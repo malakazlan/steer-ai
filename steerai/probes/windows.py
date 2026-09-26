@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import sys
+import time
 from ctypes import wintypes
 from dataclasses import dataclass
 
@@ -38,6 +39,20 @@ def list_top_windows() -> list[WindowInfo]:
 
     user32.EnumWindows(enum_proc(on_window), 0)
     return found
+
+
+def wait_window_for_pid(
+    pid: int, *, title_contains: str | None = None, timeout_s: float = 15.0
+) -> WindowInfo:
+    """First visible titled window owned by `pid`, polling until it appears."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        for window in list_top_windows():
+            if window.pid == pid and (title_contains is None or title_contains in window.title):
+                return window
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"no visible window for pid {pid} within {timeout_s} s")
+        time.sleep(0.2)
 
 
 def find_window(title_substring: str) -> WindowInfo | None:

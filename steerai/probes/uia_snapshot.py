@@ -12,6 +12,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from steerai.probes.win_input import ensure_per_monitor_v2
+
 _COINIT_MULTITHREADED = 0x0
 _CACHED_PROPERTIES = (
     "UIA_NamePropertyId",
@@ -39,6 +41,8 @@ class UiaClient:
     ) -> None:
         if sys.platform != "win32":
             raise OSError("UI Automation requires Windows")
+        # UIA scales rectangles to the client's DPI awareness; set it before the first COM call.
+        self.dpi_per_monitor_v2 = ensure_per_monitor_v2()
         self._uia_module, self._uia = _create_client()
         self._uia.ConnectionTimeout = connection_timeout_ms
         self._uia.TransactionTimeout = transaction_timeout_ms
@@ -62,6 +66,14 @@ class UiaClient:
         except Exception as exc:  # COMError exists only once comtypes is loaded
             raise OSError(f"no UIA element for hwnd {hwnd:#x}: {exc}") from exc
         return self._snapshot(element, self._uia_module.TreeScope_Subtree, "subtree")
+
+    def bounding_rect(self, hwnd: int) -> tuple[int, int, int, int]:
+        """UIA bounding rectangle of the window element, in physical screen pixels."""
+        try:
+            rect = self._uia.ElementFromHandle(hwnd).CurrentBoundingRectangle
+        except Exception as exc:  # COMError exists only once comtypes is loaded
+            raise OSError(f"no UIA element for hwnd {hwnd:#x}: {exc}") from exc
+        return int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
 
     def _snapshot(self, element: Any, scope: int, scope_name: str) -> Snapshot:
         # `element` is a COM interface pointer; comtypes has no type stubs, hence Any.
