@@ -67,6 +67,9 @@ quote-style = "double"
 
 [tool.mypy]
 python_version = "3.12"
+# Windows-first codebase: type-check as win32 everywhere so `sys.platform` guards are not
+# narrowed to "always raises" on the Linux lint runner.
+platform = "win32"
 strict = true
 warn_unreachable = true
 show_error_codes = true
