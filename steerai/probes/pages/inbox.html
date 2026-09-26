@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Steer probe inbox</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; display: grid; grid-template-columns: 260px 1fr; height: 100vh; }
+  nav { border-right: 1px solid #ccc; padding: 12px; }
+  main { display: grid; grid-template-rows: auto 1fr auto; }
+  header, footer { padding: 10px; border-bottom: 1px solid #ccc; }
+  footer { border-top: 1px solid #ccc; border-bottom: none; }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li { padding: 6px 0; }
+  .msgs { padding: 10px; overflow: auto; }
+  .bubble { padding: 6px 10px; margin: 4px 0; background: #eef; border-radius: 8px; width: fit-content; }
+  .out { background: #dfd; margin-left: auto; }
+</style>
+</head>
+<body>
+<nav aria-label="Chats">
+  <input type="search" aria-label="Search chats" placeholder="Search">
+  <button>New message</button>
+  <ul role="list" aria-label="Chat list">
+    <li><a href="#chat-amir">Amir · hi bro · 2h</a></li>
+    <li><a href="#chat-amir-khan">Amir Khan · ok · 3d</a></li>
+    <li><a href="#chat-sara">Sara Ahmed · invoice attached · 1d</a></li>
+    <li><a href="#chat-bilal">Bilal · see you tomorrow · 5d</a></li>
+    <li><a href="#chat-team">Design team · sprint review · 1w</a></li>
+    <li><a href="#chat-mom">Mom · call me · 2w</a></li>
+    <li><a href="#chat-sarah-j">Sarah Jones · thanks! · 3w</a></li>
+    <li><a href="#chat-ali">Ali Raza · meeting notes · 1mo</a></li>
+  </ul>
+  <button>Archived chats</button>
+  <button>Settings</button>
+  <button>Log out</button>
+</nav>
+<main>
+  <header>
+    <h1>Amir Khan</h1>
+    <button>Call Amir Khan</button>
+    <button>Video call</button>
+    <button>Chat options</button>
+    <button>Mute notifications</button>
+    <button>Delete chat</button>
+  </header>
+  <section class="msgs" aria-label="Conversation">
+    <div class="bubble">ok</div>
+    <div class="bubble out">are we still on for friday?</div>
+    <div class="bubble">yes, 6pm works</div>
+    <button>Load older messages</button>
+  </section>
+  <footer>
+    <button>Attach file</button>
+    <button>Add emoji</button>
+    <textarea aria-label="Message" placeholder="Message..."></textarea>
+    <button>Send</button>
+    <button>Voice message</button>
+  </footer>
+</main>
+</body>
+</html>

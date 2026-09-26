@@ -9,6 +9,7 @@ authors = [{ name = "malakazlan" }]
 dependencies = [
     "comtypes>=1.4 ; sys_platform == 'win32'",
     "pydantic>=2.11",
+    "typesafe-sdk>=0.7.1",
     "websockets>=13",
 ]
 

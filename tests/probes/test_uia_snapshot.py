@@ -28,6 +28,16 @@ def test_subtree_snapshot_of_a_real_window(client: UiaClient) -> None:
     assert sum(snapshot.by_control_type.values()) == snapshot.node_count
 
 
+def test_cached_tree_has_structure_and_matches_flat_count(client: UiaClient) -> None:
+    hwnd = list_top_windows()[0].hwnd
+    tree = client.cached_tree(hwnd)
+    assert tree.nodes[0].depth == 0
+    pairs = zip(tree.nodes, tree.nodes[1:], strict=False)
+    assert all(0 <= child.depth <= parent.depth + 1 for parent, child in pairs)
+    assert tree.fetch_ms > 0
+    assert len(tree.nodes) == client.snapshot_subtree(hwnd).node_count
+
+
 def test_bounding_rect_of_a_real_window_is_non_empty(client: UiaClient) -> None:
     hwnd = list_top_windows()[0].hwnd
     left, top, right, bottom = client.bounding_rect(hwnd)

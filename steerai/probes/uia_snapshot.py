@@ -33,6 +33,23 @@ class Snapshot:
     by_control_type: dict[str, int] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class RawNode:
+    depth: int
+    role: str
+    name: str
+    automation_id: str
+    box: tuple[int, int, int, int]
+    offscreen: bool
+
+
+@dataclass(frozen=True, slots=True)
+class TreeSnapshot:
+    nodes: list[RawNode]
+    fetch_ms: float
+    walk_ms: float
+
+
 class UiaClient:
     """Thin, typed boundary around the COM UI Automation client."""
 
@@ -66,6 +83,51 @@ class UiaClient:
         except Exception as exc:  # COMError exists only once comtypes is loaded
             raise OSError(f"no UIA element for hwnd {hwnd:#x}: {exc}") from exc
         return self._snapshot(element, self._uia_module.TreeScope_Subtree, "subtree")
+
+    def cached_tree(self, hwnd: int) -> TreeSnapshot:
+        """Whole subtree with structure in one cross-process call (BuildUpdatedCache, Subtree).
+
+        Probe 4 spike: ~36 ms for 227 nodes versus ~500 ms for the flat FindAllBuildCache.
+        The walk over cached children is in-process and costs ~1 ms.
+        """
+        try:
+            element = self._uia.ElementFromHandle(hwnd)
+        except Exception as exc:  # COMError exists only once comtypes is loaded
+            raise OSError(f"no UIA element for hwnd {hwnd:#x}: {exc}") from exc
+        cache_request = self._uia.CreateCacheRequest()
+        for name in _CACHED_PROPERTIES:
+            cache_request.AddProperty(getattr(self._uia_module, name))
+        cache_request.TreeScope = self._uia_module.TreeScope_Subtree
+        started = time.perf_counter_ns()
+        root = element.BuildUpdatedCache(cache_request)
+        fetch_ms = (time.perf_counter_ns() - started) / 1_000_000
+        started = time.perf_counter_ns()
+        nodes: list[RawNode] = []
+        self._walk_cached(root, 0, nodes)
+        walk_ms = (time.perf_counter_ns() - started) / 1_000_000
+        return TreeSnapshot(nodes=nodes, fetch_ms=fetch_ms, walk_ms=walk_ms)
+
+    def _walk_cached(self, element: Any, depth: int, out: list[RawNode]) -> None:
+        # `element` is a cached COM element; comtypes has no stubs, hence Any.
+        rect = element.CachedBoundingRectangle
+        type_id = int(element.CachedControlType)
+        out.append(
+            RawNode(
+                depth=depth,
+                role=self._control_type_names.get(type_id, str(type_id)),
+                name=str(element.CachedName or ""),
+                automation_id=str(element.CachedAutomationId or ""),
+                box=(int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)),
+                offscreen=bool(element.CachedIsOffscreen),
+            )
+        )
+        try:
+            children = element.GetCachedChildren()
+            count = int(children.Length)
+        except ValueError:  # comtypes raises on a NULL pointer: leaf node
+            return
+        for index in range(count):
+            self._walk_cached(children.GetElement(index), depth + 1, out)
 
     def bounding_rect(self, hwnd: int) -> tuple[int, int, int, int]:
         """UIA bounding rectangle of the window element, in physical screen pixels."""

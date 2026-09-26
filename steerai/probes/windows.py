@@ -22,6 +22,17 @@ def list_top_windows() -> list[WindowInfo]:
         raise OSError("window enumeration requires Windows")
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    # Explicit signatures: HWNDs are 64-bit and must not default to c_int.
+    user32.EnumWindows.argtypes = (enum_proc, wintypes.LPARAM)
+    user32.EnumWindows.restype = wintypes.BOOL
+    user32.IsWindowVisible.argtypes = (wintypes.HWND,)
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.GetWindowTextLengthW.argtypes = (wintypes.HWND,)
+    user32.GetWindowTextLengthW.restype = ctypes.c_int
+    user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+    user32.GetWindowTextW.restype = ctypes.c_int
+    user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
     found: list[WindowInfo] = []
 
     def on_window(hwnd: int, _lparam: int) -> bool:

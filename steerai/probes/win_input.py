@@ -94,10 +94,28 @@ def ensure_per_monitor_v2() -> bool:
 
 
 def _user32() -> ctypes.WinDLL:
+    """user32 with explicit signatures: HWNDs are 64-bit and must not default to c_int."""
     if sys.platform != "win32":
         raise OSError("SendInput requires Windows")
     ensure_per_monitor_v2()
-    return ctypes.WinDLL("user32", use_last_error=True)
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.SendInput.argtypes = (wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
+    user32.SendInput.restype = wintypes.UINT
+    user32.GetSystemMetrics.argtypes = (ctypes.c_int,)
+    user32.GetSystemMetrics.restype = ctypes.c_int
+    user32.GetDpiForSystem.restype = wintypes.UINT
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+    user32.SetForegroundWindow.restype = wintypes.BOOL
+    user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.AttachThreadInput.argtypes = (wintypes.DWORD, wintypes.DWORD, wintypes.BOOL)
+    user32.AttachThreadInput.restype = wintypes.BOOL
+    user32.WindowFromPoint.argtypes = (wintypes.POINT,)
+    user32.WindowFromPoint.restype = wintypes.HWND
+    user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+    user32.GetWindowRect.restype = wintypes.BOOL
+    return user32
 
 
 def _to_absolute(user32: ctypes.WinDLL, x: int, y: int) -> tuple[int, int]:
@@ -180,6 +198,7 @@ def acquire_foreground(hwnd: int) -> str:
 
     current = user32.GetForegroundWindow()
     current_thread = user32.GetWindowThreadProcessId(current, None)
+    kernel32.GetCurrentThreadId.restype = wintypes.DWORD
     own_thread = kernel32.GetCurrentThreadId()
     user32.AttachThreadInput(own_thread, current_thread, True)
     try:
