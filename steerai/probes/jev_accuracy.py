@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -100,9 +99,8 @@ def parse_args(argv: Sequence[str]) -> ProbeArgs:
 
 
 def run_probe(args: ProbeArgs) -> dict[str, Any]:
-    api_key = os.environ.get("TYPESAFE_API_KEY")
-    if not api_key:
-        raise OSError("TYPESAFE_API_KEY is not set")
+    jev = JevClient.from_env()
+    settings = JevClient.settings_from_env()
     cases = load_cases()
     profile_dir = Path(tempfile.mkdtemp(prefix="steer-jev-"))
     page = profile_dir / "inbox.html"
@@ -118,7 +116,6 @@ def run_probe(args: ProbeArgs) -> dict[str, Any]:
         elements = elements_from_nodes(tree)
         kept = prune(elements, cap=150)
         lines = format_lines(kept, remaining=len(prune(elements, cap=len(elements))) - len(kept))
-        jev = JevClient(api_key=api_key)
         outcomes: list[Outcome] = []
         for case in cases:
             expected = resolve_expected_id(case, kept)
@@ -139,6 +136,8 @@ def run_probe(args: ProbeArgs) -> dict[str, Any]:
             chrome.wait(timeout=10)
         shutil.rmtree(profile_dir, ignore_errors=True)
     return {
+        "gateway": settings.base_url or "https://api.typesafe.ai",
+        "model_requested": settings.model,
         "element_lines": len(lines),
         "summary": summarize(outcomes, gate=args.gate),
         "outcomes": [asdict(o) | {"correct": o.correct} for o in outcomes],
