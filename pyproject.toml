@@ -1,0 +1,81 @@
+[project]
+name = "steerai"
+version = "0.0.1"
+description = "A fast, accurate, reliable computer-use agent for Windows."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "Proprietary" }
+authors = [{ name = "malakazlan" }]
+dependencies = [
+    "pydantic>=2.11",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-timeout>=2.3",
+    "ruff>=0.12",
+    "mypy>=1.16",
+    "pip-audit>=2.9",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["steerai"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["."]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "N",         # pep8-naming
+    "UP",        # pyupgrade
+    "B",         # bugbear
+    "S",         # bandit (security)
+    "BLE",       # no blind except
+    "A",         # builtins shadowing
+    "C4",        # comprehensions
+    "DTZ",       # naive datetimes
+    "T20",       # no print
+    "PT",        # pytest style
+    "RET",       # return consistency
+    "SIM",       # simplify
+    "ARG",       # unused arguments
+    "PTH",       # pathlib
+    "ERA",       # commented-out code
+    "PL",        # pylint subset
+    "RUF",
+]
+ignore = [
+    "PLR2004",   # magic numbers are fine in tests and budgets
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "PLR0913", "ARG001"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+show_error_codes = true
+files = ["steerai", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers --strict-config -p no:cacheprovider --timeout=60"
+markers = [
+    "windows: requires a Windows desktop session (UIA, SendInput, capture)",
+    "live: calls a paid external API (Jev, LLM); opt-in with -m live",
+]
+xfail_strict = true

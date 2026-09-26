@@ -1,0 +1,41 @@
+# Local-only working folders (design docs and session context stay off GitHub)
+docs/
+context/
+
+# Secrets and local config
+.env
+.env.*
+*.pem
+*.key
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Rust (Phase 5)
+target/
+
+# Steer runtime data
+traces/
+cache/
+*.sqlite
+*.sqlite3
+*.jsonl
+
+# OS and editors
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.idea/
