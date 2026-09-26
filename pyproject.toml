@@ -9,6 +9,7 @@ authors = [{ name = "malakazlan" }]
 dependencies = [
     "comtypes>=1.4 ; sys_platform == 'win32'",
     "pydantic>=2.11",
+    "websockets>=13",
 ]
 
 [dependency-groups]
@@ -86,5 +87,9 @@ addopts = "-q --strict-markers --strict-config -p no:cacheprovider --timeout=60"
 markers = [
     "windows: requires a Windows desktop session (UIA, SendInput, capture)",
     "live: calls a paid external API (Jev, LLM); opt-in with -m live",
+    "probe: launches real applications and takes tens of seconds; opt-in with -m probe",
 ]
 xfail_strict = true
+
+[tool.uv]
+link-mode = "copy"
