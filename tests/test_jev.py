@@ -63,6 +63,56 @@ def test_choose_element_parses_choice_probabilities_and_margin() -> None:
     assert body["questions"]["target"]["type"] == "choice"
 
 
+def test_base_url_routes_to_a_gateway_with_the_same_path() -> None:
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen["host"] = request.url.host
+        seen["path"] = request.url.path
+        return httpx2.Response(
+            200,
+            json={
+                "model": "jev-1.13.0",
+                "answers": {
+                    "target": {
+                        "type": "choice",
+                        "choice": "4",
+                        "probabilities": {"1": 0.0, "2": 0.0, "3": 0.0, "4": 1.0, "none": 0.0},
+                        "confidence": 1.0,
+                    }
+                },
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        )
+
+    client = JevClient(
+        api_key="or-key",
+        base_url="https://openrouter.ai/api",
+        transport=httpx2.MockTransport(handler),
+    )
+    assert client.choose_element(intent="new message", lines=LINES).element_id == 4
+    assert seen == {"host": "openrouter.ai", "path": "/api/v1/systemone"}
+
+
+def test_client_from_env_prefers_explicit_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TYPESAFE_API_KEY", "k")
+    monkeypatch.setenv("STEER_JEV_BASE_URL", "https://openrouter.ai/api")
+    monkeypatch.setenv("STEER_JEV_MODEL", "typesafe/jev-1.13")
+    settings = JevClient.settings_from_env()
+    assert (settings.api_key, settings.base_url, settings.model) == (
+        "k",
+        "https://openrouter.ai/api",
+        "typesafe/jev-1.13",
+    )
+    monkeypatch.delenv("STEER_JEV_BASE_URL")
+    monkeypatch.delenv("STEER_JEV_MODEL")
+    settings = JevClient.settings_from_env()
+    assert (settings.base_url, settings.model) == (None, "jev-latest")
+    monkeypatch.delenv("TYPESAFE_API_KEY")
+    with pytest.raises(OSError, match="TYPESAFE_API_KEY not set"):  # message prefix is stable
+        JevClient.from_env()
+
+
 def test_choose_element_none_maps_to_no_element() -> None:
     def handler(_request: httpx2.Request) -> httpx2.Response:
         return httpx2.Response(

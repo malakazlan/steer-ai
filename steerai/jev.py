@@ -5,6 +5,7 @@ One question family per method. Everything the model sees is text; the caller pr
 
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -15,6 +16,13 @@ from typesafe_sdk import Choice, TypeSafeClient
 
 NONE_OPTION = "none"
 _ELEMENT_KEY = "target"
+
+
+@dataclass(frozen=True, slots=True)
+class JevSettings:
+    api_key: str | None
+    base_url: str | None
+    model: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,17 +51,44 @@ def build_element_question(*, intent: str, lines: Sequence[str]) -> tuple[dict[s
 
 
 class JevClient:
+    """Works against TypeSafe directly or any gateway exposing the same `/v1/systemone` API
+    (OpenRouter at `https://openrouter.ai/api`, or a local Jev-compatible server)."""
+
     def __init__(
         self,
         *,
         api_key: str | None = None,
         model: str = "jev-latest",
+        base_url: str | None = None,
         transport: httpx2.BaseTransport | None = None,
         timeout_s: float = 10.0,
     ) -> None:
         self._client = TypeSafeClient(
-            api_key=api_key, model=model, transport=transport, timeout=timeout_s
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+            transport=transport,
+            timeout=timeout_s,
         )
+
+    @staticmethod
+    def settings_from_env() -> JevSettings:
+        """From TYPESAFE_API_KEY, optional STEER_JEV_BASE_URL and STEER_JEV_MODEL.
+
+        OpenRouter: base_url https://openrouter.ai/api, model typesafe/jev-1.13.
+        """
+        return JevSettings(
+            api_key=os.environ.get("TYPESAFE_API_KEY") or None,
+            base_url=os.environ.get("STEER_JEV_BASE_URL") or None,
+            model=os.environ.get("STEER_JEV_MODEL") or "jev-latest",
+        )
+
+    @classmethod
+    def from_env(cls) -> JevClient:
+        settings = cls.settings_from_env()
+        if not settings.api_key:
+            raise OSError("TYPESAFE_API_KEY not set (an OpenRouter key + STEER_JEV_BASE_URL works)")
+        return cls(api_key=settings.api_key, model=settings.model, base_url=settings.base_url)
 
     def choose_element(self, *, intent: str, lines: Sequence[str]) -> ElementChoice:
         state, question = build_element_question(intent=intent, lines=lines)
