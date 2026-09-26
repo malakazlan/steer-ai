@@ -28,6 +28,17 @@ def test_subtree_snapshot_of_a_real_window(client: UiaClient) -> None:
     assert sum(snapshot.by_control_type.values()) == snapshot.node_count
 
 
+def test_bounding_rect_of_a_real_window_is_non_empty(client: UiaClient) -> None:
+    hwnd = list_top_windows()[0].hwnd
+    left, top, right, bottom = client.bounding_rect(hwnd)
+    assert right > left
+    assert bottom > top
+
+
+def test_client_made_process_per_monitor_v2_aware(client: UiaClient) -> None:
+    assert client.dpi_per_monitor_v2 is True
+
+
 def test_timeouts_are_applied(client: UiaClient) -> None:
     assert client.connection_timeout_ms == 5000
     assert client.transaction_timeout_ms == 5000

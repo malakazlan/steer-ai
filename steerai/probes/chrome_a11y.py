@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from steerai.probes.uia_snapshot import UiaClient
-from steerai.probes.windows import WindowInfo, list_top_windows
+from steerai.probes.windows import WindowInfo, wait_window_for_pid
 
 CHROME_DEFAULT = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
 _POLL_S = 0.25
@@ -138,16 +138,6 @@ def launch_chrome(chrome: Path, profile_dir: Path, port: int, url: str) -> subpr
         url,
     ]
     return subprocess.Popen(args)  # noqa: S603 - fixed argv built from validated paths
-
-
-def window_for_pid(pid: int, *, timeout_s: float = 15.0) -> WindowInfo:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        for window in list_top_windows():
-            if window.pid == pid and "Google Chrome" in window.title:
-                return window
-        time.sleep(0.2)
-    raise TimeoutError(f"no visible Chrome window for pid {pid}")
 
 
 # ---------------------------------------------------------------- probe
@@ -267,7 +257,7 @@ def run_probe(args: ProbeArgs) -> dict[str, Any]:
     try:
         session = CdpSession(page_ws_url(port))
         result["chrome_version"] = session.call("Browser.getVersion").get("product")
-        window = window_for_pid(proc.pid)
+        window = wait_window_for_pid(proc.pid, title_contains="Google Chrome")
         result["window"] = asdict(window)
         client = UiaClient()
 

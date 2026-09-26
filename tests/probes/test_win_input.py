@@ -6,9 +6,13 @@ import pytest
 
 from steerai.probes.win_input import (
     STEER_EXTRA_INFO,
+    VK_MENU,
+    build_keyboard_input,
     build_mouse_input,
+    foreground_hwnd,
     move_cursor,
     pid_at_point,
+    system_dpi,
     window_rect,
 )
 
@@ -22,6 +26,24 @@ def test_mouse_input_carries_steer_tag_and_absolute_flags() -> None:
     assert record.union.mi.dx == 100
     assert record.union.mi.dy == 200
     assert record.union.mi.dwFlags & 0x0001
+
+
+def test_keyboard_input_carries_steer_tag_and_keyup_flag() -> None:
+    down = build_keyboard_input(vk=VK_MENU, keyup=False)
+    up = build_keyboard_input(vk=VK_MENU, keyup=True)
+    assert down.type == 1  # INPUT_KEYBOARD
+    assert down.union.ki.wVk == VK_MENU
+    assert down.union.ki.dwFlags == 0
+    assert up.union.ki.dwFlags & 0x0002
+    assert up.union.ki.dwExtraInfo == STEER_EXTRA_INFO
+
+
+def test_foreground_hwnd_is_a_window() -> None:
+    assert foreground_hwnd() > 0
+
+
+def test_system_dpi_is_at_least_96() -> None:
+    assert system_dpi() >= 96
 
 
 def test_move_cursor_lands_on_requested_pixel() -> None:
