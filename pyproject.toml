@@ -7,6 +7,7 @@ requires-python = ">=3.12,<3.13"
 license = { text = "Proprietary" }
 authors = [{ name = "malakazlan" }]
 dependencies = [
+    "comtypes>=1.4 ; sys_platform == 'win32'",
     "pydantic>=2.11",
 ]
 
@@ -66,10 +67,18 @@ quote-style = "double"
 
 [tool.mypy]
 python_version = "3.12"
+# Windows-first codebase: type-check as win32 everywhere so `sys.platform` guards are not
+# narrowed to "always raises" on the Linux lint runner.
+platform = "win32"
 strict = true
 warn_unreachable = true
 show_error_codes = true
 files = ["steerai", "tests"]
+
+[[tool.mypy.overrides]]
+# comtypes ships no type stubs and is Windows-only; the COM boundary is wrapped in uia_snapshot.py.
+module = ["comtypes.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
