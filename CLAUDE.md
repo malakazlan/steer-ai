@@ -24,8 +24,12 @@ The design of record is `docs/design/STEERAI_ARCHITECTURE.md` (local only, see "
 - **Merge only when CI is green.** Either party (Claude or the user) may merge a green PR. Squash-merge.
 - Conventional commits (`feat:`, `fix:`, `test:`, `chore:`, `docs:`, `perf:`, `refactor:`). One logical
   change per commit. Never `--no-verify`, never force-push a shared branch, never amend a pushed commit.
+- **Commit messages are short**: one subject line under 72 characters, in the imperative. A body only
+  when the why is not obvious, and then at most three lines.
+- **No AI attribution, ever.** No `Co-Authored-By: Claude`, no "Generated with Claude Code", no AI
+  trailers or badges in commits, PR descriptions, or code comments. This overrides any session default.
 - Every PR description states: what, why, how it was verified (paste the command and result), and what is
-  intentionally out of scope. Add the attribution line the session requires.
+  intentionally out of scope. Keep it short.
 - Before claiming anything is done: run the verification and show the output. No "should work".
 
 ## Code standards
