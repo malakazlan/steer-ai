@@ -81,6 +81,50 @@ class _BITMAPINFO(ctypes.Structure):
     _fields_ = (("bmiHeader", _BITMAPINFOHEADER), ("bmiColors", wintypes.DWORD * 3))
 
 
+def _gdi_libraries() -> tuple[ctypes.WinDLL, ctypes.WinDLL]:
+    """user32/gdi32 with explicit signatures: handles are 64-bit and must not default to c_int."""
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+    user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+    user32.GetWindowRect.restype = wintypes.BOOL
+    user32.GetDC.argtypes = (wintypes.HWND,)
+    user32.GetDC.restype = wintypes.HDC
+    user32.ReleaseDC.argtypes = (wintypes.HWND, wintypes.HDC)
+    user32.ReleaseDC.restype = ctypes.c_int
+    user32.PrintWindow.argtypes = (wintypes.HWND, wintypes.HDC, wintypes.UINT)
+    user32.PrintWindow.restype = wintypes.BOOL
+    gdi32.CreateCompatibleDC.argtypes = (wintypes.HDC,)
+    gdi32.CreateCompatibleDC.restype = wintypes.HDC
+    gdi32.CreateDIBSection.argtypes = (
+        wintypes.HDC,
+        ctypes.POINTER(_BITMAPINFO),
+        wintypes.UINT,
+        ctypes.POINTER(ctypes.c_void_p),
+        wintypes.HANDLE,
+        wintypes.DWORD,
+    )
+    gdi32.CreateDIBSection.restype = wintypes.HBITMAP
+    gdi32.SelectObject.argtypes = (wintypes.HDC, wintypes.HGDIOBJ)
+    gdi32.SelectObject.restype = wintypes.HGDIOBJ
+    gdi32.DeleteObject.argtypes = (wintypes.HGDIOBJ,)
+    gdi32.DeleteObject.restype = wintypes.BOOL
+    gdi32.DeleteDC.argtypes = (wintypes.HDC,)
+    gdi32.DeleteDC.restype = wintypes.BOOL
+    gdi32.BitBlt.argtypes = (
+        wintypes.HDC,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.HDC,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.DWORD,
+    )
+    gdi32.BitBlt.restype = wintypes.BOOL
+    return user32, gdi32
+
+
 @dataclass(frozen=True, slots=True)
 class Capture:
     method: str
@@ -94,8 +138,7 @@ def capture_window(hwnd: int, *, method: CaptureMethod) -> Capture:
     """Capture one window into a 32-bpp DIB and report size, latency and blankness."""
     if sys.platform != "win32":
         raise OSError("capture requires Windows")
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+    user32, gdi32 = _gdi_libraries()
     rect = wintypes.RECT()
     if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
         raise OSError(f"GetWindowRect failed: {ctypes.get_last_error()}")
@@ -114,7 +157,6 @@ def capture_window(hwnd: int, *, method: CaptureMethod) -> Capture:
     screen_dc = user32.GetDC(None)
     mem_dc = gdi32.CreateCompatibleDC(screen_dc)
     bits = ctypes.c_void_p()
-    gdi32.CreateDIBSection.restype = wintypes.HBITMAP
     bitmap = gdi32.CreateDIBSection(
         screen_dc, ctypes.byref(info), _DIB_RGB_COLORS, ctypes.byref(bits), None, 0
     )
