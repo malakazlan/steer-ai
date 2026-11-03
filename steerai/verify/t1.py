@@ -654,6 +654,8 @@ def verify(  # noqa: PLR0913 - keyword-only context and timing knobs with measur
     own_pid: int | None = None,
     deadline_s: float = DEADLINE_S,
     poll_s: float = POLL_S,
+    monotonic: Callable[[], float] | None = None,
+    sleep: Callable[[float], None] | None = None,
 ) -> Verdict:
     """Evaluate against `after`; on a miss re-observe (`observe(stable_window=1)`) until the
     predicate holds, the contradiction settles (two equal typed observations), or the deadline,
@@ -663,7 +665,9 @@ def verify(  # noqa: PLR0913 - keyword-only context and timing knobs with measur
     if deadline_s < 0:
         raise ValueError("deadline_s must be >= 0")
     ctx = Context(live=live, windows=windows, windows_before=windows_before, own_pid=own_pid)
-    start = time.monotonic()
+    now = monotonic or time.monotonic
+    pause = sleep or time.sleep
+    start = now()
     polls = 0
     previous: object = _UNSET
     last_observe_s = 0.0
@@ -675,20 +679,20 @@ def verify(  # noqa: PLR0913 - keyword-only context and timing knobs with measur
         if verdict.state is not None and previous is not _UNSET and previous == verdict.state:
             return replace(verdict, code=ErrorCode.VERIFY_FAILED, polls=polls)
         previous = verdict.state
-        remaining = deadline_s - (time.monotonic() - start)
+        remaining = deadline_s - (now() - start)
         if remaining <= _EPSILON_S or remaining < last_observe_s:
             return replace(verdict, code=ErrorCode.VERIFY_TIMEOUT, polls=polls)
         if last_observe_s < poll_s:
-            time.sleep(max(0.0, min(poll_s - last_observe_s, remaining - last_observe_s)))
+            pause(max(0.0, min(poll_s - last_observe_s, remaining - last_observe_s)))
         polls += 1
-        started = time.monotonic()
+        started = now()
         try:
             after = observe(stable_window=1)
             verdict = _evaluate(predicate, before, after, ctx)
         except (OSError, SteerError) as exc:
             code = exc.code if isinstance(exc, SteerError) else ErrorCode.VERIFY_TIMEOUT
             return _no_verdict(code, polls, "observe_failed")
-        last_observe_s = time.monotonic() - started
+        last_observe_s = now() - started
     return replace(verdict, polls=polls)
 
 

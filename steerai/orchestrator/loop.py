@@ -151,14 +151,18 @@ class Session:
         self._verify_deadline_s = verify_deadline_s
         self._last_after: tuple[Snapshot, float] | None = None
         self._last_pair: tuple[Snapshot, Snapshot] | None = None
+        self._windows_at_step: list[WindowLike] | None = None
+        self._scrolled: str | None = None
 
     # ---- one step ----------------------------------------------------------------------------
 
-    def run_step(self, step: Step) -> StepResult:
+    def run_step(self, step: Step) -> StepResult:  # noqa: PLR0911 - one return per exit
         stage = _Stage(self._monotonic)
         risk = effective_risk(step)
         key = self._ledger.key_for(step)
         evidence: dict[str, Any] = {"risk": risk}
+        windows_before = list(self._windows()) if self._windows else None
+        self._begin_step(windows_before)
         try:
             before = stage.measure("observe", lambda: self._before(risk, evidence))
             element_id = stage.measure("decide", lambda: self._resolve(step, before))
@@ -196,6 +200,8 @@ class Session:
             )
             evidence["retries"] = retries
             evidence["delivery"] = action.delivery.value
+            if self._scrolled is not None:
+                evidence["scrolled"] = self._scrolled
             if action.code in (ErrorCode.GATE_BLOCKED, ErrorCode.GATE_PENDING_USER):
                 self._close(step, risk, action.delivery.value)
                 return self._finish(
@@ -220,13 +226,29 @@ class Session:
                     label_kind=None,
                     code=action.code,
                 )
-            verdict, after = stage.measure("verify", lambda: self._verify(expect, before_of_record))
+            verdict, after = stage.measure(
+                "verify", lambda: self._verify(expect, before_of_record, windows_before)
+            )
             label = label_of_record(
                 verdict, predicate=expect, action_key=key, before=before_of_record, after=after
             )
             self._remember(before_of_record, after)
             outcome = self._outcome(verdict.holds, action, verdict.evidence.get("reason"))
-            self._close(step, risk, outcome)
+            try:
+                self._close(step, risk, outcome)
+            except LedgerError:
+                # the action ran; the attempt stays open in the ledger (unknown next time)
+                evidence["detail"] = "wal_unavailable"
+                return self._finish(
+                    step,
+                    stage,
+                    evidence,
+                    gate=gate_result.outcome,
+                    action=action,
+                    verify_code=verdict.code,
+                    label_kind=label.kind if label else None,
+                    code=ErrorCode.GATE_BLOCKED,
+                )
             evidence.update({k: v for k, v in verdict.evidence.items() if k != "level"})
             evidence["level"] = verdict.level
             ok = verdict.holds and action.delivery is not Delivery.NOT_DELIVERED
@@ -247,7 +269,7 @@ class Session:
                 step,
                 stage,
                 evidence,
-                gate="block",
+                gate="unreached",
                 action=None,
                 verify_code=None,
                 label_kind=None,
@@ -255,6 +277,10 @@ class Session:
             )
 
     # ---- stages ---------------------------------------------------------------------------------
+
+    def _begin_step(self, windows_before: list[WindowLike] | None) -> None:
+        self._windows_at_step = windows_before
+        self._scrolled = None
 
     def _observe_fresh(self, evidence: dict[str, Any]) -> Snapshot:
         snapshot = self._observer.observe(self.hwnd)
@@ -370,7 +396,10 @@ class Session:
         scrolled = False
         while True:
             if risk in ("R2", "R3"):
-                self._ledger.mark(step, "acting")
+                try:
+                    self._ledger.mark(step, "acting")
+                except LedgerError as exc:
+                    raise _StepFailureError(ErrorCode.GATE_BLOCKED, "wal_unavailable") from exc
             action = self._build(path, verb, element_id, step.text)
             result = executor.execute(action, before)
             if result.code in (ErrorCode.GATE_BLOCKED, ErrorCode.GATE_PENDING_USER):
@@ -380,9 +409,10 @@ class Session:
             detail = result.evidence.get("detail")
             if detail in ("offscreen", "clipped") and not scrolled:
                 scrolled = True
-                self._semantic.execute(
+                scroll_result = self._semantic.execute(
                     Action(verb="scroll_into_view", element_id=element_id), before
                 )
+                self._scrolled = scroll_result.delivery.value
                 before = self._observer.observe(self.hwnd, stable_window=1)
                 element_id = self._resolve(step, before)
                 continue
@@ -399,7 +429,9 @@ class Session:
             return PhysicalAction(verb=verb, element_id=element_id, text=text)
         return Action(verb=verb, element_id=element_id)
 
-    def _verify(self, expect: Predicate, before: Snapshot) -> tuple[Any, Snapshot]:
+    def _verify(
+        self, expect: Predicate, before: Snapshot, windows_before: Sequence[WindowLike] | None
+    ) -> tuple[Any, Snapshot]:
         decided: list[Snapshot] = [self._observer.observe(self.hwnd, stable_window=1)]
 
         def observe(**kwargs: Any) -> Snapshot:
@@ -413,8 +445,10 @@ class Session:
             observe,
             live=self._live,
             windows=self._windows() if self._windows else None,
-            windows_before=[] if self._windows else None,
+            windows_before=windows_before,
             deadline_s=self._verify_deadline_s,
+            monotonic=self._monotonic,
+            sleep=self._sleep,
         )
         after = next((s for s in decided if s.id == verdict.after_id), decided[-1])
         return verdict, after
@@ -552,14 +586,18 @@ class Session:
                 return "stopped", ErrorCode.BUDGET_EXCEEDED, "max_steps"
             result = self.run_step(step)
             results.append(result)
+            detail = str(result.evidence.get("detail", result.gate))
             if result.gate == "block":
-                return (
-                    "blocked",
-                    ErrorCode.GATE_BLOCKED,
-                    str(result.evidence.get("detail", "block")),
-                )
+                return "blocked", ErrorCode.GATE_BLOCKED, detail
             if result.gate == "pending":
                 return "paused", ErrorCode.GATE_PENDING_USER, "unanswered"
+            if result.gate == "unreached":
+                return "stopped", result.code or ErrorCode.VERIFY_FAILED, detail
+            if result.gate == "done_already":
+                # the earlier verified attempt (or the persisted before) proved the effect
+                ticked.add(step.subgoal)
+                strikes = 0
+                continue
             if result.ok and self._last_pair is not None:
                 before, after = self._last_pair
                 subgoal = next(s for s in plan.subgoals if s.id == step.subgoal)
@@ -588,7 +626,7 @@ class Session:
                 snapshot,
                 live=self._live,
                 windows=self._windows() if self._windows else None,
-                windows_before=[] if self._windows else None,
+                windows_before=list(self._windows()) if self._windows else None,
             ).holds
         except (SteerError, ValueError):
             return False
@@ -601,7 +639,7 @@ class Session:
                 after,
                 live=self._live,
                 windows=self._windows() if self._windows else None,
-                windows_before=[] if self._windows else None,
+                windows_before=self._windows_at_step,
             ).holds
         except (SteerError, ValueError):
             return False
@@ -614,10 +652,11 @@ def _structural_part(predicate: Predicate) -> Predicate | None:
     if isinstance(predicate, _DIFF_PREDICATES):
         return predicate
     if isinstance(predicate, (All, AnyOf)):
-        for part in predicate.parts:
-            found = _structural_part(part)
-            if found is not None:
-                return found
+        found = [p for p in (_structural_part(part) for part in predicate.parts) if p is not None]
+        for candidate in found:
+            if not isinstance(candidate, CountDelta):
+                return candidate
+        return found[0] if found else None
     return None
 
 

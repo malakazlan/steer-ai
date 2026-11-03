@@ -101,6 +101,9 @@ class Step:
             raise ValueError(f"{self.verb} needs text")
         if self.verb not in _TEXT_VERBS and self.text is not None:
             raise ValueError(f"{self.verb} takes no text")
+        composer = self.params.get("composer_id")
+        if composer is not None and not composer.isdigit():
+            raise ValueError("composer_id must be a snapshot element id")
         if self.path is not None and self.path not in ("semantic", "physical"):
             raise ValueError("path must be semantic or physical")
         if self.preapproved_by_request and self.text_provenance != "verbatim":
@@ -161,7 +164,8 @@ class StepResult:
 
     step_id: str
     ok: bool
-    gate: GateOutcome | Literal["pending", "done_already"]
+    gate: GateOutcome | Literal["pending", "done_already", "unreached"]
+    """`unreached`: the step failed before the gate ran (unstable, no target, no record)."""
     action: ActionResult | None
     verify_code: ErrorCode | None
     label_kind: Literal["t1", "user"] | None

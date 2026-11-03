@@ -320,7 +320,7 @@ def test_unreadable_record_is_unknown_and_confirms() -> None:
     h.session.run_step(_type())
     h.ledger.unreadable.add("s3")
     result = h.session.run_step(_send())
-    assert result.gate in ("block", "pending", "confirm")
+    assert result.gate in ("block", "pending", "confirm", "unreached")
     assert h.confirmer.asked
     assert h.confirmer.asked[0].previous_attempt == "unknown"
     assert result.code is ErrorCode.GATE_BLOCKED or result.ok is False
