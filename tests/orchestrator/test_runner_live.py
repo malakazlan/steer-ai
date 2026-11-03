@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -21,8 +22,10 @@ import pytest
 from steerai.orchestrator.plan_io import plan_from_json
 from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome
 from steerai.probes.uia_snapshot import UiaClient
+from steerai.probes.win_input import _send, _user32, build_keyboard_input
 from steerai.probes.windows import wait_window_for_pid
 from steerai.run import EXIT_BLOCKED, EXIT_DONE, EXIT_PAUSED
+from steerai.session.monitor import DEFAULT_KILL_KEY, parse_kill_key
 from steerai.world.model import WorldModel
 from tests.orchestrator.test_live import _observe_until_exposed
 
@@ -30,6 +33,20 @@ pytestmark = pytest.mark.windows
 PAGE = Path(__file__).resolve().parents[2] / "steerai" / "probes" / "pages" / "inbox.html"
 MESSAGE = "hello there from the runner"
 ROOT = Path(__file__).resolve().parents[2]
+_MODIFIER_VK = {"ctrl": 0x11, "shift": 0x10, "alt": 0x12, "win": 0x5B}
+
+
+def _press_kill_key() -> None:
+    mods, vk = parse_kill_key(DEFAULT_KILL_KEY)
+    order = [m for m in ("ctrl", "shift", "alt", "win") if m in mods]
+    time.sleep(0.3)  # the runner is inside its ask: the console is waiting
+    _send(
+        _user32(),
+        *[build_keyboard_input(vk=_MODIFIER_VK[m], keyup=False) for m in order],
+        build_keyboard_input(vk=vk, keyup=False),
+        build_keyboard_input(vk=vk, keyup=True),
+        *[build_keyboard_input(vk=_MODIFIER_VK[m], keyup=True) for m in reversed(order)],
+    )
 
 
 def _plan_doc(content_role: str) -> dict[str, Any]:
@@ -79,9 +96,12 @@ def _plan_doc(content_role: str) -> dict[str, Any]:
     }
 
 
-def _run_cli(args: list[str], *, answer: str | None) -> tuple[int, dict[str, Any], str]:
+def _run_cli(
+    args: list[str], *, answer: str | None, on_ask: Callable[[], None] | None = None
+) -> tuple[int, dict[str, Any], str]:
     """Run the CLI; a thread answers the first ASK line on stderr with `answer` (the decision
-    id substituted for `{id}`), or with a bare Enter when `answer` is None."""
+    id substituted for `{id}`), or with a bare Enter when `answer` is None; `on_ask` runs first
+    (the kill chord in the kill variant), in which case nothing is typed."""
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     proc = subprocess.Popen(  # noqa: S603 - this interpreter, a fixed module, the test's own args
         [sys.executable, "-m", "steerai.run", *args],
@@ -101,6 +121,9 @@ def _run_cli(args: list[str], *, answer: str | None) -> tuple[int, dict[str, Any
         for line in proc.stderr:
             err_lines.append(line)
             if line.startswith("ASK "):
+                if on_ask is not None:
+                    on_ask()
+                    continue
                 decision_id = line.split()[1]
                 reply = "" if answer is None else answer.replace("{id}", decision_id)
                 with contextlib.suppress(OSError, ValueError):
@@ -198,6 +221,17 @@ def test_the_runner_sends_once_resumes_as_done_and_honours_the_risk_limit(tmp_pa
         assert out["status"] == "paused"
         assert out["code"] == "gate_pending_user"
         assert "--task-id run-live-2" in err
+
+        # the kill switch at the ask: injected with Steer's tag from this process; the runner's
+        # hot key fires, the console returns killed, the gate blocks, nothing is sent
+        code, out, err = _run_cli(
+            [*base, "--task-id", "run-live-kill"], answer=None, on_ask=_press_kill_key
+        )
+        assert code == EXIT_BLOCKED, (out, err)
+        assert out["status"] == "blocked"
+        assert out["detail"] == "killed"
+        assert {r["step_id"]: r["gate"] for r in out["results"]}["send"] == "block"
+        assert "ASK " in err
     finally:
         proc.terminate()
         with contextlib.suppress(subprocess.TimeoutExpired):
