@@ -24,9 +24,10 @@ Path = Literal["semantic", "physical"]
 GateOutcome = Literal["approve", "confirm", "block"]
 TextProvenance = Literal["verbatim", "generated"]
 
-VERBS: frozenset[str] = frozenset({"click", "type", "send", "submit", "delete", "open"})
+VERBS: frozenset[str] = frozenset({"click", "focus", "type", "send", "submit", "delete", "open"})
 _EXECUTOR_VERBS: dict[str, tuple[Path, str]] = {
     "click": ("semantic", "click"),
+    "focus": ("physical", "click"),
     "type": ("physical", "type"),
     "send": ("semantic", "click"),
     "submit": ("semantic", "click"),

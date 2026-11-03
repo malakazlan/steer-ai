@@ -118,6 +118,8 @@ def _need_scope(value: Within | None, name: str, verb: str) -> Within:
 
 def template_for(verb: str, params: Params) -> Predicate:
     """The verb's fixed postcondition, filled from the parameters by code."""
+    if verb == "focus":
+        return Focused(target_id=_need_int(params.target_id, "target_id", verb))
     if verb == "type":
         return ValueEquals(
             target_id=_need_int(params.target_id, "target_id", verb),

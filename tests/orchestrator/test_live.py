@@ -26,7 +26,7 @@ from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome
 from steerai.probes.uia_snapshot import UiaClient
 from steerai.probes.win_input import acquire_foreground
 from steerai.probes.windows import wait_window_for_pid
-from steerai.verify.predicates import Appeared, Focused, Within
+from steerai.verify.predicates import Appeared, Within
 from steerai.world.model import Snapshot, WorldModel
 
 pytestmark = pytest.mark.windows
@@ -74,12 +74,9 @@ def _observe_until_exposed(model: WorldModel, hwnd: int, *, max_s: float = 25.0)
         time.sleep(0.5)
 
 
-def _plan(composer_id: int, content_role: str) -> Plan:
+def _plan(content_role: str) -> Plan:
     condition = Appeared(
-        role=content_role,
-        name_pattern=MESSAGE,
-        within=Within(landmark="Conversation"),
-        excluding_anchor=composer_id,
+        role=content_role, name_pattern=MESSAGE, within=Within(landmark="Conversation")
     )
     return Plan(
         goal="send a message in the inbox page",
@@ -88,11 +85,9 @@ def _plan(composer_id: int, content_role: str) -> Plan:
             Step(
                 id="focus",
                 subgoal="g1",
-                verb="click",
+                verb="focus",
                 target=Target(role="Edit", name="Message"),
                 risk="R0",
-                path="physical",
-                expect=Focused(target_id=composer_id),
             ),
             Step(
                 id="type",
@@ -110,7 +105,8 @@ def _plan(composer_id: int, content_role: str) -> Plan:
                 risk="R2",
                 params={
                     "text": MESSAGE,
-                    "composer_id": str(composer_id),
+                    "composer_role": "Edit",
+                    "composer_name": "Message",
                     "scope": "Conversation",
                     "content_role": content_role,
                 },
@@ -129,7 +125,6 @@ def test_a_send_task_runs_end_to_end_and_resumes_as_done(tmp_path: Path) -> None
         client = UiaClient()
         model = WorldModel(client)
         start = _observe_until_exposed(model, window.hwnd)
-        composer = next(e for e in start.elements if e.role == "Edit" and e.name == "Message")
         content_role = next(
             e.role for e in start.elements if e.name == "ok" and e.parent_id is not None
         )
@@ -147,7 +142,7 @@ def test_a_send_task_runs_end_to_end_and_resumes_as_done(tmp_path: Path) -> None
             live=_Live(client),
             trace=trace,
         )
-        plan = _plan(composer.id, content_role)
+        plan = _plan(content_role)
         started = time.perf_counter()
         result = session.run_task(plan)
         elapsed = time.perf_counter() - started

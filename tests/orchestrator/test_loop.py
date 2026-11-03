@@ -62,7 +62,12 @@ def _send(step_id: str = "s3") -> Step:
         verb="send",
         target=Target(role="Button", name="Send"),
         risk="R2",
-        params={"text": HELLO, "composer_id": str(COMPOSER[0]), "scope": "Conversation"},
+        params={
+            "text": HELLO,
+            "composer_role": "Edit",
+            "composer_name": "Message",
+            "scope": "Conversation",
+        },
     )
 
 

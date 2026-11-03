@@ -37,6 +37,7 @@ from steerai.orchestrator.contracts import (
     Risk,
     Step,
     StepResult,
+    Target,
     executor_verb,
 )
 from steerai.orchestrator.gate import Gate, GateResult, effective_risk
@@ -173,6 +174,7 @@ class Session:
                     target_pid=before.pid,
                     previous_attempt=previous,
                     target_id=element_id,
+                    composer_id=self._composer(step, before),
                 ),
             )
             if gate_result.outcome in ("block", "pending"):
@@ -293,6 +295,22 @@ class Session:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
         return matches[0].id
 
+    def _composer(self, step: Step, snapshot: Snapshot) -> int | None:
+        """The composer a send template reads, resolved by role and name in this snapshot:
+        element ids are positional and a plan must never carry one across steps (OR-06)."""
+        role = step.params.get("composer_role")
+        name = step.params.get("composer_name")
+        if role is None or name is None:
+            return None
+        probe = Step(
+            id=f"{step.id}.composer",
+            subgoal=step.subgoal,
+            verb="click",
+            target=Target(role=role, name=name),
+            risk="R0",
+        )
+        return self._resolve(probe, snapshot)
+
     def _admission(self, step: Step, key: str, risk: Risk, before: Snapshot) -> str | None:
         """None when the key is fresh, "done" when nothing may run, else the previous attempt's
         token the gate shows (an outcome, a phase, or "unknown")."""
@@ -312,7 +330,7 @@ class Session:
     def _resume(self, step: Step, record: WriteAheadRecord, before: Snapshot) -> str:
         """A crash between the record and the outcome (OR-01): done when the effect is already
         there relative to the persisted before, else the phase the gate shows."""
-        expect = self._gate.predicate_for(step)
+        expect = self._gate.predicate_for(step, composer_id=self._composer(step, before))
         if expect is not None and self._effect_present(expect, record.before, before):
             self._ledger.record_outcome(step, "done_already")
             return "done"

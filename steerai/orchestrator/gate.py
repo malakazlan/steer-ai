@@ -105,11 +105,13 @@ def _block(detail: str, risk: Risk, **extra: Any) -> GateResult:
     )
 
 
-def params_for(step: Step, target_id: int | None = None) -> Params:
+def params_for(step: Step, target_id: int | None = None, composer_id: int | None = None) -> Params:
     """Strength parameters filled by code from the step, never from model text (5.4 [v0.5]);
     `target_id` is the element the loop resolved for a role-and-name target."""
     raw = step.params
     composer = raw.get("composer_id")
+    if composer is None and composer_id is not None:
+        composer = str(composer_id)
     scope = raw.get("scope")
     resolved = step.target.element_id if step.target is not None else None
     return Params(
@@ -133,12 +135,14 @@ class Gate:
         self._own_pid = own_pid
         self._task_id = task_id
 
-    def predicate_for(self, step: Step) -> Predicate | None:
+    def predicate_for(
+        self, step: Step, target_id: int | None = None, composer_id: int | None = None
+    ) -> Predicate | None:
         """The step's effect as the gate would check it: its own `expect`, else the template."""
         if step.expect is not None:
             return step.expect
         try:
-            return template_for(template_verb(step.verb), params_for(step))
+            return template_for(template_verb(step.verb), params_for(step, target_id, composer_id))
         except ValueError:
             return None
 
@@ -151,11 +155,12 @@ class Gate:
         target_pid: int,
         previous_attempt: str | None = None,
         target_id: int | None = None,
+        composer_id: int | None = None,
     ) -> GateResult:
         risk = effective_risk(step)
         if target_pid == self._own_pid:
             return _block("self_target", risk)
-        params = params_for(step, target_id)
+        params = params_for(step, target_id, composer_id)
         predicate = self._predicate(step, expect, risk, params)
         if isinstance(predicate, GateResult):
             return predicate

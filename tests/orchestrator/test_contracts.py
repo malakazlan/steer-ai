@@ -39,7 +39,8 @@ def _step(**overrides: object) -> Step:
 
 
 def test_verb_table_is_closed_and_maps_to_executors_and_templates() -> None:
-    assert frozenset({"click", "type", "send", "submit", "delete", "open"}) == VERBS
+    assert frozenset({"click", "focus", "type", "send", "submit", "delete", "open"}) == VERBS
+    assert executor_verb("focus") == ("physical", "click")
     assert executor_verb("click") == ("semantic", "click")
     assert executor_verb("type") == ("physical", "type")
     assert executor_verb("send") == ("semantic", "click")
