@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ctypes
 import sys
+from collections.abc import Sequence
 from ctypes import wintypes
 
 STEER_EXTRA_INFO = 0x5354_4545  # "STEE"
@@ -54,6 +55,7 @@ class INPUT(ctypes.Structure):
 
 _INPUT_KEYBOARD = 1
 _KEYEVENTF_KEYUP = 0x0002
+_KEYEVENTF_UNICODE = 0x0004
 VK_MENU = 0x12  # ALT
 
 
@@ -64,12 +66,36 @@ def build_mouse_input(*, dx: int, dy: int, flags: int) -> INPUT:
     return record
 
 
-def build_keyboard_input(*, vk: int, keyup: bool) -> INPUT:
+_KEYEVENTF_EXTENDEDKEY = 0x0001
+
+
+def build_keyboard_input(*, vk: int, keyup: bool, scan: int = 0, extended: bool = False) -> INPUT:
     record = INPUT()
     record.type = _INPUT_KEYBOARD
-    flags = _KEYEVENTF_KEYUP if keyup else 0
-    record.union.ki = KEYBDINPUT(vk, 0, flags, 0, STEER_EXTRA_INFO)
+    flags = (_KEYEVENTF_KEYUP if keyup else 0) | (_KEYEVENTF_EXTENDEDKEY if extended else 0)
+    record.union.ki = KEYBDINPUT(vk, scan, flags, 0, STEER_EXTRA_INFO)
     return record
+
+
+def scan_code_for(vk: int) -> int:
+    """Hardware scan code for a virtual key (MapVirtualKeyW), 0 when unavailable."""
+    if sys.platform != "win32":
+        return 0
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.MapVirtualKeyW.argtypes = (wintypes.UINT, wintypes.UINT)
+    user32.MapVirtualKeyW.restype = wintypes.UINT
+    return int(user32.MapVirtualKeyW(vk, 0))
+
+
+_MODIFIER_VKS = {"ctrl": 0x11, "shift": 0x10, "alt": 0x12, "win_left": 0x5B, "win_right": 0x5C}
+
+
+def physical_modifiers_down() -> list[str]:
+    """Modifier keys the user is physically holding right now (GetAsyncKeyState high bit)."""
+    user32 = _user32()
+    user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
+    user32.GetAsyncKeyState.restype = ctypes.c_short
+    return [name for name, vk in _MODIFIER_VKS.items() if user32.GetAsyncKeyState(vk) & 0x8000]
 
 
 def ensure_per_monitor_v2() -> bool:
@@ -153,6 +179,21 @@ def click_at(x: int, y: int) -> None:
         build_mouse_input(dx=ax, dy=ay, flags=base | _MOUSEEVENTF_LEFTDOWN),
         build_mouse_input(dx=ax, dy=ay, flags=base | _MOUSEEVENTF_LEFTUP),
     )
+
+
+def build_keyboard_unicode(unit: int, *, keyup: bool) -> INPUT:
+    """A KEYEVENTF_UNICODE event for one UTF-16 code unit (layout independent)."""
+    record = INPUT()
+    record.type = _INPUT_KEYBOARD
+    flags = _KEYEVENTF_UNICODE | (_KEYEVENTF_KEYUP if keyup else 0)
+    record.union.ki = KEYBDINPUT(0, unit, flags, 0, STEER_EXTRA_INFO)
+    return record
+
+
+def send_inputs(records: Sequence[INPUT]) -> None:
+    """Inject a batch of tagged events; raises when Windows accepted fewer than sent."""
+    if records:
+        _send(_user32(), *records)
 
 
 def key_tap(vk: int) -> None:
