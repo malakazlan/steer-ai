@@ -131,6 +131,15 @@ class Gate:
         self._own_pid = own_pid
         self._task_id = task_id
 
+    def predicate_for(self, step: Step) -> Predicate | None:
+        """The step's effect as the gate would check it: its own `expect`, else the template."""
+        if step.expect is not None:
+            return step.expect
+        try:
+            return template_for(template_verb(step.verb), params_for(step))
+        except ValueError:
+            return None
+
     def decide(
         self,
         step: Step,

@@ -160,6 +160,11 @@ class Ledger:
             return "fresh"
         return "confirm"
 
+    def outcome_of(self, key: str) -> str | None:
+        """The recorded outcome for `key`, None while an attempt is open or never ran."""
+        record = self._executions.get(key)
+        return None if record is None else record.get("outcome")
+
     # ---- write-ahead records -----------------------------------------------------------------
 
     def _record_path(self, step_id: str) -> Path:

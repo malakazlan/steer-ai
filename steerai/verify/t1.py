@@ -528,6 +528,11 @@ def _title_key(title: str) -> str:
     return _COUNTER.sub("", _COUNTER.sub("", title)).strip().casefold()
 
 
+def title_holds(pattern: str, title: str) -> bool:
+    """Presence only (no before): the counter-stripped, casefolded pattern is in the title."""
+    return _title_key(pattern) in _title_key(title)
+
+
 def _title_matches(predicate: TitleMatches, before: Snapshot, after: Snapshot) -> Verdict:
     wanted = _title_key(predicate.pattern)
     title = _title_key(after.title)
