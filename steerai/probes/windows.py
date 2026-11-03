@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import functools
+import os
 import sys
 import time
 from ctypes import wintypes
@@ -85,6 +86,29 @@ def is_cloaked(hwnd: int) -> bool:
         hwnd, dwmwa_cloaked, ctypes.byref(cloaked), ctypes.sizeof(cloaked)
     )
     return result == 0 and cloaked.value != 0
+
+
+def console_exclusions() -> tuple[set[int], set[int]]:
+    """(hwnds, pids) a runner must never target: its console window, every process attached
+    to that console, and this process (RN-15)."""
+    if sys.platform != "win32":
+        raise OSError("console lookup requires Windows")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetConsoleWindow.restype = wintypes.HWND
+    kernel32.GetConsoleProcessList.argtypes = (ctypes.POINTER(wintypes.DWORD), wintypes.DWORD)
+    kernel32.GetConsoleProcessList.restype = wintypes.DWORD
+    hwnds: set[int] = set()
+    console = kernel32.GetConsoleWindow()
+    if console:
+        hwnds.add(int(console))
+    pids: set[int] = {os.getpid()}
+    buffer = (wintypes.DWORD * 64)()
+    count = kernel32.GetConsoleProcessList(buffer, 64)
+    if count > 64:
+        buffer = (wintypes.DWORD * count)()
+        count = kernel32.GetConsoleProcessList(buffer, count)
+    pids.update(int(buffer[i]) for i in range(min(count, len(buffer))))
+    return hwnds, pids
 
 
 def process_alive(pid: int) -> bool:
