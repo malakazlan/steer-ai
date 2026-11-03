@@ -23,6 +23,8 @@ RISKS: tuple[Risk, ...] = ("R0", "R1", "R2", "R3")
 Path = Literal["semantic", "physical"]
 GateOutcome = Literal["approve", "confirm", "block"]
 TextProvenance = Literal["verbatim", "generated"]
+GateToken = GateOutcome | Literal["pending", "done_already", "unreached"]
+"""`unreached`: the step failed before the gate ran; after the gate, the token is its outcome."""
 
 VERBS: frozenset[str] = frozenset({"click", "focus", "type", "send", "submit", "delete", "open"})
 _EXECUTOR_VERBS: dict[str, tuple[Path, str]] = {
@@ -164,7 +166,7 @@ class StepResult:
 
     step_id: str
     ok: bool
-    gate: GateOutcome | Literal["pending", "done_already", "unreached"]
+    gate: GateToken
     """`unreached`: the step failed before the gate ran (unstable, no target, no record)."""
     action: ActionResult | None
     verify_code: ErrorCode | None

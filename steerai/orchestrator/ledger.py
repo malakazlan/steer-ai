@@ -197,6 +197,7 @@ class Ledger:
             self._write_encrypted(path, text)
         except OSError as exc:
             raise LedgerError(f"write-ahead record could not be written: {exc}") from exc
+        previous = self._executions.get(key)
         self._executions[key] = {
             "step_id": step.id,
             "decision_id": decision.decision_id,
@@ -206,6 +207,11 @@ class Ledger:
         try:
             self._save_state()
         except LedgerError:
+            # no action and no consumed key: this instance must agree with the disk
+            if previous is None:
+                del self._executions[key]
+            else:
+                self._executions[key] = previous
             path.unlink(missing_ok=True)
             raise
         return record

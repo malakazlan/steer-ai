@@ -228,6 +228,38 @@ def test_a_failed_write_means_no_action_and_no_consumed_key(
     assert Ledger(tmp_path, task_id="task-1", started_at=5.0).admit(key) == "fresh"
 
 
+def test_a_failed_state_save_after_the_record_write_unlinks_the_record_and_keeps_the_key_fresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 5.11 write order: the record first, then the state; the state owns the consumed key, so a
+    # record without a state entry must not survive and the key must stay fresh everywhere.
+    ledger = Ledger(tmp_path, task_id="task-1", started_at=5.0)
+    step = _send()
+    key = ledger.key_for(step)
+    real = dpapi.protect
+    calls = {"n": 0}
+
+    def fails_on_the_state_save(data: bytes, *, entropy: bytes | None = None) -> bytes:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("CryptProtectData failed: error 5")
+        return real(data, entropy=entropy)
+
+    monkeypatch.setattr(dpapi, "protect", fails_on_the_state_save)
+    with pytest.raises(LedgerError, match="ledger state"):
+        ledger.write_ahead(step, _snapshot(), _decision(key, "approve"))
+    monkeypatch.undo()
+    assert calls["n"] == 2, "the record write came first, then the state save"
+    assert list(tmp_path.rglob("*.wal")) == [], "the record is unlinked"
+    assert list(tmp_path.rglob("*.tmp")) == []
+    assert ledger.read_ahead(step) is None
+    reopened = Ledger(tmp_path, task_id="task-1", started_at=9.0)
+    assert reopened.admit(key) == "fresh"
+    assert reopened.started_at == 5.0, "the persisted start time wins over the caller's"
+    assert reopened.key_for(step) == key
+    assert ledger.admit(key) == "fresh", "the same instance holds no consumed key either"
+
+
 def test_tampered_record_is_unknown_not_absent(tmp_path: Path) -> None:
     # OR-08: unreadable is never "no record".
     ledger = Ledger(tmp_path, task_id="task-1", started_at=5.0)

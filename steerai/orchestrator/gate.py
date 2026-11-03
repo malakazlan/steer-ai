@@ -13,6 +13,7 @@ confirmer to render; names stay out of its repr.
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -49,6 +50,8 @@ DENY_PATTERNS: Mapping[str, Risk] = {
 }
 """5.13 1a: words in a target's name that raise the step's tier (whole words, case-folded)."""
 _RISK_ORDER = {risk: index for index, risk in enumerate(RISKS)}
+_WORD = re.compile(r"\w+")
+"""Whole words: punctuation around a word ("Delete,", "(Send)") does not hide it."""
 Outcome = Literal["approve", "confirm", "block", "pending"]
 
 
@@ -57,7 +60,7 @@ def effective_risk(step: Step) -> Risk:
     risk: Risk = step.risk
     if step.target is None:
         return risk
-    words = set(normalise_name(step.target.name).casefold().split())
+    words = set(_WORD.findall(normalise_name(step.target.name).casefold()))
     for word, tier in DENY_PATTERNS.items():
         if word in words and _RISK_ORDER[tier] > _RISK_ORDER[risk]:
             risk = tier

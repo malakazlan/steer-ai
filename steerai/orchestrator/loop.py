@@ -33,6 +33,7 @@ from steerai.action.physical import PhysicalAction
 from steerai.errors import ErrorCode, SteerError
 from steerai.orchestrator.contracts import (
     GateDecision,
+    GateToken,
     Plan,
     Risk,
     Step,
@@ -51,7 +52,15 @@ from steerai.verify.predicates import (
     TitleMatches,
     WindowGone,
 )
-from steerai.verify.t1 import LiveReads, WindowLike, evaluate, label_of_record, title_holds, verify
+from steerai.verify.t1 import (
+    NO_LABEL_REASONS,
+    LiveReads,
+    WindowLike,
+    evaluate,
+    label_of_record,
+    title_holds,
+    verify,
+)
 from steerai.world.fingerprint import similarity
 from steerai.world.model import Snapshot, normalise_name
 
@@ -161,6 +170,7 @@ class Session:
         risk = effective_risk(step)
         key = self._ledger.key_for(step)
         evidence: dict[str, Any] = {"risk": risk}
+        gate_stage: GateToken = "unreached"
         windows_before = list(self._windows()) if self._windows else None
         self._begin_step(windows_before)
         try:
@@ -181,6 +191,7 @@ class Session:
                     composer_id=self._composer(step, before),
                 ),
             )
+            gate_stage = gate_result.outcome
             if gate_result.outcome in ("block", "pending"):
                 return self._gate_stopped(step, gate_result, stage, evidence)
             decision, expect = self._admitted(key, previous, gate_result)
@@ -264,12 +275,13 @@ class Session:
                 code=None if ok else (verdict.code or action.code),
             )
         except _StepFailureError as failure:
+            # before the gate ran the token is `unreached`; after, the gate's outcome
             evidence["detail"] = failure.detail
             return self._finish(
                 step,
                 stage,
                 evidence,
-                gate="unreached",
+                gate=gate_stage,
                 action=None,
                 verify_code=None,
                 label_kind=None,
@@ -294,7 +306,8 @@ class Session:
     def _before(self, risk: Risk, evidence: dict[str, Any]) -> Snapshot:
         if risk in ("R0", "R1") and self._last_after is not None:
             snapshot, stamp = self._last_after
-            if snapshot.stable and self._monotonic() - stamp <= REUSE_FRESHNESS_S:
+            same_window = snapshot.hwnd == self.hwnd
+            if same_window and snapshot.stable and self._monotonic() - stamp <= REUSE_FRESHNESS_S:
                 evidence["observe_reused"] = True
                 return snapshot
         return self._observe_fresh(evidence)
@@ -356,7 +369,11 @@ class Session:
     def _resume(self, step: Step, record: WriteAheadRecord, before: Snapshot) -> str:
         """A crash between the record and the outcome (OR-01): done when the effect is already
         there relative to the persisted before, else the phase the gate shows."""
-        expect = self._gate.predicate_for(step, composer_id=self._composer(step, before))
+        try:
+            composer_id = self._composer(step, record.before)
+        except _StepFailureError:
+            return record.phase
+        expect = self._gate.predicate_for(step, composer_id=composer_id)
         if expect is not None and self._effect_present(expect, record.before, before):
             self._ledger.record_outcome(step, "done_already")
             return "done"
@@ -464,13 +481,7 @@ class Session:
             return "delivered_verified"
         if action.delivery is Delivery.NOT_DELIVERED:
             return "not_delivered"
-        if reason in (
-            "unstable",
-            "scope_churn",
-            "scope_shifted",
-            "anchor_vanished",
-            "observe_failed",
-        ):
+        if reason in NO_LABEL_REASONS:
             return "no_label"
         return (
             action.delivery.value if action.delivery is Delivery.DELIVERY_UNCERTAIN else str(reason)
@@ -605,9 +616,9 @@ class Session:
                     ticked.add(subgoal.id)
                     strikes = 0
                     continue
-            if (
-                not result.ok and self._last_pair is not None and _same_screen(*self._last_pair)
-            ) or (not result.ok and self._last_pair is None):
+            if result.ok:
+                strikes = 0
+            elif self._last_pair is None or _same_screen(*self._last_pair):
                 strikes += 1
             if strikes >= SCREEN_GUARD_STRIKES:
                 return "stopped", ErrorCode.BUDGET_EXCEEDED, "loop"
