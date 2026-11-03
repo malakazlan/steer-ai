@@ -55,7 +55,7 @@ def test_every_deny_pattern_of_the_design_doc_is_listed() -> None:
 
 @pytest.mark.parametrize(
     "name",
-    ["Dele​te chat", "S‍end", "‮Delete chat‬", "Sign​out"],
+    ["Dele\u200bte chat", "S\u200dend", "\u202eDelete chat\u202c", "Sign\u200bout"],
 )
 def test_format_characters_never_hide_a_deny_word(name: str) -> None:
     assert effective_risk(_click(name)) in ("R2", "R3")
@@ -63,7 +63,9 @@ def test_format_characters_never_hide_a_deny_word(name: str) -> None:
 
 @pytest.mark.parametrize("name", ["Delete_all", "Send2", "SEND", "Resend"])
 def test_digits_and_underscores_never_hide_a_word_but_longer_words_are_not_it(name: str) -> None:
-    assert effective_risk(_click(name)) == ("R0" if name == "Resend" else effective_risk(_click(name)))
+    assert effective_risk(_click(name)) == (
+        "R0" if name == "Resend" else effective_risk(_click(name))
+    )
     assert (effective_risk(_click(name)) != "R0") == (name != "Resend")
 
 

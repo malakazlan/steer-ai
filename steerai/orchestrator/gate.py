@@ -90,7 +90,7 @@ def effective_risk(step: Step) -> Risk:
     risk: Risk = step.risk
     if step.target is None:
         return risk
-    words = _words(step.target.name) + [""] + _id_words(step.target.automation_id)
+    words = [*_words(step.target.name), "", *_id_words(step.target.automation_id)]
     for pattern, tier in DENY_PATTERNS.items():
         if _RISK_ORDER[tier] > _RISK_ORDER[risk] and _contains(words, pattern):
             risk = tier
