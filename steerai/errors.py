@@ -7,6 +7,7 @@ from enum import StrEnum
 
 class ErrorCode(StrEnum):
     PERCEPTION_TIMEOUT = "perception_timeout"
+    PERCEPTION_DEGRADED = "perception_degraded"
     UNSTABLE_UI = "unstable_ui"
     ELEMENT_NOT_FOUND = "element_not_found"
     ELEMENT_NOT_ACTIONABLE = "element_not_actionable"

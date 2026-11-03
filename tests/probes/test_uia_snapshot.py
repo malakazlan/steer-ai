@@ -69,3 +69,22 @@ def test_timeouts_are_applied(client: UiaClient) -> None:
 def test_invalid_hwnd_raises(client: UiaClient) -> None:
     with pytest.raises(OSError, match="no UIA element for hwnd"):
         client.snapshot_subtree(0x7FFF_FFF1)
+
+
+def test_cached_tree_handles_align_with_nodes_and_runtime_ids_are_set(client: UiaClient) -> None:
+    hwnd = _drivable_hwnd()
+    tree = client.cached_tree(hwnd)
+    assert len(tree.handles) == len(tree.nodes)
+    assert all(node.runtime_id for node in tree.nodes)
+    assert all(isinstance(node.enabled, bool) for node in tree.nodes)
+
+
+def test_cached_tree_runtime_ids_are_unique_within_one_snapshot(client: UiaClient) -> None:
+    tree = client.cached_tree(_drivable_hwnd())
+    ids = [node.runtime_id for node in tree.nodes]
+    assert len(ids) == len(set(ids))
+
+
+def test_cached_tree_of_an_invalid_hwnd_raises(client: UiaClient) -> None:
+    with pytest.raises(OSError, match="no UIA element for hwnd"):
+        client.cached_tree(0x7FFF_FFF1)

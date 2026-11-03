@@ -49,15 +49,19 @@ def test_similarity_of_two_empty_sets_is_zero() -> None:
 
 
 def test_fingerprint_matches_by_threshold() -> None:
-    fp = Fingerprint(process="chrome.exe", title_pattern="Inbox", marks=landmarks(INBOX))
+    title = "Inbox - Chat"
+    fp = Fingerprint(process="chrome.exe", title_pattern="x", marks=landmarks(INBOX, title=title))
     # same screen, different rows: rows are not landmarks, so similarity is 1.0
     later = [*INBOX[:4], *INBOX[6:]]
-    same_app = Fingerprint(process="chrome.exe", title_pattern="Inbox", marks=landmarks(later))
-    three_of_four = Fingerprint(
-        process="chrome.exe", title_pattern="Inbox", marks=landmarks(INBOX[:7])
+    same = Fingerprint(process="chrome.exe", title_pattern="x", marks=landmarks(later, title=title))
+    four_of_five = Fingerprint(
+        process="chrome.exe", title_pattern="x", marks=landmarks(INBOX[:7], title=title)
     )
-    other = Fingerprint(process="notepad.exe", title_pattern="x", marks=landmarks(INBOX))
-    assert fp.matches(same_app, threshold=0.8)
-    assert not fp.matches(three_of_four, threshold=0.8)  # Jaccard 3/4 = 0.75
-    assert fp.matches(three_of_four, threshold=0.7)
+    other = Fingerprint(
+        process="notepad.exe", title_pattern="x", marks=landmarks(INBOX, title=title)
+    )
+    assert len(fp.marks) == 5
+    assert fp.matches(same, threshold=0.8)
+    assert fp.matches(four_of_five, threshold=0.8)  # Jaccard 4/5
+    assert not fp.matches(four_of_five, threshold=0.81)
     assert not fp.matches(other, threshold=0.8)

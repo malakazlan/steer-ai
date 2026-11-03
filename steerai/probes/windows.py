@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import functools
 import sys
 import time
 from ctypes import wintypes
@@ -136,3 +137,51 @@ def find_window(title_substring: str) -> WindowInfo | None:
         if needle in window.title.lower():
             return window
     return None
+
+
+@functools.cache
+def _user32() -> ctypes.WinDLL:
+    """user32 with explicit signatures for the per-window helpers (loaded once)."""
+    if sys.platform != "win32":
+        raise OSError("window helpers require Windows")
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    for name in ("IsWindow", "IsWindowEnabled", "IsIconic", "GetWindowTextLengthW"):
+        getattr(user32, name).argtypes = (wintypes.HWND,)
+    user32.IsWindow.restype = wintypes.BOOL
+    user32.IsWindowEnabled.restype = wintypes.BOOL
+    user32.IsIconic.restype = wintypes.BOOL
+    user32.GetWindowTextLengthW.restype = ctypes.c_int
+    user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+    user32.GetWindowTextW.restype = ctypes.c_int
+    user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    return user32
+
+
+def is_window(hwnd: int) -> bool:
+    return bool(_user32().IsWindow(hwnd))
+
+
+def is_window_enabled(hwnd: int) -> bool:
+    """False while a modal owned dialog disables its owner window."""
+    return bool(_user32().IsWindowEnabled(hwnd))
+
+
+def is_minimized(hwnd: int) -> bool:
+    return bool(_user32().IsIconic(hwnd))
+
+
+def window_pid(hwnd: int) -> int:
+    pid = wintypes.DWORD()
+    _user32().GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value
+
+
+def window_title(hwnd: int) -> str:
+    user32 = _user32()
+    length = user32.GetWindowTextLengthW(hwnd)
+    if length <= 0:
+        return ""
+    buffer = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd, buffer, length + 1)
+    return buffer.value

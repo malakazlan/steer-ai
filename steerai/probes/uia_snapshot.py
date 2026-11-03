@@ -23,6 +23,7 @@ _CACHED_PROPERTIES = (
     "UIA_IsEnabledPropertyId",
     "UIA_IsOffscreenPropertyId",
     "UIA_RuntimeIdPropertyId",
+    "UIA_IsPasswordPropertyId",
 )
 
 
@@ -44,6 +45,8 @@ class RawNode:
     offscreen: bool
     enabled: bool = True
     runtime_id: tuple[int, ...] = ()
+    secure: bool = False
+    """Password field: its value is never read and the line is tagged `secure` (WM-23)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +134,7 @@ class UiaClient:
                 offscreen=bool(element.CachedIsOffscreen),
                 enabled=bool(element.CachedIsEnabled),
                 runtime_id=tuple(int(v) for v in runtime_id) if runtime_id else (),
+                secure=bool(element.CachedIsPassword),
             )
         )
         handles.append(element)

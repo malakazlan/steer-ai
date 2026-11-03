@@ -1,5 +1,7 @@
 """Top-level window enumeration via the Win32 API."""
 
+import os
+
 import pytest
 
 from steerai.probes.windows import (
@@ -60,3 +62,24 @@ def test_process_name_of_an_invalid_pid_is_empty() -> None:
 
 def test_minimized_flag_is_a_bool_for_every_window() -> None:
     assert all(isinstance(w.minimized, bool) for w in list_top_windows())
+
+
+def test_window_info_minimized_defaults_to_false() -> None:
+    assert WindowInfo(hwnd=1, title="t", pid=1).minimized is False
+
+
+def test_is_cloaked_is_false_for_an_invalid_hwnd() -> None:
+    assert is_cloaked(0) is False
+    assert is_cloaked(0x7FFF_FFF1) is False
+
+
+def test_process_name_of_the_current_process_is_a_bare_executable_name() -> None:
+    name = process_name(os.getpid())
+    assert name.lower().endswith(".exe")
+    assert "\\" not in name
+    assert "/" not in name
+
+
+def test_listed_windows_have_unique_hwnds() -> None:
+    hwnds = [w.hwnd for w in list_top_windows()]
+    assert len(hwnds) == len(set(hwnds))
