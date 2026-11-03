@@ -297,26 +297,29 @@ def test_title_matches_ignores_counters_and_case() -> None:
 
 def test_window_exists_consults_the_window_list_and_skips_our_own_process() -> None:
     windows = _windows("Save As", "Amir Khan - Chat")
-    assert (
-        evaluate(
-            WindowExists(name_pattern="Save As"), before(), after_with(), windows=windows
+
+    def check(pattern: str, *, own_pid: int | None = None) -> bool:
+        return evaluate(
+            WindowExists(name_pattern=pattern),
+            before(),
+            after_with(),
+            windows=windows,
+            windows_before=[],
+            own_pid=own_pid,
         ).holds
-        is True
-    )
-    assert (
-        evaluate(
-            WindowExists(name_pattern="save as"), before(), after_with(), windows=windows
-        ).holds
-        is True
-    )
-    assert (
-        evaluate(WindowExists(name_pattern="Save"), before(), after_with(), windows=windows).holds
-        is False
-    )
+
+    assert check("Save As") is True
+    assert check("save as") is True
+    assert check("Save") is False
     own = [SimpleNamespace(title="Steer", hwnd=0x1, pid=4242)]
     assert (
         evaluate(
-            WindowExists(name_pattern="Steer"), before(), after_with(), windows=own, own_pid=4242
+            WindowExists(name_pattern="Steer"),
+            before(),
+            after_with(),
+            windows=own,
+            windows_before=[],
+            own_pid=4242,
         ).holds
         is False
     )
@@ -324,7 +327,7 @@ def test_window_exists_consults_the_window_list_and_skips_our_own_process() -> N
 
 def test_window_exists_without_a_window_list_is_refused() -> None:
     with pytest.raises(ValueError, match="windows"):
-        evaluate(WindowExists(name_pattern="x"), before(), after_with())
+        evaluate(WindowExists(name_pattern="x"), before(), after_with(), windows_before=[])
 
 
 # ---- conjunctions ------------------------------------------------------------------------------
@@ -512,8 +515,7 @@ def test_label_of_record_carries_the_action_key_and_redacts_the_pattern() -> Non
     assert label.after_id == "after-poll-2", "the deciding snapshot, not the caller's after"
     assert label.predicate["kind"] == "Appeared"
     assert label.predicate["role"] == "Text"
-    assert label.predicate["within"]["kind"] == "landmark"
-    assert len(label.predicate["within"]["hash"]) == 12
+    assert label.predicate["within"] == {"kind": "landmark"}
     text = str(label.to_dict())
     assert "hello there" not in text
     assert "conversation" not in text, "landmark names are contact names in chat apps"

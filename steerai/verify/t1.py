@@ -20,7 +20,6 @@ Outcomes are three-valued: pass, fail, or no label (`label_of_record` returns No
 
 from __future__ import annotations
 
-import hashlib
 import re
 import time
 from collections.abc import Callable, Hashable, Sequence
@@ -72,6 +71,7 @@ NO_LABEL_REASONS: frozenset[str] = frozenset(
         "siblings_changed",
         "anchor_vanished",
         "anchor_transient",
+        "target_not_found",
     }
 )
 
@@ -297,12 +297,18 @@ def _appeared(predicate: Appeared, before: Snapshot, after: Snapshot) -> Verdict
         ),
         (delta < predicate.expected, "count_unchanged", False),
         (
-            any(_has_status(e, after, _PENDING_TOKENS) for e in seen.new_matches),
+            any(
+                _has_status(e, after, _PENDING_TOKENS, predicate.name_pattern)
+                for e in seen.new_matches
+            ),
             "pending_status",
             False,
         ),
         (
-            any(_has_status(e, after, _FAILED_TOKENS) for e in seen.new_matches),
+            any(
+                _has_status(e, after, _FAILED_TOKENS, predicate.name_pattern)
+                for e in seen.new_matches
+            ),
             "failed_status",
             True,
         ),
@@ -345,18 +351,23 @@ def _out_of_order(predicate: Appeared, seen: _Appearance) -> bool:
     return min(new_ids) < max(seen.surviving_ids)
 
 
-def _has_status(element: Element, snapshot: Snapshot, tokens: tuple[str, ...]) -> bool:
-    """A status token in any descendant of the element (a bubble's "Sending..." or "Failed")."""
+def _has_status(
+    element: Element, snapshot: Snapshot, tokens: tuple[str, ...], pattern: str
+) -> bool:
+    """A status token in a descendant of the element (a bubble's "Sending..." or "Failed");
+    a descendant that is the message text itself ("please retry") is never a status."""
     children: dict[int | None, list[Element]] = {}
     for candidate in snapshot.elements:
         children.setdefault(candidate.parent_id, []).append(candidate)
     stack = list(children.get(element.id, []))
     while stack:
         node = stack.pop()
+        stack.extend(children.get(node.id, []))
+        if name_matches(node.name, pattern, scoped=True):
+            continue
         name = node.name.casefold()
         if any(token in name for token in tokens):
             return True
-        stack.extend(children.get(node.id, []))
     return False
 
 
@@ -544,12 +555,17 @@ def _matching_windows(
 
 
 def _window_exists(predicate: WindowExists, ctx: Context) -> Verdict:
-    matched = _matching_windows(_windows(ctx, "WindowExists"), predicate.name_pattern, ctx.own_pid)
-    reason = "no_window"
-    if ctx.windows_before is not None:
-        seen = {w.hwnd for w in ctx.windows_before}
-        matched = [w for w in matched if w.hwnd not in seen]
-        reason = "not_new"
+    if ctx.windows_before is None:
+        raise ValueError("WindowExists needs the windows list taken before the step")
+    seen = {w.hwnd for w in ctx.windows_before}
+    matched = [
+        w
+        for w in _matching_windows(
+            _windows(ctx, "WindowExists"), predicate.name_pattern, ctx.own_pid
+        )
+        if w.hwnd not in seen
+    ]
+    reason = "not_new"
     if matched:
         return Verdict(holds=True, code=None, level=3, polls=0, evidence={"matched": len(matched)})
     return _plain(reason)
@@ -755,8 +771,8 @@ def redact(predicate: Predicate) -> dict[str, Any]:
 
 
 def _within_spec(within: Within) -> dict[str, Any]:
-    """The scope without its landmark name (panes are named after contacts): a hash."""
+    """The scope without its landmark name: panes are named after contacts, and a short
+    name's digest is dictionary-recoverable, so only the kind is kept."""
     if within.landmark is None:
         return {"kind": "anchor", "anchor_id": within.anchor_id}
-    digest = hashlib.sha256(within.landmark.encode()).hexdigest()[:12]
-    return {"kind": "landmark", "hash": digest}
+    return {"kind": "landmark"}

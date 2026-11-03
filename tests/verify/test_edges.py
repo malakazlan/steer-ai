@@ -791,8 +791,7 @@ def test_redact_keeps_the_shape_of_every_kind_and_leaks_no_text() -> None:
     assert [p["kind"] for p in inner_any["parts"]] == ["Appeared", "Disappeared", "WindowGone"]
     appeared = inner_any["parts"][0]
     assert appeared["within"]["kind"] == "landmark"
-    assert len(appeared["within"]["hash"]) == 12
-    assert int(appeared["within"]["hash"], 16) >= 0
+    assert appeared["within"] == {"kind": "landmark"}
     assert {k: v for k, v in appeared.items() if k != "within"} == {
         "kind": "Appeared",
         "role": "Text",
@@ -820,7 +819,7 @@ def test_redact_keeps_the_shape_of_every_kind_and_leaks_no_text() -> None:
     assert inner_all["parts"][3] == {"kind": "Focused", "target_id": 5}
     assert inner_all["parts"][4] == {"kind": "State", "target_id": 7, "wanted": "selected"}
     count = inner_all["parts"][5]
-    assert count["within"] == appeared["within"], "the same landmark hashes the same"
+    assert count["within"] == appeared["within"]
     assert {k: v for k, v in count.items() if k != "within"} == {
         "kind": "CountDelta",
         "role": "ListItem",
@@ -828,13 +827,13 @@ def test_redact_keeps_the_shape_of_every_kind_and_leaks_no_text() -> None:
     }
 
 
-def test_landmark_hash_is_stable_under_normalisation_and_distinct_across_names() -> None:
-    def hash_of(landmark: str) -> str:
+def test_landmark_spec_carries_no_name_and_no_digest() -> None:
+    def spec_of(landmark: str) -> object:
         spec = redact(Appeared(role="Text", name_pattern="x", within=Within(landmark=landmark)))
-        return str(spec["within"]["hash"])
+        return spec["within"]
 
-    assert hash_of("Conversation") == hash_of(f"  conversation{NBSP}")
-    assert hash_of("Conversation") != hash_of("Chats")
+    assert spec_of("Conversation") == {"kind": "landmark"}
+    assert spec_of("Conversation") == spec_of("Chats"), "indistinguishable by design"
     assert "conversation" not in str(redact(HELLO)).casefold()
 
 

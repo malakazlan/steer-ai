@@ -207,12 +207,51 @@ def test_verdict_and_label_cite_the_poll_that_decided(clock: Any) -> None:
 # ---- B5: the label never carries the landmark name ---------------------------------------------
 
 
-def test_redact_hashes_landmarks_and_keeps_anchor_ids() -> None:
+def test_redact_keeps_only_the_scope_kind_for_landmarks() -> None:
     spec = redact(Appeared(role="Text", name_pattern="x", within=Within(landmark="Amir Khan")))
-    assert spec["within"]["kind"] == "landmark"
+    assert spec["within"] == {"kind": "landmark"}, "no name and no digest of it"
     assert "amir" not in str(spec).casefold()
     anchored = redact(CountDelta(role="Text", within=Within(anchor_id=5), delta=1))
     assert anchored["within"] == {"kind": "anchor", "anchor_id": 5}
+
+
+def test_vanished_live_target_is_no_label(clock: Any) -> None:
+    # The live analogue of a vanished anchor: a re-keyed composer is not a failed step.
+    predicate = ValueEquals(target_id=COMPOSER[0], text="hello")
+    gone = build([r for r in BASE_ROWS if r[0] != COMPOSER[0]], snapshot_id="after", taken_at=1.0)
+    verdict = verify(predicate, before(), gone, lambda **_: gone, live=FakeLive())
+    assert verdict.evidence["reason"] == "target_not_found"
+    assert (
+        label_of_record(verdict, predicate=predicate, action_key="k", before=before(), after=gone)
+        is None
+    )
+
+
+def test_the_message_text_itself_is_never_a_status_token() -> None:
+    # A bubble row whose Text child is the message: "please retry" is content, not a status.
+    retry = Appeared(role="ListItem", name_pattern="please retry", within=CONVERSATION_SCOPE)
+    bubble = after_with(
+        (30, "ListItem", "please retry", (42, 33), CONVERSATION[0]),
+        (31, "Text", "please retry", (42, 34), 30),
+    )
+    assert evaluate(retry, before(), bubble).holds is True
+    sending = Appeared(
+        role="ListItem", name_pattern="sending you the file", within=CONVERSATION_SCOPE
+    )
+    bubble = after_with(
+        (30, "ListItem", "sending you the file", (42, 33), CONVERSATION[0]),
+        (31, "Text", "sending you the file", (42, 34), 30),
+        (32, "Text", "Sending…", (42, 35), 30),
+    )
+    assert evaluate(sending, before(), bubble).evidence["reason"] == "pending_status"
+
+
+def test_window_exists_needs_the_before_list() -> None:
+    from steerai.verify.predicates import WindowExists  # noqa: PLC0415 - local to this check
+
+    windows = [SimpleNamespace(title="Save As", hwnd=0x100, pid=50)]
+    with pytest.raises(ValueError, match="before"):
+        evaluate(WindowExists(name_pattern="Save As"), before(), after_with(), windows=windows)
 
 
 # ---- B6: the sleep leaves room for the next observe --------------------------------------------
