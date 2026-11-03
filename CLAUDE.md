@@ -63,6 +63,20 @@ The design of record is `docs/design/STEERAI_ARCHITECTURE.md` (local only, see "
 - `superpowers:requesting-code-review` / `code-review` before merging non-trivial PRs.
 - `superpowers:brainstorming` before any new component not already specified in the design doc.
 
+## Project review agents (run in parallel)
+
+Three project skills in `.claude/skills/` with matching agents in `.claude/agents/`. For any feature
+beyond a one-file fix, dispatch them together on the feature packet and act only on their contracts:
+
+| Agent | Skill | Produces |
+|---|---|---|
+| `principal` | `principal-review` | APPROVE / REVISE verdict with prior art, bottleneck, numbered blocking changes |
+| `edge-case-hunter` | `edge-case-hunting` | severity-sorted edge-case table with ids, triggers, expected behaviour, test type |
+| `tester` | `verifying-by-testing` | status report with red-first evidence, five-run repeat, measured budgets, verbatim gate output |
+
+Order when sequential: hunter → tester → principal. In parallel: all three on the packet, then the
+principal re-reviews with the other two reports attached. A REVISE verdict blocks the PR.
+
 ## Folders
 
 - `steerai/` Python package. `tests/` pytest. `.github/workflows/` CI, the source of truth for green.
