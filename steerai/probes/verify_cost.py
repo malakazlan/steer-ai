@@ -132,10 +132,16 @@ def _notepad_trials(model: WorldModel, live: _Live, runs: int) -> list[Trial]:
     return trials
 
 
-def _chrome_trials(chrome: Path, model: WorldModel, live: _Live, runs: int) -> list[Trial]:
+def _chrome_trials(
+    chrome: Path, model: WorldModel, live: _Live, runs: int, *, noop: bool = False
+) -> list[Trial]:
+    """Pass and timeout paths on the inbox page; with `noop` the Send button does nothing, so a
+    pass is a false success (the probe records it as the `noop` case)."""
     trials: list[Trial] = []
     profile_dir = Path(tempfile.mkdtemp(prefix="steer-vcost-"))
-    proc = launch_chrome(chrome, profile_dir, 9337, PAGE.as_uri(), window_size=(1000, 640))
+    url = PAGE.as_uri() + ("?noop=1" if noop else "")
+    target = "chrome-noop" if noop else "chrome"
+    proc = launch_chrome(chrome, profile_dir, 9337, url, window_size=(1000, 640))
     try:
         window = wait_window_for_pid(proc.pid, title_contains="Google Chrome")
         acquire_foreground(window.hwnd)
@@ -151,6 +157,12 @@ def _chrome_trials(chrome: Path, model: WorldModel, live: _Live, runs: int) -> l
                 else "Text"
             )
             text = f"verify cost run {run}"
+            # The no-op page never clears the composer; typing refuses a non-empty field.
+            cleared = Executor().execute(
+                Action(verb="set_value", element_id=composer.id, text=""), before
+            )
+            if not cleared.ok:
+                raise RuntimeError(f"clear failed: {cleared.to_dict()}")
             clicked = physical.execute(PhysicalAction(verb="click", element_id=composer.id), before)
             typed = physical.execute(
                 PhysicalAction(verb="type", element_id=composer.id, text=text), before
@@ -161,7 +173,7 @@ def _chrome_trials(chrome: Path, model: WorldModel, live: _Live, runs: int) -> l
                     f"send failed: {clicked.to_dict()} {typed.to_dict()} {pressed.to_dict()}"
                 )
             scope = Within(landmark="Conversation")
-            bench = _Bench("chrome", model, window.hwnd, live)
+            bench = _Bench(target, model, window.hwnd, live)
             trials.append(
                 bench.run(
                     "pass",
@@ -171,6 +183,8 @@ def _chrome_trials(chrome: Path, model: WorldModel, live: _Live, runs: int) -> l
                     before,
                 )
             )
+            if noop:
+                continue
             trials.append(
                 bench.run(
                     "timeout", Appeared(role=role, name_pattern="never sent", within=scope), before
@@ -239,6 +253,7 @@ def run_probe(args: ProbeArgs) -> dict[str, Any]:
         if not args.chrome.is_file():
             raise FileNotFoundError(args.chrome)
         trials += _chrome_trials(args.chrome, model, live, args.runs)
+        trials += _chrome_trials(args.chrome, model, live, args.runs, noop=True)
     return {
         "runs": args.runs,
         "trials": [asdict(t) for t in trials],
