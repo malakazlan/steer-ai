@@ -161,6 +161,30 @@ def chord_to_inputs(chord: str) -> list[INPUT]:
     return down + up
 
 
+CHUNK_UNITS = 8
+
+
+def chunk_text(text: str, *, units: int = CHUNK_UNITS) -> list[str]:
+    """Split text into chunks of at most `units` UTF-16 code units for paced typing (design 5.9
+    [v1.0]), never splitting a surrogate pair: an astral character moves whole into the next
+    chunk, so a chunk may hold `units - 1` code units."""
+    if units <= 0:
+        raise ValueError("units must be > 0")
+    chunks: list[str] = []
+    current: list[str] = []
+    used = 0
+    for ch in text:
+        width = 2 if ord(ch) > 0xFFFF else 1
+        if used + width > units and current:
+            chunks.append("".join(current))
+            current, used = [], 0
+        current.append(ch)
+        used += width
+    if current:
+        chunks.append("".join(current))
+    return chunks
+
+
 def type_text(text: str) -> None:
     send_inputs(text_to_inputs(text))
 

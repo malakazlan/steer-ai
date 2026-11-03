@@ -154,6 +154,20 @@ class UiaClient:
             raise OSError(f"no UIA element for hwnd {hwnd:#x}: {exc}") from exc
         return int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
 
+    def runtime_id_at(self, x: int, y: int) -> tuple[int, ...]:
+        """RuntimeId of the UIA element under a screen pixel (`ElementFromPoint`). Off every
+        monitor UIA answers the desktop root (measured: RuntimeId (42, 0x10010)), never nothing.
+        Hit testing through UIA sees in-window covering (popups, overlays) that the Win32
+        root-window check cannot."""
+        try:
+            element = self._uia.ElementFromPoint(self._uia_module.tagPOINT(x, y))
+        except Exception as exc:  # COMError exists only once comtypes is loaded
+            raise OSError(f"no UIA element at ({x}, {y}): {exc}") from exc
+        if not element:
+            return ()
+        runtime_id = element.GetRuntimeId()
+        return tuple(int(v) for v in runtime_id) if runtime_id else ()
+
     def _snapshot(self, element: Any, scope: int, scope_name: str) -> Snapshot:
         # `element` is a COM interface pointer; comtypes has no type stubs, hence Any.
         cache_request = self._uia.CreateCacheRequest()

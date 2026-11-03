@@ -12,9 +12,11 @@ from steerai.probes.win_input import (
     foreground_hwnd,
     move_cursor,
     pid_at_point,
+    root_hwnd_at,
     system_dpi,
     window_rect,
 )
+from steerai.probes.windows import is_window
 
 pytestmark = pytest.mark.windows
 
@@ -65,3 +67,15 @@ def test_window_rect_of_desktop_is_screen_sized() -> None:
     assert (left, top) == (0, 0)
     assert right > 0
     assert bottom > 0
+
+
+def test_root_hwnd_at_the_desktop_centre_is_a_top_level_window() -> None:
+    left, top, right, bottom = window_rect(ctypes.windll.user32.GetDesktopWindow())
+    hwnd = root_hwnd_at((left + right) // 2, (top + bottom) // 2)
+    assert hwnd != 0
+    assert is_window(hwnd)
+    assert ctypes.windll.user32.GetAncestor(hwnd, 2) == hwnd, "GA_ROOT of a root is itself"
+
+
+def test_root_hwnd_at_a_point_outside_every_monitor_is_zero() -> None:
+    assert root_hwnd_at(-100_000, -100_000) == 0

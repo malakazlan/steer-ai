@@ -211,3 +211,25 @@ def test_build_keyboard_unicode_at_the_word_boundary() -> None:
     assert record.union.ki.wScan == 0xFFFF
     assert record.union.ki.dwFlags == 0x0004 | 0x0002
     assert record.union.ki.dwExtraInfo == STEER_EXTRA_INFO
+
+
+# ---- chunking for paced typing (design 5.9 [v1.0]: 8 code units per SendInput call) ------------
+
+
+def test_chunk_text_splits_into_eight_code_units_by_default() -> None:
+    assert keyboard.chunk_text("abcdefghijklmnopq") == ["abcdefgh", "ijklmnop", "q"]
+
+
+def test_chunk_text_never_splits_a_surrogate_pair() -> None:
+    # 7 BMP units then an astral char (2 units): the pair moves whole into the next chunk
+    text = "abcdefg\U0001f600hij"
+    assert keyboard.chunk_text(text) == ["abcdefg", "\U0001f600hij"]
+
+
+def test_chunk_text_of_empty_text_is_empty() -> None:
+    assert keyboard.chunk_text("") == []
+
+
+def test_chunk_text_rejects_a_non_positive_size() -> None:
+    with pytest.raises(ValueError, match="units"):
+        keyboard.chunk_text("abc", units=0)

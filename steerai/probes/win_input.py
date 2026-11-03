@@ -57,6 +57,7 @@ _INPUT_KEYBOARD = 1
 _KEYEVENTF_KEYUP = 0x0002
 _KEYEVENTF_UNICODE = 0x0004
 VK_MENU = 0x12  # ALT
+_GA_ROOT = 2
 
 
 def build_mouse_input(*, dx: int, dy: int, flags: int) -> INPUT:
@@ -141,6 +142,8 @@ def _user32() -> ctypes.WinDLL:
     user32.WindowFromPoint.restype = wintypes.HWND
     user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
     user32.GetWindowRect.restype = wintypes.BOOL
+    user32.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+    user32.GetAncestor.restype = wintypes.HWND
     return user32
 
 
@@ -260,6 +263,19 @@ def pid_at_point(x: int, y: int) -> int:
     pid = wintypes.DWORD()
     user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
     return pid.value
+
+
+def root_hwnd_at(x: int, y: int) -> int:
+    """Top-level window (`GetAncestor(GA_ROOT)`) under a screen pixel, 0 when there is none.
+
+    The covered check (design 5.9 [v0.7]) compares this with the target's root hwnd: a child of
+    the target window owns the pixel in the normal case, another root means a covering window.
+    """
+    user32 = _user32()
+    hwnd = user32.WindowFromPoint(wintypes.POINT(x, y))
+    if not hwnd:
+        return 0
+    return int(user32.GetAncestor(hwnd, _GA_ROOT) or 0)
 
 
 def window_rect(hwnd: int) -> tuple[int, int, int, int]:

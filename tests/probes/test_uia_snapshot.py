@@ -88,3 +88,22 @@ def test_cached_tree_runtime_ids_are_unique_within_one_snapshot(client: UiaClien
 def test_cached_tree_of_an_invalid_hwnd_raises(client: UiaClient) -> None:
     with pytest.raises(OSError, match="no UIA element for hwnd"):
         client.cached_tree(0x7FFF_FFF1)
+
+
+def test_runtime_id_at_a_window_centre_is_an_element_of_that_window(client: UiaClient) -> None:
+    window = next(w for w in list_top_windows() if w.title and not w.minimized)
+    left, top, right, bottom = window_rect(window.hwnd)
+    tree = client.cached_tree(window.hwnd)
+    runtime_id = client.runtime_id_at((left + right) // 2, (top + bottom) // 2)
+    assert runtime_id, "an element exists under every visible window pixel"
+    known = {node.runtime_id for node in tree.nodes}
+    assert runtime_id in known or runtime_id == (), (runtime_id, window.title)
+
+
+def test_runtime_id_at_a_point_outside_every_monitor_is_the_desktop_root(
+    client: UiaClient,
+) -> None:
+    # Measured 2026-11-04 (Win10 22H2): ElementFromPoint never answers "nothing"; off every
+    # monitor it returns the desktop root, whose RuntimeId is the fixed pair (42, 0x10010). The
+    # covered check compares against the target subtree, so the root can never pass it.
+    assert client.runtime_id_at(-100_000, -100_000) == (42, 0x10010)
