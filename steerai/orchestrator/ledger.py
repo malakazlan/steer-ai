@@ -29,6 +29,7 @@ from typing import Any, Literal
 from steerai.errors import ErrorCode, SteerError
 from steerai.orchestrator.contracts import GateDecision, Step, Target
 from steerai.platform import dpapi
+from steerai.probes.windows import process_alive
 from steerai.world.model import Snapshot, normalise_name, snapshot_from_json, snapshot_to_json
 
 Admission = Literal["fresh", "done", "confirm"]
@@ -126,12 +127,85 @@ class Ledger:
         self._dir = root / _digest(task_id)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._state_path = self._dir / "state.ledger"
+        self._lock_path = self._dir / "lock"
         self._executions: dict[str, dict[str, Any]] = {}
         self._secret = b""
-        if self._state_path.exists():
-            self._load_state()
-        else:
-            self._secret = os.urandom(32)
+        self._plan_digest: str | None = None
+        self._window: dict[str, Any] | None = None
+        self._locked = False
+        self._acquire_lock()
+        try:
+            if self._state_path.exists():
+                self._load_state()
+            else:
+                self._secret = os.urandom(32)
+                self._save_state()
+        except LedgerError:
+            self.close()
+            raise
+
+    # ---- one runner per task (RN-12) -----------------------------------------------------
+
+    def _acquire_lock(self) -> None:
+        for _ in range(2):
+            try:
+                fd = os.open(self._lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+            except FileExistsError:
+                holder = self._lock_holder()
+                if holder is not None and holder != os.getpid() and process_alive(holder):
+                    raise LedgerError(
+                        f"ledger_locked: another runner (pid {holder}) holds this task"
+                    ) from None
+                self._lock_path.unlink(missing_ok=True)  # stale: the holder is gone
+                continue
+            except OSError as exc:
+                raise LedgerError(f"ledger lock could not be taken: {exc}") from exc
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump({"pid": os.getpid()}, handle)
+            self._locked = True
+            return
+        raise LedgerError("ledger_locked: the lock could not be taken")
+
+    def _lock_holder(self) -> int | None:
+        try:
+            payload = json.loads(self._lock_path.read_text(encoding="utf-8"))
+            pid = payload["pid"]
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        return pid if isinstance(pid, int) and not isinstance(pid, bool) else None
+
+    def close(self) -> None:
+        """Release the task lock; the state stays on disk for a resume. The lock guards against
+        another runner process; a second ledger in this process takes it over."""
+        if self._locked:
+            self._lock_path.unlink(missing_ok=True)
+            self._locked = False
+
+    def __enter__(self) -> Ledger:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    # ---- what the task is bound to (RN-16/17) ----------------------------------------
+
+    def bind_plan(self, digest: str, *, allow_change: bool = False) -> None:
+        """A task id runs one plan; a different plan under the same id is refused unless
+        the caller says the change is deliberate."""
+        if self._plan_digest not in (None, digest) and not allow_change:
+            raise LedgerError("plan_changed: this task id already ran a different plan")
+        if self._plan_digest != digest:
+            self._plan_digest = digest
+            self._save_state()
+
+    def bind_window(self, *, pid: int, title: str, allow_change: bool = False) -> None:
+        """A task's done keys mean nothing in another window: the pid and a title digest
+        are bound on the first run and must match on a resume."""
+        window = {"pid": pid, "title": _digest(title)}
+        if self._window not in (None, window) and not allow_change:
+            raise LedgerError("window_changed: this task id was bound to another window")
+        if self._window != window:
+            self._window = window
             self._save_state()
 
     # ---- keys and admission ------------------------------------------------------------------
@@ -283,6 +357,10 @@ class Ledger:
             self.started_at = float(payload["started_at"])
             self._secret = bytes.fromhex(str(payload["secret"]))
             self._executions = {str(k): dict(v) for k, v in payload["executions"].items()}
+            plan = payload.get("plan_digest")
+            self._plan_digest = None if plan is None else str(plan)
+            window = payload.get("window")
+            self._window = None if window is None else dict(window)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise LedgerError(f"ledger state unreadable: {exc}") from exc
 
@@ -293,6 +371,8 @@ class Ledger:
             "started_at": self.started_at,
             "secret": self._secret.hex(),
             "executions": self._executions,
+            "plan_digest": self._plan_digest,
+            "window": self._window,
         }
         try:
             self._write_encrypted(self._state_path, json.dumps(payload, separators=(",", ":")))

@@ -87,6 +87,31 @@ def is_cloaked(hwnd: int) -> bool:
     return result == 0 and cloaked.value != 0
 
 
+def process_alive(pid: int) -> bool:
+    """Whether a process with this id is still running (a handle opens and the exit code is
+    STILL_ACTIVE); False for a dead or inaccessible process."""
+    if sys.platform != "win32":
+        raise OSError("process lookup requires Windows")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    query_limited_information = 0x1000
+    still_active = 259
+    handle = kernel32.OpenProcess(query_limited_information, False, pid)
+    if not handle:
+        return False
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False
+        return code.value == still_active
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def process_name(pid: int) -> str:
     """Executable file name (e.g. "chrome.exe") of a process, or "" when it cannot be opened."""
     if sys.platform != "win32":

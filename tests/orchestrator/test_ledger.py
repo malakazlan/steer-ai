@@ -5,6 +5,8 @@ per-task secret."""
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -18,6 +20,7 @@ from steerai.orchestrator.ledger import (
     action_key,
 )
 from steerai.platform import dpapi
+from steerai.probes.windows import process_alive
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
 
@@ -329,3 +332,78 @@ def test_record_payload_is_json_with_a_version_before_encryption() -> None:
     assert payload["before"]["id"] == "before"
     assert payload["phase"] == "written"
     assert WriteAheadRecord.from_json(record.to_json()) == record
+
+
+# ---- the runner's needs: one runner per task, a plan and a window bound to the task ----------
+
+
+def _dead_pid() -> int:
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait(timeout=30)
+    return proc.pid
+
+
+def test_the_lock_names_this_process_and_goes_with_close(
+    tmp_path: Path,
+) -> None:
+    first = Ledger(tmp_path, task_id="t", started_at=1.0)
+    lock = next(tmp_path.iterdir()) / "lock"
+    assert json.loads(lock.read_text(encoding="utf-8")) == {"pid": os.getpid()}
+    first.close()
+    assert not lock.exists()
+    with Ledger(tmp_path, task_id="t", started_at=1.0) as again:
+        assert again.task_id == "t"
+        assert lock.exists()
+    assert not lock.exists()
+    Ledger(tmp_path, task_id="other", started_at=1.0).close()
+
+
+def test_a_lock_held_by_a_dead_process_is_replaced_and_a_live_one_honoured(
+    tmp_path: Path,
+) -> None:
+    Ledger(tmp_path, task_id="t", started_at=1.0).close()
+    lock = next(tmp_path.iterdir()) / "lock"
+    lock.write_text(json.dumps({"pid": _dead_pid()}), encoding="utf-8")
+    Ledger(tmp_path, task_id="t", started_at=1.0).close()
+    sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        lock.write_text(json.dumps({"pid": sleeper.pid}), encoding="utf-8")
+        with pytest.raises(LedgerError, match="ledger_locked"):
+            Ledger(tmp_path, task_id="t", started_at=1.0)
+    finally:
+        sleeper.kill()
+        sleeper.wait(timeout=30)
+    lock.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+    Ledger(tmp_path, task_id="t", started_at=1.0).close()  # this process takes its own lock over
+
+
+def test_process_alive_tells_a_running_process_from_a_dead_one() -> None:
+    assert process_alive(os.getpid()) is True
+    assert process_alive(_dead_pid()) is False
+
+
+def test_the_plan_is_bound_to_the_task_id(tmp_path: Path) -> None:
+    with Ledger(tmp_path, task_id="t", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64)
+        ledger.bind_plan("a" * 64)
+    with Ledger(tmp_path, task_id="t", started_at=1.0) as ledger:
+        with pytest.raises(LedgerError, match="plan_changed"):
+            ledger.bind_plan("b" * 64)
+        ledger.bind_plan("b" * 64, allow_change=True)
+    with Ledger(tmp_path, task_id="t", started_at=1.0) as ledger:
+        ledger.bind_plan("b" * 64)
+
+
+def test_the_window_is_bound_to_the_task_id_by_pid_and_title_digest(tmp_path: Path) -> None:
+    with Ledger(tmp_path, task_id="t", started_at=1.0) as ledger:
+        ledger.bind_window(pid=500, title="Amir Khan - Chat")
+        ledger.bind_window(pid=500, title="Amir Khan - Chat")
+    with Ledger(tmp_path, task_id="t", started_at=1.0) as ledger:
+        with pytest.raises(LedgerError, match="window_changed"):
+            ledger.bind_window(pid=501, title="Amir Khan - Chat")
+        with pytest.raises(LedgerError, match="window_changed"):
+            ledger.bind_window(pid=500, title="Sara Ali - Chat")
+        ledger.bind_window(pid=501, title="Sara Ali - Chat", allow_change=True)
+    state = next(tmp_path.rglob("state.ledger")).read_bytes()
+    assert b"Sara" not in state
+    assert "Sara Ali - Chat".encode("utf-16-le") not in state
