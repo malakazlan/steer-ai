@@ -132,6 +132,19 @@ def _notepad_trials(model: WorldModel, live: _Live, runs: int) -> list[Trial]:
     return trials
 
 
+def _observe_until_exposed(model: WorldModel, hwnd: int, *, max_s: float = 25.0) -> Snapshot:
+    """Chromium's first-contact tree is thin and reads as stable (probe 5 ledger: cold settle
+    10-25 s); observe until the composer is exposed or `max_s` elapse."""
+    deadline = time.monotonic() + max_s
+    while True:
+        snapshot = model.observe(hwnd, cap_s=5.0)
+        if any(e.role == "Edit" and e.name == "Message" for e in snapshot.elements):
+            return snapshot
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"composer never exposed; {snapshot.node_count} nodes")
+        time.sleep(0.5)
+
+
 def _chrome_trials(
     chrome: Path, model: WorldModel, live: _Live, runs: int, *, noop: bool = False
 ) -> list[Trial]:
@@ -145,10 +158,9 @@ def _chrome_trials(
     try:
         window = wait_window_for_pid(proc.pid, title_contains="Google Chrome")
         acquire_foreground(window.hwnd)
-        time.sleep(3.0)
         physical = PhysicalExecutor()
         for run in range(runs):
-            before = model.observe(window.hwnd, cap_s=20.0)
+            before = _observe_until_exposed(model, window.hwnd)
             composer = next(e for e in before.elements if e.role == "Edit" and e.name == "Message")
             send = next(e for e in before.elements if e.role == "Button" and e.name == "Send")
             role = (
