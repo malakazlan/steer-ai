@@ -29,12 +29,19 @@ def _clean_pattern(text: str, what: str) -> str:
     return normalised
 
 
+def _comparable(text: str) -> str:
+    # Format characters (ZWSP, ZWJ, bidi marks) are invisible decoration, never content (VF-24).
+    return "".join(ch for ch in normalise_name(text) if unicodedata.category(ch) != "Cf")
+
+
 def name_matches(name: str, pattern: str, *, scoped: bool) -> bool:
-    """Scoped: case-insensitive substring; window-wide: anchored, full-string, case-sensitive."""
-    normalised = normalise_name(name)
-    wanted = normalise_name(pattern)
+    """Always full-string (a substring hit on a longer name is another author's message, a
+    quoted reply or a status row, VF-06); scoped matches ignore case, window-wide ones do not.
+    Patterns are plain text: no regular expression is ever compiled from them."""
+    normalised = _comparable(name)
+    wanted = _comparable(pattern)
     if scoped:
-        return wanted.casefold() in normalised.casefold()
+        return normalised.casefold() == wanted.casefold()
     return normalised == wanted
 
 
@@ -63,10 +70,14 @@ class Appeared:
     within: Within | None = None
     excluding_anchor: int | None = None
     """Subtree to ignore (the step's own composer in send templates, 5.10 [v0.4])."""
+    expected: int = 1
+    """How many matching elements must appear: more is a duplicate effect (VF-13)."""
 
     def __post_init__(self) -> None:
         _check_role(self.role)
         object.__setattr__(self, "name_pattern", _clean_pattern(self.name_pattern, "name"))
+        if self.expected <= 0:
+            raise ValueError("expected must be > 0")
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +131,16 @@ class WindowExists:
 
 
 @dataclass(frozen=True, slots=True)
+class WindowGone:
+    """A top-level window present before the step and absent after (compose window closed)."""
+
+    name_pattern: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name_pattern", _clean_pattern(self.name_pattern, "window"))
+
+
+@dataclass(frozen=True, slots=True)
 class CountDelta:
     role: str
     delta: int
@@ -157,6 +178,7 @@ Predicate = (
     | State
     | TitleMatches
     | WindowExists
+    | WindowGone
     | CountDelta
     | All
     | AnyOf

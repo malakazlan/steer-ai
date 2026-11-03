@@ -66,12 +66,12 @@ def test_within_is_a_landmark_or_an_anchor_never_both() -> None:
     assert Within(landmark="Conversation").landmark == "conversation"
 
 
-def test_window_wide_match_is_anchored_and_scoped_match_is_a_substring() -> None:
+def test_window_wide_match_is_case_sensitive_and_scoped_match_is_not() -> None:
     assert name_matches("hello world", "hello world", scoped=False) is True
     assert name_matches("hello world!", "hello world", scoped=False) is False
     assert name_matches("Hello World", "hello world", scoped=False) is False
-    assert name_matches("Sara: hello world!", "hello world", scoped=True) is True
-    assert name_matches("Sara: Hello World", "hello world", scoped=True) is True
+    assert name_matches("Hello World", "hello world", scoped=True) is True
+    assert name_matches("Sara: hello world!", "hello world", scoped=True) is False
 
 
 def test_match_normalises_compatibility_forms_and_whitespace() -> None:

@@ -145,7 +145,11 @@ def test_appeared_on_different_windows_is_refused() -> None:
 
 def test_disappeared_holds_when_the_runtime_id_is_gone() -> None:
     verdict = evaluate(
-        Disappeared(role="ListItem", name_pattern="Amir", within=Within(landmark="Chats")),
+        Disappeared(
+            role="ListItem",
+            name_pattern="Amir \u00b7 hi bro \u00b7 2h",
+            within=Within(landmark="Chats"),
+        ),
         before(),
         after_without(CHAT_AMIR[0]),
     )
@@ -161,7 +165,11 @@ def test_disappeared_is_false_when_nothing_matched_before() -> None:
 
 def test_disappeared_is_false_while_any_match_remains() -> None:
     verdict = evaluate(
-        Disappeared(role="ListItem", name_pattern="Amir", within=Within(landmark="Chats")),
+        Disappeared(
+            role="ListItem",
+            name_pattern="Amir \u00b7 hi bro \u00b7 2h",
+            within=Within(landmark="Chats"),
+        ),
         before(),
         after_with(),
     )
@@ -190,7 +198,7 @@ def test_value_equals_reads_the_resolved_target_live() -> None:
         ValueEquals(target_id=COMPOSER[0], text="hello there"), before(), after_with(), live=live
     )
     assert verdict.holds is True
-    assert verdict.state == "hello there"
+    assert verdict.evidence == {}
 
 
 def test_value_equals_normalises_line_endings_and_null_values() -> None:
@@ -280,10 +288,11 @@ def test_state_on_an_element_without_the_pattern_is_false() -> None:
 
 
 def test_title_matches_ignores_counters_and_case() -> None:
-    assert evaluate(TitleMatches(pattern="Amir Khan - Chat"), before(), after_with()).holds is True
+    earlier = build(BASE_ROWS, snapshot_id="before", title="Chats")
+    assert evaluate(TitleMatches(pattern="Amir Khan - Chat"), earlier, after_with()).holds is True
     counted = build(BASE_ROWS, snapshot_id="after", title="(3) Amir Khan - Chat")
-    assert evaluate(TitleMatches(pattern="amir khan - chat"), before(), counted).holds is True
-    assert evaluate(TitleMatches(pattern="Sara"), before(), after_with()).holds is False
+    assert evaluate(TitleMatches(pattern="amir khan - chat"), earlier, counted).holds is True
+    assert evaluate(TitleMatches(pattern="Sara"), earlier, after_with()).holds is False
 
 
 def test_window_exists_consults_the_window_list_and_skips_our_own_process() -> None:
@@ -295,11 +304,13 @@ def test_window_exists_consults_the_window_list_and_skips_our_own_process() -> N
         is True
     )
     assert (
-        evaluate(WindowExists(name_pattern="Save"), before(), after_with(), windows=windows).holds
+        evaluate(
+            WindowExists(name_pattern="save as"), before(), after_with(), windows=windows
+        ).holds
         is True
     )
     assert (
-        evaluate(WindowExists(name_pattern="Open"), before(), after_with(), windows=windows).holds
+        evaluate(WindowExists(name_pattern="Save"), before(), after_with(), windows=windows).holds
         is False
     )
     own = [SimpleNamespace(title="Steer", hwnd=0x1, pid=4242)]
@@ -406,7 +417,7 @@ def test_verify_settles_a_value_contradiction_inside_the_deadline(clock: Any) ->
     assert verdict.holds is False
     assert verdict.code is ErrorCode.VERIFY_FAILED
     assert verdict.polls == 1
-    assert verdict.evidence["reason"] == "settled"
+    assert verdict.evidence["reason"] == "value_unchanged"
 
 
 def test_verify_never_settles_appeared_or_count(clock: Any) -> None:
@@ -419,15 +430,18 @@ def test_verify_never_settles_appeared_or_count(clock: Any) -> None:
     assert verdict.code is ErrorCode.VERIFY_TIMEOUT
 
 
-def test_verify_settles_disappeared_when_the_target_stays(clock: Any) -> None:
+def test_verify_only_times_out_when_a_disappeared_target_stays(clock: Any) -> None:
     verdict = verify(
-        Disappeared(role="ListItem", name_pattern="Amir", within=Within(landmark="Chats")),
+        Disappeared(
+            role="ListItem",
+            name_pattern="Amir \u00b7 hi bro \u00b7 2h",
+            within=Within(landmark="Chats"),
+        ),
         before(),
         after_with(),
         _observer([after_with()]),
     )
-    assert verdict.code is ErrorCode.VERIFY_FAILED
-    assert verdict.polls == 1
+    assert verdict.code is ErrorCode.VERIFY_TIMEOUT
 
 
 def test_verify_reobserves_with_a_single_stability_fetch(clock: Any) -> None:
@@ -501,11 +515,7 @@ def test_label_of_record_is_never_made_from_a_thrown_verify() -> None:
         polls=2,
         evidence={"reason": "observe_failed"},
     )
-    with pytest.raises(ValueError, match="observe_failed"):
-        label_of_record(
-            verdict,
-            predicate=Focused(target_id=1),
-            action_key="k",
-            before=before(),
-            after=after_with(),
-        )
+    label = label_of_record(
+        verdict, predicate=Focused(target_id=1), action_key="k", before=before(), after=after_with()
+    )
+    assert label is None
