@@ -14,6 +14,7 @@ Chrome window, so defaults are two fetches, a 50 ms poll and the 1.5 s cap from 
 
 from __future__ import annotations
 
+import json
 import time
 import unicodedata
 import uuid
@@ -88,6 +89,98 @@ class Snapshot:
             if element.id == element_id:
                 return handle
         raise SteerError(ErrorCode.ELEMENT_NOT_FOUND, f"no element {element_id} in {self.id}")
+
+
+SNAPSHOT_FORMAT = 1
+_ELEMENT_FIELDS = (
+    "id",
+    "depth",
+    "role",
+    "name",
+    "box",
+    "offscreen",
+    "enabled",
+    "automation_id",
+    "runtime_id",
+    "parent_id",
+    "secure",
+)
+
+
+def snapshot_to_json(snapshot: Snapshot) -> str:
+    """The snapshot as JSON for the write-ahead record (5.11): elements only, never handles.
+    The caller encrypts it (DPAPI) before it touches disk; names are user data."""
+    payload = {
+        "version": SNAPSHOT_FORMAT,
+        "id": snapshot.id,
+        "hwnd": snapshot.hwnd,
+        "process": snapshot.process,
+        "title": snapshot.title,
+        "taken_at": snapshot.taken_at,
+        "node_count": snapshot.node_count,
+        "stable": snapshot.stable,
+        "minimized": snapshot.minimized,
+        "pid": snapshot.pid,
+        "cap": snapshot.cap,
+        "elements": [
+            {
+                name: list(v) if isinstance(v := getattr(e, name), tuple) else v
+                for name in _ELEMENT_FIELDS
+            }
+            for e in snapshot.elements
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def snapshot_from_json(text: str) -> Snapshot:
+    """The inverse of `snapshot_to_json`; a handle-less snapshot for diffing and resume."""
+    try:
+        payload = json.loads(text)
+    except ValueError as exc:
+        raise ValueError(f"snapshot JSON is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("version") != SNAPSHOT_FORMAT:
+        raise ValueError("snapshot JSON has an unknown version or shape")
+    try:
+        raw_elements = payload["elements"]
+        if not isinstance(raw_elements, list):
+            raise TypeError("elements must be a list")
+        elements = [
+            Element(
+                id=int(raw["id"]),
+                depth=int(raw["depth"]),
+                role=str(raw["role"]),
+                name=str(raw["name"]),
+                box=(
+                    int(raw["box"][0]),
+                    int(raw["box"][1]),
+                    int(raw["box"][2]),
+                    int(raw["box"][3]),
+                ),
+                offscreen=bool(raw["offscreen"]),
+                enabled=bool(raw["enabled"]),
+                automation_id=str(raw["automation_id"]),
+                runtime_id=tuple(int(v) for v in raw["runtime_id"]),
+                parent_id=None if raw["parent_id"] is None else int(raw["parent_id"]),
+                secure=bool(raw["secure"]),
+            )
+            for raw in raw_elements
+        ]
+        return Snapshot(
+            id=str(payload["id"]),
+            hwnd=int(payload["hwnd"]),
+            process=str(payload["process"]),
+            title=str(payload["title"]),
+            taken_at=float(payload["taken_at"]),
+            elements=elements,
+            node_count=int(payload["node_count"]),
+            stable=bool(payload["stable"]),
+            minimized=bool(payload["minimized"]),
+            pid=int(payload["pid"]),
+            cap=int(payload["cap"]),
+        )
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        raise ValueError(f"snapshot JSON is malformed: {type(exc).__name__}") from exc
 
 
 @dataclass(frozen=True, slots=True)
