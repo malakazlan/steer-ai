@@ -17,7 +17,8 @@ import pytest
 
 import steerai.action.readback as readback_mod
 from steerai.action.dispositions import Delivery
-from steerai.action.executor import SNAPSHOT_MAX_AGE_S, Action, Executor, UiaBindings
+from steerai.action.execution import SNAPSHOT_MAX_AGE_S, UiaBindings
+from steerai.action.executor import Action, Executor
 from steerai.action.keyboard import GateApproval
 from steerai.errors import ErrorCode, SteerError
 from steerai.probes.uia_snapshot import UiaClient
