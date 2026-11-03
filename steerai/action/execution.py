@@ -146,8 +146,12 @@ class Call:
     secure: bool = False
     steps: list[Step] = field(default_factory=list)
     sent: str | None = None
+    blocker: Callable[[], str | None] | None = None
+    """Asked before every mutating call: a token (`killed`) refuses it, nothing is issued."""
 
     def send(self, label: str, mutate: Callable[[], Any]) -> None:
+        if self.blocker is not None and (token := self.blocker()) is not None:
+            raise RefusalError(ErrorCode.GATE_BLOCKED, token)
         self.sent = label
         mutate()
         self.steps.append(Step(label=label, mechanism=self.mechanism, outcome="succeeded"))

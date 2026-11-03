@@ -272,6 +272,23 @@ def _send(user32: ctypes.WinDLL, *records: INPUT) -> None:
         raise OSError(f"SendInput sent {sent}/{len(records)}: error {ctypes.get_last_error()}")
 
 
+def nudge_in_place() -> None:
+    """A tagged absolute move to the cursor's current position: reaches a low-level hook as
+    Steer's own event and leaves the cursor still (probe `hook-latency-2026-11-04`: a
+    zero-delta relative move never reaches a hook)."""
+    user32 = _user32()
+    x, y = cursor_pos()
+    ax, ay = _to_absolute(user32, x, y)
+    _send(
+        user32,
+        build_mouse_input(
+            dx=ax,
+            dy=ay,
+            flags=_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE | _MOUSEEVENTF_VIRTUALDESK,
+        ),
+    )
+
+
 def move_cursor(x: int, y: int) -> None:
     user32 = _user32()
     ax, ay = _to_absolute(user32, x, y)

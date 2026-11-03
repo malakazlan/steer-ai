@@ -78,14 +78,16 @@ class Executor:
         uia: UiaBindings | None = None,
         windows: WindowState | None = None,
         clock: Callable[[], float] = time.time,
+        blocker: Callable[[], str | None] | None = None,
     ) -> None:
         self._uia = UiaBindings.load() if uia is None else uia
+        self._blocker = blocker
         self._admission = Admission(
             windows=LiveWindows() if windows is None else windows, bindings=self._uia, clock=clock
         )
 
     def execute(self, action: Action, snapshot: Snapshot) -> ActionResult:
-        call = Call(action.verb, "semantic")
+        call = Call(action.verb, "semantic", blocker=self._blocker)
         try:
             element, handle = self._admission.admit(action, snapshot)
             call.secure = element.secure
