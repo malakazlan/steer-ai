@@ -15,11 +15,11 @@ import pytest
 
 from steerai.action.execution import UiaBindings
 from steerai.action.executor import Action, Executor
+from steerai.action.live_reads import UiaLiveReads
 from steerai.action.physical import PhysicalAction, PhysicalExecutor
 from steerai.errors import ErrorCode
 from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome
 from steerai.probes.uia_snapshot import UiaClient
-from steerai.probes.verify_cost import _Live
 from steerai.probes.win_input import acquire_foreground
 from steerai.probes.windows import wait_window_for_pid
 from steerai.verify.predicates import Appeared, ValueEquals, Within
@@ -152,7 +152,7 @@ def test_value_equals_on_notepad_fails_on_an_empty_document_and_passes_after_set
         time.sleep(0.5)
         client = UiaClient()
         model = WorldModel(client)
-        live = _Live(client, UiaBindings.load())
+        live = UiaLiveReads(client, UiaBindings.load())
 
         def observe(**kwargs: Any) -> Snapshot:
             return model.observe(window.hwnd, cap_s=5.0, **kwargs)
