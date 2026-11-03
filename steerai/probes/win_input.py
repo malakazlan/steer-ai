@@ -89,6 +89,10 @@ def scan_code_for(vk: int) -> int:
 
 
 _MODIFIER_VKS = {"ctrl": 0x11, "shift": 0x10, "alt": 0x12, "win_left": 0x5B, "win_right": 0x5C}
+_BUTTON_VKS = {"left": 0x01, "right": 0x02, "middle": 0x04, "x1": 0x05, "x2": 0x06}
+_SM_CXDOUBLECLK, _SM_CYDOUBLECLK = 36, 37
+_SPI_GETFILTERKEYS, _SPI_GETSTICKYKEYS = 0x0032, 0x003A
+_FKF_FILTERKEYSON = _SKF_STICKYKEYSON = 0x0001
 
 
 def physical_modifiers_down() -> list[str]:
@@ -97,6 +101,80 @@ def physical_modifiers_down() -> list[str]:
     user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
     user32.GetAsyncKeyState.restype = ctypes.c_short
     return [name for name, vk in _MODIFIER_VKS.items() if user32.GetAsyncKeyState(vk) & 0x8000]
+
+
+def physical_buttons_down() -> list[str]:
+    """Mouse buttons the user is physically holding right now (PX-11)."""
+    user32 = _user32()
+    user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
+    user32.GetAsyncKeyState.restype = ctypes.c_short
+    return [name for name, vk in _BUTTON_VKS.items() if user32.GetAsyncKeyState(vk) & 0x8000]
+
+
+class _FILTERKEYS(ctypes.Structure):
+    _fields_ = (
+        ("cbSize", wintypes.UINT),
+        ("dwFlags", wintypes.DWORD),
+        ("iWaitMSec", wintypes.DWORD),
+        ("iDelayMSec", wintypes.DWORD),
+        ("iRepeatMSec", wintypes.DWORD),
+        ("iBounceMSec", wintypes.DWORD),
+    )
+
+
+class _STICKYKEYS(ctypes.Structure):
+    _fields_ = (("cbSize", wintypes.UINT), ("dwFlags", wintypes.DWORD))
+
+
+def accessibility_filters_active() -> bool:
+    """Filter Keys or Sticky Keys is switched on (`SPI_GETFILTERKEYS` / `SPI_GETSTICKYKEYS`):
+    injected down/up pairs can be dropped or our modifiers latched for the user (PX-16)."""
+    user32 = _user32()
+    user32.SystemParametersInfoW.argtypes = (
+        wintypes.UINT,
+        wintypes.UINT,
+        ctypes.c_void_p,
+        wintypes.UINT,
+    )
+    user32.SystemParametersInfoW.restype = wintypes.BOOL
+    filter_keys = _FILTERKEYS(cbSize=ctypes.sizeof(_FILTERKEYS))
+    sticky_keys = _STICKYKEYS(cbSize=ctypes.sizeof(_STICKYKEYS))
+    if not user32.SystemParametersInfoW(
+        _SPI_GETFILTERKEYS, filter_keys.cbSize, ctypes.byref(filter_keys), 0
+    ):
+        raise OSError(f"SPI_GETFILTERKEYS failed: error {ctypes.get_last_error()}")
+    if not user32.SystemParametersInfoW(
+        _SPI_GETSTICKYKEYS, sticky_keys.cbSize, ctypes.byref(sticky_keys), 0
+    ):
+        raise OSError(f"SPI_GETSTICKYKEYS failed: error {ctypes.get_last_error()}")
+    return bool(filter_keys.dwFlags & _FKF_FILTERKEYSON) or bool(
+        sticky_keys.dwFlags & _SKF_STICKYKEYSON
+    )
+
+
+def double_click_time_s() -> float:
+    user32 = _user32()
+    user32.GetDoubleClickTime.restype = wintypes.UINT
+    return int(user32.GetDoubleClickTime()) / 1000
+
+
+def double_click_size_px() -> int:
+    """Half the double-click rectangle: two clicks closer than this (and within the time) form a
+    double click (`SM_CXDOUBLECLK` / `SM_CYDOUBLECLK`)."""
+    user32 = _user32()
+    width = int(user32.GetSystemMetrics(_SM_CXDOUBLECLK))
+    height = int(user32.GetSystemMetrics(_SM_CYDOUBLECLK))
+    return max(width, height) // 2
+
+
+def cursor_pos() -> tuple[int, int]:
+    user32 = _user32()
+    user32.GetCursorPos.argtypes = (ctypes.POINTER(wintypes.POINT),)
+    user32.GetCursorPos.restype = wintypes.BOOL
+    point = wintypes.POINT()
+    if not user32.GetCursorPos(ctypes.byref(point)):
+        raise OSError(f"GetCursorPos failed: error {ctypes.get_last_error()}")
+    return int(point.x), int(point.y)
 
 
 def ensure_per_monitor_v2() -> bool:
@@ -241,6 +319,11 @@ def acquire_foreground(hwnd: int) -> str:
         return "alt-tap"
 
     current = user32.GetForegroundWindow()
+    user32.IsHungAppWindow.argtypes = (wintypes.HWND,)
+    user32.IsHungAppWindow.restype = wintypes.BOOL
+    if not current or user32.IsHungAppWindow(current):
+        # Attaching to a non-pumping thread blocks indefinitely (PX-24): skip the rung.
+        raise OSError(f"could not bring hwnd {hwnd:#x} to the foreground")
     current_thread = user32.GetWindowThreadProcessId(current, None)
     kernel32.GetCurrentThreadId.restype = wintypes.DWORD
     own_thread = kernel32.GetCurrentThreadId()

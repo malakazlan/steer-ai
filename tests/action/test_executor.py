@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
@@ -19,169 +19,42 @@ import steerai.action.readback as readback_mod
 from steerai.action.dispositions import Delivery
 from steerai.action.execution import SNAPSHOT_MAX_AGE_S, UiaBindings
 from steerai.action.executor import Action, Executor
-from steerai.action.keyboard import GateApproval
 from steerai.errors import ErrorCode, SteerError
 from steerai.probes.uia_snapshot import UiaClient
 from steerai.probes.windows import wait_window_for_pid
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot, WorldModel
-
-BOX = (10, 10, 110, 50)
-UIA_INVOKE, UIA_VALUE, UIA_TOGGLE, UIA_EXPAND, UIA_SELECTION_ITEM, UIA_SCROLL_ITEM = (
-    10000,
-    10002,
-    10015,
-    10005,
-    10010,
-    10017,
+from tests.action.fakes import (
+    APPROVAL,
+    BOX,
+    E_ACCESSDENIED,
+    RPC_S_SERVER_UNAVAILABLE,
+    TYPE_IDS,
+    UIA_E_ELEMENTNOTAVAILABLE,
+    UIA_E_ELEMENTNOTENABLED,
+    UIA_E_TIMEOUT,
+    UIA_EXPAND,
+    UIA_INVOKE,
+    UIA_SCROLL_ITEM,
+    UIA_SELECTION_ITEM,
+    UIA_TOGGLE,
+    UIA_VALUE,
+    FakeHandle,
+    FakeWindows,
+    com_error,
 )
-# UIA_*ControlTypeId values; the executor takes the mapping from the comtypes module on Windows
-# and from this table in pure tests.
-TYPE_IDS = {
-    "Button": 50000,
-    "CheckBox": 50002,
-    "Edit": 50004,
-    "ListItem": 50007,
-    "TreeItem": 50024,
-    "Document": 50030,
-}
-E_ACCESSDENIED = 0x80070005
-UIA_E_ELEMENTNOTENABLED = 0x80040200
-UIA_E_ELEMENTNOTAVAILABLE = 0x80040201
-RPC_S_SERVER_UNAVAILABLE = 0x800706BA
-UIA_E_TIMEOUT = 0x80131505
-APPROVAL = GateApproval(approved_by="user", reason="login as the user asked", decision_id="d-7")
 
 
-class _ComError(Exception):
-    """Shaped like `_ctypes.COMError` (a signed `hresult`); the real type is exercised by the
-    Windows dead-handle test."""
-
-    def __init__(self, hresult: int) -> None:
-        super().__init__("COM call failed")
-        self.hresult = hresult - (1 << 32)
-
-
-def _com_error(hresult: int) -> Exception:
-    return _ComError(hresult)
-
-
-@dataclass
-class _FakeHandle:
-    """Behaves like a cached IUIAutomationElement for the patterns the executor uses."""
-
-    value: str | None = ""
-    toggled: int = 0  # 0 off, 1 on, 2 indeterminate
-    expanded: int = 0  # 0 collapsed, 1 expanded, 2 partially, 3 leaf
-    selected: bool = False
-    patterns: set[int] = field(default_factory=lambda: {UIA_INVOKE, UIA_VALUE, UIA_TOGGLE})
-    invoked: int = 0
-    read_only: bool = False
-    control_type: int = TYPE_IDS["Button"]
-    name: str = "Send"
-    offscreen: bool = False
-    calls: list[str] = field(default_factory=list)
-
-    @property
-    def CurrentControlType(self) -> int:  # noqa: N802 - COM naming
-        return self.control_type
-
-    @property
-    def CurrentName(self) -> str:  # noqa: N802
-        return self.name
-
-    @property
-    def CurrentIsOffscreen(self) -> bool:  # noqa: N802
-        return self.offscreen
-
-    def GetCurrentPattern(self, pattern_id: int) -> Any:  # noqa: N802
-        if pattern_id not in self.patterns:
-            return None
-        handle = self
-
-        class _Pattern:
-            def QueryInterface(self, _iface: Any) -> Any:  # noqa: N802
-                return self
-
-            def Invoke(self) -> None:  # noqa: N802
-                handle.invoked += 1
-                handle.calls.append("invoke")
-
-            def SetValue(self, text: str) -> None:  # noqa: N802
-                handle.value = text
-                handle.calls.append(f"set:{text}")
-
-            @property
-            def CurrentValue(self) -> str | None:  # noqa: N802
-                return handle.value
-
-            @property
-            def CurrentIsReadOnly(self) -> bool:  # noqa: N802
-                return handle.read_only
-
-            def Toggle(self) -> None:  # noqa: N802
-                handle.toggled = 0 if handle.toggled else 1
-                handle.calls.append("toggle")
-
-            @property
-            def CurrentToggleState(self) -> int:  # noqa: N802
-                return handle.toggled
-
-            def Expand(self) -> None:  # noqa: N802
-                handle.expanded = 1
-                handle.calls.append("expand")
-
-            def Collapse(self) -> None:  # noqa: N802
-                handle.expanded = 0
-                handle.calls.append("collapse")
-
-            @property
-            def CurrentExpandCollapseState(self) -> int:  # noqa: N802
-                return handle.expanded
-
-            def Select(self) -> None:  # noqa: N802
-                handle.selected = True
-                handle.calls.append("select")
-
-            @property
-            def CurrentIsSelected(self) -> bool:  # noqa: N802
-                return handle.selected
-
-            def ScrollIntoView(self) -> None:  # noqa: N802
-                handle.offscreen = False
-                handle.calls.append("scroll")
-
-        return _Pattern()
-
-
-@dataclass
-class _Windows:
-    """Stands in for the Win32 window re-check (probes.windows)."""
-
-    alive: bool = True
-    cloaked: bool = False
-    enabled: bool = True
-
-    def is_window(self, _hwnd: int) -> bool:
-        return self.alive
-
-    def is_cloaked(self, _hwnd: int) -> bool:
-        return self.cloaked
-
-    def is_window_enabled(self, _hwnd: int) -> bool:
-        return self.enabled
-
-
-def _executor(windows: _Windows | None = None, *, now: float = 0.0) -> Executor:
+def _executor(windows: FakeWindows | None = None, *, now: float = 0.0) -> Executor:
     return Executor(
         uia=UiaBindings(control_types={v: k for k, v in TYPE_IDS.items()}, interfaces={}),
-        windows=windows or _Windows(),
+        windows=windows or FakeWindows(),
         clock=lambda: now,
     )
 
 
 def _snapshot(
-    handle: _FakeHandle,
+    handle: FakeHandle,
     *,
     role: str = "Button",
     name: str = "Send",
@@ -231,7 +104,7 @@ def fast_clock(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_click_invokes_and_is_unverified_without_a_postcondition(fast_clock: None) -> None:
-    handle = _FakeHandle()
+    handle = FakeHandle()
     result = _executor().execute(Action(verb="click", element_id=1), _snapshot(handle))
     assert handle.invoked == 1
     assert result.delivery is Delivery.DELIVERED_UNVERIFIED
@@ -243,7 +116,7 @@ def test_click_invokes_and_is_unverified_without_a_postcondition(fast_clock: Non
 
 
 def test_click_with_a_postcondition_is_verified(fast_clock: None) -> None:
-    handle = _FakeHandle()
+    handle = FakeHandle()
     action = Action(verb="click", element_id=1, postcondition=lambda: handle.invoked == 1)
     result = _executor().execute(action, _snapshot(handle))
     assert result.delivery is Delivery.DELIVERED_VERIFIED
@@ -251,7 +124,7 @@ def test_click_with_a_postcondition_is_verified(fast_clock: None) -> None:
 
 
 def test_a_postcondition_that_already_holds_refuses_the_action(fast_clock: None) -> None:
-    handle = _FakeHandle()
+    handle = FakeHandle()
     action = Action(verb="click", element_id=1, postcondition=lambda: True)
     result = _executor().execute(action, _snapshot(handle))
     assert handle.calls == []
@@ -264,7 +137,7 @@ def test_a_postcondition_that_already_holds_refuses_the_action(fast_clock: None)
 
 
 def test_set_value_is_verified_by_reading_the_value_back(fast_clock: None) -> None:
-    handle = _FakeHandle()
+    handle = FakeHandle()
     action = Action(verb="set_value", element_id=1, text="hello")
     result = _executor().execute(action, _snapshot(handle, role="Edit", name="Message"))
     assert handle.value == "hello"
@@ -274,7 +147,7 @@ def test_set_value_is_verified_by_reading_the_value_back(fast_clock: None) -> No
 
 
 def test_set_value_already_equal_sends_nothing(fast_clock: None) -> None:
-    handle = _FakeHandle(value="hello")
+    handle = FakeHandle(value="hello")
     action = Action(verb="set_value", element_id=1, text="hello")
     result = _executor().execute(action, _snapshot(handle, role="Edit", name="Message"))
     assert handle.calls == []
@@ -283,7 +156,7 @@ def test_set_value_already_equal_sends_nothing(fast_clock: None) -> None:
 
 
 def test_set_value_on_a_read_only_field_is_not_actionable(fast_clock: None) -> None:
-    handle = _FakeHandle(read_only=True)
+    handle = FakeHandle(read_only=True)
     action = Action(verb="set_value", element_id=1, text="hello")
     result = _executor().execute(action, _snapshot(handle, role="Edit", name="Message"))
     assert result.code is ErrorCode.ELEMENT_NOT_ACTIONABLE
@@ -294,7 +167,7 @@ def test_set_value_on_a_read_only_field_is_not_actionable(fast_clock: None) -> N
 def test_set_value_on_a_read_only_field_already_equal_is_already_in_state(
     fast_clock: None,
 ) -> None:
-    handle = _FakeHandle(read_only=True, value="hello")
+    handle = FakeHandle(read_only=True, value="hello")
     action = Action(verb="set_value", element_id=1, text="hello")
     result = _executor().execute(action, _snapshot(handle, role="Edit", name="Message"))
     assert result.skipped is True
@@ -302,7 +175,7 @@ def test_set_value_on_a_read_only_field_already_equal_is_already_in_state(
 
 
 def test_set_value_rejects_invalid_text_before_touching_the_element(fast_clock: None) -> None:
-    handle = _FakeHandle()
+    handle = FakeHandle()
     action = Action(verb="set_value", element_id=1, text="bad\x1b")
     result = _executor().execute(action, _snapshot(handle, role="Edit", name="Message"))
     assert result.code is ErrorCode.INVALID_TEXT
@@ -313,7 +186,7 @@ def test_set_value_rejects_invalid_text_before_touching_the_element(fast_clock: 
 
 
 def test_set_value_passes_newlines_as_literal_content(fast_clock: None) -> None:
-    handle = _FakeHandle()
+    handle = FakeHandle()
     action = Action(verb="set_value", element_id=1, text="line one\r\nline two")
     result = _executor().execute(action, _snapshot(handle, role="Edit", name="Message"))
     assert handle.value == "line one\nline two"
@@ -322,7 +195,7 @@ def test_set_value_passes_newlines_as_literal_content(fast_clock: None) -> None:
 
 def test_set_value_readback_ignores_the_line_ending_the_app_stores(fast_clock: None) -> None:
     @dataclass
-    class _CrLfEdit(_FakeHandle):
+    class _CrLfEdit(FakeHandle):
         def GetCurrentPattern(self, pattern_id: int) -> Any:  # noqa: N802
             inner = super().GetCurrentPattern(pattern_id)
             handle = self
@@ -352,7 +225,7 @@ def test_set_value_readback_ignores_the_line_ending_the_app_stores(fast_clock: N
 
 
 def test_set_value_with_empty_text_clears_the_field(fast_clock: None) -> None:
-    handle = _FakeHandle(value="old")
+    handle = FakeHandle(value="old")
     result = _executor().execute(
         Action(verb="set_value", element_id=1, text=""), _snapshot(handle, role="Edit")
     )
@@ -362,7 +235,7 @@ def test_set_value_with_empty_text_clears_the_field(fast_clock: None) -> None:
 
 
 def test_set_value_treats_a_null_value_as_empty(fast_clock: None) -> None:
-    handle = _FakeHandle(value=None)
+    handle = FakeHandle(value=None)
     cleared = _executor().execute(
         Action(verb="set_value", element_id=1, text=""), _snapshot(handle, role="Edit")
     )
@@ -379,7 +252,7 @@ def test_set_value_that_the_app_normalises_differently_is_verify_failed(
     fast_clock: None,
 ) -> None:
     @dataclass
-    class _TrimmingEdit(_FakeHandle):
+    class _TrimmingEdit(FakeHandle):
         def GetCurrentPattern(self, pattern_id: int) -> Any:  # noqa: N802
             inner = super().GetCurrentPattern(pattern_id)
             handle = self
@@ -412,7 +285,7 @@ def test_set_value_that_the_app_normalises_differently_is_verify_failed(
 
 
 def test_check_is_idempotent_and_uncheck_toggles_once(fast_clock: None) -> None:
-    handle = _FakeHandle(toggled=1)
+    handle = FakeHandle(toggled=1)
     checked = _executor().execute(
         Action(verb="check", element_id=1), _snapshot(handle, role="CheckBox")
     )
@@ -427,7 +300,7 @@ def test_check_is_idempotent_and_uncheck_toggles_once(fast_clock: None) -> None:
 
 
 def test_expand_and_select_are_verified_by_their_state(fast_clock: None) -> None:
-    handle = _FakeHandle(patterns={UIA_EXPAND, UIA_SELECTION_ITEM})
+    handle = FakeHandle(patterns={UIA_EXPAND, UIA_SELECTION_ITEM})
     expanded = _executor().execute(
         Action(verb="expand", element_id=1), _snapshot(handle, role="TreeItem")
     )
@@ -439,14 +312,14 @@ def test_expand_and_select_are_verified_by_their_state(fast_clock: None) -> None
 
 
 def test_missing_pattern_is_not_actionable(fast_clock: None) -> None:
-    handle = _FakeHandle(patterns=set())
+    handle = FakeHandle(patterns=set())
     result = _executor().execute(Action(verb="click", element_id=1), _snapshot(handle))
     assert result.code is ErrorCode.ELEMENT_NOT_ACTIONABLE
     assert result.delivery is Delivery.NOT_DELIVERED
 
 
 def test_unknown_element_id_is_element_not_found(fast_clock: None) -> None:
-    result = _executor().execute(Action(verb="click", element_id=9), _snapshot(_FakeHandle()))
+    result = _executor().execute(Action(verb="click", element_id=9), _snapshot(FakeHandle()))
     assert result.code is ErrorCode.ELEMENT_NOT_FOUND
     assert result.retry_safe is True
 
@@ -468,7 +341,7 @@ def test_text_on_a_verb_that_takes_none_is_rejected_at_construction(verb: str) -
 
 
 def test_action_repr_and_result_never_contain_the_typed_text(fast_clock: None) -> None:
-    handle = _FakeHandle()
+    handle = FakeHandle()
     typed = "typed-value-42"
     action = Action(verb="set_value", element_id=1, text=typed)
     assert typed not in repr(action)
@@ -480,7 +353,7 @@ def test_action_repr_and_result_never_contain_the_typed_text(fast_clock: None) -
 
 
 def test_disabled_element_in_the_snapshot_is_refused_before_any_call(fast_clock: None) -> None:
-    handle = _FakeHandle()
+    handle = FakeHandle()
     result = _executor().execute(
         Action(verb="click", element_id=1), _snapshot(handle, enabled=False)
     )
@@ -491,7 +364,7 @@ def test_disabled_element_in_the_snapshot_is_refused_before_any_call(fast_clock:
 
 
 def test_unstable_snapshot_is_refused(fast_clock: None) -> None:
-    handle = _FakeHandle()
+    handle = FakeHandle()
     result = _executor().execute(
         Action(verb="click", element_id=1), _snapshot(handle, stable=False)
     )
@@ -501,7 +374,7 @@ def test_unstable_snapshot_is_refused(fast_clock: None) -> None:
 
 
 def test_snapshot_older_than_the_cap_is_refused(fast_clock: None) -> None:
-    handle = _FakeHandle()
+    handle = FakeHandle()
     stale = _executor(now=SNAPSHOT_MAX_AGE_S + 0.001).execute(
         Action(verb="click", element_id=1), _snapshot(handle)
     )
@@ -517,15 +390,15 @@ def test_snapshot_older_than_the_cap_is_refused(fast_clock: None) -> None:
 @pytest.mark.parametrize(
     ("windows", "code"),
     [
-        (_Windows(alive=False), ErrorCode.APP_CRASHED),
-        (_Windows(cloaked=True), ErrorCode.WINDOW_OTHER_DESKTOP),
-        (_Windows(enabled=False), ErrorCode.INTERRUPT_MODAL),
+        (FakeWindows(alive=False), ErrorCode.APP_CRASHED),
+        (FakeWindows(cloaked=True), ErrorCode.WINDOW_OTHER_DESKTOP),
+        (FakeWindows(enabled=False), ErrorCode.INTERRUPT_MODAL),
     ],
 )
 def test_window_is_rechecked_before_the_call(
-    fast_clock: None, windows: _Windows, code: ErrorCode
+    fast_clock: None, windows: FakeWindows, code: ErrorCode
 ) -> None:
-    handle = _FakeHandle()
+    handle = FakeHandle()
     result = _executor(windows).execute(Action(verb="click", element_id=1), _snapshot(handle))
     assert result.code is code
     assert result.delivery is Delivery.NOT_DELIVERED
@@ -533,7 +406,7 @@ def test_window_is_rechecked_before_the_call(
 
 
 def test_handle_whose_name_changed_since_the_snapshot_is_not_found(fast_clock: None) -> None:
-    handle = _FakeHandle()
+    handle = FakeHandle()
     snapshot = _snapshot(handle, name="Delete row 3")
     handle.name = "Delete row 4"
     result = _executor().execute(Action(verb="click", element_id=1), snapshot)
@@ -543,7 +416,7 @@ def test_handle_whose_name_changed_since_the_snapshot_is_not_found(fast_clock: N
 
 
 def test_handle_whose_control_type_changed_is_not_found(fast_clock: None) -> None:
-    handle = _FakeHandle()
+    handle = FakeHandle()
     snapshot = _snapshot(handle)
     handle.control_type = TYPE_IDS["Edit"]
     result = _executor().execute(Action(verb="click", element_id=1), snapshot)
@@ -552,7 +425,7 @@ def test_handle_whose_control_type_changed_is_not_found(fast_clock: None) -> Non
 
 
 def test_identity_check_normalises_whitespace_and_compatibility_forms(fast_clock: None) -> None:
-    handle = _FakeHandle()
+    handle = FakeHandle()
     snapshot = _snapshot(handle, name="Send  message")
     handle.name = "Send\u00a0message"
     result = _executor().execute(Action(verb="click", element_id=1), snapshot)
@@ -561,7 +434,7 @@ def test_identity_check_normalises_whitespace_and_compatibility_forms(fast_clock
 
 
 def test_identity_check_tolerates_a_null_name(fast_clock: None) -> None:
-    handle = _FakeHandle()
+    handle = FakeHandle()
     snapshot = _snapshot(handle, name="")
     handle.name = None  # type: ignore[assignment]  # VT_EMPTY from the provider
     _executor().execute(Action(verb="click", element_id=1), snapshot)
@@ -572,7 +445,7 @@ def test_identity_check_tolerates_a_null_name(fast_clock: None) -> None:
 
 
 def test_secure_element_is_refused_without_gate_approval(fast_clock: None) -> None:
-    handle = _FakeHandle()
+    handle = FakeHandle()
     snapshot = _snapshot(handle, role="Edit", name="Password", secure=True)
     refused = _executor().execute(Action(verb="set_value", element_id=1, text="s3cret"), snapshot)
     assert refused.code is ErrorCode.GATE_BLOCKED
@@ -584,7 +457,7 @@ def test_secure_element_is_refused_without_gate_approval(fast_clock: None) -> No
 def test_secure_element_with_gate_approval_records_the_decision_not_the_length(
     fast_clock: None,
 ) -> None:
-    handle = _FakeHandle()
+    handle = FakeHandle()
     snapshot = _snapshot(handle, role="Edit", name="Password", secure=True)
     action = Action(verb="set_value", element_id=1, text="s3cret", approval=APPROVAL)
     allowed = _executor().execute(action, snapshot)
@@ -602,8 +475,8 @@ def test_approval_must_be_a_gate_approval_not_a_flag() -> None:
 # ---- failure classification by phase (SX-01, SX-02, SX-03) ------------------------------------
 
 
-def _handle_raising(error: Exception) -> _FakeHandle:
-    class _Broken(_FakeHandle):
+def _handle_raising(error: Exception) -> FakeHandle:
+    class _Broken(FakeHandle):
         def GetCurrentPattern(self, _pattern_id: int) -> Any:  # noqa: N802
             raise error
 
@@ -632,7 +505,7 @@ def test_steer_error_before_the_call_is_not_delivered_with_its_code(fast_clock: 
 def test_com_error_before_the_call_maps_hresult_to_a_code(
     fast_clock: None, hresult: int, code: ErrorCode
 ) -> None:
-    handle = _handle_raising(_com_error(hresult))
+    handle = _handle_raising(com_error(hresult))
     result = _executor().execute(Action(verb="click", element_id=1), _snapshot(handle))
     assert result.code is code
     assert result.delivery is Delivery.NOT_DELIVERED
@@ -653,7 +526,7 @@ def test_programming_error_before_the_call_propagates(fast_clock: None) -> None:
         _executor().execute(Action(verb="click", element_id=1), _snapshot(handle))
 
 
-class _ValueReadFails(_FakeHandle):
+class _ValueReadFails(FakeHandle):
     """CurrentValue raises `error` once SetValue has been sent: the element went away mid-poll."""
 
     def __init__(self, error: Exception, *, fail_call: bool = False) -> None:
@@ -703,7 +576,7 @@ def test_set_value_whose_readback_raises_a_steer_error_is_uncertain(fast_clock: 
 
 
 def test_set_value_whose_readback_raises_a_com_error_is_uncertain(fast_clock: None) -> None:
-    handle = _ValueReadFails(_com_error(UIA_E_ELEMENTNOTAVAILABLE))
+    handle = _ValueReadFails(com_error(UIA_E_ELEMENTNOTAVAILABLE))
     action = Action(verb="set_value", element_id=1, text="hello")
     result = _executor().execute(action, _snapshot(handle, role="Edit", name="Message"))
     assert handle.calls == ["set:hello"]
@@ -717,7 +590,7 @@ def test_set_value_whose_readback_raises_a_com_error_is_uncertain(fast_clock: No
 
 
 def test_set_value_whose_call_raises_a_com_error_is_uncertain(fast_clock: None) -> None:
-    handle = _ValueReadFails(_com_error(RPC_S_SERVER_UNAVAILABLE), fail_call=True)
+    handle = _ValueReadFails(com_error(RPC_S_SERVER_UNAVAILABLE), fail_call=True)
     action = Action(verb="set_value", element_id=1, text="hello")
     result = _executor().execute(action, _snapshot(handle, role="Edit", name="Message"))
     assert result.delivery is Delivery.DELIVERY_UNCERTAIN
@@ -729,7 +602,7 @@ def test_set_value_whose_call_raises_a_com_error_is_uncertain(fast_clock: None) 
 
 
 def test_click_whose_postcondition_raises_after_invoke_is_uncertain(fast_clock: None) -> None:
-    handle = _FakeHandle()
+    handle = FakeHandle()
 
     def postcondition() -> bool:
         if handle.invoked:
@@ -746,7 +619,7 @@ def test_click_whose_postcondition_raises_after_invoke_is_uncertain(fast_clock: 
 
 
 def test_programming_error_after_the_call_is_uncertain_not_lost(fast_clock: None) -> None:
-    handle = _FakeHandle()
+    handle = FakeHandle()
 
     def postcondition() -> bool:
         if handle.invoked:
@@ -764,7 +637,7 @@ def test_programming_error_after_the_call_is_uncertain_not_lost(fast_clock: None
 # ---- state verbs: tri-state, expand states, scroll (SX-08, SX-20, SX-21, SX-23) -----------------
 
 
-class _ThreeState(_FakeHandle):
+class _ThreeState(FakeHandle):
     """A tri-state checkbox: Toggle cycles Off(0) -> On(1) -> Indeterminate(2) -> Off(0)."""
 
     def GetCurrentPattern(self, pattern_id: int) -> Any:  # noqa: N802
@@ -834,7 +707,7 @@ def test_toggle_that_never_reaches_the_wanted_state_stops_after_two_and_fails(
 
 
 def test_toggle_whose_readback_never_settles_is_not_toggled_again(fast_clock: None) -> None:
-    class _Flickering(_FakeHandle):
+    class _Flickering(FakeHandle):
         def GetCurrentPattern(self, pattern_id: int) -> Any:  # noqa: N802
             if pattern_id != UIA_TOGGLE:
                 return None
@@ -864,7 +737,7 @@ def test_toggle_whose_readback_never_settles_is_not_toggled_again(fast_clock: No
 
 
 def test_expand_on_a_leaf_node_is_refused_before_any_call(fast_clock: None) -> None:
-    handle = _FakeHandle(patterns={UIA_EXPAND}, expanded=3)
+    handle = FakeHandle(patterns={UIA_EXPAND}, expanded=3)
     result = _executor().execute(
         Action(verb="expand", element_id=1), _snapshot(handle, role="TreeItem")
     )
@@ -874,7 +747,7 @@ def test_expand_on_a_leaf_node_is_refused_before_any_call(fast_clock: None) -> N
 
 
 def test_collapse_on_a_partially_expanded_node_sends_and_verifies(fast_clock: None) -> None:
-    handle = _FakeHandle(patterns={UIA_EXPAND}, expanded=2)
+    handle = FakeHandle(patterns={UIA_EXPAND}, expanded=2)
     result = _executor().execute(
         Action(verb="collapse", element_id=1), _snapshot(handle, role="TreeItem")
     )
@@ -883,7 +756,7 @@ def test_collapse_on_a_partially_expanded_node_sends_and_verifies(fast_clock: No
 
 
 def test_collapse_is_verified_and_idempotent(fast_clock: None) -> None:
-    handle = _FakeHandle(patterns={UIA_EXPAND}, expanded=1)
+    handle = FakeHandle(patterns={UIA_EXPAND}, expanded=1)
     collapsed = _executor().execute(
         Action(verb="collapse", element_id=1), _snapshot(handle, role="TreeItem")
     )
@@ -898,7 +771,7 @@ def test_collapse_is_verified_and_idempotent(fast_clock: None) -> None:
 
 
 def test_select_that_the_app_rejects_is_verify_failed(fast_clock: None) -> None:
-    class _Rejecting(_FakeHandle):
+    class _Rejecting(FakeHandle):
         def GetCurrentPattern(self, pattern_id: int) -> Any:  # noqa: N802
             pattern = super().GetCurrentPattern(pattern_id)
             handle = self
@@ -918,7 +791,7 @@ def test_select_that_the_app_rejects_is_verify_failed(fast_clock: None) -> None:
 
 
 def test_scroll_into_view_reads_back_on_screen_without_a_postcondition(fast_clock: None) -> None:
-    handle = _FakeHandle(patterns={UIA_SCROLL_ITEM}, offscreen=True)
+    handle = FakeHandle(patterns={UIA_SCROLL_ITEM}, offscreen=True)
     result = _executor().execute(
         Action(verb="scroll_into_view", element_id=1), _snapshot(handle, role="ListItem")
     )
@@ -928,7 +801,7 @@ def test_scroll_into_view_reads_back_on_screen_without_a_postcondition(fast_cloc
 
 
 def test_scroll_into_view_that_stays_offscreen_is_verify_failed(fast_clock: None) -> None:
-    class _Stuck(_FakeHandle):
+    class _Stuck(FakeHandle):
         def GetCurrentPattern(self, pattern_id: int) -> Any:  # noqa: N802
             pattern = super().GetCurrentPattern(pattern_id)
             pattern.ScrollIntoView = lambda: self.calls.append("scroll")
@@ -943,7 +816,7 @@ def test_scroll_into_view_that_stays_offscreen_is_verify_failed(fast_clock: None
 
 
 def test_scroll_into_view_already_on_screen_is_already_in_state(fast_clock: None) -> None:
-    handle = _FakeHandle(patterns={UIA_SCROLL_ITEM}, offscreen=False)
+    handle = FakeHandle(patterns={UIA_SCROLL_ITEM}, offscreen=False)
     result = _executor().execute(
         Action(verb="scroll_into_view", element_id=1), _snapshot(handle, role="ListItem")
     )
@@ -952,7 +825,7 @@ def test_scroll_into_view_already_on_screen_is_already_in_state(fast_clock: None
 
 
 def test_scroll_into_view_with_a_postcondition_uses_it(fast_clock: None) -> None:
-    handle = _FakeHandle(patterns={UIA_SCROLL_ITEM}, offscreen=True)
+    handle = FakeHandle(patterns={UIA_SCROLL_ITEM}, offscreen=True)
     result = _executor().execute(
         Action(verb="scroll_into_view", element_id=1, postcondition=lambda: bool(handle.calls)),
         _snapshot(handle, role="ListItem"),
@@ -966,14 +839,14 @@ def test_scroll_into_view_with_a_postcondition_uses_it(fast_clock: None) -> None
 class _RawPattern:
     """A pattern object with no QueryInterface (what a non-comtypes shim or test double exposes)."""
 
-    def __init__(self, handle: _FakeHandle) -> None:
+    def __init__(self, handle: FakeHandle) -> None:
         self._handle = handle
 
     def Invoke(self) -> None:  # noqa: N802
         self._handle.invoked += 1
 
 
-class _NoQueryInterface(_FakeHandle):
+class _NoQueryInterface(FakeHandle):
     def GetCurrentPattern(self, pattern_id: int) -> Any:  # noqa: N802
         return _RawPattern(self) if pattern_id == UIA_INVOKE else None
 
@@ -986,7 +859,7 @@ def test_pattern_without_query_interface_is_used_as_is(fast_clock: None) -> None
 
 
 @dataclass
-class _InertValue(_FakeHandle):
+class _InertValue(FakeHandle):
     """SetValue is accepted but the control never changes its value."""
 
     reads: int = 0
@@ -1037,7 +910,7 @@ def test_set_value_that_silently_does_nothing_is_verify_failed_and_not_retry_saf
 def test_set_value_compares_exactly_not_after_whitespace_or_case_folding(
     fast_clock: None, current: str, wanted: str
 ) -> None:
-    handle = _FakeHandle(value=current)
+    handle = FakeHandle(value=current)
     action = Action(verb="set_value", element_id=1, text=wanted)
     result = _executor().execute(action, _snapshot(handle, role="Edit", name="Message"))
     assert handle.calls == [f"set:{wanted}"]
@@ -1047,7 +920,7 @@ def test_set_value_compares_exactly_not_after_whitespace_or_case_folding(
 
 def test_snapshot_without_live_handles_is_element_not_found(fast_clock: None) -> None:
     result = _executor().execute(
-        Action(verb="click", element_id=1), _snapshot(_FakeHandle(), handles=[])
+        Action(verb="click", element_id=1), _snapshot(FakeHandle(), handles=[])
     )
     assert result.code is ErrorCode.ELEMENT_NOT_FOUND
     assert result.retry_safe is True
@@ -1133,7 +1006,7 @@ def test_real_com_error_from_a_dead_handle_becomes_a_result() -> None:
     proc.wait(timeout=5)
     time.sleep(0.2)
     # Bypass the window re-check so the dead handle itself raises the real COMError.
-    executor = Executor(windows=_Windows(), clock=lambda: snapshot.taken_at)
+    executor = Executor(windows=FakeWindows(), clock=lambda: snapshot.taken_at)
     result = executor.execute(
         Action(verb="set_value", element_id=target.id, text="too late"), snapshot
     )

@@ -202,8 +202,7 @@ def press(chord: str, *, approval: GateApproval | None = None) -> None:
         send_inputs(records)
     except OSError as exc:
         inserted = _inserted_count(exc)
-        modifiers = chord_to_vks(chord)[:-1]
-        _release_modifiers(modifiers)
+        _release_modifiers(chord_to_vks(chord))  # every key: the main key's down may be in
         raise InjectionError(
             f"chord {chord!r} partially injected ({inserted}/{len(records)})",
             inserted=inserted,

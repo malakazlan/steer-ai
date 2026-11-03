@@ -177,6 +177,51 @@ def window_pid(hwnd: int) -> int:
     return pid.value
 
 
+_UOI_NAME = 2
+_DESKTOP_READOBJECTS = 0x0001
+
+
+def is_hung(hwnd: int) -> bool:
+    """`IsHungAppWindow`: the window's thread has not pumped messages for about five seconds;
+    input queued to it replays later against a different UI (PX-18)."""
+    user32 = _user32()
+    user32.IsHungAppWindow.argtypes = (wintypes.HWND,)
+    user32.IsHungAppWindow.restype = wintypes.BOOL
+    return bool(user32.IsHungAppWindow(hwnd))
+
+
+def input_desktop_name() -> str:
+    """Name of the desktop receiving input (`OpenInputDesktop` + `GetUserObjectInformation`):
+    "Default" normally, "Winlogon" on the secure desktop (UAC, lock screen) where SendInput is
+    dropped (PX-17)."""
+    user32 = _user32()
+    user32.OpenInputDesktop.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    user32.OpenInputDesktop.restype = wintypes.HANDLE
+    user32.GetUserObjectInformationW.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    user32.GetUserObjectInformationW.restype = wintypes.BOOL
+    user32.CloseDesktop.argtypes = (wintypes.HANDLE,)
+    user32.CloseDesktop.restype = wintypes.BOOL
+    desktop = user32.OpenInputDesktop(0, False, _DESKTOP_READOBJECTS)
+    if not desktop:
+        raise OSError(f"OpenInputDesktop failed: error {ctypes.get_last_error()}")
+    try:
+        buffer = ctypes.create_unicode_buffer(256)
+        needed = wintypes.DWORD()
+        if not user32.GetUserObjectInformationW(
+            desktop, _UOI_NAME, buffer, ctypes.sizeof(buffer), ctypes.byref(needed)
+        ):
+            raise OSError(f"GetUserObjectInformation failed: error {ctypes.get_last_error()}")
+        return buffer.value
+    finally:
+        user32.CloseDesktop(desktop)
+
+
 def window_title(hwnd: int) -> str:
     user32 = _user32()
     length = user32.GetWindowTextLengthW(hwnd)

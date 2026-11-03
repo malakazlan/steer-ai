@@ -168,6 +168,17 @@ class UiaClient:
         runtime_id = element.GetRuntimeId()
         return tuple(int(v) for v in runtime_id) if runtime_id else ()
 
+    def focused_runtime_id(self) -> tuple[int, ...]:
+        """RuntimeId of the element with keyboard focus (`GetFocusedElement`), empty when none."""
+        try:
+            element = self._uia.GetFocusedElement()
+        except Exception as exc:  # COMError exists only once comtypes is loaded
+            raise OSError(f"no focused UIA element: {exc}") from exc
+        if not element:
+            return ()
+        runtime_id = element.GetRuntimeId()
+        return tuple(int(v) for v in runtime_id) if runtime_id else ()
+
     def _snapshot(self, element: Any, scope: int, scope_name: str) -> Snapshot:
         # `element` is a COM interface pointer; comtypes has no type stubs, hence Any.
         cache_request = self._uia.CreateCacheRequest()
