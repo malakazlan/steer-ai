@@ -68,6 +68,17 @@ REUSE_FRESHNESS_S = 5.0
 """How old a decided after snapshot may be to serve as the next R0/R1 before. Unmeasured; well
 inside the executors' 10 s admission cap."""
 SCREEN_GUARD_THRESHOLD = 0.9
+STOP_CODES: frozenset[ErrorCode] = frozenset(
+    {
+        ErrorCode.APP_CRASHED,
+        ErrorCode.WINDOW_OTHER_DESKTOP,
+        ErrorCode.SECURE_DESKTOP,
+        ErrorCode.INTERRUPT_MODAL,
+        ErrorCode.PERCEPTION_DEGRADED,
+    }
+)
+"""Codes that end the task even after a dispatch: the window or the desktop is not there to
+act on any more (RN-14); the ledger record stays open, so a resume confirms."""
 SCREEN_GUARD_STRIKES = 3
 DEFAULT_MAX_STEPS = 20
 _DIFF_PREDICATES = (Appeared, Disappeared, CountDelta, WindowGone)
@@ -171,6 +182,7 @@ class Session:
         key = self._ledger.key_for(step)
         evidence: dict[str, Any] = {"risk": risk}
         gate_stage: GateToken = "unreached"
+        dispatched: ActionResult | None = None
         windows_before = list(self._windows()) if self._windows else None
         self._begin_step(windows_before)
         try:
@@ -196,9 +208,7 @@ class Session:
                 return self._gate_stopped(step, gate_result, stage, evidence)
             decision, expect = self._admitted(key, previous, gate_result)
             if gate_result.outcome == "confirm":
-                # The approved thing must be the executed thing (OR-31): observe again.
-                before = stage.measure("observe", lambda: self._observe_fresh(evidence))
-                element_id = stage.measure("decide", lambda: self._resolve(step, before))
+                before, element_id = self._after_ask(step, before, stage, evidence)
             before_of_record = before
             if risk in ("R2", "R3"):
                 try:
@@ -209,6 +219,7 @@ class Session:
             action, before, retries = stage.measure(
                 "act", lambda: self._act(step, risk, before, element_id)
             )
+            dispatched = action
             evidence["retries"] = retries
             evidence["delivery"] = action.delivery.value
             if self._scrolled is not None:
@@ -276,19 +287,54 @@ class Session:
             )
         except _StepFailureError as failure:
             # before the gate ran the token is `unreached`; after, the gate's outcome
-            evidence["detail"] = failure.detail
-            return self._finish(
-                step,
-                stage,
-                evidence,
-                gate=gate_stage,
-                action=None,
-                verify_code=None,
-                label_kind=None,
-                code=failure.code,
+            return self._failed(
+                step, stage, evidence, gate=gate_stage, dispatched=None, failure=failure
+            )
+        except SteerError as failure:
+            # the world model could not observe (window gone, other desktop): a result, with
+            # the action if one was dispatched; an open record stays open (RN-14)
+            return self._failed(
+                step, stage, evidence, gate=gate_stage, dispatched=dispatched, failure=failure
             )
 
     # ---- stages ---------------------------------------------------------------------------------
+
+    def _after_ask(
+        self, step: Step, before: Snapshot, stage: _Stage, evidence: dict[str, Any]
+    ) -> tuple[Snapshot, int]:
+        """The approved thing must be the executed thing (OR-31): observe again, on the screen
+        the ask was made on (RN-13), and resolve the target again."""
+        fresh = stage.measure("observe", lambda: self._observe_fresh(evidence))
+        if fresh.title != before.title:
+            raise _StepFailureError(ErrorCode.FOCUS_LOST, "screen_changed_during_ask")
+        return fresh, stage.measure("decide", lambda: self._resolve(step, fresh))
+
+    def _failed(  # noqa: PLR0913 - the step's state at the failure, nothing more
+        self,
+        step: Step,
+        stage: _Stage,
+        evidence: dict[str, Any],
+        *,
+        gate: GateToken,
+        dispatched: ActionResult | None,
+        failure: _StepFailureError | SteerError,
+    ) -> StepResult:
+        if isinstance(failure, _StepFailureError):
+            evidence["detail"] = failure.detail
+        else:
+            evidence["detail"] = "observe_raised"
+            if dispatched is not None:
+                evidence["delivery"] = dispatched.delivery.value
+        return self._finish(
+            step,
+            stage,
+            evidence,
+            gate=gate,
+            action=dispatched,
+            verify_code=None,
+            label_kind=None,
+            code=failure.code,
+        )
 
     def _begin_step(self, windows_before: list[WindowLike] | None) -> None:
         self._windows_at_step = windows_before
@@ -558,9 +604,27 @@ class Session:
                 "subgoals": len(plan.subgoals),
             }
         )
-        start = self._observer.observe(self.hwnd)
-        ticked = {s.id for s in plan.subgoals if self._holds_now(s.condition, start)}
         results: list[StepResult] = []
+        try:
+            start = self._observer.observe(self.hwnd)
+        except SteerError as failure:
+            # the window is not there to start on (RN-14): a result, not a traceback
+            self._trace.write(
+                {
+                    "kind": "task_end",
+                    "task_id": self.task_id,
+                    "status": "stopped",
+                    "detail": "observe_raised",
+                }
+            )
+            return TaskResult(
+                status="stopped",
+                results=results,
+                ticked=set(),
+                code=failure.code,
+                evidence={"detail": "observe_raised"},
+            )
+        ticked = {s.id for s in plan.subgoals if self._holds_now(s.condition, start)}
         outcome = self._run_steps(plan, ticked, results)
         if outcome is not None:
             stopped, code, detail = outcome
@@ -602,8 +666,9 @@ class Session:
                 return "blocked", ErrorCode.GATE_BLOCKED, detail
             if result.gate == "pending":
                 return "paused", ErrorCode.GATE_PENDING_USER, "unanswered"
-            if not result.ok and result.action is None:
-                # nothing was dispatched: unreached, or a refusal after the gate ran
+            if not result.ok and (result.action is None or result.code in STOP_CODES):
+                # nothing was dispatched (unreached, or a refusal after the gate ran), or
+                # the window is not there to act on any more
                 return "stopped", result.code or ErrorCode.VERIFY_FAILED, detail
             if result.gate == "done_already":
                 # the earlier verified attempt (or the persisted before) proved the effect
