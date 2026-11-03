@@ -149,7 +149,10 @@ class MSLLHOOKSTRUCT(ctypes.Structure):
     )
 
 
-_HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+def _hookproc_type() -> Any:
+    """The HOOKPROC callback type; built on demand because `WINFUNCTYPE` exists on Windows only
+    and this module is imported (not run) on Linux CI."""
+    return ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
 
 
 class HookThread:
@@ -191,9 +194,10 @@ class HookThread:
     def _run(self) -> None:
         user32 = ctypes.WinDLL("user32", use_last_error=True)
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        hookproc = _hookproc_type()
         user32.SetWindowsHookExW.argtypes = (
             ctypes.c_int,
-            _HOOKPROC,
+            hookproc,
             wintypes.HINSTANCE,
             wintypes.DWORD,
         )
@@ -228,7 +232,7 @@ class HookThread:
                     ledger.seen(kind=kind, entered_ns=entered, body_ns=body)
                 return int(user32.CallNextHookEx(None, code, wparam, lparam))
 
-            return _HOOKPROC(proc)
+            return hookproc(proc)
 
         hooks: list[Any] = []
         try:
