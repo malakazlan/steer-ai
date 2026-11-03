@@ -1,5 +1,7 @@
 """UIA cached snapshot: one cross-process round trip, timed, with timeouts set."""
 
+import ctypes
+
 import pytest
 
 from steerai.probes.uia_snapshot import Snapshot, UiaClient
@@ -103,7 +105,9 @@ def test_runtime_id_at_a_window_centre_is_an_element_of_that_window(client: UiaC
 def test_runtime_id_at_a_point_outside_every_monitor_is_the_desktop_root(
     client: UiaClient,
 ) -> None:
-    # Measured 2026-11-04 (Win10 22H2): ElementFromPoint never answers "nothing"; off every
-    # monitor it returns the desktop root, whose RuntimeId is the fixed pair (42, 0x10010). The
-    # covered check compares against the target subtree, so the root can never pass it.
-    assert client.runtime_id_at(-100_000, -100_000) == (42, 0x10010)
+    # Measured 2026-11-04 (Win10 22H2 and the windows-latest runner): ElementFromPoint never
+    # answers "nothing"; off every monitor it returns the desktop root, whose RuntimeId is
+    # (42, <desktop window handle>): 0x10010 here, 0x1000C on the runner. The covered check
+    # compares against the target subtree, so the root can never pass it.
+    desktop = int(ctypes.windll.user32.GetDesktopWindow())
+    assert client.runtime_id_at(-100_000, -100_000) == (42, desktop)

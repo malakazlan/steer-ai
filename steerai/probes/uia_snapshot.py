@@ -156,7 +156,8 @@ class UiaClient:
 
     def runtime_id_at(self, x: int, y: int) -> tuple[int, ...]:
         """RuntimeId of the UIA element under a screen pixel (`ElementFromPoint`). Off every
-        monitor UIA answers the desktop root (measured: RuntimeId (42, 0x10010)), never nothing.
+        monitor UIA answers the desktop root (measured: RuntimeId (42, <desktop hwnd>)), never
+        nothing.
         Hit testing through UIA sees in-window covering (popups, overlays) that the Win32
         root-window check cannot."""
         try:
