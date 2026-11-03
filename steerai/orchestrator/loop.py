@@ -68,6 +68,11 @@ REUSE_FRESHNESS_S = 5.0
 """How old a decided after snapshot may be to serve as the next R0/R1 before. Unmeasured; well
 inside the executors' 10 s admission cap."""
 SCREEN_GUARD_THRESHOLD = 0.9
+IDLE_S = 2.0
+"""A step starts only after the person has been idle this long (5.1 [v1.4]; unmeasured)."""
+MAX_WAIT_S = 60.0
+"""Continuous input beyond this pauses the task as a takeover (unmeasured)."""
+WAIT_POLL_S = 0.1
 STOP_CODES: frozenset[ErrorCode] = frozenset(
     {
         ErrorCode.APP_CRASHED,
@@ -82,6 +87,19 @@ act on any more (RN-14); the ledger record stays open, so a resume confirms."""
 SCREEN_GUARD_STRIKES = 3
 DEFAULT_MAX_STEPS = 20
 _DIFF_PREDICATES = (Appeared, Disappeared, CountDelta, WindowGone)
+
+
+class Monitor(Protocol):
+    """The takeover monitor as the loop sees it (5.1 [v1.4])."""
+
+    def last_user_input(self) -> float: ...
+    def kill_requested(self) -> bool: ...
+    def healthy(self) -> bool: ...
+    def detail(self) -> str: ...
+    def maintain(self) -> None: ...
+    def counts(self) -> dict[str, int]: ...
+    def mark_ask_open(self) -> None: ...
+    def mark_ask_closed(self) -> None: ...
 
 
 class Observer(Protocol):
@@ -121,6 +139,20 @@ class _StepFailureError(Exception):
         self.detail = detail
 
 
+class _KilledError(_StepFailureError):
+    """The person pressed the kill switch: the step is blocked by them (TK-09/23/24)."""
+
+    def __init__(self) -> None:
+        super().__init__(ErrorCode.GATE_BLOCKED, "killed")
+
+
+class _TakeoverError(_StepFailureError):
+    """The person kept using the machine past the wait: the task pauses (TK-30/48)."""
+
+    def __init__(self) -> None:
+        super().__init__(ErrorCode.GATE_PENDING_USER, "takeover")
+
+
 @dataclass
 class _Stage:
     """Latency accounting by stage (OR-39): policy time apart from the user's wait."""
@@ -154,8 +186,12 @@ class Session:
         sleep: Callable[[float], None] = time.sleep,
         verify_deadline_s: float = 3.0,
         max_steps: int = DEFAULT_MAX_STEPS,
+        monitor: Monitor | None = None,
     ) -> None:
         self.task_id = task_id
+        self._monitor = monitor
+        self._counts_at_step: dict[str, int] = {}
+        self._secure_step = False
         self.hwnd = hwnd
         self.max_steps = max_steps
         self._observer = observer
@@ -173,10 +209,11 @@ class Session:
         self._last_pair: tuple[Snapshot, Snapshot] | None = None
         self._windows_at_step: list[WindowLike] | None = None
         self._scrolled: str | None = None
+        self._act_evidence: dict[str, Any] = {}
 
     # ---- one step ----------------------------------------------------------------------------
 
-    def run_step(self, step: Step) -> StepResult:  # noqa: PLR0911 - one return per exit
+    def run_step(self, step: Step) -> StepResult:
         stage = _Stage(self._monotonic)
         risk = effective_risk(step)
         key = self._ledger.key_for(step)
@@ -185,37 +222,31 @@ class Session:
         dispatched: ActionResult | None = None
         windows_before = list(self._windows()) if self._windows else None
         self._begin_step(windows_before)
+        recorded = False
         try:
+            self._boundary(evidence)
             before = stage.measure("observe", lambda: self._before(risk, evidence))
             element_id = stage.measure("decide", lambda: self._resolve(step, before))
+            self._secure_step = before.element(element_id).secure
             previous = self._admission(step, key, risk, before)
             if previous == "done":
                 return self._done_already(step, stage, evidence)
             gate_result = stage.measure(
-                "gate",
-                lambda: self._gate.decide(
-                    step,
-                    action_key=key,
-                    expect=step.expect,
-                    target_pid=before.pid,
-                    previous_attempt=previous,
-                    target_id=element_id,
-                    composer_id=self._composer(step, before),
-                ),
+                "gate", lambda: self._decide(step, key, before, previous, element_id)
             )
             gate_stage = gate_result.outcome
             if gate_result.outcome in ("block", "pending"):
                 return self._gate_stopped(step, gate_result, stage, evidence)
             decision, expect = self._admitted(key, previous, gate_result)
-            if gate_result.outcome == "confirm":
+            waited = self._boundary(evidence)
+            if gate_result.outcome == "confirm" or waited:
+                # the approved thing must be the executed thing (OR-31); a wait that ended after
+                # the observe restarts the step from observe (TK-03)
                 before, element_id = self._after_ask(step, before, stage, evidence)
-            before_of_record = before
-            if risk in ("R2", "R3"):
-                try:
-                    before_of_record = self._ledger.before_of_record(step, before)
-                    self._ledger.write_ahead(step, before_of_record, decision)
-                except LedgerError as exc:
-                    raise _StepFailureError(ErrorCode.GATE_BLOCKED, "wal_unavailable") from exc
+                if waited:
+                    evidence["restarted"] = True
+            before_of_record, recorded = self._record(step, risk, before, decision)
+            self._act_evidence = evidence
             action, before, retries = stage.measure(
                 "act", lambda: self._act(step, risk, before, element_id)
             )
@@ -224,69 +255,32 @@ class Session:
             evidence["delivery"] = action.delivery.value
             if self._scrolled is not None:
                 evidence["scrolled"] = self._scrolled
-            if action.code in (ErrorCode.GATE_BLOCKED, ErrorCode.GATE_PENDING_USER):
-                self._close(step, risk, action.delivery.value)
-                return self._finish(
-                    step,
-                    stage,
-                    evidence,
-                    gate=gate_result.outcome,
-                    action=action,
-                    verify_code=None,
-                    label_kind=None,
-                    code=action.code,
-                )
-            if action.delivery is Delivery.NOT_DELIVERED and not action.steps:
-                self._close(step, risk, "not_delivered")
-                return self._finish(
-                    step,
-                    stage,
-                    evidence,
-                    gate=gate_result.outcome,
-                    action=action,
-                    verify_code=None,
-                    label_kind=None,
-                    code=action.code,
-                )
-            verdict, after = stage.measure(
-                "verify", lambda: self._verify(expect, before_of_record, windows_before)
+            undelivered = self._undelivered(
+                step, stage, evidence, gate=gate_result.outcome, action=action, risk=risk
             )
-            label = label_of_record(
-                verdict, predicate=expect, action_key=key, before=before_of_record, after=after
-            )
-            self._remember(before_of_record, after)
-            outcome = self._outcome(verdict.holds, action, verdict.evidence.get("reason"))
-            try:
-                self._close(step, risk, outcome)
-            except LedgerError:
-                # the action ran; the attempt stays open in the ledger (unknown next time)
-                evidence["detail"] = "wal_unavailable"
-                return self._finish(
-                    step,
-                    stage,
-                    evidence,
-                    gate=gate_result.outcome,
-                    action=action,
-                    verify_code=verdict.code,
-                    label_kind=label.kind if label else None,
-                    code=ErrorCode.GATE_BLOCKED,
-                )
-            evidence.update({k: v for k, v in verdict.evidence.items() if k != "level"})
-            evidence["level"] = verdict.level
-            ok = verdict.holds and action.delivery is not Delivery.NOT_DELIVERED
-            return self._finish(
+            if undelivered is not None:
+                return undelivered
+            return self._verified(
                 step,
                 stage,
                 evidence,
-                gate=gate_result.outcome,
+                key=key,
+                expect=expect,
+                before_of_record=before_of_record,
+                windows_before=windows_before,
                 action=action,
-                verify_code=verdict.code,
-                label_kind=label.kind if label else None,
-                ok=ok,
-                code=None if ok else (verdict.code or action.code),
+                risk=risk,
+                gate=gate_result.outcome,
             )
         except _StepFailureError as failure:
-            # before the gate ran the token is `unreached`; after, the gate's outcome
+            # before the gate ran the token is `unreached`; after, the gate's outcome; a kill is
+            # the person's block, and a kill after the record (nothing sent) releases the key
+            if isinstance(failure, _KilledError):
+                gate_stage = "block"
+                if recorded and dispatched is None:
+                    self._close(step, risk, "not_delivered")
+            elif isinstance(failure, _TakeoverError):
+                gate_stage = "pending"
             return self._failed(
                 step, stage, evidence, gate=gate_stage, dispatched=None, failure=failure
             )
@@ -298,6 +292,150 @@ class Session:
             )
 
     # ---- stages ---------------------------------------------------------------------------------
+
+    def _verified(  # noqa: PLR0913 - the step's state after the dispatch
+        self,
+        step: Step,
+        stage: _Stage,
+        evidence: dict[str, Any],
+        *,
+        key: str,
+        expect: Predicate,
+        before_of_record: Snapshot,
+        windows_before: list[WindowLike] | None,
+        action: ActionResult,
+        risk: Risk,
+        gate: GateToken,
+    ) -> StepResult:
+        """T1 against the before of record, the label of record, the ledger outcome."""
+        verdict, after = stage.measure(
+            "verify", lambda: self._verify(expect, before_of_record, windows_before)
+        )
+        label = label_of_record(
+            verdict, predicate=expect, action_key=key, before=before_of_record, after=after
+        )
+        self._remember(before_of_record, after)
+        outcome = self._outcome(verdict.holds, action, verdict.evidence.get("reason"))
+        try:
+            self._close(step, risk, outcome)
+        except LedgerError:
+            # the action ran; the attempt stays open in the ledger (unknown next time)
+            evidence["detail"] = "wal_unavailable"
+            return self._finish(
+                step,
+                stage,
+                evidence,
+                gate=gate,
+                action=action,
+                verify_code=verdict.code,
+                label_kind=label.kind if label else None,
+                code=ErrorCode.GATE_BLOCKED,
+            )
+        evidence.update({k: v for k, v in verdict.evidence.items() if k != "level"})
+        evidence["level"] = verdict.level
+        ok = verdict.holds and action.delivery is not Delivery.NOT_DELIVERED
+        return self._finish(
+            step,
+            stage,
+            evidence,
+            gate=gate,
+            action=action,
+            verify_code=verdict.code,
+            label_kind=label.kind if label else None,
+            ok=ok,
+            code=None if ok else (verdict.code or action.code),
+        )
+
+    def _record(
+        self, step: Step, risk: Risk, before: Snapshot, decision: GateDecision
+    ) -> tuple[Snapshot, bool]:
+        """The write-ahead record before any R2/R3 dispatch; (before of record, written)."""
+        if risk not in ("R2", "R3"):
+            return before, False
+        try:
+            before_of_record = self._ledger.before_of_record(step, before)
+            self._ledger.write_ahead(step, before_of_record, decision)
+        except LedgerError as exc:
+            raise _StepFailureError(ErrorCode.GATE_BLOCKED, "wal_unavailable") from exc
+        return before_of_record, True
+
+    def _undelivered(  # noqa: PLR0913 - the step's state after the dispatch
+        self,
+        step: Step,
+        stage: _Stage,
+        evidence: dict[str, Any],
+        *,
+        gate: GateToken,
+        action: ActionResult,
+        risk: Risk,
+    ) -> StepResult | None:
+        """A dispatch the executor refused (gate codes are final) or never issued: the result,
+        with the ledger closed; None when the action went out and must be verified."""
+        if action.code in (ErrorCode.GATE_BLOCKED, ErrorCode.GATE_PENDING_USER):
+            if "detail" in action.evidence:
+                evidence["detail"] = action.evidence["detail"]
+            self._close(step, risk, action.delivery.value)
+        elif action.delivery is Delivery.NOT_DELIVERED and not action.steps:
+            self._close(step, risk, "not_delivered")
+        else:
+            return None
+        return self._finish(
+            step,
+            stage,
+            evidence,
+            gate=gate,
+            action=action,
+            verify_code=None,
+            label_kind=None,
+            code=action.code,
+        )
+
+    def _decide(
+        self, step: Step, key: str, before: Snapshot, previous: str | None, element_id: int
+    ) -> GateResult:
+        """The gate's decision; while it may be asking, the person's input is their answer."""
+        if self._monitor is not None:
+            self._monitor.mark_ask_open()
+        try:
+            return self._gate.decide(
+                step,
+                action_key=key,
+                expect=step.expect,
+                target_pid=before.pid,
+                previous_attempt=previous,
+                target_id=element_id,
+                composer_id=self._composer(step, before),
+            )
+        finally:
+            if self._monitor is not None:
+                self._monitor.mark_ask_closed()
+
+    def _boundary(self, evidence: dict[str, Any]) -> bool:
+        """Before anything that acts: the kill switch, the monitor's health, and the person's
+        idle time (5.1 [v1.4], TK-22/29/30/31). Returns whether it waited."""
+        monitor = self._monitor
+        if monitor is None:
+            return False
+        started = self._monotonic()
+        waited = False
+        while True:
+            monitor.maintain()
+            if monitor.kill_requested():
+                raise _KilledError
+            if not monitor.healthy():
+                raise _StepFailureError(ErrorCode.GATE_BLOCKED, monitor.detail())
+            now = self._monotonic()
+            if now - monitor.last_user_input() >= IDLE_S:
+                break
+            if now - started >= MAX_WAIT_S:
+                raise _TakeoverError
+            waited = True
+            self._sleep(WAIT_POLL_S)
+        if waited:
+            evidence["waited_s"] = round(
+                evidence.get("waited_s", 0.0) + (self._monotonic() - started), 3
+            )
+        return waited
 
     def _after_ask(
         self, step: Step, before: Snapshot, stage: _Stage, evidence: dict[str, Any]
@@ -339,6 +477,22 @@ class Session:
     def _begin_step(self, windows_before: list[WindowLike] | None) -> None:
         self._windows_at_step = windows_before
         self._scrolled = None
+        self._secure_step = False
+        self._counts_at_step = self._monitor.counts() if self._monitor is not None else {}
+
+    def _input_evidence(self, evidence: dict[str, Any]) -> None:
+        """Input during the step as counts of the person's events only (TK-20/25/37)."""
+        if self._monitor is None:
+            return
+        now = self._monitor.counts()
+        delta = {
+            kind: now.get(kind, 0) - self._counts_at_step.get(kind, 0)
+            for kind in ("user", "injected_other")
+        }
+        if any(delta.values()):
+            evidence["user_input_during_step"] = True
+            if not self._secure_step:
+                evidence["input_counts"] = delta
 
     def _observe_fresh(self, evidence: dict[str, Any]) -> Snapshot:
         snapshot = self._observer.observe(self.hwnd)
@@ -353,7 +507,10 @@ class Session:
         if risk in ("R0", "R1") and self._last_after is not None:
             snapshot, stamp = self._last_after
             same_window = snapshot.hwnd == self.hwnd
-            if same_window and snapshot.stable and self._monotonic() - stamp <= REUSE_FRESHNESS_S:
+            fresh = self._monotonic() - stamp <= REUSE_FRESHNESS_S
+            if self._monitor is not None and self._monitor.last_user_input() >= stamp:
+                evidence["reuse_skipped"] = "user_input"  # the person touched the screen (TK-16)
+            elif same_window and snapshot.stable and fresh:
                 evidence["observe_reused"] = True
                 return snapshot
         return self._observe_fresh(evidence)
@@ -463,6 +620,9 @@ class Session:
                     self._ledger.mark(step, "acting")
                 except LedgerError as exc:
                     raise _StepFailureError(ErrorCode.GATE_BLOCKED, "wal_unavailable") from exc
+            if self._boundary(self._act_evidence):
+                before = self._observer.observe(self.hwnd, stable_window=1)
+                element_id = self._resolve(step, before)
             action = self._build(path, verb, element_id, step.text)
             result = executor.execute(action, before)
             if result.code in (ErrorCode.GATE_BLOCKED, ErrorCode.GATE_PENDING_USER):
@@ -579,6 +739,7 @@ class Session:
         ok: bool = False,
         code: ErrorCode | None = None,
     ) -> StepResult:
+        self._input_evidence(evidence)
         result = StepResult(
             step_id=step.id,
             ok=ok,
@@ -662,10 +823,10 @@ class Session:
             result = self.run_step(step)
             results.append(result)
             detail = str(result.evidence.get("detail", result.gate))
-            if result.gate == "block":
+            if result.gate == "block" or detail == "killed":
                 return "blocked", ErrorCode.GATE_BLOCKED, detail
             if result.gate == "pending":
-                return "paused", ErrorCode.GATE_PENDING_USER, "unanswered"
+                return "paused", ErrorCode.GATE_PENDING_USER, detail
             if not result.ok and (result.action is None or result.code in STOP_CODES):
                 # nothing was dispatched (unreached, or a refusal after the gate ran), or
                 # the window is not there to act on any more
