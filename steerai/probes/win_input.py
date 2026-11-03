@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ctypes
 import sys
+from collections.abc import Sequence
 from ctypes import wintypes
 
 STEER_EXTRA_INFO = 0x5354_4545  # "STEE"
@@ -54,6 +55,7 @@ class INPUT(ctypes.Structure):
 
 _INPUT_KEYBOARD = 1
 _KEYEVENTF_KEYUP = 0x0002
+_KEYEVENTF_UNICODE = 0x0004
 VK_MENU = 0x12  # ALT
 
 
@@ -153,6 +155,21 @@ def click_at(x: int, y: int) -> None:
         build_mouse_input(dx=ax, dy=ay, flags=base | _MOUSEEVENTF_LEFTDOWN),
         build_mouse_input(dx=ax, dy=ay, flags=base | _MOUSEEVENTF_LEFTUP),
     )
+
+
+def build_keyboard_unicode(unit: int, *, keyup: bool) -> INPUT:
+    """A KEYEVENTF_UNICODE event for one UTF-16 code unit (layout independent)."""
+    record = INPUT()
+    record.type = _INPUT_KEYBOARD
+    flags = _KEYEVENTF_UNICODE | (_KEYEVENTF_KEYUP if keyup else 0)
+    record.union.ki = KEYBDINPUT(0, unit, flags, 0, STEER_EXTRA_INFO)
+    return record
+
+
+def send_inputs(records: Sequence[INPUT]) -> None:
+    """Inject a batch of tagged events; raises when Windows accepted fewer than sent."""
+    if records:
+        _send(_user32(), *records)
 
 
 def key_tap(vk: int) -> None:
