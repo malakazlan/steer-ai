@@ -407,3 +407,15 @@ def test_the_window_is_bound_to_the_task_id_by_pid_and_title_digest(tmp_path: Pa
     state = next(tmp_path.rglob("state.ledger")).read_bytes()
     assert b"Sara" not in state
     assert "Sara Ali - Chat".encode("utf-16-le") not in state
+
+
+def test_a_superseded_instances_close_leaves_the_successors_lock(tmp_path: Path) -> None:
+    first = Ledger(tmp_path, task_id="t", started_at=1.0)
+    lock = next(tmp_path.iterdir()) / "lock"
+    second = Ledger(tmp_path, task_id="t", started_at=1.0)  # same process: takes the lock over
+    token = json.loads(lock.read_text(encoding="utf-8"))["token"]
+    first.close()
+    assert lock.exists(), "the first instance's close never removes the second's lock"
+    assert json.loads(lock.read_text(encoding="utf-8"))["token"] == token
+    second.close()
+    assert not lock.exists()

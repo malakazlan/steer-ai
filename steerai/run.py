@@ -460,6 +460,7 @@ def _run_bound(  # noqa: PLR0913, PLR0911 - the run's state, one return per exit
     stderr: TextIO,
 ) -> int:
     try:
+        trace = _open_trace(options)  # first: a bad path binds nothing and taps nothing
         ledger.bind_plan(hashlib.sha256(data).hexdigest(), allow_change=options.allow_plan_change)
         window = _pick_window(options, deps)
         ledger.bind_window(
@@ -467,7 +468,6 @@ def _run_bound(  # noqa: PLR0913, PLR0911 - the run's state, one return per exit
         )
         out.note(f"task {options.task_id}: window 0x{window.hwnd:x} pid {window.pid}")
         out.resume_hint()
-        trace = _open_trace(options)  # before the foreground: a bad path has no side effect
         try:
             deps.acquire_foreground(window.hwnd)
         except OSError as exc:
@@ -501,7 +501,8 @@ def _run_bound(  # noqa: PLR0913, PLR0911 - the run's state, one return per exit
     except KeyboardInterrupt:
         return _interrupted(out)
     except Exception:  # noqa: BLE001 - the last line of defence maps to one exit code
-        traceback.print_exc(file=stderr)
+        for line in traceback.format_exc().splitlines():
+            out.note(line)  # escaped: exception text can quote titles or plan text
         out.emit({"status": "error", "code": None, "detail": "internal_error"})
         return EXIT_ERROR
     if result.status != "done":
