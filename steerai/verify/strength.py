@@ -118,6 +118,8 @@ def _need_scope(value: Within | None, name: str, verb: str) -> Within:
 
 def template_for(verb: str, params: Params) -> Predicate:
     """The verb's fixed postcondition, filled from the parameters by code."""
+    if verb == "focus":
+        return Focused(target_id=_need_int(params.target_id, "target_id", verb))
     if verb == "type":
         return ValueEquals(
             target_id=_need_int(params.target_id, "target_id", verb),
@@ -157,7 +159,8 @@ def template_for(verb: str, params: Params) -> Predicate:
 
 def strength(predicate: Predicate, tier: Tier, params: Params) -> Strength:
     if isinstance(predicate, Focused):
-        return Strength(False, "focused_alone")
+        # The honest effect of an R0 focus click; never a postcondition for anything that acts.
+        return Strength(tier == "R0", None if tier == "R0" else "focused_alone")
     if tier in ("R0", "R1"):
         return Strength(True)
     return _content_strength(predicate, params)
