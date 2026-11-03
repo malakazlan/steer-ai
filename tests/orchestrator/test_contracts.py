@@ -179,3 +179,9 @@ def test_step_result_is_redacted_and_carries_stage_latencies() -> None:
             latency_ms={},
             evidence={},
         )
+
+
+def test_step_path_override_is_validated() -> None:
+    assert _step(verb="click", text=None, path="physical").path == "physical"
+    with pytest.raises(ValueError, match="path"):
+        _step(verb="click", text=None, path="teleport")

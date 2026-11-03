@@ -95,8 +95,9 @@ def test_templates_refuse_missing_parameters() -> None:
 # ---- strength ----------------------------------------------------------------------------------
 
 
-def test_focused_alone_is_always_weak() -> None:
-    for tier in ("R0", "R1", "R2", "R3"):
+def test_focused_alone_is_weak_above_r0() -> None:
+    assert strength(Focused(target_id=1), "R0", Params(target_id=1)).ok is True
+    for tier in ("R1", "R2", "R3"):
         assert strength(Focused(target_id=1), tier, Params(target_id=1)).ok is False
 
 

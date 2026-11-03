@@ -18,7 +18,7 @@ from steerai.orchestrator.gate import (
     GateResult,
     effective_risk,
 )
-from steerai.verify.predicates import Appeared, Focused, Within
+from steerai.verify.predicates import Appeared, Focused, ValueEquals, Within
 from steerai.verify.strength import Params
 
 CONVERSATION = Within(landmark="Conversation")
@@ -229,3 +229,21 @@ def test_only_an_exact_yes_counts(answer: str) -> None:
         _step(verb="send", name="Send", risk="R2"), action_key="k", expect=STRONG, target_pid=777
     )
     assert result.outcome == "pending"
+
+
+def test_type_template_takes_the_resolved_element_id() -> None:
+    gate = _gate()
+    step = Step(
+        id="s2",
+        subgoal="g1",
+        verb="type",
+        target=Target(role="Edit", name="Message"),
+        text="hello there",
+        risk="R1",
+    )
+    blocked = gate.decide(step, action_key="k", expect=None, target_pid=777)
+    assert blocked.outcome == "block"
+    assert blocked.evidence["detail"] == "no_predicate"
+    approved = gate.decide(step, action_key="k", expect=None, target_pid=777, target_id=12)
+    assert approved.outcome == "approve"
+    assert approved.expect == ValueEquals(target_id=12, text="hello there")

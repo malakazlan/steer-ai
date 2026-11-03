@@ -64,7 +64,7 @@ _DIFF_PREDICATES = (Appeared, Disappeared, CountDelta, WindowGone)
 
 
 class Observer(Protocol):
-    def observe(self, hwnd: int, **kwargs: Any) -> Snapshot: ...
+    def observe(self, hwnd: int, *, stable_window: int = ..., cap_s: float = ...) -> Snapshot: ...
 
 
 class ExecutorLike(Protocol):
@@ -172,6 +172,7 @@ class Session:
                     expect=step.expect,
                     target_pid=before.pid,
                     previous_attempt=previous,
+                    target_id=element_id,
                 ),
             )
             if gate_result.outcome in ("block", "pending"):
@@ -344,6 +345,8 @@ class Session:
         self, step: Step, risk: Risk, before: Snapshot, element_id: int
     ) -> tuple[ActionResult, Snapshot, int]:
         path, verb = executor_verb(step.verb)
+        if step.path is not None:
+            path = step.path
         executor = self._physical if path == "physical" else self._semantic
         retries = 0
         scrolled = False

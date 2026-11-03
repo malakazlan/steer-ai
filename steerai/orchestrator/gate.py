@@ -105,13 +105,15 @@ def _block(detail: str, risk: Risk, **extra: Any) -> GateResult:
     )
 
 
-def params_for(step: Step) -> Params:
-    """Strength parameters filled by code from the step, never from model text (5.4 [v0.5])."""
+def params_for(step: Step, target_id: int | None = None) -> Params:
+    """Strength parameters filled by code from the step, never from model text (5.4 [v0.5]);
+    `target_id` is the element the loop resolved for a role-and-name target."""
     raw = step.params
     composer = raw.get("composer_id")
     scope = raw.get("scope")
+    resolved = step.target.element_id if step.target is not None else None
     return Params(
-        target_id=step.target.element_id if step.target is not None else None,
+        target_id=resolved if resolved is not None else target_id,
         target_role=step.target.role if step.target is not None else None,
         target_name=step.target.name if step.target is not None else None,
         text=step.text if step.text is not None else raw.get("text"),
@@ -140,7 +142,7 @@ class Gate:
         except ValueError:
             return None
 
-    def decide(
+    def decide(  # noqa: PLR0913 - keyword-only context from the loop, each part optional
         self,
         step: Step,
         *,
@@ -148,11 +150,12 @@ class Gate:
         expect: Predicate | None,
         target_pid: int,
         previous_attempt: str | None = None,
+        target_id: int | None = None,
     ) -> GateResult:
         risk = effective_risk(step)
         if target_pid == self._own_pid:
             return _block("self_target", risk)
-        params = params_for(step)
+        params = params_for(step, target_id)
         predicate = self._predicate(step, expect, risk, params)
         if isinstance(predicate, GateResult):
             return predicate

@@ -86,6 +86,8 @@ class Step:
     expect: Predicate | None = None
     preapproved_by_request: bool = False
     text_provenance: TextProvenance = "verbatim"
+    path: Path | None = None
+    """Overrides the verb table's executor path (a physical click to focus a field)."""
 
     def __post_init__(self) -> None:
         if self.verb not in VERBS:
@@ -98,6 +100,8 @@ class Step:
             raise ValueError(f"{self.verb} needs text")
         if self.verb not in _TEXT_VERBS and self.text is not None:
             raise ValueError(f"{self.verb} takes no text")
+        if self.path is not None and self.path not in ("semantic", "physical"):
+            raise ValueError("path must be semantic or physical")
         if self.preapproved_by_request and self.text_provenance != "verbatim":
             raise ValueError("only verbatim request text can be preapproved by the request")
         floor = _RISK_FLOOR.get(self.verb)
