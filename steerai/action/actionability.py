@@ -1,9 +1,11 @@
-"""Actionability before physical input (design 5.9 [v0.7]).
+"""Actionability before physical input (design 5.9 [v0.7], [v1.0]).
 
 A target must be visible, have area, be enabled, be stable (two bounding-rect samples at least
-34 ms apart within half a pixel) and receive events (the window under its centre belongs to the
-target process). Elevation is decided by comparing process integrity levels, never by SendInput's
-return value; an unreadable target level means best effort, judged by the readback afterwards.
+34 ms apart within half a pixel), and receive events: the top-level window under its live centre
+must be the target's own window (a pid comparison misses same-process modals and dropdowns).
+Secure (password) fields are refused unless the gate approved credential entry. Elevation is
+decided by comparing process integrity levels, never by SendInput's return value; an unreadable
+target level means higher than ours (measured, probe uipi-integrity-2026-11-03) and blocks input.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ class Actionability:
 
 
 def rects_stable(a: Box, b: Box, *, tolerance: float = STABLE_TOLERANCE_PX) -> bool:
+    """Integer boxes within half a pixel are equal boxes; the tolerance exists for float sources."""
     return all(abs(x - y) <= tolerance for x, y in zip(a, b, strict=True))
 
 
@@ -38,27 +41,43 @@ def centre_of(box: Box) -> tuple[int, int]:
 
 
 def check_actionable(
-    element: Element, *, owner_pid_at_centre: int, target_pid: int
+    element: Element,
+    *,
+    root_hwnd_at_centre: int,
+    target_root_hwnd: int,
+    allow_secure: bool = False,
+    live_box: Box | None = None,
 ) -> Actionability:
-    """Pure part of the check: geometry, state and the hit-test result the caller measured."""
+    """Pure part of the check, over the live rectangle (default: the snapshot box) and the
+    hit test the caller measured."""
+    live_box = element.box if live_box is None else live_box
     if element.offscreen:
         raise SteerError(ErrorCode.ELEMENT_NOT_ACTIONABLE, f"element {element.id} is off-screen")
-    if not element.has_area:
+    if live_box[2] <= live_box[0] or live_box[3] <= live_box[1]:
         raise SteerError(ErrorCode.ELEMENT_NOT_ACTIONABLE, f"element {element.id} has no area")
     if not element.enabled:
         raise SteerError(ErrorCode.ELEMENT_NOT_ACTIONABLE, f"element {element.id} is disabled")
-    if owner_pid_at_centre != target_pid:
+    if element.secure and not allow_secure:
         raise SteerError(
             ErrorCode.ELEMENT_NOT_ACTIONABLE,
-            f"element {element.id} is covered: pid {owner_pid_at_centre} owns its centre",
+            f"element {element.id} is a secure field; credential entry needs gate approval",
         )
-    return Actionability(centre=centre_of(element.box), box=element.box)
+    if target_root_hwnd == 0 or root_hwnd_at_centre != target_root_hwnd:
+        raise SteerError(
+            ErrorCode.ELEMENT_NOT_ACTIONABLE,
+            f"element {element.id} is covered: window {root_hwnd_at_centre:#x} owns its centre",
+        )
+    return Actionability(centre=centre_of(live_box), box=live_box)
 
 
 def integrity_allows_input(*, caller_level: int, target_level: int | None) -> bool:
-    """UIPI: input from a lower integrity process into a higher one is silently dropped."""
+    """UIPI: input from a lower integrity process into a higher one is silently dropped.
+
+    An unreadable target level counts as higher (every system or elevated process was unreadable
+    from medium integrity in the probe), so it blocks.
+    """
     if target_level is None:
-        return True
+        return False
     return caller_level >= target_level
 
 
@@ -75,7 +94,8 @@ def sample_stable_rect(read_rect: Callable[[], Box], *, gap_s: float = STABLE_GA
 
 
 def process_integrity_level(pid: int) -> int | None:
-    """Mandatory integrity level of a process (0x1000 low, 0x2000 medium, 0x3000 high), or None."""
+    """Mandatory integrity level of a process (0x1000 low, 0x2000 medium, 0x3000 high), or None
+    when the token cannot be read (access denied, or the process is gone)."""
     if sys.platform != "win32":
         raise OSError("integrity levels require Windows")
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)

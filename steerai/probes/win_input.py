@@ -66,12 +66,36 @@ def build_mouse_input(*, dx: int, dy: int, flags: int) -> INPUT:
     return record
 
 
-def build_keyboard_input(*, vk: int, keyup: bool) -> INPUT:
+_KEYEVENTF_EXTENDEDKEY = 0x0001
+
+
+def build_keyboard_input(*, vk: int, keyup: bool, scan: int = 0, extended: bool = False) -> INPUT:
     record = INPUT()
     record.type = _INPUT_KEYBOARD
-    flags = _KEYEVENTF_KEYUP if keyup else 0
-    record.union.ki = KEYBDINPUT(vk, 0, flags, 0, STEER_EXTRA_INFO)
+    flags = (_KEYEVENTF_KEYUP if keyup else 0) | (_KEYEVENTF_EXTENDEDKEY if extended else 0)
+    record.union.ki = KEYBDINPUT(vk, scan, flags, 0, STEER_EXTRA_INFO)
     return record
+
+
+def scan_code_for(vk: int) -> int:
+    """Hardware scan code for a virtual key (MapVirtualKeyW), 0 when unavailable."""
+    if sys.platform != "win32":
+        return 0
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.MapVirtualKeyW.argtypes = (wintypes.UINT, wintypes.UINT)
+    user32.MapVirtualKeyW.restype = wintypes.UINT
+    return int(user32.MapVirtualKeyW(vk, 0))
+
+
+_MODIFIER_VKS = {"ctrl": 0x11, "shift": 0x10, "alt": 0x12, "win_left": 0x5B, "win_right": 0x5C}
+
+
+def physical_modifiers_down() -> list[str]:
+    """Modifier keys the user is physically holding right now (GetAsyncKeyState high bit)."""
+    user32 = _user32()
+    user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
+    user32.GetAsyncKeyState.restype = ctypes.c_short
+    return [name for name, vk in _MODIFIER_VKS.items() if user32.GetAsyncKeyState(vk) & 0x8000]
 
 
 def ensure_per_monitor_v2() -> bool:
