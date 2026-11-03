@@ -12,7 +12,7 @@ from steerai.orchestrator.contracts import Plan, Step, Subgoal, Target
 from steerai.orchestrator.ledger import LedgerError
 from steerai.verify.predicates import All, Appeared, CountDelta, TitleMatches, WindowExists, Within
 from tests.orchestrator.fakes import FakeConfirmer
-from tests.orchestrator.test_loop import HELLO, Harness, _plan, _send, _type
+from tests.orchestrator.test_loop import HELLO, Harness, _click, _plan, _send, _type
 
 CONVERSATION = Within(landmark="Conversation")
 
@@ -185,3 +185,18 @@ def test_done_already_in_the_middle_of_a_plan_keeps_going() -> None:
     assert result.status == "done"
     assert result.ticked == {"g1", "g2"}
     assert isinstance(h.confirmer, FakeConfirmer)
+
+
+# ---- final pass: a post-gate refusal that dispatched nothing stops the task ----------------
+
+
+def test_a_post_gate_failure_that_dispatched_nothing_stops_the_task() -> None:
+    h = Harness()
+    h.ledger.fail_writes = True
+    task = h.session.run_task(_plan(_type(), _send(), _click(step_id="s9")))
+    assert task.status == "stopped"
+    assert task.code is ErrorCode.GATE_BLOCKED
+    assert task.evidence["detail"] == "wal_unavailable"
+    assert [r.step_id for r in task.results] == ["s2", "s3"], "the step after was never run"
+    assert task.results[1].gate == "confirm"
+    assert h.world.sent == []

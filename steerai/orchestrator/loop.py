@@ -602,7 +602,8 @@ class Session:
                 return "blocked", ErrorCode.GATE_BLOCKED, detail
             if result.gate == "pending":
                 return "paused", ErrorCode.GATE_PENDING_USER, "unanswered"
-            if result.gate == "unreached":
+            if not result.ok and result.action is None:
+                # nothing was dispatched: unreached, or a refusal after the gate ran
                 return "stopped", result.code or ErrorCode.VERIFY_FAILED, detail
             if result.gate == "done_already":
                 # the earlier verified attempt (or the persisted before) proved the effect
