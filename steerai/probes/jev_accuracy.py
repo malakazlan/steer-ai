@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,8 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+from steerai.chooser_factory import chooser_from_env
+from steerai.claude_choice import DEFAULT_MODEL
 from steerai.jev import JevClient
 from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome
 from steerai.probes.element_list import Element, elements_from_nodes, format_lines, prune
@@ -99,7 +102,7 @@ def parse_args(argv: Sequence[str]) -> ProbeArgs:
 
 
 def run_probe(args: ProbeArgs) -> dict[str, Any]:
-    jev = JevClient.from_env()
+    chooser, decider = chooser_from_env()
     settings = JevClient.settings_from_env()
     cases = load_cases()
     profile_dir = Path(tempfile.mkdtemp(prefix="steer-jev-"))
@@ -119,7 +122,7 @@ def run_probe(args: ProbeArgs) -> dict[str, Any]:
         outcomes: list[Outcome] = []
         for case in cases:
             expected = resolve_expected_id(case, kept)
-            answer = jev.choose_element(intent=case.intent, lines=lines)
+            answer = chooser.choose_element(intent=case.intent, lines=lines)
             outcomes.append(
                 Outcome(
                     intent=case.intent,
@@ -136,8 +139,13 @@ def run_probe(args: ProbeArgs) -> dict[str, Any]:
             chrome.wait(timeout=10)
         shutil.rmtree(profile_dir, ignore_errors=True)
     return {
-        "gateway": settings.base_url or "https://api.typesafe.ai",
-        "model_requested": settings.model,
+        "decider": decider,
+        "gateway": (settings.base_url or "https://api.typesafe.ai")
+        if decider == "jev"
+        else "anthropic",
+        "model_requested": settings.model
+        if decider == "jev"
+        else os.environ.get("STEER_CLAUDE_MODEL") or DEFAULT_MODEL,
         "element_lines": len(lines),
         "summary": summarize(outcomes, gate=args.gate),
         "outcomes": [asdict(o) | {"correct": o.correct} for o in outcomes],
