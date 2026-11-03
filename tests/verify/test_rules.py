@@ -79,8 +79,9 @@ def test_match_strips_format_characters_and_never_treats_patterns_as_regex() -> 
 
 
 def test_appeared_needs_the_match_count_to_rise_by_exactly_the_expected_delta() -> None:
-    # Positional ids: the last slot is "new" but carries the old "ok" text; the count of "ok"
-    # elements did not change.
+    # Positional ids: the last slot is "new" but carries the old "ok" text, and one old element
+    # vanished: the shift guard catches it first (no label). A genuinely new second "ok" with
+    # all old rows surviving is a real effect and passes.
     shifted_rows = [r for r in BASE_ROWS if r[0] not in (BUBBLE_OK[0], BUBBLE_OUT[0])] + [
         (9, "Text", "are we still on for friday?", (42, 31), CONVERSATION[0]),
         (10, "Text", "ok", (42, 34), CONVERSATION[0]),
@@ -91,7 +92,7 @@ def test_appeared_needs_the_match_count_to_rise_by_exactly_the_expected_delta() 
         build(shifted_rows, snapshot_id="after", taken_at=1.0),
     )
     assert verdict.holds is False
-    assert verdict.evidence["reason"] == "count_unchanged"
+    assert verdict.evidence["reason"] == "scope_shifted"
 
 
 def test_two_new_matches_for_one_expected_is_a_duplicate_effect(clock: Any) -> None:
@@ -292,28 +293,19 @@ def test_disappeared_still_present_only_times_out(clock: Any) -> None:
     assert verdict.code is ErrorCode.VERIFY_TIMEOUT
 
 
-def test_value_mismatch_is_failed_only_when_nothing_landed(clock: Any) -> None:
-    unchanged = FakeLive(states={COMPOSER[3]: FakeHandle(value="draft")})
+def test_value_mismatch_is_only_failed_when_the_value_is_empty(clock: Any) -> None:
+    # The before value is not in the snapshot (UIA `Current*` reads the provider now), so a
+    # stable non-empty mismatch is uncertain, never a contradiction (principal re-review B1).
+    stale = FakeLive(states={COMPOSER[3]: FakeHandle(value="draft")})
     verdict = verify(
         ValueEquals(target_id=COMPOSER[0], text="hello"),
         before(),
         after_with(),
         lambda **_: after_with(),
-        live=unchanged,
-    )
-    assert verdict.code is ErrorCode.VERIFY_FAILED
-    assert verdict.evidence["reason"] == "value_unchanged"
-    # A persisted before snapshot has no handles: the before value is unknown, so a stable
-    # mismatch is uncertain, never a contradiction.
-    partial = FakeLive(states={COMPOSER[3]: FakeHandle(value="hel")})
-    verdict = verify(
-        ValueEquals(target_id=COMPOSER[0], text="hello"),
-        replace(before(), handles=[]),
-        after_with(),
-        lambda **_: after_with(),
-        live=partial,
+        live=stale,
     )
     assert verdict.code is ErrorCode.VERIFY_TIMEOUT
+    assert verdict.evidence["reason"] == "value_differs"
 
 
 def test_value_empty_after_typing_is_failed(clock: Any) -> None:

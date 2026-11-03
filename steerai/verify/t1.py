@@ -20,6 +20,7 @@ Outcomes are three-valued: pass, fail, or no label (`label_of_record` returns No
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from collections.abc import Callable, Hashable, Sequence
@@ -56,6 +57,7 @@ above it the scope re-rendered (VF-03). Unmeasured; one is the smallest useful v
 _EPSILON_S = 1e-6
 _TEXT_ROLES: frozenset[str] = frozenset({"Text"})
 _FAILED_TOKENS = ("failed", "retry", "not delivered", "not sent")
+_PENDING_TOKENS = ("sending", "pending", "queued")
 _COUNTER = re.compile(r"^\s*\(\d+\)\s*|\s*\(\d+\)\s*$")
 _UNSET = object()
 NO_LABEL_REASONS: frozenset[str] = frozenset(
@@ -67,6 +69,8 @@ NO_LABEL_REASONS: frozenset[str] = frozenset(
         "observe_failed",
         "evaluate_failed",
         "secure_target",
+        "siblings_changed",
+        "anchor_vanished",
     }
 )
 
@@ -100,6 +104,8 @@ class Verdict:
     state: Hashable | None = None
     """The typed observation behind a contradiction, for settle detection; never recorded.
     None means the predicate can only time out from this observation."""
+    after_id: str | None = None
+    """The snapshot the verdict was decided on (the last poll, not the caller's after)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,9 +139,15 @@ def _evaluate(predicate: Predicate, before: Snapshot, after: Snapshot, ctx: Cont
         raise SteerError(ErrorCode.APP_CRASHED, "a different process owns the window now")
     if not before.stable or not after.stable:
         return Verdict(
-            holds=False, code=None, level=0, polls=0, evidence={"level": 0, "reason": "unstable"}
+            holds=False,
+            code=None,
+            level=0,
+            polls=0,
+            evidence={"level": 0, "reason": "unstable"},
+            after_id=after.id,
         )
-    return _EVALUATORS[type(predicate)](predicate, before, after, ctx)
+    verdict = _EVALUATORS[type(predicate)](predicate, before, after, ctx)
+    return replace(verdict, after_id=after.id)
 
 
 # ---- structural predicates (pure) ---------------------------------------------------------------
@@ -172,6 +184,31 @@ def _container_survived(scope: Scope, source: Snapshot, other: Snapshot) -> bool
     if not container.runtime_id:
         return False
     return any(e.runtime_id == container.runtime_id for e in other.elements)
+
+
+def _translate(before: Snapshot, after: Snapshot, element_id: int | None) -> int | None:
+    """A before-snapshot element id as the after snapshot's id for the same element (RuntimeId,
+    role and name), or None when it vanished. Element ids are positional, so an insertion
+    earlier in tree order shifts every later id onto another element."""
+    if element_id is None:
+        return None
+    try:
+        return resolve_in(before, element_id, after).id
+    except SteerError:
+        return None
+
+
+class _AnchorVanishedError(Exception):
+    pass
+
+
+def _translate_within(before: Snapshot, after: Snapshot, within: Within | None) -> Within | None:
+    if within is None or within.anchor_id is None:
+        return within
+    translated = _translate(before, after, within.anchor_id)
+    if translated is None:
+        raise _AnchorVanishedError
+    return Within(anchor_id=translated)
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,8 +257,20 @@ def _appearance(
     )
 
 
+def _after_scope(predicate: Appeared, before: Snapshot, after: Snapshot) -> Scope:
+    """The predicate's scope in the after snapshot, anchors resolved by identity."""
+    try:
+        within = _translate_within(before, after, predicate.within)
+        excluding = _translate(before, after, predicate.excluding_anchor)
+    except _AnchorVanishedError:
+        return Scope(level=0, reason="anchor_vanished")
+    if predicate.excluding_anchor is not None and excluding is None:
+        return Scope(level=0, reason="anchor_vanished")
+    return resolve_scope(after, within, excluding=excluding)
+
+
 def _appeared(predicate: Appeared, before: Snapshot, after: Snapshot) -> Verdict:
-    scope = resolve_scope(after, predicate.within, excluding=predicate.excluding_anchor)
+    scope = _after_scope(predicate, before, after)
     if scope.level == 0:
         return _miss(scope, scope.reason or "no_scope")
     if not _container_survived(scope, after, before):
@@ -233,19 +282,28 @@ def _appeared(predicate: Appeared, before: Snapshot, after: Snapshot) -> Verdict
         )
         return _miss(scope, "not_new" if present else "no_match")
     delta = seen.count_after - seen.count_before
-    first_new = min(e.id for e in seen.new_matches)
-    shifted = seen.vanished or (bool(seen.surviving_ids) and first_new < max(seen.surviving_ids))
+    shifted = seen.vanished or _out_of_order(predicate, seen)
     # (condition, reason, positive contradiction), checked in order; the first hit decides.
+    # No-label conditions come first so a re-rendered scope never yields a failed label.
     rules = (
+        (len(seen.new_role) > predicate.expected + CHURN_TOLERANCE, "scope_churn", False),
+        (shifted, "scope_shifted", False),
         (
             len(seen.new_matches) > predicate.expected or delta > predicate.expected,
             "duplicate_effect",
             True,
         ),
         (delta < predicate.expected, "count_unchanged", False),
-        (len(seen.new_role) > predicate.expected + CHURN_TOLERANCE, "scope_churn", False),
-        (shifted, "scope_shifted", False),
-        (any(_has_failed_status(e, after) for e in seen.new_matches), "failed_status", True),
+        (
+            any(_has_status(e, after, _PENDING_TOKENS) for e in seen.new_matches),
+            "pending_status",
+            False,
+        ),
+        (
+            any(_has_status(e, after, _FAILED_TOKENS) for e in seen.new_matches),
+            "failed_status",
+            True,
+        ),
     )
     for condition, reason, contradiction in rules:
         if condition:
@@ -259,12 +317,29 @@ def _appeared(predicate: Appeared, before: Snapshot, after: Snapshot) -> Verdict
     )
 
 
-def _has_failed_status(element: Element, snapshot: Snapshot) -> bool:
-    for child in snapshot.elements:
-        if child.parent_id == element.id:
-            name = child.name.casefold()
-            if any(token in name for token in _FAILED_TOKENS):
-                return True
+def _out_of_order(predicate: Appeared, seen: _Appearance) -> bool:
+    """An effect lands at the growing end of its list: after every surviving element for an
+    appending list, before every one for a prepending list (Sent folders)."""
+    if not seen.surviving_ids:
+        return False
+    new_ids = [e.id for e in seen.new_matches]
+    if predicate.order == "prepend":
+        return max(new_ids) > min(seen.surviving_ids)
+    return min(new_ids) < max(seen.surviving_ids)
+
+
+def _has_status(element: Element, snapshot: Snapshot, tokens: tuple[str, ...]) -> bool:
+    """A status token in any descendant of the element (a bubble's "Sending..." or "Failed")."""
+    children: dict[int | None, list[Element]] = {}
+    for candidate in snapshot.elements:
+        children.setdefault(candidate.parent_id, []).append(candidate)
+    stack = list(children.get(element.id, []))
+    while stack:
+        node = stack.pop()
+        name = node.name.casefold()
+        if any(token in name for token in tokens):
+            return True
+        stack.extend(children.get(node.id, []))
     return False
 
 
@@ -310,7 +385,10 @@ def _disappeared(predicate: Disappeared, before: Snapshot, after: Snapshot) -> V
 
 def _count_delta(predicate: CountDelta, before: Snapshot, after: Snapshot) -> Verdict:
     scope_before = resolve_scope(before, predicate.within)
-    scope_after = resolve_scope(after, predicate.within)
+    try:
+        scope_after = resolve_scope(after, _translate_within(before, after, predicate.within))
+    except _AnchorVanishedError:
+        return _miss(Scope(level=0), "anchor_vanished")
     if scope_before.level == 0 or scope_after.level == 0:
         return _miss(scope_after, "ambiguous_landmark")
     count_before = sum(
@@ -378,13 +456,8 @@ def _value_equals(
         return Verdict(holds=True, code=None, level=3, polls=0, evidence={})
     if value == "":
         return _plain("value_empty", settles=True)
-    if len(before.handles) == len(before.elements):
-        try:
-            unchanged = _read_value(before.element(predicate.target_id), before, live) == value
-        except (OSError, SteerError):
-            unchanged = False
-        if unchanged:
-            return _plain("value_unchanged", settles=True)
+    # The before value is not in the snapshot (`Current*` reads the provider now, VF-30 B1):
+    # a stable non-empty mismatch stays uncertain until the value is cached at before time.
     return _plain("value_differs")
 
 
@@ -434,9 +507,7 @@ def _title_matches(predicate: TitleMatches, before: Snapshot, after: Snapshot) -
         return _plain("already_true")
     if wanted in title:
         return Verdict(holds=True, code=None, level=3, polls=0, evidence={})
-    if title == _title_key(before.title):
-        return _plain("title_unchanged", settles=True)
-    return _plain("title_differs")
+    return _plain("title_unchanged" if title == _title_key(before.title) else "title_differs")
 
 
 def _windows(ctx: Context, name: str) -> Sequence[WindowLike]:
@@ -506,6 +577,9 @@ def _any_of(predicate: AnyOf, before: Snapshot, after: Snapshot, ctx: Context) -
     holding = next((v for v in verdicts if v.holds), None)
     if holding is not None:
         return holding
+    undecidable = next((v for v in verdicts if v.evidence.get("reason") in NO_LABEL_REASONS), None)
+    if undecidable is not None:
+        return undecidable
     return replace(verdicts[-1], state=_combined_state(verdicts))
 
 
@@ -564,7 +638,7 @@ def verify(  # noqa: PLR0913 - keyword-only context and timing knobs with measur
         if remaining <= _EPSILON_S or remaining < last_observe_s:
             return replace(verdict, code=ErrorCode.VERIFY_TIMEOUT, polls=polls)
         if last_observe_s < poll_s:
-            time.sleep(min(poll_s - last_observe_s, remaining))
+            time.sleep(max(0.0, min(poll_s - last_observe_s, remaining - last_observe_s)))
         polls += 1
         started = time.monotonic()
         try:
@@ -626,7 +700,7 @@ def label_of_record(
         action_key=action_key,
         predicate=redact(predicate),
         before_id=before.id,
-        after_id=after.id,
+        after_id=verdict.after_id or after.id,
         level=verdict.level,
         code=verdict.code.value if verdict.code else None,
     )
@@ -658,5 +732,9 @@ def redact(predicate: Predicate) -> dict[str, Any]:
     return spec
 
 
-def _within_spec(within: Within) -> str:
-    return within.landmark if within.landmark is not None else f"anchor:{within.anchor_id}"
+def _within_spec(within: Within) -> dict[str, Any]:
+    """The scope without its landmark name (panes are named after contacts): a hash."""
+    if within.landmark is None:
+        return {"kind": "anchor", "anchor_id": within.anchor_id}
+    digest = hashlib.sha256(within.landmark.encode()).hexdigest()[:12]
+    return {"kind": "landmark", "hash": digest}

@@ -405,8 +405,8 @@ def test_verify_times_out_at_the_deadline_without_polling_past_it(clock: Any) ->
     assert verdict.polls == 12
 
 
-def test_verify_settles_a_value_contradiction_inside_the_deadline(clock: Any) -> None:
-    live = FakeLive(states={COMPOSER[3]: FakeHandle(value="hello")})
+def test_verify_settles_an_empty_value_inside_the_deadline(clock: Any) -> None:
+    live = FakeLive(states={COMPOSER[3]: FakeHandle(value="")})
     verdict = verify(
         ValueEquals(target_id=COMPOSER[0], text="hello there"),
         before(),
@@ -417,7 +417,7 @@ def test_verify_settles_a_value_contradiction_inside_the_deadline(clock: Any) ->
     assert verdict.holds is False
     assert verdict.code is ErrorCode.VERIFY_FAILED
     assert verdict.polls == 1
-    assert verdict.evidence["reason"] == "value_unchanged"
+    assert verdict.evidence["reason"] == "value_empty"
 
 
 def test_verify_never_settles_appeared_or_count(clock: Any) -> None:
@@ -489,7 +489,14 @@ def test_verify_treats_an_observe_error_as_timeout_evidence(clock: Any) -> None:
 
 def test_label_of_record_carries_the_action_key_and_redacts_the_pattern() -> None:
     predicate = Appeared(role="Text", name_pattern="hello there", within=CONVERSATION_SCOPE)
-    verdict = Verdict(holds=True, code=None, level=1, polls=0, evidence={"level": 1, "matched": 1})
+    verdict = Verdict(
+        holds=True,
+        code=None,
+        level=1,
+        polls=2,
+        evidence={"level": 1, "matched": 1},
+        after_id="after-poll-2",
+    )
     label = label_of_record(
         verdict,
         predicate=predicate,
@@ -502,9 +509,14 @@ def test_label_of_record_carries_the_action_key_and_redacts_the_pattern() -> Non
     assert label.holds is True
     assert label.action_key == "k-1"
     assert label.before_id == "before"
-    assert label.after_id == "after"
-    assert label.predicate == {"kind": "Appeared", "role": "Text", "within": "conversation"}
-    assert "hello there" not in str(label.to_dict())
+    assert label.after_id == "after-poll-2", "the deciding snapshot, not the caller's after"
+    assert label.predicate["kind"] == "Appeared"
+    assert label.predicate["role"] == "Text"
+    assert label.predicate["within"]["kind"] == "landmark"
+    assert len(label.predicate["within"]["hash"]) == 12
+    text = str(label.to_dict())
+    assert "hello there" not in text
+    assert "conversation" not in text, "landmark names are contact names in chat apps"
 
 
 def test_label_of_record_is_never_made_from_a_thrown_verify() -> None:

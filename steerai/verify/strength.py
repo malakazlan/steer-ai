@@ -80,9 +80,11 @@ class Params:
     window_title: str | None = field(default=None, repr=False)
     goal_text: str | None = field(default=None, repr=False)
 
-    @property
-    def content_values(self) -> frozenset[str]:
-        values = (self.text, self.file_name, self.target_name)
+    def content_values(self, *, with_target: bool) -> frozenset[str]:
+        """Parameters a pattern may equal: the text or file name always; the target's own
+        name only for a `Disappeared` (a delete names its target; an `Appeared` equal to a
+        clicked button's label proves nothing)."""
+        values = [self.text, self.file_name] + ([self.target_name] if with_target else [])
         return frozenset(_key(v) for v in values if v)
 
 
@@ -179,7 +181,12 @@ def _content_strength(predicate: Predicate, params: Params) -> Strength:
     if not _is_structural(predicate):
         return Strength(False, "no_structural_content_predicate")
     assert isinstance(predicate, Appeared | Disappeared)  # noqa: S101 - narrowed above
-    reason = _pattern_problem(predicate.name_pattern, predicate.within, params)
+    reason = _pattern_problem(
+        predicate.name_pattern,
+        predicate.within,
+        params,
+        with_target=isinstance(predicate, Disappeared),
+    )
     return Strength(reason is None, reason)
 
 
@@ -189,7 +196,9 @@ def _is_structural(predicate: Predicate) -> bool:
     return isinstance(predicate, Appeared | Disappeared)
 
 
-def _pattern_problem(pattern: str, within: Within | None, params: Params) -> str | None:
+def _pattern_problem(
+    pattern: str, within: Within | None, params: Params, *, with_target: bool
+) -> str | None:
     key = _key(pattern)
     scope_name = within.landmark if within is not None else None
     rules = (
@@ -212,7 +221,7 @@ def _pattern_problem(pattern: str, within: Within | None, params: Params) -> str
         ),
         (_TIME_LIKE.match(key) is not None, "pattern_is_time_like"),
         (key in _DATE_WORDS, "pattern_is_date_like"),
-        (key not in params.content_values, "pattern_not_a_parameter"),
+        (key not in params.content_values(with_target=with_target), "pattern_not_a_parameter"),
     )
     return next((reason for condition, reason in rules if condition), None)
 

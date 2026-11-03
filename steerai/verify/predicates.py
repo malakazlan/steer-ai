@@ -72,12 +72,16 @@ class Appeared:
     """Subtree to ignore (the step's own composer in send templates, 5.10 [v0.4])."""
     expected: int = 1
     """How many matching elements must appear: more is a duplicate effect (VF-13)."""
+    order: Literal["append", "prepend"] = "append"
+    """Where the list grows: a conversation appends, a Sent folder prepends."""
 
     def __post_init__(self) -> None:
         _check_role(self.role)
         object.__setattr__(self, "name_pattern", _clean_pattern(self.name_pattern, "name"))
         if self.expected <= 0:
             raise ValueError("expected must be > 0")
+        if self.order not in ("append", "prepend"):
+            raise ValueError("order must be append or prepend")
 
 
 @dataclass(frozen=True, slots=True)
