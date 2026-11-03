@@ -10,7 +10,7 @@ from __future__ import annotations
 import subprocess
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -22,21 +22,32 @@ import steerai.action.readback as readback_mod
 from steerai.action.dispositions import Delivery
 from steerai.action.execution import UiaBindings
 from steerai.action.keyboard import InjectionError
-from steerai.action.physical import MAX_UNITS_PER_STEP, PhysicalAction, PhysicalExecutor
+from steerai.action.physical import (
+    MAX_UNITS_PER_STEP,
+    PhysicalAction,
+    PhysicalExecutor,
+    TypingPace,
+)
 from steerai.action.sanitize import NewlineBinding
 from steerai.errors import ErrorCode
 from steerai.probes.uia_snapshot import UiaClient
 from steerai.probes.win_input import acquire_foreground
-from steerai.probes.windows import wait_window_for_pid
+from steerai.probes.windows import is_hung, wait_window_for_pid
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot, WorldModel
 from tests.action.fakes import (
     APPROVAL,
     BOX,
+    E_ACCESSDENIED,
+    RPC_S_SERVER_UNAVAILABLE,
     TYPE_IDS,
+    UIA_E_ELEMENTNOTAVAILABLE,
+    UIA_E_ELEMENTNOTENABLED,
+    UIA_E_TIMEOUT,
     UIA_VALUE,
     FakeHandle,
     FakeWindows,
+    com_error,
 )
 
 TARGET_ID = (7, 1)
@@ -123,7 +134,7 @@ class FakeInput:
     def foreground_hwnd(self) -> int:
         return self.foreground
 
-    def foreground_process(self) -> str:
+    def foreground_process(self, _hwnd: int) -> str:
         return self.foreground_name
 
     def acquire_foreground(self, hwnd: int) -> str:
@@ -772,6 +783,561 @@ def test_type_never_clicks_to_obtain_focus(fast_clock: Any) -> None:
     assert inputs.moves == []
 
 
+# ---- PX rows without a direct test, boundaries and failure phases (tester, 2026-11-04) --------
+
+
+def _count_acquires(inputs: FakeInput) -> list[int]:
+    """Record every `acquire_foreground` call (the ALT tap lives behind it)."""
+    calls: list[int] = []
+    original = inputs.acquire_foreground
+
+    def counting(hwnd: int) -> str:
+        calls.append(hwnd)
+        return original(hwnd)
+
+    inputs.acquire_foreground = counting  # type: ignore[method-assign]
+    return calls
+
+
+def _record_sleeps(monkeypatch: pytest.MonkeyPatch, now: dict[str, float]) -> list[float]:
+    """Re-install the fast clock so every sleep it receives is recorded, in order."""
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now["t"] += seconds
+
+    fake = SimpleNamespace(monotonic=lambda: now["t"], sleep=sleep, perf_counter=lambda: now["t"])
+    for module in (readback_mod, actionability_mod, physical_mod):
+        monkeypatch.setattr(module, "time", fake)
+    return sleeps
+
+
+PRESS = PhysicalAction(verb="press", element_id=1, chord="ctrl+s")
+
+
+@pytest.mark.parametrize(
+    ("inputs", "detail"),
+    [
+        (FakeInput(foreground=0x99, modifiers=["alt"]), "modifier_held"),
+        (FakeInput(foreground=0x99, buttons=["left"]), "button_held"),
+    ],
+)
+def test_held_keys_are_refused_before_the_foreground_is_touched(
+    fast_clock: Any, inputs: FakeInput, detail: str
+) -> None:
+    # PX-23: the ALT tap would compose with whatever the user holds; hands are checked first.
+    acquires = _count_acquires(inputs)
+    result = _executor(inputs).execute(PRESS, _snapshot(FakeHandle()))
+    assert acquires == []
+    assert inputs.chords == []
+    assert result.delivery is Delivery.NOT_DELIVERED
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.evidence == {"reason": "focus_lost", "detail": detail}
+
+
+def test_held_modifier_refuses_type_before_the_foreground_is_touched(fast_clock: Any) -> None:
+    handle = _edit()
+    inputs = FakeInput(sink=handle, foreground=0x99, modifiers=["ctrl"])
+    acquires = _count_acquires(inputs)
+    result = _executor(inputs).execute(_type("hi"), _snapshot(handle, role="Edit"))
+    assert acquires == []
+    assert inputs.bursts == []
+    assert result.evidence["detail"] == "modifier_held"
+
+
+def test_modifier_pressed_while_the_window_came_forward_stops_the_chord(fast_clock: Any) -> None:
+    # PX-23: hands are re-checked after the foreground procedure, before the chord goes out.
+    inputs = FakeInput(foreground=0x99)
+
+    def acquire(hwnd: int) -> str:
+        inputs.foreground = hwnd
+        inputs.modifiers = ["shift"]
+        return "alt-tap"
+
+    inputs.acquire_foreground = acquire  # type: ignore[method-assign]
+    result = _executor(inputs).execute(PRESS, _snapshot(FakeHandle()))
+    assert inputs.chords == []
+    assert result.delivery is Delivery.NOT_DELIVERED
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.evidence["detail"] == "modifier_held"
+
+
+def test_chord_is_sent_once_when_the_postcondition_never_holds(fast_clock: Any) -> None:
+    # PX-26: the readback times out; the chord is never re-sent to "help" it along.
+    inputs = FakeInput()
+    action = PhysicalAction(verb="press", element_id=1, chord="ctrl+s", postcondition=lambda: False)
+    result = _executor(inputs).execute(action, _snapshot(FakeHandle()))
+    assert inputs.chords == ["ctrl+s"]
+    assert result.delivery is Delivery.DELIVERED_UNVERIFIED
+    assert result.code is ErrorCode.VERIFY_TIMEOUT
+    assert result.retry_safe is False
+    assert fast_clock["t"] >= 0.4, "the poll ran to its deadline"
+
+
+def test_click_is_sent_once_when_the_postcondition_never_holds(fast_clock: Any) -> None:
+    inputs = FakeInput()
+    action = PhysicalAction(verb="click", element_id=1, postcondition=lambda: False)
+    result = _executor(inputs).execute(action, _snapshot(FakeHandle()))
+    assert inputs.clicks == [CENTRE]
+    assert result.delivery is Delivery.DELIVERED_UNVERIFIED
+    assert result.code is ErrorCode.VERIFY_TIMEOUT
+
+
+def test_type_does_not_accept_a_caller_postcondition() -> None:
+    # `type` reads its own value back (design 5.9 [v1.1] SX-04); a caller predicate on it would
+    # be sampled before the action and then never again, so it must be rejected at construction.
+    with pytest.raises(ValueError, match="postcondition"):
+        PhysicalAction(verb="type", element_id=1, text="x", postcondition=lambda: False)
+
+
+@pytest.mark.parametrize(
+    ("dx", "dy", "waits"),
+    [
+        (4, 0, True),
+        (0, 4, True),
+        (4, 4, True),
+        (-4, -4, True),
+        (5, 0, False),
+        (0, 5, False),
+        (-5, 0, False),
+    ],
+)
+def test_double_click_distance_boundary(fast_clock: Any, dx: int, dy: int, waits: bool) -> None:
+    # PX-03: SM_CXDOUBLECLK/2 = 4 px; at the limit it is a double click, one past it is not.
+    inputs = FakeInput(double_click_s=0.5, double_click_px=4)
+    executor = _executor(inputs)
+    executor.execute(CLICK, _snapshot(FakeHandle()))
+    first = fast_clock["t"]
+    box = (BOX[0] + dx, BOX[1] + dy, BOX[2] + dx, BOX[3] + dy)
+    executor.execute(CLICK, _snapshot(FakeHandle(box=box)))
+    assert len(inputs.clicks) == 2
+    assert (fast_clock["t"] - first >= 0.5) is waits
+
+
+def test_second_click_after_the_double_click_time_does_not_wait(fast_clock: Any) -> None:
+    inputs = FakeInput(double_click_s=0.5)
+    executor = _executor(inputs)
+    executor.execute(CLICK, _snapshot(FakeHandle()))
+    fast_clock["t"] += 0.5
+    first = fast_clock["t"]
+    executor.execute(CLICK, _snapshot(FakeHandle()))
+    assert fast_clock["t"] - first < 0.1
+
+
+def test_zero_double_click_time_never_waits(fast_clock: Any) -> None:
+    inputs = FakeInput(double_click_s=0.0)
+    executor = _executor(inputs)
+    executor.execute(CLICK, _snapshot(FakeHandle()))
+    first = fast_clock["t"]
+    executor.execute(CLICK, _snapshot(FakeHandle()))
+    assert fast_clock["t"] - first < 0.1
+    assert len(inputs.clicks) == 2
+
+
+def test_element_replaced_under_the_cursor_before_the_button_goes_down(fast_clock: Any) -> None:
+    # PX-08: admission hit the target; by the last look a popup owns the point.
+    inputs = FakeInput(hits=[TARGET_ID, (9, 9)])
+    result = _executor(inputs).execute(CLICK, _snapshot(FakeHandle()))
+    assert inputs.moves == [CENTRE]
+    assert inputs.clicks == []
+    assert result.delivery is Delivery.NOT_DELIVERED
+    assert result.code is ErrorCode.ELEMENT_NOT_ACTIONABLE
+    assert result.evidence["detail"] == "target_moved"
+
+
+def test_window_covered_after_the_cursor_arrived_is_not_clicked(fast_clock: Any) -> None:
+    inputs = FakeInput()
+
+    def moved(x: int, y: int) -> None:
+        inputs.moves.append((x, y))
+        inputs.root_at = 0x99
+
+    inputs.move_cursor = moved  # type: ignore[method-assign]
+    result = _executor(inputs).execute(CLICK, _snapshot(FakeHandle()))
+    assert inputs.clicks == []
+    assert result.evidence["detail"] == "target_moved"
+
+
+def test_window_rect_failure_before_the_click_is_perception_timeout(fast_clock: Any) -> None:
+    inputs = FakeInput()
+
+    def broken(_hwnd: int) -> tuple[int, int, int, int]:
+        raise OSError("GetWindowRect failed for hwnd 0x10: error 1400")
+
+    inputs.window_rect = broken  # type: ignore[method-assign]
+    result = _executor(inputs).execute(CLICK, _snapshot(FakeHandle()))
+    assert inputs.moves == []
+    assert inputs.clicks == []
+    assert result.delivery is Delivery.NOT_DELIVERED
+    assert result.retry_safe is True
+    assert result.code is ErrorCode.PERCEPTION_TIMEOUT
+    assert result.evidence == {"reason": "perception_timeout"}
+
+
+@pytest.mark.parametrize(
+    ("hresult", "code"),
+    [
+        (UIA_E_ELEMENTNOTAVAILABLE, ErrorCode.ELEMENT_NOT_FOUND),
+        (E_ACCESSDENIED, ErrorCode.ELEMENT_NOT_FOUND),
+        (UIA_E_ELEMENTNOTENABLED, ErrorCode.ELEMENT_NOT_ACTIONABLE),
+        (RPC_S_SERVER_UNAVAILABLE, ErrorCode.APP_CRASHED),
+        (UIA_E_TIMEOUT, ErrorCode.PERCEPTION_TIMEOUT),
+    ],
+)
+def test_com_error_from_the_hit_test_is_classified_and_nothing_is_sent(
+    fast_clock: Any, hresult: int, code: ErrorCode
+) -> None:
+    inputs = FakeInput()
+
+    def failing(_x: int, _y: int) -> tuple[int, ...]:
+        raise com_error(hresult)
+
+    inputs.runtime_id_at = failing  # type: ignore[method-assign]
+    result = _executor(inputs).execute(CLICK, _snapshot(FakeHandle()))
+    assert inputs.clicks == []
+    assert result.delivery is Delivery.NOT_DELIVERED
+    assert result.code is code
+    assert result.evidence == {"reason": code.value, "hresult": f"0x{hresult:08X}"}
+
+
+def test_programming_error_before_anything_is_sent_propagates(fast_clock: Any) -> None:
+    inputs = FakeInput()
+
+    def bug(_x: int, _y: int) -> tuple[int, ...]:
+        raise TypeError("boom")
+
+    inputs.runtime_id_at = bug  # type: ignore[method-assign]
+    with pytest.raises(TypeError, match="boom"):
+        _executor(inputs).execute(CLICK, _snapshot(FakeHandle()))
+
+
+def test_com_error_after_the_click_is_uncertain_in_the_readback_phase(fast_clock: Any) -> None:
+    inputs = FakeInput()
+    calls = {"n": 0}
+
+    def hits(_x: int, _y: int) -> tuple[int, ...]:
+        calls["n"] += 1
+        if calls["n"] == 3:  # admission, last look, then the `hit_after` read
+            raise com_error(UIA_E_ELEMENTNOTAVAILABLE)
+        return TARGET_ID
+
+    inputs.runtime_id_at = hits  # type: ignore[method-assign]
+    result = _executor(inputs).execute(CLICK, _snapshot(FakeHandle()))
+    assert inputs.clicks == [CENTRE]
+    assert result.delivery is Delivery.DELIVERY_UNCERTAIN
+    assert result.retry_safe is False
+    assert result.code is ErrorCode.VERIFY_FAILED
+    assert result.evidence == {
+        "reason": "element_not_found",
+        "phase": "readback",
+        "hresult": "0x80040201",
+    }
+
+
+def test_hit_with_an_empty_runtime_id_is_never_accepted(fast_clock: Any) -> None:
+    # ElementFromPoint answered nothing and a snapshot child also lacks an id: () must not match.
+    handle = FakeHandle()
+    snapshot = _snapshot(handle)
+    snapshot.elements[2] = replace(snapshot.elements[2], runtime_id=())
+    inputs = FakeInput(hits=[()])
+    result = _executor(inputs).execute(CLICK, snapshot)
+    assert inputs.clicks == []
+    assert result.code is ErrorCode.ELEMENT_NOT_ACTIONABLE
+    assert result.evidence["detail"] == "covered_in_window"
+
+
+def test_target_without_a_runtime_id_accepts_only_identified_descendants(fast_clock: Any) -> None:
+    handle = FakeHandle()
+    snapshot = _snapshot(handle)
+    snapshot.elements[1] = replace(snapshot.elements[1], runtime_id=())
+    refused = _executor(FakeInput(hits=[()])).execute(CLICK, snapshot)
+    assert refused.code is ErrorCode.ELEMENT_NOT_ACTIONABLE
+    assert refused.evidence["detail"] == "covered_in_window"
+    accepted = _executor(FakeInput(hits=[CHILD_ID])).execute(CLICK, snapshot)
+    assert accepted.delivery is Delivery.DELIVERED_UNVERIFIED
+
+
+def test_ancestor_without_a_runtime_id_does_not_turn_a_miss_into_hit_test_miss(
+    fast_clock: Any,
+) -> None:
+    handle = FakeHandle()
+    snapshot = _snapshot(handle)
+    snapshot.elements[0] = replace(snapshot.elements[0], runtime_id=())
+    result = _executor(FakeInput(hits=[()])).execute(CLICK, snapshot)
+    assert result.evidence["detail"] == "covered_in_window"
+
+
+def test_type_with_no_focused_element_is_refused(fast_clock: Any) -> None:
+    handle = _edit()
+    inputs = FakeInput(sink=handle, focused=())
+    result = _executor(inputs).execute(_type("hi"), _snapshot(handle, role="Edit"))
+    assert inputs.bursts == []
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.evidence["detail"] == "target_not_focused"
+
+
+@pytest.mark.parametrize(("text", "expected"), [("hi", []), ("x" * 20, [0.02, 0.02])])
+def test_chunk_delay_sleeps_between_bursts_and_never_after_the_last(
+    fast_clock: Any, monkeypatch: pytest.MonkeyPatch, text: str, expected: list[float]
+) -> None:
+    handle = _edit()
+    inputs = FakeInput(sink=handle)
+    sleeps = _record_sleeps(monkeypatch, fast_clock)
+    executor = PhysicalExecutor(
+        uia=UiaBindings(control_types={v: k for k, v in TYPE_IDS.items()}, interfaces={}),
+        windows=FakeWindows(),
+        clock=lambda: 0.0,
+        inputs=inputs,
+        pace=TypingPace(chunk_delay_s=0.02),
+    )
+    result = executor.execute(_type(text), _snapshot(handle, role="Edit"))
+    assert result.delivery is Delivery.DELIVERED_VERIFIED
+    assert [s for s in sleeps if s == 0.02] == expected
+
+
+def test_default_pace_never_sleeps_between_bursts(
+    fast_clock: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handle = _edit()
+    inputs = FakeInput(sink=handle)
+    sleeps = _record_sleeps(monkeypatch, fast_clock)
+    result = _executor(inputs).execute(_type("x" * 20), _snapshot(handle, role="Edit"))
+    assert result.delivery is Delivery.DELIVERED_VERIFIED
+    assert 0.0 not in sleeps
+    assert len(inputs.bursts) == 3
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"chunk_delay_s": -0.01}, {"max_units_per_step": 0}, {"max_units_per_step": -1}]
+)
+def test_typing_pace_rejects_out_of_range_values(kwargs: dict[str, Any]) -> None:
+    # A negative delay reaches `time.sleep` after the first burst and surfaces as an uncertain
+    # delivery; a non-positive cap refuses every text. Both are configuration errors.
+    with pytest.raises(ValueError, match=r"chunk_delay_s|max_units_per_step"):
+        TypingPace(**kwargs)
+
+
+def test_text_exactly_at_the_budget_is_typed(fast_clock: Any) -> None:
+    # PX-29 boundary: the limit itself is allowed, the limit plus one is refused (tested above).
+    handle = _edit()
+    inputs = FakeInput(sink=handle)
+    result = _executor(inputs).execute(
+        _type("x" * MAX_UNITS_PER_STEP), _snapshot(handle, role="Edit")
+    )
+    assert result.delivery is Delivery.DELIVERED_VERIFIED
+    assert len(inputs.bursts) == -(-MAX_UNITS_PER_STEP // 8), "ceil(units / 8) bursts"
+    assert result.evidence["chars"] == MAX_UNITS_PER_STEP
+
+
+def test_budget_counts_utf16_units_not_characters(fast_clock: Any) -> None:
+    handle = _edit()
+    inputs = FakeInput(sink=handle)
+    executor = _executor(inputs)
+    within = executor.execute(
+        _type("\U0001f600" * (MAX_UNITS_PER_STEP // 2)), _snapshot(handle, role="Edit")
+    )
+    assert within.delivery is Delivery.DELIVERED_VERIFIED
+    assert within.evidence["chars"] == MAX_UNITS_PER_STEP
+    handle.value = ""
+    over = executor.execute(
+        _type("\U0001f600" * (MAX_UNITS_PER_STEP // 2 + 1)), _snapshot(handle, role="Edit")
+    )
+    assert over.code is ErrorCode.BUDGET_EXCEEDED
+    assert over.evidence["detail"] == "typing_budget"
+
+
+@dataclass
+class _FlickerHandle(FakeHandle):
+    """Once text is in, the value reads differently on every sample (a live formatter)."""
+
+    reads: int = 0
+
+    def GetCurrentPattern(self, pattern_id: int) -> Any:  # noqa: N802
+        inner = super().GetCurrentPattern(pattern_id)
+        if inner is None:
+            return None
+        outer = self
+
+        class _Flicker:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(inner, name)
+
+            @property
+            def CurrentValue(self) -> str | None:  # noqa: N802
+                outer.reads += 1
+                if not outer.value:
+                    return outer.value
+                return outer.value + ("~" if outer.reads % 2 else "~~")
+
+        return _Flicker()
+
+
+def test_readback_that_never_settles_is_verify_timeout(fast_clock: Any) -> None:
+    handle = _FlickerHandle(patterns={UIA_VALUE})
+    inputs = FakeInput(sink=handle)
+    result = _executor(inputs).execute(_type("hello"), _snapshot(handle, role="Edit"))
+    assert result.delivery is Delivery.DELIVERED_UNVERIFIED
+    assert result.code is ErrorCode.VERIFY_TIMEOUT
+    assert result.evidence == {"foreground": "already", "chunks": 1, "chars": 5}
+    assert handle.reads >= 9, "first sample plus the eight bounded steps"
+
+
+def test_app_that_appends_after_the_last_chunk_is_readback_differs(fast_clock: Any) -> None:
+    # Autocomplete fires once the whole word is in: the value is a superset, not a prefix.
+    handle = _edit()
+    inputs = FakeInput(sink=handle, transform=lambda v: v + ".com" if v == "steer" else v)
+    result = _executor(inputs).execute(_type("steer"), _snapshot(handle, role="Edit"))
+    assert handle.value == "steer.com"
+    assert result.delivery is Delivery.DELIVERED_UNVERIFIED
+    assert result.code is ErrorCode.VERIFY_FAILED
+    assert result.evidence["detail"] == "readback_differs"
+    assert "units_read" not in result.evidence
+
+
+@dataclass
+class _LateHandle(FakeHandle):
+    """Newline chords the app shows only from the `visible_after`-th value read on."""
+
+    pending: list[int] = field(default_factory=list)
+    visible_after: int = 3
+    reads: int = 0
+
+    def GetCurrentPattern(self, pattern_id: int) -> Any:  # noqa: N802
+        inner = super().GetCurrentPattern(pattern_id)
+        if inner is None:
+            return None
+        outer = self
+
+        class _Late:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(inner, name)
+
+            @property
+            def CurrentValue(self) -> str | None:  # noqa: N802
+                outer.reads += 1
+                if outer.reads >= outer.visible_after and outer.pending:
+                    value = outer.value or ""
+                    for position in reversed(outer.pending):
+                        value = value[:position] + "\n" + value[position:]
+                    outer.value, outer.pending = value, []
+                return outer.value
+
+        return _Late()
+
+
+@dataclass
+class _SlowChordInput(FakeInput):
+    """The chord goes out at once; the app applies it later (see `_LateHandle`)."""
+
+    def press(self, chord: str, _approval: Any = None) -> None:
+        assert isinstance(self.sink, _LateHandle)
+        self.chords.append(chord)
+        self.sink.pending.append(len(self.sink.value or ""))
+        self._burst(f"chord:{chord}", "")
+
+
+def test_newline_chord_the_app_consumes_slowly_still_verifies(fast_clock: Any) -> None:
+    handle = _LateHandle(patterns={UIA_VALUE}, visible_after=3)
+    inputs = _SlowChordInput(sink=handle)
+    action = _type("line one\nline two", newline=NewlineBinding("shift+enter"))
+    result = _executor(inputs).execute(action, _snapshot(handle, role="Edit"))
+    assert inputs.chords == ["shift+enter"]
+    assert handle.value == "line one\nline two"
+    assert result.delivery is Delivery.DELIVERED_VERIFIED
+    assert result.evidence == {"foreground": "already", "chunks": 3, "chars": 17}
+    assert fast_clock["t"] < 0.4, "verified before the readback deadline"
+
+
+def test_newline_chord_the_app_never_shows_is_readback_differs(fast_clock: Any) -> None:
+    handle = _LateHandle(patterns={UIA_VALUE}, visible_after=100)
+    inputs = _SlowChordInput(sink=handle)
+    action = _type("line one\nline two", newline=NewlineBinding("shift+enter"))
+    result = _executor(inputs).execute(action, _snapshot(handle, role="Edit"))
+    assert result.delivery is Delivery.DELIVERED_UNVERIFIED
+    assert result.code is ErrorCode.VERIFY_FAILED
+    assert result.evidence["detail"] == "readback_differs"
+
+
+def test_secure_field_focus_loss_evidence_has_no_chunk_count(fast_clock: Any) -> None:
+    # PX-04 + PX-28: the stop reason and the stealing process name are tokens; the count is not.
+    handle = _edit()
+
+    def steal(inputs: FakeInput, index: int) -> None:
+        if index == 1:
+            inputs.foreground = 0x99
+            inputs.foreground_name = "toast.exe"
+
+    inputs = FakeInput(sink=handle, after_burst=steal)
+    result = _executor(inputs).execute(
+        _type("hunter2hunter2", approval=APPROVAL), _snapshot(handle, role="Edit", secure=True)
+    )
+    assert inputs.bursts == ["text:8"]
+    assert result.delivery is Delivery.DELIVERY_UNCERTAIN
+    assert result.evidence == {
+        "reason": "focus_lost",
+        "phase": "call",
+        "foreground": "already",
+        "decision_id": "d-7",
+        "foreground_process": "toast.exe",
+    }
+    assert "hunter2" not in str(result.to_dict())
+
+
+@pytest.mark.parametrize("binding", ["alt+f4", "win+shift+e", "enter", "return"])
+def test_newline_binding_that_is_blocked_or_bare_enter_is_invalid_text(
+    fast_clock: Any, binding: str
+) -> None:
+    handle = _edit()
+    inputs = FakeInput(sink=handle)
+    action = _type("a\nb", newline=NewlineBinding(binding))
+    result = _executor(inputs).execute(action, _snapshot(handle, role="Edit"))
+    assert inputs.bursts == []
+    assert inputs.chords == []
+    assert result.delivery is Delivery.NOT_DELIVERED
+    assert result.code is ErrorCode.INVALID_TEXT
+    assert result.evidence == {"reason": "invalid_text"}
+    assert binding not in str(result.to_dict())
+
+
+@pytest.mark.parametrize("binding", ["ctrl+v", "shift+insert", "win+v"])
+def test_newline_binding_that_routes_to_the_clipboard_is_refused_before_typing(
+    fast_clock: Any, binding: str
+) -> None:
+    # A routed chord is never injected raw (design 5.9 [v1.0]); `keyboard.press` would refuse
+    # it, but only after the first text chunk had gone out.
+    handle = _edit()
+    inputs = FakeInput(sink=handle)
+    action = _type("a\nb", newline=NewlineBinding(binding))
+    result = _executor(inputs).execute(action, _snapshot(handle, role="Edit"))
+    assert inputs.bursts == []
+    assert inputs.chords == []
+    assert result.delivery is Delivery.NOT_DELIVERED
+    assert result.code is ErrorCode.INVALID_TEXT
+    assert result.evidence == {"reason": "invalid_text"}
+
+
+def test_blocker_before_the_first_burst_is_a_refusal_with_nothing_sent(
+    fast_clock: Any,
+) -> None:
+    handle = _edit()
+
+    class _AltWhileComingForward(FakeInput):
+        def acquire_foreground(self, hwnd: int) -> str:
+            self.foreground = hwnd
+            self.modifiers = ["alt"]
+            return "alt-tap"
+
+    inputs = _AltWhileComingForward(sink=handle)
+    result = _executor(inputs).execute(_type("hello"), _snapshot(handle, role="Edit"))
+    assert inputs.bursts == []
+    assert result.delivery is Delivery.NOT_DELIVERED
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.retry_safe is True
+    assert result.steps == []
+    assert result.evidence == {"reason": "focus_lost", "detail": "modifier_held"}
+
+
 # ---- Windows ----------------------------------------------------------------------------------
 
 
@@ -818,5 +1384,25 @@ def test_blocked_chord_on_notepad_is_refused_and_the_window_survives() -> None:
         )
         assert result.code is ErrorCode.GATE_BLOCKED, result.to_dict()
         assert proc.poll() is None, "Notepad was closed"
+    finally:
+        proc.terminate()
+
+
+@pytest.mark.windows
+def test_notepad_document_owns_the_point_and_the_focus_after_a_click() -> None:
+    # PX-02/PX-12/PX-18 live: measured 2026-11-04 on Win10 Notepad, the Document's RuntimeId is
+    # what `ElementFromPoint` and `GetFocusedElement` answer once Steer has clicked into it.
+    proc, snapshot, target = _notepad()
+    try:
+        assert is_hung(snapshot.hwnd) is False
+        assert target.runtime_id, "the Notepad text area has a RuntimeId"
+        executor = PhysicalExecutor()
+        clicked = executor.execute(PhysicalAction(verb="click", element_id=target.id), snapshot)
+        assert clicked.delivery is Delivery.DELIVERED_UNVERIFIED, clicked.to_dict()
+        assert clicked.evidence["hit_after"] == "target"
+        x, y = clicked.evidence["clicked_at"]
+        client = UiaClient()
+        assert client.runtime_id_at(x, y) == target.runtime_id
+        assert client.focused_runtime_id() == target.runtime_id
     finally:
         proc.terminate()

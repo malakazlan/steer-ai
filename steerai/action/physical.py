@@ -54,9 +54,11 @@ from steerai.world.elements import Box, Element
 from steerai.world.model import Snapshot
 
 VERBS: frozenset[str] = frozenset({"click", "type", "press"})
-MAX_UNITS_PER_STEP = 1000
-"""Measured 2026-11-04 (probe typing-pace): ≈1 ms/unit Chrome, ≈3 ms/unit Notepad, so 1,000
-units stay inside the new-step budget of section 9."""
+MAX_UNITS_PER_STEP = 500
+"""A ceiling, not a budget: typing time is additive to the step. Measured 2026-11-04 (probe
+typing-pace, `keyboard.type_text` alone): about 1 ms/unit in Chrome and 3 ms/unit in Notepad,
+so 500 units cost 0.5 to 1.5 s before the executor's per-burst checks, which are unmeasured.
+Longer text is the orchestrator's to split across steps."""
 DEFAULT_CHUNK_DELAY_S = 0.0
 """Measured 2026-11-04: no dropped units at 0 ms on Notepad or a Chrome textarea."""
 _TAB = "\t"
@@ -66,6 +68,12 @@ _TAB = "\t"
 class TypingPace:
     chunk_delay_s: float = DEFAULT_CHUNK_DELAY_S
     max_units_per_step: int = MAX_UNITS_PER_STEP
+
+    def __post_init__(self) -> None:
+        if self.chunk_delay_s < 0:
+            raise ValueError("chunk_delay_s must be >= 0")
+        if self.max_units_per_step <= 0:
+            raise ValueError("max_units_per_step must be > 0")
 
 
 DEFAULT_PACE = TypingPace()
@@ -102,7 +110,7 @@ class InputPort(Protocol):
     def physical_modifiers_down(self) -> list[str]: ...
     def physical_buttons_down(self) -> list[str]: ...
     def foreground_hwnd(self) -> int: ...
-    def foreground_process(self) -> str: ...
+    def foreground_process(self, hwnd: int) -> str: ...
     def acquire_foreground(self, hwnd: int) -> str: ...
     def focused_runtime_id(self) -> tuple[int, ...]: ...
     def double_click_time_s(self) -> float: ...
@@ -121,7 +129,7 @@ class LiveInput:
         self._client = client
 
     def dpi_aware(self) -> bool:
-        return win_input.ensure_per_monitor_v2()
+        return win_input.dpi_context_is_per_monitor_v2()
 
     def input_desktop_name(self) -> str:
         return windows.input_desktop_name()
@@ -162,8 +170,7 @@ class LiveInput:
     def foreground_hwnd(self) -> int:
         return win_input.foreground_hwnd()
 
-    def foreground_process(self) -> str:
-        hwnd = win_input.foreground_hwnd()
+    def foreground_process(self, hwnd: int) -> str:
         return windows.process_name(windows.window_pid(hwnd)) if hwnd else ""
 
     def acquire_foreground(self, hwnd: int) -> str:
@@ -215,6 +222,8 @@ class PhysicalAction:
             raise ValueError("newline binding goes with type")
         if self.approval is not None and not isinstance(self.approval, GateApproval):
             raise TypeError("approval must be a GateApproval from the gate, not a flag")
+        if self.postcondition is not None and self.verb == "type":
+            raise ValueError("type reads its value back; it takes no postcondition")
 
 
 @dataclass(frozen=True, slots=True)
@@ -457,7 +466,7 @@ class PhysicalExecutor:
         """Send the bursts; the count sent, or the result that stopped the typing early."""
         sent = 0
         call.sent = "keyboard.type"
-        for burst in bursts:
+        for index, burst in enumerate(bursts):
             if (stop := self._burst_blocker(hwnd, target.subtree)) is not None:
                 return self._stopped(call, stop, sent, evidence)
             try:
@@ -468,7 +477,7 @@ class PhysicalExecutor:
             except InjectionError as exc:
                 return _partial(call, exc, _with_count(evidence, call, "chunks", sent))
             sent += 1
-            if self._pace.chunk_delay_s:
+            if self._pace.chunk_delay_s and index < len(bursts) - 1:
                 time.sleep(self._pace.chunk_delay_s)
         if (stop := self._burst_blocker(hwnd, target.subtree)) is not None:
             return self._stopped(call, stop, sent, evidence)
@@ -511,7 +520,9 @@ class PhysicalExecutor:
             raise RefusalError(ErrorCode.FOCUS_LOST, reason)
         extra = _with_count({}, call, "chunks", sent)
         if reason == "focus_lost":
-            extra["foreground_process"] = self._inputs.foreground_process()
+            extra["foreground_process"] = self._inputs.foreground_process(
+                self._inputs.foreground_hwnd()
+            )
         return _uncertain(call, {"reason": reason, "phase": "call", **evidence, **extra})
 
 

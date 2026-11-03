@@ -16,7 +16,7 @@ from __future__ import annotations
 import unicodedata
 from dataclasses import dataclass
 
-from steerai.action.keyboard import chord_to_vks, is_blocked_combo
+from steerai.action.keyboard import chord_to_vks, is_blocked_combo, is_routed_combo
 from steerai.errors import ErrorCode, SteerError
 
 DEFAULT_MAX_UNITS = 4000
@@ -45,7 +45,7 @@ class NewlineBinding:
             ) from exc
         if vks == [0x0D]:
             raise SteerError(ErrorCode.INVALID_TEXT, "newline binding may not be bare Enter")
-        if is_blocked_combo(self.chord):
+        if is_blocked_combo(self.chord) or is_routed_combo(self.chord):
             raise SteerError(ErrorCode.INVALID_TEXT, f"newline binding {self.chord!r} is blocked")
         if send_chord is not None and chord_to_vks(send_chord) == vks:
             raise SteerError(ErrorCode.INVALID_TEXT, "newline binding equals the app's send chord")

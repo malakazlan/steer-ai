@@ -4,10 +4,13 @@ import os
 
 import pytest
 
+from steerai.probes.win_input import foreground_hwnd
 from steerai.probes.windows import (
     WindowInfo,
     find_window,
+    input_desktop_name,
     is_cloaked,
+    is_hung,
     list_top_windows,
     process_name,
     wait_window_for_pid,
@@ -83,3 +86,13 @@ def test_process_name_of_the_current_process_is_a_bare_executable_name() -> None
 def test_listed_windows_have_unique_hwnds() -> None:
     hwnds = [w.hwnd for w in list_top_windows()]
     assert len(hwnds) == len(set(hwnds))
+
+
+def test_input_desktop_is_the_default_one_in_an_interactive_session() -> None:
+    # PX-17: "Winlogon" would mean the secure desktop, where SendInput is dropped.
+    assert input_desktop_name() == "Default"
+
+
+def test_foreground_window_is_not_hung() -> None:
+    # PX-18: the window that just received input pumps messages.
+    assert is_hung(foreground_hwnd()) is False

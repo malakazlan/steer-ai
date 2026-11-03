@@ -7,10 +7,17 @@ import pytest
 from steerai.probes.win_input import (
     STEER_EXTRA_INFO,
     VK_MENU,
+    accessibility_filters_active,
     build_keyboard_input,
     build_mouse_input,
+    cursor_pos,
+    double_click_size_px,
+    double_click_time_s,
+    ensure_per_monitor_v2,
     foreground_hwnd,
     move_cursor,
+    physical_buttons_down,
+    physical_modifiers_down,
     pid_at_point,
     root_hwnd_at,
     system_dpi,
@@ -48,7 +55,11 @@ def test_system_dpi_is_at_least_96() -> None:
     assert system_dpi() >= 96
 
 
+@pytest.mark.probe
 def test_move_cursor_lands_on_requested_pixel() -> None:
+    # The cursor is a desktop-global resource the physical mouse also writes: this is
+    # deterministic only on an idle desktop (1/5 failures seen locally while the mouse was
+    # in use). The executor guards itself with `cursor_mismatch`; run with -m probe.
     user32 = ctypes.windll.user32
     move_cursor(400, 300)
     point = ctypes.wintypes.POINT()
@@ -79,3 +90,38 @@ def test_root_hwnd_at_the_desktop_centre_is_a_top_level_window() -> None:
 
 def test_root_hwnd_at_a_point_outside_every_monitor_is_zero() -> None:
     assert root_hwnd_at(-100_000, -100_000) == 0
+
+
+# ---- platform state the physical executor reads before every action (PX-01, 11, 16, 39) --------
+
+
+def test_no_mouse_button_is_held_while_the_tests_run() -> None:
+    assert physical_buttons_down() == []
+
+
+def test_no_modifier_is_held_while_the_tests_run() -> None:
+    assert physical_modifiers_down() == []
+
+
+def test_accessibility_filters_report_a_bool_without_raising() -> None:
+    assert isinstance(accessibility_filters_active(), bool)
+
+
+@pytest.mark.probe
+def test_cursor_pos_reads_back_the_moved_cursor() -> None:
+    move_cursor(401, 301)
+    assert cursor_pos() == (401, 301)
+
+
+def test_double_click_time_is_within_the_settable_range() -> None:
+    # SetDoubleClickTime accepts 0..5000 ms and GetDoubleClickTime answers 500 ms by default;
+    # measured 0.5 s here (2026-11-04).
+    assert 0.1 <= double_click_time_s() <= 5.0
+
+
+def test_double_click_half_size_is_at_least_one_pixel() -> None:
+    assert double_click_size_px() >= 1
+
+
+def test_process_is_per_monitor_v2_aware() -> None:
+    assert ensure_per_monitor_v2() is True

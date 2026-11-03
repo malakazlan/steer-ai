@@ -198,6 +198,24 @@ def ensure_per_monitor_v2() -> bool:
     )
 
 
+def dpi_context_is_per_monitor_v2() -> bool:
+    """Pure query: is this thread's DPI awareness context Per-Monitor-V2 right now. Unlike
+    `ensure_per_monitor_v2` it sets nothing, so an executor can detect that the context was
+    chosen wrongly or too late (design 5.9 [v0.6] ordering rule, PX-01)."""
+    if sys.platform != "win32":
+        raise OSError("DPI awareness requires Windows")
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+    user32.AreDpiAwarenessContextsEqual.argtypes = (ctypes.c_void_p, ctypes.c_void_p)
+    user32.AreDpiAwarenessContextsEqual.restype = wintypes.BOOL
+    current = user32.GetThreadDpiAwarenessContext()
+    return bool(
+        user32.AreDpiAwarenessContextsEqual(
+            ctypes.c_void_p(current), _DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        )
+    )
+
+
 def _user32() -> ctypes.WinDLL:
     """user32 with explicit signatures: HWNDs are 64-bit and must not default to c_int."""
     if sys.platform != "win32":
