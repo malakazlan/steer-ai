@@ -7,6 +7,7 @@ import functools
 import os
 import sys
 import time
+from collections.abc import Callable, Mapping
 from ctypes import wintypes
 from dataclasses import dataclass
 
@@ -114,15 +115,61 @@ def parent_pids(pid: int, *, limit: int = 16) -> list[int]:
             ok = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
     finally:
         kernel32.CloseHandle(snapshot)
+    return parent_chain(pid, parents, process_start_time, limit=limit)
+
+
+def parent_chain(
+    pid: int,
+    parents: Mapping[int, int],
+    started: Callable[[int], int | None],
+    *,
+    limit: int = 16,
+) -> list[int]:
+    """Walk the parent map nearest first; stop at the root, at a cycle, at the limit, and at a
+    parent whose start time is unknown or later than its child's: a parent cannot start after
+    its child, so that pid was reused by an unrelated process (RN-15 follow-up)."""
     chain: list[int] = []
     current = pid
+    child_started = started(pid)
     while len(chain) < limit:
         parent = parents.get(current)
         if parent is None or parent == 0 or parent in chain or parent == pid:
             break
+        parent_started = started(parent)
+        if child_started is None or parent_started is None or parent_started > child_started:
+            break
         chain.append(parent)
-        current = parent
+        current, child_started = parent, parent_started
     return chain
+
+
+def process_start_time(pid: int) -> int | None:
+    """The process creation time as a FILETIME count (100 ns units), or None when the process
+    cannot be opened."""
+    if sys.platform != "win32":
+        raise OSError("process lookup requires Windows")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetProcessTimes.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+    )
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+        if not kernel32.GetProcessTimes(handle, created, exited, kernel, user):
+            return None
+        return (created.dwHighDateTime << 32) | created.dwLowDateTime
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 class _ProcessEntry(ctypes.Structure):
