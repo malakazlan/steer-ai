@@ -6,6 +6,9 @@ BOM), and text over the cap measured in UTF-16 code units after newline normalis
 (including U+2028/U+2029 and NEL) are never sent as Enter: they are rejected unless the app
 profile declares a newline binding, which must be a valid, unblocked chord other than bare Enter
 and other than the app's send chord (AX-01). Emoji joiners and variation selectors are allowed.
+
+[v1.1] `sanitize_value` is the ValuePattern form: a value is content, not keystrokes, so it may be
+empty and may hold newlines (normalised to LF); the character and length rules are the same.
 """
 
 from __future__ import annotations
@@ -57,18 +60,14 @@ def _rejected(ch: str) -> bool:
     return category == "Cf" and ch not in _ALLOWED_FORMAT
 
 
-def sanitize_text(
-    text: str,
-    *,
-    newline: NewlineBinding | None = None,
-    max_units: int = DEFAULT_MAX_UNITS,
-    send_chord: str | None = None,
-) -> list[Part]:
-    normalised = text
+def normalise_newlines(text: str) -> str:
+    """CR LF, CR, NEL and the Unicode line and paragraph separators become LF."""
     for separator in _LINE_SEPARATORS:
-        normalised = normalised.replace(separator, _LF)
-    if not normalised.replace(_ZERO_WIDTH_SPACE, "").strip():
-        raise SteerError(ErrorCode.INVALID_TEXT, "text is empty or whitespace only")
+        text = text.replace(separator, _LF)
+    return text
+
+
+def _check_characters(normalised: str, max_units: int) -> None:
     bad = [ch for ch in normalised if _rejected(ch)]
     if bad:
         raise SteerError(
@@ -80,6 +79,26 @@ def sanitize_text(
         raise SteerError(
             ErrorCode.INVALID_TEXT, f"text is longer than the cap ({units} > {max_units} units)"
         )
+
+
+def sanitize_value(text: str, *, max_units: int = DEFAULT_MAX_UNITS) -> str:
+    """The value to hand to `ValuePattern.SetValue`: may be empty, newlines stay literal."""
+    normalised = normalise_newlines(text)
+    _check_characters(normalised, max_units)
+    return normalised
+
+
+def sanitize_text(
+    text: str,
+    *,
+    newline: NewlineBinding | None = None,
+    max_units: int = DEFAULT_MAX_UNITS,
+    send_chord: str | None = None,
+) -> list[Part]:
+    normalised = normalise_newlines(text)
+    if not normalised.replace(_ZERO_WIDTH_SPACE, "").strip():
+        raise SteerError(ErrorCode.INVALID_TEXT, "text is empty or whitespace only")
+    _check_characters(normalised, max_units)
     if _LF in normalised and newline is None:
         raise SteerError(
             ErrorCode.INVALID_TEXT, "newline in text and the app declares no newline binding"

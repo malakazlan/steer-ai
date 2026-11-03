@@ -72,7 +72,7 @@ class UiaClient:
         self._uia_module, self._uia = _create_client()
         self._uia.ConnectionTimeout = connection_timeout_ms
         self._uia.TransactionTimeout = transaction_timeout_ms
-        self._control_type_names = _control_type_names(self._uia_module)
+        self._control_type_names = control_type_names(self._uia_module)
 
     @property
     def connection_timeout_ms(self) -> int:
@@ -174,10 +174,13 @@ class UiaClient:
         )
 
 
-def _create_client() -> tuple[Any, Any]:
-    # Returns (generated UIAutomationClient module, IUIAutomation2 instance); both untyped COM.
+def load_uia_module() -> Any:
+    """The comtypes-generated `UIAutomationClient` module (untyped COM, Windows only).
+
+    Sets the MTA flag before comtypes initialises COM on this thread (design 5.6.2), so every
+    user of the module, client or executor, goes through here.
+    """
     if "comtypes" not in sys.modules:
-        # Must be set before comtypes initialises COM on this thread: MTA per design 5.6.2.
         sys.coinit_flags = _COINIT_MULTITHREADED  # type: ignore[attr-defined]  # comtypes reads it
     # Lazy imports: comtypes is Windows-only and must not load at module import time.
     import comtypes.client  # noqa: PLC0415
@@ -185,13 +188,22 @@ def _create_client() -> tuple[Any, Any]:
     comtypes.client.GetModule("UIAutomationCore.dll")
     from comtypes.gen import UIAutomationClient  # noqa: PLC0415
 
+    return UIAutomationClient
+
+
+def _create_client() -> tuple[Any, Any]:
+    # Returns (generated UIAutomationClient module, IUIAutomation2 instance); both untyped COM.
+    import comtypes.client  # noqa: PLC0415
+
+    UIAutomationClient = load_uia_module()  # noqa: N806 - module name
     client = comtypes.client.CreateObject(
         UIAutomationClient.CUIAutomation8, interface=UIAutomationClient.IUIAutomation2
     )
     return UIAutomationClient, client
 
 
-def _control_type_names(uia_module: Any) -> dict[int, str]:
+def control_type_names(uia_module: Any) -> dict[int, str]:
+    """UIA control type id -> role name (`UIA_ButtonControlTypeId` -> `Button`)."""
     # `uia_module` is the comtypes-generated module; untyped, hence Any.
     suffix = "ControlTypeId"
     return {

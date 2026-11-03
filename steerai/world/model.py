@@ -127,7 +127,8 @@ def diff(before: Snapshot, after: Snapshot) -> Diff:
     )
 
 
-def _normal(name: str) -> str:
+def normalise_name(name: str) -> str:
+    """NFKC with collapsed whitespace: the name equality used for identity re-checks."""
     return " ".join(unicodedata.normalize("NFKC", name).split())
 
 
@@ -152,7 +153,8 @@ def resolve_in(snapshot: Snapshot, element_id: int, fresh: Snapshot) -> Element:
         )
     exact = [c for c in candidates if c.role == chosen.role and c.box == chosen.box]
     candidate = exact[0] if exact else candidates[0]
-    if candidate.role != chosen.role or _normal(candidate.name) != _normal(chosen.name):
+    same_name = normalise_name(candidate.name) == normalise_name(chosen.name)
+    if candidate.role != chosen.role or not same_name:
         raise SteerError(
             ErrorCode.ELEMENT_NOT_FOUND,
             f"element {element_id} changed from {chosen.role} {chosen.name!r} "
