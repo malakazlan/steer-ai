@@ -88,26 +88,89 @@ def is_cloaked(hwnd: int) -> bool:
     return result == 0 and cloaked.value != 0
 
 
+def parent_pids(pid: int, *, limit: int = 16) -> list[int]:
+    """The parent chain of a process from a Toolhelp snapshot (nearest first), stopped at the
+    limit or at a cycle; a pid whose parent is gone ends the chain."""
+    if sys.platform != "win32":
+        raise OSError("process lookup requires Windows")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Process32FirstW.argtypes = (wintypes.HANDLE, ctypes.c_void_p)
+    kernel32.Process32FirstW.restype = wintypes.BOOL
+    kernel32.Process32NextW.argtypes = (wintypes.HANDLE, ctypes.c_void_p)
+    kernel32.Process32NextW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if snapshot in (None, ctypes.c_void_p(-1).value):
+        return []
+    parents: dict[int, int] = {}
+    try:
+        entry = _ProcessEntry()
+        entry.dwSize = ctypes.sizeof(_ProcessEntry)
+        ok = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while ok:
+            parents[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
+            ok = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    chain: list[int] = []
+    current = pid
+    while len(chain) < limit:
+        parent = parents.get(current)
+        if parent is None or parent == 0 or parent in chain or parent == pid:
+            break
+        chain.append(parent)
+        current = parent
+    return chain
+
+
+class _ProcessEntry(ctypes.Structure):
+    _fields_ = (
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", ctypes.c_wchar * 260),
+    )
+
+
 def console_exclusions() -> tuple[set[int], set[int]]:
-    """(hwnds, pids) a runner must never target: its console window, every process attached
-    to that console, and this process (RN-15)."""
+    """(hwnds, pids) a runner must never target: its console window and the window that owns
+    it (under ConPTY the console is a hidden pseudo-window owned by the terminal, so
+    `GetConsoleWindow` alone misses Windows Terminal), every process attached to the console,
+    this process and its parent chain (RN-15)."""
     if sys.platform != "win32":
         raise OSError("console lookup requires Windows")
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.GetConsoleWindow.restype = wintypes.HWND
     kernel32.GetConsoleProcessList.argtypes = (ctypes.POINTER(wintypes.DWORD), wintypes.DWORD)
     kernel32.GetConsoleProcessList.restype = wintypes.DWORD
+    user32 = _user32()
+    user32.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+    user32.GetAncestor.restype = wintypes.HWND
     hwnds: set[int] = set()
+    pids: set[int] = {os.getpid(), *parent_pids(os.getpid())}
     console = kernel32.GetConsoleWindow()
     if console:
         hwnds.add(int(console))
-    pids: set[int] = {os.getpid()}
+        pids.add(window_pid(int(console)))
+        owner = user32.GetAncestor(console, 3)  # GA_ROOTOWNER
+        if owner:
+            hwnds.add(int(owner))
+            pids.add(window_pid(int(owner)))
     buffer = (wintypes.DWORD * 64)()
     count = kernel32.GetConsoleProcessList(buffer, 64)
     if count > 64:
         buffer = (wintypes.DWORD * count)()
         count = kernel32.GetConsoleProcessList(buffer, count)
     pids.update(int(buffer[i]) for i in range(min(count, len(buffer))))
+    pids.discard(0)
     return hwnds, pids
 
 

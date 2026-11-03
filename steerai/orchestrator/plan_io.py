@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, Literal, cast
 
 from steerai.orchestrator.contracts import (
@@ -107,6 +107,12 @@ def plan_from_json(text: str) -> Plan:
         raw: object = json.loads(text, object_pairs_hook=_pairs, parse_constant=_constant)
     except json.JSONDecodeError as exc:
         raise PlanError("$", f"not valid JSON: {exc.msg} at line {exc.lineno}") from exc
+    except RecursionError as exc:
+        raise PlanError("$", "nested too deep to decode") from exc
+    except ValueError as exc:
+        if isinstance(exc, PlanError):
+            raise
+        raise PlanError("$", f"not a plan document: {exc}") from exc
     return _plan(raw, "$")
 
 
@@ -181,10 +187,24 @@ def _within(value: object, path: str) -> Within | None:
     _keys(obj, frozenset({"landmark"}), path)
     if "landmark" not in obj:
         raise PlanError(path, "within needs a landmark")
-    return Within(landmark=_text(obj["landmark"], f"{path}.landmark"))
+    return _built(path, lambda: Within(landmark=_text(obj["landmark"], f"{path}.landmark")))
+
+
+def _built[T](path: str, make: Callable[[], T]) -> T:
+    """A contract refusal (an empty pattern, a zero delta) is a plan error at this path."""
+    try:
+        return make()
+    except ValueError as exc:
+        if isinstance(exc, PlanError):
+            raise
+        raise PlanError(path, str(exc)) from exc
 
 
 def _predicate(value: object, path: str, depth: int = 1) -> Predicate:
+    return _built(path, lambda: _predicate_body(value, path, depth))
+
+
+def _predicate_body(value: object, path: str, depth: int) -> Predicate:
     if depth > MAX_DEPTH:
         raise PlanError(path, f"nested deeper than {MAX_DEPTH}")
     obj = _obj(value, path)

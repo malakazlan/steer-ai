@@ -21,6 +21,12 @@ MAX_ANSWER_CHARS = 4096
 _PREFIX = "  "
 
 
+def escape_text(value: str) -> str:
+    """Every non-printable character as an escape: what the console shows can never
+    rewrite it (RN-05)."""
+    return _show(value)
+
+
 def _show(value: str) -> str:
     out: list[str] = []
     for ch in value:
@@ -82,20 +88,24 @@ class ConsoleConfirmer:
         self._warned = False
 
     def ask(self, ask: Ask) -> str:
-        if not self._write(render_ask(ask)):
+        try:
+            text = render_ask(ask)
+        except (TypeError, ValueError):
+            return "unanswered"
+        if not self._write(text):
             return "unanswered"
         line = self._read()
         if line is None:
             return "unanswered"
-        answer = line.rstrip("\r\n").strip()
-        bound_yes = f"yes:{ask.decision_id}"
-        if answer == bound_yes:
-            return bound_yes
-        if answer in ("no", f"no:{ask.decision_id}"):
+        return self._classify(line.rstrip("\r\n").strip(), ask.decision_id)
+
+    def _classify(self, answer: str, decision_id: str) -> str:
+        bound_yes = f"yes:{decision_id}"
+        if answer in (bound_yes, "no", f"no:{decision_id}"):
             return answer
+        if answer == "yes" and self._interactive:
+            return "yes"
         if answer == "yes":
-            if self._interactive:
-                return "yes"
             self._write(
                 f"{_PREFIX}stdin is not interactive: only the bound token {bound_yes} counts\n"
             )

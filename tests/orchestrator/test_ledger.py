@@ -348,7 +348,7 @@ def test_the_lock_names_this_process_and_goes_with_close(
 ) -> None:
     first = Ledger(tmp_path, task_id="t", started_at=1.0)
     lock = next(tmp_path.iterdir()) / "lock"
-    assert json.loads(lock.read_text(encoding="utf-8")) == {"pid": os.getpid()}
+    assert json.loads(lock.read_text(encoding="utf-8"))["pid"] == os.getpid()
     first.close()
     assert not lock.exists()
     with Ledger(tmp_path, task_id="t", started_at=1.0) as again:

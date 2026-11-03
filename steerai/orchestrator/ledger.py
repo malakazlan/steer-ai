@@ -21,6 +21,7 @@ import json
 import os
 import sys
 import time
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -132,6 +133,7 @@ class Ledger:
         self._secret = b""
         self._plan_digest: str | None = None
         self._window: dict[str, Any] | None = None
+        self._lock_token = uuid.uuid4().hex
         self._locked = False
         self._acquire_lock()
         try:
@@ -154,17 +156,26 @@ class Ledger:
                 holder = self._lock_holder()
                 if holder is not None and holder != os.getpid() and process_alive(holder):
                     raise LedgerError(
-                        f"ledger_locked: another runner (pid {holder}) holds this task"
+                        f"ledger_locked: another runner (pid {holder}) holds this task; "
+                        f"the lock is {self._lock_path}"
                     ) from None
                 self._lock_path.unlink(missing_ok=True)  # stale: the holder is gone
                 continue
             except OSError as exc:
                 raise LedgerError(f"ledger lock could not be taken: {exc}") from exc
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump({"pid": os.getpid()}, handle)
+                json.dump({"pid": os.getpid(), "token": self._lock_token}, handle)
             self._locked = True
             return
         raise LedgerError("ledger_locked: the lock could not be taken")
+
+    def _lock_token_on_disk(self) -> str | None:
+        try:
+            payload = json.loads(self._lock_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        token = payload.get("token") if isinstance(payload, dict) else None
+        return token if isinstance(token, str) else None
 
     def _lock_holder(self) -> int | None:
         try:
@@ -178,7 +189,8 @@ class Ledger:
         """Release the task lock; the state stays on disk for a resume. The lock guards against
         another runner process; a second ledger in this process takes it over."""
         if self._locked:
-            self._lock_path.unlink(missing_ok=True)
+            if self._lock_token_on_disk() == self._lock_token:
+                self._lock_path.unlink(missing_ok=True)
             self._locked = False
 
     def __enter__(self) -> Ledger:

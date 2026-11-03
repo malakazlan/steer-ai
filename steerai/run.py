@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Protocol, TextIO
 
 from steerai.errors import ErrorCode, SteerError
-from steerai.orchestrator.console import ConsoleConfirmer
+from steerai.orchestrator.console import ConsoleConfirmer, escape_text
 from steerai.orchestrator.contracts import RISKS, Plan, Risk, Step
 from steerai.orchestrator.gate import Confirmer, effective_risk
 from steerai.orchestrator.ledger import LedgerError
@@ -294,7 +294,8 @@ class _Out:
         self._stderr = stderr
 
     def note(self, text: str) -> None:
-        self._stderr.write(text + "\n")
+        # plan errors quote plan text and candidates quote other processes' titles (RN-05)
+        self._stderr.write(escape_text(text) + "\n")
 
     def resume_hint(self) -> None:
         o = self._options
@@ -361,6 +362,29 @@ def _pick_window(options: Options, deps: Deps) -> WindowInfo:
 def run(options: Options, deps: Deps, *, stdin: TextIO, stdout: TextIO, stderr: TextIO) -> int:
     out = _Out(options, stdout, stderr)
     try:
+        return _run(plan_options=options, deps=deps, out=out, stdin=stdin, stderr=stderr)
+    except KeyboardInterrupt:
+        return _interrupted(out)
+
+
+def _interrupted(out: _Out) -> int:
+    out.note("interrupted; the task can resume")
+    out.resume_hint()
+    out.emit(
+        {
+            "status": "paused",
+            "code": ErrorCode.GATE_PENDING_USER.value,
+            "detail": "interrupted",
+            "ticked": [],
+            "results": [],
+        }
+    )
+    return EXIT_PAUSED
+
+
+def _run(*, plan_options: Options, deps: Deps, out: _Out, stdin: TextIO, stderr: TextIO) -> int:
+    options = plan_options
+    try:
         data = options.plan.read_bytes()
     except OSError as exc:
         return out.error("plan_unreadable", note=f"plan: {exc}")
@@ -392,6 +416,12 @@ def run(options: Options, deps: Deps, *, stdin: TextIO, stdout: TextIO, stderr: 
         return out.error(
             _ledger_detail(exc), code=ErrorCode.GATE_BLOCKED, note=f"ledger: {exc.message}"
         )
+    except OSError as exc:
+        return out.error(
+            "wal_unavailable",
+            code=ErrorCode.GATE_BLOCKED,
+            note=f"ledger: {options.ledger_dir} cannot be used: {exc}",
+        )
     try:
         return _run_bound(
             plan,
@@ -405,6 +435,17 @@ def run(options: Options, deps: Deps, *, stdin: TextIO, stdout: TextIO, stderr: 
         )
     finally:
         ledger.close()
+
+
+def _open_trace(options: Options) -> Trace:
+    if options.trace is None:
+        return NullTrace()
+    try:
+        trace = JsonLinesTrace(options.trace)
+        trace.write({"kind": "run", "task_id": options.task_id})
+    except OSError as exc:
+        raise UsageError(f"--trace {options.trace}: {exc}") from exc
+    return trace
 
 
 def _run_bound(  # noqa: PLR0913, PLR0911 - the run's state, one return per exit path
@@ -426,11 +467,11 @@ def _run_bound(  # noqa: PLR0913, PLR0911 - the run's state, one return per exit
         )
         out.note(f"task {options.task_id}: window 0x{window.hwnd:x} pid {window.pid}")
         out.resume_hint()
+        trace = _open_trace(options)  # before the foreground: a bad path has no side effect
         try:
             deps.acquire_foreground(window.hwnd)
         except OSError as exc:
             raise RunnerError(ErrorCode.FOCUS_LOST, "foreground") from exc
-        trace: Trace = JsonLinesTrace(options.trace) if options.trace is not None else NullTrace()
         bound = Bound(
             hwnd=window.hwnd,
             pid=window.pid,
@@ -458,18 +499,7 @@ def _run_bound(  # noqa: PLR0913, PLR0911 - the run's state, one return per exit
     except SteerError as exc:
         return out.error("setup_failed", code=exc.code, note=f"setup: {exc.message}")
     except KeyboardInterrupt:
-        out.note("interrupted; the task can resume")
-        out.resume_hint()
-        out.emit(
-            {
-                "status": "paused",
-                "code": ErrorCode.GATE_PENDING_USER.value,
-                "detail": "interrupted",
-                "ticked": [],
-                "results": [],
-            }
-        )
-        return EXIT_PAUSED
+        return _interrupted(out)
     except Exception:  # noqa: BLE001 - the last line of defence maps to one exit code
         traceback.print_exc(file=stderr)
         out.emit({"status": "error", "code": None, "detail": "internal_error"})
