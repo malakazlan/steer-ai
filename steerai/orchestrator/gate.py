@@ -14,6 +14,7 @@ confirmer to render; names stay out of its repr.
 from __future__ import annotations
 
 import re
+import unicodedata
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -47,22 +48,51 @@ DENY_PATTERNS: Mapping[str, Risk] = {
     "share": "R2",
     "reply": "R2",
     "forward": "R2",
+    "confirm": "R2",
+    "sign out": "R2",
+    "signout": "R2",
+    "install": "R3",
+    "uninstall": "R3",
+    "format": "R3",
+    "reset": "R3",
 }
-"""5.13 1a: words in a target's name that raise the step's tier (whole words, case-folded)."""
+"""5.13 1a: words (or word sequences) in a target's name or automation id that raise the step's
+tier. Matched on whole words of the comparable form (NFKC, format characters removed,
+case-folded), so punctuation or a zero-width character never hides a word (RN-04)."""
 _RISK_ORDER = {risk: index for index, risk in enumerate(RISKS)}
-_WORD = re.compile(r"\w+")
-"""Whole words: punctuation around a word ("Delete,", "(Send)") does not hide it."""
+_WORD = re.compile(r"[^\W\d_]+")
+"""Whole words of letters: punctuation, digits or underscores around a word ("Delete,",
+"(Send)", "Delete_all", "Send2") never hide it."""
+_CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 Outcome = Literal["approve", "confirm", "block", "pending"]
 
 
+def _words(text: str) -> list[str]:
+    comparable = "".join(ch for ch in normalise_name(text) if unicodedata.category(ch) != "Cf")
+    return _WORD.findall(comparable.casefold())
+
+
+def _id_words(automation_id: str) -> list[str]:
+    # btnDelete, delete_chat, chat-delete-button: split on case changes, then on non-words
+    return _words(_CAMEL.sub(" ", automation_id))
+
+
+def _contains(words: list[str], pattern: str) -> bool:
+    wanted = pattern.split()
+    if len(wanted) == 1:
+        return wanted[0] in words
+    return any(words[i : i + len(wanted)] == wanted for i in range(len(words) - len(wanted) + 1))
+
+
 def effective_risk(step: Step) -> Risk:
-    """The plan's tier raised by the deny patterns on the target's name, never lowered."""
+    """The plan's tier raised by the deny patterns on the target's name and automation id,
+    never lowered (RN-03/04/25)."""
     risk: Risk = step.risk
     if step.target is None:
         return risk
-    words = set(_WORD.findall(normalise_name(step.target.name).casefold()))
-    for word, tier in DENY_PATTERNS.items():
-        if word in words and _RISK_ORDER[tier] > _RISK_ORDER[risk]:
+    words = [*_words(step.target.name), "", *_id_words(step.target.automation_id)]
+    for pattern, tier in DENY_PATTERNS.items():
+        if _RISK_ORDER[tier] > _RISK_ORDER[risk] and _contains(words, pattern):
             risk = tier
     return risk
 
@@ -80,6 +110,8 @@ class Ask:
     expect: Mapping[str, Any]
     params: Mapping[str, str] = field(repr=False)
     previous_attempt: str | None = None
+    target_name: str = field(default="", repr=False)
+    automation_id: str = field(default="", repr=False)
 
 
 class Confirmer(Protocol):
@@ -190,6 +222,8 @@ class Gate:
             expect=redact(predicate),
             params={**step.params, **({"text": step.text} if step.text is not None else {})},
             previous_attempt=previous_attempt,
+            target_name=step.target.name if step.target is not None else "",
+            automation_id=step.target.automation_id if step.target is not None else "",
         )
         answer = self._confirmer.ask(ask)
         if answer in ("yes", f"yes:{decision_id}"):

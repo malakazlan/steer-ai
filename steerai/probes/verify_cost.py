@@ -24,8 +24,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from steerai.action.execution import UIA_VALUE_PATTERN, UiaBindings
+from steerai.action.execution import UiaBindings
 from steerai.action.executor import Action, Executor
+from steerai.action.live_reads import UiaLiveReads
 from steerai.action.physical import PhysicalAction, PhysicalExecutor
 from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome
 from steerai.probes.stats import LatencyStats
@@ -51,26 +52,6 @@ class Trial:
     """One `observe(stable_window=1)` of the same window, measured right before the verify."""
 
 
-class _Live:
-    def __init__(self, client: UiaClient, bindings: UiaBindings) -> None:
-        self._client = client
-        self._bindings = bindings
-
-    def value(self, handle: Any) -> str | None:
-        pattern = self._bindings.pattern(handle, UIA_VALUE_PATTERN, "ValuePattern")
-        raw = pattern.CurrentValue
-        return None if raw is None else str(raw)
-
-    def toggle_state(self, _handle: Any) -> int | None:
-        return None
-
-    def is_selected(self, _handle: Any) -> bool | None:
-        return None
-
-    def focused_runtime_id(self) -> tuple[int, ...]:
-        return self._client.focused_runtime_id()
-
-
 @dataclass(frozen=True, slots=True)
 class _Bench:
     """One window under test: the model that observes it and the live reads for it."""
@@ -78,7 +59,7 @@ class _Bench:
     target: str
     model: WorldModel
     hwnd: int
-    live: _Live
+    live: UiaLiveReads
 
     def run(self, case: str, predicate: Predicate, before: Snapshot) -> Trial:
         started = time.perf_counter()
@@ -104,7 +85,7 @@ class _Bench:
         )
 
 
-def _notepad_trials(model: WorldModel, live: _Live, runs: int) -> list[Trial]:
+def _notepad_trials(model: WorldModel, live: UiaLiveReads, runs: int) -> list[Trial]:
     trials: list[Trial] = []
     for run in range(runs):
         proc = subprocess.Popen(["notepad.exe"])  # noqa: S607 - fixed, well-known executable
@@ -146,7 +127,7 @@ def _observe_until_exposed(model: WorldModel, hwnd: int, *, max_s: float = 25.0)
 
 
 def _chrome_trials(
-    chrome: Path, model: WorldModel, live: _Live, runs: int, *, noop: bool = False
+    chrome: Path, model: WorldModel, live: UiaLiveReads, runs: int, *, noop: bool = False
 ) -> list[Trial]:
     """Pass and timeout paths on the inbox page; with `noop` the Send button does nothing, so a
     pass is a false success (the probe records it as the `noop` case)."""
@@ -259,7 +240,7 @@ def parse_args(argv: Sequence[str]) -> ProbeArgs:
 def run_probe(args: ProbeArgs) -> dict[str, Any]:
     client = UiaClient()
     model = WorldModel(client)
-    live = _Live(client, UiaBindings.load())
+    live = UiaLiveReads(client, UiaBindings.load())
     trials = _notepad_trials(model, live, args.runs)
     if args.chrome is not None:
         if not args.chrome.is_file():

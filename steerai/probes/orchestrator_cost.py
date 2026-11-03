@@ -24,8 +24,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from steerai.action.execution import UIA_VALUE_PATTERN, UiaBindings
+from steerai.action.execution import UiaBindings
 from steerai.action.executor import Executor
+from steerai.action.live_reads import UiaLiveReads
 from steerai.action.physical import PhysicalExecutor
 from steerai.orchestrator.contracts import GateDecision, Plan, Step, Subgoal, Target
 from steerai.orchestrator.gate import Ask, Gate
@@ -220,26 +221,6 @@ def _plan(content_role: str, run: int) -> Plan:
     )
 
 
-class _Live:
-    def __init__(self, client: UiaClient) -> None:
-        self._client = client
-        self._bindings = UiaBindings.load()
-
-    def value(self, handle: Any) -> str | None:
-        pattern = self._bindings.pattern(handle, UIA_VALUE_PATTERN, "ValuePattern")
-        raw = pattern.CurrentValue
-        return None if raw is None else str(raw)
-
-    def toggle_state(self, _handle: Any) -> int | None:
-        return None
-
-    def is_selected(self, _handle: Any) -> bool | None:
-        return None
-
-    def focused_runtime_id(self) -> tuple[int, ...]:
-        return self._client.focused_runtime_id()
-
-
 def _observe_until_exposed(model: WorldModel, hwnd: int, *, max_s: float = 25.0) -> Snapshot:
     deadline = time.monotonic() + max_s
     while True:
@@ -265,7 +246,8 @@ def _chrome_plan_cost(chrome: Path, root: Path, runs: int) -> dict[str, Any]:
         content_role = next(
             e.role for e in start.elements if e.name == "ok" and e.parent_id is not None
         )
-        semantic, physical, live = Executor(), PhysicalExecutor(), _Live(client)
+        semantic, physical = Executor(), PhysicalExecutor()
+        live = UiaLiveReads(client, UiaBindings.load())
         for run in range(runs):
             task_id = f"plan-{run}-{time.time_ns()}"
             session = Session(

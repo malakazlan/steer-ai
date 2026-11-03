@@ -10,12 +10,12 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import pytest
 
-from steerai.action.execution import UIA_VALUE_PATTERN, UiaBindings
+from steerai.action.execution import UiaBindings
 from steerai.action.executor import Executor
+from steerai.action.live_reads import UiaLiveReads
 from steerai.action.physical import PhysicalExecutor
 from steerai.orchestrator.contracts import Plan, Step, Subgoal, Target
 from steerai.orchestrator.gate import Ask, Gate
@@ -41,26 +41,6 @@ class YesConfirmer:
     def ask(self, ask: Ask) -> str:
         self.asked.append(ask)
         return f"yes:{ask.decision_id}"
-
-
-class _Live:
-    def __init__(self, client: UiaClient) -> None:
-        self._client = client
-        self._bindings = UiaBindings.load()
-
-    def value(self, handle: Any) -> str | None:
-        pattern = self._bindings.pattern(handle, UIA_VALUE_PATTERN, "ValuePattern")
-        raw = pattern.CurrentValue
-        return None if raw is None else str(raw)
-
-    def toggle_state(self, _handle: Any) -> int | None:
-        return None
-
-    def is_selected(self, _handle: Any) -> bool | None:
-        return None
-
-    def focused_runtime_id(self) -> tuple[int, ...]:
-        return self._client.focused_runtime_id()
 
 
 def _observe_until_exposed(model: WorldModel, hwnd: int, *, max_s: float = 25.0) -> Snapshot:
@@ -123,6 +103,7 @@ def test_a_send_task_runs_end_to_end_and_resumes_as_done(tmp_path: Path) -> None
         window = wait_window_for_pid(proc.pid, title_contains="Google Chrome")
         acquire_foreground(window.hwnd)
         client = UiaClient()
+        bindings = UiaBindings.load()
         model = WorldModel(client)
         start = _observe_until_exposed(model, window.hwnd)
         content_role = next(
@@ -139,7 +120,7 @@ def test_a_send_task_runs_end_to_end_and_resumes_as_done(tmp_path: Path) -> None
             physical=PhysicalExecutor(),
             gate=Gate(confirmer=confirmer, own_pid=0, task_id="task-live-1"),
             ledger=ledger,
-            live=_Live(client),
+            live=UiaLiveReads(client, bindings),
             trace=trace,
         )
         plan = _plan(content_role)
@@ -168,7 +149,7 @@ def test_a_send_task_runs_end_to_end_and_resumes_as_done(tmp_path: Path) -> None
             physical=PhysicalExecutor(),
             gate=Gate(confirmer=confirmer, own_pid=0, task_id="task-live-1"),
             ledger=resumed,
-            live=_Live(client),
+            live=UiaLiveReads(client, bindings),
         )
         assert fresh.run_step(plan.steps[2]).gate == "done_already"
         assert len(confirmer.asked) == 1, "resume never asked and never sent again"
