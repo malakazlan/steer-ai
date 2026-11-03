@@ -34,6 +34,7 @@ from steerai.orchestrator.loop import DEFAULT_MAX_STEPS, TaskResult
 from steerai.orchestrator.plan_io import PlanError, plan_from_bytes
 from steerai.orchestrator.trace import JsonLinesTrace, NullTrace, Trace
 from steerai.probes.windows import WindowInfo
+from steerai.session.monitor import DEFAULT_KILL_KEY, parse_kill_key
 from steerai.world.model import Snapshot, normalise_name
 
 EXIT_DONE = 0
@@ -80,6 +81,7 @@ class Options:
     warmup_s: float
     allow_plan_change: bool
     allow_window_change: bool
+    kill_key: str = DEFAULT_KILL_KEY
 
     def replace(self, **changes: Any) -> Options:
         return dataclasses.replace(self, **changes)
@@ -108,6 +110,8 @@ class Bound:
     ledger: Any
     """The task ledger: `LedgerLike` for the runner, the loop's `TaskLedger` for the session."""
     trace: Trace
+    monitor: Any = None
+    """The takeover monitor (`steerai.session.monitor.HookMonitor`), or None in pure tests."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +124,9 @@ class Deps:
     acquire_foreground: Callable[[int], str]
     open_ledger: Callable[[Path, str], LedgerLike]
     build_session: Callable[[Bound], SessionLike]
+    start_monitor: Callable[[Options], Any] | None = None
+    """Starts the takeover monitor (hooks and the kill hot key) for these options; None only in
+    pure tests. The real runner always monitors: 5.1 has no tier exception."""
 
     def replace(self, **changes: Any) -> Deps:
         return dataclasses.replace(self, **changes)
@@ -160,19 +167,23 @@ def resolve_window(
     return matches[0]
 
 
-def warm_up(
+def warm_up(  # noqa: PLR0913 - keyword-only tuning knobs plus the injected clock and kill
     observe: Callable[[], Snapshot],
     *,
     cap_s: float,
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     poll_s: float = 0.25,
+    kill: Callable[[], bool] | None = None,
 ) -> Snapshot:
     """First contact (5.1 [v0.6], RN-18): observe until three consecutive snapshots agree on
-    the node count, or the cap passes; the last snapshot is returned either way."""
+    the node count, or the cap passes; the last snapshot is returned either way. The kill
+    switch is honoured between observes (TK-22)."""
     start = monotonic()
     counts: list[int] = []
     while True:
+        if kill is not None and kill():
+            raise SteerError(ErrorCode.GATE_BLOCKED, "killed: the kill switch was pressed")
         snapshot = observe()
         counts.append(snapshot.node_count)
         if len(counts) >= 3 and counts[-1] == counts[-2] == counts[-3]:
@@ -264,9 +275,18 @@ def parse_args(argv: Sequence[str]) -> Options:
     parser.add_argument("--warmup-s", type=_non_negative(float), default=DEFAULT_WARMUP_S)
     parser.add_argument("--allow-plan-change", action="store_true")
     parser.add_argument("--allow-window-change", action="store_true")
+    parser.add_argument(
+        "--kill-key",
+        default=DEFAULT_KILL_KEY,
+        help="the global kill chord (at least one modifier; never F12 or a blocked shortcut)",
+    )
     try:
         args = parser.parse_args(list(argv))
     except argparse.ArgumentError as exc:
+        raise UsageError(str(exc)) from exc
+    try:
+        parse_kill_key(args.kill_key)
+    except ValueError as exc:
         raise UsageError(str(exc)) from exc
     return Options(
         plan=args.plan,
@@ -281,6 +301,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         warmup_s=float(args.warmup_s),
         allow_plan_change=bool(args.allow_plan_change),
         allow_window_change=bool(args.allow_window_change),
+        kill_key=str(args.kill_key),
     )
 
 
@@ -448,7 +469,7 @@ def _open_trace(options: Options) -> Trace:
     return trace
 
 
-def _run_bound(  # noqa: PLR0913, PLR0911 - the run's state, one return per exit path
+def _run_bound(  # noqa: PLR0913 - the run's state, one return per exit path
     plan: Plan,
     data: bytes,
     *,
@@ -462,6 +483,62 @@ def _run_bound(  # noqa: PLR0913, PLR0911 - the run's state, one return per exit
     try:
         trace = _open_trace(options)  # first: a bad path binds nothing and taps nothing
         ledger.bind_plan(hashlib.sha256(data).hexdigest(), allow_change=options.allow_plan_change)
+        monitor = deps.start_monitor(options) if deps.start_monitor is not None else None
+    except UsageError as exc:
+        return out.error("usage", note=str(exc))
+    except LedgerError as exc:
+        return _ledger_refusal(out, exc)
+    except SteerError as exc:
+        return _monitor_refusal(out, exc)
+    except KeyboardInterrupt:
+        return _interrupted(out)
+    try:
+        return _run_monitored(
+            plan,
+            ledger=ledger,
+            monitor=monitor,
+            trace=trace,
+            options=options,
+            deps=deps,
+            out=out,
+            stdin=stdin,
+            stderr=stderr,
+        )
+    finally:
+        if monitor is not None:
+            monitor.close()
+
+
+def _monitor_refusal(out: _Out, exc: SteerError) -> int:
+    kind = exc.message.split(":", 1)[0].strip()
+    if kind not in ("kill_key_unavailable", "monitor_unavailable"):
+        kind = "setup_failed"
+    hint = " (pass --kill-key to choose another chord)" if kind == "kill_key_unavailable" else ""
+    return out.error(kind, code=exc.code, note=f"monitor: {exc.message}{hint}")
+
+
+def _ledger_refusal(out: _Out, exc: LedgerError) -> int:
+    detail = _ledger_detail(exc)
+    hint = {
+        "plan_changed": " (pass --allow-plan-change if that is deliberate)",
+        "window_changed": " (pass --allow-window-change if that is deliberate)",
+    }.get(detail, "")
+    return out.error(detail, code=ErrorCode.GATE_BLOCKED, note=f"ledger: {exc.message}{hint}")
+
+
+def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per exit path
+    plan: Plan,
+    *,
+    ledger: LedgerLike,
+    monitor: Any,
+    trace: Trace,
+    options: Options,
+    deps: Deps,
+    out: _Out,
+    stdin: TextIO,
+    stderr: TextIO,
+) -> int:
+    try:
         window = _pick_window(options, deps)
         ledger.bind_window(
             pid=window.pid, title=window.title, allow_change=options.allow_window_change
@@ -478,21 +555,17 @@ def _run_bound(  # noqa: PLR0913, PLR0911 - the run's state, one return per exit
             title=window.title,
             task_id=options.task_id,
             options=options,
-            confirmer=ConsoleConfirmer(stdin, stderr),
+            confirmer=ConsoleConfirmer(stdin, stderr, monitor=monitor),
             ledger=ledger,
             trace=SafeTrace(trace, stderr),
+            monitor=monitor,
         )
         session = deps.build_session(bound)
         result = session.run_task(plan)
     except UsageError as exc:
         return out.error("usage", note=str(exc))
     except LedgerError as exc:
-        detail = _ledger_detail(exc)
-        hint = {
-            "plan_changed": " (pass --allow-plan-change if that is deliberate)",
-            "window_changed": " (pass --allow-window-change if that is deliberate)",
-        }.get(detail, "")
-        return out.error(detail, code=ErrorCode.GATE_BLOCKED, note=f"ledger: {exc.message}{hint}")
+        return _ledger_refusal(out, exc)
     except RunnerError as exc:
         _candidates(out, exc.candidates)
         return out.error(exc.detail, code=exc.code, note=f"window: {exc.detail}")
@@ -532,13 +605,19 @@ def _build_session(bound: Bound) -> SessionLike:
         )
     bindings = UiaBindings.load()
     model = WorldModel(client)
-    warm_up(lambda: model.observe(bound.hwnd, cap_s=5.0), cap_s=bound.options.warmup_s)
+    monitor = bound.monitor
+    blocker = None if monitor is None else _kill_blocker(monitor)
+    warm_up(
+        lambda: model.observe(bound.hwnd, cap_s=5.0),
+        cap_s=bound.options.warmup_s,
+        kill=None if monitor is None else monitor.kill_requested,
+    )
     return Session(
         task_id=bound.task_id,
         hwnd=bound.hwnd,
         observer=model,
-        semantic=Executor(),
-        physical=PhysicalExecutor(),
+        semantic=Executor(blocker=blocker),
+        physical=PhysicalExecutor(blocker=blocker),
         gate=Gate(confirmer=bound.confirmer, own_pid=os.getpid(), task_id=bound.task_id),
         ledger=bound.ledger,
         live=UiaLiveReads(client, bindings),
@@ -546,7 +625,20 @@ def _build_session(bound: Bound) -> SessionLike:
         trace=bound.trace,
         verify_deadline_s=bound.options.verify_deadline_s,
         max_steps=bound.options.max_steps,
+        monitor=monitor,
     )
+
+
+def _kill_blocker(monitor: Any) -> Callable[[], str | None]:
+    return lambda: "killed" if monitor.kill_requested() else None
+
+
+def _start_monitor(options: Options) -> Any:
+    from steerai.session.monitor import HookMonitor  # noqa: PLC0415 - Windows hooks
+
+    monitor = HookMonitor(kill_key=options.kill_key)
+    monitor.start()
+    return monitor
 
 
 def _real_deps() -> Deps:
@@ -560,6 +652,7 @@ def _real_deps() -> Deps:
         acquire_foreground=acquire_foreground,
         open_ledger=lambda root, task_id: Ledger(root, task_id=task_id, started_at=time.time()),
         build_session=_build_session,
+        start_monitor=_start_monitor,
     )
 
 
