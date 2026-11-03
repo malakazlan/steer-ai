@@ -81,6 +81,7 @@ class FakeInput:
     hung: bool = False
     own: int = 4242
     window_box: tuple[int, int, int, int] = (0, 0, 1000, 800)
+    screen_box: tuple[int, int, int, int] = (0, 0, 1920, 1080)
     cursor_override: tuple[int, int] | None = None
     double_click_s: float = 0.5
     double_click_px: int = 4
@@ -116,6 +117,9 @@ class FakeInput:
 
     def window_rect(self, _hwnd: int) -> tuple[int, int, int, int]:
         return self.window_box
+
+    def screen_rect(self) -> tuple[int, int, int, int]:
+        return self.screen_box
 
     def root_hwnd_at(self, _x: int, _y: int) -> int:
         return self.root_at
@@ -313,6 +317,7 @@ def test_click_moves_checks_the_cursor_and_clicks_the_live_centre(fast_clock: An
         "reason": "no_postcondition",
         "clicked_at": [60, 30],
         "foreground_was_target": True,
+        "cursor_at": [60, 30],
         "hit_after": "target",
     }
 
@@ -381,8 +386,24 @@ def test_element_that_moved_after_the_cursor_arrived_is_not_clicked(fast_clock: 
 
 
 def test_cursor_that_did_not_land_on_the_point_aborts_before_the_click(fast_clock: Any) -> None:
-    inputs = FakeInput(cursor_override=(61, 30))
+    inputs = FakeInput(cursor_override=(63, 30))
     result = _executor(inputs).execute(CLICK, _snapshot(FakeHandle()))
+    assert inputs.clicks == []
+    assert result.evidence["detail"] == "cursor_mismatch"
+
+
+def test_cursor_one_pixel_off_inside_the_target_is_accepted(fast_clock: Any) -> None:
+    # Measured 2026-11-04 (PX-39): absolute coordinates round through the virtual screen.
+    inputs = FakeInput(cursor_override=(61, 31))
+    result = _executor(inputs).execute(CLICK, _snapshot(FakeHandle()))
+    assert inputs.clicks == [CENTRE]
+    assert result.evidence["cursor_at"] == [61, 31]
+
+
+def test_cursor_one_pixel_off_but_outside_a_thin_target_is_refused(fast_clock: Any) -> None:
+    handle = FakeHandle(box=(10, 30, 110, 31))
+    inputs = FakeInput(cursor_override=(60, 31))
+    result = _executor(inputs).execute(CLICK, _snapshot(handle))
     assert inputs.clicks == []
     assert result.evidence["detail"] == "cursor_mismatch"
 
@@ -436,6 +457,17 @@ def test_hit_on_a_descendant_of_the_target_is_accepted(fast_clock: Any) -> None:
     result = _executor(inputs).execute(CLICK, _snapshot(FakeHandle()))
     assert inputs.clicks == [CENTRE]
     assert result.delivery is Delivery.DELIVERED_UNVERIFIED
+
+
+def test_element_below_the_physical_screen_is_clipped(fast_clock: Any) -> None:
+    # Measured 2026-11-04: a 1200x900 logical Chrome window at 125 % runs past a 1080-pixel
+    # screen; its composer sits at y 1101 and the cursor clamps to y 1079.
+    handle = FakeHandle(box=(592, 1101, 803, 1124))
+    inputs = FakeInput(window_box=(50, 50, 1550, 1152), screen_box=(0, 0, 1920, 1080))
+    result = _executor(inputs).execute(CLICK, _snapshot(handle))
+    assert inputs.moves == []
+    assert result.code is ErrorCode.ELEMENT_NOT_ACTIONABLE
+    assert result.evidence["detail"] == "clipped"
 
 
 def test_partially_clipped_element_is_clicked_in_its_visible_part(fast_clock: Any) -> None:
