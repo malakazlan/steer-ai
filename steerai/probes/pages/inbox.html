@@ -58,6 +58,21 @@
   </footer>
 </main>
 <script>
+  // ?rows=N appends N deterministic chat rows so a probe can observe a dense tree (no network).
+  (function () {
+    var m = /[?&]rows=(\d+)/.exec(window.location.search);
+    if (!m) { return; }
+    var list = document.querySelector('ul[aria-label="Chat list"]');
+    var n = Math.min(parseInt(m[1], 10), 5000);
+    for (var i = 0; i < n; i++) {
+      var li = document.createElement('li');
+      var a = document.createElement('a');
+      a.href = '#chat-extra-' + i;
+      a.textContent = 'Contact ' + i + ' · message ' + i + ' · ' + (i % 24) + 'h';
+      li.appendChild(a);
+      list.appendChild(li);
+    }
+  })();
   // Deterministic Send for the verifier probe: append an outgoing bubble with the composer text,
   // then clear the composer. No timers, no network. With ?noop=1 the button does nothing, so a
   // verifier that passes on this variant has a false-success path.
