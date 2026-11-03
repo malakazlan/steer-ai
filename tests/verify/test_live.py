@@ -105,12 +105,15 @@ def test_send_on_the_inbox_page_is_verified_by_t1() -> None:
         assert label.holds is True
         assert MESSAGE not in str(label.to_dict())
 
-        # The same send a second time against the same before snapshot is not a new effect.
+        # Against a before snapshot that already shows the bubble, the same text is not a new
+        # effect. (The orchestrator's `after` may predate the DOM update, which is why the
+        # verdict names the snapshot that decided it; a fresh settled snapshot is used here.)
+        settled = model.observe(window.hwnd, cap_s=5.0)
         again = verify(
             Appeared(
                 role=content_role, name_pattern=MESSAGE, within=Within(landmark="Conversation")
             ),
-            after,
+            settled,
             model.observe(window.hwnd, cap_s=5.0, stable_window=1),
             lambda **kw: model.observe(window.hwnd, cap_s=5.0, **kw),
             deadline_s=0.5,
