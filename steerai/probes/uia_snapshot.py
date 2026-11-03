@@ -22,6 +22,7 @@ _CACHED_PROPERTIES = (
     "UIA_BoundingRectanglePropertyId",
     "UIA_IsEnabledPropertyId",
     "UIA_IsOffscreenPropertyId",
+    "UIA_RuntimeIdPropertyId",
 )
 
 
@@ -41,6 +42,8 @@ class RawNode:
     automation_id: str
     box: tuple[int, int, int, int]
     offscreen: bool
+    enabled: bool = True
+    runtime_id: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +51,9 @@ class TreeSnapshot:
     nodes: list[RawNode]
     fetch_ms: float
     walk_ms: float
+    handles: list[Any] = field(default_factory=list)
+    """Live cached COM elements, one per node (comtypes has no stubs, hence Any). Act through
+    these; they support Current* properties and patterns. Never let them cross a process."""
 
 
 class UiaClient:
@@ -103,14 +109,18 @@ class UiaClient:
         fetch_ms = (time.perf_counter_ns() - started) / 1_000_000
         started = time.perf_counter_ns()
         nodes: list[RawNode] = []
-        self._walk_cached(root, 0, nodes)
+        handles: list[Any] = []
+        self._walk_cached(root, 0, nodes, handles)
         walk_ms = (time.perf_counter_ns() - started) / 1_000_000
-        return TreeSnapshot(nodes=nodes, fetch_ms=fetch_ms, walk_ms=walk_ms)
+        return TreeSnapshot(nodes=nodes, fetch_ms=fetch_ms, walk_ms=walk_ms, handles=handles)
 
-    def _walk_cached(self, element: Any, depth: int, out: list[RawNode]) -> None:
+    def _walk_cached(
+        self, element: Any, depth: int, out: list[RawNode], handles: list[Any]
+    ) -> None:
         # `element` is a cached COM element; comtypes has no stubs, hence Any.
         rect = element.CachedBoundingRectangle
         type_id = int(element.CachedControlType)
+        runtime_id = element.GetCachedPropertyValue(self._uia_module.UIA_RuntimeIdPropertyId)
         out.append(
             RawNode(
                 depth=depth,
@@ -119,15 +129,18 @@ class UiaClient:
                 automation_id=str(element.CachedAutomationId or ""),
                 box=(int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)),
                 offscreen=bool(element.CachedIsOffscreen),
+                enabled=bool(element.CachedIsEnabled),
+                runtime_id=tuple(int(v) for v in runtime_id) if runtime_id else (),
             )
         )
+        handles.append(element)
         try:
             children = element.GetCachedChildren()
             count = int(children.Length)
         except ValueError:  # comtypes raises on a NULL pointer: leaf node
             return
         for index in range(count):
-            self._walk_cached(children.GetElement(index), depth + 1, out)
+            self._walk_cached(children.GetElement(index), depth + 1, out, handles)
 
     def bounding_rect(self, hwnd: int) -> tuple[int, int, int, int]:
         """UIA bounding rectangle of the window element, in physical screen pixels."""

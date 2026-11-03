@@ -2,7 +2,14 @@
 
 import pytest
 
-from steerai.probes.windows import WindowInfo, find_window, list_top_windows, wait_window_for_pid
+from steerai.probes.windows import (
+    WindowInfo,
+    find_window,
+    is_cloaked,
+    list_top_windows,
+    process_name,
+    wait_window_for_pid,
+)
 
 pytestmark = pytest.mark.windows
 
@@ -37,3 +44,19 @@ def test_wait_window_for_pid_finds_an_existing_window() -> None:
 
 def test_find_window_returns_none_when_absent() -> None:
     assert find_window("no window has this title 7f3a9c") is None
+
+
+def test_listed_windows_are_never_cloaked() -> None:
+    assert not any(is_cloaked(w.hwnd) for w in list_top_windows())
+
+
+def test_process_name_of_a_listed_window_ends_with_exe() -> None:
+    assert process_name(list_top_windows()[0].pid).lower().endswith(".exe")
+
+
+def test_process_name_of_an_invalid_pid_is_empty() -> None:
+    assert process_name(0) == ""
+
+
+def test_minimized_flag_is_a_bool_for_every_window() -> None:
+    assert all(isinstance(w.minimized, bool) for w in list_top_windows())
