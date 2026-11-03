@@ -12,12 +12,26 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import TextIO
+import threading
+from typing import Protocol, TextIO
 
 from steerai.orchestrator.gate import Ask
 
 MAX_ANSWER_CHARS = 4096
 """An answer longer than this is not an answer (RN-42)."""
+KILL_POLL_S = 0.1
+"""How often a waiting ask looks at the kill switch (unmeasured)."""
+_KILLED = object()
+
+
+class KillSource(Protocol):
+    """What the confirmer needs from the takeover monitor: the kill flag and the ask bracket."""
+
+    def kill_requested(self) -> bool: ...
+    def mark_ask_open(self) -> None: ...
+    def mark_ask_closed(self) -> None: ...
+
+
 _PREFIX = "  "
 
 
@@ -76,9 +90,13 @@ class ConsoleConfirmer:
         stderr: TextIO | None = None,
         *,
         interactive: bool | None = None,
+        monitor: KillSource | None = None,
+        poll_s: float = KILL_POLL_S,
     ) -> None:
         self._stdin = sys.stdin if stdin is None else stdin
         self._stderr = sys.stderr if stderr is None else stderr
+        self._monitor = monitor
+        self._poll_s = poll_s
         if interactive is None:
             try:
                 interactive = bool(self._stdin.isatty())
@@ -94,10 +112,39 @@ class ConsoleConfirmer:
             return "unanswered"
         if not self._write(text):
             return "unanswered"
-        line = self._read()
-        if line is None:
+        if self._monitor is not None:
+            self._monitor.mark_ask_open()
+        try:
+            line = self._read_or_kill()
+        finally:
+            if self._monitor is not None:
+                self._monitor.mark_ask_closed()
+        if line is _KILLED:
+            return "killed"
+        if not isinstance(line, str):
             return "unanswered"
         return self._classify(line.rstrip("\r\n").strip(), ask.decision_id)
+
+    def _read_or_kill(self) -> str | object | None:
+        """One line, or the kill sentinel: a blocking read cannot be interrupted on Windows, so
+        a reader thread blocks and this thread polls the kill switch beside it (TK-08)."""
+        monitor = self._monitor
+        if monitor is None:
+            return self._read()
+        if monitor.kill_requested():
+            return _KILLED
+        box: list[str | None] = []
+        done = threading.Event()
+
+        def read() -> None:
+            box.append(self._read())
+            done.set()
+
+        threading.Thread(target=read, name="steer-console-read", daemon=True).start()
+        while not done.wait(timeout=self._poll_s):
+            if monitor.kill_requested():
+                return _KILLED  # the reader stays blocked on the pipe and dies with the process
+        return box[0] if box else None
 
     def _classify(self, answer: str, decision_id: str) -> str:
         bound_yes = f"yes:{decision_id}"
