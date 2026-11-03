@@ -71,6 +71,7 @@ NO_LABEL_REASONS: frozenset[str] = frozenset(
         "secure_target",
         "siblings_changed",
         "anchor_vanished",
+        "anchor_transient",
     }
 )
 
@@ -232,12 +233,13 @@ def _appearance(
     after_ids = {e.runtime_id for e in after.elements if e.runtime_id}
     in_role = [e for e in after.elements if e.id in scope.ids and e.role == predicate.role]
     new_role = [e for e in in_role if e.runtime_id and e.runtime_id not in before_ids]
+    new_matches = [e for e in new_role if _scoped(scope, e, predicate.role, predicate.name_pattern)]
+    # The effect's own subtree (a bubble's timestamp and status texts) is not unrelated churn.
+    owned = _descendant_ids(after, [e.id for e in new_matches])
     return _Appearance(
         in_role=in_role,
-        new_role=new_role,
-        new_matches=[
-            e for e in new_role if _scoped(scope, e, predicate.role, predicate.name_pattern)
-        ],
+        new_role=[e for e in new_role if e.id not in owned],
+        new_matches=new_matches,
         count_before=sum(
             1
             for e in before.elements
@@ -315,6 +317,21 @@ def _appeared(predicate: Appeared, before: Snapshot, after: Snapshot) -> Verdict
         polls=0,
         evidence={"level": scope.level, "matched": len(seen.new_matches)},
     )
+
+
+def _descendant_ids(snapshot: Snapshot, roots: list[int]) -> set[int]:
+    children: dict[int | None, list[int]] = {}
+    for element in snapshot.elements:
+        children.setdefault(element.parent_id, []).append(element.id)
+    ids: set[int] = set()
+    stack = list(roots)
+    while stack:
+        node = stack.pop()
+        for child in children.get(node, []):
+            if child not in ids:
+                ids.add(child)
+                stack.append(child)
+    return ids
 
 
 def _out_of_order(predicate: Appeared, seen: _Appearance) -> bool:
@@ -562,7 +579,10 @@ def _all(predicate: All, before: Snapshot, after: Snapshot, ctx: Context) -> Ver
     verdicts = [_evaluate(part, before, after, ctx) for part in predicate.parts]
     failing = next((v for v in verdicts if not v.holds), None)
     if failing is not None:
-        return replace(failing, state=_combined_state(verdicts))
+        # A part with a typed contradiction (a duplicate effect, an empty value) decides the
+        # conjunction on its own: it cannot un-happen while a sibling part is still pending.
+        settled = next((v for v in verdicts if not v.holds and v.state is not None), None)
+        return settled if settled is not None else replace(failing, state=None)
     return Verdict(
         holds=True,
         code=None,
@@ -721,6 +741,8 @@ def redact(predicate: Predicate) -> dict[str, Any]:
                     spec["excluding_anchor"] = predicate.excluding_anchor
                 if predicate.expected != 1:
                     spec["expected"] = predicate.expected
+                if predicate.order != "append":
+                    spec["order"] = predicate.order
         case ValueEquals() | Focused() | State():
             spec["target_id"] = predicate.target_id
             if isinstance(predicate, State):

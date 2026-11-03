@@ -65,12 +65,11 @@ def resolve_scope(
     if within is not None and within.anchor_id is not None and within.anchor_id in by_id:
         container = _nearest_container(by_id[within.anchor_id], by_id)
         if container is not None:
-            return Scope(
-                level=2,
-                ids=_subtree(container.id, children) - excluded,
-                container_id=container.id,
-                strict=False,
-            )
+            ids = _subtree(container.id, children) - excluded
+            if not ids:
+                # The anchor sits in a toast or tooltip: nothing there is ever evidence.
+                return Scope(level=0, reason="anchor_transient")
+            return Scope(level=2, ids=ids, container_id=container.id, strict=False)
     return Scope(level=3, ids={e.id for e in snapshot.elements} - excluded, strict=True)
 
 
