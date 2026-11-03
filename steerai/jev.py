@@ -14,7 +14,9 @@ from typing import Any
 import httpx2
 from typesafe_sdk import Choice, TypeSafeClient
 
-NONE_OPTION = "none"
+from steerai.decision import NONE_OPTION, ElementChoice, option_ids, top2_margin
+
+__all__ = ["NONE_OPTION", "ElementChoice", "JevClient", "JevSettings", "build_element_question"]
 _ELEMENT_KEY = "target"
 
 
@@ -25,19 +27,10 @@ class JevSettings:
     model: str
 
 
-@dataclass(frozen=True, slots=True)
-class ElementChoice:
-    element_id: int | None
-    confidence: float
-    margin: float
-    probabilities: dict[str, float]
-    model: str
-    latency_ms: float
-
-
 def build_element_question(*, intent: str, lines: Sequence[str]) -> tuple[dict[str, str], Choice]:
     """State + Choice over element ids (design 5.8: one Choice, ids as options, `none` included)."""
-    criteria: dict[str, str | None] = {line.split(" ", 1)[0]: line for line in lines}
+    numbered = {line.split(" ", 1)[0]: line for line in lines}
+    criteria: dict[str, str | None] = {key: numbered[key] for key in option_ids(lines)}
     criteria[NONE_OPTION] = "No listed element is the right target for this intent."
     state = {"intent": intent, "screen": "\n".join(lines)}
     question = Choice(
@@ -101,15 +94,8 @@ class JevClient:
         return ElementChoice(
             element_id=None if chosen == NONE_OPTION else int(chosen),
             confidence=float(answer.confidence),
-            margin=_top2_margin(probabilities),
+            margin=top2_margin(probabilities),
             probabilities=probabilities,
             model=str(response.model),
             latency_ms=latency_ms,
         )
-
-
-def _top2_margin(probabilities: dict[str, float]) -> float:
-    ordered = sorted(probabilities.values(), reverse=True)
-    if not ordered:
-        return 0.0
-    return ordered[0] - (ordered[1] if len(ordered) > 1 else 0.0)
