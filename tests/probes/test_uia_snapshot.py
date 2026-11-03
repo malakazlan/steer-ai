@@ -3,9 +3,21 @@
 import pytest
 
 from steerai.probes.uia_snapshot import Snapshot, UiaClient
+from steerai.probes.win_input import window_rect
 from steerai.probes.windows import list_top_windows
 
 pytestmark = pytest.mark.windows
+
+
+def _drivable_hwnd() -> int:
+    """A visible, non-minimized window with a real rectangle, or skip when the desktop has none."""
+    for window in list_top_windows():
+        if window.minimized:
+            continue
+        left, top, right, bottom = window_rect(window.hwnd)
+        if right > left and bottom > top:
+            return window.hwnd
+    pytest.skip("every window on this desktop is minimized")
 
 
 @pytest.fixture(scope="module")
@@ -39,7 +51,7 @@ def test_cached_tree_has_structure_and_matches_flat_count(client: UiaClient) -> 
 
 
 def test_bounding_rect_of_a_real_window_is_non_empty(client: UiaClient) -> None:
-    hwnd = list_top_windows()[0].hwnd
+    hwnd = _drivable_hwnd()
     left, top, right, bottom = client.bounding_rect(hwnd)
     assert right > left
     assert bottom > top
@@ -57,3 +69,22 @@ def test_timeouts_are_applied(client: UiaClient) -> None:
 def test_invalid_hwnd_raises(client: UiaClient) -> None:
     with pytest.raises(OSError, match="no UIA element for hwnd"):
         client.snapshot_subtree(0x7FFF_FFF1)
+
+
+def test_cached_tree_handles_align_with_nodes_and_runtime_ids_are_set(client: UiaClient) -> None:
+    hwnd = _drivable_hwnd()
+    tree = client.cached_tree(hwnd)
+    assert len(tree.handles) == len(tree.nodes)
+    assert all(node.runtime_id for node in tree.nodes)
+    assert all(isinstance(node.enabled, bool) for node in tree.nodes)
+
+
+def test_cached_tree_runtime_ids_are_unique_within_one_snapshot(client: UiaClient) -> None:
+    tree = client.cached_tree(_drivable_hwnd())
+    ids = [node.runtime_id for node in tree.nodes]
+    assert len(ids) == len(set(ids))
+
+
+def test_cached_tree_of_an_invalid_hwnd_raises(client: UiaClient) -> None:
+    with pytest.raises(OSError, match="no UIA element for hwnd"):
+        client.cached_tree(0x7FFF_FFF1)

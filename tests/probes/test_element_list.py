@@ -39,4 +39,4 @@ def test_prune_caps_and_reports_remainder() -> None:
     elements = [_el(i, 0, "Button", f"b{i}") for i in range(1, 8)]
     kept = prune(elements, cap=5)
     assert len(kept) == 5
-    assert format_lines(kept, remaining=2)[-1] == "(... 2 more below)"
+    assert format_lines(kept, remaining=2)[-1] == "(... 2 more not shown)"
