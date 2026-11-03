@@ -54,6 +54,7 @@ from steerai.world.elements import Box, Element
 from steerai.world.model import Snapshot
 
 VERBS: frozenset[str] = frozenset({"click", "type", "press"})
+CURSOR_TOLERANCE_PX = 1
 MAX_UNITS_PER_STEP = 500
 """A ceiling, not a budget: typing time is additive to the step. Measured 2026-11-04 (probe
 typing-pace, `keyboard.type_text` alone): about 1 ms/unit in Chrome and 3 ms/unit in Notepad,
@@ -105,6 +106,7 @@ class InputPort(Protocol):
     def integrity_level(self, pid: int) -> int | None: ...
     def caller_integrity_level(self) -> int: ...
     def window_rect(self, hwnd: int) -> Box: ...
+    def screen_rect(self) -> Box: ...
     def root_hwnd_at(self, x: int, y: int) -> int: ...
     def runtime_id_at(self, x: int, y: int) -> tuple[int, ...]: ...
     def physical_modifiers_down(self) -> list[str]: ...
@@ -154,6 +156,9 @@ class LiveInput:
 
     def window_rect(self, hwnd: int) -> Box:
         return win_input.window_rect(hwnd)
+
+    def screen_rect(self) -> Box:
+        return win_input.virtual_screen_rect()
 
     def root_hwnd_at(self, x: int, y: int) -> int:
         return win_input.root_hwnd_at(x, y)
@@ -231,6 +236,7 @@ class _Target:
     element: Element
     handle: Any  # live COM element; comtypes has no stubs
     point: tuple[int, int]
+    visible: Box
     subtree: frozenset[tuple[int, ...]]
     """RuntimeIds of the element and its snapshot descendants: the hit-test acceptance set."""
     ancestors: frozenset[tuple[int, ...]]
@@ -300,13 +306,14 @@ class PhysicalExecutor:
         if bool(handle.CurrentIsOffscreen):
             raise RefusalError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "offscreen")
         live = sample_stable_rect(lambda: _rect(handle))
-        visible = _intersect(live, inputs.window_rect(snapshot.hwnd))
+        visible = _visible_part(live, inputs.window_rect(snapshot.hwnd), inputs.screen_rect())
         if visible is None:
             raise RefusalError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "clipped")
         target = _Target(
             element=element,
             handle=handle,
             point=centre_of(visible),
+            visible=visible,
             subtree=_subtree_ids(snapshot, element),
             ancestors=_ancestor_ids(snapshot, element),
         )
@@ -354,10 +361,18 @@ class PhysicalExecutor:
             "foreground_was_target": inputs.foreground_hwnd() == snapshot.hwnd,
         }
         inputs.move_cursor(*target.point)
-        if inputs.cursor_pos() != target.point:
+        cursor = inputs.cursor_pos()
+        # Absolute SendInput coordinates round through the virtual screen (PX-39). Measured
+        # 2026-11-04 on a single 125 % monitor: on-screen points land exactly; the one-pixel
+        # tolerance covers the inverse mapping on other layouts (unmeasured). The cursor must
+        # sit on the target: inside its visible rectangle and within tolerance of the point.
+        if not _within(cursor, target.point, CURSOR_TOLERANCE_PX, target.visible):
             raise RefusalError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "cursor_mismatch")
+        evidence["cursor_at"] = list(cursor)
         # Last look before the button goes down: still the same rectangle, still the target.
-        visible = _intersect(_rect(target.handle), inputs.window_rect(snapshot.hwnd))
+        visible = _visible_part(
+            _rect(target.handle), inputs.window_rect(snapshot.hwnd), inputs.screen_rect()
+        )
         if visible is None or centre_of(visible) != target.point:
             raise RefusalError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "target_moved")
         self._hit_test(target, snapshot.hwnd, moved_detail="target_moved")
@@ -541,6 +556,19 @@ _DISPATCH: dict[
 def _rect(handle: Any) -> Box:
     rect = handle.CurrentBoundingRectangle
     return int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
+
+
+def _within(cursor: tuple[int, int], point: tuple[int, int], tolerance: int, box: Box) -> bool:
+    near = abs(cursor[0] - point[0]) <= tolerance and abs(cursor[1] - point[1]) <= tolerance
+    inside = box[0] <= cursor[0] < box[2] and box[1] <= cursor[1] < box[3]
+    return near and inside
+
+
+def _visible_part(live: Box, window: Box, screen: Box) -> Box | None:
+    """The part of the live rectangle inside both the window and the virtual screen (PX-20): a
+    window taller than the screen leaves its bottom controls unreachable by the cursor."""
+    in_window = _intersect(live, window)
+    return None if in_window is None else _intersect(in_window, screen)
 
 
 def _intersect(a: Box, b: Box) -> Box | None:

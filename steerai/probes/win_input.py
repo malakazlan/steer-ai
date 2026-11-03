@@ -167,6 +167,17 @@ def double_click_size_px() -> int:
     return max(width, height) // 2
 
 
+def virtual_screen_rect() -> tuple[int, int, int, int]:
+    """The union of all monitors in physical pixels (`SM_*VIRTUALSCREEN`); a point outside it
+    cannot be reached by the cursor, which Windows clamps to the screen edge."""
+    user32 = _user32()
+    left = int(user32.GetSystemMetrics(_SM_XVIRTUALSCREEN))
+    top = int(user32.GetSystemMetrics(_SM_YVIRTUALSCREEN))
+    width = int(user32.GetSystemMetrics(_SM_CXVIRTUALSCREEN))
+    height = int(user32.GetSystemMetrics(_SM_CYVIRTUALSCREEN))
+    return left, top, left + width, top + height
+
+
 def cursor_pos() -> tuple[int, int]:
     user32 = _user32()
     user32.GetCursorPos.argtypes = (ctypes.POINTER(wintypes.POINT),)

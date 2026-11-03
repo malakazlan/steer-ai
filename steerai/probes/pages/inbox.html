@@ -57,5 +57,26 @@
     <button>Voice message</button>
   </footer>
 </main>
+<script>
+  // Deterministic Send for the verifier probe: append an outgoing bubble with the composer text,
+  // then clear the composer. No timers, no network. With ?noop=1 the button does nothing, so a
+  // verifier that passes on this variant has a false-success path.
+  (function () {
+    var buttons = document.querySelectorAll("footer button");
+    var send = Array.prototype.filter.call(buttons, function (b) { return b.textContent === "Send"; })[0];
+    var composer = document.querySelector("footer textarea");
+    var messages = document.querySelector("section.msgs");
+    var noop = /[?&]noop=1/.test(window.location.search);
+    send.addEventListener("click", function () {
+      var text = composer.value;
+      if (!text || noop) { return; }
+      var bubble = document.createElement("div");
+      bubble.className = "bubble out";
+      bubble.textContent = text;
+      messages.insertBefore(bubble, messages.querySelector("button"));
+      composer.value = "";
+    });
+  })();
+</script>
 </body>
 </html>

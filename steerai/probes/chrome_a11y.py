@@ -125,7 +125,14 @@ def page_ws_url(port: int, *, timeout_s: float = 15.0) -> str:
 # ---------------------------------------------------------------- Chrome
 
 
-def launch_chrome(chrome: Path, profile_dir: Path, port: int, url: str) -> subprocess.Popen[bytes]:
+def launch_chrome(
+    chrome: Path,
+    profile_dir: Path,
+    port: int,
+    url: str,
+    *,
+    window_size: tuple[int, int] = (1200, 900),
+) -> subprocess.Popen[bytes]:
     args = [
         str(chrome),
         f"--user-data-dir={profile_dir}",
@@ -133,7 +140,7 @@ def launch_chrome(chrome: Path, profile_dir: Path, port: int, url: str) -> subpr
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-sync",
-        "--window-size=1200,900",
+        f"--window-size={window_size[0]},{window_size[1]}",
         "--window-position=40,40",
         url,
     ]
