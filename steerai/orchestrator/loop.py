@@ -132,6 +132,28 @@ class TaskResult:
     evidence: dict[str, Any] = field(default_factory=dict)
 
 
+def wait_for_idle(
+    monitor: Monitor, *, monotonic: Callable[[], float], sleep: Callable[[float], None]
+) -> str | None:
+    """The one rule for anything that acts on the person's desktop (5.1 [v1.4]): the kill
+    switch first (nothing is injected after the key), then the monitor's health, then the
+    person's idle time, polled up to `MAX_WAIT_S`. Returns None to go ahead, or the token
+    `killed`, `takeover` or the monitor's own detail."""
+    started = monotonic()
+    while True:
+        if monitor.kill_requested():
+            return "killed"
+        monitor.maintain()
+        if not monitor.healthy():
+            return monitor.detail()
+        now = monotonic()
+        if now - monitor.last_user_input() >= IDLE_S:
+            return None
+        if now - started >= MAX_WAIT_S:
+            return "takeover"
+        sleep(WAIT_POLL_S)
+
+
 class _StepFailureError(Exception):
     def __init__(self, code: ErrorCode, detail: str) -> None:
         super().__init__(detail)
@@ -430,25 +452,17 @@ class Session:
         if monitor is None:
             return False
         started = self._monotonic()
-        waited = False
-        while True:
-            if monitor.kill_requested():
-                raise _KilledError  # before the self-probe: nothing is injected after the key
-            monitor.maintain()
-            if not monitor.healthy():
-                raise _StepFailureError(ErrorCode.GATE_BLOCKED, monitor.detail())
-            now = self._monotonic()
-            if now - monitor.last_user_input() >= IDLE_S:
-                break
-            if now - started >= MAX_WAIT_S:
-                raise _TakeoverError
-            waited = True
-            self._sleep(WAIT_POLL_S)
-        if waited:
-            evidence["waited_s"] = round(
-                evidence.get("waited_s", 0.0) + (self._monotonic() - started), 3
-            )
-        return waited
+        held = wait_for_idle(monitor, monotonic=self._monotonic, sleep=self._sleep)
+        if held == "killed":
+            raise _KilledError
+        if held == "takeover":
+            raise _TakeoverError
+        if held is not None:
+            raise _StepFailureError(ErrorCode.GATE_BLOCKED, held)
+        waited_s = self._monotonic() - started
+        if waited_s > 0:
+            evidence["waited_s"] = round(evidence.get("waited_s", 0.0) + waited_s, 3)
+        return waited_s > 0
 
     def _after_ask(
         self, step: Step, before: Snapshot, stage: _Stage, evidence: dict[str, Any]
@@ -669,6 +683,7 @@ class Session:
             detail = result.evidence.get("detail")
             if detail in ("offscreen", "clipped") and not scrolled:
                 scrolled = True
+                self._boundary(self._act_evidence)  # the scroll is a dispatch too
                 scroll_result = self._semantic.execute(
                     Action(verb="scroll_into_view", element_id=element_id), before
                 )
