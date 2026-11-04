@@ -1,28 +1,23 @@
 """The launcher and overlay window (design 5.1 asks surface; packet launcher-2026-11-04,
-schema gate items 1-6 folded in).
+schema gate items 1-6 folded in; the runner moved to a child process after the first live runs).
 
 One Tk window on the main thread: a goal entry, a target-window picker, a Run button, a log pane
-and an ask panel. The runner runs on **one persistent worker thread** for the process's lifetime
-(COM is initialised on the thread that first imports comtypes, so tasks are queued to that one
-thread and `steerai.app` never imports comtypes on the main thread); the overlay's broker is the
-runner's confirmer and the UI drains the runner's output and the pending ask every `DRAIN_MS`.
-While a task runs the window is no-activate and topmost (`WS_EX_NOACTIVATE` through
-`SetWindowLongPtrW`, topmost through `SetWindowPos`, 5.1 [v0.4]) so a button click never takes
-foreground from the target; the switch happens synchronously in the Run handler before the
-worker is signalled. Before a task it is a normal window, because the goal entry needs keyboard
-focus. One task at a time. **Closing the window is the kill**: the monitor the runner starts is
-wrapped so `kill_requested()` also reads the UI's flag; close sets it, joins the worker with a
-bounded timeout, then destroys the root.
+and an ask panel. Run starts `python -m steerai.run --goal ...` as a child process
+(`RunnerProcess`); the window drains its lines and its pending ask every `DRAIN_MS`, shows the
+ask with buttons, and writes the exact bound token the button means. While a task runs the
+window is no-activate and topmost (`WS_EX_NOACTIVATE` through `SetWindowLongPtrW`, topmost
+through `SetWindowPos`, `WM_MOUSEACTIVATE` answered `MA_NOACTIVATE`, focus-free classic
+buttons; 5.1 [v0.4]) so a button click never takes foreground from the target; the switch
+happens synchronously in the Run handler before the child starts. Before a task it is a normal
+window, because the goal entry needs keyboard focus. One task at a time. **Closing the window
+is the kill**: the child is terminated and its hooks and asks end with it.
 """
 
 from __future__ import annotations
 
 import ctypes
-import io
 import os
-import queue
 import sys
-import threading
 import time
 import tkinter as tk
 from collections.abc import Callable, Sequence
@@ -30,10 +25,9 @@ from pathlib import Path
 from tkinter import ttk
 from typing import Any
 
-from steerai.app.broker import Answer, AskBroker, KillSource, PendingAsk
-from steerai.orchestrator.gate import Ask
+from steerai.app.runner_process import Answer, PendingAsk, RunnerProcess, runner_argv
 from steerai.probes.windows import WindowInfo
-from steerai.run import Deps, Options, parse_args, run
+from steerai.run import UsageError, parse_args
 
 DRAIN_MS = 50
 CLOSE_JOIN_S = 5.0
@@ -49,67 +43,14 @@ SWP_FRAMECHANGED = 0x0020
 GWLP_WNDPROC = -4
 WM_MOUSEACTIVATE = 0x0021
 MA_NOACTIVATE = 3
-_WNDPROC = ctypes.WINFUNCTYPE(
-    ctypes.c_longlong, ctypes.c_void_p, ctypes.c_uint, ctypes.c_ulonglong, ctypes.c_longlong
-)
+
+ProcessFactory = Callable[[Sequence[str]], RunnerProcess]
 
 
-class QueueWriter(io.TextIOBase):
-    """A text stream whose lines land in a queue the UI drains."""
-
-    def __init__(self, lines: queue.Queue[str]) -> None:
-        super().__init__()
-        self._lines = lines
-        self._partial = ""
-
-    @property
-    def encoding(self) -> str:  # type: ignore[override]
-        return "utf-8"
-
-    def writable(self) -> bool:
-        return True
-
-    def isatty(self) -> bool:
-        return False
-
-    def write(self, s: str) -> int:
-        self._partial += s
-        while "\n" in self._partial:
-            line, self._partial = self._partial.split("\n", 1)
-            self._lines.put(line)
-        return len(s)
-
-    def flush(self) -> None:
-        if self._partial:
-            self._lines.put(self._partial)
-            self._partial = ""
-
-
-class BrokerConfirmer:
-    """The runner's confirmer: every ask goes to the broker, the UI answers with buttons."""
-
-    def __init__(self, broker: AskBroker) -> None:
-        self._broker = broker
-
-    def ask(self, ask: Ask) -> str:
-        return self._broker.confirm(ask)
-
-    def ask_go(self, go_id: str) -> str:
-        return self._broker.go(go_id)
-
-
-class ClosableMonitor:
-    """The runner's monitor with the UI's kill flag OR-ed in: closing the window kills."""
-
-    def __init__(self, inner: Any, closed: threading.Event) -> None:
-        self._inner = inner
-        self._closed = closed
-
-    def kill_requested(self) -> bool:
-        return self._closed.is_set() or bool(self._inner.kill_requested())
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._inner, name)
+def _wndproc_type() -> Any:  # Any: ctypes has no public type for a callback factory
+    return ctypes.WINFUNCTYPE(
+        ctypes.c_longlong, ctypes.c_void_p, ctypes.c_uint, ctypes.c_ulonglong, ctypes.c_longlong
+    )
 
 
 def toplevel_hwnd(widget: tk.Misc) -> int:
@@ -162,7 +103,7 @@ class NoActivate:
             ctypes.c_longlong,
         )
         self._previous = 0
-        self._proc = _WNDPROC(self._handle)
+        self._proc = _wndproc_type()(self._handle)
 
     def _handle(self, hwnd: int, message: int, wparam: int, lparam: int) -> int:
         if message == WM_MOUSEACTIVATE:
@@ -185,66 +126,26 @@ class NoActivate:
             self._previous = 0
 
 
-class RunnerThread:
-    """The one worker thread tasks are queued to (COM lives there)."""
-
-    def __init__(self) -> None:
-        self._jobs: queue.Queue[Callable[[], None]] = queue.Queue()
-        self._busy = threading.Event()
-        self._thread = threading.Thread(target=self._loop, name="steer-runner", daemon=True)
-        self._thread.start()
-
-    def _loop(self) -> None:
-        while True:
-            job = self._jobs.get()
-            self._busy.set()
-            try:
-                job()
-            finally:
-                self._busy.clear()
-
-    def busy(self) -> bool:
-        return self._busy.is_set() or not self._jobs.empty()
-
-    def submit(self, job: Callable[[], None]) -> None:
-        self._jobs.put(job)
-
-    def wait_idle(self, timeout_s: float) -> bool:
-        deadline = time.monotonic() + timeout_s
-        while self.busy():
-            if time.monotonic() >= deadline:
-                return False
-            time.sleep(0.05)
-        return True
-
-
 class Overlay:
     def __init__(  # noqa: PLR0913 - every collaborator is injected so the window runs in tests
         self,
         *,
         root: tk.Tk,
-        deps: Deps,
         list_windows: Callable[[], Sequence[WindowInfo]],
         exclusions: Callable[[], tuple[set[int], set[int]]],
         ledger_dir: Path,
         trace_dir: Path,
-        runner: Callable[..., int] = run,
-        worker: RunnerThread | None = None,
+        make_process: ProcessFactory | None = None,
     ) -> None:
         self.root = root
-        self._deps = deps
         self._list_windows = list_windows
         self._exclusions = exclusions
         self._ledger_dir = ledger_dir
         self._trace_dir = trace_dir
-        self._runner = runner
-        self._worker = worker or RunnerThread()
-        self._lines: queue.Queue[str] = queue.Queue()
-        self.broker = AskBroker()
-        self.closed = threading.Event()
+        self._make_process: ProcessFactory = make_process or _real_process
+        self.process: RunnerProcess | None = None
         self._windows: list[WindowInfo] = []
         self._shown: PendingAsk | None = None
-        self._task_open = False
         self._no_activate: NoActivate | None = None
         self.exit_code: int | None = None
         self._build()
@@ -301,9 +202,11 @@ class Overlay:
     # ---- running -----------------------------------------------------------------------------
 
     def running(self) -> bool:
-        return self._task_open
+        return self.process is not None and self.process.running()
 
-    def options_for(self, goal: str, hwnd: int) -> Options:
+    def argv_for(self, goal: str, hwnd: int) -> list[str]:
+        """The runner's options; `parse_args` validates them here so a usage error shows in the
+        window before any child starts."""
         task_id = f"app-{os.getpid()}-{int(time.time() * 1000)}"
         argv = [
             "--goal",
@@ -317,7 +220,8 @@ class Overlay:
             "--task-id",
             task_id,
         ]
-        return parse_args(argv)
+        parse_args(argv)
+        return argv
 
     def run_clicked(self) -> None:
         if self.running():
@@ -329,52 +233,23 @@ class Overlay:
             self._log("a goal and a target window are needed")
             return
         try:
-            options = self.options_for(goal, window.hwnd)
-        except ValueError as exc:
+            argv = self.argv_for(goal, window.hwnd)
+        except UsageError as exc:
             self._log(f"usage: {exc}")
             return
-        self.start(options)
+        self.start(argv)
 
-    def start(self, options: Options) -> None:
-        """Switch the window to task mode first (synchronously), then queue the run."""
+    def start(self, argv: Sequence[str]) -> None:
+        """Switch the window to task mode first (synchronously), then start the child."""
         if self.running():
             raise RuntimeError("one task at a time")
         self.exit_code = None
-        self._task_open = True
-        self.closed.clear()
+        self._trace_dir.mkdir(parents=True, exist_ok=True)
         self._set_task_mode(True)
         self.status["text"] = "running"
         self.run_button["state"] = "disabled"
-        deps = self._deps.replace(
-            make_confirmer=self._make_confirmer, start_monitor=self._start_monitor
-        )
-        writer = QueueWriter(self._lines)
-
-        def work() -> None:
-            try:
-                code = self._runner(
-                    options, deps, stdin=io.StringIO(), stdout=writer, stderr=writer
-                )
-            except Exception as exc:  # noqa: BLE001 - the thread must report, not die silently
-                self._lines.put(f"internal error: {type(exc).__name__}")
-                code = 70
-            finally:
-                writer.flush()
-            self.exit_code = code
-
-        self._worker.submit(work)
-
-    def _make_confirmer(
-        self, _stdin: Any, _stderr: Any, monitor: KillSource | None
-    ) -> BrokerConfirmer:
-        self.broker = AskBroker(monitor=monitor)
-        return BrokerConfirmer(self.broker)
-
-    def _start_monitor(self, options: Options) -> Any:
-        start = self._deps.start_monitor
-        if start is None:
-            return ClosableMonitor(_NoMonitor(), self.closed)
-        return ClosableMonitor(start(options), self.closed)
+        self.process = self._make_process(argv)
+        self.process.start()
 
     def _set_task_mode(self, task: bool) -> None:
         if sys.platform != "win32":
@@ -390,9 +265,12 @@ class Overlay:
             self._no_activate = None
 
     def close(self) -> None:
-        """The window's close button: the kill, a bounded join, then the root goes."""
-        self.closed.set()
-        self._worker.wait_idle(CLOSE_JOIN_S)
+        """The window's close button: the kill (the child is terminated), then the root goes."""
+        if self.process is not None:
+            self.process.close()
+            deadline = time.monotonic() + CLOSE_JOIN_S
+            while self.process.running() and time.monotonic() < deadline:
+                time.sleep(0.05)
         self.root.destroy()
 
     # ---- the UI tick -------------------------------------------------------------------------
@@ -402,22 +280,25 @@ class Overlay:
         self.root.after(DRAIN_MS, self._tick)
 
     def drain(self) -> None:
-        while True:
-            try:
-                self._log(self._lines.get_nowait())
-            except queue.Empty:
-                break
-        pending = self.broker.pending() if self._task_open else None
+        process = self.process
+        if process is None:
+            return
+        for line in process.drain_lines():
+            self._log(line)
+        pending = process.pending()
         if pending != self._shown:
             self._shown = pending
             self._show_ask(pending)
-        if self._task_open and self.exit_code is not None and not self._worker.busy():
-            self._finish()
+        if process.exit_code is not None and self.exit_code is None:
+            self._finish(process)
 
-    def _finish(self) -> None:
-        self._task_open = False
+    def _finish(self, process: RunnerProcess) -> None:
+        for line in process.drain_lines():
+            self._log(line)
+        self.exit_code = process.exit_code
         self._set_task_mode(False)
-        self.status["text"] = f"exit {self.exit_code}"
+        status = process.result.get("status", "killed" if process.killed else "ended")
+        self.status["text"] = f"{status} (exit {self.exit_code})"
         self.run_button["state"] = "normal"
         self._shown = None
         self._show_ask(None)
@@ -433,19 +314,23 @@ class Overlay:
         decision_id = pending.decision_id  # captured now: a later ask never reuses these buttons
         if pending.kind == "go":
             self.ask_text.insert("1.0", f"Run the plan shown in the log? (plan {decision_id})")
-            self._button("Go", lambda: self.broker.answer(Answer.go(decision_id)))
+            self._button("Go", lambda: self._answer(Answer.go(decision_id)))
         else:
             self.ask_text.insert("1.0", pending.text)
             if pending.kind == "yes":
-                self._button("Yes", lambda: self.broker.answer(Answer.yes(decision_id)))
+                self._button("Yes", lambda: self._answer(Answer.yes(decision_id)))
             else:
                 for n in range(1, pending.candidates + 1):
                     self._button(str(n), self._chooser(n, decision_id))
-        self._button("No", lambda: self.broker.answer(Answer.no()))
+        self._button("No", lambda: self._answer(Answer.no()))
         self.ask_text["state"] = "disabled"
 
+    def _answer(self, answer: Answer) -> None:
+        if self.process is not None:
+            self.process.answer(answer)
+
     def _chooser(self, n: int, decision_id: str) -> Callable[[], None]:
-        return lambda: self.broker.answer(Answer.choose(n, decision_id))
+        return lambda: self._answer(Answer.choose(n, decision_id))
 
     def _button(self, label: str, command: Callable[[], None]) -> None:
         # a classic button that never takes focus: a ttk button calls SetFocus on click, which
@@ -461,32 +346,6 @@ class Overlay:
         self.log["state"] = "disabled"
 
 
-class _NoMonitor:
-    """Stands in when the deps start no monitor (pure tests): never kills, always healthy."""
-
-    def kill_requested(self) -> bool:
-        return False
-
-    def healthy(self) -> bool:
-        return True
-
-    def last_user_input(self) -> float:
-        return 0.0
-
-    def counts(self) -> dict[str, int]:
-        return {}
-
-    def mark_ask_open(self) -> None:
-        return None
-
-    def mark_ask_closed(self) -> None:
-        return None
-
-    def maintain(self) -> None:
-        return None
-
-    def detail(self) -> str:
-        return "monitor_lost"
-
-    def close(self) -> None:
-        return None
+def _real_process(argv: Sequence[str]) -> RunnerProcess:
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    return RunnerProcess(runner_argv(argv), env=env)
