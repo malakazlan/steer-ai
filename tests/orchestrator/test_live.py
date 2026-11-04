@@ -50,7 +50,11 @@ def _observe_until_exposed(model: WorldModel, hwnd: int, *, max_s: float = 25.0)
         if any(e.role == "Edit" and e.name == "Message" for e in snapshot.elements):
             return snapshot
         if time.monotonic() >= deadline:
-            raise AssertionError(f"composer never exposed; {snapshot.node_count} nodes")
+            roles = sorted({e.role for e in snapshot.elements})
+            raise AssertionError(
+                f"composer never exposed; {snapshot.node_count} nodes, title {snapshot.title!r}, "
+                f"stable {snapshot.stable}, roles {roles}"
+            )
         time.sleep(0.5)
 
 

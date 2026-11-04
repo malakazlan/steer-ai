@@ -54,6 +54,8 @@ from steerai.world.elements import Box, Element
 from steerai.world.model import Snapshot
 
 VERBS: frozenset[str] = frozenset({"click", "type", "press"})
+TEXT_ROLES: frozenset[str] = frozenset({"Edit", "ComboBox", "Document"})
+"""Roles a chord may land on: the target itself, or such a descendant of it (5.9 [v1.7])."""
 CURSOR_TOLERANCE_PX = 1
 MAX_UNITS_PER_STEP = 500
 """A ceiling, not a budget: typing time is additive to the step. Measured 2026-11-04 (probe
@@ -319,7 +321,9 @@ class PhysicalExecutor:
             subtree=_subtree_ids(snapshot, element),
             ancestors=_ancestor_ids(snapshot, element),
         )
-        self._hit_test(target, snapshot.hwnd)
+        if action.verb != "press":
+            # a chord lands on the focused element, never under the pointer
+            self._hit_test(target, snapshot.hwnd)
         self._check_hands_off()
         return target
 
@@ -400,7 +404,7 @@ class PhysicalExecutor:
     # ---- press -------------------------------------------------------------------------------
 
     def _press(
-        self, action: PhysicalAction, snapshot: Snapshot, _target: _Target, call: Call
+        self, action: PhysicalAction, snapshot: Snapshot, target: _Target, call: Call
     ) -> ActionResult:
         chord = action.chord
         if chord is None:  # enforced by PhysicalAction.__post_init__; kept for the type checker
@@ -412,6 +416,8 @@ class PhysicalExecutor:
         evidence: dict[str, Any] = {"foreground": self._bring_forward(snapshot.hwnd)}
         if action.approval is not None:
             evidence["decision_id"] = action.approval.decision_id
+        if not _focus_on_field(snapshot, target, self._inputs.focused_runtime_id()):
+            raise RefusalError(ErrorCode.FOCUS_LOST, "target_not_focused")
         self._check_hands_off()
         try:
             call.send("keyboard.chord", lambda: self._inputs.press(chord, action.approval))
@@ -592,6 +598,18 @@ def _visible_part(live: Box, window: Box, screen: Box) -> Box | None:
 def _intersect(a: Box, b: Box) -> Box | None:
     box = (max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3]))
     return box if box[2] > box[0] and box[3] > box[1] else None
+
+
+def _focus_on_field(snapshot: Snapshot, target: _Target, focused: tuple[int, ...]) -> bool:
+    """Keyboard focus sits on the target itself or on a text-role descendant of it; a link or a
+    button inside a page's Document is never the field a chord was approved for (SE-01)."""
+    if not focused:
+        return False
+    if focused == tuple(target.element.runtime_id):
+        return True
+    if focused not in target.subtree:
+        return False
+    return any(tuple(e.runtime_id) == focused and e.role in TEXT_ROLES for e in snapshot.elements)
 
 
 def _subtree_ids(snapshot: Snapshot, element: Element) -> frozenset[tuple[int, ...]]:

@@ -1438,3 +1438,63 @@ def test_notepad_document_owns_the_point_and_the_focus_after_a_click() -> None:
         assert client.focused_runtime_id() == target.runtime_id
     finally:
         proc.terminate()
+
+
+def test_press_refuses_when_the_target_is_not_focused(fast_clock: Any) -> None:
+    """A chord lands on the focused element; the target names where it must land."""
+    inputs = FakeInput(focused=(9, 9, 9))
+    action = PhysicalAction(verb="press", element_id=1, chord="enter")
+    result = _executor(inputs).execute(action, _snapshot(FakeHandle()))
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.evidence["detail"] == "target_not_focused"
+    assert inputs.chords == []
+
+
+def test_press_does_not_need_the_pointer_hit_test(fast_clock: Any) -> None:
+    """A keyboard verb: a transparent overlay under the pointer is no reason to refuse."""
+    inputs = FakeInput(hits=[(9, 9, 9)])
+    action = PhysicalAction(verb="press", element_id=1, chord="enter")
+    result = _executor(inputs).execute(action, _snapshot(FakeHandle()))
+    assert result.delivery is Delivery.DELIVERED_UNVERIFIED
+    assert inputs.chords == ["enter"]
+
+
+def _document_snapshot(child_role: str) -> Snapshot:
+    """A Document target with one descendant of `child_role` (a page or a composer)."""
+    base = _snapshot(FakeHandle(), role="Document", name="Page")
+    child = replace(base.elements[2], role=child_role)
+    return replace(base, elements=[base.elements[0], base.elements[1], child])
+
+
+def test_press_on_a_document_refuses_focus_on_a_non_text_descendant(fast_clock: Any) -> None:
+    """A page's subtree is the whole page: focus on a link inside it is not the target (SE-01)."""
+    inputs = FakeInput(focused=CHILD_ID)
+    action = PhysicalAction(verb="press", element_id=1, chord="enter")
+    result = _executor(inputs).execute(action, _document_snapshot("Hyperlink"))
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.evidence["detail"] == "target_not_focused"
+    assert inputs.chords == []
+
+
+def test_press_on_a_document_accepts_focus_on_a_text_descendant(fast_clock: Any) -> None:
+    inputs = FakeInput(focused=CHILD_ID)
+    action = PhysicalAction(verb="press", element_id=1, chord="enter")
+    result = _executor(inputs).execute(action, _document_snapshot("Edit"))
+    assert result.delivery is Delivery.DELIVERED_UNVERIFIED
+    assert inputs.chords == ["enter"]
+
+
+def test_press_with_no_focused_element_and_no_runtime_id_is_refused(fast_clock: Any) -> None:
+    """Nothing focused and a target without a RuntimeId must not compare equal (final pass 1)."""
+    inputs = FakeInput(focused=())
+    base = _snapshot(FakeHandle(), role="Edit", name="Message")
+    bare = replace(
+        base,
+        elements=[base.elements[0], replace(base.elements[1], runtime_id=()), base.elements[2]],
+    )
+    result = _executor(inputs).execute(
+        PhysicalAction(verb="press", element_id=1, chord="enter"), bare
+    )
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.evidence["detail"] == "target_not_focused"
+    assert inputs.chords == []

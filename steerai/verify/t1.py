@@ -222,7 +222,8 @@ class _Appearance:
     count_before: int
     count_after: int
     surviving_ids: list[int]
-    vanished: bool
+    vanished: int
+    """Elements of the role in the before scope whose RuntimeId is gone after."""
 
 
 def _appearance(
@@ -231,9 +232,17 @@ def _appearance(
     scope_before = resolve_scope(before, predicate.within, excluding=predicate.excluding_anchor)
     before_ids = {e.runtime_id for e in before.elements if e.runtime_id}
     after_ids = {e.runtime_id for e in after.elements if e.runtime_id}
-    in_role = [e for e in after.elements if e.id in scope.ids and e.role == predicate.role]
+    # the replacing form counts top-level elements of the role only: a page's embedded frames
+    # (ads, sign-in promos) are neither predecessors nor churn
+    skip_after = _nested_ids(after, predicate.role) if predicate.replaces else set()
+    skip_before = _nested_ids(before, predicate.role) if predicate.replaces else set()
+    in_role = [
+        e
+        for e in after.elements
+        if e.id in scope.ids and e.role == predicate.role and e.id not in skip_after
+    ]
     new_role = [e for e in in_role if e.runtime_id and e.runtime_id not in before_ids]
-    new_matches = [e for e in new_role if _scoped(scope, e, predicate.role, predicate.name_pattern)]
+    new_matches = [e for e in new_role if _scoped(scope, e, predicate.role, predicate.name_match)]
     # The effect's own subtree (a bubble's timestamp and status texts) is not unrelated churn.
     owned = _descendant_ids(after, [e.id for e in new_matches])
     return _Appearance(
@@ -243,20 +252,41 @@ def _appearance(
         count_before=sum(
             1
             for e in before.elements
-            if _scoped(scope_before, e, predicate.role, predicate.name_pattern)
+            if _scoped(scope_before, e, predicate.role, predicate.name_match)
         ),
         count_after=sum(
-            1 for e in after.elements if _scoped(scope, e, predicate.role, predicate.name_pattern)
+            1 for e in after.elements if _scoped(scope, e, predicate.role, predicate.name_match)
         ),
         surviving_ids=[e.id for e in in_role if e.runtime_id in before_ids],
-        vanished=any(
-            e.id in scope_before.ids
+        vanished=sum(
+            1
+            for e in before.elements
+            if e.id in scope_before.ids
+            and e.id not in skip_before
             and e.role == predicate.role
             and bool(e.runtime_id)
             and e.runtime_id not in after_ids
-            for e in before.elements
         ),
     )
+
+
+def _nested_ids(snapshot: Snapshot, role: str) -> set[int]:
+    """Ids of elements of `role` that sit under another element of `role`."""
+    by_id = {e.id: e for e in snapshot.elements}
+    nested: set[int] = set()
+    for element in snapshot.elements:
+        if element.role != role:
+            continue
+        parent = element.parent_id
+        while parent is not None:
+            ancestor = by_id.get(parent)
+            if ancestor is None:
+                break
+            if ancestor.role == role:
+                nested.add(element.id)
+                break
+            parent = ancestor.parent_id
+    return nested
 
 
 def _after_scope(predicate: Appeared, before: Snapshot, after: Snapshot) -> Scope:
@@ -280,16 +310,23 @@ def _appeared(predicate: Appeared, before: Snapshot, after: Snapshot) -> Verdict
     seen = _appearance(predicate, before, after, scope)
     if not seen.new_matches:
         present = any(
-            _scoped(scope, e, predicate.role, predicate.name_pattern) for e in after.elements
+            _scoped(scope, e, predicate.role, predicate.name_match) for e in after.elements
         )
         return _miss(scope, "not_new" if present else "no_match")
     delta = seen.count_after - seen.count_before
-    shifted = seen.vanished or _out_of_order(predicate, seen)
+    if predicate.replaces:
+        # the navigation form: the predecessor's vanishing is the effect, its order is moot
+        shifted = seen.vanished > 1
+        replaced = (seen.vanished == 0, "not_replaced", False)
+    else:
+        shifted = seen.vanished > 0 or _out_of_order(predicate, seen)
+        replaced = (False, "not_replaced", False)
     # (condition, reason, positive contradiction), checked in order; the first hit decides.
     # No-label conditions come first so a re-rendered scope never yields a failed label.
     rules = (
         (len(seen.new_role) > predicate.expected + CHURN_TOLERANCE, "scope_churn", False),
         (shifted, "scope_shifted", False),
+        replaced,
         (
             len(seen.new_matches) > predicate.expected or delta > predicate.expected,
             "duplicate_effect",
@@ -297,7 +334,9 @@ def _appeared(predicate: Appeared, before: Snapshot, after: Snapshot) -> Verdict
         ),
         (delta < predicate.expected, "count_unchanged", False),
         (
-            any(
+            # a page is not a message: a replacing Document's content is never a status
+            not predicate.replaces
+            and any(
                 _has_status(e, after, _PENDING_TOKENS, predicate.name_pattern)
                 for e in seen.new_matches
             ),
@@ -305,7 +344,8 @@ def _appeared(predicate: Appeared, before: Snapshot, after: Snapshot) -> Verdict
             False,
         ),
         (
-            any(
+            not predicate.replaces
+            and any(
                 _has_status(e, after, _FAILED_TOKENS, predicate.name_pattern)
                 for e in seen.new_matches
             ),
@@ -316,13 +356,10 @@ def _appeared(predicate: Appeared, before: Snapshot, after: Snapshot) -> Verdict
     for condition, reason, contradiction in rules:
         if condition:
             return _contradiction(scope, reason) if contradiction else _miss(scope, reason)
-    return Verdict(
-        holds=True,
-        code=None,
-        level=scope.level,
-        polls=0,
-        evidence={"level": scope.level, "matched": len(seen.new_matches)},
-    )
+    evidence: dict[str, Any] = {"level": scope.level, "matched": len(seen.new_matches)}
+    if predicate.replaces:
+        evidence["replaced"] = seen.vanished
+    return Verdict(holds=True, code=None, level=scope.level, polls=0, evidence=evidence)
 
 
 def _descendant_ids(snapshot: Snapshot, roots: list[int]) -> set[int]:
@@ -751,6 +788,22 @@ def label_of_record(
     )
 
 
+def _appeared_spec(predicate: Appeared) -> dict[str, Any]:
+    """The `Appeared` options that shape a label, never its pattern."""
+    spec: dict[str, Any] = {}
+    if predicate.excluding_anchor is not None:
+        spec["excluding_anchor"] = predicate.excluding_anchor
+    if predicate.expected != 1:
+        spec["expected"] = predicate.expected
+    if predicate.order != "append":
+        spec["order"] = predicate.order
+    if predicate.decoration is not None:
+        spec["decoration"] = predicate.decoration
+    if predicate.replaces:
+        spec["replaces"] = True
+    return spec
+
+
 def redact(predicate: Predicate) -> dict[str, Any]:
     """The predicate's shape without its patterns or values."""
     spec: dict[str, Any] = {"kind": type(predicate).__name__}
@@ -762,12 +815,7 @@ def redact(predicate: Predicate) -> dict[str, Any]:
             if isinstance(predicate, CountDelta):
                 spec["delta"] = predicate.delta
             if isinstance(predicate, Appeared):
-                if predicate.excluding_anchor is not None:
-                    spec["excluding_anchor"] = predicate.excluding_anchor
-                if predicate.expected != 1:
-                    spec["expected"] = predicate.expected
-                if predicate.order != "append":
-                    spec["order"] = predicate.order
+                spec.update(_appeared_spec(predicate))
         case ValueEquals() | Focused() | State():
             spec["target_id"] = predicate.target_id
             if isinstance(predicate, State):

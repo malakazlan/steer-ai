@@ -26,6 +26,7 @@ from steerai.orchestrator.contracts import (
     Target,
     executor_verb,
 )
+from steerai.verify.decorations import DECORATIONS
 from steerai.verify.predicates import (
     All,
     AnyOf,
@@ -205,6 +206,32 @@ def _predicate(value: object, path: str, depth: int = 1) -> Predicate:
     return _built(path, lambda: _predicate_body(value, path, depth))
 
 
+def _appeared(fields: Mapping[str, Any], inner: str) -> Appeared:
+    _keys(
+        fields,
+        frozenset({"role", "name", "within", "expected", "order", "decoration", "replaces"}),
+        inner,
+    )
+    replaces = _bool(fields.get("replaces", False), f"{inner}.replaces")
+    order = fields.get("order", "append")
+    if order not in ("append", "prepend"):
+        raise PlanError(f"{inner}.order", "must be append or prepend")
+    decoration = fields.get("decoration")
+    if decoration is not None and (
+        not isinstance(decoration, str) or decoration not in DECORATIONS
+    ):
+        raise PlanError(f"{inner}.decoration", "must be a known decoration")
+    return Appeared(
+        role=_text(fields.get("role"), f"{inner}.role"),
+        name_pattern=_text(fields.get("name"), f"{inner}.name"),
+        within=_within(fields.get("within"), f"{inner}.within"),
+        expected=_int(fields.get("expected", 1), f"{inner}.expected", lo=1, hi=MAX_COUNT),
+        order=cast("Literal['append', 'prepend']", order),
+        decoration=decoration,
+        replaces=replaces,
+    )
+
+
 def _predicate_body(value: object, path: str, depth: int) -> Predicate:
     if depth > MAX_DEPTH:
         raise PlanError(path, f"nested deeper than {MAX_DEPTH}")
@@ -228,17 +255,7 @@ def _predicate_body(value: object, path: str, depth: int) -> Predicate:
             raise PlanError(inner, str(exc)) from exc
     fields = _obj(body, inner)
     if kind == "appeared":
-        _keys(fields, frozenset({"role", "name", "within", "expected", "order"}), inner)
-        order = fields.get("order", "append")
-        if order not in ("append", "prepend"):
-            raise PlanError(f"{inner}.order", "must be append or prepend")
-        return Appeared(
-            role=_text(fields.get("role"), f"{inner}.role"),
-            name_pattern=_text(fields.get("name"), f"{inner}.name"),
-            within=_within(fields.get("within"), f"{inner}.within"),
-            expected=_int(fields.get("expected", 1), f"{inner}.expected", lo=1, hi=MAX_COUNT),
-            order=cast("Literal['append', 'prepend']", order),
-        )
+        return _appeared(fields, inner)
     if kind == "disappeared":
         _keys(fields, frozenset({"role", "name", "within"}), inner)
         return Disappeared(
@@ -430,19 +447,27 @@ def _encode_within(within: Within | None) -> dict[str, Any]:
     return {"within": {"landmark": within.landmark}}
 
 
+def _encode_appeared(predicate: Appeared) -> dict[str, Any]:
+    if predicate.excluding_anchor is not None:
+        raise PlanError("$", "excluding_anchor is snapshot-scoped and has no file form")
+    body: dict[str, Any] = {"role": predicate.role, "name": predicate.name_pattern}
+    body.update(_encode_within(predicate.within))
+    if predicate.expected != 1:
+        body["expected"] = predicate.expected
+    if predicate.order != "append":
+        body["order"] = predicate.order
+    if predicate.decoration is not None:
+        body["decoration"] = predicate.decoration
+    if predicate.replaces:
+        body["replaces"] = True
+    return body
+
+
 def _encode(predicate: Predicate) -> dict[str, Any]:  # noqa: PLR0911 - one kind each
     if isinstance(predicate, Appeared):
-        if predicate.excluding_anchor is not None:
-            raise PlanError("$", "excluding_anchor is snapshot-scoped and has no file form")
-        body: dict[str, Any] = {"role": predicate.role, "name": predicate.name_pattern}
-        body.update(_encode_within(predicate.within))
-        if predicate.expected != 1:
-            body["expected"] = predicate.expected
-        if predicate.order != "append":
-            body["order"] = predicate.order
-        return {"appeared": body}
+        return {"appeared": _encode_appeared(predicate)}
     if isinstance(predicate, Disappeared):
-        body = {"role": predicate.role, "name": predicate.name_pattern}
+        body: dict[str, Any] = {"role": predicate.role, "name": predicate.name_pattern}
         body.update(_encode_within(predicate.within))
         return {"disappeared": body}
     if isinstance(predicate, CountDelta):

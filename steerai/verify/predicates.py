@@ -13,6 +13,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Literal
 
+from steerai.verify.decorations import decorate
 from steerai.world.model import normalise_name
 
 StateName = Literal["on", "off", "selected"]
@@ -67,6 +68,11 @@ class Within:
                 raise ValueError("Within landmark is empty")
 
 
+REPLACING_ROLES: frozenset[str] = frozenset({"Document"})
+"""Roles whose `appeared` may take the replacing form (5.10 [v1.7]): a page replaces a page; a
+list row never replaces, so the vanish and order rules stay in force for every other role."""
+
+
 @dataclass(frozen=True, slots=True)
 class Appeared:
     """Present after and absent before: only an element with a new RuntimeId counts."""
@@ -80,6 +86,12 @@ class Appeared:
     """How many matching elements must appear: more is a duplicate effect (VF-13)."""
     order: Literal["append", "prepend"] = "append"
     """Where the list grows: a conversation appends, a Sent folder prepends."""
+    decoration: str | None = None
+    """A code-owned frame around the content (VF-34): the gate judges `name_pattern`, the
+    verifier matches `name_match`."""
+    replaces: bool = False
+    """The navigation form: exactly one element of the role in scope vanishes as the new one
+    appears (a page's Document replaced by the next page's). A list never replaces."""
 
     def __post_init__(self) -> None:
         _check_role(self.role)
@@ -88,6 +100,22 @@ class Appeared:
             raise ValueError("expected must be > 0")
         if self.order not in ("append", "prepend"):
             raise ValueError("order must be append or prepend")
+        if self.decoration is not None:
+            decorate(self.decoration, self.name_pattern)  # refuses an unknown key
+        if self.replaces:
+            if self.role not in REPLACING_ROLES:
+                raise ValueError(f"replaces is only for {sorted(REPLACING_ROLES)}, not {self.role}")
+            if self.expected != 1 or self.order != "append" or self.within is not None:
+                raise ValueError(
+                    "replaces is the single, window-wide form: no expected, order or within"
+                )
+
+    @property
+    def name_match(self) -> str:
+        """The full name to match on screen: the pattern inside its decoration, if any."""
+        if self.decoration is None:
+            return self.name_pattern
+        return decorate(self.decoration, self.name_pattern)
 
 
 @dataclass(frozen=True, slots=True)

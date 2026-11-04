@@ -30,7 +30,8 @@ from typing import Any, Literal, Protocol
 
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.action.executor import Action
-from steerai.action.physical import PhysicalAction
+from steerai.action.physical import TEXT_ROLES, PhysicalAction
+from steerai.action.sanitize import normalise_newlines
 from steerai.errors import ErrorCode, SteerError
 from steerai.orchestrator.contracts import (
     RISKS,
@@ -838,6 +839,11 @@ class Session:
         path, verb = executor_verb(step.verb)
         if step.path is not None:
             path = step.path
+        chord: str | None = None
+        if step.verb == "submit" and before.element(element_id).role in TEXT_ROLES:
+            # a composer submits with Enter: a physical press on the focused field
+            path, verb, chord = "physical", "press", "enter"
+            self._act_evidence["submit"] = "enter"
         executor = self._physical if path == "physical" else self._semantic
         retries = 0
         scrolled = False
@@ -856,8 +862,8 @@ class Session:
             if self._monitor is not None:
                 # input during the step is what lands after this point (D7)
                 self._counts_at_step = self._monitor.counts()
-            action = self._build(path, verb, element_id, step.text)
-            result = executor.execute(action, before)
+            action = self._build(path, verb, element_id, step.text, chord)
+            result, before, element_id = self._dispatch(step, executor, action, before)
             if result.delivery is not Delivery.NOT_DELIVERED or result.steps:
                 self._sent_in_act = True  # something may have reached the app
             if result.code in (ErrorCode.GATE_BLOCKED, ErrorCode.GATE_PENDING_USER):
@@ -882,10 +888,57 @@ class Session:
                 continue
             return result, before, retries
 
+    def _dispatch(
+        self, step: Step, executor: ExecutorLike, action: Any, before: Snapshot
+    ) -> tuple[ActionResult, Snapshot, int]:
+        """One execution. Enter on a composer first proves the composer shows the approved text
+        (OR-31). A focus click refused for a transparent overlay under the pointer
+        (`hit_test_miss`, nothing sent) falls back to UIA SetFocus on a fresh look if the
+        boundary waited (TK-03), verified like any focus step (5.9 [v1.7])."""
+        element_id: int = action.element_id
+        if getattr(action, "chord", None) == "enter":
+            self._check_composer(step, before, element_id)
+        result = executor.execute(action, before)
+        fallback = (
+            step.verb == "focus"
+            and result.delivery is Delivery.NOT_DELIVERED
+            and result.evidence.get("detail") == "hit_test_miss"
+        )
+        if not fallback:
+            return result, before, element_id
+        if self._boundary(self._act_evidence):
+            before, element_id = self._reobserve(
+                step, before, self._act_evidence, mismatch="screen_changed_during_wait"
+            )
+            self._act_evidence["restarted"] = True
+            if self._monitor is not None:
+                # the wait's input is not the step's (D7), as in the act loop
+                self._counts_at_step = self._monitor.counts()
+        result = self._semantic.execute(Action(verb="focus", element_id=element_id), before)
+        self._act_evidence["focus_fallback"] = "set_focus"
+        return result, before, element_id
+
+    def _check_composer(self, step: Step, before: Snapshot, element_id: int) -> None:
+        """Enter submits whatever the field shows: it must be the text the person approved
+        (SE-02). The field's text never enters the evidence."""
+        text = step.params.get("text", step.text)
+        if not text:
+            raise _StepFailureError(ErrorCode.GATE_BLOCKED, "submit_text_missing")
+        if self._live is None:
+            raise _StepFailureError(ErrorCode.GATE_BLOCKED, "composer_unreadable")
+        try:
+            value = self._live.value(before.handle(element_id))
+        except SteerError as exc:
+            raise _StepFailureError(ErrorCode.GATE_BLOCKED, "composer_unreadable") from exc
+        if value is None or normalise_newlines(value) != normalise_newlines(text):
+            raise _StepFailureError(ErrorCode.GATE_BLOCKED, "composer_differs")
+
     @staticmethod
-    def _build(path: str, verb: str, element_id: int, text: str | None) -> Any:
+    def _build(
+        path: str, verb: str, element_id: int, text: str | None, chord: str | None = None
+    ) -> Any:
         if path == "physical":
-            return PhysicalAction(verb=verb, element_id=element_id, text=text)
+            return PhysicalAction(verb=verb, element_id=element_id, text=text, chord=chord)
         return Action(verb=verb, element_id=element_id)
 
     def _verify(

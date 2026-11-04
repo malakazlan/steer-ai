@@ -65,6 +65,15 @@ class FakeHandle:
     offscreen: bool = False
     box: tuple[int, int, int, int] = BOX
     calls: list[str] = field(default_factory=list)
+    focused: bool = False
+
+    def SetFocus(self) -> None:  # noqa: N802
+        self.calls.append("SetFocus")
+        self.focused = True
+
+    @property
+    def CurrentHasKeyboardFocus(self) -> bool:  # noqa: N802
+        return self.focused
 
     @property
     def CurrentBoundingRectangle(self) -> Any:  # noqa: N802
