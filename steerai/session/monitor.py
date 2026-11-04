@@ -59,7 +59,7 @@ class MonitorCore:
         self._probe_sent_at: float | None = None
         self._reference: tuple[int, int] | None = None
         self._counts: dict[str, int] = {}
-        self._ask_open = False
+        self._ask_depth = 0
         self._kill = False
         self._errors = 0
         self._loop_failed = False
@@ -115,10 +115,10 @@ class MonitorCore:
         self._loop_failed = True
 
     def mark_ask_open(self) -> None:
-        self._ask_open = True
+        self._ask_depth += 1
 
     def mark_ask_closed(self) -> None:
-        self._ask_open = False
+        self._ask_depth = max(0, self._ask_depth - 1)
 
     # ---- what the loop reads ----------------------------------------------------------------
 
@@ -161,7 +161,7 @@ class MonitorCore:
         self._count("steer")
 
     def _person(self, now: float, *, injected: bool) -> None:
-        if self._ask_open:
+        if self._ask_depth > 0:
             self._count("answer")
             return
         self._count("injected_other" if injected else "user")
@@ -259,6 +259,11 @@ class HookMonitor:
     def start(self) -> None:
         if sys.platform != "win32":
             raise SteerError(ErrorCode.GATE_BLOCKED, "monitor_unavailable: hooks require Windows")
+        if self._stop_timed_out:
+            raise SteerError(
+                ErrorCode.GATE_BLOCKED,
+                "monitor_unavailable: a previous hook thread did not stop; restart the process",
+            )
         self._core = MonitorCore(started_at=self._monotonic(), dead_band_px=self._dead_band)
         self._ready.clear()
         self._error = None

@@ -30,7 +30,7 @@ from steerai.orchestrator.console import ConsoleConfirmer, escape_text
 from steerai.orchestrator.contracts import RISKS, Plan, Risk, Step
 from steerai.orchestrator.gate import Confirmer, effective_risk
 from steerai.orchestrator.ledger import LedgerError
-from steerai.orchestrator.loop import DEFAULT_MAX_STEPS, IDLE_S, MAX_WAIT_S, WAIT_POLL_S, TaskResult
+from steerai.orchestrator.loop import DEFAULT_MAX_STEPS, TaskResult, wait_for_idle
 from steerai.orchestrator.plan_io import PlanError, plan_from_bytes
 from steerai.orchestrator.trace import JsonLinesTrace, NullTrace, Trace
 from steerai.probes.windows import WindowInfo
@@ -540,26 +540,6 @@ def _started_monitor(deps: Deps, options: Options) -> Any:
         ) from exc
 
 
-def _wait_for_idle(
-    monitor: Any, *, monotonic: Callable[[], float], sleep: Callable[[float], None]
-) -> str | None:
-    """Before the runner's own desktop action (the foreground tap, TK-29): the kill switch,
-    the monitor's health, then the person's idle time, as a dispatch would wait."""
-    started = monotonic()
-    while True:
-        if monitor.kill_requested():
-            return "killed"
-        monitor.maintain()
-        if not monitor.healthy():
-            return str(monitor.detail())
-        now = monotonic()
-        if now - monitor.last_user_input() >= IDLE_S:
-            return None
-        if now - started >= MAX_WAIT_S:
-            return "takeover"
-        sleep(WAIT_POLL_S)
-
-
 def _monitor_refusal(out: _Out, exc: SteerError) -> int:
     kind = exc.message.split(":", 1)[0].strip()
     if kind not in ("kill_key_unavailable", "monitor_unavailable"):
@@ -597,7 +577,7 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
         out.note(f"task {options.task_id}: window 0x{window.hwnd:x} pid {window.pid}")
         out.resume_hint()
         if monitor is not None:
-            held = _wait_for_idle(monitor, monotonic=deps.monotonic, sleep=deps.sleep)
+            held = wait_for_idle(monitor, monotonic=deps.monotonic, sleep=deps.sleep)
             refused = None if held is None else _hold_refusal(out, held)
             if refused is not None:
                 return refused
