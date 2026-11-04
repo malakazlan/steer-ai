@@ -7,14 +7,15 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
 from anthropic.lib._parse._transform import transform_schema
 
 from steerai.orchestrator.contracts import RISKS
 from steerai.orchestrator.plan_io import (
-    APPEARED_KEYS,
     FILE_VERBS,
     KINDS,
     PARAM_KEYS,
+    PREDICATE_KEYS,
     STEP_KEYS,
     TARGET_KEYS,
     plan_from_json,
@@ -81,18 +82,45 @@ def test_every_flat_predicate_translates_to_a_subset_of_the_boundarys_keys() -> 
         "decoration": "google_search",
         "replaces": True,
     }
-    allowed = {
-        "appeared": APPEARED_KEYS,
-        "disappeared": frozenset({"role", "name", "within"}),
-        "count_delta": frozenset({"role", "delta", "within"}),
-        "title": frozenset({"pattern"}),
-        "window_exists": frozenset({"name"}),
-        "window_gone": frozenset({"name"}),
-    }
-    for kind, keys in allowed.items():
+    assert set(PREDICATE_KEYS) == KINDS - {"all", "any_of"}
+    for kind, keys in PREDICATE_KEYS.items():
+        # the test fills every field; `kind` is one of the Literal's values at run time
         form = PredicateDoc(kind=kind, **full).to_file_form()  # type: ignore[arg-type]
         assert set(form) == {kind}
         assert frozenset(form[kind]) <= keys, kind
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    [
+        PredicateDoc(kind="appeared", role="Text", name="hello", within="chats", expected=2),
+        PredicateDoc(kind="disappeared", role="ListItem", name="Amir", within="chats"),
+        PredicateDoc(kind="count_delta", role="ListItem", delta=-1, within="chats"),
+        PredicateDoc(kind="title", pattern="Amir - Chat"),
+        PredicateDoc(kind="window_exists", name="Save As"),
+        PredicateDoc(kind="window_gone", name="Save As"),
+    ],
+)
+def test_every_kind_round_trips_through_the_boundary(predicate: PredicateDoc) -> None:
+    doc = _doc_with(predicate)
+    plan = plan_from_json(json.dumps(doc.to_file_form()))
+    assert json.loads(plan_to_json(plan))["subgoals"][0]["condition"] == predicate.to_file_form()
+
+
+def _doc_with(condition: PredicateDoc) -> PlanDoc:
+    return PlanDoc(
+        goal="g",
+        subgoals=[SubgoalDoc(id="g1", desc="d", condition=condition)],
+        steps=[
+            StepDoc(
+                id="s1",
+                subgoal="g1",
+                verb="click",
+                target=TargetDoc(role="Button", name="Ok"),
+                risk="R0",
+            )
+        ],
+    )
 
 
 def test_the_absent_step_keys_are_exactly_the_gates_inputs() -> None:

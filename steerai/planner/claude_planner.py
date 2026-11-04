@@ -55,8 +55,8 @@ never lowered; declare the honest tier.
 Targets: {{"role": "<control type as listed>", "name": "<exact name as listed>"}}. Use the exact
 name text from the listing; never invent names. Act inside the page or document content: the
 browser's own controls (the address bar, tabs, toolbar buttons, menus) are not the page's search
-box and are never a target unless the goal is about the browser itself. Fields that already hold
-text cannot be typed into. For a person in a chat list use
+box and are never a target unless the goal is about the browser itself. Prefer an empty field
+to type into. For a person in a chat list use
 "match": "person" with the name part only (no separators, no preview text).
 
 Predicates: one object with a "kind" and the fields that kind uses. appeared: role, name,

@@ -62,9 +62,10 @@ class PredicateDoc(_Doc):
         default=None, description="true only for a Document that replaces the previous page"
     )
 
-    def to_file_form(self) -> dict[str, Any]:
+    def to_file_form(self) -> dict[str, Any]:  # Any: a JSON body for the plan boundary
         """The 6.3 one-key object; a missing required field is left out so the plan boundary
-        names it (never invented here)."""
+        names it (never invented here); a field the kind does not use is dropped (it never
+        reaches the boundary, so it adds no matching power)."""
         fields = self.model_dump(mode="json", exclude_unset=True, exclude={"kind"})
         within = fields.pop("within", None)
         wanted = _KIND_FIELDS[self.kind]
@@ -124,7 +125,7 @@ class PlanDoc(_Doc):
     subgoals: list[SubgoalDoc]
     steps: list[StepDoc]
 
-    def to_file_form(self) -> dict[str, Any]:
+    def to_file_form(self) -> dict[str, Any]:  # Any: a JSON body for the plan boundary
         """The 6.3 document with every predicate in its one-key form."""
         body = self.model_dump(mode="json", exclude_unset=True)
         for subgoal, raw in zip(self.subgoals, body.get("subgoals", []), strict=True):

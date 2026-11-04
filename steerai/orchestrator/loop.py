@@ -89,13 +89,13 @@ MAX_WAIT_S = 60.0
 """Continuous input beyond this pauses the task as a takeover (unmeasured)."""
 WAIT_POLL_S = 0.1
 SETTLE_S = 0.5
-NAVIGATION_VERIFY_S = 10.0
-"""Verify deadline for a replacing `appeared` (a page replacing itself; 5.10 [v1.7]): a heavy
-page loads slower than the 3 s step deadline (Wikipedia article: over 3.5 s, under 5 s, n=1).
-Unmeasured beyond that."""
 """A target missing right after the page changed is a timing gap first: settle this long and
 re-observe before calling it absent (first real-site run 2026-11-04; unmeasured)."""
 SETTLE_RETRIES = 2
+NAVIGATION_VERIFY_S = 10.0
+"""Verify deadline for a replacing `appeared` (a page replacing itself; 5.10 [v1.9]): a heavy
+page loads slower than the 3 s step deadline (Wikipedia article: over 3.5 s, under 5 s, n=1).
+Unmeasured beyond that."""
 STOP_CODES: frozenset[ErrorCode] = frozenset(
     {
         ErrorCode.APP_CRASHED,
@@ -1180,7 +1180,6 @@ class Session:
 
 def _structural_part(predicate: Predicate) -> Predicate | None:
     """The diff part of a template the resume guard may evaluate on a handle-less snapshot."""
-    from steerai.verify.predicates import All, AnyOf  # noqa: PLC0415 - avoids an import cycle
 
     if isinstance(predicate, _DIFF_PREDICATES):
         return predicate
@@ -1211,8 +1210,6 @@ def _verify_deadline(expect: Predicate, step_deadline_s: float) -> float:
 
 
 def _is_navigation(predicate: Predicate) -> bool:
-    if isinstance(predicate, Appeared):
-        return predicate.replaces
-    if isinstance(predicate, All | AnyOf):
-        return any(_is_navigation(part) for part in predicate.parts)
-    return False
+    """Only a bare replacing `appeared`: the model's mirror cannot combine predicates, and a
+    file plan that wraps one in `all` / `any_of` keeps the step deadline."""
+    return isinstance(predicate, Appeared) and predicate.replaces
