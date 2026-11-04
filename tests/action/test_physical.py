@@ -1457,3 +1457,28 @@ def test_press_does_not_need_the_pointer_hit_test(fast_clock: Any) -> None:
     result = _executor(inputs).execute(action, _snapshot(FakeHandle()))
     assert result.delivery is Delivery.DELIVERED_UNVERIFIED
     assert inputs.chords == ["enter"]
+
+
+def _document_snapshot(child_role: str) -> Snapshot:
+    """A Document target with one descendant of `child_role` (a page or a composer)."""
+    base = _snapshot(FakeHandle(), role="Document", name="Page")
+    child = replace(base.elements[2], role=child_role)
+    return replace(base, elements=[base.elements[0], base.elements[1], child])
+
+
+def test_press_on_a_document_refuses_focus_on_a_non_text_descendant(fast_clock: Any) -> None:
+    """A page's subtree is the whole page: focus on a link inside it is not the target (SE-01)."""
+    inputs = FakeInput(focused=CHILD_ID)
+    action = PhysicalAction(verb="press", element_id=1, chord="enter")
+    result = _executor(inputs).execute(action, _document_snapshot("Hyperlink"))
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.evidence["detail"] == "target_not_focused"
+    assert inputs.chords == []
+
+
+def test_press_on_a_document_accepts_focus_on_a_text_descendant(fast_clock: Any) -> None:
+    inputs = FakeInput(focused=CHILD_ID)
+    action = PhysicalAction(verb="press", element_id=1, chord="enter")
+    result = _executor(inputs).execute(action, _document_snapshot("Edit"))
+    assert result.delivery is Delivery.DELIVERED_UNVERIFIED
+    assert inputs.chords == ["enter"]

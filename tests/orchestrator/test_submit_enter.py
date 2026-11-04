@@ -8,7 +8,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
+
+import pytest
 
 from steerai.errors import ErrorCode
 from steerai.orchestrator.contracts import Step, Target
@@ -138,3 +141,72 @@ def test_a_non_focus_click_does_not_fall_back_on_a_hit_test_miss() -> None:
     result = h.session.run_step(step)
     assert result.ok is False
     assert h.semantic.calls == []
+
+
+@pytest.mark.parametrize("role", ["ComboBox", "Document"])
+def test_submit_on_the_other_text_roles_presses_enter_too(role: str) -> None:
+    h = Harness()
+    h.world.rows = [(r[0], role, *r[2:]) if r == COMPOSER else r for r in h.world.rows]
+    h.world.composer_value = HELLO
+    actions = _sends_on_enter(h)
+    step = Step(
+        id="s3",
+        subgoal="g1",
+        verb="submit",
+        target=Target(role=role, name="Message"),
+        risk="R2",
+        params={**PARAMS, "composer_role": role},
+    )
+    result = h.session.run_step(step)
+    assert result.ok is True, result.to_dict()
+    assert [(a.verb, a.chord) for a in actions] == [("press", "enter")]
+    assert h.semantic.calls == []
+
+
+def test_a_set_focus_fallback_that_never_takes_fails_with_the_fallback_recorded() -> None:
+    h = Harness()
+    _rebuild(h, live=FocusLive(h.world))
+    h.physical.outcomes[COMPOSER[0]] = not_delivered(
+        ErrorCode.ELEMENT_NOT_ACTIONABLE, "hit_test_miss"
+    )
+    result = h.session.run_step(_focus_step())
+    assert result.ok is False
+    assert h.semantic.calls == [("focus", COMPOSER[0], None)]
+    assert result.evidence["focus_fallback"] == "set_focus"
+
+
+def test_submit_enter_is_refused_when_the_composer_shows_other_text() -> None:
+    """The approved thing must be the executed thing (OR-31, SE-02): Enter only submits the text
+    the person confirmed; the screen's text never enters the evidence."""
+    h = Harness()
+    h.world.composer_value = "something else entirely"
+    result = h.session.run_step(_submit("Edit", "Message"))
+    assert result.ok is False
+    assert result.code is ErrorCode.GATE_BLOCKED
+    assert result.evidence["detail"] == "composer_differs"
+    assert h.physical.calls == []
+    assert h.world.sent == []
+    assert "something else" not in json.dumps(result.to_dict())
+
+
+def test_the_set_focus_fallback_re_observes_after_a_wait() -> None:
+    """A wait at the fallback's boundary ends after the observe: fresh snapshot first (TK-03)."""
+    quiet = Harness()
+    _rebuild(quiet, live=FocusLive(quiet.world, focused=COMPOSER[3]))
+    quiet.physical.outcomes[COMPOSER[0]] = not_delivered(
+        ErrorCode.ELEMENT_NOT_ACTIONABLE, "hit_test_miss"
+    )
+    assert quiet.session.run_step(_focus_step()).ok is True
+    baseline = len(quiet.world.observed)
+
+    waited = Harness()
+    _rebuild(waited, live=FocusLive(waited.world, focused=COMPOSER[3]))
+    waited.physical.outcomes[COMPOSER[0]] = not_delivered(
+        ErrorCode.ELEMENT_NOT_ACTIONABLE, "hit_test_miss"
+    )
+    waited.session._boundary = lambda evidence: True  # type: ignore[method-assign]  # noqa: ARG005
+    result = waited.session.run_step(_focus_step())
+    assert result.ok is True, result.to_dict()
+    assert result.evidence["restarted"] is True
+    assert len(waited.world.observed) >= baseline + 1, "the fallback observed again after the wait"
+    assert waited.semantic.calls == [("focus", COMPOSER[0], None)]
