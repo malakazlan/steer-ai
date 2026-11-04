@@ -327,3 +327,18 @@ def test_a_plan_with_no_steps_is_no_steps_not_invalid_plan() -> None:
     assert error.prompt_version == PROMPT_VERSION
     record = error.trace_record(latency_ms=5.0)
     assert (record["model"], record["detail"], record["path"]) == ("m-1", "no_steps", None)
+
+
+def test_mechanical_steps_keep_the_templates_effect_not_the_models() -> None:
+    """A type step's effect is its value, a focus step's is keyboard focus: the gate's templates
+    verify those (5.9, 5.10); an `expect` the model writes for them is dropped (first real run:
+    an `appeared` on a type step timed out and left the task unfinished)."""
+    doc = _doc()
+    doc.steps[0].expect = PredicateDoc(kind="title", pattern="Google")
+    doc.steps[1].expect = PredicateDoc(kind="appeared", role="ComboBox", name=QUERY)
+    planner, _ = _planner(_Response(parsed_output=doc))
+    outcome = planner.plan(_request())
+    by_id = {s.id: s for s in outcome.plan.steps}
+    assert by_id["focus"].expect is None
+    assert by_id["type"].expect is None
+    assert by_id["submit"].expect is not None, "an acting step keeps the model's effect"

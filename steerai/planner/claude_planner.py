@@ -31,7 +31,9 @@ DEFAULT_MAX_TOKENS = 8192
 """Unmeasured: enough for the 6.3 form of a ten-step plan; a `max_tokens` stop is `truncated`."""
 DEFAULT_MAX_RETRIES = 1
 EFFORT = "medium"
-PROMPT_VERSION = "planner-1"
+PROMPT_VERSION = "planner-2"
+MECHANICAL_VERBS = frozenset({"type", "focus"})
+"""Steps whose effect code verifies (value typed, focus held): any model `expect` is dropped."""
 
 _SYSTEM = f"""You write a plan for a Windows computer-use agent that acts on one window.
 Output a JSON plan document in the exact schema you are given. Nothing else.
@@ -60,6 +62,10 @@ new on screen); disappeared: role, name, within? (it is gone); title: pattern (t
 holds this plain text); window_exists / window_gone: name; count_delta: role, delta, within?.
 "within" names a landmark container by its exact name. Patterns are plain text, never regular
 expressions. Leave fields the kind does not use unset.
+
+Do not write "expect" for focus or type steps: the agent verifies the focus and the typed
+value itself. Subgoals describe end states visible on screen after an action (a page replaced,
+a message appeared, an item gone), never "the text is typed".
 
 Verification rule for R2 and R3 steps: the step's "expect" must be an "appeared" or
 "disappeared" whose "name" is the step's own content (the text typed or sent, or the name of
@@ -202,6 +208,10 @@ def _document_bytes(doc: PlanDoc, request: PlanRequest) -> bytes:
         text = step.get("text")
         if isinstance(text, str):
             step["text_provenance"] = "verbatim" if _in_goal(text, goal_key) else "generated"
+        if step.get("verb") in MECHANICAL_VERBS:
+            # the effect of typing is the value, of focusing the focus: the gate's templates
+            # verify those; a model-written effect here cannot be right
+            step.pop("expect", None)
     return json.dumps(body, ensure_ascii=False).encode("utf-8")
 
 
