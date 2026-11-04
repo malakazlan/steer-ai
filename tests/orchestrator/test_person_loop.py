@@ -374,7 +374,14 @@ def test_the_binding_refreshes_its_text_after_every_rebind() -> None:
             ]
 
     h.confirmer.on_ask = answer_then_tick
-    h.session.run_step(_person_delete("Amir"))
+
+    def remove_on_click(executor: Any, action: Any) -> None:
+        if action.verb == "click":
+            executor.world.rows = [r for r in executor.world.rows if r[0] != action.element_id]
+
+    h.semantic.on_execute = remove_on_click
+    result = h.session.run_step(_person_delete("Amir"))
+    assert result.ok is True, ("the template followed the renamed row", result.to_dict())
     yes = next(a for a in seen if a.kind == "yes")
     assert yes.target_name == f"Amir Khan {MID} ok {MID} 3d", (
         "the ask-time text: no observe between"
@@ -404,3 +411,53 @@ def test_two_rows_with_the_same_full_name_never_rebind_by_name() -> None:
     assert result.code is ErrorCode.ELEMENT_NOT_FOUND
     assert result.evidence["detail"] == "candidate_gone"
     assert h.semantic.calls == [], "never the twin by name"
+
+
+def _strong_person_click(step_id: str = "p1") -> Step:
+    """A person click whose expectation is strong enough for R3 (a parameter-backed Appeared)."""
+    return Step(
+        id=step_id,
+        subgoal="g1",
+        verb="click",
+        target=Target(role="ListItem", name="Amir", match="person"),
+        risk="R1",
+        params={"text": "opened"},
+        expect=Appeared(role="Text", name_pattern="opened", within=Within(landmark="Conversation")),
+    )
+
+
+def test_a_raised_record_is_honoured_whatever_row_the_person_picks_next() -> None:
+    """An earlier attempt bound a row whose own name raised the step to R3 and left an open
+    record; the plan says R1. The next attempt must consult the ledger before any ask."""
+    h = Harness()
+    raised: Row = (23, "ListItem", f"Amir delete {MID} hi {MID} 1h", (42, 41), 1)
+    h.world.rows.append(raised)
+    seen = _answer_which(h, 2)  # the raised row is second in document order
+    first = h.session.run_step(_strong_person_click())
+    assert first.evidence["risk"] == "R3"
+    assert [a.kind for a in seen] == ["which", "yes"]
+    assert "p1" in h.ledger.records, "an R3 step writes a record"
+    key = h.ledger.key_for(_strong_person_click())
+    h.ledger.executions[key]["outcome"] = None
+    h.ledger.records["p1"] = replace(h.ledger.records["p1"], phase="acting")
+    h.confirmer.asked.clear()
+    seen = _answer_which(h, 1)  # the person would now pick the plain row
+    second = h.session.run_step(_strong_person_click())
+    assert [a.kind for a in seen] == ["yes"], "the open record re-binds; no second which-ask"
+    assert seen[0].previous_attempt == "acting"
+    assert second.evidence["risk"] == "R3"
+    assert h.semantic.calls[-1][1] == 23, "the record's row, not the plain one"
+
+
+def test_a_done_raised_key_never_asks_which() -> None:
+    h = Harness()
+    raised: Row = (23, "ListItem", f"Amir delete {MID} hi {MID} 1h", (42, 41), 1)
+    h.world.rows.append(raised)
+    _answer_which(h, 2)
+    h.session.run_step(_strong_person_click())
+    key = h.ledger.key_for(_strong_person_click())
+    h.ledger.executions[key]["outcome"] = "delivered_verified"
+    h.confirmer.asked.clear()
+    again = h.session.run_step(_strong_person_click())
+    assert again.gate == "done_already"
+    assert h.confirmer.asked == []

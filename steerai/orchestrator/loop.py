@@ -32,6 +32,7 @@ from steerai.action.executor import Action
 from steerai.action.physical import PhysicalAction
 from steerai.errors import ErrorCode, SteerError
 from steerai.orchestrator.contracts import (
+    RISKS,
     GateDecision,
     GateToken,
     Plan,
@@ -69,9 +70,10 @@ from steerai.verify.t1 import (
     title_holds,
     verify,
 )
+from steerai.world.elements import Element
 from steerai.world.fingerprint import similarity
 from steerai.world.model import Snapshot, normalise_name
-from steerai.world.people import lookalike_only
+from steerai.world.people import comparable, lookalike_only, name_part
 
 REUSE_FRESHNESS_S = 5.0
 """How old a decided after snapshot may be to serve as the next R0/R1 before. Unmeasured; well
@@ -94,6 +96,7 @@ STOP_CODES: frozenset[ErrorCode] = frozenset(
 """Codes that end the task even after a dispatch: the window or the desktop is not there to
 act on any more (RN-14); the ledger record stays open, so a resume confirms."""
 SCREEN_GUARD_STRIKES = 3
+_RISK_ORDER = {risk: index for index, risk in enumerate(RISKS)}
 DEFAULT_MAX_STEPS = 20
 _DIFF_PREDICATES = (Appeared, Disappeared, CountDelta, WindowGone)
 
@@ -247,6 +250,7 @@ class Session:
         self._act_evidence: dict[str, Any] = {}
         self._sent_in_act = False
         self._binding: Binding | None = None
+        self._candidates: tuple[str, list[Element]] | None = None
 
     # ---- one step ----------------------------------------------------------------------------
 
@@ -264,17 +268,16 @@ class Session:
             self._boundary(evidence)
             self._act_evidence = evidence
             before = stage.measure("observe", lambda: self._before(risk, evidence))
-            # admission first: a done key never asks which row (PT-29)
+            # admission first, at the candidates' tier ceiling for a person target: a done
+            # or open record under this key is never bypassed by the row the person picks
+            risk = self._ceiling(step, before, risk)
             previous = self._admission(step, key, risk, before)
             if previous == "done":
                 return self._done_already(step, stage, evidence)
             element_id = stage.measure("decide", lambda: self._resolve(step, before))
             self._secure_step = before.element(element_id).secure
-            risk, previous = self._retier(
-                step, key, before, risk=risk, previous=previous, evidence=evidence
-            )
-            if previous == "done":
-                return self._done_already(step, stage, evidence)
+            risk = self._settled_tier(step, risk)
+            evidence["risk"] = risk
             gate_result = stage.measure(
                 "gate", lambda: self._decide(step, key, before, previous, element_id, risk=risk)
             )
@@ -294,6 +297,12 @@ class Session:
                 before, element_id = stage.measure(
                     "observe", lambda: self._reobserve(step, before, evidence, mismatch=token)
                 )
+                if self._binding is not None:
+                    # the bound row's text may have moved on: the template follows it
+                    rebuilt = self._gate.predicate_for(
+                        step, element_id, self._composer(step, before), bound=self._binding
+                    )
+                    expect = rebuilt if rebuilt is not None else expect
                 if waited:
                     evidence["restarted"] = True
             before_of_record, recorded = self._record(step, risk, before, decision)
@@ -444,27 +453,22 @@ class Session:
             code=action.code,
         )
 
-    def _retier(  # noqa: PLR0913 - the step's state after the target is bound
-        self,
-        step: Step,
-        key: str,
-        before: Snapshot,
-        *,
-        risk: Risk,
-        previous: str | None,
-        evidence: dict[str, Any],
-    ) -> tuple[Risk, str | None]:
-        """The bound row's own name can raise the tier (PT-31): the whole step follows, and a
-        step raised into R2/R3 goes through admission like any other."""
+    def _ceiling(self, step: Step, before: Snapshot, risk: Risk) -> Risk:
+        """For a person target, the highest tier any candidate row could raise the step to
+        (PT-31): admission runs there, so the ledger is consulted whatever row is chosen."""
+        target = step.target
+        if target is None or target.match != "person":
+            return risk
+        found = pick(before, target)
+        self._candidates = (before.id, found)
+        tiers = [effective_risk(step, comparable(name_part(c.name))) for c in found]
+        return max([risk, *tiers], key=_RISK_ORDER.__getitem__)
+
+    def _settled_tier(self, step: Step, ceiling: Risk) -> Risk:
+        """The bound row's own tier, never below the plan's (PT-31)."""
         if self._binding is None:
-            return risk, previous
-        raised = effective_risk(step, self._binding.name_part)
-        if raised == risk:
-            return risk, previous
-        evidence["risk"] = raised
-        if raised in ("R2", "R3") and previous is None:
-            previous = self._admission(step, key, raised, before)
-        return raised, previous
+            return ceiling
+        return effective_risk(step, self._binding.name_part)
 
     def _decide(  # noqa: PLR0913 - the step's state at the gate
         self,
@@ -601,6 +605,7 @@ class Session:
         self._secure_step = False
         self._sent_in_act = False
         self._binding = None
+        self._candidates = None
         self._counts_at_step = self._monitor.counts() if self._monitor is not None else {}
 
     def _input_evidence(self, evidence: dict[str, Any]) -> None:
@@ -675,7 +680,10 @@ class Session:
             # screen shows now (review item 2)
             self._binding = replace(bind(found), unique_name=self._binding.unique_name)
             return found.id
-        found_all = pick(snapshot, target)
+        cached = self._candidates
+        found_all = (
+            cached[1] if cached is not None and cached[0] == snapshot.id else pick(snapshot, target)
+        )
         evidence["candidates"] = len(found_all)
         if not found_all:
             others = other_role_matches(snapshot, target)
