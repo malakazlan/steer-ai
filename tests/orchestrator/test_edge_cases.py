@@ -101,7 +101,7 @@ def _open_record(h: Harness, step: Step, before: Snapshot, phase: str = "acting"
 
 def test_target_identity_normalises_whitespace_case_and_compatibility_forms() -> None:
     base = Target(role="Button", name="Send").identity
-    assert base == "Button|send|"
+    assert base == "Button|send||exact"
     assert Target(role="Button", name="  Send  ").identity == base
     assert Target(role="Button", name="SEND").identity == base
     assert Target(role="Button", name="\N{FULLWIDTH LATIN CAPITAL LETTER S}end").identity == base, (

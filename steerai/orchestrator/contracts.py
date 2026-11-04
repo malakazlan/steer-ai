@@ -23,6 +23,9 @@ RISKS: tuple[Risk, ...] = ("R0", "R1", "R2", "R3")
 Path = Literal["semantic", "physical"]
 GateOutcome = Literal["approve", "confirm", "block"]
 TextProvenance = Literal["verbatim", "generated"]
+MatchMode = Literal["exact", "person"]
+"""How a plan's target name is matched against the screen (5.8 [v1.5]): `exact` is the whole
+normalised name; `person` is the contact rule (name part equal or a whole-token prefix)."""
 GateToken = GateOutcome | Literal["pending", "done_already", "unreached"]
 """`unreached`: the step failed before the gate ran; after the gate, the token is its outcome."""
 
@@ -65,16 +68,20 @@ class Target:
     name: str = field(repr=False)
     automation_id: str = field(default="", repr=False)
     element_id: int | None = None
+    match: MatchMode = "exact"
 
     def __post_init__(self) -> None:
         if not self.role.strip():
             raise ValueError("target role must be named")
         if not normalise_name(self.name):
             raise ValueError("target name must be named")
+        if self.match not in ("exact", "person"):
+            raise ValueError("match must be exact or person")
 
     @property
     def identity(self) -> str:
-        return f"{self.role}|{normalise_name(self.name).casefold()}|{self.automation_id}"
+        name = normalise_name(self.name).casefold()
+        return f"{self.role}|{name}|{self.automation_id}|{self.match}"
 
 
 @dataclass(frozen=True, slots=True)
