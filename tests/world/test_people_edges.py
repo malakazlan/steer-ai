@@ -8,7 +8,14 @@ import json
 import pytest
 
 from steerai.orchestrator.plan_io import PlanError, plan_from_json
-from steerai.world.people import MAX_CANDIDATES, lookalike_only, matches, mixed_script, name_part
+from steerai.world.people import (
+    MAX_CANDIDATES,
+    comparable,
+    lookalike_only,
+    matches,
+    mixed_script,
+    name_part,
+)
 from tests.orchestrator.test_plan_io import _doc
 
 CYR_A = chr(0x0430)  # Cyrillic small a
@@ -87,3 +94,16 @@ def test_the_codec_keeps_an_exact_name_with_a_separator() -> None:
         "name": "Amir " + MID + " hi bro " + MID + " 2h",
     }
     plan_from_json(json.dumps(doc))
+
+
+CYR_SMALL_I = chr(
+    0x0456
+)  # Cyrillic small byelorussian-ukrainian i: UTS #39 says i, its capital says l
+
+
+def test_a_letters_own_line_beats_its_capitals_fold_in_the_table() -> None:
+    assert comparable("Am" + CYR_SMALL_I + "r") == "amir"
+    assert lookalike_only("Amir", "Am" + CYR_SMALL_I + "r " + MID + " hi") is True
+    assert comparable("Am" + chr(0x0406) + "r") == "amir", (
+        "a capital folds through its lowercase line"
+    )

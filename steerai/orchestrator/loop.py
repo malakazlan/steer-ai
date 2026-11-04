@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol
 
 from steerai.action.dispositions import ActionResult, Delivery
@@ -270,8 +270,13 @@ class Session:
                 return self._done_already(step, stage, evidence)
             element_id = stage.measure("decide", lambda: self._resolve(step, before))
             self._secure_step = before.element(element_id).secure
+            risk, previous = self._retier(
+                step, key, before, risk=risk, previous=previous, evidence=evidence
+            )
+            if previous == "done":
+                return self._done_already(step, stage, evidence)
             gate_result = stage.measure(
-                "gate", lambda: self._decide(step, key, before, previous, element_id)
+                "gate", lambda: self._decide(step, key, before, previous, element_id, risk=risk)
             )
             gate_stage = gate_result.outcome
             if gate_result.outcome in ("block", "pending"):
@@ -317,26 +322,24 @@ class Session:
                 risk=risk,
                 gate=gate_result.outcome,
             )
-        except _StepFailureError as failure:
-            # before the gate ran the token is `unreached`; after, the gate's outcome; a kill is
-            # the person's block, and a kill after the record (nothing sent) releases the key
-            if recorded and dispatched is None and not self._sent_in_act:
-                try:
-                    self._close(step, risk, "not_delivered")  # nothing sent: no open record
-                except LedgerError:
-                    evidence["ledger"] = "wal_unavailable"  # the attempt stays open (D5)
-            if isinstance(failure, _TakeoverError) or failure.code is ErrorCode.GATE_PENDING_USER:
-                gate_stage = "pending"
-            elif failure.detail == "none_chosen":
-                gate_stage = "block"  # the person declined every row (PT-30)
-            return self._failed(
-                step, stage, evidence, gate=gate_stage, dispatched=None, failure=failure
-            )
-        except SteerError as failure:
-            # the world model could not observe (window gone, other desktop): a result, with
-            # the action if one was dispatched; an open record stays open (RN-14)
-            return self._failed(
-                step, stage, evidence, gate=gate_stage, dispatched=dispatched, failure=failure
+        except (_StepFailureError, SteerError) as failure:
+            # a refusal before anything was sent, or the world model failing to observe (RN-14):
+            # a result either way, with the dispatched action when there is one
+            release = recorded and dispatched is None and not self._sent_in_act
+            return (
+                self._refused(
+                    step,
+                    stage,
+                    evidence,
+                    gate=gate_stage,
+                    failure=failure,
+                    risk=risk,
+                    release=release,
+                )
+                if isinstance(failure, _StepFailureError)
+                else self._failed(
+                    step, stage, evidence, gate=gate_stage, dispatched=dispatched, failure=failure
+                )
             )
 
     # ---- stages ---------------------------------------------------------------------------------
@@ -441,12 +444,41 @@ class Session:
             code=action.code,
         )
 
-    def _decide(
-        self, step: Step, key: str, before: Snapshot, previous: str | None, element_id: int
+    def _retier(  # noqa: PLR0913 - the step's state after the target is bound
+        self,
+        step: Step,
+        key: str,
+        before: Snapshot,
+        *,
+        risk: Risk,
+        previous: str | None,
+        evidence: dict[str, Any],
+    ) -> tuple[Risk, str | None]:
+        """The bound row's own name can raise the tier (PT-31): the whole step follows, and a
+        step raised into R2/R3 goes through admission like any other."""
+        if self._binding is None:
+            return risk, previous
+        raised = effective_risk(step, self._binding.name_part)
+        if raised == risk:
+            return risk, previous
+        evidence["risk"] = raised
+        if raised in ("R2", "R3") and previous is None:
+            previous = self._admission(step, key, raised, before)
+        return raised, previous
+
+    def _decide(  # noqa: PLR0913 - the step's state at the gate
+        self,
+        step: Step,
+        key: str,
+        before: Snapshot,
+        previous: str | None,
+        element_id: int,
+        *,
+        risk: Risk,
     ) -> GateResult:
         """The gate's decision; while an R2/R3 gate may be asking, the person's input is their
         answer, not a takeover (TK-07; the console brackets its own read as well)."""
-        asking = self._monitor is not None and effective_risk(step) in ("R2", "R3")
+        asking = self._monitor is not None and risk in ("R2", "R3")
         if asking and self._monitor is not None:
             self._monitor.mark_ask_open()
         try:
@@ -507,6 +539,34 @@ class Session:
         element_id = self._resolve(step, fresh)
         self._secure_step = fresh.element(element_id).secure
         return fresh, element_id
+
+    def _refused(  # noqa: PLR0913 - the step's state at the refusal
+        self,
+        step: Step,
+        stage: _Stage,
+        evidence: dict[str, Any],
+        *,
+        gate: GateToken,
+        failure: _StepFailureError,
+        risk: Risk,
+        release: bool,
+    ) -> StepResult:
+        """A step that stopped before anything was sent: before the gate the token is
+        `unreached`; after, the gate's own outcome; the person's own refusals (a kill at the
+        ask, `none_chosen`) are a block; a pending ask pauses; a record with nothing sent is
+        closed `not_delivered` so the key is released."""
+        if release:
+            try:
+                self._close(step, risk, "not_delivered")
+            except LedgerError:
+                evidence["ledger"] = "wal_unavailable"  # the attempt stays open (D5)
+        if isinstance(failure, _TakeoverError) or failure.code is ErrorCode.GATE_PENDING_USER:
+            gate = "pending"
+        elif failure.detail == "none_chosen" or (
+            failure.detail == "killed" and not isinstance(failure, _KilledError)
+        ):
+            gate = "block"
+        return self._failed(step, stage, evidence, gate=gate, dispatched=None, failure=failure)
 
     def _failed(  # noqa: PLR0913 - the step's state at the failure, nothing more
         self,
@@ -611,6 +671,9 @@ class Session:
             found = rebind(self._binding, snapshot)
             if found is None:
                 raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "candidate_gone")
+            # same identity, current text: the confirm ask and the templates see what the
+            # screen shows now (review item 2)
+            self._binding = replace(bind(found), unique_name=self._binding.unique_name)
             return found.id
         found_all = pick(snapshot, target)
         evidence["candidates"] = len(found_all)
@@ -622,7 +685,7 @@ class Session:
         if too_many(found_all):
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
         if len(found_all) == 1 and not lookalike_only(target.name, found_all[0].name):
-            self._binding = bind(found_all[0])
+            self._binding = bind(found_all[0], found_all)
             return found_all[0].id
         if self._monitor is not None:
             self._monitor.mark_ask_open()
@@ -634,7 +697,7 @@ class Session:
         evidence.update({k: v for k, v in which.evidence.items() if k != "detail"})
         if which.outcome == "chosen" and which.index is not None:
             element = found_all[which.index - 1]
-            self._binding = bind(element)
+            self._binding = bind(element, found_all)
             return element.id
         detail = str(which.evidence.get("detail", which.outcome))
         raise _StepFailureError(which.code or ErrorCode.GATE_PENDING_USER, detail)

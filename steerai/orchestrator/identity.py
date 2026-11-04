@@ -32,10 +32,13 @@ from steerai.world.people import (
 @dataclass(frozen=True, slots=True)
 class Binding:
     role: str
-    runtime_id: tuple[int, ...]
+    runtime_id: tuple[int, ...] = field(repr=False)
     name_part: str = field(repr=False)
     """The comparable name part (NFKC, case-folded, confusables folded)."""
     full_name: str = field(repr=False)
+    unique_name: bool = True
+    """Whether the full name was unique among the ask-time candidates; only then may a
+    re-rendered row be found again by its name (PT-08, review item 3)."""
 
     def to_record(self) -> dict[str, Any]:
         return {
@@ -43,11 +46,12 @@ class Binding:
             "runtime_id": list(self.runtime_id),
             "name_part": self.name_part,
             "full_name": self.full_name,
+            "unique_name": self.unique_name,
         }
 
     @classmethod
     def from_record(cls, payload: Any) -> Binding | None:
-        if not isinstance(payload, dict):
+        if not isinstance(payload, dict) or not isinstance(payload.get("runtime_id"), list | tuple):
             return None
         try:
             return cls(
@@ -55,6 +59,7 @@ class Binding:
                 runtime_id=tuple(int(v) for v in payload["runtime_id"]),
                 name_part=str(payload["name_part"]),
                 full_name=str(payload["full_name"]),
+                unique_name=bool(payload.get("unique_name", True)),
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -81,12 +86,21 @@ def other_role_matches(snapshot: Snapshot, target: Target) -> int:
     )
 
 
-def bind(element: Element) -> Binding:
+def bind(element: Element, among: Sequence[Element] = ()) -> Binding:
+    """The binding for a chosen element; `among` are the other candidates at ask time."""
+    wanted = normalise_name(element.name).casefold()
+    twins = [
+        other
+        for other in among
+        if tuple(other.runtime_id) != tuple(element.runtime_id)
+        and normalise_name(other.name).casefold() == wanted
+    ]
     return Binding(
         role=element.role,
         runtime_id=tuple(element.runtime_id),
         name_part=comparable(name_part(element.name)),
         full_name=element.name,
+        unique_name=not twins,
     )
 
 
@@ -140,6 +154,8 @@ def rebind(binding: Binding, snapshot: Snapshot) -> Element | None:
     ]
     if len(by_runtime) == 1:
         return by_runtime[0]
+    if not binding.unique_name:
+        return None  # a twin by name existed at ask time: the name proves nothing
     wanted = normalise_name(binding.full_name).casefold()
     by_name = [
         e

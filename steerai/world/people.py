@@ -45,8 +45,8 @@ CONFUSABLE_TO_LATIN: dict[str, str] = {
     "\u0251": "a",
     "\u0261": "g",
     "\u0263": "y",
-    "\u0269": "l",
-    "\u026a": "l",
+    "\u0269": "i",
+    "\u026a": "i",
     "\u026f": "w",
     "\u0280": "r",
     "\u0284": "f",
@@ -74,7 +74,7 @@ CONFUSABLE_TO_LATIN: dict[str, str] = {
     "\u03b5": "e",
     "\u03b6": "z",
     "\u03b7": "h",
-    "\u03b9": "l",
+    "\u03b9": "i",
     "\u03ba": "k",
     "\u03bc": "m",
     "\u03bd": "v",
@@ -82,7 +82,7 @@ CONFUSABLE_TO_LATIN: dict[str, str] = {
     "\u03c1": "p",
     "\u03c3": "o",
     "\u03c4": "t",
-    "\u03c5": "y",
+    "\u03c5": "u",
     "\u03c7": "x",
     "\u03d2": "y",
     "\u03dc": "f",
@@ -127,7 +127,7 @@ CONFUSABLE_TO_LATIN: dict[str, str] = {
     "\u0448": "w",
     "\u044c": "b",
     "\u0455": "s",
-    "\u0456": "l",
+    "\u0456": "i",
     "\u0458": "j",
     "\u0461": "w",
     "\u0474": "v",
@@ -338,7 +338,7 @@ CONFUSABLE_TO_LATIN: dict[str, str] = {
     "\u216d": "c",
     "\u216e": "d",
     "\u216f": "m",
-    "\u2170": "l",
+    "\u2170": "i",
     "\u2174": "v",
     "\u2179": "x",
     "\u217c": "l",
@@ -375,7 +375,7 @@ CONFUSABLE_TO_LATIN: dict[str, str] = {
     "\u2c8e": "h",
     "\u2c8f": "h",
     "\u2c92": "l",
-    "\u2c93": "l",
+    "\u2c93": "i",
     "\u2c94": "k",
     "\u2c95": "k",
     "\u2c98": "m",
@@ -533,7 +533,7 @@ CONFUSABLE_TO_LATIN: dict[str, str] = {
     "\uff46": "f",
     "\uff47": "g",
     "\uff48": "h",
-    "\uff49": "l",
+    "\uff49": "i",
     "\uff4a": "j",
     "\uff4b": "k",
     "\uff4c": "l",
@@ -654,7 +654,7 @@ CONFUSABLE_TO_LATIN: dict[str, str] = {
     "\U000118c0": "v",
     "\U000118c1": "s",
     "\U000118c2": "f",
-    "\U000118c3": "l",
+    "\U000118c3": "i",
     "\U000118c4": "y",
     "\U000118c6": "e",
     "\U000118c8": "o",
@@ -1521,12 +1521,16 @@ CONFUSABLE_TO_LATIN: dict[str, str] = {
 # --- end generated ---
 
 
+_FOLD = str.maketrans(CONFUSABLE_TO_LATIN)
+
+
 def generate_confusable_table(confusables_txt: str) -> dict[str, str]:
     """The fold table from UTS #39 `confusables.txt`: every single-code-point source whose
     prototype is one ASCII letter, keyed by the source's case-folded form (when that is one
     character), mapped to the lowercase letter. Pure, so a test can hold the vendored table to
     the data."""
-    table: dict[str, str] = {}
+    own: dict[str, str] = {}
+    derived: dict[str, str] = {}
     for raw in confusables_txt.splitlines():
         line = raw.split("#", 1)[0].strip()
         if not line:
@@ -1542,15 +1546,18 @@ def generate_confusable_table(confusables_txt: str) -> dict[str, str]:
         target = chr(int(targets[0], 16))
         if not ("A" <= target <= "Z" or "a" <= target <= "z"):
             continue
-        for key in {source, source.casefold()}:
-            if len(key) == 1 and not key.isascii():
-                table[key] = target.lower()
+        if not source.isascii():
+            own[source] = target.lower()
+        folded = source.casefold()
+        if len(folded) == 1 and folded != source and not folded.isascii():
+            derived[folded] = target.lower()
+    # a letter's own line wins: the capital's fold must never overwrite it (Cyrillic I/i)
+    table = {**derived, **own}
     return dict(sorted(table.items()))
 
 
 def comparable(text: str) -> str:
-    folded = _nfkc_casefold(text)
-    return "".join(CONFUSABLE_TO_LATIN.get(ch, ch) for ch in folded)
+    return _nfkc_casefold(text).translate(_FOLD)
 
 
 def name_part(name: str) -> str:
@@ -1574,8 +1581,9 @@ def preview(name: str) -> str:
     return rest.strip(" \u00b7-\u2013\u2014")
 
 
-def matches(parameter: str, name: str) -> bool:
-    wanted = comparable(parameter).strip()
+def matches(parameter: str, name: str, *, wanted: str | None = None) -> bool:
+    """`wanted` is the parameter's comparable form when the caller has it already."""
+    wanted = comparable(parameter).strip() if wanted is None else wanted
     if not wanted:
         return False
     part = comparable(name_part(name)).strip()
@@ -1619,4 +1627,5 @@ def mixed_script(name: str) -> bool:
 
 def candidates(elements: Iterable[Element], role: str, parameter: str) -> Sequence[Element]:
     """The elements of the role whose name part names the parameter, in document order."""
-    return [e for e in elements if e.role == role and matches(parameter, e.name)]
+    wanted = comparable(parameter).strip()
+    return [e for e in elements if e.role == role and matches(parameter, e.name, wanted=wanted)]

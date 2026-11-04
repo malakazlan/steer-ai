@@ -352,3 +352,55 @@ def test_the_which_ask_is_bound_to_its_id_and_rejects_yes_and_out_of_range() -> 
     )
     assert result.outcome == "chosen"
     assert result.index == 2
+
+
+# ---- the principal's implementation review ---------------------------------------------------
+
+
+def test_the_binding_refreshes_its_text_after_every_rebind() -> None:
+    h = Harness()
+    h.world.rows.append(AMIR_KHAN)
+    seen = _answer_which(h, 2)
+    original = h.confirmer.on_ask
+
+    def answer_then_tick(ask: Ask) -> None:
+        assert original is not None
+        original(ask)
+        if ask.kind == "which":
+            # the age ticks between the which-ask and the confirm's re-observe
+            h.world.rows = [
+                (15, "ListItem", f"Amir Khan {MID} ok {MID} 4d", (42, 17), 1) if r[0] == 15 else r
+                for r in h.world.rows
+            ]
+
+    h.confirmer.on_ask = answer_then_tick
+    h.session.run_step(_person_delete("Amir"))
+    yes = next(a for a in seen if a.kind == "yes")
+    assert yes.target_name == f"Amir Khan {MID} ok {MID} 3d", (
+        "the ask-time text: no observe between"
+    )
+    chosen = h.ledger.records["d1"].chosen
+    assert chosen is not None
+    assert chosen["full_name"] == f"Amir Khan {MID} ok {MID} 4d"
+
+
+def test_two_rows_with_the_same_full_name_never_rebind_by_name() -> None:
+    h = Harness()
+    twin_a: Row = (21, "ListItem", f"Amir {MID} Sent a photo {MID} 2h", (42, 31), 1)
+    twin_b: Row = (22, "ListItem", f"Amir {MID} Sent a photo {MID} 2h", (42, 32), 1)
+    h.world.rows = [r for r in h.world.rows if not (r[1] == "ListItem" and r[2].startswith("Amir"))]
+    h.world.rows.extend([twin_a, twin_b])
+    _answer_which(h, 1)
+    original = h.confirmer.on_ask
+
+    def answer_then_rerender(ask: Ask) -> None:
+        assert original is not None
+        original(ask)
+        if ask.kind == "yes":
+            h.world.rows = [r for r in h.world.rows if r[3] != (42, 31)]  # the chosen node is gone
+
+    h.confirmer.on_ask = answer_then_rerender
+    result = h.session.run_step(_person_delete("Amir"))
+    assert result.code is ErrorCode.ELEMENT_NOT_FOUND
+    assert result.evidence["detail"] == "candidate_gone"
+    assert h.semantic.calls == [], "never the twin by name"
