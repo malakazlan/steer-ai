@@ -96,6 +96,21 @@ class LedgerLike(Protocol):
     def close(self) -> None: ...
 
 
+class GoConfirmer(Confirmer, Protocol):
+    """A confirmer that also answers the plan preview (`go` / `no` / `killed` / `unanswered`)."""
+
+    def ask_go(self, go_id: str) -> str: ...
+
+
+ConfirmerFactory = Callable[[TextIO, TextIO, Any], GoConfirmer]
+"""(stdin, stderr, monitor) -> the confirmer for this run: the console by default, the
+overlay's broker from the app (packet launcher-2026-11-04)."""
+
+
+def _console_confirmer(stdin: TextIO, stderr: TextIO, monitor: Any) -> GoConfirmer:
+    return ConsoleConfirmer(stdin, stderr, monitor=monitor)
+
+
 class SessionLike(Protocol):
     def run_task(self, plan: Plan) -> TaskResult: ...
 
@@ -132,6 +147,7 @@ class Deps:
     """(title, 6.2 lines) of a window after a warm-up observe; None only in pure tests."""
     planner: Callable[[PlanRequest], PlanOutcome] | None = None
     """The LLM planner (5.3); None only in pure tests or a `--plan` run."""
+    make_confirmer: ConfirmerFactory = _console_confirmer
     monotonic: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
     """Starts the takeover monitor (hooks and the kill hot key) for these options; None only in
@@ -584,6 +600,7 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
         )
         out.note(f"task {options.task_id}: window 0x{window.hwnd:x} pid {window.pid}")
         out.resume_hint()
+        confirmer = deps.make_confirmer(stdin, stderr, monitor)
         planned: Plan | int = (
             plan
             if plan is not None
@@ -594,7 +611,7 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
                 options=options,
                 deps=deps,
                 out=out,
-                confirmer=ConsoleConfirmer(stdin, stderr, monitor=monitor),
+                confirmer=confirmer,
             )
         )
         if isinstance(planned, int):
@@ -615,7 +632,7 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
             title=window.title,
             task_id=options.task_id,
             options=options,
-            confirmer=ConsoleConfirmer(stdin, stderr, monitor=monitor),
+            confirmer=confirmer,
             ledger=ledger,
             trace=SafeTrace(trace, stderr),
             monitor=monitor,
@@ -736,7 +753,7 @@ def _planned(  # noqa: PLR0913 - the run's state at planning time
     options: Options,
     deps: Deps,
     out: _Out,
-    confirmer: ConsoleConfirmer,
+    confirmer: GoConfirmer,
 ) -> Plan | int:
     """Observe, plan, write the exact bytes, bind their digest, apply the limit, preview, and
     wait for `go:<id>`; an int is the exit code of a refusal on the way."""
@@ -926,6 +943,11 @@ def _start_monitor(options: Options) -> Any:
     monitor = HookMonitor(kill_key=options.kill_key)
     monitor.start()
     return monitor
+
+
+def real_deps() -> Deps:
+    """The runner's real collaborators (the app reuses them with its own confirmer)."""
+    return _real_deps()
 
 
 def _real_deps() -> Deps:
