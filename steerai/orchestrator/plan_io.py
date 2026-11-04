@@ -81,6 +81,16 @@ _KINDS = frozenset(
 )
 
 
+TARGET_KEYS = frozenset({"role", "name", "automation_id", "match"})
+APPEARED_KEYS = frozenset({"role", "name", "within", "expected", "order", "decoration", "replaces"})
+FILE_VERBS = _FILE_VERBS
+STEP_KEYS = _STEP_KEYS
+PARAM_KEYS = _PARAM_KEYS
+KINDS = _KINDS
+"""Public names of the file form's key sets, so a producer (the planner's mirror) can be pinned
+to the boundary in a test rather than drifting from it."""
+
+
 class PlanError(ValueError):
     """A plan file that cannot become a plan; `path` names the field."""
 
@@ -207,11 +217,7 @@ def _predicate(value: object, path: str, depth: int = 1) -> Predicate:
 
 
 def _appeared(fields: Mapping[str, Any], inner: str) -> Appeared:
-    _keys(
-        fields,
-        frozenset({"role", "name", "within", "expected", "order", "decoration", "replaces"}),
-        inner,
-    )
+    _keys(fields, APPEARED_KEYS, inner)
     replaces = _bool(fields.get("replaces", False), f"{inner}.replaces")
     order = fields.get("order", "append")
     if order not in ("append", "prepend"):
@@ -284,7 +290,7 @@ def _predicate_body(value: object, path: str, depth: int) -> Predicate:
 
 def _target(value: object, path: str) -> Target:
     obj = _obj(value, path)
-    _keys(obj, frozenset({"role", "name", "automation_id", "match"}), path)
+    _keys(obj, TARGET_KEYS, path)
     match = obj.get("match", "exact")
     if match not in ("exact", "person"):
         raise PlanError(f"{path}.match", "must be exact or person")
