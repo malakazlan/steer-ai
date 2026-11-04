@@ -493,3 +493,34 @@ def test_the_plan_handed_to_the_session_is_the_file_plan(tmp_path: Path) -> None
     assert world.session is not None
     assert _step_ids(world.session.ran[0]) == _step_ids(plan)
     assert isinstance(world.session.ran[0].steps[0], Step)
+
+
+def test_warm_up_absorbs_a_provider_that_fails_for_a_while_then_answers() -> None:
+    """First contact includes a provider that answers E_FAIL for a moment after a foreground
+    change (overlay runs 2026-11-04): a `perception_timeout` observe is "not yet", kept polling
+    until the cap; the cap with no answer raises the last error."""
+    clock = {"t": 0.0}
+    answers = iter([None, None, None, 60, 60, 60])
+
+    def observe() -> Snapshot:
+        count = next(answers)
+        if count is None:
+            raise SteerError(ErrorCode.PERCEPTION_TIMEOUT, "uia fetch failed: E_FAIL")
+        rows: list[Row] = [(i, "Group", f"n{i}", (42, i), None) for i in range(count)]
+        return build(rows, snapshot_id="s", taken_at=clock["t"])
+
+    def sleep(s: float) -> None:
+        clock["t"] += s
+
+    settled = warm_up(observe, cap_s=10.0, monotonic=lambda: clock["t"], sleep=sleep)
+    assert settled.node_count == 60
+    assert clock["t"] >= 3 * 0.25, "the failed looks waited a poll each"
+
+    def never() -> Snapshot:
+        raise SteerError(ErrorCode.PERCEPTION_TIMEOUT, "uia fetch failed: E_FAIL")
+
+    clock["t"] = 0.0
+    with pytest.raises(SteerError) as caught:
+        warm_up(never, cap_s=1.0, monotonic=lambda: clock["t"], sleep=sleep)
+    assert caught.value.code is ErrorCode.PERCEPTION_TIMEOUT
+    assert clock["t"] >= 1.0

@@ -38,6 +38,11 @@ from steerai.world.fingerprint import Fingerprint, landmarks, normalise_title
 
 DEFAULT_CAP = 150
 STABLE_WINDOW = 2
+FETCH_RETRIES = 2
+FETCH_RETRY_S = 0.3
+"""A UIA fetch can fail once right after a foreground change (E_FAIL from the provider; measured
+2026-11-04 through the overlay: 1 of 1 recovered on the first retry 0.5 s later). Bounded retries
+before `perception_timeout`; the retry pause is unmeasured."""
 POLL_S = 0.05
 CAP_S = 1.5
 MIN_POLL_S = 0.01
@@ -331,12 +336,16 @@ class WorldModel:
         )
 
     def _fetch(self, hwnd: int) -> TreeSnapshot:
-        try:
-            return self._client.cached_tree(hwnd)
-        except OSError as exc:
-            if not is_window(hwnd):
-                raise SteerError(ErrorCode.APP_CRASHED, f"window {hwnd:#x} went away") from exc
-            raise SteerError(ErrorCode.PERCEPTION_TIMEOUT, str(exc)) from exc
+        for attempt in range(FETCH_RETRIES + 1):
+            try:
+                return self._client.cached_tree(hwnd)
+            except OSError as exc:
+                if not is_window(hwnd):
+                    raise SteerError(ErrorCode.APP_CRASHED, f"window {hwnd:#x} went away") from exc
+                if attempt == FETCH_RETRIES:
+                    raise SteerError(ErrorCode.PERCEPTION_TIMEOUT, str(exc)) from exc
+                time.sleep(FETCH_RETRY_S)
+        raise AssertionError("unreachable")
 
     def resolve(self, snapshot: Snapshot, element_id: int, fresh: Snapshot) -> Element:
         return resolve_in(snapshot, element_id, fresh)

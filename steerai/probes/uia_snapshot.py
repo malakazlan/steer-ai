@@ -108,7 +108,10 @@ class UiaClient:
             cache_request.AddProperty(getattr(self._uia_module, name))
         cache_request.TreeScope = self._uia_module.TreeScope_Subtree
         started = time.perf_counter_ns()
-        root = element.BuildUpdatedCache(cache_request)
+        try:
+            root = element.BuildUpdatedCache(cache_request)
+        except Exception as exc:  # COMError exists only once comtypes is loaded
+            raise OSError(f"uia fetch failed for hwnd {hwnd:#x}: {exc}") from exc
         fetch_ms = (time.perf_counter_ns() - started) / 1_000_000
         started = time.perf_counter_ns()
         nodes: list[RawNode] = []

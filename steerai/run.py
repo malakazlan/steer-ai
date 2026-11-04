@@ -96,6 +96,21 @@ class LedgerLike(Protocol):
     def close(self) -> None: ...
 
 
+class GoConfirmer(Confirmer, Protocol):
+    """A confirmer that also answers the plan preview (`go` / `no` / `killed` / `unanswered`)."""
+
+    def ask_go(self, go_id: str) -> str: ...
+
+
+ConfirmerFactory = Callable[[TextIO, TextIO, Any], GoConfirmer]
+"""(stdin, stderr, monitor) -> the confirmer for this run: the console by default, the
+overlay's broker from the app (packet launcher-2026-11-04)."""
+
+
+def _console_confirmer(stdin: TextIO, stderr: TextIO, monitor: Any) -> GoConfirmer:
+    return ConsoleConfirmer(stdin, stderr, monitor=monitor)
+
+
 class SessionLike(Protocol):
     def run_task(self, plan: Plan) -> TaskResult: ...
 
@@ -132,6 +147,7 @@ class Deps:
     """(title, 6.2 lines) of a window after a warm-up observe; None only in pure tests."""
     planner: Callable[[PlanRequest], PlanOutcome] | None = None
     """The LLM planner (5.3); None only in pure tests or a `--plan` run."""
+    make_confirmer: ConfirmerFactory = _console_confirmer
     monotonic: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
     """Starts the takeover monitor (hooks and the kill hot key) for these options; None only in
@@ -186,18 +202,35 @@ def warm_up(  # noqa: PLR0913 - keyword-only tuning knobs plus the injected cloc
     kill: Callable[[], bool] | None = None,
 ) -> Snapshot:
     """First contact (5.1 [v0.6], RN-18): observe until three consecutive snapshots agree on
-    the node count, or the cap passes; the last snapshot is returned either way. The kill
-    switch is honoured between observes (TK-22)."""
+    the node count, or the cap passes; the last snapshot is returned either way. A provider
+    that answers `perception_timeout` for a moment (E_FAIL right after a foreground change,
+    overlay runs 2026-11-04) is "not yet": polling continues until the cap, and the cap with
+    no answer at all raises the last error. The kill switch is honoured between observes
+    (TK-22)."""
     start = monotonic()
     counts: list[int] = []
+    snapshot: Snapshot | None = None
+    failure: SteerError | None = None
     while True:
         if kill is not None and kill():
             raise SteerError(ErrorCode.GATE_BLOCKED, "killed: the kill switch was pressed")
-        snapshot = observe()
-        counts.append(snapshot.node_count)
-        if len(counts) >= 3 and counts[-1] == counts[-2] == counts[-3]:
-            return snapshot
+        try:
+            snapshot = observe()
+        except SteerError as exc:
+            if exc.code is not ErrorCode.PERCEPTION_TIMEOUT:
+                raise
+            failure = exc
+        else:
+            counts.append(snapshot.node_count)
+            if len(counts) >= 3 and counts[-1] == counts[-2] == counts[-3]:
+                return snapshot
         if monotonic() - start >= cap_s:
+            if snapshot is None:
+                raise (
+                    failure
+                    if failure is not None
+                    else SteerError(ErrorCode.PERCEPTION_TIMEOUT, "warm-up produced no snapshot")
+                )
             return snapshot
         sleep(poll_s)
 
@@ -584,6 +617,7 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
         )
         out.note(f"task {options.task_id}: window 0x{window.hwnd:x} pid {window.pid}")
         out.resume_hint()
+        confirmer = deps.make_confirmer(stdin, stderr, monitor)
         planned: Plan | int = (
             plan
             if plan is not None
@@ -594,7 +628,7 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
                 options=options,
                 deps=deps,
                 out=out,
-                confirmer=ConsoleConfirmer(stdin, stderr, monitor=monitor),
+                confirmer=confirmer,
             )
         )
         if isinstance(planned, int):
@@ -615,7 +649,7 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
             title=window.title,
             task_id=options.task_id,
             options=options,
-            confirmer=ConsoleConfirmer(stdin, stderr, monitor=monitor),
+            confirmer=confirmer,
             ledger=ledger,
             trace=SafeTrace(trace, stderr),
             monitor=monitor,
@@ -736,7 +770,7 @@ def _planned(  # noqa: PLR0913 - the run's state at planning time
     options: Options,
     deps: Deps,
     out: _Out,
-    confirmer: ConsoleConfirmer,
+    confirmer: GoConfirmer,
 ) -> Plan | int:
     """Observe, plan, write the exact bytes, bind their digest, apply the limit, preview, and
     wait for `go:<id>`; an int is the exit code of a refusal on the way."""
