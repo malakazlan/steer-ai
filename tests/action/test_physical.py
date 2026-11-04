@@ -1482,3 +1482,19 @@ def test_press_on_a_document_accepts_focus_on_a_text_descendant(fast_clock: Any)
     result = _executor(inputs).execute(action, _document_snapshot("Edit"))
     assert result.delivery is Delivery.DELIVERED_UNVERIFIED
     assert inputs.chords == ["enter"]
+
+
+def test_press_with_no_focused_element_and_no_runtime_id_is_refused(fast_clock: Any) -> None:
+    """Nothing focused and a target without a RuntimeId must not compare equal (final pass 1)."""
+    inputs = FakeInput(focused=())
+    base = _snapshot(FakeHandle(), role="Edit", name="Message")
+    bare = replace(
+        base,
+        elements=[base.elements[0], replace(base.elements[1], runtime_id=()), base.elements[2]],
+    )
+    result = _executor(inputs).execute(
+        PhysicalAction(verb="press", element_id=1, chord="enter"), bare
+    )
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.evidence["detail"] == "target_not_focused"
+    assert inputs.chords == []

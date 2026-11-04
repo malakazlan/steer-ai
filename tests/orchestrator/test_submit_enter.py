@@ -210,3 +210,101 @@ def test_the_set_focus_fallback_re_observes_after_a_wait() -> None:
     assert result.evidence["restarted"] is True
     assert len(waited.world.observed) >= baseline + 1, "the fallback observed again after the wait"
     assert waited.semantic.calls == [("focus", COMPOSER[0], None)]
+
+
+def test_submit_enter_without_live_reads_is_refused_unreadable() -> None:
+    from steerai.orchestrator.gate import Gate  # noqa: PLC0415
+    from steerai.orchestrator.loop import Session  # noqa: PLC0415
+
+    h = Harness()
+    h.world.composer_value = HELLO
+    h.session = Session(
+        task_id="task-1",
+        hwnd=0x10,
+        observer=h.world,
+        semantic=h.semantic,
+        physical=h.physical,
+        gate=Gate(confirmer=h.confirmer, own_pid=4242, task_id="task-1"),
+        ledger=h.ledger,
+        live=None,
+        trace=h.trace,
+        monotonic=lambda: h.clock["t"],
+        sleep=lambda s: h.clock.__setitem__("t", h.clock["t"] + s),
+        verify_deadline_s=0.5,
+    )
+    result = h.session.run_step(_submit("Edit", "Message"))
+    assert result.code is ErrorCode.GATE_BLOCKED
+    assert result.evidence["detail"] == "composer_unreadable"
+    assert h.physical.calls == []
+
+
+def test_submit_enter_with_a_failing_value_read_is_refused_unreadable() -> None:
+    from steerai.errors import SteerError  # noqa: PLC0415
+
+    class BrokenLive(FocusLive):
+        def value(self, _handle: Any) -> str | None:
+            raise SteerError(ErrorCode.ELEMENT_NOT_FOUND, "handle gone")
+
+    h = Harness()
+    h.world.composer_value = HELLO
+    _rebuild(h, live=BrokenLive(h.world, focused=COMPOSER[3]))
+    result = h.session.run_step(_submit("Edit", "Message"))
+    assert result.code is ErrorCode.GATE_BLOCKED
+    assert result.evidence["detail"] == "composer_unreadable"
+    assert h.physical.calls == []
+
+
+def test_submit_enter_without_an_approved_text_is_refused() -> None:
+    """Unreachable through the gate (no text means no strong template), kept as defence."""
+    from steerai.orchestrator.loop import _StepFailureError  # noqa: PLC0415
+
+    h = Harness()
+    step = Step(
+        id="s3",
+        subgoal="g1",
+        verb="submit",
+        target=Target(role="Edit", name="Message"),
+        risk="R2",
+        params={"composer_role": "Edit"},
+    )
+    with pytest.raises(_StepFailureError) as caught:
+        h.session._check_composer(step, h.world.observe(0x10), COMPOSER[0])
+    assert caught.value.detail == "submit_text_missing"
+
+
+def test_input_during_the_fallback_wait_is_not_the_steps_input() -> None:
+    """D7: the counts baseline is re-taken after the fallback's re-observe, like the act loop."""
+    from steerai.orchestrator.gate import Gate  # noqa: PLC0415
+    from steerai.orchestrator.loop import Session  # noqa: PLC0415
+    from tests.orchestrator.test_takeover_loop import FakeMonitor  # noqa: PLC0415
+
+    h = Harness()
+    monitor = FakeMonitor(clock=h.clock)
+    h.session = Session(
+        task_id="task-1",
+        hwnd=0x10,
+        observer=h.world,
+        semantic=h.semantic,
+        physical=h.physical,
+        gate=Gate(confirmer=h.confirmer, own_pid=4242, task_id="task-1"),
+        ledger=h.ledger,
+        live=FocusLive(h.world, focused=COMPOSER[3]),
+        trace=h.trace,
+        monitor=monitor,
+        monotonic=lambda: h.clock["t"],
+        sleep=lambda s: h.clock.__setitem__("t", h.clock["t"] + s),
+        verify_deadline_s=0.5,
+    )
+    h.physical.outcomes[COMPOSER[0]] = not_delivered(
+        ErrorCode.ELEMENT_NOT_ACTIONABLE, "hit_test_miss"
+    )
+
+    def waited(evidence: dict[str, Any]) -> bool:
+        monitor.user_events += 5  # the person typed while the loop waited
+        return True
+
+    h.session._boundary = waited  # type: ignore[method-assign]
+    result = h.session.run_step(_focus_step())
+    assert result.ok is True, result.to_dict()
+    assert result.evidence["focus_fallback"] == "set_focus"
+    assert "user_input_during_step" not in result.evidence

@@ -603,6 +603,8 @@ def _intersect(a: Box, b: Box) -> Box | None:
 def _focus_on_field(snapshot: Snapshot, target: _Target, focused: tuple[int, ...]) -> bool:
     """Keyboard focus sits on the target itself or on a text-role descendant of it; a link or a
     button inside a page's Document is never the field a chord was approved for (SE-01)."""
+    if not focused:
+        return False
     if focused == tuple(target.element.runtime_id):
         return True
     if focused not in target.subtree:

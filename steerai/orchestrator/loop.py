@@ -911,6 +911,9 @@ class Session:
                 step, before, self._act_evidence, mismatch="screen_changed_during_wait"
             )
             self._act_evidence["restarted"] = True
+            if self._monitor is not None:
+                # the wait's input is not the step's (D7), as in the act loop
+                self._counts_at_step = self._monitor.counts()
         result = self._semantic.execute(Action(verb="focus", element_id=element_id), before)
         self._act_evidence["focus_fallback"] = "set_focus"
         return result, before, element_id
