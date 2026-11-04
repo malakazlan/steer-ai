@@ -362,7 +362,8 @@ def test_the_preview_shows_a_person_target_and_the_steps_expect() -> None:
     )
     lines = preview_lines(plan, "0123456789ab")
     assert lines[0] == f"plan 0123456789ab: {GOAL}"
-    assert lines[2].startswith('  step open: click ListItem "Amir" (person) R0 expect={"appeared": ')
+    head = '  step open: click ListItem "Amir" (person) R0 expect={"appeared": '
+    assert lines[2].startswith(head)
     assert '"within": {"landmark": "chat list"}' in lines[2], "the landmark as normalised"
     assert lines[-1] == "type go:0123456789ab to run this plan, or no"
 
