@@ -56,6 +56,8 @@ from steerai.orchestrator.identity import (
 from steerai.orchestrator.ledger import LedgerError, WriteAheadRecord
 from steerai.orchestrator.trace import NullTrace, Trace
 from steerai.verify.predicates import (
+    All,
+    AnyOf,
     Appeared,
     CountDelta,
     Disappeared,
@@ -90,6 +92,10 @@ SETTLE_S = 0.5
 """A target missing right after the page changed is a timing gap first: settle this long and
 re-observe before calling it absent (first real-site run 2026-11-04; unmeasured)."""
 SETTLE_RETRIES = 2
+NAVIGATION_VERIFY_S = 10.0
+"""Verify deadline for a replacing `appeared` (a page replacing itself; 5.10 [v1.9]): a heavy
+page loads slower than the 3 s step deadline (Wikipedia article: over 3.5 s, under 5 s, n=1).
+Unmeasured beyond that."""
 STOP_CODES: frozenset[ErrorCode] = frozenset(
     {
         ErrorCode.APP_CRASHED,
@@ -958,7 +964,7 @@ class Session:
             live=self._live,
             windows=self._windows() if self._windows else None,
             windows_before=windows_before,
-            deadline_s=self._verify_deadline_s,
+            deadline_s=_verify_deadline(expect, self._verify_deadline_s),
             monotonic=self._monotonic,
             sleep=self._sleep,
         )
@@ -1174,7 +1180,6 @@ class Session:
 
 def _structural_part(predicate: Predicate) -> Predicate | None:
     """The diff part of a template the resume guard may evaluate on a handle-less snapshot."""
-    from steerai.verify.predicates import All, AnyOf  # noqa: PLC0415 - avoids an import cycle
 
     if isinstance(predicate, _DIFF_PREDICATES):
         return predicate
@@ -1195,3 +1200,16 @@ def _same_screen(before: Snapshot, after: Snapshot) -> bool:
     if marks_before and marks_after:
         return similarity(marks_before, marks_after) >= SCREEN_GUARD_THRESHOLD
     return before.node_count == after.node_count
+
+
+def _verify_deadline(expect: Predicate, step_deadline_s: float) -> float:
+    """The navigation form waits for a page, not a message."""
+    if _is_navigation(expect):
+        return max(step_deadline_s, NAVIGATION_VERIFY_S)
+    return step_deadline_s
+
+
+def _is_navigation(predicate: Predicate) -> bool:
+    """Only a bare replacing `appeared`: the model's mirror cannot combine predicates, and a
+    file plan that wraps one in `all` / `any_of` keeps the step deadline."""
+    return isinstance(predicate, Appeared) and predicate.replaces

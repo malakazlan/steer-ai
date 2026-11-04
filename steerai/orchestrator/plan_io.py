@@ -83,6 +83,18 @@ _KINDS = frozenset(
 
 TARGET_KEYS = frozenset({"role", "name", "automation_id", "match"})
 APPEARED_KEYS = frozenset({"role", "name", "within", "expected", "order", "decoration", "replaces"})
+DISAPPEARED_KEYS = frozenset({"role", "name", "within"})
+COUNT_DELTA_KEYS = frozenset({"role", "delta", "within"})
+TITLE_KEYS = frozenset({"pattern"})
+WINDOW_KEYS = frozenset({"name"})
+PREDICATE_KEYS: Mapping[str, frozenset[str]] = {
+    "appeared": APPEARED_KEYS,
+    "disappeared": DISAPPEARED_KEYS,
+    "count_delta": COUNT_DELTA_KEYS,
+    "title": TITLE_KEYS,
+    "window_exists": WINDOW_KEYS,
+    "window_gone": WINDOW_KEYS,
+}
 FILE_VERBS = _FILE_VERBS
 STEP_KEYS = _STEP_KEYS
 PARAM_KEYS = _PARAM_KEYS
@@ -263,23 +275,23 @@ def _predicate_body(value: object, path: str, depth: int) -> Predicate:
     if kind == "appeared":
         return _appeared(fields, inner)
     if kind == "disappeared":
-        _keys(fields, frozenset({"role", "name", "within"}), inner)
+        _keys(fields, DISAPPEARED_KEYS, inner)
         return Disappeared(
             role=_text(fields.get("role"), f"{inner}.role"),
             name_pattern=_text(fields.get("name"), f"{inner}.name"),
             within=_within(fields.get("within"), f"{inner}.within"),
         )
     if kind == "count_delta":
-        _keys(fields, frozenset({"role", "delta", "within"}), inner)
+        _keys(fields, COUNT_DELTA_KEYS, inner)
         return CountDelta(
             role=_text(fields.get("role"), f"{inner}.role"),
             delta=_int(fields.get("delta"), f"{inner}.delta", lo=-MAX_COUNT, hi=MAX_COUNT),
             within=_within(fields.get("within"), f"{inner}.within"),
         )
     if kind == "title":
-        _keys(fields, frozenset({"pattern"}), inner)
+        _keys(fields, TITLE_KEYS, inner)
         return TitleMatches(pattern=_text(fields.get("pattern"), f"{inner}.pattern"))
-    _keys(fields, frozenset({"name"}), inner)
+    _keys(fields, WINDOW_KEYS, inner)
     name = _text(fields.get("name"), f"{inner}.name")
     return (
         WindowExists(name_pattern=name)

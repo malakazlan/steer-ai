@@ -308,3 +308,43 @@ def test_input_during_the_fallback_wait_is_not_the_steps_input() -> None:
     assert result.ok is True, result.to_dict()
     assert result.evidence["focus_fallback"] == "set_focus"
     assert "user_input_during_step" not in result.evidence
+
+
+def test_a_navigation_effect_gets_the_longer_verify_deadline() -> None:
+    """A page replacing itself loads slower than a message appears: a replacing `appeared` is
+    verified under `NAVIGATION_VERIFY_S`, not the step deadline (Wikipedia run, 2026-11-04)."""
+    from steerai.orchestrator.loop import NAVIGATION_VERIFY_S  # noqa: PLC0415
+    from steerai.verify.predicates import Appeared  # noqa: PLC0415
+
+    h = Harness()  # verify_deadline_s is 0.5 in the harness
+    h.world.rows.append((40, "Document", "Home", (42, 90), 0))
+    h.world.composer_value = HELLO
+    _rebuild(h, live=FocusLive(h.world, focused=COMPOSER[3]))
+    started = h.clock["t"]
+
+    class SlowPage:
+        def observe(self, hwnd: int, **kwargs: Any) -> Any:
+            if (
+                h.clock["t"] - started >= 2.0
+                and (40, "Document", "Home", (42, 90), 0) in h.world.rows
+            ):
+                h.world.rows.remove((40, "Document", "Home", (42, 90), 0))
+                h.world.rows.append((40, "Document", f"{HELLO} - Google Search", (42, 91), 0))
+            return h.world.observe(hwnd, **kwargs)
+
+    h.session._observer = SlowPage()
+    step = Step(
+        id="s3",
+        subgoal="g1",
+        verb="submit",
+        target=Target(role="Edit", name="Message"),
+        risk="R2",
+        params=PARAMS,
+        expect=Appeared(
+            role="Document", name_pattern=HELLO, decoration="google_search", replaces=True
+        ),
+    )
+    result = h.session.run_step(step)
+    assert result.ok is True, result.to_dict()
+    assert result.evidence["replaced"] == 1
+    assert NAVIGATION_VERIFY_S > 2.0

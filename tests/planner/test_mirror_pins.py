@@ -7,14 +7,15 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
 from anthropic.lib._parse._transform import transform_schema
 
 from steerai.orchestrator.contracts import RISKS
 from steerai.orchestrator.plan_io import (
-    APPEARED_KEYS,
     FILE_VERBS,
     KINDS,
     PARAM_KEYS,
+    PREDICATE_KEYS,
     STEP_KEYS,
     TARGET_KEYS,
     plan_from_json,
@@ -22,7 +23,6 @@ from steerai.orchestrator.plan_io import (
 )
 from steerai.planner.mirror import (
     MODEL_OWNED_STEP_KEYS,
-    AppearedDoc,
     ParamsDoc,
     PlanDoc,
     PredicateDoc,
@@ -65,9 +65,62 @@ def test_every_object_allows_a_subset_of_the_boundarys_keys() -> None:
     assert _properties(_definition(schema, "StepDoc")) <= STEP_KEYS
     assert _properties(_definition(schema, "TargetDoc")) <= TARGET_KEYS
     assert _properties(_definition(schema, "ParamsDoc")) <= PARAM_KEYS
-    assert _properties(_definition(schema, "AppearedDoc")) <= APPEARED_KEYS
-    assert _properties(_definition(schema, "PredicateDoc")) <= KINDS
-    assert _properties(_definition(schema, "LeafPredicateDoc")) <= KINDS - {"all", "any_of"}
+    predicate = _definition(schema, "PredicateDoc")["properties"]
+    assert frozenset(predicate["kind"]["enum"]) == KINDS - {"all", "any_of"}
+
+
+def test_every_flat_predicate_translates_to_a_subset_of_the_boundarys_keys() -> None:
+    """The flat predicate's file form never carries a key the boundary refuses for that kind."""
+    full = {
+        "role": "Text",
+        "name": "hello",
+        "within": "Chats",
+        "pattern": "x",
+        "delta": -1,
+        "expected": 2,
+        "order": "prepend",
+        "decoration": "google_search",
+        "replaces": True,
+    }
+    assert set(PREDICATE_KEYS) == KINDS - {"all", "any_of"}
+    for kind, keys in PREDICATE_KEYS.items():
+        # the test fills every field; `kind` is one of the Literal's values at run time
+        form = PredicateDoc(kind=kind, **full).to_file_form()  # type: ignore[arg-type]
+        assert set(form) == {kind}
+        assert frozenset(form[kind]) <= keys, kind
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    [
+        PredicateDoc(kind="appeared", role="Text", name="hello", within="chats", expected=2),
+        PredicateDoc(kind="disappeared", role="ListItem", name="Amir", within="chats"),
+        PredicateDoc(kind="count_delta", role="ListItem", delta=-1, within="chats"),
+        PredicateDoc(kind="title", pattern="Amir - Chat"),
+        PredicateDoc(kind="window_exists", name="Save As"),
+        PredicateDoc(kind="window_gone", name="Save As"),
+    ],
+)
+def test_every_kind_round_trips_through_the_boundary(predicate: PredicateDoc) -> None:
+    doc = _doc_with(predicate)
+    plan = plan_from_json(json.dumps(doc.to_file_form()))
+    assert json.loads(plan_to_json(plan))["subgoals"][0]["condition"] == predicate.to_file_form()
+
+
+def _doc_with(condition: PredicateDoc) -> PlanDoc:
+    return PlanDoc(
+        goal="g",
+        subgoals=[SubgoalDoc(id="g1", desc="d", condition=condition)],
+        steps=[
+            StepDoc(
+                id="s1",
+                subgoal="g1",
+                verb="click",
+                target=TargetDoc(role="Button", name="Ok"),
+                risk="R0",
+            )
+        ],
+    )
 
 
 def test_the_absent_step_keys_are_exactly_the_gates_inputs() -> None:
@@ -82,8 +135,8 @@ def test_every_enum_is_a_subset_of_the_boundarys_sets() -> None:
     step = _definition(schema, "StepDoc")["properties"]
     assert frozenset(step["verb"]["enum"]) <= FILE_VERBS
     assert frozenset(step["risk"]["enum"]) == frozenset(RISKS)
-    appeared = _definition(schema, "AppearedDoc")["properties"]
-    decoration = appeared["decoration"]
+    predicate = _definition(schema, "PredicateDoc")["properties"]
+    decoration = predicate["decoration"]
     options = [_resolved(schema, o) for o in decoration.get("anyOf", [decoration])]
     enums = {v for option in options for v in option.get("enum", [])}
     assert enums == frozenset(DECORATIONS), "the API must constrain the key, not describe it"
@@ -101,7 +154,7 @@ def test_no_object_accepts_additional_properties() -> None:
 
 
 def test_a_fixture_mirror_round_trips_through_the_boundary() -> None:
-    condition = PredicateDoc(appeared=AppearedDoc(role="Text", name="hello"))
+    condition = PredicateDoc(kind="appeared", role="Text", name="hello")
     doc = PlanDoc(
         goal="send hello",
         subgoals=[SubgoalDoc(id="g1", desc="sent", condition=condition)],
@@ -129,7 +182,7 @@ def test_a_fixture_mirror_round_trips_through_the_boundary() -> None:
             ),
         ],
     )
-    text = json.dumps(doc.model_dump(mode="json", exclude_unset=True))
+    text = json.dumps(doc.to_file_form())
     plan = plan_from_json(text)
     assert plan.steps[0].expect is None
     assert plan.steps[0].target is not None
