@@ -1017,3 +1017,23 @@ def test_real_com_error_from_a_dead_handle_becomes_a_result() -> None:
         ErrorCode.PERCEPTION_TIMEOUT,
     }
     assert result.evidence["hresult"].startswith("0x")
+
+
+# ---- focus ------------------------------------------------------------------------------------
+
+
+def test_focus_sets_focus_and_reads_keyboard_focus_back(fast_clock: Any) -> None:
+    handle = FakeHandle()
+    result = _executor().execute(Action(verb="focus", element_id=1), _snapshot(handle, role="Edit"))
+    assert result.ok is True
+    assert handle.calls == ["SetFocus"]
+    assert result.steps[-1].label == "SetFocus"
+
+
+def test_focus_that_never_takes_is_verify_failed(fast_clock: Any) -> None:
+    """Focus that settles elsewhere is a settled wrong state (5.9 [v1.1]), not a timeout."""
+    handle = FakeHandle()
+    handle.SetFocus = lambda: handle.calls.append("SetFocus")  # type: ignore[method-assign]
+    result = _executor().execute(Action(verb="focus", element_id=1), _snapshot(handle, role="Edit"))
+    assert result.ok is False
+    assert result.code is ErrorCode.VERIFY_FAILED

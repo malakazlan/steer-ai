@@ -319,7 +319,9 @@ class PhysicalExecutor:
             subtree=_subtree_ids(snapshot, element),
             ancestors=_ancestor_ids(snapshot, element),
         )
-        self._hit_test(target, snapshot.hwnd)
+        if action.verb != "press":
+            # a chord lands on the focused element, never under the pointer
+            self._hit_test(target, snapshot.hwnd)
         self._check_hands_off()
         return target
 
@@ -400,7 +402,7 @@ class PhysicalExecutor:
     # ---- press -------------------------------------------------------------------------------
 
     def _press(
-        self, action: PhysicalAction, snapshot: Snapshot, _target: _Target, call: Call
+        self, action: PhysicalAction, snapshot: Snapshot, target: _Target, call: Call
     ) -> ActionResult:
         chord = action.chord
         if chord is None:  # enforced by PhysicalAction.__post_init__; kept for the type checker
@@ -412,6 +414,8 @@ class PhysicalExecutor:
         evidence: dict[str, Any] = {"foreground": self._bring_forward(snapshot.hwnd)}
         if action.approval is not None:
             evidence["decision_id"] = action.approval.decision_id
+        if self._inputs.focused_runtime_id() not in target.subtree:
+            raise RefusalError(ErrorCode.FOCUS_LOST, "target_not_focused")
         self._check_hands_off()
         try:
             call.send("keyboard.chord", lambda: self._inputs.press(chord, action.approval))

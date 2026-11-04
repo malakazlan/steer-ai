@@ -1438,3 +1438,22 @@ def test_notepad_document_owns_the_point_and_the_focus_after_a_click() -> None:
         assert client.focused_runtime_id() == target.runtime_id
     finally:
         proc.terminate()
+
+
+def test_press_refuses_when_the_target_is_not_focused(fast_clock: Any) -> None:
+    """A chord lands on the focused element; the target names where it must land."""
+    inputs = FakeInput(focused=(9, 9, 9))
+    action = PhysicalAction(verb="press", element_id=1, chord="enter")
+    result = _executor(inputs).execute(action, _snapshot(FakeHandle()))
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.evidence["detail"] == "target_not_focused"
+    assert inputs.chords == []
+
+
+def test_press_does_not_need_the_pointer_hit_test(fast_clock: Any) -> None:
+    """A keyboard verb: a transparent overlay under the pointer is no reason to refuse."""
+    inputs = FakeInput(hits=[(9, 9, 9)])
+    action = PhysicalAction(verb="press", element_id=1, chord="enter")
+    result = _executor(inputs).execute(action, _snapshot(FakeHandle()))
+    assert result.delivery is Delivery.DELIVERED_UNVERIFIED
+    assert inputs.chords == ["enter"]

@@ -86,6 +86,8 @@ MAX_WAIT_S = 60.0
 """Continuous input beyond this pauses the task as a takeover (unmeasured)."""
 WAIT_POLL_S = 0.1
 SETTLE_S = 0.5
+TEXT_ROLES: frozenset[str] = frozenset({"Edit", "ComboBox", "Document"})
+"""Targets a `submit` step submits with Enter instead of a click (5.9 [v1.7])."""
 """A target missing right after the page changed is a timing gap first: settle this long and
 re-observe before calling it absent (first real-site run 2026-11-04; unmeasured)."""
 SETTLE_RETRIES = 2
@@ -838,6 +840,11 @@ class Session:
         path, verb = executor_verb(step.verb)
         if step.path is not None:
             path = step.path
+        chord: str | None = None
+        if step.verb == "submit" and before.element(element_id).role in TEXT_ROLES:
+            # a composer submits with Enter: a physical press on the focused field
+            path, verb, chord = "physical", "press", "enter"
+            self._act_evidence["submit"] = "enter"
         executor = self._physical if path == "physical" else self._semantic
         retries = 0
         scrolled = False
@@ -856,8 +863,8 @@ class Session:
             if self._monitor is not None:
                 # input during the step is what lands after this point (D7)
                 self._counts_at_step = self._monitor.counts()
-            action = self._build(path, verb, element_id, step.text)
-            result = executor.execute(action, before)
+            action = self._build(path, verb, element_id, step.text, chord)
+            result = self._dispatch(step, executor, action, before)
             if result.delivery is not Delivery.NOT_DELIVERED or result.steps:
                 self._sent_in_act = True  # something may have reached the app
             if result.code in (ErrorCode.GATE_BLOCKED, ErrorCode.GATE_PENDING_USER):
@@ -882,10 +889,24 @@ class Session:
                 continue
             return result, before, retries
 
+    def _dispatch(
+        self, step: Step, executor: ExecutorLike, action: Any, before: Snapshot
+    ) -> ActionResult:
+        """One execution; a focus click refused for a transparent overlay under the pointer
+        (`hit_test_miss`) falls back to UIA SetFocus, verified like any focus step (5.9 [v1.7])."""
+        result = executor.execute(action, before)
+        if step.verb != "focus" or result.evidence.get("detail") != "hit_test_miss":
+            return result
+        self._boundary(self._act_evidence)
+        self._act_evidence["focus_fallback"] = "set_focus"
+        return self._semantic.execute(Action(verb="focus", element_id=action.element_id), before)
+
     @staticmethod
-    def _build(path: str, verb: str, element_id: int, text: str | None) -> Any:
+    def _build(
+        path: str, verb: str, element_id: int, text: str | None, chord: str | None = None
+    ) -> Any:
         if path == "physical":
-            return PhysicalAction(verb=verb, element_id=element_id, text=text)
+            return PhysicalAction(verb=verb, element_id=element_id, text=text, chord=chord)
         return Action(verb=verb, element_id=element_id)
 
     def _verify(

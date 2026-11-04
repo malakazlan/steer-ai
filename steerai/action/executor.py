@@ -39,7 +39,17 @@ from steerai.errors import ErrorCode, SteerError
 from steerai.world.model import Snapshot
 
 VERBS: frozenset[str] = frozenset(
-    {"click", "set_value", "check", "uncheck", "expand", "collapse", "select", "scroll_into_view"}
+    {
+        "click",
+        "focus",
+        "set_value",
+        "check",
+        "uncheck",
+        "expand",
+        "collapse",
+        "select",
+        "scroll_into_view",
+    }
 )
 _TEXT_VERBS = frozenset({"set_value"})
 _POSTCONDITION_VERBS = frozenset({"click", "scroll_into_view"})
@@ -106,6 +116,12 @@ class Executor:
         if action.postcondition is None:
             return _unverified(call, "no_postcondition")
         return _finish(call, _poll_postcondition(action.postcondition))
+
+    def _focus(self, _action: Action, handle: Any, call: Call) -> ActionResult:
+        """UIA `SetFocus`, read back through `HasKeyboardFocus`: the fallback when a
+        focus click is refused for a transparent overlay (5.9 [v1.7])."""
+        call.send("SetFocus", handle.SetFocus)
+        return _finish(call, poll_state(lambda: bool(handle.CurrentHasKeyboardFocus), True))
 
     def _set_value(self, action: Action, handle: Any, call: Call) -> ActionResult:
         if action.text is None:  # enforced by Action.__post_init__; kept for the type checker
@@ -201,6 +217,7 @@ class Executor:
 
 _DISPATCH: dict[str, Callable[[Executor, Action, Any, Call], ActionResult]] = {
     "click": Executor._click,
+    "focus": Executor._focus,
     "set_value": Executor._set_value,
     "check": Executor._check,
     "uncheck": Executor._uncheck,
