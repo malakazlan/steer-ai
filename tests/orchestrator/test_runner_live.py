@@ -97,7 +97,11 @@ def _plan_doc(content_role: str) -> dict[str, Any]:
 
 
 def _run_cli(
-    args: list[str], *, answer: str | None, on_ask: Callable[[], None] | None = None
+    args: list[str],
+    *,
+    answer: str | None,
+    on_ask: Callable[[], None] | None = None,
+    which: str | None = None,
 ) -> tuple[int, dict[str, Any], str]:
     """Run the CLI; a thread answers the first ASK line on stderr with `answer` (the decision
     id substituted for `{id}`), or with a bare Enter when `answer` is None; `on_ask` runs first
@@ -125,7 +129,11 @@ def _run_cli(
                     on_ask()
                     continue
                 decision_id = line.split()[1]
-                reply = "" if answer is None else answer.replace("{id}", decision_id)
+                is_which = line.split()[2] == "which"
+                if is_which:
+                    reply = "" if which is None else which.replace("{id}", decision_id)
+                else:
+                    reply = "" if answer is None else answer.replace("{id}", decision_id)
                 with contextlib.suppress(OSError, ValueError):
                     proc.stdin.write(reply + "\n")
                     proc.stdin.flush()
@@ -232,6 +240,74 @@ def test_the_runner_sends_once_resumes_as_done_and_honours_the_risk_limit(tmp_pa
         assert out["detail"] == "killed"
         assert {r["step_id"]: r["gate"] for r in out["results"]}["send"] == "block"
         assert "ASK " in err
+    finally:
+        proc.terminate()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=10)
+        shutil.rmtree(profile_dir, ignore_errors=True)
+
+
+def _person_plan_doc() -> dict[str, Any]:
+    """A person click: two rows name "Amir" on the inbox page (Chrome exposes the rows' links as
+    Hyperlinks, PT-33), so the runner must ask which and click the chosen one."""
+    return {
+        "goal": "open the chat with Amir",
+        "subgoals": [
+            {
+                "id": "g1",
+                "desc": "chat opened",
+                "condition": {"title": {"pattern": "Nothing - Chat"}},
+            }
+        ],
+        "steps": [
+            {
+                "id": "open",
+                "subgoal": "g1",
+                "verb": "click",
+                "target": {"role": "Hyperlink", "name": "Amir", "match": "person"},
+                "risk": "R1",
+                "expect": {"title": {"pattern": "Nothing - Chat"}},
+            }
+        ],
+    }
+
+
+@pytest.mark.skipif(not CHROME_DEFAULT.is_file(), reason="Chrome is not installed")
+def test_a_person_target_asks_which_row_and_clicks_the_chosen_one(tmp_path: Path) -> None:
+    profile_dir = Path(tempfile.mkdtemp(prefix="steer-person-"))
+    proc = launch_chrome(CHROME_DEFAULT, profile_dir, 9341, PAGE.as_uri(), window_size=(1000, 640))
+    try:
+        window = wait_window_for_pid(proc.pid, title_contains="Google Chrome")
+        _observe_until_exposed(WorldModel(UiaClient()), window.hwnd)
+        plan_path = tmp_path / "person.json"
+        plan_path.write_text(json.dumps(_person_plan_doc()), encoding="utf-8")
+        base = [
+            "--plan",
+            str(plan_path),
+            "--hwnd",
+            str(window.hwnd),
+            "--ledger-dir",
+            str(tmp_path / "ledger"),
+            "--trace",
+            str(tmp_path / "trace.jsonl"),
+            "--task-id",
+            "person-live-1",
+        ]
+        code, out, err = _run_cli(base, answer=None, which="2:{id}")
+        step = {r["step_id"]: r for r in out["results"]}["open"]
+        assert step["evidence"]["candidates"] == 2, (out, err)
+        assert step["evidence"]["chosen_index"] == 2
+        assert step["action"] is not None, "the chosen row was clicked"
+        assert "ASK " in err
+        assert "which" in err
+        assert '"Amir Khan"' in err, "the console shows the candidate name parts"
+        assert code in (EXIT_DONE, 4), "the click lands; the title expectation is a stand-in"
+        trace = (tmp_path / "trace.jsonl").read_text(encoding="utf-8")
+        assert "Amir" not in trace
+
+        code, out, err = _run_cli(base, answer=None, which=None)
+        assert code == EXIT_PAUSED, (out, err)
+        assert out["detail"] == "unanswered"
     finally:
         proc.terminate()
         with contextlib.suppress(subprocess.TimeoutExpired):
