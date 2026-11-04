@@ -161,6 +161,31 @@ class ConsoleConfirmer:
             return self._classify_which(answer, ask)
         return self._classify(answer, ask.decision_id)
 
+    def ask_go(self, go_id: str) -> str:
+        """The plan preview's ask: "go" only for the exact token `go:<id>` (never a bare go, a
+        yes, or a bound yes: PL-05), "no" for no, "killed", else "unanswered"."""
+        if not self._write(
+            f"{_PREFIX}GO {go_id}: type go:{go_id} to run the plan shown above, or no\n"
+        ):
+            return "unanswered"
+        if self._monitor is not None:
+            self._monitor.mark_ask_open()
+        try:
+            line = self._read_or_kill()
+        finally:
+            if self._monitor is not None:
+                self._monitor.mark_ask_closed()
+        if line is _KILLED:
+            return "killed"
+        if not isinstance(line, str):
+            return "unanswered"
+        answer = line.rstrip("\r\n").strip()
+        if answer == f"go:{go_id}":
+            return "go"
+        if answer in ("no", f"no:{go_id}"):
+            return "no"
+        return "unanswered"
+
     def _classify_which(self, answer: str, ask: Ask) -> str:
         """`<n>:<ask id>` with 1 <= n <= k, no leading zero; `no`; else unanswered (PT-15)."""
         if answer in ("no", f"no:{ask.decision_id}"):

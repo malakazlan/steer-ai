@@ -33,6 +33,7 @@ from steerai.orchestrator.ledger import LedgerError
 from steerai.orchestrator.loop import DEFAULT_MAX_STEPS, TaskResult, wait_for_idle
 from steerai.orchestrator.plan_io import PlanError, plan_from_bytes
 from steerai.orchestrator.trace import JsonLinesTrace, NullTrace, Trace
+from steerai.planner.contracts import PlannerError, PlanOutcome, PlanRequest
 from steerai.probes.windows import WindowInfo
 from steerai.session.monitor import DEFAULT_KILL_KEY, parse_kill_key
 from steerai.world.model import Snapshot, normalise_name
@@ -82,6 +83,8 @@ class Options:
     allow_plan_change: bool
     allow_window_change: bool
     kill_key: str = DEFAULT_KILL_KEY
+    goal: str | None = None
+    """Plan from this goal first (the planner writes `plan`), instead of reading `plan`."""
 
     def replace(self, **changes: Any) -> Options:
         return dataclasses.replace(self, **changes)
@@ -125,6 +128,10 @@ class Deps:
     open_ledger: Callable[[Path, str], LedgerLike]
     build_session: Callable[[Bound], SessionLike]
     start_monitor: Callable[[Options], Any] | None = None
+    screen: Callable[[int], tuple[str, Sequence[str]]] | None = None
+    """(title, 6.2 lines) of a window after a warm-up observe; None only in pure tests."""
+    planner: Callable[[PlanRequest], PlanOutcome] | None = None
+    """The LLM planner (5.3); None only in pure tests or a `--plan` run."""
     monotonic: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
     """Starts the takeover monitor (hooks and the kill hot key) for these options; None only in
@@ -252,7 +259,11 @@ def parse_args(argv: Sequence[str]) -> Options:
         description="Run a plan file against one window; asks reach you on stderr, the result "
         "is one JSON line on stdout. Candidate window titles are printed on stderr.",
     )
-    parser.add_argument("--plan", required=True, type=Path, help="plan file (JSON, see design 6.3)")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--plan", type=Path, help="plan file (JSON, see design 6.3)")
+    source.add_argument(
+        "--goal", help="plan from this goal first (the plan is written next to the ledger)"
+    )
     which = parser.add_mutually_exclusive_group(required=True)
     which.add_argument("--window", help="title substring of the one window to act on")
     which.add_argument("--hwnd", type=_hwnd, help="the window handle instead of a title")
@@ -290,11 +301,15 @@ def parse_args(argv: Sequence[str]) -> Options:
         parse_kill_key(args.kill_key)
     except ValueError as exc:
         raise UsageError(str(exc)) from exc
+    task_id = args.task_id or f"task-{uuid.uuid4().hex[:12]}"
+    goal = None if args.goal is None else _usable_goal(args.goal)
+    plan_path = args.plan if goal is None else Path(args.ledger_dir) / f"{task_id}.plan.json"
     return Options(
-        plan=args.plan,
+        plan=plan_path,
+        goal=goal,
         window=args.window,
         hwnd=args.hwnd,
-        task_id=args.task_id or f"task-{uuid.uuid4().hex[:12]}",
+        task_id=task_id,
         ledger_dir=args.ledger_dir,
         trace=args.trace,
         max_risk=args.max_risk,
@@ -422,7 +437,14 @@ def _interrupted(out: _Out) -> int:
 
 
 def _run(*, plan_options: Options, deps: Deps, out: _Out, stdin: TextIO, stderr: TextIO) -> int:
-    options = plan_options
+    if plan_options.goal is not None:
+        return _run_from_goal(plan_options, deps=deps, out=out, stdin=stdin, stderr=stderr)
+    return _run_from_plan(plan_options, deps=deps, out=out, stdin=stdin, stderr=stderr)
+
+
+def _run_from_plan(
+    options: Options, *, deps: Deps, out: _Out, stdin: TextIO, stderr: TextIO
+) -> int:
     try:
         data = options.plan.read_bytes()
     except OSError as exc:
@@ -433,22 +455,7 @@ def _run(*, plan_options: Options, deps: Deps, out: _Out, stdin: TextIO, stderr:
         return out.error("invalid_plan", note=f"plan: {exc}")
     offending = over_limit(plan, options.max_risk)
     if offending is not None:
-        out.note(
-            f"refused: step {offending.id} is {effective_risk(offending)}, over --max-risk "
-            f"{options.max_risk}; nothing was run"
-        )
-        out.emit(
-            {
-                "status": "blocked",
-                "code": ErrorCode.GATE_BLOCKED.value,
-                "detail": "risk_over_limit",
-                "step_id": offending.id,
-                "risk": effective_risk(offending),
-                "ticked": [],
-                "results": [],
-            }
-        )
-        return EXIT_BLOCKED
+        return _risk_refusal(out, options, offending)
     try:
         ledger = deps.open_ledger(options.ledger_dir, options.task_id)
     except LedgerError as exc:
@@ -488,8 +495,8 @@ def _open_trace(options: Options) -> Trace:
 
 
 def _run_bound(  # noqa: PLR0913 - the run's state, one return per exit path
-    plan: Plan,
-    data: bytes,
+    plan: Plan | None,
+    data: bytes | None,
     *,
     ledger: LedgerLike,
     options: Options,
@@ -500,7 +507,8 @@ def _run_bound(  # noqa: PLR0913 - the run's state, one return per exit path
 ) -> int:
     try:
         trace = _open_trace(options)  # first: a bad path binds nothing and taps nothing
-        ledger.bind_plan(hashlib.sha256(data).hexdigest(), allow_change=options.allow_plan_change)
+        if data is not None:
+            ledger.bind_plan(_digest(data), allow_change=options.allow_plan_change)
         monitor = _started_monitor(deps, options)
     except UsageError as exc:
         return out.error("usage", note=str(exc))
@@ -558,7 +566,7 @@ def _ledger_refusal(out: _Out, exc: LedgerError) -> int:
 
 
 def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per exit path
-    plan: Plan,
+    plan: Plan | None,
     *,
     ledger: LedgerLike,
     monitor: Any,
@@ -576,6 +584,22 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
         )
         out.note(f"task {options.task_id}: window 0x{window.hwnd:x} pid {window.pid}")
         out.resume_hint()
+        planned: Plan | int = (
+            plan
+            if plan is not None
+            else _planned(
+                window,
+                ledger=ledger,
+                trace=trace,
+                options=options,
+                deps=deps,
+                out=out,
+                confirmer=ConsoleConfirmer(stdin, stderr, monitor=monitor),
+            )
+        )
+        if isinstance(planned, int):
+            return planned
+        plan = planned
         if monitor is not None:
             held = wait_for_idle(monitor, monotonic=deps.monotonic, sleep=deps.sleep)
             refused = None if held is None else _hold_refusal(out, held)
@@ -618,6 +642,208 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
         out.resume_hint()
     out.emit(_result_payload(result))
     return _STATUS_EXIT[result.status]
+
+
+# ---- from a goal (5.3 [v1.8]) ----------------------------------------------------------------
+
+MAX_GOAL_CHARS = 2000
+GO_ID_CHARS = 12
+
+
+def _usable_goal(goal: str) -> str:
+    text = " ".join(goal.split())
+    if not text:
+        raise UsageError("--goal must not be empty")
+    if len(text) > MAX_GOAL_CHARS:
+        raise UsageError(f"--goal is longer than {MAX_GOAL_CHARS} characters")
+    if any(ord(ch) < 0x20 or ch == "\x7f" for ch in text):
+        raise UsageError("--goal holds a control character")
+    return text
+
+
+def _digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _risk_refusal(out: _Out, options: Options, offending: Step) -> int:
+    out.note(
+        f"refused: step {offending.id} is {effective_risk(offending)}, over --max-risk "
+        f"{options.max_risk}; nothing was run"
+    )
+    if options.goal is not None:
+        out.note(
+            f"the plan is written; to run it: python -m steerai.run --plan {options.plan} "
+            f"--task-id {options.task_id} --ledger-dir {options.ledger_dir} "
+            f"--max-risk {effective_risk(offending)}"
+        )
+    out.emit(
+        {
+            "status": "blocked",
+            "code": ErrorCode.GATE_BLOCKED.value,
+            "detail": "risk_over_limit",
+            "step_id": offending.id,
+            "risk": effective_risk(offending),
+            "ticked": [],
+            "results": [],
+        }
+    )
+    return EXIT_BLOCKED
+
+
+def _run_from_goal(
+    options: Options, *, deps: Deps, out: _Out, stdin: TextIO, stderr: TextIO
+) -> int:
+    """`--goal`: the plan file is written by the planner after the window is bound, so the
+    ledger opens first and the plan digest is bound once the bytes exist (PL-24/32)."""
+    if options.plan.exists():
+        return out.error(
+            "plan_exists",
+            note=f"plan: {options.plan} already exists; resume it with --plan {options.plan} "
+            f"--task-id {options.task_id} --ledger-dir {options.ledger_dir}",
+        )
+    try:
+        ledger = deps.open_ledger(options.ledger_dir, options.task_id)
+    except LedgerError as exc:
+        return out.error(
+            _ledger_detail(exc), code=ErrorCode.GATE_BLOCKED, note=f"ledger: {exc.message}"
+        )
+    except OSError as exc:
+        return out.error(
+            "wal_unavailable",
+            code=ErrorCode.GATE_BLOCKED,
+            note=f"ledger: {options.ledger_dir} cannot be used: {exc}",
+        )
+    try:
+        return _run_bound(
+            None,
+            None,
+            ledger=ledger,
+            options=options,
+            deps=deps,
+            out=out,
+            stdin=stdin,
+            stderr=stderr,
+        )
+    finally:
+        ledger.close()
+
+
+def _planned(  # noqa: PLR0913 - the run's state at planning time
+    window: WindowInfo,
+    *,
+    ledger: LedgerLike,
+    trace: Trace,
+    options: Options,
+    deps: Deps,
+    out: _Out,
+    confirmer: ConsoleConfirmer,
+) -> Plan | int:
+    """Observe, plan, write the exact bytes, bind their digest, apply the limit, preview, and
+    wait for `go:<id>`; an int is the exit code of a refusal on the way."""
+    if deps.screen is None or deps.planner is None or options.goal is None:
+        raise SteerError(ErrorCode.GATE_BLOCKED, "no planner configured for --goal")
+    title, lines = deps.screen(window.hwnd)
+    out.note(f"planning from {len(lines)} screen lines; the model call may take a while")
+    request = PlanRequest(goal=options.goal, screen_lines=lines, window_title=title)
+    started = deps.monotonic()
+    try:
+        outcome = deps.planner(request)
+    except PlannerError as exc:
+        trace.write(exc.trace_record(model="", prompt_version="", latency_ms=_ms(deps, started)))
+        where = "" if exc.path is None else f" at {exc.path}"
+        return out.error(exc.detail, code=exc.code, note=f"planner: {exc.detail}{where}")
+    trace.write(outcome.trace_record())
+    _write_atomic(options.plan, outcome.data)
+    ledger.bind_plan(_digest(outcome.data), allow_change=options.allow_plan_change)
+    offending = over_limit(outcome.plan, options.max_risk)
+    if offending is not None:
+        return _risk_refusal(out, options, offending)
+    go_id = _digest(outcome.data)[:GO_ID_CHARS]
+    for line in preview_lines(outcome.plan, go_id):
+        out.note(line)
+    answer = confirmer.ask_go(go_id)
+    if answer == "go":
+        return outcome.plan
+    return _go_refusal(out, answer)
+
+
+def _ms(deps: Deps, started: float) -> float:
+    return (deps.monotonic() - started) * 1000
+
+
+def _write_atomic(path: Path, data: bytes) -> None:
+    """Whole or absent (PL-04): a crash mid-write never leaves a partial plan file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + ".part")
+    temp.write_bytes(data)
+    temp.replace(path)
+
+
+def preview_lines(plan: Plan, go_id: str) -> list[str]:
+    """What the person approves: the goal, every condition, every step with its effective
+    tier, text and params (a hijacked text must be visible, PL-01/02)."""
+    lines = [f"plan {go_id}: {plan.goal}"]
+    for subgoal in plan.subgoals:
+        lines.append(
+            f"  subgoal {subgoal.id}: {subgoal.desc} when {_predicate_text(subgoal.condition)}"
+        )
+    for step in plan.steps:
+        target = step.target
+        where = "" if target is None else f' {target.role} "{target.name}"'
+        line = f"  step {step.id}: {step.verb}{where} {effective_risk(step)}"
+        if step.text is not None:
+            line += f" text={step.text!r}"
+        if step.params:
+            line += f" params={json.dumps(dict(step.params), sort_keys=True)}"
+        if step.expect is not None:
+            line += f" expect={_predicate_text(step.expect)}"
+        lines.append(line)
+    lines.append(f"type go:{go_id} to run this plan, or no")
+    return lines
+
+
+def _predicate_text(predicate: Any) -> str:
+    from steerai.orchestrator.plan_io import _encode  # noqa: PLC0415 - the file form, one source
+
+    return json.dumps(_encode(predicate), sort_keys=True)
+
+
+def _go_refusal(out: _Out, answer: str) -> int:
+    if answer == "killed":
+        out.emit(
+            {
+                "status": "blocked",
+                "code": ErrorCode.GATE_BLOCKED.value,
+                "detail": "killed",
+                "ticked": [],
+                "results": [],
+            }
+        )
+        return EXIT_BLOCKED
+    if answer == "no":
+        out.note("plan declined; nothing was run")
+        out.emit(
+            {
+                "status": "blocked",
+                "code": ErrorCode.GATE_BLOCKED.value,
+                "detail": "plan_declined",
+                "ticked": [],
+                "results": [],
+            }
+        )
+        return EXIT_BLOCKED
+    out.note("plan not approved (only the exact go token counts); nothing was run")
+    out.resume_hint()
+    out.emit(
+        {
+            "status": "paused",
+            "code": ErrorCode.GATE_PENDING_USER.value,
+            "detail": "plan_unanswered",
+            "ticked": [],
+            "results": [],
+        }
+    )
+    return EXIT_PAUSED
 
 
 # ---- the real collaborators ----------------------------------------------------------------
@@ -669,6 +895,30 @@ def _kill_blocker(monitor: Any) -> Callable[[], str | None]:
     return lambda: "killed" if monitor.kill_requested() else None
 
 
+def _screen(hwnd: int) -> tuple[str, Sequence[str]]:
+    """A warm-up observe of the bound window: the title and the 6.2 lines for the planner."""
+    from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415
+    from steerai.world.model import WorldModel  # noqa: PLC0415
+
+    model = WorldModel(UiaClient())
+    holder: list[Snapshot] = []
+
+    def observe() -> Snapshot:
+        snapshot = model.observe(hwnd, cap_s=5.0)
+        holder.append(snapshot)
+        return snapshot
+
+    warm_up(observe, cap_s=DEFAULT_WARMUP_S)
+    snapshot = holder[-1] if holder else model.observe(hwnd, cap_s=5.0)
+    return snapshot.title, snapshot.lines
+
+
+def _planner(request: PlanRequest) -> PlanOutcome:
+    from steerai.planner.claude_planner import ClaudePlanner  # noqa: PLC0415 - the SDK
+
+    return ClaudePlanner.from_env().plan(request)
+
+
 def _start_monitor(options: Options) -> Any:
     from steerai.session.monitor import HookMonitor  # noqa: PLC0415 - Windows hooks
 
@@ -689,6 +939,8 @@ def _real_deps() -> Deps:
         open_ledger=lambda root, task_id: Ledger(root, task_id=task_id, started_at=time.time()),
         build_session=_build_session,
         start_monitor=_start_monitor,
+        screen=_screen,
+        planner=_planner,
     )
 
 
