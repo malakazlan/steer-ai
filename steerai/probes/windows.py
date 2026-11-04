@@ -276,9 +276,10 @@ def process_name(pid: int) -> str:
 
 
 def wait_window_for_pid(
-    pid: int, *, title_contains: str | None = None, timeout_s: float = 15.0
+    pid: int, *, title_contains: str | None = None, timeout_s: float = 30.0
 ) -> WindowInfo:
-    """First visible titled window owned by `pid`, polling until it appears."""
+    """First visible titled window owned by `pid`, polling until it appears (30 s: a cold Chrome
+    on a CI runner took over 15 s, 2026-11-04)."""
     deadline = time.monotonic() + timeout_s
     while True:
         for window in list_top_windows():
