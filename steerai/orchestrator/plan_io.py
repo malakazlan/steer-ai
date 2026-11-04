@@ -212,22 +212,22 @@ def _appeared(fields: Mapping[str, Any], inner: str) -> Appeared:
         frozenset({"role", "name", "within", "expected", "order", "decoration", "replaces"}),
         inner,
     )
-    replaces = fields.get("replaces", False)
-    if not isinstance(replaces, bool):
-        raise PlanError(f"{inner}.replaces", "must be true or false")
+    replaces = _bool(fields.get("replaces", False), f"{inner}.replaces")
     order = fields.get("order", "append")
     if order not in ("append", "prepend"):
         raise PlanError(f"{inner}.order", "must be append or prepend")
     decoration = fields.get("decoration")
-    if decoration is not None and decoration not in DECORATIONS:
-        raise PlanError(f"{inner}.decoration", "unknown decoration")
+    if decoration is not None and (
+        not isinstance(decoration, str) or decoration not in DECORATIONS
+    ):
+        raise PlanError(f"{inner}.decoration", "must be a known decoration")
     return Appeared(
         role=_text(fields.get("role"), f"{inner}.role"),
         name_pattern=_text(fields.get("name"), f"{inner}.name"),
         within=_within(fields.get("within"), f"{inner}.within"),
         expected=_int(fields.get("expected", 1), f"{inner}.expected", lo=1, hi=MAX_COUNT),
         order=cast("Literal['append', 'prepend']", order),
-        decoration=cast("str | None", decoration),
+        decoration=decoration,
         replaces=replaces,
     )
 

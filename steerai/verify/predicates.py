@@ -68,6 +68,11 @@ class Within:
                 raise ValueError("Within landmark is empty")
 
 
+REPLACING_ROLES: frozenset[str] = frozenset({"Document"})
+"""Roles whose `appeared` may take the replacing form (5.10 [v1.7]): a page replaces a page; a
+list row never replaces, so the vanish and order rules stay in force for every other role."""
+
+
 @dataclass(frozen=True, slots=True)
 class Appeared:
     """Present after and absent before: only an element with a new RuntimeId counts."""
@@ -97,6 +102,13 @@ class Appeared:
             raise ValueError("order must be append or prepend")
         if self.decoration is not None:
             decorate(self.decoration, self.name_pattern)  # refuses an unknown key
+        if self.replaces:
+            if self.role not in REPLACING_ROLES:
+                raise ValueError(f"replaces is only for {sorted(REPLACING_ROLES)}, not {self.role}")
+            if self.expected != 1 or self.order != "append" or self.within is not None:
+                raise ValueError(
+                    "replaces is the single, window-wide form: no expected, order or within"
+                )
 
     @property
     def name_match(self) -> str:

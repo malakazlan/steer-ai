@@ -232,7 +232,15 @@ def _appearance(
     scope_before = resolve_scope(before, predicate.within, excluding=predicate.excluding_anchor)
     before_ids = {e.runtime_id for e in before.elements if e.runtime_id}
     after_ids = {e.runtime_id for e in after.elements if e.runtime_id}
-    in_role = [e for e in after.elements if e.id in scope.ids and e.role == predicate.role]
+    # the replacing form counts top-level elements of the role only: a page's embedded frames
+    # (ads, sign-in promos) are neither predecessors nor churn
+    skip_after = _nested_ids(after, predicate.role) if predicate.replaces else set()
+    skip_before = _nested_ids(before, predicate.role) if predicate.replaces else set()
+    in_role = [
+        e
+        for e in after.elements
+        if e.id in scope.ids and e.role == predicate.role and e.id not in skip_after
+    ]
     new_role = [e for e in in_role if e.runtime_id and e.runtime_id not in before_ids]
     new_matches = [e for e in new_role if _scoped(scope, e, predicate.role, predicate.name_match)]
     # The effect's own subtree (a bubble's timestamp and status texts) is not unrelated churn.
@@ -254,11 +262,31 @@ def _appearance(
             1
             for e in before.elements
             if e.id in scope_before.ids
+            and e.id not in skip_before
             and e.role == predicate.role
             and bool(e.runtime_id)
             and e.runtime_id not in after_ids
         ),
     )
+
+
+def _nested_ids(snapshot: Snapshot, role: str) -> set[int]:
+    """Ids of elements of `role` that sit under another element of `role`."""
+    by_id = {e.id: e for e in snapshot.elements}
+    nested: set[int] = set()
+    for element in snapshot.elements:
+        if element.role != role:
+            continue
+        parent = element.parent_id
+        while parent is not None:
+            ancestor = by_id.get(parent)
+            if ancestor is None:
+                break
+            if ancestor.role == role:
+                nested.add(element.id)
+                break
+            parent = ancestor.parent_id
+    return nested
 
 
 def _after_scope(predicate: Appeared, before: Snapshot, after: Snapshot) -> Scope:
@@ -282,7 +310,7 @@ def _appeared(predicate: Appeared, before: Snapshot, after: Snapshot) -> Verdict
     seen = _appearance(predicate, before, after, scope)
     if not seen.new_matches:
         present = any(
-            _scoped(scope, e, predicate.role, predicate.name_pattern) for e in after.elements
+            _scoped(scope, e, predicate.role, predicate.name_match) for e in after.elements
         )
         return _miss(scope, "not_new" if present else "no_match")
     delta = seen.count_after - seen.count_before
@@ -306,7 +334,9 @@ def _appeared(predicate: Appeared, before: Snapshot, after: Snapshot) -> Verdict
         ),
         (delta < predicate.expected, "count_unchanged", False),
         (
-            any(
+            # a page is not a message: a replacing Document's content is never a status
+            not predicate.replaces
+            and any(
                 _has_status(e, after, _PENDING_TOKENS, predicate.name_pattern)
                 for e in seen.new_matches
             ),
@@ -314,7 +344,8 @@ def _appeared(predicate: Appeared, before: Snapshot, after: Snapshot) -> Verdict
             False,
         ),
         (
-            any(
+            not predicate.replaces
+            and any(
                 _has_status(e, after, _FAILED_TOKENS, predicate.name_pattern)
                 for e in seen.new_matches
             ),
@@ -757,6 +788,22 @@ def label_of_record(
     )
 
 
+def _appeared_spec(predicate: Appeared) -> dict[str, Any]:
+    """The `Appeared` options that shape a label, never its pattern."""
+    spec: dict[str, Any] = {}
+    if predicate.excluding_anchor is not None:
+        spec["excluding_anchor"] = predicate.excluding_anchor
+    if predicate.expected != 1:
+        spec["expected"] = predicate.expected
+    if predicate.order != "append":
+        spec["order"] = predicate.order
+    if predicate.decoration is not None:
+        spec["decoration"] = predicate.decoration
+    if predicate.replaces:
+        spec["replaces"] = True
+    return spec
+
+
 def redact(predicate: Predicate) -> dict[str, Any]:
     """The predicate's shape without its patterns or values."""
     spec: dict[str, Any] = {"kind": type(predicate).__name__}
@@ -768,12 +815,7 @@ def redact(predicate: Predicate) -> dict[str, Any]:
             if isinstance(predicate, CountDelta):
                 spec["delta"] = predicate.delta
             if isinstance(predicate, Appeared):
-                if predicate.excluding_anchor is not None:
-                    spec["excluding_anchor"] = predicate.excluding_anchor
-                if predicate.expected != 1:
-                    spec["expected"] = predicate.expected
-                if predicate.order != "append":
-                    spec["order"] = predicate.order
+                spec.update(_appeared_spec(predicate))
         case ValueEquals() | Focused() | State():
             spec["target_id"] = predicate.target_id
             if isinstance(predicate, State):
