@@ -25,6 +25,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from functools import partial
 from typing import Any, Literal, Protocol
 
 from steerai.action.dispositions import ActionResult, Delivery
@@ -84,6 +85,10 @@ IDLE_S = 2.0
 MAX_WAIT_S = 60.0
 """Continuous input beyond this pauses the task as a takeover (unmeasured)."""
 WAIT_POLL_S = 0.1
+SETTLE_S = 0.5
+"""A target missing right after the page changed is a timing gap first: settle this long and
+re-observe before calling it absent (first real-site run 2026-11-04; unmeasured)."""
+SETTLE_RETRIES = 2
 STOP_CODES: frozenset[ErrorCode] = frozenset(
     {
         ErrorCode.APP_CRASHED,
@@ -278,7 +283,7 @@ class Session:
             previous = self._admission(step, key, risk, before)
             if previous == "done":
                 return self._done_already(step, stage, evidence)
-            element_id = stage.measure("decide", lambda: self._resolve(step, before))
+            before, element_id = self._resolve_settling(step, before, stage, evidence)
             self._secure_step = before.element(element_id).secure
             risk = self._settled_tier(step, risk)
             evidence["risk"] = risk
@@ -667,6 +672,24 @@ class Session:
                 evidence["observe_reused"] = True
                 return snapshot
         return self._observe_fresh(evidence)
+
+    def _resolve_settling(
+        self, step: Step, before: Snapshot, stage: _Stage, evidence: dict[str, Any]
+    ) -> tuple[Snapshot, int]:
+        """Resolve the target; on `no_match` settle and observe again, a bounded number of times
+        (RN-18 generalised): a button re-created under an overlay is found on the next look, a
+        truly absent one still fails `no_match`. Ambiguity never settles."""
+        settled = 0
+        while True:
+            try:
+                return before, stage.measure("decide", partial(self._resolve, step, before))
+            except _StepFailureError as failure:
+                if failure.detail != "no_match" or settled >= SETTLE_RETRIES:
+                    raise
+            settled += 1
+            evidence["settled"] = settled
+            self._sleep(SETTLE_S)
+            before = stage.measure("observe", lambda: self._observe_fresh(evidence))
 
     def _resolve(self, step: Step, snapshot: Snapshot) -> int:
         target = step.target
