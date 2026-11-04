@@ -22,7 +22,6 @@ from steerai.orchestrator.plan_io import (
 )
 from steerai.planner.mirror import (
     MODEL_OWNED_STEP_KEYS,
-    AppearedDoc,
     ParamsDoc,
     PlanDoc,
     PredicateDoc,
@@ -65,9 +64,35 @@ def test_every_object_allows_a_subset_of_the_boundarys_keys() -> None:
     assert _properties(_definition(schema, "StepDoc")) <= STEP_KEYS
     assert _properties(_definition(schema, "TargetDoc")) <= TARGET_KEYS
     assert _properties(_definition(schema, "ParamsDoc")) <= PARAM_KEYS
-    assert _properties(_definition(schema, "AppearedDoc")) <= APPEARED_KEYS
-    assert _properties(_definition(schema, "PredicateDoc")) <= KINDS
-    assert _properties(_definition(schema, "LeafPredicateDoc")) <= KINDS - {"all", "any_of"}
+    predicate = _definition(schema, "PredicateDoc")["properties"]
+    assert frozenset(predicate["kind"]["enum"]) == KINDS - {"all", "any_of"}
+
+
+def test_every_flat_predicate_translates_to_a_subset_of_the_boundarys_keys() -> None:
+    """The flat predicate's file form never carries a key the boundary refuses for that kind."""
+    full = {
+        "role": "Text",
+        "name": "hello",
+        "within": "Chats",
+        "pattern": "x",
+        "delta": -1,
+        "expected": 2,
+        "order": "prepend",
+        "decoration": "google_search",
+        "replaces": True,
+    }
+    allowed = {
+        "appeared": APPEARED_KEYS,
+        "disappeared": frozenset({"role", "name", "within"}),
+        "count_delta": frozenset({"role", "delta", "within"}),
+        "title": frozenset({"pattern"}),
+        "window_exists": frozenset({"name"}),
+        "window_gone": frozenset({"name"}),
+    }
+    for kind, keys in allowed.items():
+        form = PredicateDoc(kind=kind, **full).to_file_form()  # type: ignore[arg-type]
+        assert set(form) == {kind}
+        assert frozenset(form[kind]) <= keys, kind
 
 
 def test_the_absent_step_keys_are_exactly_the_gates_inputs() -> None:
@@ -82,8 +107,8 @@ def test_every_enum_is_a_subset_of_the_boundarys_sets() -> None:
     step = _definition(schema, "StepDoc")["properties"]
     assert frozenset(step["verb"]["enum"]) <= FILE_VERBS
     assert frozenset(step["risk"]["enum"]) == frozenset(RISKS)
-    appeared = _definition(schema, "AppearedDoc")["properties"]
-    decoration = appeared["decoration"]
+    predicate = _definition(schema, "PredicateDoc")["properties"]
+    decoration = predicate["decoration"]
     options = [_resolved(schema, o) for o in decoration.get("anyOf", [decoration])]
     enums = {v for option in options for v in option.get("enum", [])}
     assert enums == frozenset(DECORATIONS), "the API must constrain the key, not describe it"
@@ -101,7 +126,7 @@ def test_no_object_accepts_additional_properties() -> None:
 
 
 def test_a_fixture_mirror_round_trips_through_the_boundary() -> None:
-    condition = PredicateDoc(appeared=AppearedDoc(role="Text", name="hello"))
+    condition = PredicateDoc(kind="appeared", role="Text", name="hello")
     doc = PlanDoc(
         goal="send hello",
         subgoals=[SubgoalDoc(id="g1", desc="sent", condition=condition)],
@@ -129,7 +154,7 @@ def test_a_fixture_mirror_round_trips_through_the_boundary() -> None:
             ),
         ],
     )
-    text = json.dumps(doc.model_dump(mode="json", exclude_unset=True))
+    text = json.dumps(doc.to_file_form())
     plan = plan_from_json(text)
     assert plan.steps[0].expect is None
     assert plan.steps[0].target is not None

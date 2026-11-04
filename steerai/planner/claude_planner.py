@@ -54,12 +54,12 @@ Targets: {{"role": "<control type as listed>", "name": "<exact name as listed>"}
 name text from the listing; never invent names. For a person in a chat list use
 "match": "person" with the name part only (no separators, no preview text).
 
-Predicates (JSON objects with exactly one key): {{"appeared": {{"role", "name", "within"?,
-"expected"?, "order"?, "decoration"?, "replaces"?}}}}, {{"disappeared": {{"role", "name",
-"within"?}}}}, {{"title": {{"pattern"}}}}, {{"window_exists": {{"name"}}}}, {{"window_gone":
-{{"name"}}}}, {{"count_delta": {{"role", "delta", "within"?}}}}, {{"all": [...]}}, {{"any_of":
-[...]}}. "within" names a landmark container by its exact name. Patterns are plain text, never
-regular expressions.
+Predicates: one object with a "kind" and the fields that kind uses. appeared: role, name,
+within?, expected?, order?, decoration?, replaces? (an element with that role and exact name is
+new on screen); disappeared: role, name, within? (it is gone); title: pattern (the window title
+holds this plain text); window_exists / window_gone: name; count_delta: role, delta, within?.
+"within" names a landmark container by its exact name. Patterns are plain text, never regular
+expressions. Leave fields the kind does not use unset.
 
 Verification rule for R2 and R3 steps: the step's "expect" must be an "appeared" or
 "disappeared" whose "name" is the step's own content (the text typed or sent, or the name of
@@ -195,7 +195,7 @@ class ClaudePlanner:
 def _document_bytes(doc: PlanDoc, request: PlanRequest) -> bytes:
     """The file form of the model's document with the gate's inputs set by code: the goal is
     the request's (PL-02), provenance follows 5.13 [v0.4], preapproval is never set."""
-    body = doc.model_dump(mode="json", exclude_unset=True)
+    body = doc.to_file_form()
     body["goal"] = " ".join(request.goal.split())  # one line: the file form takes no newline
     goal_key = normalise_name(request.goal)
     for step in body.get("steps", []):

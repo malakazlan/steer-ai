@@ -3,19 +3,25 @@
 It is pinned to the plan boundary by tests/planner/test_mirror_pins.py: every key, verb, risk,
 predicate kind and decoration it allows is one `plan_io` accepts, and the step keys it leaves out
 are exactly the gate's inputs (`preapproved_by_request`, `text_provenance`) and the loop's
-mechanism choice (`path`). Enumerations are `Literal`s because the SDK's schema transform keeps
-`enum` and drops `pattern`. Nesting is bounded by construction: `all` / `any_of` hold leaves.
+mechanism choice (`path`). Enumerations are Enums or multi-value `Literal`s because the SDK's
+schema transform keeps `enum` and demotes `const` and `pattern` to prose.
+
+The predicate is **flat**: one object with a `kind` and optional scalar fields, translated to the
+file form's one-key object by `to_file_form`. The nested form (one optional object per kind, two
+levels for `all` / `any_of`) compiled to a grammar the API refused as too large (first live call,
+2026-11-04). `all` / `any_of` are therefore not in the model's vocabulary in this slice.
 """
 
 from __future__ import annotations
 
 import enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 Verb = Literal["click", "focus", "type", "send", "submit", "delete"]
 Risk = Literal["R0", "R1", "R2", "R3"]
+Kind = Literal["appeared", "disappeared", "title", "window_exists", "window_gone", "count_delta"]
 
 
 class Decoration(enum.StrEnum):
@@ -35,14 +41,17 @@ class _Doc(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class WithinDoc(_Doc):
-    landmark: str = Field(description="name of the container element (a landmark) to look in")
+class PredicateDoc(_Doc):
+    """One predicate: `kind` says which fields matter. appeared: role, name, within?,
+    expected?, order?, decoration?, replaces?; disappeared: role, name, within?; title:
+    pattern; window_exists / window_gone: name; count_delta: role, delta, within?."""
 
-
-class AppearedDoc(_Doc):
-    role: str
-    name: str = Field(description="the full plain-text name of the element that appears")
-    within: WithinDoc | None = None
+    kind: Kind
+    role: str | None = None
+    name: str | None = Field(default=None, description="the full plain-text name as shown")
+    within: str | None = Field(default=None, description="landmark container name to look in")
+    pattern: str | None = Field(default=None, description="title: plain text the title holds")
+    delta: int | None = None
     expected: int | None = Field(default=None, ge=1)
     order: Literal["append", "prepend"] | None = None
     decoration: Decoration | None = Field(
@@ -52,43 +61,27 @@ class AppearedDoc(_Doc):
         default=None, description="true only for a Document that replaces the previous page"
     )
 
-
-class DisappearedDoc(_Doc):
-    role: str
-    name: str
-    within: WithinDoc | None = None
-
-
-class TitleDoc(_Doc):
-    pattern: str = Field(description="plain text the window title must contain")
-
-
-class WindowDoc(_Doc):
-    name: str
+    def to_file_form(self) -> dict[str, Any]:
+        """The 6.3 one-key object; a missing required field is left out so the plan boundary
+        names it (never invented here)."""
+        fields = self.model_dump(mode="json", exclude_unset=True, exclude={"kind"})
+        within = fields.pop("within", None)
+        wanted = _KIND_FIELDS[self.kind]
+        body = {k: v for k, v in fields.items() if k in wanted}
+        if within is not None and self.kind in _SCOPED_KINDS:
+            body["within"] = {"landmark": within}
+        return {self.kind: body}
 
 
-class CountDeltaDoc(_Doc):
-    role: str
-    delta: int
-    within: WithinDoc | None = None
-
-
-class LeafPredicateDoc(_Doc):
-    """Exactly one kind set."""
-
-    appeared: AppearedDoc | None = None
-    disappeared: DisappearedDoc | None = None
-    title: TitleDoc | None = None
-    window_exists: WindowDoc | None = None
-    window_gone: WindowDoc | None = None
-    count_delta: CountDeltaDoc | None = None
-
-
-class PredicateDoc(LeafPredicateDoc):
-    """Exactly one kind set; `all` / `any_of` combine leaves."""
-
-    all: list[LeafPredicateDoc] | None = None
-    any_of: list[LeafPredicateDoc] | None = None
+_KIND_FIELDS: dict[str, frozenset[str]] = {
+    "appeared": frozenset({"role", "name", "expected", "order", "decoration", "replaces"}),
+    "disappeared": frozenset({"role", "name"}),
+    "count_delta": frozenset({"role", "delta"}),
+    "title": frozenset({"pattern"}),
+    "window_exists": frozenset({"name"}),
+    "window_gone": frozenset({"name"}),
+}
+_SCOPED_KINDS = frozenset({"appeared", "disappeared", "count_delta"})
 
 
 class TargetDoc(_Doc):
@@ -129,3 +122,13 @@ class PlanDoc(_Doc):
     goal: str
     subgoals: list[SubgoalDoc]
     steps: list[StepDoc]
+
+    def to_file_form(self) -> dict[str, Any]:
+        """The 6.3 document with every predicate in its one-key form."""
+        body = self.model_dump(mode="json", exclude_unset=True)
+        for subgoal, raw in zip(self.subgoals, body.get("subgoals", []), strict=True):
+            raw["condition"] = subgoal.condition.to_file_form()
+        for step, raw in zip(self.steps, body.get("steps", []), strict=True):
+            if step.expect is not None:
+                raw["expect"] = step.expect.to_file_form()
+        return body

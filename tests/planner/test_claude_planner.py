@@ -22,7 +22,6 @@ from steerai.planner.claude_planner import (
 )
 from steerai.planner.contracts import PlannerError, PlanRequest
 from steerai.planner.mirror import (
-    AppearedDoc,
     Decoration,
     ParamsDoc,
     PlanDoc,
@@ -30,7 +29,6 @@ from steerai.planner.mirror import (
     StepDoc,
     SubgoalDoc,
     TargetDoc,
-    WithinDoc,
 )
 
 GOAL = "search Google for steer ai computer use agent"
@@ -44,9 +42,11 @@ SCREEN = (
 
 def _doc() -> PlanDoc:
     condition = PredicateDoc(
-        appeared=AppearedDoc(
-            role="Document", name=QUERY, decoration=Decoration.google_search, replaces=True
-        )
+        kind="appeared",
+        role="Document",
+        name=QUERY,
+        decoration=Decoration.google_search,
+        replaces=True,
     )
     return PlanDoc(
         goal=GOAL,
@@ -257,7 +257,7 @@ def test_from_env_reads_the_model_name(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_within_round_trips_as_a_landmark() -> None:
     doc = _doc()
     doc.subgoals[0].condition = PredicateDoc(
-        appeared=AppearedDoc(role="Text", name=QUERY, within=WithinDoc(landmark="Results"))
+        kind="appeared", role="Text", name=QUERY, within="Results"
     )
     doc.steps[2].expect = doc.subgoals[0].condition
     planner, _ = _planner(_Response(parsed_output=doc))
