@@ -29,8 +29,14 @@ def _clean_pattern(text: str, what: str) -> str:
     return normalised
 
 
+def comparable(text: str) -> str:
+    """The one comparable form of screen text: NFKC, format characters removed (ZWSP, ZWJ, bidi
+    marks are invisible decoration, never content, VF-24), case-folded."""
+    return _comparable(text).casefold()
+
+
 def _comparable(text: str) -> str:
-    # Format characters (ZWSP, ZWJ, bidi marks) are invisible decoration, never content (VF-24).
+    # case-preserving: window-wide name matches do not ignore case (VF-06)
     return "".join(ch for ch in normalise_name(text) if unicodedata.category(ch) != "Cf")
 
 

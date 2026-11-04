@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol
 
 from steerai.action.dispositions import ActionResult, Delivery
@@ -32,6 +32,7 @@ from steerai.action.executor import Action
 from steerai.action.physical import PhysicalAction
 from steerai.errors import ErrorCode, SteerError
 from steerai.orchestrator.contracts import (
+    RISKS,
     GateDecision,
     GateToken,
     Plan,
@@ -41,7 +42,15 @@ from steerai.orchestrator.contracts import (
     Target,
     executor_verb,
 )
-from steerai.orchestrator.gate import Gate, GateResult, effective_risk
+from steerai.orchestrator.gate import Gate, GateResult, effective_risk, params_for
+from steerai.orchestrator.identity import (
+    Binding,
+    bind,
+    other_role_matches,
+    pick,
+    rebind,
+    too_many,
+)
 from steerai.orchestrator.ledger import LedgerError, WriteAheadRecord
 from steerai.orchestrator.trace import NullTrace, Trace
 from steerai.verify.predicates import (
@@ -61,8 +70,10 @@ from steerai.verify.t1 import (
     title_holds,
     verify,
 )
+from steerai.world.elements import Element
 from steerai.world.fingerprint import similarity
 from steerai.world.model import Snapshot, normalise_name
+from steerai.world.people import MAX_CANDIDATES, comparable, lookalike_only, name_part
 
 REUSE_FRESHNESS_S = 5.0
 """How old a decided after snapshot may be to serve as the next R0/R1 before. Unmeasured; well
@@ -85,6 +96,7 @@ STOP_CODES: frozenset[ErrorCode] = frozenset(
 """Codes that end the task even after a dispatch: the window or the desktop is not there to
 act on any more (RN-14); the ledger record stays open, so a resume confirms."""
 SCREEN_GUARD_STRIKES = 3
+_RISK_ORDER = {risk: index for index, risk in enumerate(RISKS)}
 DEFAULT_MAX_STEPS = 20
 _DIFF_PREDICATES = (Appeared, Disappeared, CountDelta, WindowGone)
 
@@ -115,7 +127,11 @@ class TaskLedger(Protocol):
     def admit(self, key: str, decision: GateDecision | None = None) -> str: ...
     def outcome_of(self, key: str) -> str | None: ...
     def write_ahead(
-        self, step: Step, before: Snapshot, decision: GateDecision | None
+        self,
+        step: Step,
+        before: Snapshot,
+        decision: GateDecision | None,
+        chosen: dict[str, Any] | None = None,
     ) -> WriteAheadRecord: ...
     def mark(self, step: Step, phase: Any) -> None: ...
     def record_outcome(self, step: Step, outcome: str) -> None: ...
@@ -233,6 +249,8 @@ class Session:
         self._scrolled: str | None = None
         self._act_evidence: dict[str, Any] = {}
         self._sent_in_act = False
+        self._binding: Binding | None = None
+        self._candidates: tuple[str, list[Element]] | None = None
 
     # ---- one step ----------------------------------------------------------------------------
 
@@ -248,14 +266,24 @@ class Session:
         recorded = False
         try:
             self._boundary(evidence)
+            self._act_evidence = evidence
             before = stage.measure("observe", lambda: self._before(risk, evidence))
-            element_id = stage.measure("decide", lambda: self._resolve(step, before))
-            self._secure_step = before.element(element_id).secure
+            # admission first, at the candidates' tier ceiling for a person target: a done
+            # or open record under this key is never bypassed by the row the person picks
+            risk = self._ceiling(step, key, before, risk)
+            if risk in ("R2", "R3") and evidence.get("observe_reused"):
+                # a reused R0/R1 snapshot is not a before for an R2/R3 step: observe fresh
+                before = stage.measure("observe", lambda: self._observe_fresh(evidence))
+                risk = self._ceiling(step, key, before, effective_risk(step))
             previous = self._admission(step, key, risk, before)
             if previous == "done":
                 return self._done_already(step, stage, evidence)
+            element_id = stage.measure("decide", lambda: self._resolve(step, before))
+            self._secure_step = before.element(element_id).secure
+            risk = self._settled_tier(step, risk)
+            evidence["risk"] = risk
             gate_result = stage.measure(
-                "gate", lambda: self._decide(step, key, before, previous, element_id)
+                "gate", lambda: self._decide(step, key, before, previous, element_id, risk=risk)
             )
             gate_stage = gate_result.outcome
             if gate_result.outcome in ("block", "pending"):
@@ -273,10 +301,13 @@ class Session:
                 before, element_id = stage.measure(
                     "observe", lambda: self._reobserve(step, before, evidence, mismatch=token)
                 )
+                if self._binding is not None:
+                    # the bound row's text may have moved on: the postcondition follows it,
+                    # through the gate's own strength rung (never a weaker check)
+                    expect = self._rebuilt(step, risk, before, element_id)
                 if waited:
                     evidence["restarted"] = True
             before_of_record, recorded = self._record(step, risk, before, decision)
-            self._act_evidence = evidence
             action, before, retries = stage.measure(
                 "act", lambda: self._act(step, risk, before, element_id)
             )
@@ -302,24 +333,24 @@ class Session:
                 risk=risk,
                 gate=gate_result.outcome,
             )
-        except _StepFailureError as failure:
-            # before the gate ran the token is `unreached`; after, the gate's outcome; a kill is
-            # the person's block, and a kill after the record (nothing sent) releases the key
-            if recorded and dispatched is None and not self._sent_in_act:
-                try:
-                    self._close(step, risk, "not_delivered")  # nothing sent: no open record
-                except LedgerError:
-                    evidence["ledger"] = "wal_unavailable"  # the attempt stays open (D5)
-            if isinstance(failure, _TakeoverError):
-                gate_stage = "pending"
-            return self._failed(
-                step, stage, evidence, gate=gate_stage, dispatched=None, failure=failure
-            )
-        except SteerError as failure:
-            # the world model could not observe (window gone, other desktop): a result, with
-            # the action if one was dispatched; an open record stays open (RN-14)
-            return self._failed(
-                step, stage, evidence, gate=gate_stage, dispatched=dispatched, failure=failure
+        except (_StepFailureError, SteerError) as failure:
+            # a refusal before anything was sent, or the world model failing to observe (RN-14):
+            # a result either way, with the dispatched action when there is one
+            release = recorded and dispatched is None and not self._sent_in_act
+            return (
+                self._refused(
+                    step,
+                    stage,
+                    evidence,
+                    gate=gate_stage,
+                    failure=failure,
+                    risk=risk,
+                    release=release,
+                )
+                if isinstance(failure, _StepFailureError)
+                else self._failed(
+                    step, stage, evidence, gate=gate_stage, dispatched=dispatched, failure=failure
+                )
             )
 
     # ---- stages ---------------------------------------------------------------------------------
@@ -385,7 +416,8 @@ class Session:
             return before, False
         try:
             before_of_record = self._ledger.before_of_record(step, before)
-            self._ledger.write_ahead(step, before_of_record, decision)
+            chosen = self._binding.to_record() if self._binding is not None else None
+            self._ledger.write_ahead(step, before_of_record, decision, chosen=chosen)
         except LedgerError as exc:
             raise _StepFailureError(ErrorCode.GATE_BLOCKED, "wal_unavailable") from exc
         return before_of_record, True
@@ -423,12 +455,59 @@ class Session:
             code=action.code,
         )
 
-    def _decide(
-        self, step: Step, key: str, before: Snapshot, previous: str | None, element_id: int
+    def _rebuilt(self, step: Step, risk: Risk, before: Snapshot, element_id: int) -> Predicate:
+        params = params_for(step, element_id, self._composer(step, before), self._binding)
+        checked = self._gate.postcondition(step, step.expect, risk, params)
+        if isinstance(checked, GateResult):
+            detail = str(checked.evidence.get("detail", "weak_predicate"))
+            raise _StepFailureError(checked.code or ErrorCode.GATE_BLOCKED, detail)
+        return checked
+
+    def _ceiling(self, step: Step, key: str, before: Snapshot, risk: Risk) -> Risk:
+        """For a person target, the tier admission runs at: the highest tier any candidate
+        row could raise the step to (PT-31), and at least R2 whenever the key already has a
+        record or an outcome, so an earlier raised attempt is found even when the raising
+        row has left the screen (never bypassed, 5.8 [v1.6])."""
+        target = step.target
+        if target is None or target.match != "person":
+            return risk
+        found = pick(before, target)
+        self._candidates = (before.id, found)
+        tiers: list[Risk] = [risk]
+        if len(found) <= MAX_CANDIDATES:
+            tiers += [effective_risk(step, comparable(name_part(c.name))) for c in found]
+        if self._key_has_history(step, key):
+            tiers.append("R2")
+        return max(tiers, key=_RISK_ORDER.__getitem__)
+
+    def _key_has_history(self, step: Step, key: str) -> bool:
+        try:
+            return (
+                self._ledger.outcome_of(key) is not None
+                or self._ledger.read_ahead(step) is not None
+            )
+        except LedgerError:
+            return True  # unreadable means unknown: admission decides
+
+    def _settled_tier(self, step: Step, ceiling: Risk) -> Risk:
+        """The bound row's own tier, never below the plan's (PT-31)."""
+        if self._binding is None:
+            return ceiling
+        return effective_risk(step, self._binding.name_part)
+
+    def _decide(  # noqa: PLR0913 - the step's state at the gate
+        self,
+        step: Step,
+        key: str,
+        before: Snapshot,
+        previous: str | None,
+        element_id: int,
+        *,
+        risk: Risk,
     ) -> GateResult:
         """The gate's decision; while an R2/R3 gate may be asking, the person's input is their
         answer, not a takeover (TK-07; the console brackets its own read as well)."""
-        asking = self._monitor is not None and effective_risk(step) in ("R2", "R3")
+        asking = self._monitor is not None and risk in ("R2", "R3")
         if asking and self._monitor is not None:
             self._monitor.mark_ask_open()
         try:
@@ -440,6 +519,7 @@ class Session:
                 previous_attempt=previous,
                 target_id=element_id,
                 composer_id=self._composer(step, before),
+                bound=self._binding,
             )
         finally:
             if asking and self._monitor is not None:
@@ -489,6 +569,34 @@ class Session:
         self._secure_step = fresh.element(element_id).secure
         return fresh, element_id
 
+    def _refused(  # noqa: PLR0913 - the step's state at the refusal
+        self,
+        step: Step,
+        stage: _Stage,
+        evidence: dict[str, Any],
+        *,
+        gate: GateToken,
+        failure: _StepFailureError,
+        risk: Risk,
+        release: bool,
+    ) -> StepResult:
+        """A step that stopped before anything was sent: before the gate the token is
+        `unreached`; after, the gate's own outcome; the person's own refusals (a kill at the
+        ask, `none_chosen`) are a block; a pending ask pauses; a record with nothing sent is
+        closed `not_delivered` so the key is released."""
+        if release:
+            try:
+                self._close(step, risk, "not_delivered")
+            except LedgerError:
+                evidence["ledger"] = "wal_unavailable"  # the attempt stays open (D5)
+        if isinstance(failure, _TakeoverError) or failure.code is ErrorCode.GATE_PENDING_USER:
+            gate = "pending"
+        elif failure.detail == "none_chosen" or (
+            failure.detail == "killed" and not isinstance(failure, _KilledError)
+        ):
+            gate = "block"
+        return self._failed(step, stage, evidence, gate=gate, dispatched=None, failure=failure)
+
     def _failed(  # noqa: PLR0913 - the step's state at the failure, nothing more
         self,
         step: Step,
@@ -521,6 +629,8 @@ class Session:
         self._scrolled = None
         self._secure_step = False
         self._sent_in_act = False
+        self._binding = None
+        self._candidates = None
         self._counts_at_step = self._monitor.counts() if self._monitor is not None else {}
 
     def _input_evidence(self, evidence: dict[str, Any]) -> None:
@@ -562,6 +672,8 @@ class Session:
         target = step.target
         if target is None:  # enforced by Step.__post_init__; kept for the type checker
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_target")
+        if target.match == "person":
+            return self._resolve_person(step, target, snapshot)
         if target.element_id is not None:
             try:
                 snapshot.element(target.element_id)
@@ -579,6 +691,49 @@ class Session:
         if len(matches) > 1:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
         return matches[0].id
+
+    def _resolve_person(self, step: Step, target: Target, snapshot: Snapshot) -> int:
+        """A person target (5.8 [v1.5]): the bound row once bound; else the candidates, with
+        the identity ask whenever more than one names the person or the only one is a
+        lookalike (PT-01/06/08/26); never a silent pick."""
+        evidence = self._act_evidence
+        if self._binding is not None:
+            found = rebind(self._binding, snapshot)
+            if found is None:
+                raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "candidate_gone")
+            # same identity, current text: the confirm ask and the templates see what the
+            # screen shows now (review item 2)
+            self._binding = replace(bind(found), unique_name=self._binding.unique_name)
+            return found.id
+        cached = self._candidates
+        found_all = (
+            cached[1] if cached is not None and cached[0] == snapshot.id else pick(snapshot, target)
+        )
+        evidence["candidates"] = len(found_all)
+        if not found_all:
+            others = other_role_matches(snapshot, target)
+            if others:
+                evidence["other_role_matches"] = others
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_match")
+        if too_many(found_all):
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
+        if len(found_all) == 1 and not lookalike_only(target.name, found_all[0].name):
+            self._binding = bind(found_all[0], found_all)
+            return found_all[0].id
+        if self._monitor is not None:
+            self._monitor.mark_ask_open()
+        try:
+            which = self._gate.which(step, found_all)
+        finally:
+            if self._monitor is not None:
+                self._monitor.mark_ask_closed()
+        evidence.update({k: v for k, v in which.evidence.items() if k != "detail"})
+        if which.outcome == "chosen" and which.index is not None:
+            element = found_all[which.index - 1]
+            self._binding = bind(element, found_all)
+            return element.id
+        detail = str(which.evidence.get("detail", which.outcome))
+        raise _StepFailureError(which.code or ErrorCode.GATE_PENDING_USER, detail)
 
     def _composer(self, step: Step, snapshot: Snapshot) -> int | None:
         """The composer a send template reads, resolved by role and name in this snapshot:
@@ -615,11 +770,13 @@ class Session:
     def _resume(self, step: Step, record: WriteAheadRecord, before: Snapshot) -> str:
         """A crash between the record and the outcome (OR-01): done when the effect is already
         there relative to the persisted before, else the phase the gate shows."""
+        if record.chosen is not None:
+            self._binding = Binding.from_record(record.chosen)  # the row the attempt chose
         try:
             composer_id = self._composer(step, record.before)
         except _StepFailureError:
             return record.phase
-        expect = self._gate.predicate_for(step, composer_id=composer_id)
+        expect = self._gate.predicate_for(step, composer_id=composer_id, bound=self._binding)
         if expect is not None and self._effect_present(expect, record.before, before):
             self._ledger.record_outcome(step, "done_already")
             return "done"

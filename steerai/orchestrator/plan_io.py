@@ -38,6 +38,7 @@ from steerai.verify.predicates import (
     WindowGone,
     Within,
 )
+from steerai.world.people import name_part
 
 MAX_PLAN_BYTES = 262_144
 """Unmeasured cap; a 20-step plan is under 8 KB (RN-33)."""
@@ -266,7 +267,18 @@ def _predicate_body(value: object, path: str, depth: int) -> Predicate:
 
 def _target(value: object, path: str) -> Target:
     obj = _obj(value, path)
-    _keys(obj, frozenset({"role", "name", "automation_id"}), path)
+    _keys(obj, frozenset({"role", "name", "automation_id", "match"}), path)
+    match = obj.get("match", "exact")
+    if match not in ("exact", "person"):
+        raise PlanError(f"{path}.match", "must be exact or person")
+    if match == "person":
+        raw_name = obj.get("name")
+        if isinstance(raw_name, str) and (
+            not name_part(raw_name) or name_part(raw_name) != raw_name.strip()
+        ):
+            raise PlanError(
+                f"{path}.name", "a person is named by the name part alone: no separators"
+            )
     try:
         return Target(
             role=_text(obj.get("role"), f"{path}.role", max_chars=64),
@@ -274,6 +286,7 @@ def _target(value: object, path: str) -> Target:
             automation_id=_text(
                 obj.get("automation_id", ""), f"{path}.automation_id", max_chars=256
             ),
+            match=cast("Literal['exact', 'person']", match),
         )
     except ValueError as exc:
         if isinstance(exc, PlanError):
@@ -392,6 +405,8 @@ def _encode_step(step: Step) -> dict[str, Any]:
     }
     if step.target.automation_id:
         out["target"]["automation_id"] = step.target.automation_id
+    if step.target.match != "exact":
+        out["target"]["match"] = step.target.match
     if step.text is not None:
         out["text"] = step.text
     if step.params:
