@@ -1563,6 +1563,17 @@ def name_part(name: str) -> str:
     return name[:cut].strip()
 
 
+def preview(name: str) -> str:
+    """The text after the name part and its separator, stripped; empty when none."""
+    part = name_part(name)
+    rest = name.strip()[len(part) :] if name.strip().startswith(part) else ""
+    for separator in _SEPARATORS:
+        if rest.startswith(separator):
+            rest = rest[len(separator) :]
+            break
+    return rest.strip(" \u00b7-\u2013\u2014")
+
+
 def matches(parameter: str, name: str) -> bool:
     wanted = comparable(parameter).strip()
     if not wanted:

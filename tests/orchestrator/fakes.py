@@ -226,7 +226,11 @@ class MemoryLedger:
         return None if record is None else record.get("outcome")
 
     def write_ahead(
-        self, step: Step, before: Snapshot, decision: GateDecision | None
+        self,
+        step: Step,
+        before: Snapshot,
+        decision: GateDecision | None,
+        chosen: dict[str, Any] | None = None,
     ) -> WriteAheadRecord:
         key = self.key_for(step)
         if decision is None or decision.action_key != key or decision.outcome == "block":
@@ -241,6 +245,7 @@ class MemoryLedger:
             action_key=key,
             decision_id=decision.decision_id,
             phase="written",
+            chosen=chosen,
             before=replace(before, handles=[]),
             written_at=self.started_at,
         )

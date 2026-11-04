@@ -56,7 +56,10 @@ def _show(value: str) -> str:
 
 
 def render_ask(ask: Ask) -> str:
-    """The ask as printable lines; the first line is parseable: `ASK <id> <verb> <risk> <role>`."""
+    """The ask as printable lines; the first line is parseable: `ASK <id> <verb> <risk> <role>`
+    (`ASK <id> which <risk> <role>` for the identity ask)."""
+    if ask.kind == "which":
+        return _render_which(ask)
     lines = [f"ASK {_show(ask.decision_id)} {_show(ask.verb)} {ask.risk} {_show(ask.target_role)}"]
     target = _show(ask.target_name) or "(unnamed)"
     if ask.automation_id:
@@ -79,6 +82,36 @@ def render_ask(ask: Ask) -> str:
         f"type yes:{_show(ask.decision_id)} to approve, no to refuse"
     )
     return "\n".join(lines) + "\n"
+
+
+def _render_which(ask: Ask) -> str:
+    """Numbered candidates in a fixed layout (PT-14/16): the name part and the preview are
+    screen text, quoted and capped; ordinals only; the instruction after the list."""
+    lines = [f"ASK {_show(ask.decision_id)} which {ask.risk} {_show(ask.target_role)}"]
+    lines.append(f"{_PREFIX}the plan names: {_show(ask.target_name)}")
+    for line in ask.candidates:
+        tags = f"  [{', '.join(line.tags)}]" if line.tags else ""
+        lines.append(
+            f'{_PREFIX}{line.index}) {_show(line.role)} "{_cap(_show(line.name_part), 60)}"'
+            f'  preview: "{_cap(_show(line.preview), 60)}"{tags}'
+        )
+    if ask.previous_attempt is not None:
+        lines.append(
+            f"{_PREFIX}WARNING: an earlier attempt of this action may already have landed "
+            f"(phase: {_show(ask.previous_attempt)}); check the screen before answering."
+        )
+    lines.append(
+        f"{_PREFIX}the target window holds focus until you answer here; "
+        f"type <n>:{_show(ask.decision_id)} to choose a row, no for none of these"
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _cap(text: str, width: int) -> str:
+    if len(text) <= width:
+        return text
+    head = width // 2 - 2
+    return text[:head] + "..." + text[-(width - head - 3) :]
 
 
 class ConsoleConfirmer:
@@ -123,7 +156,20 @@ class ConsoleConfirmer:
             return "killed"
         if not isinstance(line, str):
             return "unanswered"
-        return self._classify(line.rstrip("\r\n").strip(), ask.decision_id)
+        answer = line.rstrip("\r\n").strip()
+        if ask.kind == "which":
+            return self._classify_which(answer, ask)
+        return self._classify(answer, ask.decision_id)
+
+    def _classify_which(self, answer: str, ask: Ask) -> str:
+        """`<n>:<ask id>` with 1 <= n <= k, no leading zero; `no`; else unanswered (PT-15)."""
+        if answer in ("no", f"no:{ask.decision_id}"):
+            return answer
+        head, sep, tail = answer.partition(":")
+        well_formed = sep and tail == ask.decision_id and head.isascii() and head.isdigit()
+        if well_formed and head[0] != "0" and 1 <= int(head) <= len(ask.candidates):
+            return f"{int(head)}:{ask.decision_id}"
+        return "unanswered"
 
     def _read_or_kill(self) -> str | object | None:
         """One line, or the kill sentinel: a blocking read cannot be interrupted on Windows, so

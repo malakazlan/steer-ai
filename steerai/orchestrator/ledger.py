@@ -23,7 +23,7 @@ import sys
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -68,6 +68,9 @@ class WriteAheadRecord:
     phase: Phase
     before: Snapshot
     written_at: float
+    chosen: dict[str, Any] | None = field(default=None, repr=False)
+    """The identity a person target was bound to (role, RuntimeId, name part, full name),
+    so a resume never dispatches to another row (PT-05)."""
 
     def to_json(self) -> str:
         return json.dumps(
@@ -80,6 +83,7 @@ class WriteAheadRecord:
                 "phase": self.phase,
                 "written_at": self.written_at,
                 "before": json.loads(snapshot_to_json(self.before)),
+                "chosen": self.chosen,
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -100,6 +104,7 @@ class WriteAheadRecord:
                 action_key=str(payload["action_key"]),
                 decision_id=str(payload["decision_id"]),
                 phase=phase,  # type: ignore[arg-type]  # validated above
+                chosen=payload.get("chosen") if isinstance(payload.get("chosen"), dict) else None,
                 before=snapshot_from_json(json.dumps(payload["before"])),
                 written_at=float(payload["written_at"]),
             )
@@ -257,7 +262,11 @@ class Ledger:
         return self._dir / f"{_digest(step_id)}.wal"
 
     def write_ahead(
-        self, step: Step, before: Snapshot, decision: GateDecision | None
+        self,
+        step: Step,
+        before: Snapshot,
+        decision: GateDecision | None,
+        chosen: dict[str, Any] | None = None,
     ) -> WriteAheadRecord:
         """Consume the key and persist the before snapshot, before any R2/R3 action; a failed
         write means no action and no consumed key."""
@@ -274,6 +283,7 @@ class Ledger:
             phase="written",
             before=before,
             written_at=time.time(),
+            chosen=chosen,
         )
         text = record.to_json()
         if len(text.encode()) > self._max_record_bytes:

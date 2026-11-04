@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
@@ -27,9 +27,11 @@ from steerai.orchestrator.contracts import (
     Step,
     template_verb,
 )
+from steerai.orchestrator.identity import Binding, CandidateLine, lines_for
 from steerai.verify.predicates import Predicate, Within, comparable
 from steerai.verify.strength import Params, strength, strengthen, template_for
 from steerai.verify.t1 import redact
+from steerai.world.elements import Element
 
 DENY_PATTERNS: Mapping[str, Risk] = {
     "delete": "R3",
@@ -58,6 +60,7 @@ DENY_PATTERNS: Mapping[str, Risk] = {
 tier. Matched on whole words of the comparable form (NFKC, format characters removed,
 case-folded), so punctuation or a zero-width character never hides a word (RN-04)."""
 _RISK_ORDER = {risk: index for index, risk in enumerate(RISKS)}
+_WHICH = re.compile(r"([1-9][0-9]{0,2}):(w-[0-9a-f]{12})")
 _WORD = re.compile(r"[^\W\d_]+")
 """Whole words of letters: punctuation, digits or underscores around a word ("Delete,",
 "(Send)", "Delete_all", "Send2") never hide it."""
@@ -95,13 +98,15 @@ def _declined(answer: str, risk: Risk, decision_id: str) -> GateResult:
     )
 
 
-def effective_risk(step: Step) -> Risk:
+def effective_risk(step: Step, bound_name: str | None = None) -> Risk:
     """The plan's tier raised by the deny patterns on the target's name and automation id,
-    never lowered (RN-03/04/25)."""
+    and on the bound element's name part for a person target (PT-31), never lowered."""
     risk: Risk = step.risk
     if step.target is None:
         return risk
     words = [*_words(step.target.name), "", *_id_words(step.target.automation_id)]
+    if bound_name:
+        words += ["", *_words(bound_name)]
     for pattern, tier in DENY_PATTERNS.items():
         if _RISK_ORDER[tier] > _RISK_ORDER[risk] and _contains(words, pattern):
             risk = tier
@@ -123,6 +128,17 @@ class Ask:
     previous_attempt: str | None = None
     target_name: str = field(default="", repr=False)
     automation_id: str = field(default="", repr=False)
+    kind: Literal["yes", "which"] = "yes"
+    """`yes`: consent to one action; `which`: the identity ask, choose among candidates."""
+    candidates: tuple[CandidateLine, ...] = field(default=(), repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class WhichResult:
+    outcome: Literal["chosen", "block", "pending"]
+    index: int | None
+    code: ErrorCode | None
+    evidence: dict[str, Any]
 
 
 class Confirmer(Protocol):
@@ -151,9 +167,15 @@ def _block(detail: str, risk: Risk, **extra: Any) -> GateResult:
     )
 
 
-def params_for(step: Step, target_id: int | None = None, composer_id: int | None = None) -> Params:
+def params_for(
+    step: Step,
+    target_id: int | None = None,
+    composer_id: int | None = None,
+    bound: Binding | None = None,
+) -> Params:
     """Strength parameters filled by code from the step, never from model text (5.4 [v0.5]);
-    `target_id` is the element the loop resolved for a role-and-name target."""
+    `target_id` is the element the loop resolved for a role-and-name target; for a person
+    target the bound element's full name is the name the templates match (PT-09)."""
     raw = step.params
     composer = raw.get("composer_id")
     if composer is None and composer_id is not None:
@@ -163,7 +185,13 @@ def params_for(step: Step, target_id: int | None = None, composer_id: int | None
     return Params(
         target_id=resolved if resolved is not None else target_id,
         target_role=step.target.role if step.target is not None else None,
-        target_name=step.target.name if step.target is not None else None,
+        target_name=(
+            bound.full_name
+            if bound is not None
+            else step.target.name
+            if step.target is not None
+            else None
+        ),
         text=step.text if step.text is not None else raw.get("text"),
         composer_id=int(composer) if composer is not None else None,
         composer_name=raw.get("composer_name"),
@@ -182,15 +210,68 @@ class Gate:
         self._task_id = task_id
 
     def predicate_for(
-        self, step: Step, target_id: int | None = None, composer_id: int | None = None
+        self,
+        step: Step,
+        target_id: int | None = None,
+        composer_id: int | None = None,
+        bound: Binding | None = None,
     ) -> Predicate | None:
         """The step's effect as the gate would check it: its own `expect`, else the template."""
         if step.expect is not None:
             return step.expect
         try:
-            return template_for(template_verb(step.verb), params_for(step, target_id, composer_id))
+            return template_for(
+                template_verb(step.verb), params_for(step, target_id, composer_id, bound)
+            )
         except ValueError:
             return None
+
+    def which(
+        self, step: Step, elements: Sequence[Element], *, previous_attempt: str | None = None
+    ) -> WhichResult:
+        """The identity ask (5.8 [v1.5]): several rows name the person, so the person chooses.
+        Only `<n>:<ask id>` with 1 <= n <= k counts; `no` is `none_chosen`; the kill switch
+        blocks; anything else pauses. No gate decision is consumed by this ask."""
+        risk = effective_risk(step)
+        parameter = step.target.name if step.target is not None else ""
+        lines = lines_for(elements, parameter)
+        ask_id = f"w-{uuid.uuid4().hex[:12]}"
+        counts = {
+            "candidates": len(lines),
+            "lookalikes": sum(1 for line in lines if "lookalike" in line.tags),
+            "mixed_script": sum(1 for line in lines if "mixed script" in line.tags),
+        }
+        ask = Ask(
+            decision_id=ask_id,
+            task_id=self._task_id,
+            action_key="",
+            verb=step.verb,
+            target_role=step.target.role if step.target is not None else "",
+            risk=risk,
+            expect={},
+            params={},
+            previous_attempt=previous_attempt,
+            target_name=parameter,
+            kind="which",
+            candidates=tuple(lines),
+        )
+        answer = self._confirmer.ask(ask)
+        chosen = _WHICH.fullmatch(answer or "")
+        if chosen is not None and chosen.group(2) == ask_id:
+            index = int(chosen.group(1))
+            if 1 <= index <= len(lines):
+                return WhichResult("chosen", index, None, {**counts, "chosen_index": index})
+        if answer in ("no", f"no:{ask_id}"):
+            return WhichResult(
+                "block", None, ErrorCode.GATE_BLOCKED, {**counts, "detail": "none_chosen"}
+            )
+        if answer == "killed":
+            return WhichResult(
+                "block", None, ErrorCode.GATE_BLOCKED, {**counts, "detail": "killed"}
+            )
+        return WhichResult(
+            "pending", None, ErrorCode.GATE_PENDING_USER, {**counts, "detail": "unanswered"}
+        )
 
     def decide(  # noqa: PLR0913 - keyword-only context from the loop, each part optional
         self,
@@ -202,11 +283,12 @@ class Gate:
         previous_attempt: str | None = None,
         target_id: int | None = None,
         composer_id: int | None = None,
+        bound: Binding | None = None,
     ) -> GateResult:
-        risk = effective_risk(step)
+        risk = effective_risk(step, bound.name_part if bound is not None else None)
         if target_pid == self._own_pid:
             return _block("self_target", risk)
-        params = params_for(step, target_id, composer_id)
+        params = params_for(step, target_id, composer_id, bound)
         predicate = self._predicate(step, expect, risk, params)
         if isinstance(predicate, GateResult):
             return predicate
@@ -233,7 +315,13 @@ class Gate:
             expect=redact(predicate),
             params={**step.params, **({"text": step.text} if step.text is not None else {})},
             previous_attempt=previous_attempt,
-            target_name=step.target.name if step.target is not None else "",
+            target_name=(
+                bound.full_name
+                if bound is not None
+                else step.target.name
+                if step.target is not None
+                else ""
+            ),
             automation_id=step.target.automation_id if step.target is not None else "",
         )
         answer = self._confirmer.ask(ask)

@@ -42,6 +42,14 @@ from steerai.orchestrator.contracts import (
     executor_verb,
 )
 from steerai.orchestrator.gate import Gate, GateResult, effective_risk
+from steerai.orchestrator.identity import (
+    Binding,
+    bind,
+    other_role_matches,
+    pick,
+    rebind,
+    too_many,
+)
 from steerai.orchestrator.ledger import LedgerError, WriteAheadRecord
 from steerai.orchestrator.trace import NullTrace, Trace
 from steerai.verify.predicates import (
@@ -63,6 +71,7 @@ from steerai.verify.t1 import (
 )
 from steerai.world.fingerprint import similarity
 from steerai.world.model import Snapshot, normalise_name
+from steerai.world.people import lookalike_only
 
 REUSE_FRESHNESS_S = 5.0
 """How old a decided after snapshot may be to serve as the next R0/R1 before. Unmeasured; well
@@ -115,7 +124,11 @@ class TaskLedger(Protocol):
     def admit(self, key: str, decision: GateDecision | None = None) -> str: ...
     def outcome_of(self, key: str) -> str | None: ...
     def write_ahead(
-        self, step: Step, before: Snapshot, decision: GateDecision | None
+        self,
+        step: Step,
+        before: Snapshot,
+        decision: GateDecision | None,
+        chosen: dict[str, Any] | None = None,
     ) -> WriteAheadRecord: ...
     def mark(self, step: Step, phase: Any) -> None: ...
     def record_outcome(self, step: Step, outcome: str) -> None: ...
@@ -233,6 +246,7 @@ class Session:
         self._scrolled: str | None = None
         self._act_evidence: dict[str, Any] = {}
         self._sent_in_act = False
+        self._binding: Binding | None = None
 
     # ---- one step ----------------------------------------------------------------------------
 
@@ -248,12 +262,14 @@ class Session:
         recorded = False
         try:
             self._boundary(evidence)
+            self._act_evidence = evidence
             before = stage.measure("observe", lambda: self._before(risk, evidence))
-            element_id = stage.measure("decide", lambda: self._resolve(step, before))
-            self._secure_step = before.element(element_id).secure
+            # admission first: a done key never asks which row (PT-29)
             previous = self._admission(step, key, risk, before)
             if previous == "done":
                 return self._done_already(step, stage, evidence)
+            element_id = stage.measure("decide", lambda: self._resolve(step, before))
+            self._secure_step = before.element(element_id).secure
             gate_result = stage.measure(
                 "gate", lambda: self._decide(step, key, before, previous, element_id)
             )
@@ -276,7 +292,6 @@ class Session:
                 if waited:
                     evidence["restarted"] = True
             before_of_record, recorded = self._record(step, risk, before, decision)
-            self._act_evidence = evidence
             action, before, retries = stage.measure(
                 "act", lambda: self._act(step, risk, before, element_id)
             )
@@ -310,8 +325,10 @@ class Session:
                     self._close(step, risk, "not_delivered")  # nothing sent: no open record
                 except LedgerError:
                     evidence["ledger"] = "wal_unavailable"  # the attempt stays open (D5)
-            if isinstance(failure, _TakeoverError):
+            if isinstance(failure, _TakeoverError) or failure.code is ErrorCode.GATE_PENDING_USER:
                 gate_stage = "pending"
+            elif failure.detail == "none_chosen":
+                gate_stage = "block"  # the person declined every row (PT-30)
             return self._failed(
                 step, stage, evidence, gate=gate_stage, dispatched=None, failure=failure
             )
@@ -385,7 +402,8 @@ class Session:
             return before, False
         try:
             before_of_record = self._ledger.before_of_record(step, before)
-            self._ledger.write_ahead(step, before_of_record, decision)
+            chosen = self._binding.to_record() if self._binding is not None else None
+            self._ledger.write_ahead(step, before_of_record, decision, chosen=chosen)
         except LedgerError as exc:
             raise _StepFailureError(ErrorCode.GATE_BLOCKED, "wal_unavailable") from exc
         return before_of_record, True
@@ -440,6 +458,7 @@ class Session:
                 previous_attempt=previous,
                 target_id=element_id,
                 composer_id=self._composer(step, before),
+                bound=self._binding,
             )
         finally:
             if asking and self._monitor is not None:
@@ -521,6 +540,7 @@ class Session:
         self._scrolled = None
         self._secure_step = False
         self._sent_in_act = False
+        self._binding = None
         self._counts_at_step = self._monitor.counts() if self._monitor is not None else {}
 
     def _input_evidence(self, evidence: dict[str, Any]) -> None:
@@ -562,6 +582,8 @@ class Session:
         target = step.target
         if target is None:  # enforced by Step.__post_init__; kept for the type checker
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_target")
+        if target.match == "person":
+            return self._resolve_person(step, target, snapshot)
         if target.element_id is not None:
             try:
                 snapshot.element(target.element_id)
@@ -579,6 +601,43 @@ class Session:
         if len(matches) > 1:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
         return matches[0].id
+
+    def _resolve_person(self, step: Step, target: Target, snapshot: Snapshot) -> int:
+        """A person target (5.8 [v1.5]): the bound row once bound; else the candidates, with
+        the identity ask whenever more than one names the person or the only one is a
+        lookalike (PT-01/06/08/26); never a silent pick."""
+        evidence = self._act_evidence
+        if self._binding is not None:
+            found = rebind(self._binding, snapshot)
+            if found is None:
+                raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "candidate_gone")
+            return found.id
+        found_all = pick(snapshot, target)
+        evidence["candidates"] = len(found_all)
+        if not found_all:
+            others = other_role_matches(snapshot, target)
+            if others:
+                evidence["other_role_matches"] = others
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_match")
+        if too_many(found_all):
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
+        if len(found_all) == 1 and not lookalike_only(target.name, found_all[0].name):
+            self._binding = bind(found_all[0])
+            return found_all[0].id
+        if self._monitor is not None:
+            self._monitor.mark_ask_open()
+        try:
+            which = self._gate.which(step, found_all)
+        finally:
+            if self._monitor is not None:
+                self._monitor.mark_ask_closed()
+        evidence.update({k: v for k, v in which.evidence.items() if k != "detail"})
+        if which.outcome == "chosen" and which.index is not None:
+            element = found_all[which.index - 1]
+            self._binding = bind(element)
+            return element.id
+        detail = str(which.evidence.get("detail", which.outcome))
+        raise _StepFailureError(which.code or ErrorCode.GATE_PENDING_USER, detail)
 
     def _composer(self, step: Step, snapshot: Snapshot) -> int | None:
         """The composer a send template reads, resolved by role and name in this snapshot:
@@ -615,11 +674,13 @@ class Session:
     def _resume(self, step: Step, record: WriteAheadRecord, before: Snapshot) -> str:
         """A crash between the record and the outcome (OR-01): done when the effect is already
         there relative to the persisted before, else the phase the gate shows."""
+        if record.chosen is not None:
+            self._binding = Binding.from_record(record.chosen)  # the row the attempt chose
         try:
             composer_id = self._composer(step, record.before)
         except _StepFailureError:
             return record.phase
-        expect = self._gate.predicate_for(step, composer_id=composer_id)
+        expect = self._gate.predicate_for(step, composer_id=composer_id, bound=self._binding)
         if expect is not None and self._effect_present(expect, record.before, before):
             self._ledger.record_outcome(step, "done_already")
             return "done"

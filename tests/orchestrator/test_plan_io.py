@@ -32,6 +32,7 @@ CONVERSATION = {"landmark": "Conversation"}
 
 
 def _doc(**overrides: Any) -> dict[str, Any]:
+    conversation = dict(CONVERSATION)  # a fresh copy: tests mutate what they get
     doc: dict[str, Any] = {
         "goal": "send hello there to Amir",
         "subgoals": [
@@ -39,7 +40,7 @@ def _doc(**overrides: Any) -> dict[str, Any]:
                 "id": "g1",
                 "desc": "hello sent",
                 "condition": {
-                    "appeared": {"role": "Text", "name": "hello there", "within": CONVERSATION}
+                    "appeared": {"role": "Text", "name": "hello there", "within": conversation}
                 },
             }
         ],
