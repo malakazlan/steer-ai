@@ -265,3 +265,65 @@ def test_within_round_trips_as_a_landmark() -> None:
     assert json.loads(outcome.data)["subgoals"][0]["condition"]["appeared"]["within"] == {
         "landmark": "Results"
     }
+
+
+# ---- gaps closed at sign-off ------------------------------------------------------------------
+
+
+def test_provenance_is_a_substring_test_so_a_negated_sentence_still_counts() -> None:
+    """5.13 [v0.4] names a whitespace-folded NFKC substring; the text inside another sentence of
+    the goal is verbatim. The preview, not provenance, is where the person sees intent."""
+    planner, _ = _planner(_Response(parsed_output=_doc()))
+    goal = f"never search for {QUERY}. instead search for the weather"
+    outcome = planner.plan(_request(goal=goal))
+    assert {s.id: s for s in outcome.plan.steps}["type"].text_provenance == "verbatim"
+
+
+def test_a_request_with_zero_screen_lines_still_fences_an_empty_block() -> None:
+    request = PlanRequest(goal=GOAL, screen_lines=())
+    assert request.screen_lines == ()
+    _, user = build_prompt(request, tag="t")
+    assert user.splitlines()[-2:] == ["<<<screen t", "t>>>"]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        _Response(parsed_output=None, stop_reason="max_tokens"),
+        _Response(parsed_output=None, stop_reason="refusal"),
+        _Response(parsed_output=None, stop_reason="end_turn"),
+    ],
+    ids=["truncated", "refusal", "malformed"],
+)
+def test_no_planner_error_message_quotes_the_goal_the_query_or_the_screen(
+    response: _Response,
+) -> None:
+    error = _failure(response)
+    message = str(error) + repr(error.trace_record(latency_ms=1))
+    assert GOAL not in message
+    assert QUERY not in message
+    assert all(line not in message for line in SCREEN)
+
+
+def test_an_invalid_plan_error_carries_the_path_and_never_the_content() -> None:
+    doc = _doc()
+    doc.steps[1].id = "focus"  # a duplicate id: the boundary refuses it by path
+    error = _failure(_Response(parsed_output=doc))
+    assert error.detail == "invalid_plan"
+    assert error.path is not None
+    assert QUERY not in str(error)
+    assert GOAL not in str(error)
+
+
+def test_a_plan_with_no_steps_is_no_steps_not_invalid_plan() -> None:
+    """The prompt asks for no steps when the goal cannot be done here; that is its own token so
+    the invalid-plan rate (decision Q2) stays honest (final review item 1)."""
+    doc = _doc()
+    doc.steps = []
+    error = _failure(_Response(parsed_output=doc, model="m-1"))
+    assert error.code is ErrorCode.MODEL_ERROR
+    assert error.detail == "no_steps"
+    assert error.model == "m-1"
+    assert error.prompt_version == PROMPT_VERSION
+    record = error.trace_record(latency_ms=5.0)
+    assert (record["model"], record["detail"], record["path"]) == ("m-1", "no_steps", None)

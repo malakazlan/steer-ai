@@ -62,8 +62,8 @@ Predicates (JSON objects with exactly one key): {{"appeared": {{"role", "name", 
 regular expressions.
 
 Verification rule for R2 and R3 steps: the step's "expect" must be an "appeared" or
-"disappeared" whose "name" is the step's own content (the text typed or sent, the file name, the
-name of the thing deleted), inside a named landmark where possible. It must never be the
+"disappeared" whose "name" is the step's own content (the text typed or sent, or the name of
+the thing deleted), inside a named landmark where possible. It must never be the
 recipient's name, the landmark's name, the window title or the goal text. A send or submit step
 carries "params" with "text" (the content), "composer_role", "composer_name" and "scope" (the
 landmark where the content appears). A page that replaces itself after a submit (a search)
@@ -133,15 +133,18 @@ class ClaudePlanner:
         latency_ms = (time.perf_counter_ns() - started) / 1e6
         doc = response.parsed_output
         stop_reason = _attr(response, "stop_reason")
+        model_used = str(response.model)
         if not isinstance(doc, PlanDoc):
-            raise PlannerError(ErrorCode.MODEL_ERROR, _empty_detail(stop_reason))
+            raise self._error(_empty_detail(stop_reason), model=model_used)
+        if not doc.steps:
+            # the prompt asks for no steps when the goal cannot be done here: its own token,
+            # so the invalid-plan rate stays honest (decision Q2)
+            raise self._error("no_steps", model=model_used)
         data = _document_bytes(doc, request)
         try:
             plan = plan_from_bytes(data)
         except PlanError as exc:
-            raise PlannerError(ErrorCode.MODEL_ERROR, "invalid_plan", path=exc.path) from exc
-        if not plan.steps:
-            raise PlannerError(ErrorCode.MODEL_ERROR, "invalid_plan", path="$.steps")
+            raise self._error("invalid_plan", path=exc.path, model=model_used) from exc
         usage = _attr(response, "usage")
         return PlanOutcome(
             plan=plan,
@@ -152,6 +155,22 @@ class ClaudePlanner:
             stop_reason=None if stop_reason is None else str(stop_reason),
             input_tokens=_count(usage, "input_tokens"),
             output_tokens=_count(usage, "output_tokens"),
+        )
+
+    def _error(
+        self,
+        detail: str,
+        *,
+        path: str | None = None,
+        model: str | None = None,
+        code: ErrorCode = ErrorCode.MODEL_ERROR,
+    ) -> PlannerError:
+        return PlannerError(
+            code,
+            detail,
+            path=path,
+            model=self.model if model is None else model,
+            prompt_version=PROMPT_VERSION,
         )
 
     def _call(self, system: str, user: str) -> ParsedLike:
@@ -165,14 +184,12 @@ class ClaudePlanner:
                 output_config={"effort": EFFORT},
             )
         except ValidationError as exc:
-            raise PlannerError(
-                ErrorCode.MODEL_ERROR, "malformed_output", path=_pydantic_path(exc)
-            ) from exc
+            raise self._error("malformed_output", path=_pydantic_path(exc)) from exc
         except Exception as exc:
             mapped = _sdk_failure(exc)
             if mapped is None:
                 raise
-            raise mapped from exc
+            raise self._error(mapped.detail, path=mapped.path, code=mapped.code) from exc
 
 
 def _document_bytes(doc: PlanDoc, request: PlanRequest) -> bytes:

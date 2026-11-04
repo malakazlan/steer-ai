@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from steerai.errors import ErrorCode
+from steerai.orchestrator.console import ConsoleConfirmer
 from steerai.orchestrator.contracts import Plan, Step, Subgoal, Target
 from steerai.orchestrator.plan_io import plan_from_bytes, plan_to_json
 from steerai.planner.contracts import PlannerError, PlanOutcome, PlanRequest
@@ -24,10 +25,12 @@ from steerai.run import (
     EXIT_USAGE,
     UsageError,
     parse_args,
+    preview_lines,
     run,
 )
 from steerai.verify.predicates import Appeared, Within
 from tests.orchestrator.test_run import FakeSession, World, _done
+from tests.orchestrator.test_run_monitor import FakeMonitor, MonitorWorld
 
 GOAL = "send hello there to Amir"
 HELLO = "hello there"
@@ -292,3 +295,89 @@ def test_goal_mode_without_a_planner_dependency_is_a_setup_failure(tmp_path: Pat
     code = run(_options(tmp_path), world.deps(), stdin=io.StringIO(), stdout=stdout, stderr=stderr)
     assert code == EXIT_USAGE
     assert json.loads(stdout.getvalue())["detail"] == "setup_failed"
+
+
+# ---- gaps closed at sign-off ------------------------------------------------------------------
+
+
+@dataclass
+class _KillMonitor(FakeMonitor):
+    def kill_requested(self) -> bool:
+        return True
+
+
+def test_a_kill_during_the_go_ask_blocks_with_killed_and_nothing_runs(tmp_path: Path) -> None:
+    plan = _plan()
+    outcome = _outcome(plan)
+    world = MonitorWorld(session=FakeSession(_done(plan)), monitor=_KillMonitor())
+    code, out, _ = _run_goal(_options(tmp_path), world, FakePlanner(outcome), stdin=_go(outcome))
+    assert code == EXIT_BLOCKED
+    assert (out["status"], out["detail"]) == ("blocked", "killed")
+    assert out["code"] == ErrorCode.GATE_BLOCKED.value
+    assert "session" not in world.calls
+    assert "foreground" not in world.calls
+    assert world.monitor.closed
+
+
+def test_the_exact_token_counts_on_a_non_interactive_stdin_and_a_bare_go_never_does() -> None:
+    go_id = "0123456789ab"
+    assert (
+        ConsoleConfirmer(io.StringIO(f"go:{go_id}\n"), io.StringIO(), interactive=False).ask_go(
+            go_id
+        )
+        == "go"
+    )
+    assert (
+        ConsoleConfirmer(io.StringIO("go\n"), io.StringIO(), interactive=True).ask_go(go_id)
+        == "unanswered"
+    )
+    assert ConsoleConfirmer(io.StringIO(""), io.StringIO(), interactive=True).ask_go(go_id) == (
+        "unanswered"
+    )
+
+
+def test_the_plan_file_is_written_whole_and_no_part_file_is_left(tmp_path: Path) -> None:
+    plan = _plan()
+    outcome = _outcome(plan)
+    world = World(session=FakeSession(_done(plan)))
+    _run_goal(_options(tmp_path), world, FakePlanner(outcome), stdin="no\n")
+    assert sorted(p.name for p in (tmp_path / "l").iterdir()) == ["goal-1.plan.json"]
+
+
+def test_the_preview_shows_a_person_target_and_the_steps_expect() -> None:
+    expect = Appeared(role="Text", name_pattern="Amir", within=Within(landmark="Chat list"))
+    plan = Plan(
+        goal=GOAL,
+        subgoals=(Subgoal(id="g1", desc="open", condition=expect),),
+        steps=(
+            Step(
+                id="open",
+                subgoal="g1",
+                verb="click",
+                target=Target(role="ListItem", name="Amir", match="person"),
+                risk="R0",
+                expect=expect,
+            ),
+        ),
+    )
+    lines = preview_lines(plan, "0123456789ab")
+    assert lines[0] == f"plan 0123456789ab: {GOAL}"
+    assert lines[2].startswith('  step open: click ListItem "Amir" (person) R0 expect={"appeared": ')
+    assert '"within": {"landmark": "chat list"}' in lines[2], "the landmark as normalised"
+    assert lines[-1] == "type go:0123456789ab to run this plan, or no"
+
+
+def test_the_preview_marks_a_person_target() -> None:
+    from steerai.run import preview_lines  # noqa: PLC0415
+
+    plan = _plan()
+    person = Step(
+        id="p",
+        subgoal="g1",
+        verb="click",
+        target=Target(role="ListItem", name="Amir", match="person"),
+        risk="R1",
+    )
+    plan = Plan(goal=plan.goal, subgoals=plan.subgoals, steps=(person, *plan.steps))
+    line = next(x for x in preview_lines(plan, "0123456789ab") if "step p:" in x)
+    assert 'ListItem "Amir" (person)' in line

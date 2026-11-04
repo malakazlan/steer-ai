@@ -31,7 +31,7 @@ from steerai.orchestrator.contracts import RISKS, Plan, Risk, Step
 from steerai.orchestrator.gate import Confirmer, effective_risk
 from steerai.orchestrator.ledger import LedgerError
 from steerai.orchestrator.loop import DEFAULT_MAX_STEPS, TaskResult, wait_for_idle
-from steerai.orchestrator.plan_io import PlanError, plan_from_bytes
+from steerai.orchestrator.plan_io import PlanError, encode_predicate, plan_from_bytes
 from steerai.orchestrator.trace import JsonLinesTrace, NullTrace, Trace
 from steerai.planner.contracts import PlannerError, PlanOutcome, PlanRequest
 from steerai.probes.windows import WindowInfo
@@ -749,7 +749,7 @@ def _planned(  # noqa: PLR0913 - the run's state at planning time
     try:
         outcome = deps.planner(request)
     except PlannerError as exc:
-        trace.write(exc.trace_record(model="", prompt_version="", latency_ms=_ms(deps, started)))
+        trace.write(exc.trace_record(latency_ms=_ms(deps, started)))
         where = "" if exc.path is None else f" at {exc.path}"
         return out.error(exc.detail, code=exc.code, note=f"planner: {exc.detail}{where}")
     trace.write(outcome.trace_record())
@@ -772,7 +772,8 @@ def _ms(deps: Deps, started: float) -> float:
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
-    """Whole or absent (PL-04): a crash mid-write never leaves a partial plan file."""
+    """Whole or absent on a process crash (PL-04); no fsync, so a power loss may still lose
+    the file, which the ledger's missing digest then reports as a plan to re-plan."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + ".part")
     temp.write_bytes(data)
@@ -790,6 +791,8 @@ def preview_lines(plan: Plan, go_id: str) -> list[str]:
     for step in plan.steps:
         target = step.target
         where = "" if target is None else f' {target.role} "{target.name}"'
+        if target is not None and target.match == "person":
+            where += " (person)"
         line = f"  step {step.id}: {step.verb}{where} {effective_risk(step)}"
         if step.text is not None:
             line += f" text={step.text!r}"
@@ -803,9 +806,7 @@ def preview_lines(plan: Plan, go_id: str) -> list[str]:
 
 
 def _predicate_text(predicate: Any) -> str:
-    from steerai.orchestrator.plan_io import _encode  # noqa: PLC0415 - the file form, one source
-
-    return json.dumps(_encode(predicate), sort_keys=True)
+    return json.dumps(encode_predicate(predicate), sort_keys=True)
 
 
 def _go_refusal(out: _Out, answer: str) -> int:

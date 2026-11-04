@@ -469,6 +469,11 @@ def _encode_appeared(predicate: Appeared) -> dict[str, Any]:
     return body
 
 
+def encode_predicate(predicate: Predicate) -> dict[str, Any]:
+    """The file form of one predicate (what the runner's plan preview shows)."""
+    return _encode(predicate)
+
+
 def _encode(predicate: Predicate) -> dict[str, Any]:  # noqa: PLR0911 - one kind each
     if isinstance(predicate, Appeared):
         return {"appeared": _encode_appeared(predicate)}

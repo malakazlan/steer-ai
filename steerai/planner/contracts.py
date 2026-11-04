@@ -59,16 +59,26 @@ class PlannerError(SteerError):
     """The planner produced no plan; `detail` is a fixed token, `path` the field for
     `invalid_plan`. The message never quotes content."""
 
-    def __init__(self, code: ErrorCode, detail: str, *, path: str | None = None) -> None:
+    def __init__(
+        self,
+        code: ErrorCode,
+        detail: str,
+        *,
+        path: str | None = None,
+        model: str = "",
+        prompt_version: str = "",
+    ) -> None:
         super().__init__(code, detail if path is None else f"{detail} at {path}")
         self.detail = detail
         self.path = path
+        self.model = model
+        self.prompt_version = prompt_version
 
-    def trace_record(self, *, model: str, prompt_version: str, latency_ms: float) -> dict[str, Any]:
+    def trace_record(self, *, latency_ms: float) -> dict[str, Any]:
         return {
             "kind": "plan",
-            "model": model,
-            "prompt_version": prompt_version,
+            "model": self.model,
+            "prompt_version": self.prompt_version,
             "latency_ms": latency_ms,
             "code": self.code.value,
             "detail": self.detail,

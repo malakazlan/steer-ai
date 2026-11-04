@@ -136,3 +136,21 @@ def test_a_fixture_mirror_round_trips_through_the_boundary() -> None:
     assert plan.steps[0].target.automation_id == ""
     assert json.loads(plan_to_json(plan))["steps"][1]["params"]["scope"] == "Conversation"
     assert plan_from_json(plan_to_json(plan)) == plan
+
+
+def test_the_mirror_refuses_the_gates_inputs_from_the_model() -> None:
+    """A model that writes provenance or preapproval is rejected by the schema, not trusted."""
+    import pytest  # noqa: PLC0415
+    from pydantic import ValidationError  # noqa: PLC0415
+
+    base = {
+        "id": "s1",
+        "subgoal": "g1",
+        "verb": "type",
+        "target": {"role": "Edit", "name": "Message"},
+        "risk": "R1",
+        "text": "hello",
+    }
+    for key in sorted(EXPECTED_ABSENT):
+        with pytest.raises(ValidationError, match=key):
+            StepDoc.model_validate({**base, key: "verbatim"})

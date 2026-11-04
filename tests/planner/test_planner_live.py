@@ -1,6 +1,6 @@
-"""Opt-in: the real planner on the real Google page through the runner (`live` marker; needs an
-Anthropic credential in the environment and Chrome). Records the planner's latency and tokens
-for section 9 (unmeasured until this has run ten times)."""
+"""Opt-in: one real planner call on the real Google page (`live` marker; needs an Anthropic
+credential in the environment and Chrome). It calls `ClaudePlanner.plan` only; the run to
+`done` through the runner and the ten-call p50/p95 for section 9 are the next PR."""
 
 from __future__ import annotations
 
