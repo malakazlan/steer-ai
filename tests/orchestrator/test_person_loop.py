@@ -478,6 +478,7 @@ def test_an_open_record_is_found_even_when_the_raising_row_has_left_the_screen()
     dispatched_before = len(h.semantic.calls)
     second = h.session.run_step(_strong_person_click())
     assert h.confirmer.asked == [], "no which-ask: the open record was found first"
+    assert second.evidence["observe_reused"] is False, "a lifted ceiling discards the reused before"
     assert second.code is ErrorCode.ELEMENT_NOT_FOUND
     assert second.evidence["detail"] == "candidate_gone"
     assert len(h.semantic.calls) == dispatched_before, "the plain row is never clicked"
