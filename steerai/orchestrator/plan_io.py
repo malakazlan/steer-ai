@@ -38,6 +38,7 @@ from steerai.verify.predicates import (
     WindowGone,
     Within,
 )
+from steerai.world.people import name_part
 
 MAX_PLAN_BYTES = 262_144
 """Unmeasured cap; a 20-step plan is under 8 KB (RN-33)."""
@@ -270,6 +271,14 @@ def _target(value: object, path: str) -> Target:
     match = obj.get("match", "exact")
     if match not in ("exact", "person"):
         raise PlanError(f"{path}.match", "must be exact or person")
+    if match == "person":
+        raw_name = obj.get("name")
+        if isinstance(raw_name, str) and (
+            not name_part(raw_name) or name_part(raw_name) != raw_name.strip()
+        ):
+            raise PlanError(
+                f"{path}.name", "a person is named by the name part alone: no separators"
+            )
     try:
         return Target(
             role=_text(obj.get("role"), f"{path}.role", max_chars=64),

@@ -11,12 +11,15 @@ about, never silently excluded or silently chosen.
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Iterable, Sequence
 
 from steerai.verify.predicates import comparable as _nfkc_casefold
 from steerai.world.elements import Element
 
 UNICODE_VERSION = "18.0.0"
+MAX_CANDIDATES = 12
+"""More matches than this is not an ask a person can answer (PT-26): `ambiguous_target`."""
 _SEPARATORS = (" \u00b7 ", "\u00b7", " - ", " \u2013 ", " \u2014 ")
 _TOKEN_BOUNDARIES = frozenset({" ", "\u00b7", "_", "("})
 
@@ -1570,6 +1573,37 @@ def matches(parameter: str, name: str) -> bool:
     if not part.startswith(wanted):
         return False
     return part[len(wanted)] in _TOKEN_BOUNDARIES
+
+
+def lookalike_only(parameter: str, name: str) -> bool:
+    """True when the name matches the parameter only through confusable folding (PT-01): the
+    comparable forms agree while the NFKC, case-folded forms differ. Such a match is never a
+    silent resolve; it always asks."""
+    if not matches(parameter, name):
+        return False
+    plain_param = _nfkc_casefold(parameter).strip()
+    plain_part = _nfkc_casefold(name_part(name)).strip()
+    if plain_part == plain_param:
+        return False
+    return not (
+        plain_part.startswith(plain_param) and plain_part[len(plain_param)] in _TOKEN_BOUNDARIES
+    )
+
+
+def _script(ch: str) -> str | None:
+    if not ch.isalpha():
+        return None
+    try:
+        return unicodedata.name(ch).split(" ", 1)[0]
+    except ValueError:
+        return None
+
+
+def mixed_script(name: str) -> bool:
+    """Letters from more than one script in the name part (PT-13), computed from the character
+    names' first word (LATIN, CYRILLIC, GREEK, ...), never from a table."""
+    scripts = {s for s in (_script(ch) for ch in name_part(name)) if s is not None}
+    return len(scripts) > 1
 
 
 def candidates(elements: Iterable[Element], role: str, parameter: str) -> Sequence[Element]:
