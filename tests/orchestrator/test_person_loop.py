@@ -461,3 +461,59 @@ def test_a_done_raised_key_never_asks_which() -> None:
     again = h.session.run_step(_strong_person_click())
     assert again.gate == "done_already"
     assert h.confirmer.asked == []
+
+
+def test_an_open_record_is_found_even_when_the_raising_row_has_left_the_screen() -> None:
+    h = Harness()
+    raised: Row = (23, "ListItem", f"Amir delete {MID} hi {MID} 1h", (42, 41), 1)
+    h.world.rows.append(raised)
+    _answer_which(h, 2)
+    first = h.session.run_step(_strong_person_click())
+    assert first.evidence["risk"] == "R3"
+    key = h.ledger.key_for(_strong_person_click())
+    h.ledger.executions[key]["outcome"] = None
+    h.ledger.records["p1"] = replace(h.ledger.records["p1"], phase="acting")
+    h.world.rows = [r for r in h.world.rows if r[3] != (42, 41)]  # the raising row is gone
+    h.confirmer.asked.clear()
+    dispatched_before = len(h.semantic.calls)
+    second = h.session.run_step(_strong_person_click())
+    assert h.confirmer.asked == [], "no which-ask: the open record was found first"
+    assert second.code is ErrorCode.ELEMENT_NOT_FOUND
+    assert second.evidence["detail"] == "candidate_gone"
+    assert len(h.semantic.calls) == dispatched_before, "the plain row is never clicked"
+
+
+def test_the_rebuilt_expectation_goes_through_the_gates_strength_rung() -> None:
+    from steerai.orchestrator.gate import Gate, GateResult  # noqa: PLC0415
+
+    class Weakening(Gate):
+        def postcondition(self, _step: Step, _expect: Any, risk: Any, _params: Any) -> Any:
+            return GateResult(
+                outcome="block",
+                decision=None,
+                code=ErrorCode.GATE_BLOCKED,
+                evidence={"risk": risk, "detail": "weak_predicate"},
+            )
+
+    h = Harness()
+    h.world.rows.append(AMIR_KHAN)
+    h.session = Session(
+        task_id="task-1",
+        hwnd=0x10,
+        observer=h.world,
+        semantic=h.semantic,
+        physical=h.physical,
+        gate=Weakening(confirmer=h.confirmer, own_pid=4242, task_id="task-1"),
+        ledger=h.ledger,
+        live=FakeLive(h.world),
+        trace=h.trace,
+        monotonic=lambda: h.clock["t"],
+        sleep=lambda s: h.clock.__setitem__("t", h.clock["t"] + s),
+        verify_deadline_s=0.5,
+    )
+    _answer_which(h, 2)
+    result = h.session.run_step(_person_delete("Amir"))
+    assert result.code is ErrorCode.GATE_BLOCKED
+    assert result.evidence["detail"] == "weak_predicate"
+    assert h.world.sent == []
+    assert h.semantic.calls == [], "nothing dispatched on a weaker check"

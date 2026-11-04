@@ -42,7 +42,7 @@ from steerai.orchestrator.contracts import (
     Target,
     executor_verb,
 )
-from steerai.orchestrator.gate import Gate, GateResult, effective_risk
+from steerai.orchestrator.gate import Gate, GateResult, effective_risk, params_for
 from steerai.orchestrator.identity import (
     Binding,
     bind,
@@ -73,7 +73,7 @@ from steerai.verify.t1 import (
 from steerai.world.elements import Element
 from steerai.world.fingerprint import similarity
 from steerai.world.model import Snapshot, normalise_name
-from steerai.world.people import comparable, lookalike_only, name_part
+from steerai.world.people import MAX_CANDIDATES, comparable, lookalike_only, name_part
 
 REUSE_FRESHNESS_S = 5.0
 """How old a decided after snapshot may be to serve as the next R0/R1 before. Unmeasured; well
@@ -270,7 +270,11 @@ class Session:
             before = stage.measure("observe", lambda: self._before(risk, evidence))
             # admission first, at the candidates' tier ceiling for a person target: a done
             # or open record under this key is never bypassed by the row the person picks
-            risk = self._ceiling(step, before, risk)
+            risk = self._ceiling(step, key, before, risk)
+            if risk in ("R2", "R3") and evidence.get("observe_reused"):
+                # a reused R0/R1 snapshot is not a before for an R2/R3 step: observe fresh
+                before = stage.measure("observe", lambda: self._observe_fresh(evidence))
+                risk = self._ceiling(step, key, before, effective_risk(step))
             previous = self._admission(step, key, risk, before)
             if previous == "done":
                 return self._done_already(step, stage, evidence)
@@ -298,11 +302,9 @@ class Session:
                     "observe", lambda: self._reobserve(step, before, evidence, mismatch=token)
                 )
                 if self._binding is not None:
-                    # the bound row's text may have moved on: the template follows it
-                    rebuilt = self._gate.predicate_for(
-                        step, element_id, self._composer(step, before), bound=self._binding
-                    )
-                    expect = rebuilt if rebuilt is not None else expect
+                    # the bound row's text may have moved on: the postcondition follows it,
+                    # through the gate's own strength rung (never a weaker check)
+                    expect = self._rebuilt(step, risk, before, element_id)
                 if waited:
                     evidence["restarted"] = True
             before_of_record, recorded = self._record(step, risk, before, decision)
@@ -453,16 +455,39 @@ class Session:
             code=action.code,
         )
 
-    def _ceiling(self, step: Step, before: Snapshot, risk: Risk) -> Risk:
-        """For a person target, the highest tier any candidate row could raise the step to
-        (PT-31): admission runs there, so the ledger is consulted whatever row is chosen."""
+    def _rebuilt(self, step: Step, risk: Risk, before: Snapshot, element_id: int) -> Predicate:
+        params = params_for(step, element_id, self._composer(step, before), self._binding)
+        checked = self._gate.postcondition(step, step.expect, risk, params)
+        if isinstance(checked, GateResult):
+            detail = str(checked.evidence.get("detail", "weak_predicate"))
+            raise _StepFailureError(checked.code or ErrorCode.GATE_BLOCKED, detail)
+        return checked
+
+    def _ceiling(self, step: Step, key: str, before: Snapshot, risk: Risk) -> Risk:
+        """For a person target, the tier admission runs at: the highest tier any candidate
+        row could raise the step to (PT-31), and at least R2 whenever the key already has a
+        record or an outcome, so an earlier raised attempt is found even when the raising
+        row has left the screen (never bypassed, 5.8 [v1.6])."""
         target = step.target
         if target is None or target.match != "person":
             return risk
         found = pick(before, target)
         self._candidates = (before.id, found)
-        tiers = [effective_risk(step, comparable(name_part(c.name))) for c in found]
-        return max([risk, *tiers], key=_RISK_ORDER.__getitem__)
+        tiers: list[Risk] = [risk]
+        if len(found) <= MAX_CANDIDATES:
+            tiers += [effective_risk(step, comparable(name_part(c.name))) for c in found]
+        if self._key_has_history(step, key):
+            tiers.append("R2")
+        return max(tiers, key=_RISK_ORDER.__getitem__)
+
+    def _key_has_history(self, step: Step, key: str) -> bool:
+        try:
+            return (
+                self._ledger.outcome_of(key) is not None
+                or self._ledger.read_ahead(step) is not None
+            )
+        except LedgerError:
+            return True  # unreadable means unknown: admission decides
 
     def _settled_tier(self, step: Step, ceiling: Risk) -> Risk:
         """The bound row's own tier, never below the plan's (PT-31)."""

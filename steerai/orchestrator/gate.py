@@ -339,6 +339,14 @@ class Gate:
             )
         return _declined(answer, risk, decision_id)
 
+    def postcondition(
+        self, step: Step, expect: Predicate | None, risk: Risk, params: Params
+    ) -> Predicate | GateResult:
+        """The step's postcondition through the same strength rung the decision used, for a
+        rebuild after the bound row's text moved on (PT-09): the template or the plan's
+        expect, strengthened where the rung strengthens, blocked where it blocks."""
+        return self._predicate(step, expect, risk, params)
+
     def _predicate(
         self, step: Step, expect: Predicate | None, risk: Risk, params: Params
     ) -> Predicate | GateResult:
