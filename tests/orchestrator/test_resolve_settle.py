@@ -89,3 +89,36 @@ def test_an_ambiguous_target_does_not_settle() -> None:
     assert result.evidence["detail"] == "ambiguous_target"
     assert "settled" not in result.evidence
     assert observer.calls == 1
+
+
+def test_a_person_target_does_not_settle() -> None:
+    """A person `no_match` keeps the 5.8 rule: the candidates of a settled snapshot would never
+    have entered the ceiling, so the loop fails at once (principal review item 1)."""
+    from steerai.orchestrator.contracts import Step, Target  # noqa: PLC0415
+
+    h = Harness()
+    observer = _Appearing(h.world, missing=1)
+    _rebuild(h, observer)
+    step = Step(
+        id="p1",
+        subgoal="g1",
+        verb="click",
+        target=Target(role="ListItem", name="Nobody", match="person"),
+        risk="R1",
+        expect=TitleMatches(pattern="Nothing - Chat"),
+    )
+    result = h.session.run_step(step)
+    assert result.evidence["detail"] == "no_match"
+    assert "settled" not in result.evidence
+    assert observer.calls == 1
+
+
+def test_the_settle_time_is_counted_in_the_step_latency() -> None:
+    """OR-39: the sleep between looks is policy time; the trace must show it (review item 2)."""
+    h = Harness()
+    observer = _Appearing(h.world, missing=SETTLE_RETRIES + 5)
+    _rebuild(h, observer)
+    result = h.session.run_step(
+        _click(step_id="g", name="Google Search", expect=TitleMatches(pattern="Nothing - Chat"))
+    )
+    assert result.latency_ms["settle"] >= SETTLE_RETRIES * SETTLE_S * 1000

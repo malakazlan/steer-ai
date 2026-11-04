@@ -570,6 +570,7 @@ class Session:
         fresh = self._observe_fresh(evidence)
         if fresh.title != before.title:
             raise _StepFailureError(ErrorCode.FOCUS_LOST, mismatch)
+        # no settle here (OR-31): a target gone while the ask was open is a changed screen
         element_id = self._resolve(step, fresh)
         self._secure_step = fresh.element(element_id).secure
         return fresh, element_id
@@ -676,19 +677,22 @@ class Session:
     def _resolve_settling(
         self, step: Step, before: Snapshot, stage: _Stage, evidence: dict[str, Any]
     ) -> tuple[Snapshot, int]:
-        """Resolve the target; on `no_match` settle and observe again, a bounded number of times
-        (RN-18 generalised): a button re-created under an overlay is found on the next look, a
-        truly absent one still fails `no_match`. Ambiguity never settles."""
+        """Resolve the target; on an exact target's `no_match` settle and observe again, a bounded
+        number of times (RN-18 generalised): a button re-created under an overlay is found on the
+        next look, a truly absent one still fails `no_match`. Ambiguity never settles, and neither
+        does a person target: its candidates are admitted by the ceiling (5.8), which a settled
+        snapshot would bypass. The sleep is policy time (OR-39), counted under `settle`."""
         settled = 0
+        person = step.target is not None and step.target.match == "person"
         while True:
             try:
                 return before, stage.measure("decide", partial(self._resolve, step, before))
             except _StepFailureError as failure:
-                if failure.detail != "no_match" or settled >= SETTLE_RETRIES:
+                if person or failure.detail != "no_match" or settled >= SETTLE_RETRIES:
                     raise
             settled += 1
             evidence["settled"] = settled
-            self._sleep(SETTLE_S)
+            stage.measure("settle", partial(self._sleep, SETTLE_S))
             before = stage.measure("observe", lambda: self._observe_fresh(evidence))
 
     def _resolve(self, step: Step, snapshot: Snapshot) -> int:
