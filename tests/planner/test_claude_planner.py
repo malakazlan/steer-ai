@@ -181,6 +181,7 @@ def test_the_prompt_names_the_closed_verbs_the_floors_and_the_decorations() -> N
     for word in ("click", "focus", "type", "send", "submit", "delete", "R2", "R3", "google_search"):
         assert word in system
     assert "only be raised" in system or "never lowered" in system
+    assert "address bar" in system, "the browser's own controls are not the page (second site)"
 
 
 def test_an_empty_goal_is_refused_before_any_call() -> None:

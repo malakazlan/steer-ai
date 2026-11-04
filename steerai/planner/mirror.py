@@ -30,6 +30,7 @@ class Decoration(enum.StrEnum):
     demotes to prose, so the API would not constrain it."""
 
     google_search = "google_search"
+    wikipedia = "wikipedia"
 
 
 MODEL_OWNED_STEP_KEYS: frozenset[str] = frozenset(
