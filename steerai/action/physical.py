@@ -23,7 +23,7 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from steerai.action import keyboard
@@ -251,7 +251,7 @@ class _Burst:
 
 
 class PhysicalExecutor:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - every collaborator is injected so the executor runs pure in tests
         self,
         *,
         uia: UiaBindings | None = None,
@@ -259,7 +259,9 @@ class PhysicalExecutor:
         clock: Callable[[], float] = time.time,
         inputs: InputPort | None = None,
         pace: TypingPace = DEFAULT_PACE,
+        blocker: Callable[[], str | None] | None = None,
     ) -> None:
+        self._blocker = blocker
         self._uia = UiaBindings.load() if uia is None else uia
         self._admission = Admission(
             windows=LiveWindows() if windows is None else windows, bindings=self._uia, clock=clock
@@ -269,7 +271,7 @@ class PhysicalExecutor:
         self._last_click: tuple[float, tuple[int, int]] | None = None
 
     def execute(self, action: PhysicalAction, snapshot: Snapshot) -> ActionResult:
-        call = Call(action.verb, "physical")
+        call = Call(action.verb, "physical", blocker=self._blocker)
         try:
             target = self._admit(action, snapshot)
             call.secure = target.element.secure
@@ -482,6 +484,8 @@ class PhysicalExecutor:
         sent = 0
         call.sent = "keyboard.type"
         for index, burst in enumerate(bursts):
+            if (token := self._kill_token()) is not None:
+                return self._stopped(call, token, sent, evidence, killed=True)
             if (stop := self._burst_blocker(hwnd, target.subtree)) is not None:
                 return self._stopped(call, stop, sent, evidence)
             try:
@@ -526,19 +530,33 @@ class PhysicalExecutor:
             return "button_held"
         return None
 
+    def _kill_token(self) -> str | None:
+        return None if self._blocker is None else self._blocker()
+
     def _stopped(
-        self, call: Call, reason: str, sent: int, evidence: dict[str, Any]
+        self,
+        call: Call,
+        reason: str,
+        sent: int,
+        evidence: dict[str, Any],
+        *,
+        killed: bool = False,
     ) -> ActionResult:
-        """Typing stopped between bursts: nothing sent is a refusal, else delivery is uncertain."""
+        """Typing stopped between bursts: nothing sent is a refusal, else delivery is
+        uncertain; a kill carries `gate_blocked`, a lost focus `focus_lost` (TK-06)."""
         if sent == 0:
             call.sent = None
-            raise RefusalError(ErrorCode.FOCUS_LOST, reason)
+            raise RefusalError(ErrorCode.GATE_BLOCKED if killed else ErrorCode.FOCUS_LOST, reason)
         extra = _with_count({}, call, "chunks", sent)
         if reason == "focus_lost":
             extra["foreground_process"] = self._inputs.foreground_process(
                 self._inputs.foreground_hwnd()
             )
-        return _uncertain(call, {"reason": reason, "phase": "call", **evidence, **extra})
+        details = {"reason": reason, "phase": "call", **evidence, **extra}
+        if killed:
+            details["detail"] = reason
+        result = _uncertain(call, details)
+        return replace(result, code=ErrorCode.GATE_BLOCKED) if killed else result
 
 
 _DISPATCH: dict[

@@ -31,14 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from steerai.probes.win_input import (
-    STEER_EXTRA_INFO,
-    ULONG_PTR,
-    _to_absolute,
-    _user32,
-    build_mouse_input,
-    cursor_pos,
-)
+from steerai.probes.win_input import STEER_EXTRA_INFO, ULONG_PTR, nudge_in_place
 
 WH_KEYBOARD_LL = 13
 WH_MOUSE_LL = 14
@@ -47,8 +40,6 @@ WM_QUIT = 0x0012
 LLKHF_INJECTED = 0x10
 LLMHF_INJECTED = 0x01
 MOUSEEVENTF_MOVE = 0x0001
-MOUSEEVENTF_ABSOLUTE = 0x8000
-MOUSEEVENTF_VIRTUALDESK = 0x4000
 _PAGE = Path(__file__).resolve().parent / "pages" / "inbox.html"
 
 
@@ -256,17 +247,8 @@ class HookThread:
 
 
 def inject_probe() -> None:
-    """One tagged absolute move to the cursor's current position. Measured 2026-11-04: a
-    zero-delta relative move and a zero-delta wheel never reach a low-level hook; an absolute
-    move to the same position does, and the cursor does not move."""
-    user32 = _user32()
-    x, y = cursor_pos()
-    ax, ay = _to_absolute(user32, x, y)
-    record = build_mouse_input(
-        dx=ax, dy=ay, flags=MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
-    )
-    if user32.SendInput(1, ctypes.byref(record), ctypes.sizeof(record)) != 1:
-        raise OSError(f"SendInput failed: {ctypes.get_last_error()}")
+    """One tagged absolute move to the cursor's current position (`nudge_in_place`)."""
+    nudge_in_place()
 
 
 def low_level_hooks_timeout_ms() -> int | None:

@@ -531,8 +531,8 @@ def test_a_retry_whose_re_resolve_is_ambiguous_fails_element_not_found_after_one
     assert [c[0] for c in h.semantic.calls] == ["click"]
     assert h.world.sent == []
     key = h.ledger.key_for(_send())
-    assert h.ledger.admit(key) != "done"
-    assert h.ledger.records["s3"].phase == "acting", "the attempt stays open: a confirm next time"
+    assert h.ledger.admit(key) == "fresh", "nothing was sent: the key is released (OR-07)"
+    assert h.ledger.outcome_of(key) == "not_delivered"
     assert result.gate == "confirm", "the gate ran and a decision was consumed: not 'unreached'"
 
 

@@ -84,6 +84,20 @@ def _contains(words: list[str], pattern: str) -> bool:
     return any(words[i : i + len(wanted)] == wanted for i in range(len(words) - len(wanted) + 1))
 
 
+def _declined(answer: str, risk: Risk, decision_id: str) -> GateResult:
+    """Anything but a yes: a no blocks, the kill switch blocks (TK-23), silence pauses."""
+    if answer in ("no", f"no:{decision_id}"):
+        return _block("user_declined", risk, decision_id=decision_id)
+    if answer == "killed":
+        return _block("killed", risk, decision_id=decision_id)
+    return GateResult(
+        outcome="pending",
+        decision=None,
+        code=ErrorCode.GATE_PENDING_USER,
+        evidence={"risk": risk, "decision_id": decision_id, "detail": "unanswered"},
+    )
+
+
 def effective_risk(step: Step) -> Risk:
     """The plan's tier raised by the deny patterns on the target's name and automation id,
     never lowered (RN-03/04/25)."""
@@ -238,14 +252,7 @@ class Gate:
                 expect=predicate,
                 params=params,
             )
-        if answer in ("no", f"no:{decision_id}"):
-            return _block("user_declined", risk, decision_id=decision_id)
-        return GateResult(
-            outcome="pending",
-            decision=None,
-            code=ErrorCode.GATE_PENDING_USER,
-            evidence={"risk": risk, "decision_id": decision_id, "detail": "unanswered"},
-        )
+        return _declined(answer, risk, decision_id)
 
     def _predicate(
         self, step: Step, expect: Predicate | None, risk: Risk, params: Params
