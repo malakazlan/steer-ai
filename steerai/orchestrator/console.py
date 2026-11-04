@@ -33,6 +33,11 @@ class KillSource(Protocol):
 
 
 _PREFIX = "  "
+ASK_LINE_PREFIX = "ASK "
+GO_LINE_PREFIX = f"{_PREFIX}GO "
+ASK_INSTRUCTION_PREFIX = f"{_PREFIX}the target window holds focus until you answer here"
+"""The console contract the app parses (5.1 [v1.9]): an ask block opens with the `ASK`
+line and closes with the instruction line; the plan preview's ask is the `GO` line."""
 
 
 def escape_text(value: str) -> str:
@@ -60,7 +65,10 @@ def render_ask(ask: Ask) -> str:
     (`ASK <id> which <risk> <role>` for the identity ask)."""
     if ask.kind == "which":
         return _render_which(ask)
-    lines = [f"ASK {_show(ask.decision_id)} {_show(ask.verb)} {ask.risk} {_show(ask.target_role)}"]
+    lines = [
+        f"{ASK_LINE_PREFIX}{_show(ask.decision_id)} {_show(ask.verb)} {ask.risk} "
+        f"{_show(ask.target_role)}"
+    ]
     target = _show(ask.target_name) or "(unnamed)"
     if ask.automation_id:
         target += f"  [automation id {_show(ask.automation_id)}]"
@@ -78,8 +86,7 @@ def render_ask(ask: Ask) -> str:
             f"(phase: {_show(ask.previous_attempt)}); check the screen before answering."
         )
     lines.append(
-        f"{_PREFIX}the target window holds focus until you answer here; "
-        f"type yes:{_show(ask.decision_id)} to approve, no to refuse"
+        f"{ASK_INSTRUCTION_PREFIX}; type yes:{_show(ask.decision_id)} to approve, no to refuse"
     )
     return "\n".join(lines) + "\n"
 
@@ -87,7 +94,7 @@ def render_ask(ask: Ask) -> str:
 def _render_which(ask: Ask) -> str:
     """Numbered candidates in a fixed layout (PT-14/16): the name part and the preview are
     screen text, quoted and capped; ordinals only; the instruction after the list."""
-    lines = [f"ASK {_show(ask.decision_id)} which {ask.risk} {_show(ask.target_role)}"]
+    lines = [f"{ASK_LINE_PREFIX}{_show(ask.decision_id)} which {ask.risk} {_show(ask.target_role)}"]
     lines.append(f"{_PREFIX}the plan names: {_show(ask.target_name)}")
     for line in ask.candidates:
         tags = f"  [{', '.join(line.tags)}]" if line.tags else ""
@@ -101,8 +108,8 @@ def _render_which(ask: Ask) -> str:
             f"(phase: {_show(ask.previous_attempt)}); check the screen before answering."
         )
     lines.append(
-        f"{_PREFIX}the target window holds focus until you answer here; "
-        f"type <n>:{_show(ask.decision_id)} to choose a row, no for none of these"
+        f"{ASK_INSTRUCTION_PREFIX}; type <n>:{_show(ask.decision_id)} to choose a row, "
+        "no for none of these"
     )
     return "\n".join(lines) + "\n"
 
@@ -165,7 +172,7 @@ class ConsoleConfirmer:
         """The plan preview's ask: "go" only for the exact token `go:<id>` (never a bare go, a
         yes, or a bound yes: PL-05), "no" for no, "killed", else "unanswered"."""
         if not self._write(
-            f"{_PREFIX}GO {go_id}: type go:{go_id} to run the plan shown above, or no\n"
+            f"{GO_LINE_PREFIX}{go_id}: type go:{go_id} to run the plan shown above, or no\n"
         ):
             return "unanswered"
         if self._monitor is not None:

@@ -4,10 +4,12 @@ launcher-2026-11-04, revised after the first live overlay runs).
 `python -m steerai.run` is the proven path: its console prints a `GO` line for the plan preview
 and an `ASK` block for a step, and reads the bound tokens on stdin. The app keeps that path
 whole: it starts the runner as a child process, turns those blocks into `PendingAsk`s for the
-window, writes the exact token the person's button means, and reads the final JSON line.
-Nothing COM or UIA runs in the window's process (an in-process runner failed its second UIA
-fetch whenever the Tk root existed before the runner thread, 2026-11-04, cause not found).
-Closing the window terminates the child: the hooks and the task go with it.
+window, writes the exact token the person's button means, and reads the final JSON line. The
+line formats come from `steerai.orchestrator.console` (one source) and a contract test feeds
+the console's real output through the parser. Nothing COM or UIA runs in the window's process
+(an in-process runner failed its second UIA fetch whenever the Tk root existed before the runner
+thread, 2026-11-04, cause not found). Closing the window terminates the child: the hooks and the
+task go with it.
 """
 
 from __future__ import annotations
@@ -21,10 +23,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-ASK_PREFIX = "ASK "
-GO_PREFIX = "  GO "
-_ASK_END = "  the target window holds focus until you answer here"
-_CANDIDATE_START = "  1) "
+from steerai.orchestrator.console import (
+    ASK_INSTRUCTION_PREFIX,
+    ASK_LINE_PREFIX,
+    GO_LINE_PREFIX,
+)
+
+READER_JOIN_S = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,10 +80,11 @@ class RunnerProcess:
         self._pending: PendingAsk | None = None
         self._block: list[str] | None = None
         self._out: list[str] = []
+        self._readers: list[threading.Thread] = []
+        self._events: queue.Queue[str] = queue.Queue()
         self.exit_code: int | None = None
         self.result: dict[str, Any] = {}
         self.killed = False
-        self._events: queue.Queue[tuple[str, str | None]] = queue.Queue()
 
     # ---- lifecycle ---------------------------------------------------------------------------
 
@@ -94,8 +100,12 @@ class RunnerProcess:
             env=self._env,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        threading.Thread(target=self._read_err, name="steer-runner-err", daemon=True).start()
-        threading.Thread(target=self._read_out, name="steer-runner-out", daemon=True).start()
+        self._readers = [
+            threading.Thread(target=self._read_err, name="steer-runner-err", daemon=True),
+            threading.Thread(target=self._read_out, name="steer-runner-out", daemon=True),
+        ]
+        for reader in self._readers:
+            reader.start()
         threading.Thread(target=self._wait, name="steer-runner-wait", daemon=True).start()
 
     def running(self) -> bool:
@@ -127,11 +137,9 @@ class RunnerProcess:
         out: list[str] = []
         while True:
             try:
-                kind, line = self._events.get_nowait()
+                out.append(self._events.get_nowait())
             except queue.Empty:
                 return out
-            if kind == "line" and line is not None:
-                out.append(line)
 
     def answer(self, answer: Answer) -> None:
         """Write the exact token the pending ask takes; anything else is dropped."""
@@ -161,8 +169,10 @@ class RunnerProcess:
             line = raw.rstrip("\r\n")
             with self._lock:
                 self._lines.append(line)
-                self._parse(line)
-            self._events.put(("line", line))
+                pending, self._block = _parse_line(line, self._block)
+                if pending is not None:
+                    self._pending = pending
+            self._events.put(line)
 
     def _read_out(self) -> None:
         proc = self._proc
@@ -176,52 +186,59 @@ class RunnerProcess:
         if proc is None:  # start() sets it
             return
         code = proc.wait()
-        for _ in range(50):  # the reader threads finish their last lines
-            if proc.stdout is not None and proc.stdout.closed:
-                break
-            threading.Event().wait(0.02)
+        for reader in self._readers:  # the readers drain the pipes the child closed
+            reader.join(READER_JOIN_S)
         last = next((line for line in reversed(self._out) if line.strip()), None)
         if last is not None:
             try:
                 parsed = json.loads(last)
-                if isinstance(parsed, dict):
-                    self.result = parsed
             except ValueError:
-                self.result = {}
+                parsed = None
+            if isinstance(parsed, dict):
+                self.result = parsed
         with self._lock:
             self._pending = None
             self._block = None
         self.exit_code = code
 
-    def _parse(self, line: str) -> None:
-        """Runs under the lock: a GO line is one ask; an ASK line opens a block that ends at the
-        console's instruction line (the token to type, which the window never shows)."""
-        if line.startswith(GO_PREFIX):
-            go_id = line[len(GO_PREFIX) :].split(":", 1)[0].strip()
-            self._pending = PendingAsk(kind="go", decision_id=go_id, text="", risk="plan")
-            return
-        if line.startswith(ASK_PREFIX):
-            self._block = [line]
-            return
-        if self._block is None:
-            return
-        if line.startswith(_ASK_END):
-            head = self._block[0].split()
-            kind: Literal["yes", "which"] = (
-                "which" if len(head) > 2 and head[2] == "which" else "yes"
-            )
-            risk = head[3] if len(head) > 3 else ""
-            candidates = sum(1 for item in self._block if _is_candidate(item))
-            self._pending = PendingAsk(
-                kind=kind,
-                decision_id=head[1] if len(head) > 1 else "",
-                text="\n".join(self._block),
-                risk=risk,
-                candidates=candidates,
-            )
-            self._block = None
-            return
-        self._block.append(line)
+
+def parse_console_lines(lines: Sequence[str]) -> PendingAsk | None:
+    """The last ask the console lines describe, or None (the contract test feeds the real
+    `render_ask` and `ask_go` output through here)."""
+    pending: PendingAsk | None = None
+    block: list[str] | None = None
+    for line in lines:
+        found, block = _parse_line(line, block)
+        if found is not None:
+            pending = found
+    return pending
+
+
+def _parse_line(line: str, block: list[str] | None) -> tuple[PendingAsk | None, list[str] | None]:
+    """A GO line is one ask; an ASK line opens a block that ends at the console's instruction
+    line (the token to type, which the window never shows)."""
+    if line.startswith(GO_LINE_PREFIX):
+        go_id = line[len(GO_LINE_PREFIX) :].split(":", 1)[0].strip()
+        return PendingAsk(kind="go", decision_id=go_id, text="", risk="plan"), None
+    if line.startswith(ASK_LINE_PREFIX):
+        return None, [line]
+    if block is None:
+        return None, None
+    if not line.startswith(ASK_INSTRUCTION_PREFIX):
+        return None, [*block, line]
+    head = block[0].split()
+    which = len(head) > 2 and head[2] == "which"
+    kind: Literal["yes", "which"] = "which" if which else "yes"
+    return (
+        PendingAsk(
+            kind=kind,
+            decision_id=head[1] if len(head) > 1 else "",
+            text="\n".join(block),
+            risk=head[3] if len(head) > 3 else "",
+            candidates=sum(1 for item in block if _is_candidate(item)),
+        ),
+        None,
+    )
 
 
 def _is_candidate(line: str) -> bool:

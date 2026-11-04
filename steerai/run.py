@@ -962,11 +962,6 @@ def _start_monitor(options: Options) -> Any:
     return monitor
 
 
-def real_deps() -> Deps:
-    """The runner's real collaborators (the app reuses them with its own confirmer)."""
-    return _real_deps()
-
-
 def _real_deps() -> Deps:
     from steerai.orchestrator.ledger import Ledger  # noqa: PLC0415 - DPAPI, Windows only
     from steerai.probes.win_input import acquire_foreground  # noqa: PLC0415

@@ -14,7 +14,7 @@ def main() -> int:
 
     base = Path(os.environ.get("LOCALAPPDATA", ".")) / "steer"
     root = tk.Tk()
-    Overlay(
+    overlay = Overlay(
         root=root,
         list_windows=list_top_windows,
         exclusions=console_exclusions,
@@ -22,7 +22,7 @@ def main() -> int:
         trace_dir=base / "traces",
     )
     root.mainloop()
-    return 0
+    return 0 if overlay.exit_code in (None, 0) else 1
 
 
 if __name__ == "__main__":
