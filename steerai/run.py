@@ -30,7 +30,7 @@ from steerai.orchestrator.console import ConsoleConfirmer, escape_text
 from steerai.orchestrator.contracts import RISKS, Plan, Risk, Step
 from steerai.orchestrator.gate import Confirmer, effective_risk
 from steerai.orchestrator.ledger import LedgerError
-from steerai.orchestrator.loop import DEFAULT_MAX_STEPS, TaskResult
+from steerai.orchestrator.loop import DEFAULT_MAX_STEPS, IDLE_S, MAX_WAIT_S, WAIT_POLL_S, TaskResult
 from steerai.orchestrator.plan_io import PlanError, plan_from_bytes
 from steerai.orchestrator.trace import JsonLinesTrace, NullTrace, Trace
 from steerai.probes.windows import WindowInfo
@@ -125,6 +125,8 @@ class Deps:
     open_ledger: Callable[[Path, str], LedgerLike]
     build_session: Callable[[Bound], SessionLike]
     start_monitor: Callable[[Options], Any] | None = None
+    monotonic: Callable[[], float] = time.monotonic
+    sleep: Callable[[float], None] = time.sleep
     """Starts the takeover monitor (hooks and the kill hot key) for these options; None only in
     pure tests. The real runner always monitors: 5.1 has no tier exception."""
 
@@ -350,6 +352,22 @@ def _candidates(out: _Out, candidates: Sequence[WindowInfo]) -> None:
         out.note(f"  hwnd 0x{w.hwnd:x} pid {w.pid}{flag}: {w.title}")
 
 
+def _hold_refusal(out: _Out, held: str) -> int:
+    """The runner's own desktop action was refused by the monitor before it happened."""
+    if held == "killed":
+        out.emit(_refused("blocked", ErrorCode.GATE_BLOCKED, "killed"))
+        return EXIT_BLOCKED
+    if held == "takeover":
+        out.resume_hint()
+        out.emit(_refused("paused", ErrorCode.GATE_PENDING_USER, "takeover"))
+        return EXIT_PAUSED
+    return out.error(held, code=ErrorCode.GATE_BLOCKED, note=f"monitor: {held}")
+
+
+def _refused(status: str, code: ErrorCode, detail: str) -> dict[str, Any]:
+    return {"status": status, "code": code.value, "detail": detail, "ticked": [], "results": []}
+
+
 def _result_payload(result: TaskResult) -> dict[str, Any]:
     return {
         "status": result.status,
@@ -483,7 +501,7 @@ def _run_bound(  # noqa: PLR0913 - the run's state, one return per exit path
     try:
         trace = _open_trace(options)  # first: a bad path binds nothing and taps nothing
         ledger.bind_plan(hashlib.sha256(data).hexdigest(), allow_change=options.allow_plan_change)
-        monitor = deps.start_monitor(options) if deps.start_monitor is not None else None
+        monitor = _started_monitor(deps, options)
     except UsageError as exc:
         return out.error("usage", note=str(exc))
     except LedgerError as exc:
@@ -507,6 +525,39 @@ def _run_bound(  # noqa: PLR0913 - the run's state, one return per exit path
     finally:
         if monitor is not None:
             monitor.close()
+
+
+def _started_monitor(deps: Deps, options: Options) -> Any:
+    if deps.start_monitor is None:
+        return None
+    try:
+        return deps.start_monitor(options)
+    except SteerError:
+        raise
+    except Exception as exc:  # a thread or Win32 failure is still a refusal
+        raise SteerError(
+            ErrorCode.GATE_BLOCKED, f"monitor_unavailable: {type(exc).__name__}"
+        ) from exc
+
+
+def _wait_for_idle(
+    monitor: Any, *, monotonic: Callable[[], float], sleep: Callable[[float], None]
+) -> str | None:
+    """Before the runner's own desktop action (the foreground tap, TK-29): the kill switch,
+    the monitor's health, then the person's idle time, as a dispatch would wait."""
+    started = monotonic()
+    while True:
+        if monitor.kill_requested():
+            return "killed"
+        monitor.maintain()
+        if not monitor.healthy():
+            return str(monitor.detail())
+        now = monotonic()
+        if now - monitor.last_user_input() >= IDLE_S:
+            return None
+        if now - started >= MAX_WAIT_S:
+            return "takeover"
+        sleep(WAIT_POLL_S)
 
 
 def _monitor_refusal(out: _Out, exc: SteerError) -> int:
@@ -545,6 +596,11 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
         )
         out.note(f"task {options.task_id}: window 0x{window.hwnd:x} pid {window.pid}")
         out.resume_hint()
+        if monitor is not None:
+            held = _wait_for_idle(monitor, monotonic=deps.monotonic, sleep=deps.sleep)
+            refused = None if held is None else _hold_refusal(out, held)
+            if refused is not None:
+                return refused
         try:
             deps.acquire_foreground(window.hwnd)
         except OSError as exc:

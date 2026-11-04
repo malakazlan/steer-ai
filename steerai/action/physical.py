@@ -552,7 +552,10 @@ class PhysicalExecutor:
             extra["foreground_process"] = self._inputs.foreground_process(
                 self._inputs.foreground_hwnd()
             )
-        result = _uncertain(call, {"reason": reason, "phase": "call", **evidence, **extra})
+        details = {"reason": reason, "phase": "call", **evidence, **extra}
+        if killed:
+            details["detail"] = reason
+        result = _uncertain(call, details)
         return replace(result, code=ErrorCode.GATE_BLOCKED) if killed else result
 
 

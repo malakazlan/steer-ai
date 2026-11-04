@@ -166,7 +166,7 @@ def test_a_kill_before_the_step_is_blocked_with_nothing_dispatched() -> None:
     assert task.status == "blocked"
     assert task.code is ErrorCode.GATE_BLOCKED
     assert task.evidence["detail"] == "killed"
-    assert task.results[0].gate == "block"
+    assert task.results[0].gate == "unreached", "the gate never ran; its token is not rewritten"
     assert h.physical.calls == []
 
 
@@ -260,3 +260,66 @@ def test_without_a_monitor_nothing_changes() -> None:
     assert result.ok is True
     assert "waited_s" not in result.evidence
     assert "user_input_during_step" not in result.evidence
+
+
+# ---- the principal's implementation review ---------------------------------------------------
+
+
+class _Titled:
+    def __init__(self, world: Any) -> None:
+        self.world = world
+        self.title = "Amir Khan - Chat"
+
+    def observe(self, hwnd: int, **kwargs: Any) -> Any:
+        from dataclasses import replace  # noqa: PLC0415
+
+        return replace(self.world.observe(hwnd, **kwargs), title=self.title)
+
+
+def test_a_wait_inside_the_act_loop_restarts_with_the_title_check() -> None:
+    h = Harness()
+    h.clock["t"] = 100.0
+    monitor = FakeMonitor(h.clock, last_user=10.0)
+    titled = _Titled(h.world)
+    _wire(h, monitor)
+    h.session._observer = titled  # the test swaps the observer behind the session
+    h.session.run_step(_type())
+    original = h.ledger.write_ahead
+
+    def person_switches_chat_after_the_record(*args: Any, **kwargs: Any) -> Any:
+        record = original(*args, **kwargs)
+        monitor.last_user = h.clock["t"]
+        titled.title = "Sara Ali - Chat"
+        return record
+
+    h.ledger.write_ahead = person_switches_chat_after_the_record  # type: ignore[method-assign]
+    result = h.session.run_step(_send())
+    assert result.ok is False
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.evidence["detail"] == "screen_changed_during_wait"
+    assert h.world.sent == []
+    key = h.ledger.key_for(_send())
+    assert h.ledger.outcome_of(key) == "not_delivered", "nothing sent after the record"
+
+
+def test_a_takeover_after_the_record_leaves_no_open_record() -> None:
+    h = Harness()
+    h.clock["t"] = 100.0
+    monitor = FakeMonitor(h.clock, last_user=10.0)
+    _wire(h, monitor)
+    h.session.run_step(_type())
+    original = h.ledger.write_ahead
+
+    def person_keeps_typing_after_the_record(*args: Any, **kwargs: Any) -> Any:
+        record = original(*args, **kwargs)
+        monitor.input_until = h.clock["t"] + MAX_WAIT_S + 1000
+        return record
+
+    h.ledger.write_ahead = person_keeps_typing_after_the_record  # type: ignore[method-assign]
+    result = h.session.run_step(_send())
+    assert result.gate == "pending"
+    assert result.evidence["detail"] == "takeover"
+    assert h.world.sent == []
+    key = h.ledger.key_for(_send())
+    assert h.ledger.outcome_of(key) == "not_delivered"
+    assert h.ledger.admit(key) == "fresh", "a resume asks afresh with no warning"

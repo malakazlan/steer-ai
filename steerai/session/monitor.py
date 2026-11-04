@@ -110,6 +110,10 @@ class MonitorCore:
     def on_loop_error(self) -> None:
         self._loop_failed = True
 
+    def on_probe_failed(self) -> None:
+        """The self-probe could not be sent (UIPI, a secure desktop): the hook is unproven."""
+        self._loop_failed = True
+
     def mark_ask_open(self) -> None:
         self._ask_open = True
 
@@ -248,6 +252,7 @@ class HookMonitor:
         self._error: str | None = None
         self._procs: list[Any] = []  # the WINFUNCTYPE objects must outlive the hooks
         self._stop_timed_out = False
+        self._hotkey_registered = False
 
     # ---- lifecycle ------------------------------------------------------------------------
 
@@ -257,6 +262,7 @@ class HookMonitor:
         self._core = MonitorCore(started_at=self._monotonic(), dead_band_px=self._dead_band)
         self._ready.clear()
         self._error = None
+        self._procs = []
         self._thread = threading.Thread(target=self._run, name="steer-monitor", daemon=True)
         self._thread.start()
         if not self._ready.wait(timeout=5.0):
@@ -269,6 +275,7 @@ class HookMonitor:
         thread = self._thread
         if thread is None:
             return
+        self._ready.wait(timeout=5.0)  # the thread id exists once the queue does
         if thread.is_alive() and self._thread_id:
             user32 = _user32()
             user32.PostThreadMessageW(self._thread_id, WM_APP_UNHOOK, 0, 0)
@@ -305,7 +312,10 @@ class HookMonitor:
 
     def probe_now(self) -> None:
         self._core.probe_sent(now=self._monotonic())
-        nudge_in_place()
+        try:
+            nudge_in_place()
+        except OSError:
+            self._core.on_probe_failed()  # fails closed: the next boundary stops (D4)
 
     def mark_ask_open(self) -> None:
         self._core.mark_ask_open()
@@ -359,7 +369,7 @@ class HookMonitor:
                 user32.TranslateMessage(ctypes.byref(msg))
                 user32.DispatchMessageW(ctypes.byref(msg))
 
-    def _run(self) -> None:  # noqa: PLR0915 - one thread body: bind, install, pump, tear down
+    def _run(self) -> None:
         user32 = _user32()
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         hookproc = ctypes.WINFUNCTYPE(
@@ -407,65 +417,73 @@ class HookMonitor:
             wintypes.LPARAM,
         )
         kernel32.GetCurrentThreadId.restype = wintypes.DWORD
-        core = self._core
-        monotonic = self._monotonic
         msg = wintypes.MSG()
         user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_NOREMOVE)  # creates the queue first
         self._thread_id = int(kernel32.GetCurrentThreadId())
-
-        def make(mouse: bool) -> Any:
-            struct = _MouseHook if mouse else _KeyboardHook
-
-            def proc(code: int, wparam: int, lparam: int) -> int:
-                try:
-                    if code == HC_ACTION:
-                        info = ctypes.cast(lparam, ctypes.POINTER(struct)).contents
-                        if mouse:
-                            core.on_mouse(
-                                message=int(wparam),
-                                flags=int(info.flags),
-                                extra=int(info.dwExtraInfo),
-                                pt=(int(info.pt.x), int(info.pt.y)),
-                                now=monotonic(),
-                            )
-                        else:
-                            core.on_keyboard(
-                                flags=int(info.flags), extra=int(info.dwExtraInfo), now=monotonic()
-                            )
-                except Exception:  # noqa: BLE001 - the hook chain must go on; the core records it
-                    core.on_callback_error()
-                return int(user32.CallNextHookEx(None, code, wparam, lparam))
-
-            return hookproc(proc)
-
         hooks: list[int] = []
-        hotkey = False
         try:
-            for mouse, kind in ((True, WH_MOUSE_LL), (False, WH_KEYBOARD_LL)):
-                proc = make(mouse)
-                self._procs.append(proc)
-                hook = user32.SetWindowsHookExW(kind, proc, None, 0)
-                if not hook:
-                    error = ctypes.get_last_error()
-                    self._error = f"monitor_unavailable: SetWindowsHookEx failed (error {error})"
-                    return
-                hooks.append(int(hook))
-            flags = sum(_MOD_FLAGS[m] for m in self._mods) | _MOD_NOREPEAT
-            if not user32.RegisterHotKey(None, HOTKEY_ID, flags, self._vk):
-                error = ctypes.get_last_error()
-                self._error = (
-                    f"kill_key_unavailable: RegisterHotKey failed (error {error}); "
-                    "another program holds the chord, pass --kill-key"
-                )
-                return
-            hotkey = True
-            self._ready.set()
-            hotkey = self._pump(user32, msg, hooks, hotkey=True)
+            self._install_and_pump(user32, hookproc, msg, hooks)
+        except Exception as exc:  # noqa: BLE001 - the thread reports, start() refuses (D3)
+            if self._error is None:
+                self._error = f"monitor_unavailable: {type(exc).__name__} in the hook thread"
+            self._core.on_loop_error()
         finally:
             _unhook_all(user32, hooks)
-            if hotkey:
+            if self._hotkey_registered:
                 user32.UnregisterHotKey(None, HOTKEY_ID)
+                self._hotkey_registered = False
             self._ready.set()
+
+    def _make_proc(self, user32: Any, hookproc: Any, *, mouse: bool) -> Any:
+        """The hook procedure: two fields to the core, then always `CallNextHookEx`
+        (TK-04/05/32)."""
+        core = self._core
+        monotonic = self._monotonic
+        struct = _MouseHook if mouse else _KeyboardHook
+
+        def proc(code: int, wparam: int, lparam: int) -> int:
+            try:
+                if code == HC_ACTION:
+                    info = ctypes.cast(lparam, ctypes.POINTER(struct)).contents
+                    if mouse:
+                        core.on_mouse(
+                            message=int(wparam),
+                            flags=int(info.flags),
+                            extra=int(info.dwExtraInfo),
+                            pt=(int(info.pt.x), int(info.pt.y)),
+                            now=monotonic(),
+                        )
+                    else:
+                        core.on_keyboard(
+                            flags=int(info.flags), extra=int(info.dwExtraInfo), now=monotonic()
+                        )
+            except Exception:  # noqa: BLE001 - the hook chain must go on; the core records it
+                core.on_callback_error()
+            return int(user32.CallNextHookEx(None, code, wparam, lparam))
+
+        return hookproc(proc)
+
+    def _install_and_pump(self, user32: Any, hookproc: Any, msg: Any, hooks: list[int]) -> None:
+        for mouse, kind in ((True, WH_MOUSE_LL), (False, WH_KEYBOARD_LL)):
+            proc = self._make_proc(user32, hookproc, mouse=mouse)
+            self._procs.append(proc)
+            hook = user32.SetWindowsHookExW(kind, proc, None, 0)
+            if not hook:
+                error = ctypes.get_last_error()
+                self._error = f"monitor_unavailable: SetWindowsHookEx failed (error {error})"
+                return
+            hooks.append(int(hook))
+        flags = sum(_MOD_FLAGS[m] for m in self._mods) | _MOD_NOREPEAT
+        if not user32.RegisterHotKey(None, HOTKEY_ID, flags, self._vk):
+            error = ctypes.get_last_error()
+            self._error = (
+                f"kill_key_unavailable: RegisterHotKey failed (error {error}); "
+                "another program holds the chord, pass --kill-key"
+            )
+            return
+        self._hotkey_registered = True
+        self._ready.set()
+        self._hotkey_registered = self._pump(user32, msg, hooks, hotkey=True)
 
 
 def _unhook_all(user32: Any, hooks: list[int]) -> None:
