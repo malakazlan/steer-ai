@@ -14,7 +14,6 @@ confirmer to render; names stay out of its repr.
 from __future__ import annotations
 
 import re
-import unicodedata
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -28,10 +27,9 @@ from steerai.orchestrator.contracts import (
     Step,
     template_verb,
 )
-from steerai.verify.predicates import Predicate, Within
+from steerai.verify.predicates import Predicate, Within, comparable
 from steerai.verify.strength import Params, strength, strengthen, template_for
 from steerai.verify.t1 import redact
-from steerai.world.model import normalise_name
 
 DENY_PATTERNS: Mapping[str, Risk] = {
     "delete": "R3",
@@ -68,8 +66,7 @@ Outcome = Literal["approve", "confirm", "block", "pending"]
 
 
 def _words(text: str) -> list[str]:
-    comparable = "".join(ch for ch in normalise_name(text) if unicodedata.category(ch) != "Cf")
-    return _WORD.findall(comparable.casefold())
+    return _WORD.findall(comparable(text))
 
 
 def _id_words(automation_id: str) -> list[str]:
