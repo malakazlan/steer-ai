@@ -403,3 +403,37 @@ def test_observe_twice_yields_distinct_ids_and_resolves_across_them(clock: _Fake
     assert first.id != second.id
     assert model.resolve(first, 2, second).runtime_id == (2,)
     assert model.diff(first, second).appeared == []
+
+
+class _FlakyClient(_FakeClient):
+    """Fails the first `failures` fetches the way a UIA provider does right after a foreground
+    change (E_FAIL, measured 2026-11-04 through the overlay: one retry 0.5 s later succeeded)."""
+
+    def __init__(self, trees: list[TreeSnapshot], failures: int) -> None:
+        super().__init__(trees)
+        self.failures = failures
+
+    def cached_tree(self, hwnd: int) -> TreeSnapshot:
+        if self.failures > 0:
+            self.failures -= 1
+            self.calls.append(hwnd)
+            raise OSError("uia fetch failed for hwnd 0x10: E_FAIL")
+        return super().cached_tree(hwnd)
+
+
+def test_a_transient_fetch_failure_is_retried_within_the_observe(clock: _FakeClock) -> None:
+    client = _FlakyClient([_tree(5)], failures=1)
+    snapshot = _model(client).observe(HWND)
+    assert snapshot.stable is True
+    assert client.calls == [HWND, HWND, HWND], "one failed fetch, then the two stable ones"
+    assert model_module.FETCH_RETRY_S in clock.sleeps
+
+
+def test_a_fetch_that_keeps_failing_is_perception_timeout_after_the_retries(
+    clock: _FakeClock,
+) -> None:
+    client = _FlakyClient([_tree(5)], failures=99)
+    with pytest.raises(SteerError) as caught:
+        _model(client).observe(HWND)
+    assert caught.value.code is ErrorCode.PERCEPTION_TIMEOUT
+    assert len(client.calls) == model_module.FETCH_RETRIES + 1

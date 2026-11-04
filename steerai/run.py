@@ -202,18 +202,35 @@ def warm_up(  # noqa: PLR0913 - keyword-only tuning knobs plus the injected cloc
     kill: Callable[[], bool] | None = None,
 ) -> Snapshot:
     """First contact (5.1 [v0.6], RN-18): observe until three consecutive snapshots agree on
-    the node count, or the cap passes; the last snapshot is returned either way. The kill
-    switch is honoured between observes (TK-22)."""
+    the node count, or the cap passes; the last snapshot is returned either way. A provider
+    that answers `perception_timeout` for a moment (E_FAIL right after a foreground change,
+    overlay runs 2026-11-04) is "not yet": polling continues until the cap, and the cap with
+    no answer at all raises the last error. The kill switch is honoured between observes
+    (TK-22)."""
     start = monotonic()
     counts: list[int] = []
+    snapshot: Snapshot | None = None
+    failure: SteerError | None = None
     while True:
         if kill is not None and kill():
             raise SteerError(ErrorCode.GATE_BLOCKED, "killed: the kill switch was pressed")
-        snapshot = observe()
-        counts.append(snapshot.node_count)
-        if len(counts) >= 3 and counts[-1] == counts[-2] == counts[-3]:
-            return snapshot
+        try:
+            snapshot = observe()
+        except SteerError as exc:
+            if exc.code is not ErrorCode.PERCEPTION_TIMEOUT:
+                raise
+            failure = exc
+        else:
+            counts.append(snapshot.node_count)
+            if len(counts) >= 3 and counts[-1] == counts[-2] == counts[-3]:
+                return snapshot
         if monotonic() - start >= cap_s:
+            if snapshot is None:
+                raise (
+                    failure
+                    if failure is not None
+                    else SteerError(ErrorCode.PERCEPTION_TIMEOUT, "warm-up produced no snapshot")
+                )
             return snapshot
         sleep(poll_s)
 
