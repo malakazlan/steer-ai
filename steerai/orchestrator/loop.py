@@ -30,6 +30,8 @@ from typing import Any, Literal, Protocol
 
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.action.executor import Action
+from steerai.action.launch import expected_title, title_matches
+from steerai.action.launcher import OpenAction
 from steerai.action.physical import TEXT_ROLES, PhysicalAction
 from steerai.action.sanitize import normalise_newlines
 from steerai.errors import ErrorCode, SteerError
@@ -44,7 +46,7 @@ from steerai.orchestrator.contracts import (
     Target,
     executor_verb,
 )
-from steerai.orchestrator.gate import Gate, GateResult, effective_risk, params_for
+from steerai.orchestrator.gate import Gate, GateResult, effective_risk, open_tier, params_for
 from steerai.orchestrator.identity import (
     Binding,
     bind,
@@ -63,7 +65,9 @@ from steerai.verify.predicates import (
     Disappeared,
     Predicate,
     TitleMatches,
+    WindowExists,
     WindowGone,
+    name_matches,
 )
 from steerai.verify.t1 import (
     NO_LABEL_REASONS,
@@ -92,6 +96,7 @@ SETTLE_S = 0.5
 """A target missing right after the page changed is a timing gap first: settle this long and
 re-observe before calling it absent (first real-site run 2026-11-04; unmeasured)."""
 SETTLE_RETRIES = 2
+OPEN_POLL_S = 0.1
 NAVIGATION_VERIFY_S = 10.0
 """Verify deadline for a replacing `appeared` (a page replacing itself; 5.10 [v1.9]): a heavy
 page loads slower than the 3 s step deadline (Wikipedia article: over 3.5 s, under 5 s, n=1).
@@ -152,6 +157,10 @@ class TaskLedger(Protocol):
     def set_window_ref(self, ref: str | None) -> None: ...
     def record_open(self, step: Step, window: Mapping[str, Any]) -> None: ...
     def opened_window(self, step: Step) -> dict[str, Any] | None: ...
+
+
+class LauncherLike(Protocol):
+    def execute(self, action: OpenAction, windows_before: Sequence[Any]) -> ActionResult: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,8 +249,17 @@ class Session:
         verify_deadline_s: float = 3.0,
         max_steps: int = DEFAULT_MAX_STEPS,
         monitor: Monitor | None = None,
+        launcher: LauncherLike | None = None,
+        window_title: Callable[[int], str] | None = None,
+        identify: Callable[[int], dict[str, Any] | None] | None = None,
+        foreground: Callable[[], int] | None = None,
     ) -> None:
         self.task_id = task_id
+        self._launcher = launcher
+        self._window_title = window_title
+        self._identify = identify
+        self._foreground = foreground
+        self._goal = ""
         self._monitor = monitor
         self._counts_at_step: dict[str, int] = {}
         self._secure_step = False
@@ -270,6 +288,8 @@ class Session:
     # ---- one step ----------------------------------------------------------------------------
 
     def run_step(self, step: Step) -> StepResult:
+        if step.verb == "open":
+            return self._run_open(step)
         stage = _Stage(self._monotonic)
         risk = effective_risk(step)
         key = self._ledger.key_for(step)
@@ -367,6 +387,177 @@ class Session:
                     step, stage, evidence, gate=gate_stage, dispatched=dispatched, failure=failure
                 )
             )
+
+    # ---- open (packet open-multiwindow-2026-11-06) -----------------------------------------------
+
+    def _run_open(self, step: Step) -> StepResult:
+        """No element to resolve: the gate on the code-owned title, the window list right
+        before the launch (P4), the launcher's own window adopted only once its live title
+        matches (P5, OW-06/09), the window recorded at any tier (P7), a failure stops (P6)."""
+        stage = _Stage(self._monotonic)
+        tier = open_tier(self._goal, step)
+        if tier != step.risk:
+            step = replace(step, risk=tier)  # the gate and the ledger see the content's tier
+        risk = effective_risk(step)
+        key = self._ledger.key_for(step)
+        evidence: dict[str, Any] = {"risk": risk}
+        gate_stage: GateToken = "unreached"
+        self._begin_step(None)
+        recorded = False
+        try:
+            self._boundary(evidence)
+            self._act_evidence = evidence
+            if self._ledger.admit(key) == "done":
+                self._rebind_opened(step)
+                evidence["window"] = "rebound"
+                return self._done_already(step, stage, evidence)
+            before = stage.measure("observe", lambda: self._before(risk, evidence))
+            previous = self._admission(step, key, risk, before)
+            gate_result = stage.measure(
+                "gate", lambda: self._decide(step, key, before, previous, None, risk=risk)
+            )
+            gate_stage = gate_result.outcome
+            if gate_result.outcome in ("block", "pending"):
+                return self._gate_stopped(step, gate_result, stage, evidence)
+            decision, _expect = self._admitted(key, previous, gate_result)
+            self._boundary(evidence)
+            _before_of_record, recorded = self._record(step, risk, before, decision)
+            return self._launch(step, risk, stage, evidence, gate=gate_result.outcome)
+        except (_StepFailureError, SteerError) as failure:
+            if isinstance(failure, _StepFailureError):
+                return self._refused(
+                    step,
+                    stage,
+                    evidence,
+                    gate=gate_stage,
+                    failure=failure,
+                    risk=risk,
+                    release=recorded and not self._sent_in_act,
+                )
+            return self._failed(
+                step, stage, evidence, gate=gate_stage, dispatched=None, failure=failure
+            )
+
+    def _launch(
+        self,
+        step: Step,
+        risk: Risk,
+        stage: _Stage,
+        evidence: dict[str, Any],
+        *,
+        gate: GateToken,
+    ) -> StepResult:
+        if self._launcher is None or self._window_title is None or self._identify is None:
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "no_launcher")
+        if step.target is None:  # enforced by Step.__post_init__; kept for the type checker
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_target")
+        site, text = step.params.get("site"), step.params.get("text")
+        title = expected_title(step.target.name, site, text)
+        windows_before = list(self._windows()) if self._windows else []
+        if risk in ("R2", "R3"):
+            try:
+                self._ledger.mark(step, "acting")
+            except LedgerError as exc:
+                raise _StepFailureError(ErrorCode.GATE_BLOCKED, "wal_unavailable") from exc
+        launcher = self._launcher
+        action = stage.measure(
+            "act",
+            lambda: launcher.execute(
+                OpenAction(app=step.target.name if step.target else "", site=site, text=text),
+                windows_before,
+            ),
+        )
+        self._sent_in_act = bool(action.steps)
+        hwnd = action.evidence.get("hwnd")
+        if not isinstance(hwnd, int):
+            self._close(step, risk, action.delivery.value)
+            evidence["detail"] = str(action.evidence.get("detail", "no_new_window"))
+            return self._finish(step, stage, evidence, gate=gate, action=action, code=action.code)
+        holds = stage.measure("verify", lambda: self._title_arrives(hwnd, title))
+        identity = self._identify(hwnd) if holds else None
+        if identity is None:
+            self._close(step, risk, Delivery.DELIVERED_UNVERIFIED.value)
+            evidence["detail"] = "open_unverified"
+            return self._finish(
+                step,
+                stage,
+                evidence,
+                gate=gate,
+                action=action,
+                verify_code=ErrorCode.VERIFY_TIMEOUT,
+                code=ErrorCode.VERIFY_TIMEOUT,
+            )
+        self._close(step, risk, Delivery.DELIVERED_VERIFIED.value)
+        self._ledger.record_open(step, {**identity, "title": title})
+        self._adopt(hwnd, step)
+        evidence["window"] = "opened"
+        if self._foreground is not None:
+            evidence["foreground_after_open"] = self._foreground() == hwnd
+        return self._finish(
+            step, stage, evidence, gate=gate, action=action, label_kind="t1", ok=True
+        )
+
+    def _title_arrives(self, hwnd: int, title: str) -> bool:
+        """The launcher's own window shows the code-owned title (counter stripped, full-string),
+        re-read every poll until the navigation deadline; the kill ends the wait."""
+        read = self._window_title
+        if read is None:
+            return False
+        deadline = self._monotonic() + max(self._verify_deadline_s, NAVIGATION_VERIFY_S)
+        while True:
+            if self._monitor is not None and self._monitor.kill_requested():
+                raise _KilledError
+            if title_matches(read(hwnd), title):
+                return True
+            if self._monotonic() >= deadline:
+                return False
+            self._sleep(OPEN_POLL_S)
+
+    def _adopt(self, hwnd: int, step: Step) -> None:
+        """The opened window becomes the current one; nothing observed before carries over."""
+        self.hwnd = hwnd
+        self._last_after = None
+        self._last_pair = None
+        self._ledger.set_window_ref(f"opened:{step.id}")
+
+    def _rebind_opened(self, step: Step) -> None:
+        """A resume: the recorded window again, by identity (handle, pid, process start time,
+        image), never by title (P7, decision 3); anything else stops `window_gone`."""
+        record = self._ledger.opened_window(step)
+        hwnd = None if record is None else record.get("hwnd")
+        current = (
+            self._identify(hwnd) if self._identify is not None and isinstance(hwnd, int) else None
+        )
+        same = (
+            record is not None
+            and current is not None
+            and all(current.get(k) == record.get(k) for k in ("pid", "start", "image"))
+        )
+        if not same or not isinstance(hwnd, int):
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "window_gone")
+        self._adopt(hwnd, step)
+
+    def _holds_in_window(self, predicate: Predicate) -> bool:
+        """An `open`'s subgoal in the window it opened: every element there is new, so a
+        presence check is the effect; titles are read live."""
+        if isinstance(predicate, All | AnyOf):
+            parts = (self._holds_in_window(part) for part in predicate.parts)
+            return all(parts) if isinstance(predicate, All) else any(parts)
+        if isinstance(predicate, WindowExists | TitleMatches):
+            title = "" if self._window_title is None else self._window_title(self.hwnd)
+            if isinstance(predicate, WindowExists):
+                return bool(title) and title_matches(title, predicate.name_pattern)
+            return bool(title) and title_holds(predicate.pattern, title)
+        try:
+            snapshot = self._observer.observe(self.hwnd)
+        except SteerError:
+            return False
+        if not isinstance(predicate, Appeared):
+            return self._holds_now(predicate, snapshot)
+        return any(
+            e.role == predicate.role and name_matches(e.name, predicate.name_match, scoped=True)
+            for e in snapshot.elements
+        )
 
     # ---- stages ---------------------------------------------------------------------------------
 
@@ -516,7 +707,7 @@ class Session:
         key: str,
         before: Snapshot,
         previous: str | None,
-        element_id: int,
+        element_id: int | None,
         *,
         risk: Risk,
     ) -> GateResult:
@@ -1055,6 +1246,7 @@ class Session:
     # ---- a whole plan --------------------------------------------------------------------------
 
     def run_task(self, plan: Plan) -> TaskResult:
+        self._goal = plan.goal
         self._trace.write(
             {
                 "kind": "task",
@@ -1120,15 +1312,16 @@ class Session:
                 return "stopped", ErrorCode.BUDGET_EXCEEDED, "max_steps"
             result = self.run_step(step)
             results.append(result)
-            detail = str(result.evidence.get("detail", result.gate))
-            if result.gate == "block" or detail == "killed":
-                return "blocked", ErrorCode.GATE_BLOCKED, detail
-            if result.gate == "pending":
-                return "paused", ErrorCode.GATE_PENDING_USER, detail
-            if not result.ok and (result.action is None or result.code in STOP_CODES):
-                # nothing was dispatched (unreached, or a refusal after the gate ran), or
-                # the window is not there to act on any more
-                return "stopped", result.code or ErrorCode.VERIFY_FAILED, detail
+            stop = (
+                self._after_open(plan, step, result, ticked)
+                if step.verb == "open"
+                else _stop_for(result)
+            )
+            if stop is not None:
+                return stop
+            if step.verb == "open":
+                strikes = 0
+                continue
             if result.gate == "done_already":
                 # the earlier verified attempt (or the persisted before) proved the effect
                 ticked.add(step.subgoal)
@@ -1147,6 +1340,22 @@ class Session:
                 strikes += 1
             if strikes >= SCREEN_GUARD_STRIKES:
                 return "stopped", ErrorCode.BUDGET_EXCEEDED, "loop"
+        return None
+
+    def _after_open(
+        self, plan: Plan, step: Step, result: StepResult, ticked: set[str]
+    ) -> tuple[Literal["stopped", "paused", "blocked"], ErrorCode, str] | None:
+        """A failed `open` stops: the next steps would act in the old window, maybe the
+        person's own (P6); a verified one ticks its subgoal when it holds in the new window."""
+        stop = _stop_for(result)
+        if stop is not None:
+            return stop
+        if not result.ok:
+            detail = str(result.evidence.get("detail", result.gate))
+            return "stopped", result.code or ErrorCode.VERIFY_TIMEOUT, detail
+        subgoal = next(s for s in plan.subgoals if s.id == step.subgoal)
+        if result.gate == "done_already" or self._holds_in_window(subgoal.condition):
+            ticked.add(subgoal.id)
         return None
 
     def _holds_now(self, predicate: Predicate, snapshot: Snapshot) -> bool:
@@ -1203,6 +1412,22 @@ def _same_screen(before: Snapshot, after: Snapshot) -> bool:
     if marks_before and marks_after:
         return similarity(marks_before, marks_after) >= SCREEN_GUARD_THRESHOLD
     return before.node_count == after.node_count
+
+
+def _stop_for(
+    result: StepResult,
+) -> tuple[Literal["stopped", "paused", "blocked"], ErrorCode, str] | None:
+    """Why the task ends after this result, or None: the person blocked or killed it, an ask
+    is pending, nothing was dispatched (unreached, or a refusal after the gate ran), or the
+    window is not there to act on any more."""
+    detail = str(result.evidence.get("detail", result.gate))
+    if result.gate == "block" or detail == "killed":
+        return "blocked", ErrorCode.GATE_BLOCKED, detail
+    if result.gate == "pending":
+        return "paused", ErrorCode.GATE_PENDING_USER, detail
+    if not result.ok and (result.action is None or result.code in STOP_CODES):
+        return "stopped", result.code or ErrorCode.VERIFY_FAILED, detail
+    return None
 
 
 def _verify_deadline(expect: Predicate, step_deadline_s: float) -> float:
