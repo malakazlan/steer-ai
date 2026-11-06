@@ -157,6 +157,7 @@ class Ledger:
         self._chain: list[dict[str, Any]] = []
         """The task's plans in order (replan [v2.1]): digest, step ids, the window ref in effect."""
         self._window: dict[str, Any] | None = None
+        self._start_window: dict[str, Any] | None = None
         self.window_ref: str | None = None
         """The window steps act in once the task left its start window; a resumed link restores
         the ref it started with, so its keys match the first run's (replan item 3)."""
@@ -276,15 +277,31 @@ class Ledger:
         )
         self._save_state()
 
-    def bind_window(self, *, pid: int, title: str, allow_change: bool = False) -> None:
+    def bind_window(
+        self,
+        *,
+        pid: int,
+        title: str,
+        allow_change: bool = False,
+        identity: Mapping[str, Any] | None = None,
+    ) -> None:
         """A task's done keys mean nothing in another window: the pid and a title digest
-        are bound on the first run and must match on a resume."""
+        are bound on the first run and must match on a resume. The first bind also records
+        the window's identity (handle, pid, process start, image) for `window: start`; a
+        resume never records it (a reused pid would pass, step-window gate Q3)."""
         window = {"pid": pid, "title": _digest(title)}
         if self._window not in (None, window) and not allow_change:
             raise LedgerError("window_changed: this task id was bound to another window")
         if self._window != window:
             self._window = window
+            self._start_window = (
+                None if identity is None else {k: identity[k] for k in OPENED_WINDOW_KEYS[:4]}
+            )
             self._save_state()
+
+    def start_window(self) -> dict[str, Any] | None:
+        """The start window's recorded identity, None for a state written before it."""
+        return None if self._start_window is None else dict(self._start_window)
 
     # ---- keys and admission ------------------------------------------------------------------
 
@@ -487,6 +504,8 @@ class Ledger:
             self._chain = _loaded_chain(payload)
             window = payload.get("window")
             self._window = None if window is None else dict(window)
+            start = payload.get("start_window")
+            self._start_window = None if start is None else dict(start)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise LedgerError(f"ledger state unreadable: {exc}") from exc
 
@@ -500,6 +519,7 @@ class Ledger:
             "plan_digest": self._chain[-1]["digest"] if self._chain else None,
             "plan_chain": self._chain,
             "window": self._window,
+            "start_window": self._start_window,
         }
         try:
             self._write_encrypted(self._state_path, json.dumps(payload, separators=(",", ":")))

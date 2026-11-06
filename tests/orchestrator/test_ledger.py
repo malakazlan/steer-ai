@@ -633,3 +633,39 @@ def test_a_resumed_link_records_its_step_ids_for_the_next_replan(tmp_path: Path)
         ledger.bind_plan("a" * 64)
         with pytest.raises(LedgerError, match="step_id_reused"):
             ledger.extend_plan("b" * 64, ["s1"])
+
+
+# ---- the start window's identity (packet step-window-2026-11-07, gate item 3, Q3) -----------
+
+START_IDENTITY = {"hwnd": 0x10, "pid": 500, "start": 133_000_001, "image": "chrome.exe"}
+
+
+def test_the_start_windows_identity_is_recorded_once_and_survives_a_restart(
+    tmp_path: Path,
+) -> None:
+    with Ledger(tmp_path, task_id="t-start", started_at=1.0) as ledger:
+        ledger.bind_window(pid=500, title="Amir Khan - Chat", identity=START_IDENTITY)
+    with Ledger(tmp_path, task_id="t-start", started_at=1.0) as ledger:
+        # a resume binds the same window again: the first identity stays (gate Q3)
+        ledger.bind_window(
+            pid=500, title="Amir Khan - Chat", identity={**START_IDENTITY, "start": 9}
+        )
+        assert ledger.start_window() == START_IDENTITY
+    state = next(tmp_path.rglob("state.ledger")).read_bytes()
+    assert b"Amir" not in state
+
+
+def test_a_state_without_the_start_identity_reads_none(tmp_path: Path) -> None:
+    with Ledger(tmp_path, task_id="t-old-start", started_at=1.0) as ledger:
+        ledger.bind_window(pid=500, title="Amir Khan - Chat")
+    with Ledger(tmp_path, task_id="t-old-start", started_at=1.0) as ledger:
+        ledger.bind_window(pid=500, title="Amir Khan - Chat", identity=START_IDENTITY)
+        assert ledger.start_window() is None, "never read on a resume (a reused pid would pass)"
+
+
+def test_an_allowed_window_change_replaces_the_start_identity(tmp_path: Path) -> None:
+    other = {**START_IDENTITY, "hwnd": 0x20, "pid": 501}
+    with Ledger(tmp_path, task_id="t-change", started_at=1.0) as ledger:
+        ledger.bind_window(pid=500, title="Amir Khan - Chat", identity=START_IDENTITY)
+        ledger.bind_window(pid=501, title="Sara Ali - Chat", identity=other, allow_change=True)
+        assert ledger.start_window() == other
