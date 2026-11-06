@@ -615,9 +615,14 @@ class Session:
         self._refuse_locked()  # a locked session stops as such, never as window_gone
         changed = self._select(step, evidence) or self._front_pending
         self._boundary(evidence)
-        if changed and _needs_front(step):
-            self._front_pending = False
+        if not changed:
+            return
+        # a step that does not need the window in front carries the switch to the first one
+        # that does (tester T-01); a skipped or refused tap is tried again there (N6)
+        self._front_pending = True
+        if _needs_front(step):
             self._to_front(evidence)
+            self._front_pending = evidence.get("foreground_after_select") is False
 
     def _to_front(self, evidence: dict[str, Any]) -> None:
         """Bring the window just switched to in front, then re-read the lock (SW-07). A
@@ -732,8 +737,9 @@ class Session:
 
     def _in_front(self, risk: Risk) -> None:
         """An R2/R3 step in a window the task selected or opened is in front when its ask
-        opens: the person sees where a send lands; there is no selection tap (SW-15, gate
-        item 2). The start window's own steps keep the measured send path (review item 3)."""
+        opens: the person sees where a send lands (SW-15). The switch tap (`_to_front`, [v2.5])
+        runs before this check; it stays the check after the tap. The start window's own steps
+        keep the measured send path (PR #33 review item 3)."""
         front = self._foreground
         selected = self._switched
         if risk in ("R2", "R3") and selected and front is not None and front() != self.hwnd:
@@ -1667,10 +1673,10 @@ WINDOW_TITLE_CHARS = 80
 
 
 def _needs_front(step: Step) -> bool:
-    """From the plan alone: a physical step, a submit (a composer turns it into a press) or
-    an R2/R3 step needs its window in front; a semantic R0/R1 step does not (SF-13)."""
+    """From the plan alone: a physical step or an R2/R3 step (a submit is always R2, its floor)
+    needs its window in front; a semantic R0/R1 step does not (SF-13)."""
     path = step.path or executor_verb(step.verb)[0]
-    return path == "physical" or step.verb == "submit" or effective_risk(step) in ("R2", "R3")
+    return path == "physical" or effective_risk(step) in ("R2", "R3")
 
 
 def _value_ready(plan: Plan, step: Step, result: StepResult, results: list[StepResult]) -> bool:
