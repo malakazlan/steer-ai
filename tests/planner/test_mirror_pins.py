@@ -207,3 +207,15 @@ def test_the_mirror_refuses_the_gates_inputs_from_the_model() -> None:
     for key in sorted(EXPECTED_ABSENT):
         with pytest.raises(ValidationError, match=key):
             StepDoc.model_validate({**base, key: "verbatim"})
+
+
+def test_the_site_enum_is_the_registry() -> None:
+    """The model picks a site key the API constrains; the keys are the registry's (P2)."""
+    from steerai.action.launch import SITES  # noqa: PLC0415
+
+    schema = _schema()
+    params = _definition(schema, "ParamsDoc")["properties"]
+    options = [_resolved(schema, o) for o in params["site"].get("anyOf", [params["site"]])]
+    assert {v for o in options for v in o.get("enum", [])} == set(SITES)
+    step = _definition(schema, "StepDoc")["properties"]
+    assert "open" in step["verb"]["enum"]

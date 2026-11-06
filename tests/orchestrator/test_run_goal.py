@@ -382,3 +382,20 @@ def test_the_preview_marks_a_person_target() -> None:
     plan = Plan(goal=plan.goal, subgoals=plan.subgoals, steps=(person, *plan.steps))
     line = next(x for x in preview_lines(plan, "0123456789ab") if "step p:" in x)
     assert 'ListItem "Amir" (person)' in line
+
+
+def test_the_planner_sees_the_open_windows_of_registry_apps(tmp_path: Path) -> None:
+    plan = _plan()
+    outcome = _outcome(plan)
+    world = World(session=FakeSession(_done(plan)))
+    planner = FakePlanner(outcome)
+
+    def screen(_hwnd: int) -> tuple[str, list[str]]:
+        return "Program Manager", list(SCREEN_LINES)
+
+    deps = world.deps().replace(
+        screen=screen, planner=planner, open_windows=lambda: ["Inbox - Google Chrome"]
+    )
+    stdout, stderr = io.StringIO(), io.StringIO()
+    run(_options(tmp_path), deps, stdin=io.StringIO("no\n"), stdout=stdout, stderr=stderr)
+    assert list(planner.requests[0].open_windows) == ["Inbox - Google Chrome"]

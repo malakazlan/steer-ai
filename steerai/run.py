@@ -146,6 +146,8 @@ class Deps:
     build_session: Callable[[Bound], SessionLike]
     start_monitor: Callable[[Options], Any] | None = None
     desktop: Callable[[], WindowInfo] | None = None
+    open_windows: Callable[[], Sequence[str]] | None = None
+    """Titles of the open windows of registry apps, for the planner; None only in pure tests."""
     """The shell's desktop window for `--desktop`; None only in pure tests."""
     screen: Callable[[int], tuple[str, Sequence[str]]] | None = None
     """(title, 6.2 lines) of a window after a warm-up observe; None only in pure tests."""
@@ -800,7 +802,10 @@ def _planned(  # noqa: PLR0913 - the run's state at planning time
         raise SteerError(ErrorCode.GATE_BLOCKED, "no planner configured for --goal")
     title, lines = deps.screen(window.hwnd)
     out.note(f"planning from {len(lines)} screen lines; the model call may take a while")
-    request = PlanRequest(goal=options.goal, screen_lines=lines, window_title=title)
+    open_windows = deps.open_windows() if deps.open_windows is not None else ()
+    request = PlanRequest(
+        goal=options.goal, screen_lines=lines, window_title=title, open_windows=open_windows
+    )
     started = deps.monotonic()
     try:
         outcome = deps.planner(request)
@@ -986,6 +991,25 @@ def _planner(request: PlanRequest) -> PlanOutcome:
     return ClaudePlanner.from_env().plan(request)
 
 
+def _open_windows() -> list[str]:
+    """The titles of registry-app windows outside Steer's own tree (data minimisation: the
+    planner sees no other window's title; schema gate non-blocking note)."""
+    from steerai.action.launch import APPS  # noqa: PLC0415
+    from steerai.probes.windows import (  # noqa: PLC0415
+        console_exclusions,
+        list_top_windows,
+        process_name,
+    )
+
+    images = {name for spec in APPS.values() for name in spec.process_names}
+    hwnds, pids = console_exclusions()
+    return [
+        w.title
+        for w in list_top_windows()
+        if w.hwnd not in hwnds and w.pid not in pids and process_name(w.pid).lower() in images
+    ]
+
+
 def _start_monitor(options: Options) -> Any:
     from steerai.session.monitor import HookMonitor  # noqa: PLC0415 - Windows hooks
 
@@ -1011,6 +1035,7 @@ def _real_deps() -> Deps:
         build_session=_build_session,
         start_monitor=_start_monitor,
         desktop=desktop_window,
+        open_windows=_open_windows,
         screen=_screen,
         planner=_planner,
     )

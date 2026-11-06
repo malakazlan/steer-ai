@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-Verb = Literal["click", "focus", "type", "send", "submit", "delete"]
+Verb = Literal["click", "focus", "type", "send", "submit", "delete", "open"]
 Risk = Literal["R0", "R1", "R2", "R3"]
 Kind = Literal["appeared", "disappeared", "title", "window_exists", "window_gone", "count_delta"]
 
@@ -31,6 +31,14 @@ class Decoration(enum.StrEnum):
 
     google_search = "google_search"
     wikipedia = "wikipedia"
+
+
+class SiteKey(enum.StrEnum):
+    """Kept equal to `steerai.action.launch.SITES` by the pinning test (an Enum: see Decoration)."""
+
+    google_search = "google_search"
+    youtube_search = "youtube_search"
+    youtube = "youtube"
 
 
 MODEL_OWNED_STEP_KEYS: frozenset[str] = frozenset(
@@ -94,7 +102,8 @@ class TargetDoc(_Doc):
 
 
 class ParamsDoc(_Doc):
-    text: str | None = None
+    text: str | None = Field(default=None, description="the content; for open: the search words")
+    site: SiteKey | None = Field(default=None, description="for open with chrome: the site")
     composer_role: str | None = None
     composer_name: str | None = None
     scope: str | None = None

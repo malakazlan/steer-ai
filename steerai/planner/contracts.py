@@ -14,6 +14,8 @@ from typing import Any
 from steerai.errors import ErrorCode, SteerError
 from steerai.orchestrator.contracts import Plan
 
+MAX_OPEN_WINDOWS = 20
+
 
 @dataclass(frozen=True, slots=True)
 class PlanRequest:
@@ -21,11 +23,14 @@ class PlanRequest:
     screen_lines: Sequence[str]
     window_title: str = ""
     app_hint: str = ""
+    open_windows: Sequence[str] = ()
+    """Titles of the open windows of registry apps (screen content, fenced; OW-21)."""
 
     def __post_init__(self) -> None:
         if not self.goal.strip():
             raise ValueError("goal must not be empty")
         object.__setattr__(self, "screen_lines", tuple(self.screen_lines))
+        object.__setattr__(self, "open_windows", tuple(self.open_windows)[:MAX_OPEN_WINDOWS])
 
 
 @dataclass(frozen=True, slots=True)
