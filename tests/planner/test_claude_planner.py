@@ -392,3 +392,27 @@ def test_an_open_step_keeps_no_model_expect() -> None:
     step = {s.id: s for s in outcome.plan.steps}["o1"]
     assert step.expect is None
     assert dict(step.params) == {"site": "youtube_search", "text": QUERY}
+
+
+def test_explicit_nulls_from_the_model_are_dropped_not_refused() -> None:
+    """First live desktop run: the model sent `composer_role: null` on an open's params and the
+    plan boundary refused it (`$.steps[0].params.composer_role`)."""
+    doc = _doc()
+    doc.steps.insert(
+        0,
+        StepDoc(
+            id="o1",
+            subgoal="g1",
+            verb="open",
+            target=TargetDoc(role="App", name="chrome", automation_id=None, match=None),
+            risk="R1",
+            params=ParamsDoc(
+                site=SiteKey.youtube_search, text=QUERY, composer_role=None, scope=None
+            ),
+            expect=None,
+        ),
+    )
+    planner, _ = _planner(_Response(parsed_output=doc))
+    outcome = planner.plan(_request(goal="search YouTube for " + QUERY))
+    step = {s.id: s for s in outcome.plan.steps}["o1"]
+    assert dict(step.params) == {"site": "youtube_search", "text": QUERY}

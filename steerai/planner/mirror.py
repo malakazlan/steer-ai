@@ -74,7 +74,7 @@ class PredicateDoc(_Doc):
         """The 6.3 one-key object; a missing required field is left out so the plan boundary
         names it (never invented here); a field the kind does not use is dropped (it never
         reaches the boundary, so it adds no matching power)."""
-        fields = self.model_dump(mode="json", exclude_unset=True, exclude={"kind"})
+        fields = self.model_dump(mode="json", exclude_none=True, exclude={"kind"})
         within = fields.pop("within", None)
         wanted = _KIND_FIELDS[self.kind]
         body = {k: v for k, v in fields.items() if k in wanted}
@@ -136,7 +136,7 @@ class PlanDoc(_Doc):
 
     def to_file_form(self) -> dict[str, Any]:  # Any: a JSON body for the plan boundary
         """The 6.3 document with every predicate in its one-key form."""
-        body = self.model_dump(mode="json", exclude_unset=True)
+        body = self.model_dump(mode="json", exclude_none=True)  # a model null is "not given"
         for subgoal, raw in zip(self.subgoals, body.get("subgoals", []), strict=True):
             raw["condition"] = subgoal.condition.to_file_form()
         for step, raw in zip(self.steps, body.get("steps", []), strict=True):
