@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import functools
 import os
@@ -218,6 +219,10 @@ def console_exclusions() -> tuple[set[int], set[int]]:
         count = kernel32.GetConsoleProcessList(buffer, count)
     pids.update(int(buffer[i]) for i in range(min(count, len(buffer))))
     pids.discard(0)
+    with contextlib.suppress(OSError):
+        # started from Explorer, the parent chain reaches the shell: the desktop and every
+        # File Explorer window stay targetable (OW-18)
+        pids.discard(desktop_window().pid)
     return hwnds, pids
 
 
@@ -300,6 +305,21 @@ def desktop_window() -> WindowInfo:
     if not hwnd:
         raise OSError("the desktop window (Progman) was not found")
     return WindowInfo(hwnd=hwnd, title=window_title(hwnd), pid=window_pid(hwnd))
+
+
+def window_identity(hwnd: int) -> dict[str, object] | None:
+    """What a resume re-binds an opened window by: handle, pid, process start time, image name
+    and the live title; None when the handle is no longer a window (schema gate P7)."""
+    if not is_window(hwnd):
+        return None
+    pid = window_pid(hwnd)
+    return {
+        "hwnd": hwnd,
+        "pid": pid,
+        "start": process_start_time(pid),
+        "image": process_name(pid).lower(),
+        "title": window_title(hwnd),
+    }
 
 
 def find_window(title_substring: str) -> WindowInfo | None:
