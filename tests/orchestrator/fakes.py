@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -12,7 +12,7 @@ from steerai.action.dispositions import Step as ActionStep
 from steerai.errors import ErrorCode
 from steerai.orchestrator.contracts import GateDecision, Step
 from steerai.orchestrator.gate import Ask
-from steerai.orchestrator.ledger import LedgerError, WriteAheadRecord, action_key
+from steerai.orchestrator.ledger import LedgerError, WriteAheadRecord, action_key, key_params
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
 
@@ -203,13 +203,25 @@ class MemoryLedger:
     records: dict[str, WriteAheadRecord] = field(default_factory=dict)
     fail_writes: bool = False
     unreadable: set[str] = field(default_factory=set)
+    window_ref: str | None = None
+
+    def set_window_ref(self, ref: str | None) -> None:
+        self.window_ref = ref
 
     def key_for(self, step: Step) -> str:
         assert step.target is not None
-        params = dict(step.params)
-        if step.text is not None:
-            params["text"] = step.text
-        return action_key(self.secret, step.verb, step.target, params)
+        return action_key(self.secret, step.verb, step.target, key_params(step, self.window_ref))
+
+    def record_open(self, step: Step, window: Mapping[str, Any]) -> None:
+        key = self.key_for(step)
+        entry = dict(self.executions.get(key) or {"step_id": step.id})
+        entry.update(phase="verified", outcome="delivered_verified", window=dict(window))
+        self.executions[key] = entry
+
+    def opened_window(self, step: Step) -> dict[str, Any] | None:
+        entry = self.executions.get(self.key_for(step))
+        window = None if entry is None else entry.get("window")
+        return None if window is None else dict(window)
 
     def admit(self, key: str, decision: GateDecision | None = None) -> str:
         record = self.executions.get(key)

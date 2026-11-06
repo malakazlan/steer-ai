@@ -419,3 +419,59 @@ def test_a_superseded_instances_close_leaves_the_successors_lock(tmp_path: Path)
     assert json.loads(lock.read_text(encoding="utf-8"))["token"] == token
     second.close()
     assert not lock.exists()
+
+
+# ---- opened windows and window references (packet open-multiwindow-2026-11-06, P7, P8, OW-33) --
+
+
+def _open_step(step_id: str = "o1") -> Step:
+    return Step(
+        id=step_id,
+        subgoal="g1",
+        verb="open",
+        target=Target(role="App", name="chrome"),
+        risk="R1",
+        params={"site": "youtube"},
+    )
+
+
+WINDOW = {"hwnd": 0x30, "pid": 500, "start": 133_000_000, "image": "chrome.exe", "title": "YouTube"}
+
+
+def test_a_verified_open_is_done_at_any_tier_and_its_window_survives_a_restart(
+    tmp_path: Path,
+) -> None:
+    ledger = Ledger(tmp_path, task_id="t-open", started_at=1.0)
+    step = _open_step()
+    key = ledger.key_for(step)
+    assert ledger.admit(key) == "fresh"
+    ledger.record_open(step, WINDOW)
+    assert ledger.admit(key) == "done"
+    ledger.close()
+    again = Ledger(tmp_path, task_id="t-open", started_at=2.0)
+    window = again.opened_window(step)
+    assert window is not None
+    assert (window["hwnd"], window["pid"], window["start"], window["image"]) == (
+        0x30,
+        500,
+        133_000_000,
+        "chrome.exe",
+    )
+    assert window["title"] != "YouTube", "the title is stored as a digest, never in clear"
+    again.close()
+
+
+def test_two_identical_opens_have_their_own_keys(tmp_path: Path) -> None:
+    with Ledger(tmp_path, task_id="t-two", started_at=1.0) as ledger:
+        assert ledger.key_for(_open_step("o1")) != ledger.key_for(_open_step("o2"))
+
+
+def test_the_window_reference_is_part_of_the_key_only_when_set(tmp_path: Path) -> None:
+    with Ledger(tmp_path, task_id="t-ref", started_at=1.0) as ledger:
+        step = _send()
+        start_key = ledger.key_for(step)
+        ledger.set_window_ref("opened:o1")
+        opened_key = ledger.key_for(step)
+        ledger.set_window_ref(None)
+        assert ledger.key_for(step) == start_key
+        assert opened_key != start_key
