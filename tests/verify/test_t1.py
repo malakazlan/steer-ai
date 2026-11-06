@@ -542,3 +542,5 @@ def test_a_title_pattern_ignores_leading_and_trailing_counters() -> None:
     assert title_holds("Inbox - Gmail", "(12) Inbox - Gmail")
     assert title_holds("Inbox - Gmail", "Inbox - Gmail (4)")
     assert not title_holds("Inbox 3", "Inbox - Gmail")
+    assert title_holds("Inbox - Gmail (5)", "Inbox - Gmail (4)"), "a counter that moved"
+    assert title_holds("(2) Inbox", "(7) Inbox")
