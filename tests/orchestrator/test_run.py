@@ -198,6 +198,7 @@ class FakeLedger:
     links: int = 1
     unsettled_now: bool = False
     step_ids: list[str] = field(default_factory=list)
+    identities: list[Any] = field(default_factory=list)
 
     def bind_plan(self, digest: str, *, allow_change: bool = False, step_ids: Any = ()) -> None:
         if self.refuse == "plan_changed" and not allow_change:
@@ -217,7 +218,10 @@ class FakeLedger:
     def unsettled(self) -> bool:
         return self.unsettled_now
 
-    def bind_window(self, *, pid: int, title: str, allow_change: bool = False) -> None:
+    def bind_window(
+        self, *, pid: int, title: str, allow_change: bool = False, identity: Any = None
+    ) -> None:
+        self.identities.append(identity)
         if self.refuse == "window_changed" and not allow_change:
             raise LedgerError("window_changed: bound to another window")
         self.windows.append((pid, title))

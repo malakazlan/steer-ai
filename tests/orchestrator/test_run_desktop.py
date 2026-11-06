@@ -69,3 +69,49 @@ def test_the_shell_is_never_part_of_steers_own_tree() -> None:
 
     _hwnds, pids = console_exclusions()
     assert desktop_window().pid not in pids
+
+
+# ---- per-step windows from the runner (step-window SW-05, gate item 3, SW-09) ---------------
+
+
+def _run_plan(
+    tmp_path: Path, plan: object, *extra: str, **deps_changes: object
+) -> tuple[int, dict, str]:  # type: ignore[type-arg]
+    import io  # noqa: PLC0415
+    import json  # noqa: PLC0415
+
+    from steerai.orchestrator.plan_io import plan_to_json  # noqa: PLC0415
+    from steerai.run import run  # noqa: PLC0415
+
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(plan_to_json(plan), encoding="utf-8")  # type: ignore[arg-type]
+    options = parse_args(["--plan", str(plan_path), "--ledger-dir", str(tmp_path / "l"), *extra])
+    world = World(session=FakeSession(_done(plan)))  # type: ignore[arg-type]
+    deps = world.deps().replace(desktop=lambda: DESKTOP, **deps_changes)
+    stdout, stderr = io.StringIO(), io.StringIO()
+    code = run(options, deps, stdin=io.StringIO(""), stdout=stdout, stderr=stderr)
+    return code, json.loads(stdout.getvalue()), stderr.getvalue()
+
+
+def test_window_start_on_a_desktop_task_is_refused_before_anything_runs(tmp_path: Path) -> None:
+    from dataclasses import replace  # noqa: PLC0415
+
+    plan = _plan(replace(_click(), window="start"))
+    code, out, err = _run_plan(tmp_path, plan, "--desktop")
+    assert out["detail"] == "invalid_plan"
+    assert "steps[0].window" in err
+    assert code != EXIT_DONE
+
+
+def test_the_start_windows_identity_is_bound_with_the_window(tmp_path: Path) -> None:
+    identity = {"hwnd": 0x10, "pid": 500, "start": 3, "image": "chrome.exe", "title": "t"}
+    seen: list[int] = []
+
+    def identify(hwnd: int) -> dict[str, object]:
+        seen.append(hwnd)
+        return identity
+
+    world_plan = _plan(_click())
+    code, _out, err = _run_plan(tmp_path, world_plan, "--window", "chrome", identify=identify)
+    assert code == EXIT_DONE, err
+    assert seen == [0x10]

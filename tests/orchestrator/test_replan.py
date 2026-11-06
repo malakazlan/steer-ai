@@ -408,3 +408,29 @@ def test_the_failure_is_never_an_earlier_plans() -> None:
     progress = _progress(plan, _unfinished(_result("c1", ok=False, code=ErrorCode.VERIFY_FAILED)))
     progress.add(_one_click_plan(_click("p2.c1")), _unfinished(_result("p2.c1")))
     assert progress.failure() is None
+
+
+# ---- window references in a continuation (step-window SW-05, SW-19) ---------------------------
+
+
+def test_a_continuation_may_name_a_verified_open_of_an_earlier_link() -> None:
+    plan = _second_plan(_click("p2.s1", window="opened:s1"))
+    assert continuation_refusal(plan, _progress()) is None
+
+
+@pytest.mark.parametrize("ref", ["opened:s9", "opened:p2.s1"])
+def test_a_continuation_naming_no_verified_open_is_refused(ref: str) -> None:
+    plan = _second_plan(_click("p2.s1"), _click("p2.s2", window=ref))
+    assert continuation_refusal(plan, _progress()) == "steps[1].window"
+
+
+def test_a_continuation_naming_an_open_that_failed_is_refused() -> None:
+    failed = _progress(result=_unfinished(_result("s1", ok=False, code=ErrorCode.VERIFY_TIMEOUT)))
+    plan = _second_plan(_click("p2.s1", window="opened:s1"))
+    assert continuation_refusal(plan, failed) == "steps[0].window"
+
+
+def test_start_is_refused_on_a_desktop_task() -> None:
+    plan = _second_plan(_click("p2.s1", window="start"))
+    assert continuation_refusal(plan, _progress(), desktop=True) == "steps[0].window"
+    assert continuation_refusal(plan, _progress(), desktop=False) is None

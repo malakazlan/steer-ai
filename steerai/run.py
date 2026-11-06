@@ -20,14 +20,14 @@ import sys
 import time
 import traceback
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, TextIO
 
 from steerai.errors import ErrorCode, SteerError
 from steerai.orchestrator.console import ConsoleConfirmer, escape_text
-from steerai.orchestrator.contracts import RISKS, Plan, Risk, Step
+from steerai.orchestrator.contracts import RISKS, START_WINDOW, Plan, Risk, Step
 from steerai.orchestrator.gate import Confirmer, effective_risk
 from steerai.orchestrator.ledger import LedgerError
 from steerai.orchestrator.loop import DEFAULT_MAX_STEPS, TaskResult, wait_for_idle
@@ -115,7 +115,14 @@ class LedgerLike(Protocol):
     def extend_plan(self, digest: str, step_ids: Sequence[str]) -> None: ...
     def plan_count(self) -> int: ...
     def unsettled(self) -> bool: ...
-    def bind_window(self, *, pid: int, title: str, allow_change: bool = False) -> None: ...
+    def bind_window(
+        self,
+        *,
+        pid: int,
+        title: str,
+        allow_change: bool = False,
+        identity: Mapping[str, Any] | None = None,
+    ) -> None: ...
     def close(self) -> None: ...
 
 
@@ -177,6 +184,9 @@ class Deps:
     """(title, 6.2 lines) of a window after a warm-up observe; None only in pure tests."""
     planner: Callable[[PlanRequest], PlanOutcome] | None = None
     """The LLM planner (5.3); None only in pure tests or a `--plan` run."""
+    identify: Callable[[int], Mapping[str, Any] | None] | None = None
+    """A window's identity (`window_identity`), recorded for `window: start`; None only in
+    pure tests."""
     session_locked: Callable[[], bool | None] | None = None
     """The session's lock state (issue #31); None only in pure tests."""
     make_confirmer: ConfirmerFactory = _console_confirmer
@@ -474,6 +484,31 @@ def _tap_foreground(options: Options, deps: Deps, window: WindowInfo) -> None:
         raise RunnerError(ErrorCode.FOCUS_LOST, "foreground") from exc
 
 
+def _start_checked(planned: Plan | int, options: Options, out: _Out) -> Plan | int:
+    """A plan, or the exit code that refused it: `window: start` on a `--desktop` task."""
+    if isinstance(planned, int):
+        return planned
+    start_at = _desktop_start(planned, options)
+    if start_at is None:
+        return planned
+    return out.error(
+        "invalid_plan",
+        code=ErrorCode.MODEL_ERROR,
+        note=f"plan: {start_at}: a task started on the desktop has no start window to go back "
+        "to; nothing was run",
+    )
+
+
+def _desktop_start(plan: Plan, options: Options) -> str | None:
+    """`window: start` on a `--desktop` task would act on the shell (step-window SW-05)."""
+    if not options.desktop:
+        return None
+    for index, step in enumerate(plan.steps):
+        if step.window == START_WINDOW:
+            return f"$.steps[{index}].window"
+    return None
+
+
 def _refuse_locked(deps: Deps) -> None:
     """Nothing is planned, tapped or run on a locked (or unknown) session (issue #31)."""
     if deps.session_locked is not None and deps.session_locked() is not False:
@@ -679,7 +714,10 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
         _refuse_locked(deps)
         window = _pick_window(options, deps)
         ledger.bind_window(
-            pid=window.pid, title=window.title, allow_change=options.allow_window_change
+            pid=window.pid,
+            title=window.title,
+            allow_change=options.allow_window_change,
+            identity=None if deps.identify is None else deps.identify(window.hwnd),
         )
         out.note(f"task {options.task_id}: window 0x{window.hwnd:x} pid {window.pid}")
         out.resume_hint()
@@ -697,6 +735,7 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
                 confirmer=confirmer,
             )
         )
+        planned = _start_checked(planned, options, out)
         if isinstance(planned, int):
             return planned
         plan = planned
@@ -932,6 +971,8 @@ def preview_lines(
             line += f" params={json.dumps(dict(step.params), sort_keys=True)}"
         if step.expect is not None:
             line += f" expect={_predicate_text(step.expect)}"
+        if step.window is not None:
+            line += f" window={step.window}"  # where it lands (SW-09)
         lines.append(line)
     lines.append(f"type go:{go_id} to run this plan, or no")
     return lines
@@ -1067,7 +1108,7 @@ def _continuation_plan(r: Replan, progress: Progress, number: int) -> Plan | Tas
         r.out.note(f"planner: {exc.detail}{where}")
         return progress.ended("stopped", exc.code, exc.detail)
     r.trace.write(outcome.trace_record())
-    refusal = continuation_refusal(outcome.plan, progress)
+    refusal = continuation_refusal(outcome.plan, progress, desktop=r.options.desktop)
     if refusal is not None:
         r.out.note(f"planner: the continuation breaks a rule at {refusal}; nothing was written")
         return progress.ended("stopped", ErrorCode.MODEL_ERROR, "invalid_plan")
@@ -1258,6 +1299,7 @@ def _real_deps() -> Deps:
         desktop_window,
         list_top_windows,
         session_locked,
+        window_identity,
     )
 
     return Deps(
@@ -1272,6 +1314,7 @@ def _real_deps() -> Deps:
         screen=_screen,
         planner=_planner,
         session_locked=session_locked,
+        identify=window_identity,
     )
 
 
