@@ -348,3 +348,65 @@ def test_a_navigation_effect_gets_the_longer_verify_deadline() -> None:
     assert result.ok is True, result.to_dict()
     assert result.evidence["replaced"] == 1
     assert NAVIGATION_VERIFY_S > 2.0
+
+
+def _renaming_page(h: Harness) -> None:
+    """The page renames its own Document after the action (a single-page app, PR #29 review)."""
+    h.world.rows.append((40, "Document", "Home", (42, 90), 0))
+    started = h.clock["t"]
+    world_observe = h.world.observe
+
+    class RenamingPage:
+        def observe(self, hwnd: int, **kwargs: Any) -> Any:
+            old = (40, "Document", "Home", (42, 90), 0)
+            if h.clock["t"] - started >= 0.2 and old in h.world.rows:
+                h.world.rows.remove(old)
+                h.world.rows.append((40, "Document", f"{HELLO} - Google Search", (42, 90), 0))
+            return world_observe(hwnd, **kwargs)
+
+    h.session._observer = RenamingPage()
+
+
+def _replacing() -> Any:
+    from steerai.verify.predicates import Appeared  # noqa: PLC0415
+
+    return Appeared(role="Document", name_pattern=HELLO, decoration="google_search", replaces=True)
+
+
+def test_an_in_place_rename_never_verifies_an_r2_step() -> None:
+    """Principal review of PR #29, item 2: a rename keeps its RuntimeId, so at R2/R3 it is no
+    new element (5.10 [v1.2]); the step stays unverified with no label."""
+    h = Harness()
+    h.world.composer_value = HELLO
+    _rebuild(h, live=FocusLive(h.world, focused=COMPOSER[3]))
+    _renaming_page(h)
+    step = Step(
+        id="s3",
+        subgoal="g1",
+        verb="submit",
+        target=Target(role="Edit", name="Message"),
+        risk="R2",
+        params=PARAMS,
+        expect=_replacing(),
+    )
+    result = h.session.run_step(step)
+    assert result.ok is False, result.to_dict()
+    assert result.evidence["reason"] == "renamed_at_risk"
+    assert result.label_kind is None
+    assert result.code is ErrorCode.VERIFY_TIMEOUT
+
+
+def test_an_in_place_rename_verifies_an_r1_click() -> None:
+    h = Harness()
+    _renaming_page(h)
+    step = Step(
+        id="c1",
+        subgoal="g1",
+        verb="click",
+        target=Target(role="Button", name="Chat options"),
+        risk="R1",
+        expect=_replacing(),
+    )
+    result = h.session.run_step(step)
+    assert result.ok is True, result.to_dict()
+    assert result.evidence["renamed"] == 1

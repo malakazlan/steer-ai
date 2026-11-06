@@ -102,7 +102,7 @@ def _result(
         gate=gate,  # type: ignore[arg-type]
         action=action,
         verify_code=None if ok else code,
-        label_kind=label if ok else None,  # type: ignore[arg-type]
+        label_kind=label,  # type: ignore[arg-type]  # production labels failures too
         latency_ms={},
         evidence=evidence,
         code=None if ok else code,
@@ -400,3 +400,11 @@ def test_rewritten_conditions_are_named() -> None:
         )
     )
     assert progress.rewritten(same) == set()
+
+
+def test_the_failure_is_never_an_earlier_plans() -> None:
+    """Review note: plan 2's request must not report plan 1's failure again."""
+    plan = _one_click_plan(_click("c1"))
+    progress = _progress(plan, _unfinished(_result("c1", ok=False, code=ErrorCode.VERIFY_FAILED)))
+    progress.add(_one_click_plan(_click("p2.c1")), _unfinished(_result("p2.c1")))
+    assert progress.failure() is None

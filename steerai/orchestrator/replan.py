@@ -75,7 +75,8 @@ class Progress:
         steps = self.steps
         done = []
         for result in self.results():
-            if result.label_kind != "t1" and result.gate != "done_already":
+            # a failed verify still carries a T1 label: only an ok step is done (review item 1)
+            if not result.ok or (result.label_kind != "t1" and result.gate != "done_already"):
                 continue
             target = steps[result.step_id].target
             if target is not None:
@@ -85,8 +86,9 @@ class Progress:
         return done
 
     def failure(self) -> FailedStep | None:
-        """The last step that failed, by id and taxonomy code."""
-        for result in reversed(self.results()):
+        """The last step that failed in the last run, by id and taxonomy code: an earlier
+        plan's failure is never reported again."""
+        for result in reversed(self.last.results):
             code = result.code or result.verify_code
             if not result.ok and code is not None:
                 return FailedStep(step_id=result.step_id, code=code.value)
@@ -117,10 +119,12 @@ class Progress:
             status=status, results=self.results(), ticked=ticked, code=code, evidence=evidence
         )
 
-    def ended(self, status: str, code: ErrorCode, detail: str) -> TaskResult:
+    def ended(
+        self, status: Literal["stopped", "paused", "blocked"], code: ErrorCode, detail: str
+    ) -> TaskResult:
         """The task ends on the way to another plan, with everything that did run."""
         return TaskResult(
-            status=status,  # type: ignore[arg-type]  # one of the four, chosen by the caller
+            status=status,
             results=self.results(),
             ticked=self.ticked,
             code=code,

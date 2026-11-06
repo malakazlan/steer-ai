@@ -1031,6 +1031,10 @@ def _continuation_plan(r: Replan, progress: Progress, number: int) -> Plan | Tas
         title, lines = r.deps.screen(r.session.hwnd)
     except SteerError as exc:
         return progress.ended("stopped", exc.code, "observe_raised")
+    path = r.options.plan.with_suffix(f".{number + 1}.json")
+    if path.exists():  # before the model call: a refusal costs nothing (review note)
+        r.out.note(f"plan: {path} already exists; nothing was written")
+        return progress.ended("stopped", ErrorCode.GATE_BLOCKED, "plan_exists")
     r.out.note(f"replanning ({number}/{MAX_REPLANS}) from {len(lines)} screen lines")
     request = PlanRequest(
         goal=r.options.goal,
@@ -1064,9 +1068,6 @@ def _bound_continuation(
     """Write the exact bytes as `<task>.plan.<n>.json`, bind them as the chain's next link,
     apply the risk limit, preview (decision Q1) and wait for this plan's own `go:<id>`."""
     path = r.options.plan.with_suffix(f".{number + 1}.json")
-    if path.exists():
-        r.out.note(f"plan: {path} already exists; nothing was written")
-        return progress.ended("stopped", ErrorCode.GATE_BLOCKED, "plan_exists")
     _write_atomic(path, outcome.data)
     try:
         r.ledger.extend_plan(_digest(outcome.data), [s.id for s in outcome.plan.steps])

@@ -619,8 +619,18 @@ class Session:
         verdict, after = stage.measure(
             "verify", lambda: self._verify(expect, before_of_record, windows_before)
         )
-        label = label_of_record(
-            verdict, predicate=expect, action_key=key, before=before_of_record, after=after
+        renamed_at_risk = risk in ("R2", "R3") and verdict.holds and "renamed" in verdict.evidence
+        if renamed_at_risk:
+            # a page renamed in place keeps its RuntimeId: no new element, so never the
+            # effect of an R2/R3 step (5.10 [v1.2]); unverified, and no label (review item 2)
+            reason = {**verdict.evidence, "reason": "renamed_at_risk"}
+            verdict = replace(verdict, holds=False, code=ErrorCode.VERIFY_TIMEOUT, evidence=reason)
+        label = (
+            None
+            if renamed_at_risk
+            else label_of_record(
+                verdict, predicate=expect, action_key=key, before=before_of_record, after=after
+            )
         )
         self._remember(before_of_record, after)
         outcome = self._outcome(verdict.holds, action, verdict.evidence.get("reason"))
