@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-Verb = Literal["click", "focus", "type", "send", "submit", "delete"]
+Verb = Literal["click", "focus", "type", "send", "submit", "delete", "open"]
 Risk = Literal["R0", "R1", "R2", "R3"]
 Kind = Literal["appeared", "disappeared", "title", "window_exists", "window_gone", "count_delta"]
 
@@ -31,6 +31,14 @@ class Decoration(enum.StrEnum):
 
     google_search = "google_search"
     wikipedia = "wikipedia"
+
+
+class SiteKey(enum.StrEnum):
+    """Kept equal to `steerai.action.launch.SITES` by the pinning test (an Enum: see Decoration)."""
+
+    google_search = "google_search"
+    youtube_search = "youtube_search"
+    youtube = "youtube"
 
 
 MODEL_OWNED_STEP_KEYS: frozenset[str] = frozenset(
@@ -66,7 +74,7 @@ class PredicateDoc(_Doc):
         """The 6.3 one-key object; a missing required field is left out so the plan boundary
         names it (never invented here); a field the kind does not use is dropped (it never
         reaches the boundary, so it adds no matching power)."""
-        fields = self.model_dump(mode="json", exclude_unset=True, exclude={"kind"})
+        fields = self.model_dump(mode="json", exclude_none=True, exclude={"kind"})
         within = fields.pop("within", None)
         wanted = _KIND_FIELDS[self.kind]
         body = {k: v for k, v in fields.items() if k in wanted}
@@ -94,7 +102,10 @@ class TargetDoc(_Doc):
 
 
 class ParamsDoc(_Doc):
-    text: str | None = None
+    # `site` before `text`: the model writes fields in schema order, and decided `text` before
+    # the site existed (measured, see the pinning test)
+    site: SiteKey | None = Field(default=None, description="for open with chrome: the site")
+    text: str | None = Field(default=None, description="the content; for open: the search words")
     composer_role: str | None = None
     composer_name: str | None = None
     scope: str | None = None
@@ -127,7 +138,7 @@ class PlanDoc(_Doc):
 
     def to_file_form(self) -> dict[str, Any]:  # Any: a JSON body for the plan boundary
         """The 6.3 document with every predicate in its one-key form."""
-        body = self.model_dump(mode="json", exclude_unset=True)
+        body = self.model_dump(mode="json", exclude_none=True)  # a model null is "not given"
         for subgoal, raw in zip(self.subgoals, body.get("subgoals", []), strict=True):
             raw["condition"] = subgoal.condition.to_file_form()
         for step, raw in zip(self.steps, body.get("steps", []), strict=True):

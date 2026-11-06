@@ -257,7 +257,7 @@ def test_snapshot_scoped_ids_are_refused(where: str, key: str) -> None:
     assert key in _error(doc).path
 
 
-@pytest.mark.parametrize("verb", ["open", "scroll", "click_at", "Send"])
+@pytest.mark.parametrize("verb", ["scroll", "click_at", "Send"])
 def test_a_verb_without_an_executor_is_refused(verb: str) -> None:
     doc = _doc()
     doc["steps"][0]["verb"] = verb

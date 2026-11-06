@@ -14,11 +14,13 @@ confirmer to render; names stay out of its repr.
 from __future__ import annotations
 
 import re
+import urllib.parse
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
+from steerai.action.launch import SITES, LaunchError, expected_title, site_url
 from steerai.errors import ErrorCode
 from steerai.orchestrator.contracts import (
     RISKS,
@@ -70,6 +72,14 @@ Outcome = Literal["approve", "confirm", "block", "pending"]
 
 def _words(text: str) -> list[str]:
     return _WORD.findall(comparable(text))
+
+
+_TOKEN = re.compile(r"[^\W_]+")
+"""Letters and digits: a number in an `open`'s content is content too (review item 1)."""
+
+
+def _tokens(text: str) -> list[str]:
+    return [token.casefold() for token in _TOKEN.findall(comparable(text))]
 
 
 def _id_words(automation_id: str) -> list[str]:
@@ -197,10 +207,53 @@ def params_for(
         composer_name=raw.get("composer_name"),
         scope=Within(landmark=scope) if scope else None,
         content_role=raw.get("content_role", "Text"),
-        window_name=raw.get("window_name"),
+        window_name=_open_title(step) or raw.get("window_name"),
+        open_title=_open_title(step),
         file_name=raw.get("file_name"),
         recipient=raw.get("recipient"),
     )
+
+
+def _open_title(step: Step) -> str | None:
+    if step.verb != "open" or step.target is None:
+        return None
+    try:
+        return expected_title(step.target.name, step.params.get("site"), step.params.get("text"))
+    except LaunchError:
+        return None
+
+
+def open_tier(goal: str, step: Step) -> Risk:
+    """An `open`'s tier from the plan's goal, by code (schema gate P1, decision 2; OW-01/02):
+    content in a URL leaves the machine, so it stays R1 only when every word of it is a word
+    of the goal and the goal names the site; anything else confirms at R2."""
+    risk: Risk = step.risk
+    site = step.params.get("site")
+    text = step.params.get("text")
+    if site is None or text is None:
+        return risk
+    goal_tokens = set(_tokens(goal))
+    spec = SITES.get(site)
+    named = spec is not None and bool(spec.names & goal_tokens)
+    symbols = {ch for ch in comparable(text) if not (ch.isalnum() or ch.isspace())}
+    goal_symbols = set(comparable(goal))
+    # every word and every symbol of the content must be the goal's own (review item 1)
+    if named and symbols <= goal_symbols and set(_tokens(text)) <= goal_tokens:
+        return risk
+    return "R2" if _RISK_ORDER[risk] < _RISK_ORDER["R2"] else risk
+
+
+def _opens(step: Step) -> dict[str, str]:
+    """What an `open`'s ask shows besides the content: the host the URL goes to."""
+    if step.verb != "open" or step.target is None:
+        return {}
+    try:
+        url = site_url(step.target.name, step.params.get("site"), step.params.get("text"))
+    except LaunchError:
+        return {}
+    if url is None:
+        return {}
+    return {"opens": urllib.parse.urlsplit(url).hostname or ""}
 
 
 class Gate:
@@ -289,6 +342,8 @@ class Gate:
         if target_pid == self._own_pid:
             return _block("self_target", risk)
         params = params_for(step, target_id, composer_id, bound)
+        if step.verb == "open":
+            expect = None  # the code-owned title, never the model's effect (P2)
         predicate = self._predicate(step, expect, risk, params)
         if isinstance(predicate, GateResult):
             return predicate
@@ -313,7 +368,11 @@ class Gate:
             target_role=step.target.role if step.target is not None else "",
             risk=risk,
             expect=redact(predicate),
-            params={**step.params, **({"text": step.text} if step.text is not None else {})},
+            params={
+                **step.params,
+                **({"text": step.text} if step.text is not None else {}),
+                **_opens(step),
+            },
             previous_attempt=previous_attempt,
             target_name=(
                 bound.full_name

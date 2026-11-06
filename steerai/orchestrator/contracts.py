@@ -39,7 +39,9 @@ _EXECUTOR_VERBS: dict[str, tuple[Path, str]] = {
     "delete": ("semantic", "click"),
 }
 _TEXT_VERBS = frozenset({"type"})
-_RISK_FLOOR: dict[str, Risk] = {"send": "R2", "submit": "R2", "delete": "R3"}
+_RISK_FLOOR: dict[str, Risk] = {"send": "R2", "submit": "R2", "delete": "R3", "open": "R1"}
+OPEN_TARGET_ROLE = "App"
+"""An `open` step's target names a registry app (`steerai.action.launch.APPS`)."""
 _RISK_ORDER = {risk: index for index, risk in enumerate(RISKS)}
 
 
@@ -106,6 +108,8 @@ class Step:
             raise ValueError(f"risk must be one of {RISKS}")
         if self.target is None:
             raise ValueError("a step needs a target")
+        if (self.verb == "open") != (self.target.role == OPEN_TARGET_ROLE):
+            raise ValueError(f"an open step and only an open step targets role {OPEN_TARGET_ROLE}")
         if self.verb in _TEXT_VERBS and self.text is None:
             raise ValueError(f"{self.verb} needs text")
         if self.verb not in _TEXT_VERBS and self.text is not None:

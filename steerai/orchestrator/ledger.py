@@ -59,6 +59,24 @@ def action_key(secret: bytes, verb: str, target: Target, params: Mapping[str, st
     return hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()
 
 
+def key_params(step: Step, window_ref: str | None) -> dict[str, str]:
+    """The parameters an action key covers: the step's own, its text, an `open`'s step id
+    (two identical opens are two actions, OW-33) and the window the step acts in once the task
+    left its start window (`opened:<step id>`, schema gate P8)."""
+    params = dict(step.params)
+    if step.text is not None:
+        params["text"] = step.text
+    if step.verb == "open":
+        params["_step"] = step.id
+    if window_ref is not None:
+        params["_window"] = window_ref
+    return params
+
+
+OPENED_WINDOW_KEYS = ("hwnd", "pid", "start", "image", "title")
+"""What a verified `open` records: the identity a resume re-binds by (P7, decision 3)."""
+
+
 @dataclass(frozen=True, slots=True)
 class WriteAheadRecord:
     task_id: str
@@ -138,6 +156,8 @@ class Ledger:
         self._secret = b""
         self._plan_digest: str | None = None
         self._window: dict[str, Any] | None = None
+        self.window_ref: str | None = None
+        """The window steps act in once the task left its start window (in memory)."""
         self._lock_token = uuid.uuid4().hex
         self._locked = False
         self._acquire_lock()
@@ -227,13 +247,42 @@ class Ledger:
 
     # ---- keys and admission ------------------------------------------------------------------
 
+    def set_window_ref(self, ref: str | None) -> None:
+        self.window_ref = ref
+
     def key_for(self, step: Step) -> str:
         if step.target is None:  # enforced by Step.__post_init__; kept for the type checker
             raise LedgerError("a step without a target has no action key")
-        params = dict(step.params)
-        if step.text is not None:
-            params["text"] = step.text
-        return action_key(self._secret, step.verb, step.target, params)
+        return action_key(self._secret, step.verb, step.target, key_params(step, self.window_ref))
+
+    def record_open(self, step: Step, window: Mapping[str, Any]) -> None:
+        """A verified `open`, at any tier: done, with the window it opened (title digested)."""
+        key = self.key_for(step)
+        entry = dict(self._executions.get(key) or {"step_id": step.id})
+        entry.update(
+            phase="verified",
+            outcome="delivered_verified",
+            window={
+                **{k: window[k] for k in OPENED_WINDOW_KEYS[:4]},
+                "title": _digest(str(window["title"])),
+            },
+        )
+        self._executions[key] = entry
+        self._save_state()
+
+    def record_open_attempt(self, step: Step, outcome: str) -> None:
+        """A launched `open` that was not verified, at any tier: not done, and a resume must
+        confirm before launching again (a window may already be open)."""
+        key = self.key_for(step)
+        entry = dict(self._executions.get(key) or {"step_id": step.id})
+        entry.update(phase="verified", outcome=outcome)
+        self._executions[key] = entry
+        self._save_state()
+
+    def opened_window(self, step: Step) -> dict[str, Any] | None:
+        entry = self._executions.get(self.key_for(step))
+        window = None if entry is None else entry.get("window")
+        return None if window is None else dict(window)
 
     def admit(self, key: str, decision: GateDecision | None = None) -> Admission:
         """Whether `key` may execute now: fresh (never ran, or nothing was delivered), done

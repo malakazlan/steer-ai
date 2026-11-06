@@ -79,6 +79,9 @@ class Params:
     recipient: str | None = field(default=None, repr=False)
     window_title: str | None = field(default=None, repr=False)
     goal_text: str | None = field(default=None, repr=False)
+    open_title: str | None = field(default=None, repr=False)
+    """The window title an `open` must show, filled by code from the registries, never
+    from a model field (schema gate P2)."""
 
     def content_values(self, *, with_target: bool) -> frozenset[str]:
         """Parameters a pattern may equal: the text or file name always; the target's own
@@ -148,7 +151,8 @@ def template_for(verb: str, params: Params) -> Predicate:
             )
         )
     if verb == "open":
-        return WindowExists(name_pattern=_need_str(params.window_name, "window_name", verb))
+        title = params.open_title or params.window_name
+        return WindowExists(name_pattern=_need_str(title, "window_name", verb))
     if verb == "click":
         raise ValueError(
             "click has no template: the planner supplies the effect (appeared, disappeared, "
@@ -158,6 +162,13 @@ def template_for(verb: str, params: Params) -> Predicate:
 
 
 def strength(predicate: Predicate, tier: Tier, params: Params) -> Strength:
+    if (
+        isinstance(predicate, WindowExists)
+        and params.open_title is not None
+        and _key(predicate.name_pattern) == _key(params.open_title)
+    ):
+        # the code-owned title of a registry launch: identity-checked by the loop
+        return Strength(True)
     if isinstance(predicate, Focused):
         # The honest effect of an R0 focus click; never a postcondition for anything that acts.
         return Strength(tier == "R0", None if tier == "R0" else "focused_alone")

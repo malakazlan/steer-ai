@@ -16,6 +16,8 @@ from typing import Any
 import pytest
 
 from steerai.app.overlay import (
+    DESKTOP_HWND,
+    DESKTOP_LABEL,
     WS_EX_NOACTIVATE,
     WS_EX_TOPMOST,
     Overlay,
@@ -95,8 +97,15 @@ def test_the_picker_excludes_steers_own_tree_and_preselects_nothing(
     root: tk.Tk, tmp_path: Path
 ) -> None:
     overlay = _overlay(root, tmp_path)
-    assert list(overlay.window_box["values"]) == [f"{CHROME.title}  [0x10]"]
+    assert list(overlay.window_box["values"]) == [DESKTOP_LABEL, f"{CHROME.title}  [0x10]"]
     assert overlay.selected_window() is None
+
+
+def test_the_desktop_choice_runs_the_task_with_desktop(root: tk.Tk, tmp_path: Path) -> None:
+    overlay = _overlay(root, tmp_path)
+    argv = overlay.argv_for("open notepad", DESKTOP_HWND)
+    assert "--desktop" in argv
+    assert "--hwnd" not in argv
 
 
 def test_run_needs_a_goal_and_a_window(root: tk.Tk, tmp_path: Path) -> None:

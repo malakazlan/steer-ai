@@ -85,6 +85,8 @@ class Options:
     kill_key: str = DEFAULT_KILL_KEY
     goal: str | None = None
     """Plan from this goal first (the planner writes `plan`), instead of reading `plan`."""
+    desktop: bool = False
+    """Start on the shell's desktop window (a task that begins with an `open`)."""
 
     def replace(self, **changes: Any) -> Options:
         return dataclasses.replace(self, **changes)
@@ -143,6 +145,10 @@ class Deps:
     open_ledger: Callable[[Path, str], LedgerLike]
     build_session: Callable[[Bound], SessionLike]
     start_monitor: Callable[[Options], Any] | None = None
+    desktop: Callable[[], WindowInfo] | None = None
+    """The shell's desktop window for `--desktop`; None only in pure tests."""
+    open_windows: Callable[[], Sequence[str]] | None = None
+    """Titles of the open windows of registry apps, for the planner; None only in pure tests."""
     screen: Callable[[int], tuple[str, Sequence[str]]] | None = None
     """(title, 6.2 lines) of a window after a warm-up observe; None only in pure tests."""
     planner: Callable[[PlanRequest], PlanOutcome] | None = None
@@ -300,6 +306,9 @@ def parse_args(argv: Sequence[str]) -> Options:
     which = parser.add_mutually_exclusive_group(required=True)
     which.add_argument("--window", help="title substring of the one window to act on")
     which.add_argument("--hwnd", type=_hwnd, help="the window handle instead of a title")
+    which.add_argument(
+        "--desktop", action="store_true", help="start on the desktop (the plan opens its apps)"
+    )
     parser.add_argument("--task-id", default=None, help="resume a task; default: a new id")
     parser.add_argument(
         "--ledger-dir",
@@ -352,6 +361,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         allow_plan_change=bool(args.allow_plan_change),
         allow_window_change=bool(args.allow_window_change),
         kill_key=str(args.kill_key),
+        desktop=bool(args.desktop),
     )
 
 
@@ -426,7 +436,24 @@ def _result_payload(result: TaskResult) -> dict[str, Any]:
     }
 
 
+def _tap_foreground(options: Options, deps: Deps, window: WindowInfo) -> None:
+    """The target in front before the first step; never the shell's desktop (schema gate)."""
+    if options.desktop:
+        return
+    try:
+        deps.acquire_foreground(window.hwnd)
+    except OSError as exc:
+        raise RunnerError(ErrorCode.FOCUS_LOST, "foreground") from exc
+
+
 def _pick_window(options: Options, deps: Deps) -> WindowInfo:
+    if options.desktop:
+        if deps.desktop is None:
+            raise UsageError("--desktop is not available here")
+        try:
+            return deps.desktop()
+        except OSError as exc:
+            raise RunnerError(ErrorCode.ELEMENT_NOT_FOUND, "no_desktop") from exc
     windows = deps.list_windows()
     excluded_hwnds, excluded_pids = deps.exclusions()
     if options.hwnd is not None:
@@ -639,10 +666,7 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
             refused = None if held is None else _hold_refusal(out, held)
             if refused is not None:
                 return refused
-        try:
-            deps.acquire_foreground(window.hwnd)
-        except OSError as exc:
-            raise RunnerError(ErrorCode.FOCUS_LOST, "foreground") from exc
+        _tap_foreground(options, deps, window)
         bound = Bound(
             hwnd=window.hwnd,
             pid=window.pid,
@@ -778,7 +802,10 @@ def _planned(  # noqa: PLR0913 - the run's state at planning time
         raise SteerError(ErrorCode.GATE_BLOCKED, "no planner configured for --goal")
     title, lines = deps.screen(window.hwnd)
     out.note(f"planning from {len(lines)} screen lines; the model call may take a while")
-    request = PlanRequest(goal=options.goal, screen_lines=lines, window_title=title)
+    open_windows = deps.open_windows() if deps.open_windows is not None else ()
+    request = PlanRequest(
+        goal=options.goal, screen_lines=lines, window_title=title, open_windows=open_windows
+    )
     started = deps.monotonic()
     try:
         outcome = deps.planner(request)
@@ -887,12 +914,18 @@ def _go_refusal(out: _Out, answer: str) -> int:
 def _build_session(bound: Bound) -> SessionLike:
     from steerai.action.execution import UiaBindings  # noqa: PLC0415 - Windows-only COM setup
     from steerai.action.executor import Executor  # noqa: PLC0415
+    from steerai.action.launcher import Launcher  # noqa: PLC0415
     from steerai.action.live_reads import UiaLiveReads  # noqa: PLC0415
     from steerai.action.physical import PhysicalExecutor  # noqa: PLC0415
     from steerai.orchestrator.gate import Gate  # noqa: PLC0415
     from steerai.orchestrator.loop import Session  # noqa: PLC0415
     from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415
-    from steerai.probes.windows import list_top_windows  # noqa: PLC0415
+    from steerai.probes.win_input import foreground_hwnd  # noqa: PLC0415
+    from steerai.probes.windows import (  # noqa: PLC0415
+        list_top_windows,
+        window_identity,
+        window_title,
+    )
     from steerai.world.model import WorldModel  # noqa: PLC0415
 
     client = UiaClient()
@@ -923,6 +956,10 @@ def _build_session(bound: Bound) -> SessionLike:
         verify_deadline_s=bound.options.verify_deadline_s,
         max_steps=bound.options.max_steps,
         monitor=monitor,
+        launcher=Launcher(blocker=blocker),
+        window_title=window_title,
+        identify=window_identity,
+        foreground=foreground_hwnd,
     )
 
 
@@ -954,6 +991,25 @@ def _planner(request: PlanRequest) -> PlanOutcome:
     return ClaudePlanner.from_env().plan(request)
 
 
+def _open_windows() -> list[str]:
+    """The titles of registry-app windows outside Steer's own tree (data minimisation: the
+    planner sees no other window's title; schema gate non-blocking note)."""
+    from steerai.action.launch import APPS  # noqa: PLC0415
+    from steerai.probes.windows import (  # noqa: PLC0415
+        console_exclusions,
+        list_top_windows,
+        process_name,
+    )
+
+    images = {name for spec in APPS.values() for name in spec.process_names}
+    hwnds, pids = console_exclusions()
+    return [
+        w.title
+        for w in list_top_windows()
+        if w.hwnd not in hwnds and w.pid not in pids and process_name(w.pid).lower() in images
+    ]
+
+
 def _start_monitor(options: Options) -> Any:
     from steerai.session.monitor import HookMonitor  # noqa: PLC0415 - Windows hooks
 
@@ -965,7 +1021,11 @@ def _start_monitor(options: Options) -> Any:
 def _real_deps() -> Deps:
     from steerai.orchestrator.ledger import Ledger  # noqa: PLC0415 - DPAPI, Windows only
     from steerai.probes.win_input import acquire_foreground  # noqa: PLC0415
-    from steerai.probes.windows import console_exclusions, list_top_windows  # noqa: PLC0415
+    from steerai.probes.windows import (  # noqa: PLC0415
+        console_exclusions,
+        desktop_window,
+        list_top_windows,
+    )
 
     return Deps(
         list_windows=list_top_windows,
@@ -974,6 +1034,8 @@ def _real_deps() -> Deps:
         open_ledger=lambda root, task_id: Ledger(root, task_id=task_id, started_at=time.time()),
         build_session=_build_session,
         start_monitor=_start_monitor,
+        desktop=desktop_window,
+        open_windows=_open_windows,
         screen=_screen,
         planner=_planner,
     )

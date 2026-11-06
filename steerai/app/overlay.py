@@ -30,6 +30,9 @@ from steerai.probes.windows import WindowInfo
 from steerai.run import UsageError, parse_args
 
 DRAIN_MS = 50
+DESKTOP_HWND = 0
+DESKTOP_LABEL = "Desktop (the plan opens its apps)"
+"""The picker's first choice: the task starts on the desktop with `--desktop`."""
 CLOSE_JOIN_S = 5.0
 GWL_EXSTYLE = -20
 WS_EX_TOPMOST = 0x00000008
@@ -185,12 +188,19 @@ class Overlay:
 
     def refresh_windows(self) -> None:
         hidden_hwnds, hidden_pids = self._exclusions()
+        desktop = WindowInfo(hwnd=DESKTOP_HWND, title=DESKTOP_LABEL, pid=0)
         self._windows = [
-            w
-            for w in self._list_windows()
-            if w.hwnd not in hidden_hwnds and w.pid not in hidden_pids and not w.minimized
+            desktop,
+            *(
+                w
+                for w in self._list_windows()
+                if w.hwnd not in hidden_hwnds and w.pid not in hidden_pids and not w.minimized
+            ),
         ]
-        self.window_box["values"] = [f"{w.title}  [0x{w.hwnd:x}]" for w in self._windows]
+        self.window_box["values"] = [
+            w.title if w.hwnd == DESKTOP_HWND else f"{w.title}  [0x{w.hwnd:x}]"
+            for w in self._windows
+        ]
         self.window_box.set("")  # nothing preselected: the person picks the target
 
     def selected_window(self) -> WindowInfo | None:
@@ -208,11 +218,11 @@ class Overlay:
         """The runner's options; `parse_args` validates them here so a usage error shows in the
         window before any child starts."""
         task_id = f"app-{os.getpid()}-{int(time.time() * 1000)}"
+        where = ["--desktop"] if hwnd == DESKTOP_HWND else ["--hwnd", f"0x{hwnd:x}"]
         argv = [
             "--goal",
             goal,
-            "--hwnd",
-            f"0x{hwnd:x}",
+            *where,
             "--ledger-dir",
             str(self._ledger_dir),
             "--trace",

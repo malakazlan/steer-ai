@@ -17,6 +17,7 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
+from steerai.action.launch import APPS, SITES
 from steerai.errors import ErrorCode
 from steerai.orchestrator.plan_io import PlanError, plan_from_bytes
 from steerai.planner.contracts import PlannerError, PlanOutcome, PlanRequest
@@ -31,11 +32,12 @@ DEFAULT_MAX_TOKENS = 8192
 """Unmeasured: enough for the 6.3 form of a ten-step plan; a `max_tokens` stop is `truncated`."""
 DEFAULT_MAX_RETRIES = 1
 EFFORT = "medium"
-PROMPT_VERSION = "planner-3"
-MECHANICAL_VERBS = frozenset({"type", "focus"})
-"""Steps whose effect code verifies (value typed, focus held): any model `expect` is dropped."""
+PROMPT_VERSION = "planner-6"
+MECHANICAL_VERBS = frozenset({"type", "focus", "open"})
+"""Steps whose effect code verifies (value typed, focus held, window opened): any model
+`expect` is dropped."""
 
-_SYSTEM = f"""You write a plan for a Windows computer-use agent that acts on one window.
+_SYSTEM = f"""You write a plan for a Windows computer-use agent that acts on one window at a time.
 Output a JSON plan document in the exact schema you are given. Nothing else.
 
 The plan has subgoals and steps. Each subgoal has a condition in the predicate language that
@@ -45,7 +47,20 @@ effect in the same language.
 Verbs (closed set): click (a button or link), focus (put keyboard focus in a field), type (type
 single-line text into the focused field; needs "text"), send (press the send button of a
 message composer), submit (submit a form; on a text field this presses Enter), delete (remove
-something). There is no other verb.
+something), open (launch an app; every later step acts in the window it opened). There is no
+other verb.
+
+An open step: {{"verb": "open", "target": {{"role": "App", "name": <one of {sorted(APPS)}>}},
+"params": {{"site": <one of {sorted(SITES)}>, "text": <the words to search>}}}}. A site opens in
+chrome, and chrome always opens a site; give "text" for a search site, taken from the goal's own
+words where possible, and no "text" for youtube. Notepad takes no site. Start with an open when
+the goal needs an app or a site that is not the current window; the open windows listed with the
+screen are already there. Example for the goal "search YouTube for drake latest video": {{"id":
+"s1", "subgoal": "g1", "verb": "open", "target": {{"role": "App", "name": "chrome"}}, "risk":
+"R1", "params": {{"site": "youtube_search", "text": "drake latest video"}}}}. A search site
+without "text" is refused. An open needs no "expect": the agent verifies the opened window
+itself. A subgoal
+an open reaches is a "title" condition holding the site's name or the search words.
 
 Risk tiers: R0 read-only or focus; R1 reversible typing; R2 an external effect (send, submit,
 post); R3 destructive (delete, pay, reset). send and submit are never below R2, delete never
@@ -66,9 +81,10 @@ holds this plain text); window_exists / window_gone: name; count_delta: role, de
 "within" names a landmark container by its exact name. Patterns are plain text, never regular
 expressions. Leave fields the kind does not use unset.
 
-Do not write "expect" for focus or type steps: the agent verifies the focus and the typed
-value itself. Subgoals describe end states visible on screen after an action (a page replaced,
-a message appeared, an item gone), never "the text is typed".
+Do not write "expect" for focus, type or open steps: the agent verifies the focus, the
+typed value and the opened window itself. Subgoals describe end states visible on screen
+after an action (a page replaced, a message appeared, an item gone, a window opened), never
+"the text is typed".
 
 Verification rule for R2 and R3 steps: the step's "expect" must be an "appeared" or
 "disappeared" whose "name" is the step's own content (the text typed or sent, or the name of
@@ -108,6 +124,7 @@ def build_prompt(request: PlanRequest, *, tag: str | None = None) -> tuple[str, 
         lines.append(f"window: {_one_line(request.window_title)}")
     if request.app_hint:
         lines.append(f"app: {_one_line(request.app_hint)}")
+    lines.extend(f"open window: {_one_line(title)}" for title in request.open_windows)
     lines.extend(_one_line(line) for line in request.screen_lines)
     lines.append(f"{fence}>>>")
     return _SYSTEM, "\n".join(lines)
