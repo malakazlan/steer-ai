@@ -185,6 +185,15 @@ def test_the_prompt_names_the_closed_verbs_the_floors_and_the_decorations() -> N
     assert "address bar" in system, "the browser's own controls are not the page (second site)"
 
 
+def test_the_prompt_says_a_link_opens_a_page_named_by_its_title() -> None:
+    """Live replan run 2026-11-06: the model named the page after the whole link text
+    ("... 3 minutes, 57 seconds") and the click never verified."""
+    system, _ = build_prompt(_request(), tag="t")
+    flat = " ".join(system.split())
+    assert 'youtube = "<name> - YouTube"' in flat
+    assert "A click on a link that opens a page" in flat
+
+
 def test_an_empty_goal_is_refused_before_any_call() -> None:
     with pytest.raises(ValueError, match="goal"):
         PlanRequest(goal="   ", screen_lines=SCREEN)

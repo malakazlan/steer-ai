@@ -32,7 +32,7 @@ DEFAULT_MAX_TOKENS = 8192
 """Unmeasured: enough for the 6.3 form of a ten-step plan; a `max_tokens` stop is `truncated`."""
 DEFAULT_MAX_RETRIES = 1
 EFFORT = "medium"
-PROMPT_VERSION = "planner-7"
+PROMPT_VERSION = "planner-8"
 MECHANICAL_VERBS = frozenset({"type", "focus", "open"})
 """Steps whose effect code verifies (value typed, focus held, window opened): any model
 `expect` is dropped."""
@@ -96,7 +96,9 @@ landmark where the content appears). A page that replaces itself after a submit 
 is verified with "appeared" of role "Document", "name" = the content the new page is named
 after (the query, or the article title), "decoration" one of {sorted(DECORATIONS)} (the frame
 the site puts around it: google_search = "<name> - Google Search", wikipedia = "<name> -
-Wikipedia"), and "replaces": true.
+Wikipedia", youtube = "<name> - YouTube"), and "replaces": true. A click on a link that opens
+a page is verified the same way; the page is named by its own title, which can be shorter
+than the link's name (a video link adds its length and views: leave those out).
 
 A continuation: when the data block lists "done step" and "open subgoal" lines, the task
 already ran a plan and is now in the window shown. Plan only the open subgoals and keep their

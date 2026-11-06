@@ -28,6 +28,11 @@ def test_the_registry_is_code_owned_and_fills_the_content_in() -> None:
         decorate("nope", QUERY)
 
 
+def test_a_youtube_watch_page_is_its_title_in_the_youtube_frame() -> None:
+    """Measured 2026-11-06: the watch page Document is "Drake - Janice STFU - YouTube"."""
+    assert decorate("youtube", "Drake - Janice STFU") == "Drake - Janice STFU - YouTube"
+
+
 def test_a_decorated_appeared_matches_the_full_decorated_name() -> None:
     predicate = Appeared(role="Document", name_pattern=QUERY, decoration="google_search")
     assert predicate.name_match == f"{QUERY} - Google Search"
