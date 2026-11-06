@@ -708,3 +708,22 @@ def test_a_desktop_task_that_opened_a_window_brings_it_to_the_front(tmp_path: Pa
 def test_a_desktop_task_still_on_the_desktop_never_taps_it(tmp_path: Path) -> None:
     _code, _out, rig = _desktop_rig(tmp_path, opens=False)
     assert rig.world.foreground_calls == []
+
+
+def test_a_session_locked_between_plans_stops_with_the_merged_results(tmp_path: Path) -> None:
+    """Issue #31: locked while the planner ran; the continuation is never tapped or run."""
+    rig, first, cont = _two_plan_rig(tmp_path)
+    reads: list[int] = []
+
+    def locked() -> bool:
+        reads.append(1)
+        return len(reads) > 1  # unlocked at the start, locked before plan 2
+
+    base_deps = rig.world.deps
+    rig.world.deps = lambda: base_deps().replace(session_locked=locked)  # type: ignore[method-assign]
+    code, out, _err = rig.run(f"{_go(first)}\n{_go(cont)}\n")
+    assert code == EXIT_STOPPED
+    assert (out["code"], out["detail"]) == ("secure_desktop", "session_locked")
+    assert [r["step_id"] for r in out["results"]] == ["s1"]
+    assert len(rig.session.ran) == 1
+    assert OPENED not in rig.world.foreground_calls

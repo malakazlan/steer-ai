@@ -260,7 +260,10 @@ class Session:
         # Any: a JSON-shaped identity record (hwnd, pid, start, image, title)
         identify: Callable[[int], dict[str, Any] | None] | None = None,
         foreground: Callable[[], int] | None = None,
+        locked: Callable[[], bool | None] | None = None,
     ) -> None:
+        self._locked = locked
+        """The session's lock state; None means not read (pure tests only)."""
         self.task_id = task_id
         self._launcher = launcher
         self._window_title = window_title
@@ -783,7 +786,10 @@ class Session:
 
     def _boundary(self, evidence: dict[str, Any]) -> bool:
         """Before anything that acts: the kill switch, the monitor's health, and the person's
-        idle time (5.1 [v1.4], TK-22/29/30/31). Returns whether it waited."""
+        idle time (5.1 [v1.4], TK-22/29/30/31). Returns whether it waited. A locked or
+        unknown session is never acted on (issue #31)."""
+        if self._locked is not None and self._locked() is not False:
+            raise _StepFailureError(ErrorCode.SECURE_DESKTOP, "session_locked")
         monitor = self._monitor
         if monitor is None:
             return False

@@ -422,3 +422,86 @@ def window_title(hwnd: int) -> str:
     buffer = ctypes.create_unicode_buffer(length + 1)
     user32.GetWindowTextW(hwnd, buffer, length + 1)
     return buffer.value
+
+
+# ---- the session's lock state (issue #31) ------------------------------------------------------
+
+_WTS_CURRENT_SESSION = 0xFFFFFFFF
+_WTS_SESSION_INFO_EX = 25
+"""`WTSSessionInfoEx`, index 25 of `WTS_INFO_CLASS` (learn.microsoft.com, wtsapi32.h)."""
+_WTS_SESSIONSTATE_LOCK = 0
+_WTS_SESSIONSTATE_UNLOCK = 1
+
+
+class _WtsInfoExLevel1(ctypes.Structure):
+    """`WTSINFOEX_LEVEL1_W` (learn.microsoft.com, wtsapi32.h); 232 bytes inside `WTSINFOEXW`,
+    measured equal to the size the call returns (2026-11-06)."""
+
+    _fields_ = (
+        ("SessionId", wintypes.ULONG),
+        ("SessionState", ctypes.c_int),
+        ("SessionFlags", ctypes.c_long),
+        ("WinStationName", wintypes.WCHAR * 33),
+        ("UserName", wintypes.WCHAR * 21),
+        ("DomainName", wintypes.WCHAR * 18),
+        ("LogonTime", ctypes.c_longlong),
+        ("ConnectTime", ctypes.c_longlong),
+        ("DisconnectTime", ctypes.c_longlong),
+        ("LastInputTime", ctypes.c_longlong),
+        ("CurrentTime", ctypes.c_longlong),
+        ("IncomingBytes", wintypes.DWORD),
+        ("OutgoingBytes", wintypes.DWORD),
+        ("IncomingFrames", wintypes.DWORD),
+        ("OutgoingFrames", wintypes.DWORD),
+        ("IncomingCompressedBytes", wintypes.DWORD),
+        ("OutgoingCompressedBytes", wintypes.DWORD),
+    )
+
+
+class _WtsInfoExData(ctypes.Union):
+    _fields_ = (("Level1", _WtsInfoExLevel1),)
+
+
+class _WtsInfoEx(ctypes.Structure):
+    _fields_ = (("Level", wintypes.DWORD), ("Data", _WtsInfoExData))
+
+
+def session_locked() -> bool | None:
+    """Whether this process's session is locked: True, False, or None when Windows does not
+    say (`WTS_SESSIONSTATE_UNKNOWN`, a failed call). The Windows 10 lock screen is `LockApp.exe`
+    on the default desktop, so the input desktop's name does not show it (issue #31). Windows 7
+    and Server 2008 R2 report the two flags reversed (documented code defect)."""
+    wtsapi32 = ctypes.WinDLL("wtsapi32", use_last_error=True)
+    wtsapi32.WTSQuerySessionInformationW.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    wtsapi32.WTSQuerySessionInformationW.restype = wintypes.BOOL
+    wtsapi32.WTSFreeMemory.argtypes = (ctypes.c_void_p,)
+    wtsapi32.WTSFreeMemory.restype = None
+    buffer = ctypes.c_void_p()
+    size = wintypes.DWORD()
+    if not wtsapi32.WTSQuerySessionInformationW(
+        None, _WTS_CURRENT_SESSION, _WTS_SESSION_INFO_EX, ctypes.byref(buffer), ctypes.byref(size)
+    ):
+        return None
+    try:
+        if size.value < ctypes.sizeof(_WtsInfoEx):
+            return None
+        info = ctypes.cast(buffer, ctypes.POINTER(_WtsInfoEx)).contents
+        if info.Level != 1:
+            return None
+        flags = info.Data.Level1.SessionFlags
+    finally:
+        wtsapi32.WTSFreeMemory(buffer)
+    locked, unlocked = _WTS_SESSIONSTATE_LOCK, _WTS_SESSIONSTATE_UNLOCK
+    if sys.getwindowsversion()[:2] == (6, 1):
+        locked, unlocked = unlocked, locked
+    if flags == locked:
+        return True
+    if flags == unlocked:
+        return False
+    return None
