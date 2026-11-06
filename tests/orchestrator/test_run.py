@@ -194,11 +194,28 @@ class FakeLedger:
     windows: list[tuple[int, str]] = field(default_factory=list)
     closed: bool = False
     refuse: str | None = None
+    extended: list[str] = field(default_factory=list)
+    links: int = 1
+    unsettled_now: bool = False
+    step_ids: list[str] = field(default_factory=list)
 
-    def bind_plan(self, digest: str, *, allow_change: bool = False) -> None:
+    def bind_plan(self, digest: str, *, allow_change: bool = False, step_ids: Any = ()) -> None:
         if self.refuse == "plan_changed" and not allow_change:
             raise LedgerError("plan_changed: this task id already ran a different plan")
         self.plan_digests.append(digest)
+        self.step_ids.extend(step_ids)
+
+    def extend_plan(self, digest: str, step_ids: Any) -> None:
+        if self.refuse == "step_id_reused":
+            raise LedgerError("step_id_reused: a step id of an earlier plan of this task")
+        self.extended.append(digest)
+        self.step_ids.extend(step_ids)
+
+    def plan_count(self) -> int:
+        return self.links + len(self.extended)
+
+    def unsettled(self) -> bool:
+        return self.unsettled_now
 
     def bind_window(self, *, pid: int, title: str, allow_change: bool = False) -> None:
         if self.refuse == "window_changed" and not allow_change:
@@ -213,9 +230,12 @@ class FakeLedger:
 class FakeSession:
     result: TaskResult | BaseException
     ran: list[Plan] = field(default_factory=list)
+    hwnd: int = 0x10
+    continuations: list[bool] = field(default_factory=list)
 
-    def run_task(self, plan: Plan) -> TaskResult:
+    def run_task(self, plan: Plan, *, continuation: bool = False) -> TaskResult:
         self.ran.append(plan)
+        self.continuations.append(continuation)
         if isinstance(self.result, BaseException):
             raise self.result
         return self.result
@@ -233,6 +253,7 @@ class World:
     session_error: Exception | None = None
     bound: list[Bound] = field(default_factory=list)
     calls: list[str] = field(default_factory=list)
+    ledger_links: int = 1
 
     def deps(self) -> Deps:
         def list_windows() -> Sequence[WindowInfo]:
@@ -250,7 +271,7 @@ class World:
             self.calls.append("ledger")
             if self.ledger_error is not None:
                 raise self.ledger_error
-            self.ledger = FakeLedger(task_id)
+            self.ledger = FakeLedger(task_id, links=self.ledger_links)
             return self.ledger
 
         def build(bound: Bound) -> Any:

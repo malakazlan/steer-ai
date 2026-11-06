@@ -490,9 +490,11 @@ def test_a_replan_extends_the_chain_and_only_the_last_link_resumes(tmp_path: Pat
             ledger.bind_plan("a" * 64)
         with pytest.raises(LedgerError, match="plan_changed"):
             ledger.bind_plan("c" * 64)
-        assert ledger.window_ref is None
+        refused_ref = ledger.window_ref
+        assert refused_ref is None
         ledger.bind_plan("b" * 64)
         assert ledger.window_ref == "opened:o1", "the link's window: keys match the first run"
+        assert ledger.plan_count() == 2
 
 
 def test_the_first_link_resumes_in_the_start_window(tmp_path: Path) -> None:

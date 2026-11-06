@@ -256,6 +256,10 @@ class Ledger:
         self.window_ref = link["window_ref"]
         self._save_state()
 
+    def plan_count(self) -> int:
+        """How many plans the task's chain holds; the bound one is the last."""
+        return len(self._chain)
+
     def extend_plan(self, digest: str, step_ids: Iterable[str]) -> None:
         """A replan: the successor of the last link, in the window the task is in now; a step
         id the task already used is refused (its write-ahead path is the id's digest)."""

@@ -32,6 +32,12 @@ from steerai.orchestrator.gate import Confirmer, effective_risk
 from steerai.orchestrator.ledger import LedgerError
 from steerai.orchestrator.loop import DEFAULT_MAX_STEPS, TaskResult, wait_for_idle
 from steerai.orchestrator.plan_io import PlanError, encode_predicate, plan_from_bytes
+from steerai.orchestrator.replan import (
+    MAX_REPLANS,
+    Progress,
+    continuation_refusal,
+    replan_trigger,
+)
 from steerai.orchestrator.trace import JsonLinesTrace, NullTrace, Trace
 from steerai.planner.contracts import PlannerError, PlanOutcome, PlanRequest
 from steerai.probes.windows import WindowInfo
@@ -53,7 +59,17 @@ _STATUS_EXIT = {
 DEFAULT_WARMUP_S = 10.0
 """First-contact settle cap (RN-18). Unmeasured as a default; Chrome's cold tree needed up to
 25 s on CI in `tests/orchestrator/test_live.py`, ~0.5 s locally (probe 2026-09-27)."""
-_LEDGER_TOKENS = frozenset({"ledger_locked", "plan_changed", "window_changed"})
+_LEDGER_TOKENS = frozenset(
+    {
+        "ledger_locked",
+        "plan_changed",
+        "plan_superseded",
+        "plan_repeated",
+        "plan_unbound",
+        "step_id_reused",
+        "window_changed",
+    }
+)
 _RISK_ORDER = {risk: index for index, risk in enumerate(RISKS)}
 
 
@@ -93,7 +109,12 @@ class Options:
 
 
 class LedgerLike(Protocol):
-    def bind_plan(self, digest: str, *, allow_change: bool = False) -> None: ...
+    def bind_plan(
+        self, digest: str, *, allow_change: bool = False, step_ids: Sequence[str] = ()
+    ) -> None: ...
+    def extend_plan(self, digest: str, step_ids: Sequence[str]) -> None: ...
+    def plan_count(self) -> int: ...
+    def unsettled(self) -> bool: ...
     def bind_window(self, *, pid: int, title: str, allow_change: bool = False) -> None: ...
     def close(self) -> None: ...
 
@@ -114,7 +135,10 @@ def _console_confirmer(stdin: TextIO, stderr: TextIO, monitor: Any) -> GoConfirm
 
 
 class SessionLike(Protocol):
-    def run_task(self, plan: Plan) -> TaskResult: ...
+    hwnd: int
+    """The window the task is in now: the opened one after an `open`."""
+
+    def run_task(self, plan: Plan, *, continuation: bool = False) -> TaskResult: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -373,6 +397,8 @@ class _Out:
         self._options = options
         self._stdout = stdout
         self._stderr = stderr
+        self.plan = options.plan
+        """The task's last bound plan file: the one a resume names (replan RP-15/42)."""
 
     def note(self, text: str) -> None:
         # plan errors quote plan text and candidates quote other processes' titles (RN-05)
@@ -381,7 +407,7 @@ class _Out:
     def resume_hint(self) -> None:
         o = self._options
         self.note(
-            f"resume: python -m steerai.run --plan {o.plan} --task-id {o.task_id} "
+            f"resume: python -m steerai.run --plan {self.plan} --task-id {o.task_id} "
             f"--ledger-dir {o.ledger_dir}"
         )
 
@@ -567,8 +593,12 @@ def _run_bound(  # noqa: PLR0913 - the run's state, one return per exit path
 ) -> int:
     try:
         trace = _open_trace(options)  # first: a bad path binds nothing and taps nothing
-        if data is not None:
-            ledger.bind_plan(_digest(data), allow_change=options.allow_plan_change)
+        if data is not None and plan is not None:
+            ledger.bind_plan(
+                _digest(data),
+                allow_change=options.allow_plan_change,
+                step_ids=[s.id for s in plan.steps],
+            )
         monitor = _started_monitor(deps, options)
     except UsageError as exc:
         return out.error("usage", note=str(exc))
@@ -679,7 +709,21 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
             monitor=monitor,
         )
         session = deps.build_session(bound)
-        result = session.run_task(plan)
+        # a resumed later link of a replanned task runs as a continuation (hunter RP-01)
+        result = session.run_task(plan, continuation=ledger.plan_count() > 1)
+        if options.goal is not None:
+            replan = Replan(
+                session=session,
+                start=window,
+                ledger=ledger,
+                monitor=monitor,
+                trace=trace,
+                options=options,
+                deps=deps,
+                out=out,
+                confirmer=confirmer,
+            )
+            result = _replanning(replan, plan, result)
     except UsageError as exc:
         return out.error("usage", note=str(exc))
     except LedgerError as exc:
@@ -696,7 +740,7 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
             out.note(line)  # escaped: exception text can quote titles or plan text
         out.emit({"status": "error", "code": None, "detail": "internal_error"})
         return EXIT_ERROR
-    if result.status != "done":
+    if result.status != "done" and result.evidence.get("detail") != "plan_declined":
         out.resume_hint()
     out.emit(_result_payload(result))
     return _STATUS_EXIT[result.status]
@@ -815,7 +859,11 @@ def _planned(  # noqa: PLR0913 - the run's state at planning time
         return out.error(exc.detail, code=exc.code, note=f"planner: {exc.detail}{where}")
     trace.write(outcome.trace_record())
     _write_atomic(options.plan, outcome.data)
-    ledger.bind_plan(_digest(outcome.data), allow_change=options.allow_plan_change)
+    ledger.bind_plan(
+        _digest(outcome.data),
+        allow_change=options.allow_plan_change,
+        step_ids=[s.id for s in outcome.plan.steps],
+    )
     offending = over_limit(outcome.plan, options.max_risk)
     if offending is not None:
         return _risk_refusal(out, options, offending)
@@ -841,13 +889,27 @@ def _write_atomic(path: Path, data: bytes) -> None:
     temp.replace(path)
 
 
-def preview_lines(plan: Plan, go_id: str) -> list[str]:
+def preview_lines(
+    plan: Plan,
+    go_id: str,
+    *,
+    continuation: int = 0,
+    ticked: Sequence[str] = (),
+    rewritten: frozenset[str] = frozenset(),
+) -> list[str]:
     """What the person approves: the goal, every condition, every step with its effective
-    tier, text and params (a hijacked text must be visible, PL-01/02)."""
-    lines = [f"plan {go_id}: {plan.goal}"]
+    tier, text and params (a hijacked text must be visible, PL-01/02). A continuation names
+    its number, the subgoals already reached and the conditions it rewrote (decision Q1)."""
+    lines = []
+    if continuation:
+        reached = ", ".join(ticked) or "none"
+        lines.append(f"continuation {continuation}/{MAX_REPLANS}; subgoals reached: {reached}")
+    lines.append(f"plan {go_id}: {plan.goal}")
     for subgoal in plan.subgoals:
+        mark = " (condition rewritten)" if subgoal.id in rewritten else ""
         lines.append(
-            f"  subgoal {subgoal.id}: {subgoal.desc} when {_predicate_text(subgoal.condition)}"
+            f"  subgoal {subgoal.id}: {subgoal.desc} when "
+            f"{_predicate_text(subgoal.condition)}{mark}"
         )
     for step in plan.steps:
         target = step.target
@@ -906,6 +968,161 @@ def _go_refusal(out: _Out, answer: str) -> int:
         }
     )
     return EXIT_PAUSED
+
+
+# ---- replanning (5.3 [v2.1], packet replan-2026-11-06) --------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Replan:
+    """The run's state a replan needs."""
+
+    session: SessionLike
+    start: WindowInfo
+    ledger: LedgerLike
+    monitor: Any
+    trace: Trace
+    options: Options
+    deps: Deps
+    out: _Out
+    confirmer: GoConfirmer
+
+
+def _replanning(r: Replan, plan: Plan, result: TaskResult) -> TaskResult:
+    """Plan again from the window the task reached while the run's end is on the allow-list,
+    at most `MAX_REPLANS` times; every plan is previewed and needs its own `go:<id>`. The
+    result is the task's, merged over its plans (schema gate items 1, 6, 7)."""
+    progress = Progress()
+    progress.add(plan, result)
+    number = 0
+    while True:
+        trigger = replan_trigger(progress.last, progress.steps)
+        if trigger is None or not progress.remaining():
+            return progress.merged()
+        if trigger == "unverified_effect" or r.ledger.unsettled():
+            r.out.note(
+                "stopped: a step with an effect may have acted unverified; check the screen "
+                "before running the task again"
+            )
+            return progress.ended("stopped", ErrorCode.VERIFY_FAILED, "unverified_effect")
+        if number >= MAX_REPLANS:
+            r.out.note(f"stopped after {MAX_REPLANS} replans; the goal needs a person to look")
+            return progress.ended("stopped", ErrorCode.BUDGET_EXCEEDED, "replan_limit")
+        number += 1
+        r.trace.write(
+            {"kind": "replan", "task_id": r.options.task_id, "number": number, "trigger": trigger}
+        )
+        planned = _continuation_plan(r, progress, number)
+        if isinstance(planned, TaskResult):
+            return planned
+        ready = _ready_for(r, progress)
+        if ready is not None:
+            return ready
+        progress.add(planned, r.session.run_task(planned, continuation=True))
+
+
+def _continuation_plan(r: Replan, progress: Progress, number: int) -> Plan | TaskResult:
+    """Observe the current window, plan the remaining subgoals, refuse a plan that breaks the
+    continuation rules, then bind, preview and ask (`_bound_continuation`); a TaskResult ends
+    the task on the way, with what did run."""
+    if r.deps.screen is None or r.deps.planner is None or r.options.goal is None:
+        raise SteerError(ErrorCode.GATE_BLOCKED, "no planner configured for --goal")
+    try:
+        title, lines = r.deps.screen(r.session.hwnd)
+    except SteerError as exc:
+        return progress.ended("stopped", exc.code, "observe_raised")
+    r.out.note(f"replanning ({number}/{MAX_REPLANS}) from {len(lines)} screen lines")
+    request = PlanRequest(
+        goal=r.options.goal,
+        screen_lines=lines,
+        window_title=title,
+        open_windows=r.deps.open_windows() if r.deps.open_windows is not None else (),
+        continuation=number,
+        done=progress.done_steps(),
+        remaining=progress.remaining(),
+        failure=progress.failure(),
+    )
+    started = r.deps.monotonic()
+    try:
+        outcome = r.deps.planner(request)
+    except PlannerError as exc:
+        r.trace.write(exc.trace_record(latency_ms=_ms(r.deps, started)))
+        where = "" if exc.path is None else f" at {exc.path}"
+        r.out.note(f"planner: {exc.detail}{where}")
+        return progress.ended("stopped", exc.code, exc.detail)
+    r.trace.write(outcome.trace_record())
+    refusal = continuation_refusal(outcome.plan, progress)
+    if refusal is not None:
+        r.out.note(f"planner: the continuation breaks a rule at {refusal}; nothing was written")
+        return progress.ended("stopped", ErrorCode.MODEL_ERROR, "invalid_plan")
+    return _bound_continuation(r, progress, number, outcome)
+
+
+def _bound_continuation(
+    r: Replan, progress: Progress, number: int, outcome: PlanOutcome
+) -> Plan | TaskResult:
+    """Write the exact bytes as `<task>.plan.<n>.json`, bind them as the chain's next link,
+    apply the risk limit, preview (decision Q1) and wait for this plan's own `go:<id>`."""
+    path = r.options.plan.with_suffix(f".{number + 1}.json")
+    if path.exists():
+        r.out.note(f"plan: {path} already exists; nothing was written")
+        return progress.ended("stopped", ErrorCode.GATE_BLOCKED, "plan_exists")
+    _write_atomic(path, outcome.data)
+    try:
+        r.ledger.extend_plan(_digest(outcome.data), [s.id for s in outcome.plan.steps])
+    except LedgerError as exc:
+        r.out.note(f"ledger: {exc.message}")
+        return progress.ended("blocked", ErrorCode.GATE_BLOCKED, _ledger_detail(exc))
+    r.out.plan = path
+    offending = over_limit(outcome.plan, r.options.max_risk)
+    if offending is not None:
+        r.out.note(
+            f"refused: step {offending.id} is {effective_risk(offending)}, over --max-risk "
+            f"{r.options.max_risk}; the continuation was not run"
+        )
+        return progress.ended("blocked", ErrorCode.GATE_BLOCKED, "risk_over_limit")
+    go_id = _digest(outcome.data)[:GO_ID_CHARS]
+    preview = preview_lines(
+        outcome.plan,
+        go_id,
+        continuation=number,
+        ticked=sorted(progress.ticked),
+        rewritten=frozenset(progress.rewritten(outcome.plan)),
+    )
+    for line in preview:
+        r.out.note(line)
+    answer = r.confirmer.ask_go(go_id)
+    return outcome.plan if answer == "go" else _not_approved(r, progress, answer)
+
+
+def _not_approved(r: Replan, progress: Progress, answer: str) -> TaskResult:
+    if answer == "killed":
+        return progress.ended("blocked", ErrorCode.GATE_BLOCKED, "killed")
+    if answer == "no":
+        r.out.note("continuation declined; it was not run")
+        return progress.ended("blocked", ErrorCode.GATE_BLOCKED, "plan_declined")
+    r.out.note("continuation not approved (only the exact go token counts); it was not run")
+    return progress.ended("paused", ErrorCode.GATE_PENDING_USER, "plan_unanswered")
+
+
+def _ready_for(r: Replan, progress: Progress) -> TaskResult | None:
+    """The person idle and the task's current window in front before plan n>1 (item 7;
+    hunter RP-14: after a `--desktop` start too, once the task left the desktop)."""
+    if r.monitor is not None:
+        held = wait_for_idle(r.monitor, monotonic=r.deps.monotonic, sleep=r.deps.sleep)
+        if held == "killed":
+            return progress.ended("blocked", ErrorCode.GATE_BLOCKED, "killed")
+        if held == "takeover":
+            return progress.ended("paused", ErrorCode.GATE_PENDING_USER, "takeover")
+        if held is not None:
+            return progress.ended("blocked", ErrorCode.GATE_BLOCKED, held)
+    if r.options.desktop and r.session.hwnd == r.start.hwnd:
+        return None  # never the shell's desktop
+    try:
+        r.deps.acquire_foreground(r.session.hwnd)
+    except OSError:
+        return progress.ended("stopped", ErrorCode.FOCUS_LOST, "foreground")
+    return None
 
 
 # ---- the real collaborators ----------------------------------------------------------------
