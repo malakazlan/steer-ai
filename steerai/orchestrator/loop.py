@@ -266,11 +266,12 @@ class Session:
         locked: Callable[[], bool | None] | None = None,
     ) -> None:
         self._locked = locked
+        """The session's lock state; None means not read (pure tests only)."""
         self._step_refs: dict[str, str | None] = {}
         """Each step's window from plan order (None: the start window; SW-01)."""
         self._identity_now: Mapping[str, Any] | None = None
-        """The recorded identity of the current window, re-read before a dispatch."""
-        """The session's lock state; None means not read (pure tests only)."""
+        """The recorded identity of the current window when the task selected or opened
+        it, re-read before a dispatch; None in the start window never switched to."""
         self.task_id = task_id
         self._launcher = launcher
         self._window_title = window_title
@@ -619,16 +620,21 @@ class Session:
             return
         if step.window is None and ref == self._ledger.window_ref:
             return
-        self._rebind(self._record_of(ref), ref)
+        record = self._record_of(ref)
+        if (
+            ref is None
+            and record is not None
+            and str(record.get("image", "")).lower() == FRAME_HOST
+        ):
+            # every UWP frame shares the host's pid and image: `window: start` waits for a
+            # measurement (SW-11); a continuation there still runs (review item 1)
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "frame_host")
+        self._rebind(record, ref)
         evidence["window"] = "selected"
 
     def _record_of(self, ref: str | None) -> Mapping[str, Any] | None:
         if ref is None:
-            record = self._ledger.start_window()
-            if record is not None and str(record.get("image", "")).lower() == FRAME_HOST:
-                # every UWP frame shares the host's pid and image: unmeasured (SW-11)
-                raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "frame_host")
-            return record
+            return self._ledger.start_window()
         records = self._ledger.opened_records(ref)
         if len(records) > 1:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "window_ambiguous")
@@ -660,10 +666,12 @@ class Session:
         return title if isinstance(title, str) else None
 
     def _in_front(self, risk: Risk) -> None:
-        """An R2/R3 step's window is in front when its ask opens: the person sees where
-        a send lands; there is no selection tap (SW-15, gate item 2)."""
+        """An R2/R3 step in a window the task selected or opened is in front when its ask
+        opens: the person sees where a send lands; there is no selection tap (SW-15, gate
+        item 2). The start window's own steps keep the measured send path (review item 3)."""
         front = self._foreground
-        if risk in ("R2", "R3") and front is not None and front() != self.hwnd:
+        selected = self._identity_now is not None
+        if risk in ("R2", "R3") and selected and front is not None and front() != self.hwnd:
             raise _StepFailureError(ErrorCode.FOCUS_LOST, "not_foreground")
 
     def _still_the_window(self) -> None:
@@ -1202,6 +1210,7 @@ class Session:
         retries = 0
         scrolled = False
         while True:
+            self._still_the_window()  # a gone window never leaves an acting record
             if risk in ("R2", "R3"):
                 try:
                     self._ledger.mark(step, "acting")

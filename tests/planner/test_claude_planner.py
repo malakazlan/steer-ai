@@ -629,3 +629,17 @@ def test_a_continuations_in_plan_reference_follows_the_renamed_id() -> None:
     planner, _ = _planner(_Response(parsed_output=doc))
     plan = planner.plan(_continuation()).plan
     assert plan.steps[1].window == "opened:p2.o1"
+
+
+def test_a_reused_raw_id_that_names_a_step_of_this_plan_is_refused() -> None:
+    """Review note on PR #35: the model writes `opened:s1` for an earlier link's open but also
+    names one of its own steps `s1`; the rename follows the plan's own step, which is not an
+    open, so the plan is refused instead of acting in a window nobody meant."""
+    doc = _doc()
+    doc.steps[0].id = "s1"
+    doc.steps[1].window = "opened:s1"
+    planner, _ = _planner(_Response(parsed_output=doc))
+    with pytest.raises(PlannerError) as caught:
+        planner.plan(_continuation())
+    assert caught.value.detail == "invalid_plan"
+    assert caught.value.path == "$.steps[1].window"

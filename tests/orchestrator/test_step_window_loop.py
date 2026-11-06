@@ -311,3 +311,27 @@ def test_an_unknown_image_shows_its_image_name() -> None:
     assert session is not None
     session.run_step(_step("c1", window="opened:o1"))
     assert session.window_label().startswith("whatsapp.exe (opened:o1): ")
+
+
+def test_a_continuation_in_a_frame_host_start_window_still_runs() -> None:
+    """Principal review of PR #35, item 1: only `window: start` is refused there (SW-11), never
+    #29's continuation of a task that began in Calculator or Settings."""
+    win = Windows()
+    win.live[0x10]["image"] = "applicationframehost.exe"
+    rig, _ = _rig(win)
+    rig.ledger.start_record = {**START_ID, "image": "applicationframehost.exe"}
+    session = rig.session
+    assert session is not None
+    result = session.run_task(_plan(_step("p2.c1")), continuation=True)
+    assert result.evidence.get("detail") != "frame_host"
+    assert len(result.results) == 1
+
+
+def test_the_foreground_rule_leaves_the_start_windows_own_steps_alone() -> None:
+    """Review item 3: no selection, no new rule on the existing send path."""
+    rig, win = _rig()
+    win.foreground = 0x99  # the console after a semantic R2 answer
+    session = rig.session
+    assert session is not None
+    result = session.run_step(_step("c1", risk="R2"))
+    assert result.evidence.get("detail") != "not_foreground"
