@@ -415,3 +415,40 @@ def window_rect(hwnd: int) -> tuple[int, int, int, int]:
     if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
         raise OSError(f"GetWindowRect failed for hwnd {hwnd:#x}: error {ctypes.get_last_error()}")
     return rect.left, rect.top, rect.right, rect.bottom
+
+
+class _GuiThreadInfo(ctypes.Structure):
+    """`GUITHREADINFO` (Microsoft Learn, winuser.h)."""
+
+    _fields_ = (
+        ("cbSize", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("hwndActive", wintypes.HWND),
+        ("hwndFocus", wintypes.HWND),
+        ("hwndCapture", wintypes.HWND),
+        ("hwndMenuOwner", wintypes.HWND),
+        ("hwndMoveSize", wintypes.HWND),
+        ("hwndCaret", wintypes.HWND),
+        ("rcCaret", wintypes.RECT),
+    )
+
+
+_GUI_MENU_FLAGS = 0x4 | 0x8 | 0x10
+"""GUI_INMENUMODE, GUI_SYSTEMMENUMODE, GUI_POPUPMENUMODE (GUITHREADINFO.flags, winuser.h)."""
+
+
+def in_menu_mode(hwnd: int) -> bool:
+    """Whether the window's GUI thread is in a menu (menu bar, system menu, pop-up): typed keys
+    there are mnemonics, not text (issue #38: a lone ALT put classic Notepad in menu mode 16 of
+    17 times). An unreadable thread counts as in a menu: unclear means no typing."""
+    user32 = _user32()
+    user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.GetGUIThreadInfo.argtypes = (wintypes.DWORD, ctypes.POINTER(_GuiThreadInfo))
+    user32.GetGUIThreadInfo.restype = wintypes.BOOL
+    thread = user32.GetWindowThreadProcessId(hwnd, None)
+    info = _GuiThreadInfo()
+    info.cbSize = ctypes.sizeof(info)
+    if not thread or not user32.GetGUIThreadInfo(thread, ctypes.byref(info)):
+        return True
+    return bool(info.flags & _GUI_MENU_FLAGS)

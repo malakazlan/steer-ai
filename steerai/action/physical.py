@@ -115,6 +115,8 @@ class InputPort(Protocol):
     def physical_buttons_down(self) -> list[str]: ...
     def foreground_hwnd(self) -> int: ...
     def foreground_process(self, hwnd: int) -> str: ...
+    def window_pid(self, hwnd: int) -> int: ...
+    def in_menu_mode(self, hwnd: int) -> bool: ...
     def acquire_foreground(self, hwnd: int) -> str: ...
     def focused_runtime_id(self) -> tuple[int, ...]: ...
     def double_click_time_s(self) -> float: ...
@@ -179,6 +181,12 @@ class LiveInput:
 
     def foreground_process(self, hwnd: int) -> str:
         return windows.process_name(windows.window_pid(hwnd)) if hwnd else ""
+
+    def window_pid(self, hwnd: int) -> int:
+        return windows.window_pid(hwnd)
+
+    def in_menu_mode(self, hwnd: int) -> bool:
+        return win_input.in_menu_mode(hwnd)
 
     def acquire_foreground(self, hwnd: int) -> str:
         return win_input.acquire_foreground(hwnd)
@@ -346,6 +354,11 @@ class PhysicalExecutor:
         if self._inputs.physical_buttons_down():
             raise RefusalError(ErrorCode.FOCUS_LOST, "button_held")
 
+    def _refuse_menu_mode(self, hwnd: int) -> None:
+        """Keys into a window in menu mode are mnemonics, not text (issue #38, SF-03)."""
+        if self._inputs.in_menu_mode(hwnd):
+            raise RefusalError(ErrorCode.FOCUS_LOST, "menu_mode")
+
     def _bring_forward(self, hwnd: int) -> str:
         try:
             procedure = self._inputs.acquire_foreground(hwnd)
@@ -414,6 +427,7 @@ class PhysicalExecutor:
         if keyboard.is_blocked_combo(chord) and action.approval is None:
             raise RefusalError(ErrorCode.GATE_BLOCKED, "blocked_chord")
         evidence: dict[str, Any] = {"foreground": self._bring_forward(snapshot.hwnd)}
+        self._refuse_menu_mode(snapshot.hwnd)
         if action.approval is not None:
             evidence["decision_id"] = action.approval.decision_id
         if not _focus_on_field(snapshot, target, self._inputs.focused_runtime_id()):
@@ -441,6 +455,7 @@ class PhysicalExecutor:
         if current != "":
             raise RefusalError(ErrorCode.GATE_PENDING_USER, "field_not_empty")
         evidence: dict[str, Any] = {"foreground": self._bring_forward(snapshot.hwnd)}
+        self._refuse_menu_mode(snapshot.hwnd)
         if action.approval is not None:
             evidence["decision_id"] = action.approval.decision_id
         if self._inputs.focused_runtime_id() not in target.subtree:
@@ -691,3 +706,25 @@ def _uncertain(call: Call, evidence: dict[str, Any]) -> ActionResult:
 def _partial(call: Call, exc: InjectionError, evidence: dict[str, Any]) -> ActionResult:
     counts = {} if call.secure else {"inserted": exc.inserted, "sent": exc.sent}
     return _uncertain(call, {"reason": "partial_injection", "phase": "call", **evidence, **counts})
+
+
+def tap_refusal(inputs: InputPort) -> str | None:
+    """Why the loop must not bring a window forward now, from the executor's own readers
+    (issue #38; hunter SF-01/05/06/20): a secure desktop; a key or button the person holds; an
+    accessibility filter (Sticky Keys would latch the tap); a foreground window running above
+    this process's integrity, whose typing the takeover hook cannot see. None: tap."""
+    if inputs.input_desktop_name() != "Default":
+        return "secure_desktop"
+    if inputs.physical_modifiers_down() or inputs.physical_buttons_down():
+        return "hands_on"
+    if inputs.accessibility_filters_active():
+        return "accessibility_filter"
+    front = inputs.foreground_hwnd()
+    if front:
+        allowed = integrity_allows_input(
+            caller_level=inputs.caller_integrity_level(),
+            target_level=inputs.integrity_level(inputs.window_pid(front)),
+        )
+        if not allowed:
+            return "foreground_elevated"
+    return None

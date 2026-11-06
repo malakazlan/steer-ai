@@ -341,6 +341,7 @@ def window_identity(hwnd: int) -> dict[str, object] | None:
         # a reused handle can come back as a child window of the same process (SW-12)
         "root": int(user32.GetAncestor(hwnd, _GA_ROOT) or 0) == hwnd,
         "minimized": bool(user32.IsIconic(hwnd)),
+        "cloaked": is_cloaked(hwnd),  # DWMWA_CLOAKED: another virtual desktop (SF-10)
     }
 
 

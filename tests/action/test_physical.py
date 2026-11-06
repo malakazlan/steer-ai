@@ -86,6 +86,7 @@ class FakeInput:
     double_click_s: float = 0.5
     double_click_px: int = 4
     fail_chunk: int | None = None
+    menu_mode: bool = False
     """Raise InjectionError on this 1-based burst."""
     after_burst: Callable[[FakeInput, int], None] | None = None
     """Hook after each burst (1-based index) to flip foreground, focus or modifiers."""
@@ -93,6 +94,12 @@ class FakeInput:
     clicks: list[tuple[int, int]] = field(default_factory=list)
     bursts: list[str] = field(default_factory=list)
     chords: list[str] = field(default_factory=list)
+
+    def window_pid(self, hwnd: int) -> int:
+        return 777 if hwnd else 0
+
+    def in_menu_mode(self, hwnd: int) -> bool:
+        return self.menu_mode and hwnd != 0
 
     def dpi_aware(self) -> bool:
         return self.dpi
@@ -1497,4 +1504,45 @@ def test_press_with_no_focused_element_and_no_runtime_id_is_refused(fast_clock: 
     )
     assert result.code is ErrorCode.FOCUS_LOST
     assert result.evidence["detail"] == "target_not_focused"
+    assert inputs.chords == []
+
+
+# ---- the switch tap's guards and the menu-mode refusal (issue #38, hunter SF-01/03/05/06/20) ---
+
+
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        ({"desktop": "Winlogon"}, "secure_desktop"),
+        ({"modifiers": ["ctrl"]}, "hands_on"),
+        ({"buttons": ["left"]}, "hands_on"),
+        ({"filters": True}, "accessibility_filter"),
+        ({"integrity": 0x3000, "caller": 0x2000}, "foreground_elevated"),
+        ({}, None),
+    ],
+)
+def test_the_tap_refusal_reuses_the_executors_readers(
+    changes: dict[str, Any], reason: str | None
+) -> None:
+    from steerai.action.physical import tap_refusal  # noqa: PLC0415
+
+    inputs = FakeInput(**changes)
+    assert tap_refusal(inputs) == reason
+
+
+def test_typing_into_a_window_in_menu_mode_is_refused_with_nothing_sent(fast_clock: Any) -> None:
+    """SF-03: a lone ALT put classic Notepad in menu mode 16/17 times (2026-11-07): typed keys
+    would be menu mnemonics."""
+    inputs = FakeInput(foreground=0x99, acquire_procedure="input-nudge", menu_mode=True)
+    result = _executor(inputs).execute(_type("hello"), _snapshot(_edit(), role="Edit"))
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.evidence.get("detail") == "menu_mode"
+    assert inputs.bursts == []
+
+
+def test_a_chord_into_a_window_in_menu_mode_is_refused(fast_clock: Any) -> None:
+    inputs = FakeInput(foreground=0x99, acquire_procedure="input-nudge", menu_mode=True)
+    action = PhysicalAction(verb="press", element_id=1, chord="enter")
+    result = _executor(inputs).execute(action, _snapshot(FakeHandle()))
+    assert result.evidence.get("detail") == "menu_mode"
     assert inputs.chords == []

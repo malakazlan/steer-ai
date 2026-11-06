@@ -1214,7 +1214,7 @@ def _build_session(bound: Bound) -> SessionLike:
     from steerai.action.executor import Executor  # noqa: PLC0415
     from steerai.action.launcher import Launcher  # noqa: PLC0415
     from steerai.action.live_reads import UiaLiveReads  # noqa: PLC0415
-    from steerai.action.physical import PhysicalExecutor  # noqa: PLC0415
+    from steerai.action.physical import LiveInput, PhysicalExecutor, tap_refusal  # noqa: PLC0415
     from steerai.orchestrator.gate import Gate  # noqa: PLC0415
     from steerai.orchestrator.loop import Session  # noqa: PLC0415
     from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415
@@ -1260,6 +1260,7 @@ def _build_session(bound: Bound) -> SessionLike:
         identify=window_identity,
         foreground=foreground_hwnd,
         bring_forward=acquire_foreground,
+        tap_guard=lambda: tap_refusal(LiveInput(client)),
         locked=session_locked,
     )
 
