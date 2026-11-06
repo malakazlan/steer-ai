@@ -266,7 +266,14 @@ class Session:
         foreground: Callable[[], int] | None = None,
         locked: Callable[[], bool | None] | None = None,
         bring_forward: Callable[[int], str] | None = None,
+        tap_guard: Callable[[], str | None] | None = None,
     ) -> None:
+        self._tap_guard = tap_guard
+        """A reason not to tap now (held keys, accessibility filters, an elevated window
+        in front, a secure desktop), or None (hunter SF-01/05/06/20)."""
+        self._front_pending = False
+        """A resume re-bound another window at plan start: its first step that needs the
+        window in front taps it (SF-31)."""
         self._bring_forward = bring_forward
         """Brings a window the task switched to in front (the procedure name); raises
         OSError when refused (issue #38)."""
@@ -586,7 +593,7 @@ class Session:
         checked the same way once its identity was recorded (SW-26)."""
         ref = self._ledger.window_ref
         if ref is not None:
-            self._rebind(self._record_of(ref), ref)
+            self._front_pending = self._rebind(self._record_of(ref), ref)
             self._switched = True  # a window the task opened, as on the first run (SW-15)
         elif continuation and self._ledger.start_window() is not None:
             self._rebind(self._record_of(None), None)
@@ -605,9 +612,11 @@ class Session:
     def _enter_window(self, step: Step, evidence: dict[str, Any]) -> None:
         """The window first (it is part of the key), then the boundary, then the tap: the
         person's typing never moves into the window brought forward (SW-07, issue #38)."""
-        changed = self._select(step, evidence)
+        self._refuse_locked()  # a locked session stops as such, never as window_gone
+        changed = self._select(step, evidence) or self._front_pending
         self._boundary(evidence)
-        if changed:
+        if changed and _needs_front(step):
+            self._front_pending = False
             self._to_front(evidence)
 
     def _to_front(self, evidence: dict[str, Any]) -> None:
@@ -615,14 +624,28 @@ class Session:
         refused tap is evidence, never a stop: the executor's own checks decide (gate Q2)."""
         if self._bring_forward is None:
             return
+        if self._monitor is not None and self._monitor.kill_requested():
+            raise _KilledError  # nothing injected after the key (SF-32)
+        if self._identity_now is not None:
+            self._checked(self._identity_now)  # changed while the boundary waited (SF-09)
         try:
-            procedure = self._bring_forward(self.hwnd)
-        except OSError:
-            evidence["foreground_after_select"] = False
-        else:
-            front = self._foreground is None or self._foreground() == self.hwnd
-            evidence["foreground_after_select"] = procedure if front else False
-        self._refuse_locked()
+            reason = None if self._tap_guard is None else self._tap_guard()
+            if reason == "secure_desktop":
+                raise _StepFailureError(ErrorCode.SECURE_DESKTOP, "secure_desktop")
+            if reason is not None:
+                evidence["foreground_after_select"] = False
+                evidence["tap_skipped"] = reason
+                return
+            try:
+                procedure = self._bring_forward(self.hwnd)
+            except OSError:
+                evidence["foreground_after_select"] = False
+            else:
+                # an unread foreground is never a success (gate blocking item 1)
+                front = self._foreground is not None and self._foreground() == self.hwnd
+                evidence["foreground_after_select"] = procedure if front else False
+        finally:
+            self._refuse_locked()  # a lock that came with the tap stops before observe
 
     def _checked(self, record: Mapping[str, Any] | None) -> int:
         """The recorded window, still the same one: handle, pid, process start and image
@@ -639,6 +662,9 @@ class Session:
         same = all(current.get(k) == record.get(k) for k in ("pid", "start", "image"))
         if not same or current.get("visible") is not True or current.get("root") is not True:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "window_gone")
+        if current.get("cloaked") is True:
+            # DWMWA_CLOAKED: on another virtual desktop (SF-10)
+            raise _StepFailureError(ErrorCode.WINDOW_OTHER_DESKTOP, "window_other_desktop")
         if current.get("minimized") is not False:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "minimized")
         return hwnd
@@ -1635,6 +1661,13 @@ class Session:
 FRAME_HOST = "applicationframehost.exe"
 WINDOW_TITLE_CHARS = 80
 """How much of a page's own title an ask shows: a page sets it, so code caps it."""
+
+
+def _needs_front(step: Step) -> bool:
+    """From the plan alone: a physical step, a submit (a composer turns it into a press) or
+    an R2/R3 step needs its window in front; a semantic R0/R1 step does not (SF-13)."""
+    path = step.path or executor_verb(step.verb)[0]
+    return path == "physical" or step.verb == "submit" or effective_risk(step) in ("R2", "R3")
 
 
 def _value_ready(plan: Plan, step: Step, result: StepResult, results: list[StepResult]) -> bool:
