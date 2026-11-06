@@ -40,6 +40,9 @@ class AppSpec:
     """What the app appends to a page title (a browser's " - Google Chrome")."""
     takes_url: bool = False
     url_flags: tuple[str, ...] = ()
+    opens_bare: bool = True
+    """Whether the app may open with no site: measured 2026-11-06, a bare Chrome window is
+    titled "Google Chrome" (never "New Tab - ..."), too weak to identify, so Chrome needs a site."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,15 +64,16 @@ APPS: Final = MappingProxyType(
                 "%LOCALAPPDATA%/Google/Chrome/Application/chrome.exe",
             ),
             process_names=frozenset({"chrome.exe"}),
-            fresh_title="New Tab - Google Chrome",
+            fresh_title="Google Chrome",  # never used: Chrome opens a site (opens_bare)
             title_suffix=" - Google Chrome",
             takes_url=True,
             url_flags=("--new-window",),
+            opens_bare=False,
         ),
         "notepad": AppSpec(
             exe_candidates=("%SystemRoot%/System32/notepad.exe",),
             process_names=frozenset({"notepad.exe"}),
-            fresh_title="Untitled - Notepad",  # Windows 10; Windows 11 opens a tab (unmeasured)
+            fresh_title="Untitled - Notepad",  # measured 5/5 on Windows 10; Windows 11 unmeasured
         ),
     }
 )
@@ -116,7 +120,8 @@ def site_url(app: str, site: str | None, text: str | None) -> str | None:
     if site is None:
         if text is not None:
             raise LaunchError("an app opened without a site takes no content")
-        _app(app)
+        if not _app(app).opens_bare:
+            raise LaunchError(f"{app} needs a site")
         return None
     spec = _site(site)
     if spec.app != app:
@@ -137,6 +142,8 @@ def expected_title(app: str, site: str | None, text: str | None) -> str:
     if site is None:
         if text is not None:
             raise LaunchError("an app opened without a site takes no content")
+        if not spec.opens_bare:
+            raise LaunchError(f"{app} needs a site")
         return spec.fresh_title
     site_spec = _site(site)
     if site_spec.app != app:

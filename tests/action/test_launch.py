@@ -61,6 +61,7 @@ def test_the_expected_title_is_the_full_window_title_code_owns() -> None:
         ("chrome", "youtube_search", "   ", "needs content"),
         ("chrome", "youtube", "extra", "takes no content"),
         ("chrome", "youtube_search", "x" * 501, "too long"),
+        ("chrome", None, None, "needs a site"),
         ("chrome", "youtube_search", "bad " + chr(0xD800) + " surrogate", "cannot be encoded"),
     ],
 )
