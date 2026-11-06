@@ -416,3 +416,10 @@ def test_explicit_nulls_from_the_model_are_dropped_not_refused() -> None:
     outcome = planner.plan(_request(goal="search YouTube for " + QUERY))
     step = {s.id: s for s in outcome.plan.steps}["o1"]
     assert dict(step.params) == {"site": "youtube_search", "text": QUERY}
+
+
+def test_the_prompt_shows_a_complete_open_step_with_its_search_words() -> None:
+    """Second live desktop run: the model gave `site: youtube_search` with no text; the prompt
+    now shows a literal, complete open step."""
+    system, _ = build_prompt(_request(), tag="t")
+    assert '"params": {"site": "youtube_search", "text": "drake latest video"}' in system
