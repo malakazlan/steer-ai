@@ -29,6 +29,7 @@ from steerai.planner.contracts import (
     PlanRequest,
 )
 from steerai.planner.mirror import (
+    ConditionDoc,
     Decoration,
     ParamsDoc,
     PlanDoc,
@@ -58,7 +59,13 @@ def _doc() -> PlanDoc:
     )
     return PlanDoc(
         goal=GOAL,
-        subgoals=[SubgoalDoc(id="g1", desc="results shown", condition=condition)],
+        subgoals=[
+            SubgoalDoc(
+                id="g1",
+                desc="results shown",
+                condition=ConditionDoc.model_validate(condition.model_dump()),
+            )
+        ],
         steps=[
             StepDoc(
                 id="focus",
@@ -274,7 +281,7 @@ def test_from_env_reads_the_model_name(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_within_round_trips_as_a_landmark() -> None:
     doc = _doc()
-    doc.subgoals[0].condition = PredicateDoc(
+    doc.subgoals[0].condition = ConditionDoc(
         kind="appeared", role="Text", name=QUERY, within="Results"
     )
     doc.steps[2].expect = doc.subgoals[0].condition

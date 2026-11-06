@@ -36,6 +36,7 @@ from steerai.verify.predicates import (
     Appeared,
     CountDelta,
     Disappeared,
+    FieldValue,
     Predicate,
     TitleMatches,
     WindowExists,
@@ -79,6 +80,7 @@ _KINDS = frozenset(
         "window_exists",
         "window_gone",
         "count_delta",
+        "value",
         "all",
         "any_of",
     }
@@ -86,6 +88,7 @@ _KINDS = frozenset(
 
 
 TARGET_KEYS = frozenset({"role", "name", "automation_id", "match"})
+VALUE_KEYS = frozenset({"role", "name", "text"})
 APPEARED_KEYS = frozenset({"role", "name", "within", "expected", "order", "decoration", "replaces"})
 DISAPPEARED_KEYS = frozenset({"role", "name", "within"})
 COUNT_DELTA_KEYS = frozenset({"role", "delta", "within"})
@@ -98,6 +101,7 @@ PREDICATE_KEYS: Mapping[str, frozenset[str]] = {
     "title": TITLE_KEYS,
     "window_exists": WINDOW_KEYS,
     "window_gone": WINDOW_KEYS,
+    "value": VALUE_KEYS,
 }
 FILE_VERBS = _FILE_VERBS
 STEP_KEYS = _STEP_KEYS
@@ -228,8 +232,22 @@ def _built[T](path: str, make: Callable[[], T]) -> T:
         raise PlanError(path, str(exc)) from exc
 
 
-def _predicate(value: object, path: str, depth: int = 1) -> Predicate:
-    return _built(path, lambda: _predicate_body(value, path, depth))
+def _predicate(value: object, path: str, depth: int = 1, *, condition: bool = False) -> Predicate:
+    return _built(path, lambda: _predicate_body(value, path, depth, condition=condition))
+
+
+def _field_value(fields: Mapping[str, Any], inner: str, *, condition: bool) -> FieldValue:
+    if not condition:
+        # presence with no before value never proves a step's effect (VF-30 B1)
+        raise PlanError(inner, "value is a subgoal condition, never a step's expect")
+    _keys(fields, VALUE_KEYS, inner)
+    role = _text(fields.get("role"), f"{inner}.role", max_chars=64)
+    name = _text(fields.get("name"), f"{inner}.name")
+    text = _text(fields.get("text"), f"{inner}.text")
+    try:
+        return FieldValue(role=role, name_pattern=name, text=text)
+    except ValueError as exc:
+        raise PlanError(inner, str(exc)) from exc
 
 
 def _appeared(fields: Mapping[str, Any], inner: str) -> Appeared:
@@ -254,7 +272,7 @@ def _appeared(fields: Mapping[str, Any], inner: str) -> Appeared:
     )
 
 
-def _predicate_body(value: object, path: str, depth: int) -> Predicate:
+def _predicate_body(value: object, path: str, depth: int, *, condition: bool) -> Predicate:
     if depth > MAX_DEPTH:
         raise PlanError(path, f"nested deeper than {MAX_DEPTH}")
     obj = _obj(value, path)
@@ -268,7 +286,7 @@ def _predicate_body(value: object, path: str, depth: int) -> Predicate:
         raise PlanError(inner, "unknown predicate kind")
     if kind in ("all", "any_of"):
         parts = tuple(
-            _predicate(part, f"{inner}[{i}]", depth + 1)
+            _predicate(part, f"{inner}[{i}]", depth + 1, condition=condition)
             for i, part in enumerate(_list(body, inner, max_items=MAX_PARTS))
         )
         try:
@@ -285,6 +303,13 @@ def _predicate_body(value: object, path: str, depth: int) -> Predicate:
             name_pattern=_text(fields.get("name"), f"{inner}.name"),
             within=_within(fields.get("within"), f"{inner}.within"),
         )
+    if kind == "value":
+        return _field_value(fields, inner, condition=condition)
+    return _leaf(kind, fields, inner)
+
+
+def _leaf(kind: str, fields: Mapping[str, Any], inner: str) -> Predicate:
+    """count_delta, title, window_exists and window_gone."""
     if kind == "count_delta":
         _keys(fields, COUNT_DELTA_KEYS, inner)
         return CountDelta(
@@ -420,7 +445,7 @@ def _subgoal(value: object, path: str) -> Subgoal:
     return Subgoal(
         id=_ident(obj.get("id"), f"{path}.id"),
         desc=_text(obj.get("desc", ""), f"{path}.desc"),
-        condition=_predicate(obj.get("condition"), f"{path}.condition"),
+        condition=_predicate(obj.get("condition"), f"{path}.condition", condition=True),
     )
 
 
@@ -551,6 +576,14 @@ def _encode(predicate: Predicate) -> dict[str, Any]:  # noqa: PLR0911 - one kind
         body = {"role": predicate.role, "delta": predicate.delta}
         body.update(_encode_within(predicate.within))
         return {"count_delta": body}
+    if isinstance(predicate, FieldValue):
+        return {
+            "value": {
+                "role": predicate.role,
+                "name": predicate.name_pattern,
+                "text": predicate.text,
+            }
+        }
     if isinstance(predicate, TitleMatches):
         return {"title": {"pattern": predicate.pattern}}
     if isinstance(predicate, WindowExists):

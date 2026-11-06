@@ -23,6 +23,7 @@ from steerai.orchestrator.plan_io import (
 )
 from steerai.planner.mirror import (
     MODEL_OWNED_STEP_KEYS,
+    ConditionDoc,
     ParamsDoc,
     PlanDoc,
     PredicateDoc,
@@ -66,7 +67,10 @@ def test_every_object_allows_a_subset_of_the_boundarys_keys() -> None:
     assert _properties(_definition(schema, "TargetDoc")) <= TARGET_KEYS
     assert _properties(_definition(schema, "ParamsDoc")) <= PARAM_KEYS
     predicate = _definition(schema, "PredicateDoc")["properties"]
-    assert frozenset(predicate["kind"]["enum"]) == KINDS - {"all", "any_of"}
+    # `value` is a subgoal condition only: the expect grammar never offers it (field-value item 5)
+    assert frozenset(predicate["kind"]["enum"]) == KINDS - {"all", "any_of", "value"}
+    condition = _definition(schema, "ConditionDoc")["properties"]
+    assert frozenset(condition["kind"]["enum"]) == KINDS - {"all", "any_of"}
 
 
 def test_every_flat_predicate_translates_to_a_subset_of_the_boundarys_keys() -> None:
@@ -81,11 +85,12 @@ def test_every_flat_predicate_translates_to_a_subset_of_the_boundarys_keys() -> 
         "order": "prepend",
         "decoration": "google_search",
         "replaces": True,
+        "text": "hello",
     }
     assert set(PREDICATE_KEYS) == KINDS - {"all", "any_of"}
     for kind, keys in PREDICATE_KEYS.items():
         # the test fills every field; `kind` is one of the Literal's values at run time
-        form = PredicateDoc(kind=kind, **full).to_file_form()  # type: ignore[arg-type]
+        form = ConditionDoc(kind=kind, **full).to_file_form()  # type: ignore[arg-type]
         assert set(form) == {kind}
         assert frozenset(form[kind]) <= keys, kind
 
@@ -110,7 +115,11 @@ def test_every_kind_round_trips_through_the_boundary(predicate: PredicateDoc) ->
 def _doc_with(condition: PredicateDoc) -> PlanDoc:
     return PlanDoc(
         goal="g",
-        subgoals=[SubgoalDoc(id="g1", desc="d", condition=condition)],
+        subgoals=[
+            SubgoalDoc(
+                id="g1", desc="d", condition=ConditionDoc.model_validate(condition.model_dump())
+            )
+        ],
         steps=[
             StepDoc(
                 id="s1",
@@ -157,7 +166,11 @@ def test_a_fixture_mirror_round_trips_through_the_boundary() -> None:
     condition = PredicateDoc(kind="appeared", role="Text", name="hello")
     doc = PlanDoc(
         goal="send hello",
-        subgoals=[SubgoalDoc(id="g1", desc="sent", condition=condition)],
+        subgoals=[
+            SubgoalDoc(
+                id="g1", desc="sent", condition=ConditionDoc.model_validate(condition.model_dump())
+            )
+        ],
         steps=[
             StepDoc(
                 id="s1",

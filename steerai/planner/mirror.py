@@ -22,6 +22,11 @@ from pydantic import BaseModel, ConfigDict, Field
 Verb = Literal["click", "focus", "type", "send", "submit", "delete", "open"]
 Risk = Literal["R0", "R1", "R2", "R3"]
 Kind = Literal["appeared", "disappeared", "title", "window_exists", "window_gone", "count_delta"]
+ConditionKind = Literal[
+    "appeared", "disappeared", "title", "window_exists", "window_gone", "count_delta", "value"
+]
+"""A subgoal condition's kinds: `value` is a condition only, never a step's expect, so the
+grammar itself keeps it out of `expect` (field-value gate item 5)."""
 
 
 class Decoration(enum.StrEnum):
@@ -84,7 +89,16 @@ class PredicateDoc(_Doc):
         return {self.kind: body}
 
 
+class ConditionDoc(PredicateDoc):
+    """A subgoal condition: the predicate kinds plus value: role, name, text (the field of that
+    role and name holds exactly this text; only for text a type step of the subgoal typed)."""
+
+    kind: ConditionKind  # type: ignore[assignment]  # a superset of the expect kinds, by design
+    text: str | None = Field(default=None, description="value: the exact text the field holds")
+
+
 _KIND_FIELDS: dict[str, frozenset[str]] = {
+    "value": frozenset({"role", "name", "text"}),
     "appeared": frozenset({"role", "name", "expected", "order", "decoration", "replaces"}),
     "disappeared": frozenset({"role", "name"}),
     "count_delta": frozenset({"role", "delta"}),
@@ -134,7 +148,7 @@ class StepDoc(_Doc):
 class SubgoalDoc(_Doc):
     id: str
     desc: str
-    condition: PredicateDoc
+    condition: ConditionDoc
 
 
 class PlanDoc(_Doc):

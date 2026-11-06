@@ -135,6 +135,35 @@ class ValueEquals:
     text: str = field(repr=False)
 
 
+FIELD_ROLES: frozenset[str] = frozenset({"Edit", "ComboBox", "Document"})
+"""Roles whose value is what was typed (= `steerai.action.physical.TEXT_ROLES`, pinned by a
+test): on any other role the read is the element's own name (field-value gate item 3)."""
+MAX_FIELD_TEXT_UNITS = 500
+"""The longest text a `type` step sends, in UTF-16 units (section 9): a longer condition can
+never be reached (hunter FV-38)."""
+
+
+@dataclass(frozen=True, slots=True)
+class FieldValue:
+    """A subgoal condition only (issue #36): the one field of this role and name in the
+    judged snapshot holds exactly this text (the `ValueEquals` rule: newlines normalised,
+    case-sensitive). Never a step `expect`: presence has no before value (VF-30 B1)."""
+
+    role: str
+    name_pattern: str = field(repr=False)
+    text: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if self.role not in FIELD_ROLES:
+            raise ValueError(f"value role must be one of {sorted(FIELD_ROLES)}")
+        if not normalise_name(self.name_pattern):
+            raise ValueError("value name must not be empty")
+        if not self.text.strip():
+            raise ValueError("value text must not be empty: an unreadable field reads empty")
+        if len(self.text.encode("utf-16-le")) // 2 > MAX_FIELD_TEXT_UNITS:
+            raise ValueError(f"value text is over {MAX_FIELD_TEXT_UNITS} UTF-16 units")
+
+
 @dataclass(frozen=True, slots=True)
 class Focused:
     """Never a valid postcondition on its own (5.10 [v0.3])."""
@@ -212,6 +241,7 @@ Predicate = (
     Appeared
     | Disappeared
     | ValueEquals
+    | FieldValue
     | Focused
     | State
     | TitleMatches
