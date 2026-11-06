@@ -37,6 +37,7 @@ from steerai.action.sanitize import normalise_newlines
 from steerai.errors import ErrorCode, SteerError
 from steerai.orchestrator.contracts import (
     RISKS,
+    START_WINDOW,
     GateDecision,
     GateToken,
     Plan,
@@ -160,6 +161,8 @@ class TaskLedger(Protocol):
     def record_open(self, step: Step, window: Mapping[str, Any]) -> None: ...
     def opened_window(self, step: Step) -> dict[str, Any] | None: ...
     def opened_by_ref(self, ref: str) -> dict[str, Any] | None: ...
+    def opened_records(self, ref: str) -> list[dict[str, Any]]: ...
+    def start_window(self) -> dict[str, Any] | None: ...
     def record_open_attempt(self, step: Step, outcome: str) -> None: ...
 
 
@@ -263,6 +266,10 @@ class Session:
         locked: Callable[[], bool | None] | None = None,
     ) -> None:
         self._locked = locked
+        self._step_refs: dict[str, str | None] = {}
+        """Each step's window from plan order (None: the start window; SW-01)."""
+        self._identity_now: Mapping[str, Any] | None = None
+        """The recorded identity of the current window, re-read before a dispatch."""
         """The session's lock state; None means not read (pure tests only)."""
         self.task_id = task_id
         self._launcher = launcher
@@ -304,7 +311,6 @@ class Session:
             return self._run_open(step)
         stage = _Stage(self._monotonic)
         risk = effective_risk(step)
-        key = self._ledger.key_for(step)
         evidence: dict[str, Any] = {"risk": risk}
         gate_stage: GateToken = "unreached"
         dispatched: ActionResult | None = None
@@ -313,6 +319,8 @@ class Session:
         recorded = False
         try:
             self._boundary(evidence)
+            self._select(step, evidence)  # the window first: it is part of the key
+            key = self._ledger.key_for(step)
             self._act_evidence = evidence
             before = stage.measure("observe", lambda: self._before(risk, evidence))
             # admission first, at the candidates' tier ceiling for a person target: a done
@@ -329,6 +337,7 @@ class Session:
             self._secure_step = before.element(element_id).secure
             risk = self._settled_tier(step, risk)
             evidence["risk"] = risk
+            self._in_front(risk)
             gate_result = stage.measure(
                 "gate", lambda: self._decide(step, key, before, previous, element_id, risk=risk)
             )
@@ -411,6 +420,8 @@ class Session:
         if tier != step.risk:
             step = replace(step, risk=tier)  # the gate and the ledger see the content's tier
         risk = effective_risk(step)
+        if step.id in self._step_refs:
+            self._ledger.set_window_ref(self._step_refs[step.id])
         key = self._ledger.key_for(step)
         evidence: dict[str, Any] = {"risk": risk}
         gate_stage: GateToken = "unreached"
@@ -516,6 +527,7 @@ class Session:
         self._close(step, risk, Delivery.DELIVERED_VERIFIED.value)
         self._ledger.record_open(step, identity)  # the observed title, digested
         self._adopt(hwnd, f"opened:{step.id}")
+        self._identity_now = identity
         evidence["window"] = "opened"
         if self._foreground is not None:
             evidence["foreground_after_open"] = self._foreground() == hwnd
@@ -547,7 +559,7 @@ class Session:
                 return False
             self._sleep(OPEN_POLL_S)
 
-    def _adopt(self, hwnd: int, ref: str) -> None:
+    def _adopt(self, hwnd: int, ref: str | None) -> None:
         """The opened window becomes the current one; nothing observed before carries over."""
         self.hwnd = hwnd
         self._last_after = None
@@ -566,19 +578,71 @@ class Session:
         if ref is not None:
             self._rebind(self._ledger.opened_by_ref(ref), ref)
 
-    def _rebind(self, record: Mapping[str, Any] | None, ref: str) -> None:
+    def _rebind(self, record: Mapping[str, Any] | None, ref: str | None) -> None:
+        hwnd = self._checked(record)
+        if hwnd != self.hwnd:
+            self._adopt(hwnd, ref)
+        else:
+            self._ledger.set_window_ref(ref)  # the same window: what was observed holds
+        self._identity_now = record
+
+    def _checked(self, record: Mapping[str, Any] | None) -> int:
+        """The recorded window, still the same one: handle, pid, process start and image
+        equal, a visible top-level window, readable, not minimized (SW-12/13/14)."""
         hwnd = None if record is None else record.get("hwnd")
         current = (
             self._identify(hwnd) if self._identify is not None and isinstance(hwnd, int) else None
         )
-        same = (
-            record is not None
-            and current is not None
-            and all(current.get(k) == record.get(k) for k in ("pid", "start", "image"))
-        )
-        if not same or not isinstance(hwnd, int):
+        if record is None or current is None or not isinstance(hwnd, int):
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "window_gone")
-        self._adopt(hwnd, ref)
+        readable = all(r.get("start") is not None and r.get("image") for r in (record, current))
+        if not readable:
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "identity_unreadable")
+        same = all(current.get(k) == record.get(k) for k in ("pid", "start", "image"))
+        if not same or current.get("visible") is not True or current.get("root") is not True:
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "window_gone")
+        if current.get("minimized") is not False:
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "minimized")
+        return hwnd
+
+    def _select(self, step: Step, evidence: dict[str, Any]) -> None:
+        """The step's window from plan order, re-bound by identity; naming the current
+        window is accepted and still checked (gate Q2)."""
+        if step.id in self._step_refs:
+            ref = self._step_refs[step.id]
+        elif step.window is not None:
+            ref = _ledger_ref(step.window)
+        else:
+            return
+        if step.window is None and ref == self._ledger.window_ref:
+            return
+        self._rebind(self._record_of(ref), ref)
+        evidence["window"] = "selected"
+
+    def _record_of(self, ref: str | None) -> Mapping[str, Any] | None:
+        if ref is None:
+            record = self._ledger.start_window()
+            if record is not None and str(record.get("image", "")).lower() == FRAME_HOST:
+                # every UWP frame shares the host's pid and image: unmeasured (SW-11)
+                raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "frame_host")
+            return record
+        records = self._ledger.opened_records(ref)
+        if len(records) > 1:
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "window_ambiguous")
+        return records[0] if records else None
+
+    def _in_front(self, risk: Risk) -> None:
+        """An R2/R3 step's window is in front when its ask opens: the person sees where
+        a send lands; there is no selection tap (SW-15, gate item 2)."""
+        front = self._foreground
+        if risk in ("R2", "R3") and front is not None and front() != self.hwnd:
+            raise _StepFailureError(ErrorCode.FOCUS_LOST, "not_foreground")
+
+    def _still_the_window(self) -> None:
+        """The last check before a dispatch: the window is the one selected or opened,
+        after any ask or wait (SW-16)."""
+        if self._identity_now is not None:
+            self._checked(self._identity_now)
 
     def _holds_in_window(self, predicate: Predicate) -> bool:
         """An `open`'s subgoal in the window it opened: every element there is new, so a
@@ -1120,6 +1184,7 @@ class Session:
                     step, before, self._act_evidence, mismatch="screen_changed_during_wait"
                 )
                 self._act_evidence["restarted"] = True
+            self._still_the_window()
             if self._monitor is not None:
                 # input during the step is what lands after this point (D7)
                 self._counts_at_step = self._monitor.counts()
@@ -1349,12 +1414,19 @@ class Session:
                 code=failure.code,
                 evidence={"detail": "observe_raised"},
             )
+        link = self._ledger.window_ref
+        self._step_refs = _plan_refs(plan, link)
         opening = {s.subgoal for s in plan.steps if s.verb == "open"}
-        # an open's subgoal is reached in the window it opens, never in the start window
+        elsewhere = {s.subgoal for s in plan.steps if self._step_refs[s.id] != link}
+        # an open's subgoal is reached in the window it opens, and a subgoal acted on in
+        # another window is never judged on this one (SW-02)
         ticked = {
             s.id
             for s in plan.subgoals
-            if not continuation and s.id not in opening and self._holds_now(s.condition, start)
+            if not continuation
+            and s.id not in opening
+            and s.id not in elsewhere
+            and self._holds_now(s.condition, start)
         }
         outcome = self._run_steps(plan, ticked, results)
         if outcome is not None:
@@ -1478,6 +1550,28 @@ class Session:
             ).holds
         except (SteerError, ValueError):
             return False
+
+
+FRAME_HOST = "applicationframehost.exe"
+
+
+def _ledger_ref(window: str) -> str | None:
+    """A step's `window` as the ledger's window ref: `start` is None."""
+    return None if window == START_WINDOW else window
+
+
+def _plan_refs(plan: Plan, link: str | None) -> dict[str, str | None]:
+    """Each step's window from plan order, skipped steps included (SW-01): the link's
+    start, changed by a step's `window` and, after it, by an `open`."""
+    refs: dict[str, str | None] = {}
+    current = link
+    for step in plan.steps:
+        if step.window is not None:
+            current = _ledger_ref(step.window)
+        refs[step.id] = current
+        if step.verb == "open":
+            current = f"opened:{step.id}"
+    return refs
 
 
 def _structural_part(predicate: Predicate) -> Predicate | None:

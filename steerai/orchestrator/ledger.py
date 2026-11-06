@@ -346,6 +346,11 @@ class Ledger:
         window = None if entry is None else entry.get("window")
         return None if window is None else dict(window)
 
+    def opened_records(self, ref: str) -> list[dict[str, Any]]:
+        """Every window recorded under an `opened:<step id>` ref: more than one means a
+        replaced plan reused the id (SW-04), which selection refuses."""
+        return _opened_records(self._executions, ref)
+
     def opened_by_ref(self, ref: str) -> dict[str, Any] | None:
         """The window an `opened:<step id>` ref names (step ids are unique in a task)."""
         return _opened_by_ref(self._executions, ref)
@@ -529,6 +534,17 @@ class Ledger:
             self._write_encrypted(self._state_path, json.dumps(payload, separators=(",", ":")))
         except OSError as exc:
             raise LedgerError(f"ledger state could not be written: {exc}") from exc
+
+
+def _opened_records(executions: Mapping[str, Mapping[str, Any]], ref: str) -> list[dict[str, Any]]:
+    if not ref.startswith("opened:"):
+        return []
+    step_id = ref.removeprefix("opened:")
+    return [
+        dict(entry["window"])
+        for entry in executions.values()
+        if entry.get("step_id") == step_id and isinstance(entry.get("window"), dict)
+    ]
 
 
 def _opened_by_ref(executions: Mapping[str, Mapping[str, Any]], ref: str) -> dict[str, Any] | None:

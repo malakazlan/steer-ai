@@ -26,6 +26,8 @@ YT_TITLE = "drake latest video - YouTube - Google Chrome"
 START = WindowInfo(hwnd=0x10, title="Program Manager", pid=900)
 NEW = WindowInfo(hwnd=0x30, title="New Tab - Google Chrome", pid=500)
 IDENTITY = {"hwnd": 0x30, "pid": 500, "start": 7, "image": "chrome.exe", "title": YT_TITLE}
+LIVE = {"visible": True, "root": True, "minimized": False}
+"""What a live window reads besides its identity (step-window SW-12/14)."""
 
 
 @dataclass
@@ -71,7 +73,7 @@ class Desk:
         return self.titles[min(self.reads - 1, len(self.titles) - 1)]
 
     def identify(self, hwnd: int) -> dict[str, Any] | None:
-        return None if self.identity is None else {**self.identity, "hwnd": hwnd}
+        return None if self.identity is None else {**self.identity, **LIVE, "hwnd": hwnd}
 
     def windows(self) -> list[WindowInfo]:
         return list(self.windows_now)
@@ -274,7 +276,7 @@ class TwoAppDesk(Desk):
         return YT_TITLE
 
     def identify(self, hwnd: int) -> dict[str, Any] | None:
-        return {**(NOTEPAD_IDENTITY if hwnd == 0x40 else IDENTITY), "hwnd": hwnd}
+        return {**(NOTEPAD_IDENTITY if hwnd == 0x40 else IDENTITY), **LIVE, "hwnd": hwnd}
 
 
 @dataclass

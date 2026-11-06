@@ -204,6 +204,18 @@ class MemoryLedger:
     fail_writes: bool = False
     unreadable: set[str] = field(default_factory=set)
     window_ref: str | None = None
+    start_record: dict[str, Any] | None = None
+
+    def start_window(self) -> dict[str, Any] | None:
+        return None if self.start_record is None else dict(self.start_record)
+
+    def opened_records(self, ref: str) -> list[dict[str, Any]]:
+        step_id = ref.removeprefix("opened:") if ref.startswith("opened:") else None
+        return [
+            dict(entry["window"])
+            for entry in self.executions.values()
+            if step_id is not None and entry.get("step_id") == step_id and "window" in entry
+        ]
 
     def set_window_ref(self, ref: str | None) -> None:
         self.window_ref = ref

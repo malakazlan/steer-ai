@@ -325,16 +325,22 @@ def desktop_window() -> WindowInfo:
 
 def window_identity(hwnd: int) -> dict[str, object] | None:
     """What a resume re-binds an opened window by: handle, pid, process start time, image name
-    and the live title; None when the handle is no longer a window (schema gate P7)."""
+    and the live title, plus whether it is a visible, top-level, minimized window; None when the
+    handle is no longer a window (schema gate P7, step-window SW-12/14)."""
     if not is_window(hwnd):
         return None
     pid = window_pid(hwnd)
+    user32 = _user32()
     return {
         "hwnd": hwnd,
         "pid": pid,
         "start": process_start_time(pid),
         "image": process_name(pid).lower(),
         "title": window_title(hwnd),
+        "visible": bool(user32.IsWindowVisible(hwnd)),
+        # a reused handle can come back as a child window of the same process (SW-12)
+        "root": int(user32.GetAncestor(hwnd, _GA_ROOT) or 0) == hwnd,
+        "minimized": bool(user32.IsIconic(hwnd)),
     }
 
 
@@ -347,14 +353,27 @@ def find_window(title_substring: str) -> WindowInfo | None:
     return None
 
 
+_GA_ROOT = 2
+"""`GetAncestor(GA_ROOT)`: the root window of a handle (winuser.h)."""
+
+
 @functools.cache
 def _user32() -> ctypes.WinDLL:
     """user32 with explicit signatures for the per-window helpers (loaded once)."""
     if sys.platform != "win32":
         raise OSError("window helpers require Windows")
     user32 = ctypes.WinDLL("user32", use_last_error=True)
-    for name in ("IsWindow", "IsWindowEnabled", "IsIconic", "GetWindowTextLengthW"):
+    for name in (
+        "IsWindow",
+        "IsWindowEnabled",
+        "IsIconic",
+        "IsWindowVisible",
+        "GetWindowTextLengthW",
+    ):
         getattr(user32, name).argtypes = (wintypes.HWND,)
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+    user32.GetAncestor.restype = wintypes.HWND
     user32.IsWindow.restype = wintypes.BOOL
     user32.IsWindowEnabled.restype = wintypes.BOOL
     user32.IsIconic.restype = wintypes.BOOL

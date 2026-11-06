@@ -59,3 +59,16 @@ def test_this_interactive_session_reads_as_unlocked() -> None:
     from steerai.probes.windows import session_locked  # noqa: PLC0415
 
     assert session_locked() is False
+
+
+@pytest.mark.windows
+def test_a_live_windows_identity_reads_visible_root_and_not_minimized() -> None:
+    """Step-window SW-12/14: the fields selection requires, read from a real window."""
+    from steerai.probes.windows import list_top_windows, window_identity  # noqa: PLC0415
+
+    window = next(w for w in list_top_windows() if not w.minimized)
+    identity = window_identity(window.hwnd)
+    assert identity is not None
+    assert identity["visible"] is True
+    assert identity["root"] is True
+    assert identity["minimized"] is False
