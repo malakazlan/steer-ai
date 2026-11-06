@@ -43,7 +43,7 @@ class SiteKey(enum.StrEnum):
 
 
 MODEL_OWNED_STEP_KEYS: frozenset[str] = frozenset(
-    {"id", "subgoal", "verb", "target", "text", "risk", "params", "expect"}
+    {"id", "subgoal", "verb", "target", "text", "risk", "params", "expect", "window"}
 )
 
 
