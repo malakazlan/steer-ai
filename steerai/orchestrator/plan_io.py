@@ -43,6 +43,7 @@ from steerai.verify.predicates import (
     WindowGone,
     Within,
 )
+from steerai.world.model import normalise_name
 from steerai.world.people import name_part
 
 MAX_PLAN_BYTES = 262_144
@@ -464,10 +465,68 @@ def _plan(value: object, path: str) -> Plan:
         for i, item in enumerate(_list(obj.get("steps", []), f"{path}.steps", max_items=256))
     )
     _check_window_order(steps, path)
+    _check_values(subgoals, steps, path)
     try:
         return Plan(goal=goal, subgoals=subgoals, steps=steps)
     except ValueError as exc:
         raise PlanError(f"{path}.steps", str(exc)) from exc
+
+
+_NO_VALUE_VERBS = frozenset({"send", "submit", "delete"})
+
+
+def field_values(predicate: Predicate) -> list[FieldValue]:
+    """Every `value` part of a condition, at any depth."""
+    if isinstance(predicate, FieldValue):
+        return [predicate]
+    if isinstance(predicate, All | AnyOf):
+        return [found for part in predicate.parts for found in field_values(part)]
+    return []
+
+
+def _check_values(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: str) -> None:
+    """A `value` subgoal with steps names a `type` of its own with the same role, name (the
+    target rule) and exact text; it owns no send / submit / delete or R2/R3 step; its steps act
+    in one window (FV-01/03/23/25/42). A subgoal without steps cannot tick and is allowed."""
+    windows = _window_of_each(steps)
+    for index, subgoal in enumerate(subgoals):
+        wanted = field_values(subgoal.condition)
+        own = [s for s in steps if s.subgoal == subgoal.id]
+        if not wanted or not own:
+            continue
+        where = f"{path}.subgoals[{index}].condition"
+        if any(s.verb in _NO_VALUE_VERBS or s.risk in ("R2", "R3") for s in own):
+            raise PlanError(where, "a value subgoal holds no send, submit, delete or R2/R3 step")
+        if len({windows[s.id] for s in own if s.verb != "open"}) > 1:
+            raise PlanError(where, "a value subgoal acts in one window")
+        typed = [s for s in own if s.verb == "type"]
+        for value in wanted:
+            if not any(_typed_into(s, value) for s in typed):
+                raise PlanError(where, "value names the field and text a type step of it typed")
+
+
+def _typed_into(step: Step, value: FieldValue) -> bool:
+    target = step.target
+    return (
+        target is not None
+        and target.role == value.role
+        and normalise_name(target.name).casefold() == normalise_name(value.name_pattern).casefold()
+        and step.text == value.text
+    )
+
+
+def _window_of_each(steps: tuple[Step, ...]) -> dict[str, str]:
+    """Each step's window in plan order (the loop's `_plan_refs`, with the link's start as
+    "link"): a `window` changes it, an `open` changes it for the steps after."""
+    current = "link"
+    found: dict[str, str] = {}
+    for step in steps:
+        if step.window is not None:
+            current = step.window
+        found[step.id] = current
+        if step.verb == "open":
+            current = OPENED_PREFIX + step.id
+    return found
 
 
 def _check_window_order(steps: tuple[Step, ...], path: str) -> None:

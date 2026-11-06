@@ -119,3 +119,111 @@ def test_the_live_kind_keeps_its_own_refusal() -> None:
     """FV-48: `value_equals` still needs a snapshot element id."""
     with pytest.raises(PlanError, match="snapshot element id"):
         plan_from_json(_doc({"value_equals": {"target_id": 1, "text": "x"}}))
+
+
+# ---- plan rules (principal rulings on FV-01/03/21/23/25/42) -------------------------------------
+
+
+def _plan_doc(steps: list[dict[str, Any]], condition: dict[str, Any] | None = None) -> str:
+    return json.dumps(
+        {
+            "goal": "type hello in notepad",
+            "subgoals": [
+                {"id": "g1", "desc": "hello is in notepad", "condition": condition or VALUE}
+            ],
+            "steps": steps,
+        }
+    )
+
+
+def _type_step(step_id: str = "s1", text: str = "hello", **kw: Any) -> dict[str, Any]:
+    step: dict[str, Any] = {
+        "id": step_id,
+        "subgoal": "g1",
+        "verb": "type",
+        "target": {"role": "Document", "name": kw.pop("name", "Text Editor")},
+        "text": text,
+        "risk": "R1",
+    }
+    step.update(kw)
+    return step
+
+
+def test_a_value_subgoal_matching_its_type_step_is_accepted() -> None:
+    plan = plan_from_json(_plan_doc([_type_step(name="text editor")]))
+    assert plan.steps[0].text == "hello"
+
+
+def test_a_value_subgoal_without_steps_is_allowed() -> None:
+    """Plan 1 lists every subgoal of the goal (5.3 [v2.1]); it cannot tick without its step."""
+    plan = json.loads(_plan_doc([]))
+    plan["subgoals"].append({"id": "g0", "desc": "d", "condition": {"title": {"pattern": "x"}}})
+    plan["steps"] = [{**_type_step(), "subgoal": "g0"}]
+    assert plan_from_json(json.dumps(plan)).subgoals[0].id == "g1"
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        _type_step(text="Hello"),  # FV-25: exact text
+        _type_step(name="Search"),  # another field
+        {**_type_step(), "verb": "focus", "text": None},  # no type step at all
+    ],
+)
+def test_a_value_subgoal_must_name_a_type_step_of_its_own(step: dict[str, Any]) -> None:
+    """FV-03/42: the text was typed by this subgoal, never found or guessed."""
+    if step.get("text") is None:
+        step = {k: v for k, v in step.items() if k != "text"}
+    with pytest.raises(PlanError) as caught:
+        plan_from_json(_plan_doc([step]))
+    assert caught.value.path == "$.subgoals[0].condition"
+
+
+@pytest.mark.parametrize("verb", ["send", "submit"])
+def test_a_value_subgoal_owns_no_send_or_submit(verb: str) -> None:
+    """FV-01: the value holds after the type, before the effect the subgoal is for."""
+    other = {
+        "id": "s2",
+        "subgoal": "g1",
+        "verb": verb,
+        "target": {"role": "Button", "name": "Send"},
+        "risk": "R2",
+        "params": {
+            "text": "hello",
+            "composer_role": "Document",
+            "composer_name": "Text Editor",
+            "scope": "Conversation",
+        },
+        "expect": {"appeared": {"role": "Text", "name": "hello"}},
+    }
+    with pytest.raises(PlanError) as caught:
+        plan_from_json(_plan_doc([_type_step(), other]))
+    assert caught.value.path == "$.subgoals[0].condition"
+
+
+def test_a_value_subgoal_acting_in_two_windows_is_refused() -> None:
+    """FV-23: checked in one window only."""
+    steps = [
+        {
+            "id": "o1",
+            "subgoal": "g0",
+            "verb": "open",
+            "target": {"role": "App", "name": "notepad"},
+            "risk": "R1",
+        },
+        {**_type_step("s1"), "window": "opened:o1"},
+        {
+            "id": "s2",
+            "subgoal": "g1",
+            "verb": "click",
+            "target": {"role": "Button", "name": "OK"},
+            "risk": "R0",
+            "window": "start",
+            "expect": {"title": {"pattern": "x"}},
+        },
+    ]
+    doc = json.loads(_plan_doc(steps))
+    doc["subgoals"].insert(0, {"id": "g0", "desc": "d", "condition": {"title": {"pattern": "x"}}})
+    with pytest.raises(PlanError) as caught:
+        plan_from_json(json.dumps(doc))
+    assert caught.value.path == "$.subgoals[1].condition"
