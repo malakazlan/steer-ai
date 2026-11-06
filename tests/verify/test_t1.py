@@ -23,7 +23,7 @@ from steerai.verify.predicates import (
     WindowExists,
     Within,
 )
-from steerai.verify.t1 import Label, Verdict, evaluate, label_of_record, verify
+from steerai.verify.t1 import Label, Verdict, evaluate, label_of_record, title_holds, verify
 from steerai.world.model import Snapshot
 from tests.verify.fakes import (
     BASE_ROWS,
@@ -533,3 +533,12 @@ def test_label_of_record_is_never_made_from_a_thrown_verify() -> None:
         verdict, predicate=Focused(target_id=1), action_key="k", before=before(), after=after_with()
     )
     assert label is None
+
+
+def test_a_title_pattern_ignores_leading_and_trailing_counters() -> None:
+    """VF-31 pin: the `title ~` rule strips a counter at either end and keeps inner digits
+    (the page-name counter is a separate rule; an unpinned shadowing once went unseen)."""
+    assert title_holds("Inbox", "Inbox (3) - Gmail")
+    assert title_holds("Inbox - Gmail", "(12) Inbox - Gmail")
+    assert title_holds("Inbox - Gmail", "Inbox - Gmail (4)")
+    assert not title_holds("Inbox 3", "Inbox - Gmail")

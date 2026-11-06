@@ -154,12 +154,23 @@ def _evaluate(predicate: Predicate, before: Snapshot, after: Snapshot, ctx: Cont
 # ---- structural predicates (pure) ---------------------------------------------------------------
 
 
-def _scoped(scope: Scope, element: Element, role: str, pattern: str) -> bool:
+_PAGE_COUNTER = re.compile(r"^\(\d{1,4}\)\s+")
+"""A leading notification counter a site puts before a page's name ("(3) Inbox"); the
+`open` title rule (`steerai.action.launch`), never a regular expression from a plan."""
+
+
+def _scoped(scope: Scope, element: Element, role: str, pattern: str, *, page: bool = False) -> bool:
+    if not (element.id in scope.ids and element.role == role and element.has_area):
+        return False
+    if name_matches(element.name, pattern, scoped=not scope.strict):
+        return True
+    # a page's name may carry a notification counter in front, "(1) ": the `open`
+    # title rule, for the replacing form only (probe yt-click 2026-11-06)
+    counted = _PAGE_COUNTER.match(element.name)
     return (
-        element.id in scope.ids
-        and element.role == role
-        and element.has_area
-        and name_matches(element.name, pattern, scoped=not scope.strict)
+        page
+        and counted is not None
+        and name_matches(element.name[counted.end() :], pattern, scoped=not scope.strict)
     )
 
 
@@ -242,7 +253,10 @@ def _appearance(
         if e.id in scope.ids and e.role == predicate.role and e.id not in skip_after
     ]
     new_role = [e for e in in_role if e.runtime_id and e.runtime_id not in before_ids]
-    new_matches = [e for e in new_role if _scoped(scope, e, predicate.role, predicate.name_match)]
+    page = predicate.replaces
+    new_matches = [
+        e for e in new_role if _scoped(scope, e, predicate.role, predicate.name_match, page=page)
+    ]
     # The effect's own subtree (a bubble's timestamp and status texts) is not unrelated churn.
     owned = _descendant_ids(after, [e.id for e in new_matches])
     return _Appearance(
@@ -252,10 +266,12 @@ def _appearance(
         count_before=sum(
             1
             for e in before.elements
-            if _scoped(scope_before, e, predicate.role, predicate.name_match)
+            if _scoped(scope_before, e, predicate.role, predicate.name_match, page=page)
         ),
         count_after=sum(
-            1 for e in after.elements if _scoped(scope, e, predicate.role, predicate.name_match)
+            1
+            for e in after.elements
+            if _scoped(scope, e, predicate.role, predicate.name_match, page=page)
         ),
         surviving_ids=[e.id for e in in_role if e.runtime_id in before_ids],
         vanished=sum(
@@ -314,7 +330,8 @@ def _appeared(predicate: Appeared, before: Snapshot, after: Snapshot) -> Verdict
             in_place = {"level": scope.level, "matched": 1, "renamed": 1}
             return Verdict(holds=True, code=None, level=scope.level, polls=0, evidence=in_place)
         present = any(
-            _scoped(scope, e, predicate.role, predicate.name_match) for e in after.elements
+            _scoped(scope, e, predicate.role, predicate.name_match, page=predicate.replaces)
+            for e in after.elements
         )
         return _miss(scope, "not_new" if present else "no_match")
     delta = seen.count_after - seen.count_before
@@ -385,8 +402,10 @@ def _renamed_in_place(
         for e in after.elements
         if e.id not in nested_after
         and e.runtime_id in was
-        and _scoped(scope, e, predicate.role, predicate.name_match)
-        and not _scoped(whole_before, was[e.runtime_id], predicate.role, predicate.name_match)
+        and _scoped(scope, e, predicate.role, predicate.name_match, page=True)
+        and not _scoped(
+            whole_before, was[e.runtime_id], predicate.role, predicate.name_match, page=True
+        )
     ]
 
 

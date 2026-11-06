@@ -269,3 +269,62 @@ def test_two_pages_renamed_to_the_name_is_no_replacement() -> None:
     after_snap = build([*BASE_ROWS, WATCH_YT, other_after], snapshot_id="after", taken_at=1.0)
     verdict = evaluate(_watch(), before_snap, after_snap)
     assert verdict.holds is False
+
+
+# ---- a page name's notification counter (probe yt-click 2026-11-06) --------------------------
+
+COUNTED_WATCH = (40, "Document", "(1) Drake - Janice STFU - YouTube", (42, 90), WINDOW[0])
+
+
+def test_a_replacing_page_matches_with_its_notification_counter_stripped() -> None:
+    """Measured: 3 of 5 live runs named the watch page "(1) Drake - Janice STFU - YouTube"."""
+    before_snap = build([*BASE_ROWS, RESULTS_YT], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, COUNTED_WATCH], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(), before_snap, after_snap)
+    assert verdict.holds is True, verdict.evidence
+
+
+def test_a_new_counted_page_is_a_replacement_too() -> None:
+    old = (40, "Document", "Google", (42, 90), WINDOW[0])
+    new = (41, "Document", f"(3) {QUERY} - Google Search", (42, 91), WINDOW[0])
+    before_snap = build([*BASE_ROWS, old], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, new], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_nav(replaces=True), before_snap, after_snap)
+    assert verdict.holds is True, verdict.evidence
+
+
+def test_a_counter_change_alone_is_no_replacement() -> None:
+    """The results page gaining a counter is not the watch page."""
+    counted_results = (40, "Document", "(1) drake latest video - YouTube", (42, 90), WINDOW[0])
+    before_snap = build([*BASE_ROWS, RESULTS_YT], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, counted_results], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(), before_snap, after_snap)
+    assert verdict.holds is False
+
+
+def test_a_counted_page_that_already_had_the_name_is_no_replacement() -> None:
+    before_snap = build([*BASE_ROWS, WATCH_YT], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, COUNTED_WATCH], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(), before_snap, after_snap)
+    assert verdict.holds is False
+
+
+def test_the_counter_is_stripped_only_for_the_replacing_form() -> None:
+    before_snap = build([*BASE_ROWS, RESULTS_YT], snapshot_id="before")
+    counted = (41, "Document", "(1) Drake - Janice STFU - YouTube", (42, 95), WINDOW[0])
+    after_snap = build([*BASE_ROWS, RESULTS_YT, counted], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(replaces=False), before_snap, after_snap)
+    assert verdict.holds is False
+    assert verdict.evidence["reason"] == "no_match"
+
+
+def test_a_query_that_starts_with_a_counter_still_matches_itself() -> None:
+    query = "(1) first"
+    predicate = Appeared(
+        role="Document", name_pattern=query, decoration="google_search", replaces=True
+    )
+    old = (40, "Document", "Google", (42, 90), WINDOW[0])
+    new = (41, "Document", f"{query} - Google Search", (42, 91), WINDOW[0])
+    before_snap = build([*BASE_ROWS, old], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, new], snapshot_id="after", taken_at=1.0)
+    assert evaluate(predicate, before_snap, after_snap).holds is True
