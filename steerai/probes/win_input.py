@@ -344,8 +344,10 @@ def acquire_foreground(hwnd: int) -> str:
     """Bring `hwnd` to the foreground; return the procedure that worked.
 
     Windows refuses SetForegroundWindow from a process that did not receive the last input.
-    Procedures, cheapest first: direct call; a harmless ALT tap via SendInput (this process then
-    counts as the last input source) then the call; AttachThreadInput to the foreground thread.
+    Procedures, cheapest first: direct call; a tagged zero-distance mouse move via SendInput (this
+    process then received the last input event) then the call; AttachThreadInput to the foreground
+    thread. Never an ALT tap: a lone ALT puts the window entered in menu mode (16 of 17 taps into
+    classic Notepad, 2026-11-07), so its next typed keys would be menu mnemonics (issue #38).
     """
     user32 = _user32()
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -359,10 +361,10 @@ def acquire_foreground(hwnd: int) -> str:
     if is_foreground():
         return "direct"
 
-    key_tap(VK_MENU)
+    nudge_in_place()
     user32.SetForegroundWindow(hwnd)
     if is_foreground():
-        return "alt-tap"
+        return "input-nudge"
 
     current = user32.GetForegroundWindow()
     user32.IsHungAppWindow.argtypes = (wintypes.HWND,)
