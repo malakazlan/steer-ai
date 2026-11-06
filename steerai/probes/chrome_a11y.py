@@ -20,6 +20,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+import warnings
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -145,6 +146,46 @@ def launch_chrome(
         url,
     ]
     return subprocess.Popen(args)  # noqa: S603 - fixed argv built from validated paths
+
+
+PROFILE_RELEASE_S = 5.0
+"""How long a test waits for Chrome's processes to let go of its profile folder (unmeasured
+beyond the leftovers seen: a crash reporter file held after the browser exited)."""
+
+
+def stop_chrome(  # noqa: PLR0913 - the OS calls are injected so the retry runs pure in tests
+    proc: Any,  # Any: a Popen; a test passes a stand-in with pid and wait()
+    profile_dir: Path,
+    *,
+    run: Any = subprocess.run,  # Any: subprocess.run or a test's recorder
+    sleep: Any = time.sleep,  # Any: time.sleep or a test's fake clock
+    remove: Any = shutil.rmtree,  # Any: shutil.rmtree or a test's fake
+    monotonic: Any = time.monotonic,  # Any: time.monotonic or a test's fake clock
+) -> None:
+    """End a test Chrome and remove its profile: the whole process tree (the crash reporter
+    outlives the browser and holds a file open), then the folder, retried until released; a
+    folder that stays is a visible warning, never silent (349 leaked folders, 2026-11-07)."""
+    run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], check=False, capture_output=True)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=10)
+    deadline = monotonic() + PROFILE_RELEASE_S
+    while True:
+        try:
+            remove(profile_dir)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            if monotonic() >= deadline:
+                warnings.warn(
+                    f"Chrome profile {profile_dir} was not removed: {exc}",
+                    ResourceWarning,
+                    stacklevel=2,
+                )
+                return
+            sleep(0.25)
+            continue
+        if not profile_dir.exists():
+            return
 
 
 # ---------------------------------------------------------------- probe

@@ -4,7 +4,6 @@ through the semantic executor, and verify the new bubble against the before snap
 from __future__ import annotations
 
 import contextlib
-import shutil
 import subprocess
 import tempfile
 import time
@@ -18,7 +17,7 @@ from steerai.action.executor import Action, Executor
 from steerai.action.live_reads import UiaLiveReads
 from steerai.action.physical import PhysicalAction, PhysicalExecutor
 from steerai.errors import ErrorCode
-from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome
+from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome, stop_chrome
 from steerai.probes.uia_snapshot import UiaClient
 from steerai.probes.win_input import acquire_foreground
 from steerai.probes.windows import wait_window_for_pid
@@ -136,10 +135,7 @@ def test_send_on_the_inbox_page_is_verified_by_t1() -> None:
         assert again.holds is False
         assert again.evidence["reason"] == "not_new"
     finally:
-        proc.terminate()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=10)
-        shutil.rmtree(profile_dir, ignore_errors=True)
+        stop_chrome(proc, profile_dir)
 
 
 def test_value_equals_on_notepad_fails_on_an_empty_document_and_passes_after_set_value() -> None:
