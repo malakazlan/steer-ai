@@ -146,9 +146,9 @@ class Deps:
     build_session: Callable[[Bound], SessionLike]
     start_monitor: Callable[[Options], Any] | None = None
     desktop: Callable[[], WindowInfo] | None = None
+    """The shell's desktop window for `--desktop`; None only in pure tests."""
     open_windows: Callable[[], Sequence[str]] | None = None
     """Titles of the open windows of registry apps, for the planner; None only in pure tests."""
-    """The shell's desktop window for `--desktop`; None only in pure tests."""
     screen: Callable[[int], tuple[str, Sequence[str]]] | None = None
     """(title, 6.2 lines) of a window after a warm-up observe; None only in pure tests."""
     planner: Callable[[PlanRequest], PlanOutcome] | None = None

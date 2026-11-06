@@ -270,6 +270,15 @@ class Ledger:
         self._executions[key] = entry
         self._save_state()
 
+    def record_open_attempt(self, step: Step, outcome: str) -> None:
+        """A launched `open` that was not verified, at any tier: not done, and a resume must
+        confirm before launching again (a window may already be open)."""
+        key = self.key_for(step)
+        entry = dict(self._executions.get(key) or {"step_id": step.id})
+        entry.update(phase="verified", outcome=outcome)
+        self._executions[key] = entry
+        self._save_state()
+
     def opened_window(self, step: Step) -> dict[str, Any] | None:
         entry = self._executions.get(self.key_for(step))
         window = None if entry is None else entry.get("window")

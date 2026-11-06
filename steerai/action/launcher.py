@@ -38,7 +38,7 @@ class OpenAction:
     verb: str = "open"
 
 
-def _real_popen(argv: list[str]) -> Any:
+def _real_popen(argv: list[str]) -> Any:  # Any: a Popen the launcher never reads
     return subprocess.Popen(  # noqa: S603 - registry-built argv, no shell
         argv,
         env=launch_env(os.environ),
@@ -54,7 +54,7 @@ class Launcher:
     def __init__(  # noqa: PLR0913 - every system call is injected so the executor runs pure
         self,
         *,
-        popen: Callable[[list[str]], Any] = _real_popen,
+        popen: Callable[[list[str]], Any] = _real_popen,  # Any: the process is not read
         list_windows: Callable[[], Sequence[WindowInfo]] | None = None,
         process_name: Callable[[int], str] | None = None,
         resolve_exe: Callable[[Sequence[str]], str] = resolve_exe,
@@ -96,7 +96,8 @@ class Launcher:
         found = self._new_window(spec.process_names, {w.hwnd for w in windows_before})
         if isinstance(found, str):
             evidence["detail"] = found
-            code = ErrorCode.GATE_BLOCKED if found == "killed" else ErrorCode.VERIFY_TIMEOUT
+            timed_out = found in ("no_new_window", "several_new_windows")
+            code = ErrorCode.VERIFY_TIMEOUT if timed_out else ErrorCode.GATE_BLOCKED
             return ActionResult(
                 verb="open",
                 delivery=Delivery.DELIVERY_UNCERTAIN,

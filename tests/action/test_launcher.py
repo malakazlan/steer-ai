@@ -182,3 +182,16 @@ def test_the_real_launch_passes_only_the_allowlisted_environment(
     launcher_module._real_popen(["C:/x.exe"])
     assert "ANTHROPIC_API_KEY" not in seen["env"]
     assert seen.get("shell") in (None, False)
+
+
+def test_any_blocker_token_during_the_poll_is_a_block() -> None:
+    machine = Machine(appears=[], appear_after=0)
+    calls = {"n": 0}
+
+    def blocker() -> str | None:
+        calls["n"] += 1
+        return "monitor_lost" if calls["n"] > 2 else None
+
+    result = _launcher(machine, blocker=blocker).execute(_open(), [CHROME_OLD])
+    assert result.code is ErrorCode.GATE_BLOCKED
+    assert result.evidence["detail"] == "monitor_lost"

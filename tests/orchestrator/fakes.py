@@ -218,6 +218,12 @@ class MemoryLedger:
         entry.update(phase="verified", outcome="delivered_verified", window=dict(window))
         self.executions[key] = entry
 
+    def record_open_attempt(self, step: Step, outcome: str) -> None:
+        key = self.key_for(step)
+        entry = dict(self.executions.get(key) or {"step_id": step.id})
+        entry.update(phase="verified", outcome=outcome)
+        self.executions[key] = entry
+
     def opened_window(self, step: Step) -> dict[str, Any] | None:
         entry = self.executions.get(self.key_for(step))
         window = None if entry is None else entry.get("window")

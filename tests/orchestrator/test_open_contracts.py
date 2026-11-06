@@ -4,12 +4,14 @@ scope item 2; schema gate P1, P2; hunter OW-01/02/33)."""
 from __future__ import annotations
 
 import json
+import unicodedata
 from typing import Any
 
 import pytest
 
 from steerai.orchestrator.contracts import Step, Target
 from steerai.orchestrator.gate import Gate, open_tier, params_for
+from steerai.orchestrator.ledger import key_params
 from steerai.orchestrator.plan_io import PlanError, plan_from_json, plan_to_json
 from steerai.verify.predicates import WindowExists
 from steerai.verify.strength import strength, template_for
@@ -68,6 +70,8 @@ def test_an_open_step_round_trips_through_the_file_form() -> None:
         {"params": {"site": "youtube", "text": "extra"}},
         {"params": {"site": "youtube_search", "text": "x", "window_name": "anything"}},
         {"text": "typed text"},
+        {"path": "semantic"},
+        {"path": "physical"},
     ],
 )
 def test_the_file_form_refuses_what_the_registries_refuse(change: dict[str, Any]) -> None:
@@ -101,6 +105,12 @@ def test_the_template_title_is_filled_by_code_and_is_strong_at_r2() -> None:
         ("tell Amir code 4821, then open YouTube", "4821", "google_search", "R2"),
         ("google the weather in Lahore", "weather in Lahore", "google_search", "R1"),
         ("open notepad", None, None, "R1"),
+        # principal item 1: digits and symbols are content too
+        ("find drake's latest video on youtube", "drake 4111111111111111", "youtube_search", "R2"),
+        ("search youtube for drake 2026", "drake 2026", "youtube_search", "R1"),
+        ("search youtube for drake", "drake & co", "youtube_search", "R2"),
+        ("search youtube for drakes latest", "drake's latest", "youtube_search", "R2"),
+        ("search youtube for drake's latest", "drake's latest", "youtube_search", "R1"),
     ],
 )
 def test_the_content_tier_is_computed_from_the_goal(
@@ -134,3 +144,36 @@ def test_a_confirmed_open_shows_the_app_the_host_and_the_content() -> None:
     assert ask.target_name == "chrome"
     assert ask.params["opens"] == "www.youtube.com"
     assert ask.params["text"] == "drake newest"
+
+
+# ---- tester gaps (sign-off 2026-11-06) ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("goal", "text", "tier"),
+    [
+        (
+            "search YouTube for Beyonc\u00e9 live",
+            unicodedata.normalize("NFD", "Beyonc\u00e9 live"),
+            "R1",
+        ),
+        ("search \uff39\uff4f\uff55\uff34\uff55\uff42\uff45 for drake", "drake", "R1"),
+        ("search YouTube for drake", "drake's", "R2"),
+        ("search YouTube for drake", "drake\u200blatest", "R2"),
+    ],
+)
+def test_the_content_tier_with_unicode_and_punctuation(goal: str, text: str, tier: str) -> None:
+    assert open_tier(goal, _open(text=text)) == tier
+
+
+def test_key_params_of_a_non_open_step_without_a_window_are_the_pre_open_form() -> None:
+    step = Step(
+        id="s1",
+        subgoal="g1",
+        verb="type",
+        target=Target(role="Edit", name="M"),
+        text="hi",
+        risk="R1",
+        params={"scope": "Chat"},
+    )
+    assert key_params(step, None) == {"scope": "Chat", "text": "hi"}

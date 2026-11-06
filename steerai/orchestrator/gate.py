@@ -74,6 +74,14 @@ def _words(text: str) -> list[str]:
     return _WORD.findall(comparable(text))
 
 
+_TOKEN = re.compile(r"[^\W_]+")
+"""Letters and digits: a number in an `open`'s content is content too (review item 1)."""
+
+
+def _tokens(text: str) -> list[str]:
+    return [token.casefold() for token in _TOKEN.findall(comparable(text))]
+
+
 def _id_words(automation_id: str) -> list[str]:
     # btnDelete, delete_chat, chat-delete-button: split on case changes, then on non-words
     return _words(_CAMEL.sub(" ", automation_id))
@@ -224,10 +232,13 @@ def open_tier(goal: str, step: Step) -> Risk:
     text = step.params.get("text")
     if site is None or text is None:
         return risk
-    goal_words = set(_words(goal))
+    goal_tokens = set(_tokens(goal))
     spec = SITES.get(site)
-    named = spec is not None and bool(spec.names & goal_words)
-    if named and set(_words(text)) <= goal_words:
+    named = spec is not None and bool(spec.names & goal_tokens)
+    symbols = {ch for ch in comparable(text) if not (ch.isalnum() or ch.isspace())}
+    goal_symbols = set(comparable(goal))
+    # every word and every symbol of the content must be the goal's own (review item 1)
+    if named and symbols <= goal_symbols and set(_tokens(text)) <= goal_tokens:
         return risk
     return "R2" if _RISK_ORDER[risk] < _RISK_ORDER["R2"] else risk
 

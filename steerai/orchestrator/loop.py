@@ -30,7 +30,7 @@ from typing import Any, Literal, Protocol
 
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.action.executor import Action
-from steerai.action.launch import expected_title, title_matches
+from steerai.action.launch import APPS, expected_title, title_matches
 from steerai.action.launcher import OpenAction
 from steerai.action.physical import TEXT_ROLES, PhysicalAction
 from steerai.action.sanitize import normalise_newlines
@@ -67,7 +67,6 @@ from steerai.verify.predicates import (
     TitleMatches,
     WindowExists,
     WindowGone,
-    name_matches,
 )
 from steerai.verify.t1 import (
     NO_LABEL_REASONS,
@@ -157,9 +156,12 @@ class TaskLedger(Protocol):
     def set_window_ref(self, ref: str | None) -> None: ...
     def record_open(self, step: Step, window: Mapping[str, Any]) -> None: ...
     def opened_window(self, step: Step) -> dict[str, Any] | None: ...
+    def record_open_attempt(self, step: Step, outcome: str) -> None: ...
 
 
 class LauncherLike(Protocol):
+    # Any: the launcher takes the probes' WindowInfo, the loop's lister yields WindowLike;
+    # a Protocol parameter cannot be narrower than its implementations
     def execute(self, action: OpenAction, windows_before: Sequence[Any]) -> ActionResult: ...
 
 
@@ -251,6 +253,7 @@ class Session:
         monitor: Monitor | None = None,
         launcher: LauncherLike | None = None,
         window_title: Callable[[int], str] | None = None,
+        # Any: a JSON-shaped identity record (hwnd, pid, start, image, title)
         identify: Callable[[int], dict[str, Any] | None] | None = None,
         foreground: Callable[[], int] | None = None,
     ) -> None:
@@ -411,6 +414,14 @@ class Session:
                 self._rebind_opened(step)
                 evidence["window"] = "rebound"
                 return self._done_already(step, stage, evidence)
+            prior = self._ledger.outcome_of(key)
+            if prior is not None and prior != "not_delivered" and risk in ("R0", "R1"):
+                # an earlier attempt launched and may have opened a window: never a silent second
+                # launch; the person confirms with the earlier attempt shown (tester gap)
+                step = replace(step, risk="R2")
+                risk = "R2"
+                evidence["risk"] = risk
+                key = self._ledger.key_for(step)
             before = stage.measure("observe", lambda: self._before(risk, evidence))
             previous = self._admission(step, key, risk, before)
             gate_result = stage.measure(
@@ -453,12 +464,15 @@ class Session:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_target")
         site, text = step.params.get("site"), step.params.get("text")
         title = expected_title(step.target.name, site, text)
-        windows_before = list(self._windows()) if self._windows else []
+        if self._windows is None:
+            # with no list, the person's own windows would count as new (review note)
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "no_window_list")
         if risk in ("R2", "R3"):
             try:
                 self._ledger.mark(step, "acting")
             except LedgerError as exc:
                 raise _StepFailureError(ErrorCode.GATE_BLOCKED, "wal_unavailable") from exc
+        windows_before = list(self._windows())  # the last thing before the launch (P4)
         launcher = self._launcher
         action = stage.measure(
             "act",
@@ -470,13 +484,16 @@ class Session:
         self._sent_in_act = bool(action.steps)
         hwnd = action.evidence.get("hwnd")
         if not isinstance(hwnd, int):
-            self._close(step, risk, action.delivery.value)
+            self._close_open(step, risk, action.delivery.value, launched=bool(action.steps))
             evidence["detail"] = str(action.evidence.get("detail", "no_new_window"))
             return self._finish(step, stage, evidence, gate=gate, action=action, code=action.code)
         holds = stage.measure("verify", lambda: self._title_arrives(hwnd, title))
         identity = self._identify(hwnd) if holds else None
+        images = APPS[step.target.name].process_names if step.target.name in APPS else frozenset()
+        if identity is not None and str(identity.get("image", "")).lower() not in images:
+            identity = None  # the window is not the app's after all
         if identity is None:
-            self._close(step, risk, Delivery.DELIVERED_UNVERIFIED.value)
+            self._close_open(step, risk, Delivery.DELIVERED_UNVERIFIED.value, launched=True)
             evidence["detail"] = "open_unverified"
             return self._finish(
                 step,
@@ -488,7 +505,7 @@ class Session:
                 code=ErrorCode.VERIFY_TIMEOUT,
             )
         self._close(step, risk, Delivery.DELIVERED_VERIFIED.value)
-        self._ledger.record_open(step, {**identity, "title": title})
+        self._ledger.record_open(step, identity)  # the observed title, digested
         self._adopt(hwnd, step)
         evidence["window"] = "opened"
         if self._foreground is not None:
@@ -496,6 +513,14 @@ class Session:
         return self._finish(
             step, stage, evidence, gate=gate, action=action, label_kind="t1", ok=True
         )
+
+    def _close_open(self, step: Step, risk: Risk, outcome: str, *, launched: bool) -> None:
+        """An R2/R3 attempt closes its write-ahead record; a launched R0/R1 attempt is still
+        recorded, so a resume knows a window may already be open (tester gap)."""
+        if risk in ("R2", "R3"):
+            self._close(step, risk, outcome)
+        elif launched:
+            self._ledger.record_open_attempt(step, outcome)
 
     def _title_arrives(self, hwnd: int, title: str) -> bool:
         """The launcher's own window shows the code-owned title (counter stripped, full-string),
@@ -552,12 +577,12 @@ class Session:
             snapshot = self._observer.observe(self.hwnd)
         except SteerError:
             return False
-        if not isinstance(predicate, Appeared):
+        if not isinstance(predicate, _DIFF_PREDICATES):
             return self._holds_now(predicate, snapshot)
-        return any(
-            e.role == predicate.role and name_matches(e.name, predicate.name_match, scoped=True)
-            for e in snapshot.elements
-        )
+        # the verifier, against an empty before of the new window: scope, count, case
+        # and replace rules all still apply (review item 3)
+        empty = replace(snapshot, id=f"{snapshot.id}-empty", elements=[], node_count=0, handles=[])
+        return self._subgoal_holds(predicate, empty, snapshot)
 
     # ---- stages ---------------------------------------------------------------------------------
 
@@ -1275,7 +1300,13 @@ class Session:
                 code=failure.code,
                 evidence={"detail": "observe_raised"},
             )
-        ticked = {s.id for s in plan.subgoals if self._holds_now(s.condition, start)}
+        opening = {s.subgoal for s in plan.steps if s.verb == "open"}
+        # an open's subgoal is reached in the window it opens, never in the start window
+        ticked = {
+            s.id
+            for s in plan.subgoals
+            if s.id not in opening and self._holds_now(s.condition, start)
+        }
         outcome = self._run_steps(plan, ticked, results)
         if outcome is not None:
             stopped, code, detail = outcome
@@ -1354,7 +1385,7 @@ class Session:
             detail = str(result.evidence.get("detail", result.gate))
             return "stopped", result.code or ErrorCode.VERIFY_TIMEOUT, detail
         subgoal = next(s for s in plan.subgoals if s.id == step.subgoal)
-        if result.gate == "done_already" or self._holds_in_window(subgoal.condition):
+        if self._holds_in_window(subgoal.condition):  # checked, rebound or not (item 2)
             ticked.add(subgoal.id)
         return None
 

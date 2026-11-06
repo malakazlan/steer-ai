@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+import pytest
+
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.action.dispositions import Step as ActionStep
 from steerai.errors import ErrorCode
@@ -16,7 +18,7 @@ from steerai.orchestrator.contracts import Plan, Step, Subgoal, Target
 from steerai.orchestrator.gate import Gate
 from steerai.orchestrator.loop import Session
 from steerai.probes.windows import WindowInfo
-from steerai.verify.predicates import TitleMatches, WindowExists
+from steerai.verify.predicates import All, AnyOf, TitleMatches, WindowExists
 from tests.orchestrator.fakes import FakeConfirmer, FakeExecutor, FakeLive, FakeWorld, MemoryLedger
 from tests.orchestrator.test_loop import _click
 
@@ -31,9 +33,12 @@ class FakeLauncher:
     result_hwnd: int | None = 0x30
     detail: str = "no_new_window"
     calls: list[tuple[Any, list[int]]] = field(default_factory=list)
+    after_launch: Any = None  # Any: a test hook run right after the launch
 
     def execute(self, action: Any, windows_before: Any) -> ActionResult:
         self.calls.append((action, [w.hwnd for w in windows_before]))
+        if self.after_launch is not None:
+            self.after_launch()
         if self.result_hwnd is None:
             return ActionResult(
                 verb="open",
@@ -82,6 +87,7 @@ class Rig:
     clock: dict[str, float] = field(default_factory=lambda: {"t": 0.0})
     semantic: FakeExecutor | None = None
     session: Session | None = None
+    monitor: Any = None
 
     def build(self) -> Session:
         self.semantic = FakeExecutor(self.world, "semantic")
@@ -102,6 +108,7 @@ class Rig:
             window_title=self.desk.title_of,
             identify=self.desk.identify,
             foreground=lambda: 0x30,
+            monitor=self.monitor,
         )
         return self.session
 
@@ -249,3 +256,228 @@ def test_a_step_after_an_open_is_a_different_action_than_before_it() -> None:
     key_before = rig.ledger.key_for(click)
     session.run_step(_open())
     assert rig.ledger.key_for(click) != key_before
+
+
+# ---- tester gaps (sign-off 2026-11-06) ------------------------------------------------------
+
+NOTEPAD_TITLE = "Untitled - Notepad"
+NOTEPAD_IDENTITY = {"hwnd": 0x40, "pid": 600, "start": 9, "image": "notepad.exe"}
+
+
+@dataclass
+class TwoAppDesk(Desk):
+    notepad_titles: list[str] = field(default_factory=lambda: [NOTEPAD_TITLE])
+
+    def title_of(self, hwnd: int) -> str:
+        if hwnd == 0x40:
+            return self.notepad_titles[0]
+        return YT_TITLE
+
+    def identify(self, hwnd: int) -> dict[str, Any] | None:
+        return {**(NOTEPAD_IDENTITY if hwnd == 0x40 else IDENTITY), "hwnd": hwnd}
+
+
+@dataclass
+class TwoAppLauncher(FakeLauncher):
+    def execute(self, action: Any, windows_before: Any) -> ActionResult:
+        self.result_hwnd = 0x40 if action.app == "notepad" else 0x30
+        return super().execute(action, windows_before)
+
+
+def _two_opens() -> Plan:
+    notepad = Step(
+        id="o2", subgoal="g2", verb="open", target=Target(role="App", name="notepad"), risk="R1"
+    )
+    return Plan(
+        goal="search YouTube for drake latest video, then open notepad",
+        subgoals=(
+            Subgoal(id="g1", desc="results", condition=WindowExists(name_pattern=YT_TITLE)),
+            Subgoal(id="g2", desc="notepad", condition=WindowExists(name_pattern=NOTEPAD_TITLE)),
+        ),
+        steps=(_open(), notepad),
+    )
+
+
+def test_a_resume_after_the_first_of_two_opens_rebinds_it_and_launches_only_the_second() -> None:
+    first = Rig(launcher=TwoAppLauncher(), desk=TwoAppDesk(notepad_titles=["Notepad"]))
+    stopped = first.build().run_task(_two_opens())
+    assert stopped.status == "stopped"
+    assert stopped.evidence["detail"] == "open_unverified"
+    resumed = Rig(launcher=TwoAppLauncher(), desk=TwoAppDesk(), ledger=first.ledger)
+    resumed.ledger.set_window_ref(None)
+    session = resumed.build()
+    result = session.run_task(_two_opens())
+    assert result.status == "done", result
+    # the second open's first attempt launched unverified: the resume confirms before it
+    # launches again (a window may already be open)
+    assert [r.gate for r in result.results] == ["done_already", "confirm"]
+    assert [call[0].app for call in resumed.launcher.calls] == ["notepad"]
+    assert session.hwnd == 0x40
+    assert resumed.ledger.window_ref == "opened:o2"
+    resumed.ledger.set_window_ref("opened:o1")
+    assert resumed.ledger.opened_window(_two_opens().steps[1]) is not None
+
+
+def test_a_kill_during_the_launchers_poll_blocks_the_task_and_adopts_nothing() -> None:
+    rig = Rig(launcher=FakeLauncher(result_hwnd=None, detail="killed"))
+    session = rig.build()
+    result = session.run_task(
+        _plan(_open(), _click(step_id="c1", expect=TitleMatches(pattern="x")))
+    )
+    assert result.status == "blocked"
+    assert result.code is ErrorCode.GATE_BLOCKED
+    assert len(result.results) == 1
+    assert session.hwnd == START.hwnd
+    assert rig.ledger.window_ref is None
+
+
+def test_a_kill_while_the_title_is_awaited_blocks_with_nothing_adopted() -> None:
+    from tests.orchestrator.test_takeover_loop import FakeMonitor  # noqa: PLC0415
+
+    rig = Rig(desk=Desk(titles=["New Tab - Google Chrome"]))
+
+    class KillAfterLaunch(FakeMonitor):
+        def kill_requested(self) -> bool:
+            return bool(rig.launcher.calls)
+
+    rig.monitor = KillAfterLaunch(clock=rig.clock, last_user=-100.0)
+    session = rig.build()
+    result = session.run_task(_plan(_open()))
+    assert result.status == "blocked"
+    assert result.evidence["detail"] == "killed"
+    assert len(rig.launcher.calls) == 1
+    assert rig.desk.reads == 0, "the kill is checked before the first title read"
+    assert session.hwnd == START.hwnd
+    assert rig.ledger.window_ref is None
+
+
+@pytest.mark.parametrize(
+    ("condition", "status"),
+    [
+        (All(parts=(WindowExists(name_pattern=YT_TITLE), TitleMatches(pattern="YouTube"))), "done"),
+        (
+            AnyOf(parts=(WindowExists(name_pattern="Inbox"), WindowExists(name_pattern=YT_TITLE))),
+            "done",
+        ),
+        (TitleMatches(pattern="drake latest"), "done"),
+        (
+            All(parts=(WindowExists(name_pattern=YT_TITLE), TitleMatches(pattern="Gmail"))),
+            "stopped",
+        ),
+        (
+            AnyOf(parts=(WindowExists(name_pattern="Inbox"), TitleMatches(pattern="Gmail"))),
+            "stopped",
+        ),
+    ],
+)
+def test_an_opens_subgoal_holds_in_the_window_it_opened(condition: Any, status: str) -> None:
+    rig = Rig(desk=Desk(titles=[YT_TITLE]))
+    plan = Plan(
+        goal="search YouTube for drake latest video",
+        subgoals=(Subgoal(id="g1", desc="results", condition=condition),),
+        steps=(_open(),),
+    )
+    assert rig.build().run_task(plan).status == status
+
+
+# ---- principal implementation review (items 2, 3, 6) ------------------------------------------
+
+
+def _two_step_plan(goal: str = "search YouTube for drake latest video") -> Plan:
+    """An open and a click in one subgoal: the click is what reaches it (item 2)."""
+    from steerai.verify.predicates import Appeared  # noqa: PLC0415
+
+    return Plan(
+        goal=goal,
+        subgoals=(
+            Subgoal(id="g1", desc="video", condition=Appeared(role="Button", name_pattern="Pause")),
+        ),
+        steps=(_open(), _click(step_id="c1", expect=TitleMatches(pattern="Amir Khan - Chat"))),
+    )
+
+
+def test_a_rebound_open_never_ticks_its_subgoal_without_a_check() -> None:
+    rig = Rig()
+    rig.ledger.record_open(_open(), IDENTITY)
+    session = rig.build()
+    result = session.run_task(_two_step_plan())
+    assert [r.step_id for r in result.results] == ["o1", "c1"], "the click still runs"
+
+
+def test_an_open_subgoal_is_never_ticked_at_task_start() -> None:
+    """The start window may already show the condition; the open's subgoal still runs."""
+    rig = Rig()
+    rig.world.rows.append((40, "Button", "Pause", (42, 90), 0))
+    session = rig.build()
+    result = session.run_task(_two_step_plan())
+    assert result.results[0].step_id == "o1"
+
+
+def test_the_new_window_check_keeps_the_scope_and_case_rules() -> None:
+    """Item 3: an `appeared` in the new window goes through the verifier, not a bare scan."""
+    from steerai.verify.predicates import Appeared, Within  # noqa: PLC0415
+
+    rig = Rig()
+    rig.world.rows.append((40, "Button", "pause", (42, 90), 0))
+    session = rig.build()
+    session.run_step(_open())
+    scoped = Appeared(role="Button", name_pattern="Pause", within=Within(landmark="Nowhere"))
+    assert session._holds_in_window(scoped) is False
+    window_wide = Appeared(role="Button", name_pattern="Pause")
+    assert session._holds_in_window(window_wide) is False, "window-wide matches keep case"
+
+
+def test_a_resume_with_two_opens_keys_the_steps_between_by_the_first_window() -> None:
+    rig = Rig()
+    first, second = _open(step_id="o1"), _open(step_id="o2")
+    click = _click(step_id="c1", expect=TitleMatches(pattern="Amir Khan - Chat"))
+    rig.ledger.record_open(first, IDENTITY)
+    rig.ledger.set_window_ref("opened:o1")
+    click_key = rig.ledger.key_for(click)
+    rig.ledger.set_window_ref(None)
+    session = rig.build()
+    session.run_step(first)  # rebound
+    assert rig.ledger.window_ref == "opened:o1"
+    assert rig.ledger.key_for(click) == click_key
+    session.run_step(second)
+    assert rig.ledger.window_ref == "opened:o2"
+    assert rig.launcher.calls, "the second open launched"
+
+
+def test_a_kill_while_the_title_loads_blocks_with_nothing_adopted() -> None:
+    from tests.orchestrator.test_takeover_loop import FakeMonitor  # noqa: PLC0415
+
+    rig = Rig(desk=Desk(titles=["New Tab - Google Chrome"]))
+    monitor = FakeMonitor(clock=rig.clock)
+    session = rig.build()
+    session._monitor = monitor
+
+    rig.launcher.after_launch = lambda: setattr(monitor, "kill", True)
+    result = session.run_task(
+        _plan(_open(), _click(step_id="c1", expect=TitleMatches(pattern="x")))
+    )
+    assert result.status == "blocked"
+    assert result.evidence["detail"] == "killed"
+    assert session.hwnd == START.hwnd
+    assert rig.ledger.window_ref is None
+
+
+def test_a_resume_after_an_unverified_open_asks_before_launching_again() -> None:
+    """Tester gap: an earlier attempt may have opened a window; never a silent second launch."""
+    rig = Rig(desk=Desk(titles=["New Tab - Google Chrome"]))
+    session = rig.build()
+    goal = "search YouTube for drake latest video"  # verbatim content: the first attempt is R1
+    session._goal = goal
+    first = session.run_step(_open())
+    assert first.ok is False
+    assert first.evidence["risk"] == "R1"
+    rig2 = Rig(ledger=rig.ledger, confirmer=FakeConfirmer(answers=["no"]))
+    resumed = rig2.build()
+    resumed._goal = goal
+    result = resumed.run_step(_open())
+    assert rig2.confirmer.asked, "the person is asked first"
+    ask = rig2.confirmer.asked[0]
+    assert ask.risk == "R2"
+    assert ask.previous_attempt == "delivered_unverified"
+    assert rig2.launcher.calls == []
+    assert result.ok is False

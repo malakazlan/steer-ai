@@ -32,7 +32,7 @@ DEFAULT_MAX_TOKENS = 8192
 """Unmeasured: enough for the 6.3 form of a ten-step plan; a `max_tokens` stop is `truncated`."""
 DEFAULT_MAX_RETRIES = 1
 EFFORT = "medium"
-PROMPT_VERSION = "planner-4"
+PROMPT_VERSION = "planner-5"
 MECHANICAL_VERBS = frozenset({"type", "focus", "open"})
 """Steps whose effect code verifies (value typed, focus held, window opened): any model
 `expect` is dropped."""
@@ -55,7 +55,8 @@ An open step: {{"verb": "open", "target": {{"role": "App", "name": <one of {sort
 chrome; give "text" for a search site, taken from the goal's own words where possible, and no
 "text" for youtube. Notepad takes no site. Start with an open when the goal needs an app or a
 site that is not the current window; the open windows listed with the screen are already
-there. An open needs no "expect": the agent verifies the opened window itself.
+there. An open needs no "expect": the agent verifies the opened window itself. A subgoal
+an open reaches is a "title" condition holding the site's name or the search words.
 
 Risk tiers: R0 read-only or focus; R1 reversible typing; R2 an external effect (send, submit,
 post); R3 destructive (delete, pay, reset). send and submit are never below R2, delete never
