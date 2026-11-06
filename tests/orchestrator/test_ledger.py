@@ -586,3 +586,50 @@ def test_unsettled_is_any_attempt_not_known_done_or_not_sent(tmp_path: Path) -> 
         assert ledger.unsettled() is False
         ledger.record_open_attempt(_open_step("o2"), "delivered_unverified")
         assert ledger.unsettled() is True
+
+
+def test_an_open_write_ahead_record_is_unsettled_and_nothing_sent_is_settled(
+    tmp_path: Path,
+) -> None:
+    """RP-06 boundaries: a crash between write-ahead and outcome may have acted; a launch that
+    delivered nothing did not."""
+    with Ledger(tmp_path, task_id="t-wal", started_at=1.0) as ledger:
+        ledger.record_open_attempt(_open_step("o1"), "not_delivered")
+        assert ledger.unsettled() is False
+        step = _send()
+        key = ledger.key_for(step)
+        ledger.write_ahead(step, _snapshot(), _decision(key, "approve"))
+        assert ledger.unsettled() is True
+    with Ledger(tmp_path, task_id="t-wal", started_at=1.0) as ledger:
+        assert ledger.unsettled() is True, "an open record survives a restart"
+
+
+def test_a_state_from_before_the_chain_is_bound_to_its_one_plan(tmp_path: Path) -> None:
+    """Addendum item 3: the legacy digest is the chain's one link, not an empty chain."""
+    with Ledger(tmp_path, task_id="t-legacy", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64)
+    state_path = next(tmp_path.rglob("state.ledger"))
+    payload = json.loads(dpapi.unprotect(state_path.read_bytes(), entropy=b"steer-ledger-v1"))
+    payload.pop("plan_chain")
+    state_path.write_bytes(dpapi.protect(json.dumps(payload).encode(), entropy=b"steer-ledger-v1"))
+    with Ledger(tmp_path, task_id="t-legacy", started_at=1.0) as ledger:
+        assert ledger.plan_count() == 1
+        with pytest.raises(LedgerError, match="plan_changed"):
+            ledger.bind_plan("c" * 64)
+
+
+def test_a_resumed_link_records_its_step_ids_for_the_next_replan(tmp_path: Path) -> None:
+    """A legacy link loads with no step ids; the resume's bind fills them, so a later replan
+    cannot reuse one (addendum item 2)."""
+    with Ledger(tmp_path, task_id="t-fill", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64)
+    state_path = next(tmp_path.rglob("state.ledger"))
+    payload = json.loads(dpapi.unprotect(state_path.read_bytes(), entropy=b"steer-ledger-v1"))
+    payload.pop("plan_chain")
+    state_path.write_bytes(dpapi.protect(json.dumps(payload).encode(), entropy=b"steer-ledger-v1"))
+    with Ledger(tmp_path, task_id="t-fill", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["s1"])
+    with Ledger(tmp_path, task_id="t-fill", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64)
+        with pytest.raises(LedgerError, match="step_id_reused"):
+            ledger.extend_plan("b" * 64, ["s1"])

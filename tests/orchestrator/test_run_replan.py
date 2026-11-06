@@ -19,6 +19,7 @@ from steerai.orchestrator.contracts import Plan, Step, StepResult, Subgoal, Targ
 from steerai.orchestrator.loop import TaskResult
 from steerai.orchestrator.plan_io import plan_from_bytes, plan_to_json
 from steerai.planner.contracts import DoneStep, OpenSubgoal, PlannerError, PlanOutcome, PlanRequest
+from steerai.probes.windows import WindowInfo
 from steerai.run import EXIT_BLOCKED, EXIT_DONE, EXIT_PAUSED, EXIT_STOPPED, parse_args, run
 from steerai.verify.predicates import TitleMatches, WindowExists
 from tests.orchestrator.test_run import FakeLedger, World
@@ -457,3 +458,253 @@ def test_a_foreground_failure_between_plans_stops_focus_lost(tmp_path: Path) -> 
     assert (out["code"], out["detail"]) == ("focus_lost", "foreground")
     assert [r["step_id"] for r in out["results"]] == ["s1"]
     assert len(rig.session.ran) == 1
+
+
+def test_an_existing_continuation_file_stops_before_the_model_call(tmp_path: Path) -> None:
+    rig, first, _cont = _two_plan_rig(tmp_path)
+    (tmp_path / "l").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "l" / "rp-1.plan.2.json").write_text("{}", encoding="utf-8")
+    code, out, _err = rig.run(f"{_go(first)}\n")
+    assert out["detail"] == "plan_exists"
+    assert len(rig.planner.requests) == 1, "no second model call"
+    assert code == EXIT_STOPPED
+
+
+# ---- the continuation's own gates: chain, risk limit, preview, ask, idle, foreground ---------
+
+
+def test_the_preview_names_the_reached_subgoals_and_marks_a_rewritten_condition(
+    tmp_path: Path,
+) -> None:
+    """Decision Q1: plan 1's g2 waited on "x"; the continuation rewrote it for this screen."""
+    rig, first, cont = _two_plan_rig(tmp_path)
+    _code, _out, err = rig.run(f"{_go(first)}\n{_go(cont)}\n")
+    assert "continuation 1/2; subgoals reached: g1" in err
+    assert "subgoal g2: playing when" in err
+    assert err.count("(condition rewritten)") == 1
+
+
+def test_a_chain_refusal_blocks_with_its_token_and_runs_nothing_more(tmp_path: Path) -> None:
+    rig, first, _cont = _two_plan_rig(tmp_path)
+    base = rig.world.deps
+
+    def deps() -> Any:
+        built = base()
+        open_ledger = built.open_ledger
+
+        def refusing(root: Path, task_id: str) -> Any:
+            ledger: Any = open_ledger(root, task_id)  # Any: the test's FakeLedger
+            ledger.refuse = "step_id_reused"
+            return ledger
+
+        return built.replace(open_ledger=refusing)
+
+    rig.world.deps = deps  # type: ignore[method-assign]
+    code, out, _err = rig.run(f"{_go(first)}\n")
+    assert code == EXIT_BLOCKED
+    assert (out["status"], out["code"], out["detail"]) == (
+        "blocked",
+        "gate_blocked",
+        "step_id_reused",
+    )
+    assert len(rig.session.ran) == 1
+    assert [r["step_id"] for r in out["results"]] == ["s1"]
+
+
+def test_a_continuation_over_the_risk_limit_is_refused_before_its_ask(tmp_path: Path) -> None:
+    first = _outcome(_first())
+    risky = Plan(
+        goal=GOAL,
+        subgoals=_continuation().subgoals,
+        steps=(
+            Step(
+                id="p2.s1",
+                subgoal="g2",
+                verb="click",
+                target=Target(role="Link", name="Drake - Video"),
+                risk="R2",
+                expect=TitleMatches(pattern="Drake"),
+            ),
+        ),
+    )
+    cont = _outcome(risky)
+    rig = Rig(ScriptedSession([_unfinished(_step("s1"))]), ScriptedPlanner([first, cont]), tmp_path)
+    code, out, err = rig.run(f"{_go(first)}\n{_go(cont)}\n", "--max-risk", "R1")
+    assert code == EXIT_BLOCKED
+    assert (out["status"], out["detail"]) == ("blocked", "risk_over_limit")
+    assert "p2.s1" in err
+    assert _go(cont)[3:] not in err, "never previewed or asked"
+    assert len(rig.session.ran) == 1
+
+
+@dataclass
+class ScriptedConfirmer:
+    answers: list[str]
+    asked: list[str] = field(default_factory=list)
+
+    def ask_go(self, go_id: str) -> str:
+        self.asked.append(go_id)
+        return self.answers[len(self.asked) - 1]
+
+
+def test_a_kill_at_the_continuations_ask_blocks_killed(tmp_path: Path) -> None:
+    rig, first, cont = _two_plan_rig(tmp_path)
+    confirmer = ScriptedConfirmer(["go", "killed"])
+    base = rig.world.deps
+
+    def deps() -> Any:
+        return base().replace(make_confirmer=lambda _i, _e, _m: confirmer)
+
+    rig.world.deps = deps  # type: ignore[method-assign]
+    code, out, err = rig.run("")
+    assert code == EXIT_BLOCKED
+    assert (out["status"], out["detail"]) == ("blocked", "killed")
+    assert confirmer.asked == [_go(first)[3:], _go(cont)[3:]]
+    assert len(rig.session.ran) == 1
+    assert "resume:" in err
+
+
+@dataclass
+class HeldMonitor:
+    """Idle and alive until the session says otherwise after plan 1."""
+
+    clock: dict[str, float]
+    killed: bool = False
+    busy: bool = False
+    lost: bool = False
+
+    def kill_requested(self) -> bool:
+        return self.killed
+
+    def last_user_input(self) -> float:
+        return self.clock["t"] if self.busy else -100.0
+
+    def healthy(self) -> bool:
+        return not self.lost
+
+    def detail(self) -> str:
+        return "monitor_lost"
+
+    def maintain(self) -> None:
+        return None
+
+    def counts(self) -> dict[str, int]:
+        return {}
+
+    def mark_ask_open(self) -> None:
+        return None
+
+    def mark_ask_closed(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+def _held(tmp_path: Path, hold: str, *, answered: bool = False) -> tuple[int, dict[str, Any], Rig]:
+    """`answered`: both asks say go (a scripted confirmer), so only the idle wait between the
+    continuation's go and its first step can see the person."""
+    rig, first, cont = _two_plan_rig(tmp_path)
+    clock = {"t": 1000.0}
+    monitor = HeldMonitor(clock)
+    session_run = rig.session.run_task
+
+    def run_task(plan: Plan, *, continuation: bool = False) -> TaskResult:
+        result = session_run(plan, continuation=continuation)
+        setattr(monitor, hold, True)  # the person acts while plan 1 ends
+        return result
+
+    rig.session.run_task = run_task  # type: ignore[method-assign]
+    base = rig.world.deps
+
+    def sleep(seconds: float) -> None:
+        clock["t"] += seconds
+
+    def deps() -> Any:
+        built = base().replace(
+            start_monitor=lambda _o: monitor, monotonic=lambda: clock["t"], sleep=sleep
+        )
+        if answered:
+            confirmer = ScriptedConfirmer(["go", "go"])
+            built = built.replace(make_confirmer=lambda _i, _e, _m: confirmer)
+        return built
+
+    rig.world.deps = deps  # type: ignore[method-assign]
+    code, out, _err = rig.run(f"{_go(first)}\n{_go(cont)}\n")
+    return code, out, rig
+
+
+def test_a_kill_during_the_continuations_ask_blocks_and_runs_nothing_more(
+    tmp_path: Path,
+) -> None:
+    """The console ask watches the kill key: a go typed after it never counts."""
+    code, out, rig = _held(tmp_path, "killed")
+    assert code == EXIT_BLOCKED
+    assert (out["status"], out["detail"]) == ("blocked", "killed")
+    assert len(rig.session.ran) == 1
+
+
+def test_a_kill_after_the_continuations_go_blocks_before_its_first_step(tmp_path: Path) -> None:
+    code, out, rig = _held(tmp_path, "killed", answered=True)
+    assert code == EXIT_BLOCKED
+    assert (out["status"], out["detail"]) == ("blocked", "killed")
+    assert len(rig.session.ran) == 1
+    assert OPENED not in rig.world.foreground_calls
+
+
+def test_a_person_busy_before_the_continuation_pauses_takeover(tmp_path: Path) -> None:
+    code, out, rig = _held(tmp_path, "busy")
+    assert code == EXIT_PAUSED
+    assert (out["status"], out["detail"]) == ("paused", "takeover")
+    assert len(rig.session.ran) == 1
+    assert OPENED not in rig.world.foreground_calls, "never tapped while the person works"
+
+
+def test_a_monitor_lost_before_the_continuation_blocks_with_its_detail(tmp_path: Path) -> None:
+    code, out, rig = _held(tmp_path, "lost", answered=True)
+    assert code == EXIT_BLOCKED
+    assert (out["status"], out["code"], out["detail"]) == (
+        "blocked",
+        "gate_blocked",
+        "monitor_lost",
+    )
+    assert len(rig.session.ran) == 1
+
+
+def _desktop_rig(tmp_path: Path, *, opens: bool) -> tuple[int, dict[str, Any], Rig]:
+    desktop = WindowInfo(hwnd=0x50, title="Program Manager", pid=900)
+    first_plan = _first() if opens else _continuation(prefix="p1", subgoal="g2")
+    if not opens:
+        first_plan = Plan(
+            goal=GOAL,
+            subgoals=(
+                Subgoal(id="g1", desc="results", condition=WindowExists(name_pattern=YT)),
+                *first_plan.subgoals,
+            ),
+            steps=first_plan.steps,
+        )
+    first, cont = _outcome(first_plan), _outcome(_continuation())
+    one = "s1" if opens else "p1.s1"
+    session = ScriptedSession([_unfinished(_step(one)), _done("p2.s1")], hwnd=desktop.hwnd)
+    rig = Rig(session, ScriptedPlanner([first, cont]), tmp_path)
+    base = rig.world.deps
+
+    def deps() -> Any:
+        return base().replace(desktop=lambda: desktop)
+
+    rig.world.deps = deps  # type: ignore[method-assign]
+    argv = ["--goal", GOAL, "--desktop", "--ledger-dir", str(tmp_path / "l"), "--task-id", "rp-1"]
+    code, out, err = rig.run(f"{_go(first)}\n{_go(cont)}\n", options=parse_args(argv))
+    assert code == EXIT_DONE, err
+    return code, out, rig
+
+
+def test_a_desktop_task_that_opened_a_window_brings_it_to_the_front(tmp_path: Path) -> None:
+    """Hunter RP-14: once the task left the desktop, plan 2 starts with its window in front."""
+    _code, _out, rig = _desktop_rig(tmp_path, opens=True)
+    assert rig.world.foreground_calls == [OPENED]
+
+
+def test_a_desktop_task_still_on_the_desktop_never_taps_it(tmp_path: Path) -> None:
+    _code, _out, rig = _desktop_rig(tmp_path, opens=False)
+    assert rig.world.foreground_calls == []

@@ -328,3 +328,39 @@ def test_a_query_that_starts_with_a_counter_still_matches_itself() -> None:
     before_snap = build([*BASE_ROWS, old], snapshot_id="before")
     after_snap = build([*BASE_ROWS, new], snapshot_id="after", taken_at=1.0)
     assert evaluate(predicate, before_snap, after_snap).holds is True
+
+
+def test_a_page_that_became_a_nested_frame_is_not_renamed_in_place() -> None:
+    """A top-level Document re-parented under the page and renamed is a frame now, never the
+    page that replaced itself."""
+    frame_before = (41, "Document", "ad", (42, 93), WINDOW[0])
+    frame_after = (41, "Document", "Drake - Janice STFU - YouTube", (42, 93), 40)
+    before_snap = build([*BASE_ROWS, RESULTS_YT, frame_before], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, RESULTS_YT, frame_after], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(), before_snap, after_snap)
+    assert verdict.holds is False
+    assert "renamed" not in verdict.evidence
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "(1)Drake - Janice STFU - YouTube",
+        "(12345) Drake - Janice STFU - YouTube",
+        "(a) Drake - Janice STFU - YouTube",
+    ],
+)
+def test_only_a_spaced_one_to_four_digit_counter_is_stripped(name: str) -> None:
+    """The counter rule's edges: no space, five digits or a letter is part of the name."""
+    before_snap = build([*BASE_ROWS, RESULTS_YT], snapshot_id="before")
+    after_snap = build(
+        [*BASE_ROWS, (40, "Document", name, (42, 90), WINDOW[0])], snapshot_id="after", taken_at=1.0
+    )
+    assert evaluate(_watch(), before_snap, after_snap).holds is False
+
+
+def test_a_four_digit_counter_is_stripped() -> None:
+    before_snap = build([*BASE_ROWS, RESULTS_YT], snapshot_id="before")
+    counted = (40, "Document", "(9999) Drake - Janice STFU - YouTube", (42, 90), WINDOW[0])
+    after_snap = build([*BASE_ROWS, counted], snapshot_id="after", taken_at=1.0)
+    assert evaluate(_watch(), before_snap, after_snap).holds is True
