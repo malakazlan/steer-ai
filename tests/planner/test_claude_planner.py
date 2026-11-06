@@ -668,3 +668,12 @@ def test_a_window_is_listed_only_by_its_reference() -> None:
 def test_the_tasks_windows_are_capped() -> None:
     many = tuple((f"opened:s{i}", "t") for i in range(MAX_OPEN_WINDOWS + 1))
     assert len(_continuation(windows=many).windows) == MAX_OPEN_WINDOWS
+
+
+def test_the_prompt_teaches_the_value_condition() -> None:
+    """Issue #36: text left in a field is an end state the model can now write."""
+    system, _ = build_prompt(_request(), tag="t")
+    flat = " ".join(system.split())
+    assert "value: role, name, text" in flat
+    assert "only as a subgoal condition" in flat
+    assert "the same subgoal" in flat

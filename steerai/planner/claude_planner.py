@@ -32,7 +32,7 @@ DEFAULT_MAX_TOKENS = 8192
 """Unmeasured: enough for the 6.3 form of a ten-step plan; a `max_tokens` stop is `truncated`."""
 DEFAULT_MAX_RETRIES = 1
 EFFORT = "medium"
-PROMPT_VERSION = "planner-9"
+PROMPT_VERSION = "planner-10"
 MECHANICAL_VERBS = frozenset({"type", "focus", "open"})
 """Steps whose effect code verifies (value typed, focus held, window opened): any model
 `expect` is dropped."""
@@ -85,7 +85,10 @@ expressions. Leave fields the kind does not use unset.
 Do not write "expect" for focus, type or open steps: the agent verifies the focus, the
 typed value and the opened window itself. Subgoals describe end states visible on screen
 after an action (a page replaced, a message appeared, an item gone, a window opened), never
-"the text is typed".
+"the text is typed". When the goal wants text left in a field or a document (a note, a form to
+review), the end state is the field's content: use value: role, name, text, only as a subgoal
+condition, never as an expect; the field (Edit, ComboBox or Document) and the exact text must be
+those of a type step of the same subgoal, and that subgoal holds no send, submit or delete.
 
 Verification rule for R2 and R3 steps: the step's "expect" must be an "appeared" or
 "disappeared" whose "name" is the step's own content (the text typed or sent, or the name of
