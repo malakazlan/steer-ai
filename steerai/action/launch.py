@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import re
 import urllib.parse
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -63,26 +63,10 @@ APPS: Final = MappingProxyType(
             takes_url=True,
             url_flags=("--new-window",),
         ),
-        "edge": AppSpec(
-            exe_candidates=(
-                "%ProgramFiles(x86)%/Microsoft/Edge/Application/msedge.exe",
-                "%ProgramFiles%/Microsoft/Edge/Application/msedge.exe",
-            ),
-            process_names=frozenset({"msedge.exe"}),
-            fresh_title="New tab - Microsoft Edge",
-            title_suffix=" - Microsoft Edge",
-            takes_url=True,
-            url_flags=("--new-window",),
-        ),
         "notepad": AppSpec(
             exe_candidates=("%SystemRoot%/System32/notepad.exe",),
             process_names=frozenset({"notepad.exe"}),
-            fresh_title="Untitled - Notepad",
-        ),
-        "explorer": AppSpec(
-            exe_candidates=("%SystemRoot%/explorer.exe",),
-            process_names=frozenset({"explorer.exe"}),
-            fresh_title="File Explorer",
+            fresh_title="Untitled - Notepad",  # Windows 10; Windows 11 opens a tab (unmeasured)
         ),
     }
 )
@@ -101,11 +85,6 @@ SITES: Final = MappingProxyType(
         ),
         "youtube": SiteSpec(
             app="chrome", url_template="https://www.youtube.com/", title_template="YouTube"
-        ),
-        "wikipedia_search": SiteSpec(
-            app="chrome",
-            url_template="https://en.wikipedia.org/w/index.php?search={content}",
-            title_template="{content} - Wikipedia",
         ),
     }
 )
@@ -137,7 +116,11 @@ def site_url(app: str, site: str | None, text: str | None) -> str | None:
     content = _content(site, text)
     if content is None:
         return spec.url_template
-    return spec.url_template.replace(CONTENT, urllib.parse.quote_plus(content))
+    try:
+        encoded = urllib.parse.quote_plus(content)
+    except UnicodeEncodeError as exc:
+        raise LaunchError("the content cannot be encoded in a URL") from exc
+    return spec.url_template.replace(CONTENT, encoded)
 
 
 def expected_title(app: str, site: str | None, text: str | None) -> str:
@@ -157,6 +140,54 @@ def expected_title(app: str, site: str | None, text: str | None) -> str:
         else site_spec.title_template.replace(CONTENT, content)
     )
     return page + spec.title_suffix
+
+
+_COUNTER = re.compile(r"^\(\d{1,4}\)\s+")
+"""A leading notification counter a page puts before its title ("(3) Inbox - ..."): code-owned
+strip, the `title ~` rule of 5.10 [v1.2], applied to the `open` match only."""
+_LAUNCH_ENV: Final = frozenset(
+    {
+        "SystemRoot",
+        "windir",
+        "SystemDrive",
+        "PATH",
+        "PATHEXT",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+        "USERNAME",
+        "USERDOMAIN",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "ProgramData",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramW6432",
+        "CommonProgramFiles",
+        "CommonProgramFiles(x86)",
+        "COMPUTERNAME",
+        "PUBLIC",
+        "OS",
+        "PROCESSOR_ARCHITECTURE",
+        "NUMBER_OF_PROCESSORS",
+    }
+)
+
+
+def title_matches(title: str, expected: str) -> bool:
+    """Full-string, case-insensitive, whitespace-folded, after stripping a leading counter."""
+    return _fold(_COUNTER.sub("", title.strip())) == _fold(expected)
+
+
+def _fold(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
+def launch_env(environ: Mapping[str, str]) -> dict[str, str]:
+    """The launched app's environment: an allowlist, never the runner's secrets (OW-19)."""
+    return {key: value for key, value in environ.items() if key in _LAUNCH_ENV}
 
 
 def resolve_exe(candidates: Sequence[str]) -> str:

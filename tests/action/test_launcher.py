@@ -147,3 +147,38 @@ def test_the_content_never_enters_the_evidence(text: str) -> None:
     machine = Machine()
     result = _launcher(machine).execute(_open(site="youtube_search", text=text), [CHROME_OLD])
     assert text not in str(result.to_dict())
+
+
+def test_the_kill_switch_during_the_poll_stops_it_with_nothing_adopted() -> None:
+    """OW-07: the blocker is asked on every tick after the launch, not only before it."""
+    machine = Machine(appears=[], appear_after=0)
+    asks = {"n": 0}
+
+    def blocker() -> str | None:
+        asks["n"] += 1
+        return "killed" if asks["n"] > 3 else None
+
+    result = _launcher(machine, blocker=blocker).execute(_open(), [CHROME_OLD])
+    assert len(machine.launched) == 1
+    assert result.delivery is Delivery.DELIVERY_UNCERTAIN, "the process was started"
+    assert result.code is ErrorCode.GATE_BLOCKED
+    assert result.evidence["detail"] == "killed"
+    assert "hwnd" not in result.evidence
+
+
+def test_the_real_launch_passes_only_the_allowlisted_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import steerai.action.launcher as launcher_module  # noqa: PLC0415
+
+    seen: dict[str, Any] = {}
+
+    def fake_popen(argv: list[str], **kwargs: Any) -> object:
+        seen.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("steerai.action.launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+    launcher_module._real_popen(["C:/x.exe"])
+    assert "ANTHROPIC_API_KEY" not in seen["env"]
+    assert seen.get("shell") in (None, False)

@@ -20,8 +20,9 @@ from steerai.action.launch import (
 
 
 def test_the_registries_hold_the_slice_keys_and_every_site_names_a_known_app() -> None:
-    assert {"chrome", "edge", "notepad", "explorer"} <= set(APPS)
-    assert {"google_search", "youtube_search", "youtube", "wikipedia_search"} <= set(SITES)
+    # only measured templates ship (schema gate P3): Edge, Explorer, Wikipedia return when measured
+    assert set(APPS) == {"chrome", "notepad"}
+    assert set(SITES) == {"google_search", "youtube_search", "youtube"}
     for key, site in SITES.items():
         assert site.app in APPS, key
         assert APPS[site.app].takes_url, key
@@ -60,11 +61,39 @@ def test_the_expected_title_is_the_full_window_title_code_owns() -> None:
         ("chrome", "youtube_search", "   ", "needs content"),
         ("chrome", "youtube", "extra", "takes no content"),
         ("chrome", "youtube_search", "x" * 501, "too long"),
+        ("chrome", "youtube_search", "bad " + chr(0xD800) + " surrogate", "cannot be encoded"),
     ],
 )
 def test_refusals_name_the_reason(app: str, site: str | None, text: str | None, match: str) -> None:
     with pytest.raises(LaunchError, match=match):
         launch_argv(app, site, text, exe="C:/x.exe")
+
+
+def test_a_leading_counter_is_stripped_and_matching_is_full_string() -> None:
+    from steerai.action.launch import title_matches  # noqa: PLC0415
+
+    expected = "drake latest video - YouTube - Google Chrome"
+    assert title_matches("(3) drake latest video - YouTube - Google Chrome", expected)
+    assert title_matches("DRAKE latest  video - YouTube - Google Chrome", expected)
+    assert not title_matches("drake latest video - YouTube - Google Chrome (2)", expected)
+    assert not title_matches("not drake latest video - YouTube - Google Chrome", expected)
+    assert not title_matches("YouTube - Google Chrome", expected)
+
+
+def test_the_launched_environment_is_an_allowlist() -> None:
+    from steerai.action.launch import launch_env  # noqa: PLC0415
+
+    env = launch_env(
+        {
+            "SystemRoot": "C:/Windows",
+            "ANTHROPIC_API_KEY": "k",
+            "TYPESAFE_API_KEY": "t",
+            "PATH": "C:/bin",
+            "USERPROFILE": "C:/Users/p",
+            "STEER_X": "1",
+        }
+    )
+    assert env == {"SystemRoot": "C:/Windows", "PATH": "C:/bin", "USERPROFILE": "C:/Users/p"}
 
 
 def test_content_needs_are_known_per_site() -> None:

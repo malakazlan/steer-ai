@@ -11,6 +11,7 @@ never enters the evidence.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from collections.abc import Callable, Sequence
@@ -19,7 +20,7 @@ from pathlib import PurePath
 from typing import Any
 
 from steerai.action.dispositions import ActionResult, Delivery, Step
-from steerai.action.launch import APPS, LaunchError, launch_argv, resolve_exe
+from steerai.action.launch import APPS, LaunchError, launch_argv, launch_env, resolve_exe
 from steerai.errors import ErrorCode
 from steerai.probes.windows import WindowInfo
 
@@ -40,6 +41,7 @@ class OpenAction:
 def _real_popen(argv: list[str]) -> Any:
     return subprocess.Popen(  # noqa: S603 - registry-built argv, no shell
         argv,
+        env=launch_env(os.environ),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -94,11 +96,12 @@ class Launcher:
         found = self._new_window(spec.process_names, {w.hwnd for w in windows_before})
         if isinstance(found, str):
             evidence["detail"] = found
+            code = ErrorCode.GATE_BLOCKED if found == "killed" else ErrorCode.VERIFY_TIMEOUT
             return ActionResult(
                 verb="open",
                 delivery=Delivery.DELIVERY_UNCERTAIN,
                 steps=steps,
-                code=ErrorCode.VERIFY_TIMEOUT,
+                code=code,
                 evidence=evidence,
             )
         evidence["hwnd"] = found.hwnd
@@ -127,6 +130,8 @@ class Launcher:
                 return "several_new_windows"
             if self._monotonic() >= deadline:
                 return "no_new_window"
+            if self._blocker is not None and (token := self._blocker()) is not None:
+                return token
             self._sleep(POLL_S)
 
 
