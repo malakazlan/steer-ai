@@ -47,6 +47,9 @@ class SiteSpec:
     app: str
     url_template: str
     title_template: str
+    names: frozenset[str] = frozenset()
+    """The words a goal uses to name the site; content goes out at R1 only when the goal
+    names it (hunter OW-02)."""
 
 
 APPS: Final = MappingProxyType(
@@ -77,14 +80,19 @@ SITES: Final = MappingProxyType(
             app="chrome",
             url_template="https://www.google.com/search?hl=en&q={content}",
             title_template="{content} - Google Search",
+            names=frozenset({"google"}),
         ),
         "youtube_search": SiteSpec(
             app="chrome",
             url_template="https://www.youtube.com/results?search_query={content}",
             title_template="{content} - YouTube",
+            names=frozenset({"youtube"}),
         ),
         "youtube": SiteSpec(
-            app="chrome", url_template="https://www.youtube.com/", title_template="YouTube"
+            app="chrome",
+            url_template="https://www.youtube.com/",
+            title_template="YouTube",
+            names=frozenset({"youtube"}),
         ),
     }
 )

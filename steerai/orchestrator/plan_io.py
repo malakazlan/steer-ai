@@ -16,6 +16,7 @@ import unicodedata
 from collections.abc import Callable, Mapping
 from typing import Any, Literal, cast
 
+from steerai.action.launch import APPS, LaunchError, site_url
 from steerai.orchestrator.contracts import (
     RISKS,
     VERBS,
@@ -49,8 +50,8 @@ MAX_TEXT_CHARS = 2000
 MAX_PARTS = 32
 MAX_COUNT = 10_000
 _ID = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
-_PARAM_KEYS = frozenset({"text", "composer_role", "composer_name", "scope", "content_role"})
-_FILE_VERBS = frozenset(v for v in VERBS if v != "open")
+_PARAM_KEYS = frozenset({"text", "composer_role", "composer_name", "scope", "content_role", "site"})
+_FILE_VERBS = frozenset(VERBS)
 _STEP_KEYS = frozenset(
     {
         "id",
@@ -338,6 +339,8 @@ def _params(value: object, path: str) -> dict[str, str]:
 def _path(value: object, verb: str, path: str) -> Literal["semantic", "physical"] | None:
     if value is None:
         return None
+    if verb == "open":
+        raise PlanError(path, "an open step has no executor path")
     default = executor_verb(verb)[0]
     if value == default:
         return default
@@ -360,7 +363,7 @@ def _step(value: object, path: str) -> Step:
         raise PlanError(f"{path}.text_provenance", "must be verbatim or generated")
     text = obj.get("text")
     try:
-        return Step(
+        step = Step(
             id=_ident(obj.get("id"), f"{path}.id"),
             subgoal=_ident(obj.get("subgoal"), f"{path}.subgoal"),
             verb=verb,
@@ -379,6 +382,20 @@ def _step(value: object, path: str) -> Step:
         if isinstance(exc, PlanError):
             raise
         raise PlanError(path, str(exc)) from exc
+    return _checked_open(step, path)
+
+
+def _checked_open(step: Step, path: str) -> Step:
+    """An `open` names a registry app and, for a browser, a registry site with its content."""
+    if step.verb != "open" or step.target is None:
+        return step
+    if step.target.name not in APPS:
+        raise PlanError(f"{path}.target.name", f"open names one of {sorted(APPS)}")
+    try:
+        site_url(step.target.name, step.params.get("site"), step.params.get("text"))
+    except LaunchError as exc:
+        raise PlanError(f"{path}.params", str(exc)) from exc
+    return step
 
 
 def _subgoal(value: object, path: str) -> Subgoal:
