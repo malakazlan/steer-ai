@@ -1566,7 +1566,8 @@ class Session:
             detail = str(result.evidence.get("detail", result.gate))
             return "stopped", result.code or ErrorCode.VERIFY_TIMEOUT, detail
         subgoal = next(s for s in plan.subgoals if s.id == step.subgoal)
-        if self._holds_in_window(subgoal.condition):  # checked, rebound or not (item 2)
+        # a value is the type step's doing, never the open's (field-value FV-01/03)
+        if not field_values(subgoal.condition) and self._holds_in_window(subgoal.condition):
             ticked.add(subgoal.id)
         return None
 

@@ -21,7 +21,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 Verb = Literal["click", "focus", "type", "send", "submit", "delete", "open"]
 Risk = Literal["R0", "R1", "R2", "R3"]
-Kind = Literal["appeared", "disappeared", "title", "window_exists", "window_gone", "count_delta"]
 ConditionKind = Literal[
     "appeared", "disappeared", "title", "window_exists", "window_gone", "count_delta", "value"
 ]
