@@ -284,3 +284,30 @@ def test_live_title_reads_a_reference_only_while_its_identity_holds() -> None:
     win.live[0x30]["start"] = 99
     assert session.live_title("opened:o1") is None
     assert session.live_title("opened:o9") is None
+
+
+def test_the_window_label_is_code_owned_first_and_the_title_is_capped() -> None:
+    """SW-06: the app from the registry by image, the reference, then the page title."""
+    win = Windows()
+    win.live[0x30]["title"] = "x" * 500
+    rig, _ = _rig(win)
+    session = rig.session
+    assert session is not None
+    session.run_step(_step("c1", window="opened:o1"))
+    label = session.window_label()
+    assert label.startswith("chrome (opened:o1): ")
+    assert len(label) <= len("chrome (opened:o1): ") + 80
+    win.live[0x10]["title"] = "Untitled - Notepad"
+    session.run_step(_step("c2", window="start"))
+    assert session.window_label() == "notepad (start): Untitled - Notepad"
+
+
+def test_an_unknown_image_shows_its_image_name() -> None:
+    win = Windows()
+    win.live[0x30]["image"] = "whatsapp.exe"
+    rig, _ = _rig(win)
+    rig.ledger.record_open(_open(), {**OPENED_ID, "image": "whatsapp.exe", "title": "x"})
+    session = rig.session
+    assert session is not None
+    session.run_step(_step("c1", window="opened:o1"))
+    assert session.window_label().startswith("whatsapp.exe (opened:o1): ")

@@ -634,6 +634,19 @@ class Session:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "window_ambiguous")
         return records[0] if records else None
 
+    def window_label(self) -> str:
+        """The current window for an ask: the registry app by its image (else the image),
+        the reference, then the live title capped by code (SW-06); empty when nothing is
+        known."""
+        current = self._identify(self.hwnd) if self._identify is not None else None
+        if current is None:
+            return ""
+        image = str(current.get("image", "")).lower()
+        app = next((key for key, spec in APPS.items() if image in spec.process_names), image)
+        ref = self._ledger.window_ref or START_WINDOW
+        title = " ".join(str(current.get("title", "")).split())[:WINDOW_TITLE_CHARS]
+        return f"{app} ({ref}): {title or '(untitled)'}"
+
     def live_title(self, ref: str) -> str | None:
         """The live title of a task window named by reference, None unless its recorded
         identity still holds (SW-36): the planner never sees a window that is not the
@@ -858,6 +871,7 @@ class Session:
                 target_id=element_id,
                 composer_id=self._composer(step, before),
                 bound=self._binding,
+                window=self.window_label(),
             )
         finally:
             if asking and self._monitor is not None:
@@ -1568,6 +1582,8 @@ class Session:
 
 
 FRAME_HOST = "applicationframehost.exe"
+WINDOW_TITLE_CHARS = 80
+"""How much of a page's own title an ask shows: a page sets it, so code caps it."""
 
 
 def _ledger_ref(window: str) -> str | None:

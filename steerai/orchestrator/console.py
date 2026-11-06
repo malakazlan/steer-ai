@@ -73,6 +73,8 @@ def render_ask(ask: Ask) -> str:
     if ask.automation_id:
         target += f"  [automation id {_show(ask.automation_id)}]"
     lines.append(f"{_PREFIX}target: {target}")
+    if ask.window:
+        lines.append(f"{_PREFIX}window: {_show(ask.window)}")
     text = ask.params.get("text")
     if text is not None:
         lines.append(f"{_PREFIX}text: {_show(text)}")
