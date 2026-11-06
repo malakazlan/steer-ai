@@ -427,6 +427,7 @@ def test_a_secure_field_is_never_read() -> None:
     assert verdict.holds is False
     assert verdict.evidence == {"reason": "secure_target"}
     assert live.reads == 0
+    assert verdict.state == "secure_target", "it settles: no polling to the deadline"
 
 
 @pytest.mark.parametrize(
@@ -680,3 +681,12 @@ def test_a_value_subgoal_never_ticks_at_its_open() -> None:
     result = session.run_task(plan)
     assert [r.step_id for r in result.results][:1] == ["o1"]
     assert "s2" in [r.step_id for r in result.results], (result.status, result.ticked)
+
+
+def test_a_person_target_type_is_not_the_values_match() -> None:
+    """Principal carry-over: a person target or an automation id resolves differently."""
+    for extra in ({"match": "person", "name": "Text"}, {"automation_id": "editor"}):
+        step = _type_step()
+        step["target"] = {**step["target"], **extra}
+        with pytest.raises(PlanError):
+            plan_from_json(_plan_doc([step]))

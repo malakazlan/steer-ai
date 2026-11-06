@@ -501,6 +501,8 @@ def _typed_into(step: Step, value: FieldValue) -> bool:
     target = step.target
     return (
         target is not None
+        and target.match == "exact"
+        and not target.automation_id  # resolved by the exact name only, as the value is
         and target.role == value.role
         and normalise_name(target.name).casefold() == normalise_name(value.name_pattern).casefold()
         and step.text == value.text

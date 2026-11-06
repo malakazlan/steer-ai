@@ -590,7 +590,7 @@ def _field_value(predicate: FieldValue, snapshot: Snapshot, ctx: Context) -> Ver
     if len(found) > 1:
         return _plain("ambiguous_target", settles=True)
     if found[0].secure:
-        return _plain("secure_target")
+        return _plain("secure_target", settles=True)  # never read: no use in polling
     value = _read_value(found[0], snapshot, live)
     if value == normalise_newlines(predicate.text):
         return Verdict(holds=True, code=None, level=3, polls=0, evidence={})
