@@ -242,7 +242,8 @@ class Ledger:
                 last["step_ids"] = sorted(set(last["step_ids"]) | set(ids))
                 self._save_state()
             return
-        if last is not None and not allow_change:
+        if last is not None and (not allow_change or len(self._chain) > 1):
+            # a replanned task's links carry its window refs: never rewritten (RP-07)
             if any(link["digest"] == digest for link in self._chain):
                 raise LedgerError("plan_superseded: a later plan of this task replaced it")
             raise LedgerError("plan_changed: this task id already ran a different plan")
@@ -344,6 +345,17 @@ class Ledger:
         """The recorded outcome for `key`, None while an attempt is open or never ran."""
         record = self._executions.get(key)
         return None if record is None else record.get("outcome")
+
+    def closed_by(self, key: str) -> str | None:
+        """The step id whose attempt `key` records, None if it never ran."""
+        record = self._executions.get(key)
+        return None if record is None else record.get("step_id")
+
+    def unsettled(self) -> bool:
+        """Any attempt of this task that may have had an effect nobody verified: an open
+        record or an outcome other than done or nothing sent (replan RP-06)."""
+        settled = _DONE_OUTCOMES | _RETRY_OUTCOMES
+        return any(entry.get("outcome") not in settled for entry in self._executions.values())
 
     # ---- write-ahead records -----------------------------------------------------------------
 

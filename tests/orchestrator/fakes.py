@@ -250,6 +250,10 @@ class MemoryLedger:
         record = self.executions.get(key)
         return None if record is None else record.get("outcome")
 
+    def closed_by(self, key: str) -> str | None:
+        record = self.executions.get(key)
+        return None if record is None else record.get("step_id")
+
     def write_ahead(
         self,
         step: Step,

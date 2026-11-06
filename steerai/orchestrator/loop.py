@@ -144,6 +144,7 @@ class TaskLedger(Protocol):
     def key_for(self, step: Step) -> str: ...
     def admit(self, key: str, decision: GateDecision | None = None) -> str: ...
     def outcome_of(self, key: str) -> str | None: ...
+    def closed_by(self, key: str) -> str | None: ...
     def write_ahead(
         self,
         step: Step,
@@ -320,7 +321,7 @@ class Session:
                 risk = self._ceiling(step, key, before, effective_risk(step))
             previous = self._admission(step, key, risk, before)
             if previous == "done":
-                return self._done_already(step, stage, evidence)
+                return self._done_already(step, key, stage, evidence)
             before, element_id = self._resolve_settling(step, before, stage, evidence)
             self._secure_step = before.element(element_id).secure
             risk = self._settled_tier(step, risk)
@@ -418,7 +419,7 @@ class Session:
             if self._ledger.admit(key) == "done":
                 self._rebind_opened(step)
                 evidence["window"] = "rebound"
-                return self._done_already(step, stage, evidence)
+                return self._done_already(step, key, stage, evidence)
             prior = self._ledger.outcome_of(key)
             if prior is not None and prior != "not_delivered" and risk in ("R0", "R1"):
                 # an earlier attempt launched and may have opened a window: never a silent second
@@ -1227,7 +1228,12 @@ class Session:
 
     # ---- results ----------------------------------------------------------------------------
 
-    def _done_already(self, step: Step, stage: _Stage, evidence: dict[str, Any]) -> StepResult:
+    def _done_already(
+        self, step: Step, key: str, stage: _Stage, evidence: dict[str, Any]
+    ) -> StepResult:
+        # a twin keyed like an earlier step proves that step's effect, not its own subgoal
+        closed_by = self._ledger.closed_by(key)
+        evidence["done_by"] = "this_step" if closed_by in (None, step.id) else "another_step"
         return self._finish(
             step,
             stage,
@@ -1284,8 +1290,12 @@ class Session:
 
     # ---- a whole plan --------------------------------------------------------------------------
 
-    def run_task(self, plan: Plan) -> TaskResult:
+    def run_task(self, plan: Plan, *, continuation: bool = False) -> TaskResult:
+        """Run one plan. A continuation (plan n>1 of a replanned task) ticks no subgoal at
+        start: its conditions were written from the screen it starts on (hunter RP-01)."""
         self._goal = plan.goal
+        self._last_after = None  # nothing observed for another plan is reused (RP-35/47)
+        self._last_pair = None
         self._trace.write(
             {
                 "kind": "task",
@@ -1323,7 +1333,7 @@ class Session:
         ticked = {
             s.id
             for s in plan.subgoals
-            if s.id not in opening and self._holds_now(s.condition, start)
+            if not continuation and s.id not in opening and self._holds_now(s.condition, start)
         }
         outcome = self._run_steps(plan, ticked, results)
         if outcome is not None:
@@ -1382,7 +1392,8 @@ class Session:
                 continue
             if result.gate == "done_already":
                 # the earlier verified attempt (or the persisted before) proved the effect
-                ticked.add(step.subgoal)
+                if result.evidence.get("done_by") != "another_step":
+                    ticked.add(step.subgoal)
                 strikes = 0
                 continue
             if result.ok and self._last_pair is not None:

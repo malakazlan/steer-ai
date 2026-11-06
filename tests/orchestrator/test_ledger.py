@@ -551,3 +551,36 @@ def test_an_opened_window_is_found_by_its_reference_after_a_restart(tmp_path: Pa
         assert (window["hwnd"], window["pid"], window["image"]) == (0x30, 500, "chrome.exe")
         assert ledger.opened_by_ref("opened:o2") is None
         assert ledger.opened_by_ref("o1") is None, "only an opened: reference names a window"
+
+
+def test_a_chained_task_never_rewrites_its_chain_even_when_a_change_is_allowed(
+    tmp_path: Path,
+) -> None:
+    """Hunter RP-07: a replaced link would lose its window ref and every key with it."""
+    with Ledger(tmp_path, task_id="t-allow", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["o1"])
+        ledger.set_window_ref("opened:o1")
+        ledger.extend_plan("b" * 64, ["p2.s1"])
+        with pytest.raises(LedgerError, match="plan_changed"):
+            ledger.bind_plan("c" * 64, allow_change=True)
+        with pytest.raises(LedgerError, match="plan_superseded"):
+            ledger.bind_plan("a" * 64, allow_change=True)
+
+
+def test_closed_by_names_the_step_that_closed_a_key(tmp_path: Path) -> None:
+    with Ledger(tmp_path, task_id="t-closed", started_at=1.0) as ledger:
+        step = _open_step("o1")
+        key = ledger.key_for(step)
+        assert ledger.closed_by(key) is None
+        ledger.record_open(step, WINDOW)
+        assert ledger.closed_by(key) == "o1"
+
+
+def test_unsettled_is_any_attempt_not_known_done_or_not_sent(tmp_path: Path) -> None:
+    """Hunter RP-06: an uncertain attempt of an earlier run stops a replan too."""
+    with Ledger(tmp_path, task_id="t-unsettled", started_at=1.0) as ledger:
+        assert ledger.unsettled() is False
+        ledger.record_open(_open_step("o1"), WINDOW)
+        assert ledger.unsettled() is False
+        ledger.record_open_attempt(_open_step("o2"), "delivered_unverified")
+        assert ledger.unsettled() is True

@@ -388,3 +388,17 @@ def test_the_size_cap_is_exact() -> None:
 def test_malformed_json_is_a_plan_error_not_a_traceback() -> None:
     with pytest.raises(PlanError, match="JSON"):
         plan_from_json("{")
+
+
+def test_duplicate_subgoal_ids_are_refused() -> None:
+    """Hunter RP-02: a second, trivially true copy of a subgoal would tick it."""
+    plan = {
+        "goal": "g",
+        "subgoals": [
+            {"id": "g1", "desc": "a", "condition": {"title": {"pattern": "x"}}},
+            {"id": "g1", "desc": "b", "condition": {"title": {"pattern": "y"}}},
+        ],
+        "steps": [],
+    }
+    with pytest.raises(PlanError, match="duplicate subgoal ids"):
+        plan_from_json(json.dumps(plan))

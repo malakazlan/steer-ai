@@ -509,3 +509,11 @@ def test_max_steps_counts_across_the_plans_of_one_session() -> None:
     assert second.status == "stopped"
     assert second.evidence["detail"] == "max_steps"
     assert second.results == []
+
+
+def test_a_new_plan_never_reuses_the_last_plans_observation() -> None:
+    """Hunter RP-47: a fast replan would act on a screen observed before the planner ran."""
+    h = Harness()
+    h.session.run_task(_plan(_click(step_id="s1", expect=TitleMatches(pattern="Amir"))))
+    second = h.session.run_task(_plan(_click(step_id="p2.s1", expect=TitleMatches(pattern="Amir"))))
+    assert second.results[0].evidence.get("observe_reused") is not True

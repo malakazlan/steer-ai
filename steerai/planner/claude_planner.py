@@ -42,7 +42,8 @@ Output a JSON plan document in the exact schema you are given. Nothing else.
 
 The plan has subgoals and steps. Each subgoal has a condition in the predicate language that
 proves it is done. Each step acts on one on-screen element from the screen listing and names its
-effect in the same language.
+effect in the same language. List every subgoal the goal needs, also those on a screen you
+cannot see yet: a subgoal may have no steps, and the agent plans it from the screen it reaches.
 
 Verbs (closed set): click (a button or link), focus (put keyboard focus in a field), type (type
 single-line text into the focused field; needs "text"), send (press the send button of a
@@ -150,7 +151,9 @@ def _progress_lines(request: PlanRequest) -> list[str]:
 
 
 def _one_line(text: str) -> str:
-    return text.replace("\r", " ").replace("\n", " ")
+    """Every line boundary `str.splitlines` knows (CR, LF, VT, FF, NEL, U+2028/2029, ...)
+    folds to a space: data never starts a line of its own (hunter RP-28)."""
+    return " ".join(text.splitlines())
 
 
 class ClaudePlanner:
