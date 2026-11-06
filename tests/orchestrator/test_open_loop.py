@@ -6,7 +6,7 @@ tier and a resume re-binds by identity, never by title."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pytest
@@ -481,3 +481,47 @@ def test_a_resume_after_an_unverified_open_asks_before_launching_again() -> None
     assert ask.previous_attempt == "delivered_unverified"
     assert rig2.launcher.calls == []
     assert result.ok is False
+
+
+# ---- a continuation plan starts in the window the task reached (replan addendum item 3) ------
+
+
+def _in_window_plan() -> Plan:
+    return Plan(
+        goal="search YouTube for drake latest video and play the first video",
+        subgoals=(Subgoal(id="g2", desc="playing", condition=TitleMatches(pattern="x")),),
+        steps=(replace(_click(step_id="p2.c1", expect=TitleMatches(pattern="x")), subgoal="g2"),),
+    )
+
+
+def test_a_continuation_rebinds_the_opened_window_by_its_reference_first() -> None:
+    rig = Rig()
+    rig.ledger.record_open(_open(), IDENTITY)
+    rig.ledger.set_window_ref("opened:o1")  # the link's ref, restored by bind_plan
+    session = rig.build()
+    result = session.run_task(_in_window_plan())
+    assert result.evidence.get("detail") != "window_gone", result
+    assert session.hwnd == 0x30
+    assert rig.launcher.calls == []
+    assert rig.world.observed[0]["hwnd"] == 0x30, "the start observe is of the opened window"
+
+
+def test_a_continuation_whose_window_changed_identity_stops_before_any_step() -> None:
+    rig = Rig(desk=Desk(identity={**IDENTITY, "start": 99}))
+    rig.ledger.record_open(_open(), IDENTITY)
+    rig.ledger.set_window_ref("opened:o1")
+    session = rig.build()
+    result = session.run_task(_in_window_plan())
+    assert result.status == "stopped"
+    assert result.code is ErrorCode.ELEMENT_NOT_FOUND
+    assert result.evidence["detail"] == "window_gone"
+    assert result.results == []
+    assert session.hwnd == START.hwnd
+
+
+def test_a_continuation_whose_reference_names_no_recorded_window_stops() -> None:
+    rig = Rig()
+    rig.ledger.set_window_ref("opened:o9")
+    result = rig.build().run_task(_in_window_plan())
+    assert result.evidence["detail"] == "window_gone"
+    assert result.results == []

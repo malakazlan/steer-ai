@@ -139,6 +139,8 @@ class ExecutorLike(Protocol):
 
 
 class TaskLedger(Protocol):
+    window_ref: str | None
+
     def key_for(self, step: Step) -> str: ...
     def admit(self, key: str, decision: GateDecision | None = None) -> str: ...
     def outcome_of(self, key: str) -> str | None: ...
@@ -156,6 +158,7 @@ class TaskLedger(Protocol):
     def set_window_ref(self, ref: str | None) -> None: ...
     def record_open(self, step: Step, window: Mapping[str, Any]) -> None: ...
     def opened_window(self, step: Step) -> dict[str, Any] | None: ...
+    def opened_by_ref(self, ref: str) -> dict[str, Any] | None: ...
     def record_open_attempt(self, step: Step, outcome: str) -> None: ...
 
 
@@ -268,6 +271,8 @@ class Session:
         self._secure_step = False
         self.hwnd = hwnd
         self.max_steps = max_steps
+        self._steps_run = 0
+        """Steps run by this session over all its plans: a replanned task is one budget."""
         self._observer = observer
         self._semantic = semantic
         self._physical = physical
@@ -506,7 +511,7 @@ class Session:
             )
         self._close(step, risk, Delivery.DELIVERED_VERIFIED.value)
         self._ledger.record_open(step, identity)  # the observed title, digested
-        self._adopt(hwnd, step)
+        self._adopt(hwnd, f"opened:{step.id}")
         evidence["window"] = "opened"
         if self._foreground is not None:
             evidence["foreground_after_open"] = self._foreground() == hwnd
@@ -538,17 +543,26 @@ class Session:
                 return False
             self._sleep(OPEN_POLL_S)
 
-    def _adopt(self, hwnd: int, step: Step) -> None:
+    def _adopt(self, hwnd: int, ref: str) -> None:
         """The opened window becomes the current one; nothing observed before carries over."""
         self.hwnd = hwnd
         self._last_after = None
         self._last_pair = None
-        self._ledger.set_window_ref(f"opened:{step.id}")
+        self._ledger.set_window_ref(ref)
 
     def _rebind_opened(self, step: Step) -> None:
         """A resume: the recorded window again, by identity (handle, pid, process start time,
         image), never by title (P7, decision 3); anything else stops `window_gone`."""
-        record = self._ledger.opened_window(step)
+        self._rebind(self._ledger.opened_window(step), f"opened:{step.id}")
+
+    def _rebind_ref(self) -> None:
+        """A continuation plan, or its resume, starts in the window its link names, rebound by
+        identity before anything is observed (replan item 3)."""
+        ref = self._ledger.window_ref
+        if ref is not None:
+            self._rebind(self._ledger.opened_by_ref(ref), ref)
+
+    def _rebind(self, record: Mapping[str, Any] | None, ref: str) -> None:
         hwnd = None if record is None else record.get("hwnd")
         current = (
             self._identify(hwnd) if self._identify is not None and isinstance(hwnd, int) else None
@@ -560,7 +574,7 @@ class Session:
         )
         if not same or not isinstance(hwnd, int):
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "window_gone")
-        self._adopt(hwnd, step)
+        self._adopt(hwnd, ref)
 
     def _holds_in_window(self, predicate: Predicate) -> bool:
         """An `open`'s subgoal in the window it opened: every element there is new, so a
@@ -1282,6 +1296,10 @@ class Session:
         )
         results: list[StepResult] = []
         try:
+            self._rebind_ref()
+        except _StepFailureError as failure:
+            return self._ended_at_start(failure.code, failure.detail)
+        try:
             start = self._observer.observe(self.hwnd)
         except SteerError as failure:
             # the window is not there to start on (RN-14): a result, not a traceback
@@ -1332,6 +1350,14 @@ class Session:
             evidence=evidence,
         )
 
+    def _ended_at_start(self, code: ErrorCode, detail: str) -> TaskResult:
+        self._trace.write(
+            {"kind": "task_end", "task_id": self.task_id, "status": "stopped", "detail": detail}
+        )
+        return TaskResult(
+            status="stopped", results=[], ticked=set(), code=code, evidence={"detail": detail}
+        )
+
     def _run_steps(
         self, plan: Plan, ticked: set[str], results: list[StepResult]
     ) -> tuple[Literal["stopped", "paused", "blocked"], ErrorCode, str] | None:
@@ -1339,8 +1365,9 @@ class Session:
         for step in plan.steps:
             if step.subgoal in ticked:
                 continue
-            if len(results) >= self.max_steps:
+            if self._steps_run >= self.max_steps:
                 return "stopped", ErrorCode.BUDGET_EXCEEDED, "max_steps"
+            self._steps_run += 1
             result = self.run_step(step)
             results.append(result)
             stop = (
