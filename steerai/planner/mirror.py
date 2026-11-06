@@ -102,8 +102,10 @@ class TargetDoc(_Doc):
 
 
 class ParamsDoc(_Doc):
-    text: str | None = Field(default=None, description="the content; for open: the search words")
+    # `site` before `text`: the model writes fields in schema order, and decided `text` before
+    # the site existed (measured, see the pinning test)
     site: SiteKey | None = Field(default=None, description="for open with chrome: the site")
+    text: str | None = Field(default=None, description="the content; for open: the search words")
     composer_role: str | None = None
     composer_name: str | None = None
     scope: str | None = None
