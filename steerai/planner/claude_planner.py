@@ -53,8 +53,8 @@ other verb.
 An open step: {{"verb": "open", "target": {{"role": "App", "name": <one of {sorted(APPS)}>}},
 "params": {{"site": <one of {sorted(SITES)}>, "text": <the words to search>}}}}. A site opens in
 chrome, and chrome always opens a site; give "text" for a search site, taken from the
-goal's own words where possible, and no "text" for youtube. Notepad takes no site. Start with an open when the goal needs an app or a
-site that is not the current window; the open windows listed with the screen are already
+goal's own words where possible, and no "text" for youtube. Notepad takes no site. Start
+with an open when the goal needs an app or a site that is not the current window; the open windows listed with the screen are already
 there. Example for the goal "search YouTube for drake latest video": {{"id": "s1", "subgoal":
 "g1", "verb": "open", "target": {{"role": "App", "name": "chrome"}}, "risk": "R1",
 "params": {{"site": "youtube_search", "text": "drake latest video"}}}}. A search site without
