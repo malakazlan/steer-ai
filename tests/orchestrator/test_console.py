@@ -187,3 +187,15 @@ def test_an_interrupt_while_waiting_is_unanswered() -> None:
     stdin.readline = interrupt  # type: ignore[method-assign]  # a Ctrl+C stand-in on a stream
     confirmer = ConsoleConfirmer(stdin, io.StringIO(), interactive=True)
     assert confirmer.ask(_ask()) == "unanswered"
+
+
+def test_the_ask_names_the_window_the_step_lands_in() -> None:
+    """Step-window SW-06: the app and the reference first, the page's own title after."""
+    text = render_ask(_ask(window="chrome (opened:o1): drake \u202eevil - YouTube"))
+    line = next(x for x in text.splitlines() if "window:" in x)
+    assert "chrome (opened:o1): drake" in line
+    assert "\u202e" not in line, "format characters are shown escaped"
+
+
+def test_an_ask_without_a_window_has_no_window_line() -> None:
+    assert "window:" not in render_ask(_ask())

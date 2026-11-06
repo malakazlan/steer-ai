@@ -15,7 +15,14 @@ from typing import Literal
 
 from steerai.action.dispositions import Delivery
 from steerai.errors import ErrorCode
-from steerai.orchestrator.contracts import Plan, Step, StepResult, Subgoal
+from steerai.orchestrator.contracts import (
+    OPENED_PREFIX,
+    START_WINDOW,
+    Plan,
+    Step,
+    StepResult,
+    Subgoal,
+)
 from steerai.orchestrator.gate import effective_risk
 from steerai.orchestrator.loop import TaskResult
 from steerai.orchestrator.plan_io import encode_predicate
@@ -157,7 +164,7 @@ def replan_trigger(result: TaskResult, steps: Mapping[str, Step]) -> Trigger | N
     return trigger
 
 
-def continuation_refusal(plan: Plan, progress: Progress) -> str | None:
+def continuation_refusal(plan: Plan, progress: Progress, *, desktop: bool = False) -> str | None:
     """The path of the first rule a continuation plan breaks, or None: the task's goal, the
     remaining ids kept and no ticked id reused (Q3), step ids new to the task (item 2), and no
     second open of an (app, site) pair (item 4)."""
@@ -170,12 +177,30 @@ def continuation_refusal(plan: Plan, progress: Progress) -> str | None:
         return "subgoals"
     used = set(progress.steps)
     opened = {_opens(s) for s in progress.steps.values() if s.verb == "open"}
+    verified = {
+        r.step_id for r in progress.results() if r.ok and progress.steps[r.step_id].verb == "open"
+    }
+    opened_here: set[str] = set()
     for index, step in enumerate(plan.steps):
         if step.id in used:
             return f"steps[{index}].id"
+        if _bad_window(step.window, opened_here | verified, desktop=desktop):
+            return f"steps[{index}].window"
         if step.verb == "open" and _opens(step) in opened:
             return f"steps[{index}]"
+        if step.verb == "open":
+            opened_here.add(step.id)
     return None
+
+
+def _bad_window(window: str | None, opens: set[str], *, desktop: bool) -> bool:
+    """`start` is never the shell's desktop (SW-05); `opened:<id>` names an `open` earlier in
+    this plan or a verified `open` of an earlier link (SW-19)."""
+    if window is None:
+        return False
+    if window == START_WINDOW:
+        return desktop
+    return window.removeprefix(OPENED_PREFIX) not in opens
 
 
 def _missing_target(result: TaskResult, steps: Mapping[str, Step]) -> bool:

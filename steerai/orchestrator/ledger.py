@@ -157,6 +157,7 @@ class Ledger:
         self._chain: list[dict[str, Any]] = []
         """The task's plans in order (replan [v2.1]): digest, step ids, the window ref in effect."""
         self._window: dict[str, Any] | None = None
+        self._start_window: dict[str, Any] | None = None
         self.window_ref: str | None = None
         """The window steps act in once the task left its start window; a resumed link restores
         the ref it started with, so its keys match the first run's (replan item 3)."""
@@ -276,15 +277,35 @@ class Ledger:
         )
         self._save_state()
 
-    def bind_window(self, *, pid: int, title: str, allow_change: bool = False) -> None:
+    def bind_window(
+        self,
+        *,
+        pid: int,
+        title: str,
+        allow_change: bool = False,
+        identity: Mapping[str, Any] | None = None,
+    ) -> None:
         """A task's done keys mean nothing in another window: the pid and a title digest
-        are bound on the first run and must match on a resume."""
+        are bound on the first run and must match on a resume. The first bind also records
+        the window's identity (handle, pid, process start, image) for `window: start`; a
+        resume never records it (a reused pid would pass, step-window gate Q3)."""
         window = {"pid": pid, "title": _digest(title)}
         if self._window not in (None, window) and not allow_change:
             raise LedgerError("window_changed: this task id was bound to another window")
         if self._window != window:
+            first = self._window is None
             self._window = window
+            # only the first bind records it; a changed window forgets it (SW-22, gate Q3)
+            self._start_window = (
+                {k: identity[k] for k in OPENED_WINDOW_KEYS[:4]}
+                if first and identity is not None
+                else None
+            )
             self._save_state()
+
+    def start_window(self) -> dict[str, Any] | None:
+        """The start window's recorded identity, None for a state written before it."""
+        return None if self._start_window is None else dict(self._start_window)
 
     # ---- keys and admission ------------------------------------------------------------------
 
@@ -324,6 +345,11 @@ class Ledger:
         entry = self._executions.get(self.key_for(step))
         window = None if entry is None else entry.get("window")
         return None if window is None else dict(window)
+
+    def opened_records(self, ref: str) -> list[dict[str, Any]]:
+        """Every window recorded under an `opened:<step id>` ref: more than one means a
+        replaced plan reused the id (SW-04), which selection refuses."""
+        return _opened_records(self._executions, ref)
 
     def opened_by_ref(self, ref: str) -> dict[str, Any] | None:
         """The window an `opened:<step id>` ref names (step ids are unique in a task)."""
@@ -487,6 +513,8 @@ class Ledger:
             self._chain = _loaded_chain(payload)
             window = payload.get("window")
             self._window = None if window is None else dict(window)
+            start = payload.get("start_window")
+            self._start_window = None if start is None else dict(start)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise LedgerError(f"ledger state unreadable: {exc}") from exc
 
@@ -500,11 +528,23 @@ class Ledger:
             "plan_digest": self._chain[-1]["digest"] if self._chain else None,
             "plan_chain": self._chain,
             "window": self._window,
+            "start_window": self._start_window,
         }
         try:
             self._write_encrypted(self._state_path, json.dumps(payload, separators=(",", ":")))
         except OSError as exc:
             raise LedgerError(f"ledger state could not be written: {exc}") from exc
+
+
+def _opened_records(executions: Mapping[str, Mapping[str, Any]], ref: str) -> list[dict[str, Any]]:
+    if not ref.startswith("opened:"):
+        return []
+    step_id = ref.removeprefix("opened:")
+    return [
+        dict(entry["window"])
+        for entry in executions.values()
+        if entry.get("step_id") == step_id and isinstance(entry.get("window"), dict)
+    ]
 
 
 def _opened_by_ref(executions: Mapping[str, Mapping[str, Any]], ref: str) -> dict[str, Any] | None:

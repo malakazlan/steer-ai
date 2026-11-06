@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from steerai.errors import ErrorCode, SteerError
-from steerai.orchestrator.contracts import Plan
+from steerai.orchestrator.contracts import Plan, is_window_ref
 
 MAX_OPEN_WINDOWS = 20
 MAX_PROGRESS_LINES = 40
@@ -56,6 +56,9 @@ class PlanRequest:
     done: Sequence[DoneStep] = ()
     remaining: Sequence[OpenSubgoal] = ()
     failure: FailedStep | None = None
+    windows: Sequence[tuple[str, str]] = ()
+    """The task's windows a step may name, as (reference, live title): screen content,
+    fenced (step-window packet item 6)."""
 
     def __post_init__(self) -> None:
         if not self.goal.strip():
@@ -64,6 +67,9 @@ class PlanRequest:
         object.__setattr__(self, "open_windows", tuple(self.open_windows)[:MAX_OPEN_WINDOWS])
         object.__setattr__(self, "done", tuple(self.done)[:MAX_PROGRESS_LINES])
         object.__setattr__(self, "remaining", tuple(self.remaining)[:MAX_PROGRESS_LINES])
+        object.__setattr__(self, "windows", tuple(self.windows)[:MAX_OPEN_WINDOWS])
+        if any(not is_window_ref(ref) for ref, _title in self.windows):
+            raise ValueError("a window is listed by its reference: start or opened:<id>")
         if self.continuation < 0:
             raise ValueError("continuation must not be negative")
         progress = bool(self.done or self.remaining or self.failure is not None)

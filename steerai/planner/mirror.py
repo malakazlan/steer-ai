@@ -43,7 +43,7 @@ class SiteKey(enum.StrEnum):
 
 
 MODEL_OWNED_STEP_KEYS: frozenset[str] = frozenset(
-    {"id", "subgoal", "verb", "target", "text", "risk", "params", "expect"}
+    {"id", "subgoal", "verb", "target", "text", "risk", "params", "expect", "window"}
 )
 
 
@@ -123,6 +123,11 @@ class StepDoc(_Doc):
     params: ParamsDoc | None = None
     expect: PredicateDoc | None = Field(
         default=None, description="the step's own effect in the predicate language"
+    )
+    window: str | None = Field(
+        default=None,
+        description='"start" or "opened:<id of an earlier open step>": the window this step '
+        "and the next ones act in; leave unset to stay in the window of the step before",
     )
 
 

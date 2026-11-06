@@ -141,6 +141,9 @@ class Ask:
     kind: Literal["yes", "which"] = "yes"
     """`yes`: consent to one action; `which`: the identity ask, choose among candidates."""
     candidates: tuple[CandidateLine, ...] = field(default=(), repr=False)
+    window: str = field(default="", repr=False)
+    """Where the step lands: the app and reference by code, then the page's own title
+    (step-window SW-06). Never in the trace."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,6 +340,7 @@ class Gate:
         target_id: int | None = None,
         composer_id: int | None = None,
         bound: Binding | None = None,
+        window: str = "",
     ) -> GateResult:
         risk = effective_risk(step, bound.name_part if bound is not None else None)
         if target_pid == self._own_pid:
@@ -382,6 +386,7 @@ class Gate:
                 else ""
             ),
             automation_id=step.target.automation_id if step.target is not None else "",
+            window=window,
         )
         answer = self._confirmer.ask(ask)
         if answer in ("yes", f"yes:{decision_id}"):

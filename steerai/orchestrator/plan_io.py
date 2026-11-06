@@ -18,6 +18,7 @@ from typing import Any, Literal, cast
 
 from steerai.action.launch import APPS, LaunchError, site_url
 from steerai.orchestrator.contracts import (
+    OPENED_PREFIX,
     RISKS,
     VERBS,
     Plan,
@@ -26,6 +27,7 @@ from steerai.orchestrator.contracts import (
     Subgoal,
     Target,
     executor_verb,
+    is_window_ref,
 )
 from steerai.verify.decorations import DECORATIONS
 from steerai.verify.predicates import (
@@ -65,6 +67,7 @@ _STEP_KEYS = frozenset(
         "preapproved_by_request",
         "text_provenance",
         "path",
+        "window",
     }
 )
 _LIVE_KINDS = frozenset({"value_equals", "focused", "state"})
@@ -377,12 +380,25 @@ def _step(value: object, path: str) -> Step:
             ),
             text_provenance=cast("Literal['verbatim', 'generated']", provenance),
             path=_path(obj.get("path"), verb, f"{path}.path"),
+            window=_window(obj, verb, f"{path}.window"),
         )
     except ValueError as exc:
         if isinstance(exc, PlanError):
             raise
         raise PlanError(path, str(exc)) from exc
     return _checked_open(step, path)
+
+
+def _window(obj: dict[str, Any], verb: str, path: str) -> str | None:
+    """A reference, never a title; an explicit null is refused, not read as absent."""
+    if "window" not in obj:
+        return None
+    value = obj["window"]
+    if not is_window_ref(value):
+        raise PlanError(path, "window must be start or opened:<step id>")
+    if verb == "open":
+        raise PlanError(path, "an open step takes no window: it opens one")
+    return cast("str", value)
 
 
 def _checked_open(step: Step, path: str) -> Step:
@@ -422,10 +438,29 @@ def _plan(value: object, path: str) -> Plan:
         _step(item, f"{path}.steps[{i}]")
         for i, item in enumerate(_list(obj.get("steps", []), f"{path}.steps", max_items=256))
     )
+    _check_window_order(steps, path)
     try:
         return Plan(goal=goal, subgoals=subgoals, steps=steps)
     except ValueError as exc:
         raise PlanError(f"{path}.steps", str(exc)) from exc
+
+
+def _check_window_order(steps: tuple[Step, ...], path: str) -> None:
+    """A reference to a step of this plan names an `open` before it; an id outside the plan
+    belongs to an earlier link of the task, which the runner and the ledger check (SW-18)."""
+    ids = {s.id for s in steps}
+    opened: set[str] = set()
+    for index, step in enumerate(steps):
+        ref = step.window
+        if ref is not None and ref.startswith(OPENED_PREFIX):
+            named = ref.removeprefix(OPENED_PREFIX)
+            if named in ids and named not in opened:
+                raise PlanError(
+                    f"{path}.steps[{index}].window",
+                    "window names a step that is not an earlier open",
+                )
+        if step.verb == "open":
+            opened.add(step.id)
 
 
 # ---- encoding --------------------------------------------------------------------------------
@@ -471,6 +506,8 @@ def _encode_step(step: Step) -> dict[str, Any]:
         out["text_provenance"] = step.text_provenance
     if step.path is not None:
         out["path"] = step.path
+    if step.window is not None:
+        out["window"] = step.window
     return out
 
 
