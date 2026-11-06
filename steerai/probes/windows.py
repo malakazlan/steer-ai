@@ -290,6 +290,18 @@ def wait_window_for_pid(
         time.sleep(0.2)
 
 
+def desktop_window() -> WindowInfo:
+    """The shell's desktop (`Progman`), the window a task starts on when the person names no
+    app: its UIA tree lists the desktop icons; an `open` step leaves it for the app it launches."""
+    user32 = _user32()
+    user32.FindWindowW.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR)
+    user32.FindWindowW.restype = wintypes.HWND
+    hwnd = int(user32.FindWindowW("Progman", None) or 0)
+    if not hwnd:
+        raise OSError("the desktop window (Progman) was not found")
+    return WindowInfo(hwnd=hwnd, title=window_title(hwnd), pid=window_pid(hwnd))
+
+
 def find_window(title_substring: str) -> WindowInfo | None:
     """First visible top-level window whose title contains the text, case-insensitive."""
     needle = title_substring.lower()

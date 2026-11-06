@@ -39,3 +39,14 @@ def test_parent_pids_walks_the_chain_nearest_first() -> None:
     assert len(chain) == len(set(chain))
     assert parent_pids(0) == []
     assert sys.platform == "win32"
+
+
+@pytest.mark.windows
+def test_the_desktop_window_is_the_shells_program_manager() -> None:
+    """The `--desktop` start (packet open-multiwindow-2026-11-06, scope item 6)."""
+    from steerai.probes.windows import desktop_window, process_name  # noqa: PLC0415
+
+    desktop = desktop_window()
+    assert desktop.title == "Program Manager"
+    assert desktop.hwnd != 0
+    assert process_name(desktop.pid).lower() == "explorer.exe"
