@@ -42,6 +42,17 @@ def test_wait_window_for_pid_times_out_for_windowless_pid() -> None:
         wait_window_for_pid(0, timeout_s=0.3)
 
 
+def test_a_timeout_names_the_windows_of_the_launched_image() -> None:
+    """A flaky CI launch (no window for the launched pid in 30 s, twice) needs to say whether
+    the image had a window under another pid or none at all."""
+    window = list_top_windows()[0]
+    image = process_name(window.pid)
+    with pytest.raises(TimeoutError) as caught:
+        wait_window_for_pid(0, timeout_s=0.3, image=image)
+    assert f"pid {window.pid}" in str(caught.value)
+    assert image in str(caught.value)
+
+
 def test_wait_window_for_pid_finds_an_existing_window() -> None:
     first = list_top_windows()[0]
     assert wait_window_for_pid(first.pid, timeout_s=1.0).pid == first.pid

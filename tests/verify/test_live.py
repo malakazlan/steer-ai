@@ -70,7 +70,7 @@ def test_send_on_the_inbox_page_is_verified_by_t1() -> None:
     # 1000x640 logical fits a 1080-pixel screen at 125 % DPI (measured 2026-11-04).
     proc = launch_chrome(CHROME_DEFAULT, profile_dir, 9335, PAGE.as_uri(), window_size=(1000, 640))
     try:
-        window = wait_window_for_pid(proc.pid, title_contains="Google Chrome")
+        window = wait_window_for_pid(proc.pid, title_contains="Google Chrome", image="chrome.exe")
         acquire_foreground(window.hwnd)
         client = UiaClient()
         model = WorldModel(client)

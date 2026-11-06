@@ -37,7 +37,7 @@ def test_the_planner_writes_a_valid_plan_for_the_google_page(tmp_path: Path) -> 
         CHROME_DEFAULT, profile, 9361, "https://www.google.com/?hl=en", window_size=(1100, 760)
     )
     try:
-        window = wait_window_for_pid(proc.pid, title_contains="Google Chrome")
+        window = wait_window_for_pid(proc.pid, title_contains="Google Chrome", image="chrome.exe")
         model = WorldModel(UiaClient())
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
