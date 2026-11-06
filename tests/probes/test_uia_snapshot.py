@@ -43,13 +43,21 @@ def test_subtree_snapshot_of_a_real_window(client: UiaClient) -> None:
 
 
 def test_cached_tree_has_structure_and_matches_flat_count(client: UiaClient) -> None:
-    hwnd = list_top_windows()[0].hwnd
-    tree = client.cached_tree(hwnd)
-    assert tree.nodes[0].depth == 0
-    pairs = zip(tree.nodes, tree.nodes[1:], strict=False)
-    assert all(0 <= child.depth <= parent.depth + 1 for parent, child in pairs)
-    assert tree.fetch_ms > 0
-    assert len(tree.nodes) == client.snapshot_subtree(hwnd).node_count
+    """Two reads of one window agree only while it holds still: a window whose cached count
+    differs between the read before and the read after the flat count is changing (a playing
+    video was on top once, 2026-11-06), so the property is checked on a still window."""
+    for window in list_top_windows():
+        tree = client.cached_tree(window.hwnd)
+        flat = client.snapshot_subtree(window.hwnd).node_count
+        if len(client.cached_tree(window.hwnd).nodes) != len(tree.nodes):
+            continue  # changing while read: not evidence either way
+        assert tree.nodes[0].depth == 0
+        pairs = zip(tree.nodes, tree.nodes[1:], strict=False)
+        assert all(0 <= child.depth <= parent.depth + 1 for parent, child in pairs)
+        assert tree.fetch_ms > 0
+        assert len(tree.nodes) == flat
+        return
+    pytest.skip("every window on this desktop changed while it was read")
 
 
 def test_bounding_rect_of_a_real_window_is_non_empty(client: UiaClient) -> None:
