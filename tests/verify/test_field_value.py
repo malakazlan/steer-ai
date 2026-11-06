@@ -334,6 +334,6 @@ def test_a_failed_live_read_in_the_type_verify_is_a_failed_step_not_a_crash() ->
     def value(_handle: Any) -> str | None:
         raise SteerError(ErrorCode.PERCEPTION_TIMEOUT, "live_read_failed")
 
-    live.value = value  # type: ignore[method-assign]
+    live.value = value  # type: ignore[method-assign,assignment]
     result = h.session.run_step(_type())
     assert result.ok is False
