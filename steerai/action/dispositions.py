@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 from steerai.errors import ErrorCode
 
-Mechanism = Literal["semantic", "physical", "none"]
+Mechanism = Literal["semantic", "physical", "launch", "none"]
 Outcome = Literal["succeeded", "failed", "skipped"]
 ALREADY_IN_STATE = "AlreadyInState"
 
