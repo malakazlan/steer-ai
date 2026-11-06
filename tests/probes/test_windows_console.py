@@ -50,3 +50,12 @@ def test_the_desktop_window_is_the_shells_program_manager() -> None:
     assert desktop.title == "Program Manager"
     assert desktop.hwnd != 0
     assert process_name(desktop.pid).lower() == "explorer.exe"
+
+
+@pytest.mark.windows
+def test_this_interactive_session_reads_as_unlocked() -> None:
+    """Issue #31: the lock flag of the session the tests run in (measured 1 = unlocked locally,
+    2026-11-06); a runner whose session is not interactive would read None and stop every task."""
+    from steerai.probes.windows import session_locked  # noqa: PLC0415
+
+    assert session_locked() is False

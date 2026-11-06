@@ -177,6 +177,8 @@ class Deps:
     """(title, 6.2 lines) of a window after a warm-up observe; None only in pure tests."""
     planner: Callable[[PlanRequest], PlanOutcome] | None = None
     """The LLM planner (5.3); None only in pure tests or a `--plan` run."""
+    session_locked: Callable[[], bool | None] | None = None
+    """The session's lock state (issue #31); None only in pure tests."""
     make_confirmer: ConfirmerFactory = _console_confirmer
     monotonic: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
@@ -472,6 +474,12 @@ def _tap_foreground(options: Options, deps: Deps, window: WindowInfo) -> None:
         raise RunnerError(ErrorCode.FOCUS_LOST, "foreground") from exc
 
 
+def _refuse_locked(deps: Deps) -> None:
+    """Nothing is planned, tapped or run on a locked (or unknown) session (issue #31)."""
+    if deps.session_locked is not None and deps.session_locked() is not False:
+        raise RunnerError(ErrorCode.SECURE_DESKTOP, "session_locked")
+
+
 def _pick_window(options: Options, deps: Deps) -> WindowInfo:
     if options.desktop:
         if deps.desktop is None:
@@ -668,6 +676,7 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
     stderr: TextIO,
 ) -> int:
     try:
+        _refuse_locked(deps)
         window = _pick_window(options, deps)
         ledger.bind_window(
             pid=window.pid, title=window.title, allow_change=options.allow_window_change
@@ -1008,6 +1017,9 @@ def _replanning(r: Replan, plan: Plan, result: TaskResult) -> TaskResult:
         if number >= MAX_REPLANS:
             r.out.note(f"stopped after {MAX_REPLANS} replans; the goal needs a person to look")
             return progress.ended("stopped", ErrorCode.BUDGET_EXCEEDED, "replan_limit")
+        if r.deps.session_locked is not None and r.deps.session_locked() is not False:
+            # nothing on screen leaves the machine for a person who is away (review item 2)
+            return progress.ended("stopped", ErrorCode.SECURE_DESKTOP, "session_locked")
         number += 1
         r.trace.write(
             {"kind": "replan", "task_id": r.options.task_id, "number": number, "trigger": trigger}
@@ -1111,12 +1123,12 @@ def _ready_for(r: Replan, progress: Progress) -> TaskResult | None:
     hunter RP-14: after a `--desktop` start too, once the task left the desktop)."""
     if r.monitor is not None:
         held = wait_for_idle(r.monitor, monotonic=r.deps.monotonic, sleep=r.deps.sleep)
-        if held == "killed":
-            return progress.ended("blocked", ErrorCode.GATE_BLOCKED, "killed")
         if held == "takeover":
             return progress.ended("paused", ErrorCode.GATE_PENDING_USER, "takeover")
-        if held is not None:
+        if held is not None:  # killed, monitor_lost, ...: blocked under the held token
             return progress.ended("blocked", ErrorCode.GATE_BLOCKED, held)
+    if r.deps.session_locked is not None and r.deps.session_locked() is not False:
+        return progress.ended("stopped", ErrorCode.SECURE_DESKTOP, "session_locked")
     if r.options.desktop and r.session.hwnd == r.start.hwnd:
         return None  # never the shell's desktop
     try:
@@ -1141,6 +1153,7 @@ def _build_session(bound: Bound) -> SessionLike:
     from steerai.probes.win_input import foreground_hwnd  # noqa: PLC0415
     from steerai.probes.windows import (  # noqa: PLC0415
         list_top_windows,
+        session_locked,
         window_identity,
         window_title,
     )
@@ -1178,6 +1191,7 @@ def _build_session(bound: Bound) -> SessionLike:
         window_title=window_title,
         identify=window_identity,
         foreground=foreground_hwnd,
+        locked=session_locked,
     )
 
 
@@ -1243,6 +1257,7 @@ def _real_deps() -> Deps:
         console_exclusions,
         desktop_window,
         list_top_windows,
+        session_locked,
     )
 
     return Deps(
@@ -1256,6 +1271,7 @@ def _real_deps() -> Deps:
         open_windows=_open_windows,
         screen=_screen,
         planner=_planner,
+        session_locked=session_locked,
     )
 
 

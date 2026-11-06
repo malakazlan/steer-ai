@@ -438,3 +438,104 @@ def window_title(hwnd: int) -> str:
     buffer = ctypes.create_unicode_buffer(length + 1)
     user32.GetWindowTextW(hwnd, buffer, length + 1)
     return buffer.value
+
+
+# ---- the session's lock state (issue #31) ------------------------------------------------------
+
+_WTS_CURRENT_SESSION = 0xFFFFFFFF
+_WTS_SESSION_INFO_EX = 25
+"""`WTSSessionInfoEx`, index 25 of `WTS_INFO_CLASS` (learn.microsoft.com, wtsapi32.h)."""
+_WTS_SESSIONSTATE_LOCK = 0
+_WTS_SESSIONSTATE_UNLOCK = 1
+
+
+class _WtsInfoExLevel1(ctypes.Structure):
+    """`WTSINFOEX_LEVEL1_W` (learn.microsoft.com, wtsapi32.h); 232 bytes inside `WTSINFOEXW`,
+    measured equal to the size the call returns (2026-11-06)."""
+
+    _fields_ = (
+        ("SessionId", wintypes.ULONG),
+        ("SessionState", ctypes.c_int),
+        ("SessionFlags", ctypes.c_long),
+        ("WinStationName", wintypes.WCHAR * 33),
+        ("UserName", wintypes.WCHAR * 21),
+        ("DomainName", wintypes.WCHAR * 18),
+        ("LogonTime", ctypes.c_longlong),
+        ("ConnectTime", ctypes.c_longlong),
+        ("DisconnectTime", ctypes.c_longlong),
+        ("LastInputTime", ctypes.c_longlong),
+        ("CurrentTime", ctypes.c_longlong),
+        ("IncomingBytes", wintypes.DWORD),
+        ("OutgoingBytes", wintypes.DWORD),
+        ("IncomingFrames", wintypes.DWORD),
+        ("OutgoingFrames", wintypes.DWORD),
+        ("IncomingCompressedBytes", wintypes.DWORD),
+        ("OutgoingCompressedBytes", wintypes.DWORD),
+    )
+
+
+class _WtsInfoExData(ctypes.Union):
+    _fields_ = (("Level1", _WtsInfoExLevel1),)
+
+
+class _WtsInfoEx(ctypes.Structure):
+    _fields_ = (("Level", wintypes.DWORD), ("Data", _WtsInfoExData))
+
+
+@functools.cache
+def _wtsapi32() -> ctypes.WinDLL:
+    """Loaded once, prototypes set once (read at every step boundary, p50 0.2 ms)."""
+    dll = ctypes.WinDLL("wtsapi32", use_last_error=True)
+    dll.WTSQuerySessionInformationW.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    dll.WTSQuerySessionInformationW.restype = wintypes.BOOL
+    dll.WTSFreeMemory.argtypes = (ctypes.c_void_p,)
+    dll.WTSFreeMemory.restype = None
+    return dll
+
+
+_WTS_ACTIVE = 0
+"""`WTSActive` in `WTS_CONNECTSTATE_CLASS`: a user is logged on and the session is attached
+(measured 0 on this console, 2026-11-06)."""
+
+
+def lock_state(*, session_state: int, session_flags: int) -> bool | None:
+    """The lock flag of an active session: True locked, False unlocked, None for anything else
+    (a disconnected RDP session, session 0, `WTS_SESSIONSTATE_UNKNOWN`). Python 3.12 runs on
+    Windows 8.1 and later only (docs.python.org/3.12/using/windows.html), so the flags' Windows 7
+    reversal never applies."""
+    if session_state != _WTS_ACTIVE:
+        return None
+    if session_flags == _WTS_SESSIONSTATE_LOCK:
+        return True
+    if session_flags == _WTS_SESSIONSTATE_UNLOCK:
+        return False
+    return None
+
+
+def session_locked() -> bool | None:
+    """Whether this process's session is locked: True, False, or None when Windows does not say
+    or the session is not active (a failed call too). The Windows 10 lock screen is
+    `LockApp.exe` on the default desktop, so the input desktop's name does not show it (#31)."""
+    wtsapi32 = _wtsapi32()
+    buffer = ctypes.c_void_p()
+    size = wintypes.DWORD()
+    if not wtsapi32.WTSQuerySessionInformationW(
+        None, _WTS_CURRENT_SESSION, _WTS_SESSION_INFO_EX, ctypes.byref(buffer), ctypes.byref(size)
+    ):
+        return None
+    try:
+        if size.value < ctypes.sizeof(_WtsInfoEx):
+            return None
+        info = ctypes.cast(buffer, ctypes.POINTER(_WtsInfoEx)).contents
+        if info.Level != 1:
+            return None
+        level1 = info.Data.Level1
+        return lock_state(session_state=level1.SessionState, session_flags=level1.SessionFlags)
+    finally:
+        wtsapi32.WTSFreeMemory(buffer)
