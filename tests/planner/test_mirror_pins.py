@@ -66,6 +66,8 @@ def test_every_object_allows_a_subset_of_the_boundarys_keys() -> None:
     assert _properties(_definition(schema, "TargetDoc")) <= TARGET_KEYS
     assert _properties(_definition(schema, "ParamsDoc")) <= PARAM_KEYS
     predicate = _definition(schema, "PredicateDoc")["properties"]
+    # one kind set: a second predicate schema made the grammar too large for the API (HTTP 400,
+    # 2026-11-06); `value` under an expect is refused by the boundary at its path instead
     assert frozenset(predicate["kind"]["enum"]) == KINDS - {"all", "any_of"}
 
 
@@ -81,6 +83,7 @@ def test_every_flat_predicate_translates_to_a_subset_of_the_boundarys_keys() -> 
         "order": "prepend",
         "decoration": "google_search",
         "replaces": True,
+        "text": "hello",
     }
     assert set(PREDICATE_KEYS) == KINDS - {"all", "any_of"}
     for kind, keys in PREDICATE_KEYS.items():
@@ -226,3 +229,24 @@ def test_site_comes_before_text_in_the_params() -> None:
     and left it null (2 of 2 calls); with `site` first it filled the search words 3 of 3."""
     properties = list(_definition(_schema(), "ParamsDoc")["properties"])
     assert properties.index("site") < properties.index("text")
+
+
+def test_a_value_condition_round_trips_through_the_boundary() -> None:
+    """Issue #36: the model's `value` reaches the plan boundary with its role and text."""
+    condition = PredicateDoc(kind="value", role="Edit", name="Message", text="hello")
+    doc = PlanDoc(
+        goal="type hello",
+        subgoals=[SubgoalDoc(id="g1", desc="typed", condition=condition)],
+        steps=[
+            StepDoc(
+                id="s1",
+                subgoal="g1",
+                verb="type",
+                target=TargetDoc(role="Edit", name="Message"),
+                text="hello",
+                risk="R1",
+            )
+        ],
+    )
+    plan = plan_from_json(json.dumps(doc.to_file_form()))
+    assert json.loads(plan_to_json(plan))["subgoals"][0]["condition"] == condition.to_file_form()

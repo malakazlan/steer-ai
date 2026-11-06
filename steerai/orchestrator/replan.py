@@ -27,6 +27,7 @@ from steerai.orchestrator.gate import effective_risk
 from steerai.orchestrator.loop import TaskResult
 from steerai.orchestrator.plan_io import encode_predicate
 from steerai.planner.contracts import DoneStep, FailedStep, OpenSubgoal
+from steerai.verify.predicates import Predicate, field_values
 
 MAX_REPLANS = 2
 """Every replan counts, a continuation after `unfinished` too (design 5.3 [v2.1]: stricter than
@@ -170,10 +171,7 @@ def continuation_refusal(plan: Plan, progress: Progress, *, desktop: bool = Fals
     second open of an (app, site) pair (item 4)."""
     if plan.goal != progress.plans[0].goal:
         return "goal"
-    ids = {s.id for s in plan.subgoals}
-    ticked = progress.ticked
-    remaining = set(progress.subgoals()) - ticked
-    if not remaining <= ids or ids & ticked:
+    if _subgoals_refused(plan, progress):
         return "subgoals"
     used = set(progress.steps)
     opened = {_opens(s) for s in progress.steps.values() if s.verb == "open"}
@@ -191,6 +189,25 @@ def continuation_refusal(plan: Plan, progress: Progress, *, desktop: bool = Fals
         if step.verb == "open":
             opened_here.add(step.id)
     return None
+
+
+def _subgoals_refused(plan: Plan, progress: Progress) -> bool:
+    """Q3: every remaining id kept, no ticked id reused; a value's text is the goal's, so a
+    continuation never rewrites it to screen text (FV-04)."""
+    ids = {s.id for s in plan.subgoals}
+    ticked = progress.ticked
+    remaining = set(progress.subgoals()) - ticked
+    if not remaining <= ids or ids & ticked:
+        return True
+    before = progress.subgoals()
+    return any(
+        s.id in before and _texts(before[s.id].condition) != _texts(s.condition)
+        for s in plan.subgoals
+    )
+
+
+def _texts(condition: Predicate) -> list[str]:
+    return sorted(value.text for value in field_values(condition))
 
 
 def _bad_window(window: str | None, opens: set[str], *, desktop: bool) -> bool:

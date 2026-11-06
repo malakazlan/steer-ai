@@ -21,7 +21,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 Verb = Literal["click", "focus", "type", "send", "submit", "delete", "open"]
 Risk = Literal["R0", "R1", "R2", "R3"]
-Kind = Literal["appeared", "disappeared", "title", "window_exists", "window_gone", "count_delta"]
+ConditionKind = Literal[
+    "appeared", "disappeared", "title", "window_exists", "window_gone", "count_delta", "value"
+]
+"""One kind set for conditions and expects: a second predicate schema made the compiled grammar
+too large for the API (HTTP 400, measured 2026-11-06), so `value` in an `expect` is refused by
+the plan boundary at its path instead (field-value gate item 5, reality wins)."""
 
 
 class Decoration(enum.StrEnum):
@@ -56,7 +61,7 @@ class PredicateDoc(_Doc):
     expected?, order?, decoration?, replaces?; disappeared: role, name, within?; title:
     pattern; window_exists / window_gone: name; count_delta: role, delta, within?."""
 
-    kind: Kind
+    kind: ConditionKind
     role: str | None = None
     name: str | None = Field(default=None, description="the full plain-text name as shown")
     within: str | None = Field(default=None, description="landmark container name to look in")
@@ -69,6 +74,9 @@ class PredicateDoc(_Doc):
     )
     replaces: bool | None = Field(
         default=None, description="true only for a Document that replaces the previous page"
+    )
+    text: str | None = Field(
+        default=None, description="value (a subgoal condition only): the exact text the field holds"
     )
 
     def to_file_form(self) -> dict[str, Any]:  # Any: a JSON body for the plan boundary
@@ -85,6 +93,7 @@ class PredicateDoc(_Doc):
 
 
 _KIND_FIELDS: dict[str, frozenset[str]] = {
+    "value": frozenset({"role", "name", "text"}),
     "appeared": frozenset({"role", "name", "expected", "order", "decoration", "replaces"}),
     "disappeared": frozenset({"role", "name"}),
     "count_delta": frozenset({"role", "delta"}),

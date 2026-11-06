@@ -34,6 +34,7 @@ from steerai.verify.predicates import (
     Appeared,
     CountDelta,
     Disappeared,
+    FieldValue,
     Focused,
     Predicate,
     State,
@@ -46,7 +47,7 @@ from steerai.verify.predicates import (
 )
 from steerai.verify.scope import Scope, resolve_scope
 from steerai.world.elements import Element
-from steerai.world.model import Snapshot, resolve_in
+from steerai.world.model import Snapshot, normalise_name, resolve_in
 
 DEADLINE_S = 3.0
 POLL_S = 0.25
@@ -573,6 +574,29 @@ def _value_equals(
     return _plain("value_differs")
 
 
+def _field_value(predicate: FieldValue, snapshot: Snapshot, ctx: Context) -> Verdict:
+    """Presence in one snapshot: the field resolved there like a step target (role, NFKC,
+    whitespace-folded, case-folded name; exactly one) and its value read through that same
+    snapshot's handle (field-value gate item 4, FV-39)."""
+    live = _live(ctx, "FieldValue")
+    wanted = normalise_name(predicate.name_pattern).casefold()
+    found = [
+        e
+        for e in snapshot.elements
+        if e.role == predicate.role and normalise_name(e.name).casefold() == wanted
+    ]
+    if not found:
+        return _plain("target_not_found", settles=True)
+    if len(found) > 1:
+        return _plain("ambiguous_target", settles=True)
+    if found[0].secure:
+        return _plain("secure_target", settles=True)  # never read: no use in polling
+    value = _read_value(found[0], snapshot, live)
+    if value == normalise_newlines(predicate.text):
+        return Verdict(holds=True, code=None, level=3, polls=0, evidence={})
+    return _plain("value_empty" if value == "" else "value_differs", settles=True)
+
+
 def _focused(predicate: Focused, before: Snapshot, after: Snapshot, ctx: Context) -> Verdict:
     live = _live(ctx, "Focused")
     element = _target(before, after, predicate.target_id)
@@ -718,6 +742,7 @@ _EVALUATORS: dict[type, Callable[[Any, Snapshot, Snapshot, Context], Verdict]] =
     Disappeared: lambda p, b, a, _c: _disappeared(p, b, a),
     CountDelta: lambda p, b, a, _c: _count_delta(p, b, a),
     ValueEquals: _value_equals,
+    FieldValue: lambda p, _b, a, c: _field_value(p, a, c),
     Focused: _focused,
     State: _state,
     TitleMatches: lambda p, b, a, _c: _title_matches(p, b, a),
@@ -868,6 +893,8 @@ def redact(predicate: Predicate) -> dict[str, Any]:
                 spec["delta"] = predicate.delta
             if isinstance(predicate, Appeared):
                 spec.update(_appeared_spec(predicate))
+        case FieldValue():
+            spec["role"] = predicate.role  # never the name, the text or a value read
         case ValueEquals() | Focused() | State():
             spec["target_id"] = predicate.target_id
             if isinstance(predicate, State):

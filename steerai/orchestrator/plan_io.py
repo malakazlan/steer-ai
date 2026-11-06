@@ -36,12 +36,15 @@ from steerai.verify.predicates import (
     Appeared,
     CountDelta,
     Disappeared,
+    FieldValue,
     Predicate,
     TitleMatches,
     WindowExists,
     WindowGone,
     Within,
+    field_values,
 )
+from steerai.world.model import normalise_name
 from steerai.world.people import name_part
 
 MAX_PLAN_BYTES = 262_144
@@ -79,6 +82,7 @@ _KINDS = frozenset(
         "window_exists",
         "window_gone",
         "count_delta",
+        "value",
         "all",
         "any_of",
     }
@@ -86,6 +90,7 @@ _KINDS = frozenset(
 
 
 TARGET_KEYS = frozenset({"role", "name", "automation_id", "match"})
+VALUE_KEYS = frozenset({"role", "name", "text"})
 APPEARED_KEYS = frozenset({"role", "name", "within", "expected", "order", "decoration", "replaces"})
 DISAPPEARED_KEYS = frozenset({"role", "name", "within"})
 COUNT_DELTA_KEYS = frozenset({"role", "delta", "within"})
@@ -98,6 +103,7 @@ PREDICATE_KEYS: Mapping[str, frozenset[str]] = {
     "title": TITLE_KEYS,
     "window_exists": WINDOW_KEYS,
     "window_gone": WINDOW_KEYS,
+    "value": VALUE_KEYS,
 }
 FILE_VERBS = _FILE_VERBS
 STEP_KEYS = _STEP_KEYS
@@ -228,8 +234,22 @@ def _built[T](path: str, make: Callable[[], T]) -> T:
         raise PlanError(path, str(exc)) from exc
 
 
-def _predicate(value: object, path: str, depth: int = 1) -> Predicate:
-    return _built(path, lambda: _predicate_body(value, path, depth))
+def _predicate(value: object, path: str, depth: int = 1, *, condition: bool = False) -> Predicate:
+    return _built(path, lambda: _predicate_body(value, path, depth, condition=condition))
+
+
+def _field_value(fields: Mapping[str, Any], inner: str, *, condition: bool) -> FieldValue:
+    if not condition:
+        # presence with no before value never proves a step's effect (VF-30 B1)
+        raise PlanError(inner, "value is a subgoal condition, never a step's expect")
+    _keys(fields, VALUE_KEYS, inner)
+    role = _text(fields.get("role"), f"{inner}.role", max_chars=64)
+    name = _text(fields.get("name"), f"{inner}.name")
+    text = _text(fields.get("text"), f"{inner}.text")
+    try:
+        return FieldValue(role=role, name_pattern=name, text=text)
+    except ValueError as exc:
+        raise PlanError(inner, str(exc)) from exc
 
 
 def _appeared(fields: Mapping[str, Any], inner: str) -> Appeared:
@@ -254,7 +274,7 @@ def _appeared(fields: Mapping[str, Any], inner: str) -> Appeared:
     )
 
 
-def _predicate_body(value: object, path: str, depth: int) -> Predicate:
+def _predicate_body(value: object, path: str, depth: int, *, condition: bool) -> Predicate:
     if depth > MAX_DEPTH:
         raise PlanError(path, f"nested deeper than {MAX_DEPTH}")
     obj = _obj(value, path)
@@ -268,7 +288,7 @@ def _predicate_body(value: object, path: str, depth: int) -> Predicate:
         raise PlanError(inner, "unknown predicate kind")
     if kind in ("all", "any_of"):
         parts = tuple(
-            _predicate(part, f"{inner}[{i}]", depth + 1)
+            _predicate(part, f"{inner}[{i}]", depth + 1, condition=condition)
             for i, part in enumerate(_list(body, inner, max_items=MAX_PARTS))
         )
         try:
@@ -285,6 +305,13 @@ def _predicate_body(value: object, path: str, depth: int) -> Predicate:
             name_pattern=_text(fields.get("name"), f"{inner}.name"),
             within=_within(fields.get("within"), f"{inner}.within"),
         )
+    if kind == "value":
+        return _field_value(fields, inner, condition=condition)
+    return _leaf(kind, fields, inner)
+
+
+def _leaf(kind: str, fields: Mapping[str, Any], inner: str) -> Predicate:
+    """count_delta, title, window_exists and window_gone."""
     if kind == "count_delta":
         _keys(fields, COUNT_DELTA_KEYS, inner)
         return CountDelta(
@@ -420,7 +447,7 @@ def _subgoal(value: object, path: str) -> Subgoal:
     return Subgoal(
         id=_ident(obj.get("id"), f"{path}.id"),
         desc=_text(obj.get("desc", ""), f"{path}.desc"),
-        condition=_predicate(obj.get("condition"), f"{path}.condition"),
+        condition=_predicate(obj.get("condition"), f"{path}.condition", condition=True),
     )
 
 
@@ -439,10 +466,61 @@ def _plan(value: object, path: str) -> Plan:
         for i, item in enumerate(_list(obj.get("steps", []), f"{path}.steps", max_items=256))
     )
     _check_window_order(steps, path)
+    _check_values(subgoals, steps, path)
     try:
         return Plan(goal=goal, subgoals=subgoals, steps=steps)
     except ValueError as exc:
         raise PlanError(f"{path}.steps", str(exc)) from exc
+
+
+_NO_VALUE_VERBS = frozenset({"send", "submit", "delete"})
+
+
+def _check_values(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: str) -> None:
+    """A `value` subgoal with steps names a `type` of its own with the same role, name (the
+    target rule) and exact text; it owns no send / submit / delete or R2/R3 step; its steps act
+    in one window (FV-01/03/23/25/42). A subgoal without steps cannot tick and is allowed."""
+    windows = _window_of_each(steps)
+    for index, subgoal in enumerate(subgoals):
+        wanted = field_values(subgoal.condition)
+        own = [s for s in steps if s.subgoal == subgoal.id]
+        if not wanted or not own:
+            continue
+        where = f"{path}.subgoals[{index}].condition"
+        if any(s.verb in _NO_VALUE_VERBS or s.risk in ("R2", "R3") for s in own):
+            raise PlanError(where, "a value subgoal holds no send, submit, delete or R2/R3 step")
+        if len({windows[s.id] for s in own if s.verb != "open"}) > 1:
+            raise PlanError(where, "a value subgoal acts in one window")
+        typed = [s for s in own if s.verb == "type"]
+        for value in wanted:
+            if not any(_typed_into(s, value) for s in typed):
+                raise PlanError(where, "value names the field and text a type step of it typed")
+
+
+def _typed_into(step: Step, value: FieldValue) -> bool:
+    target = step.target
+    return (
+        target is not None
+        and target.match == "exact"
+        and not target.automation_id  # resolved by the exact name only, as the value is
+        and target.role == value.role
+        and normalise_name(target.name).casefold() == normalise_name(value.name_pattern).casefold()
+        and step.text == value.text
+    )
+
+
+def _window_of_each(steps: tuple[Step, ...]) -> dict[str, str]:
+    """Each step's window in plan order (the loop's `_plan_refs`, with the link's start as
+    "link"): a `window` changes it, an `open` changes it for the steps after."""
+    current = "link"
+    found: dict[str, str] = {}
+    for step in steps:
+        if step.window is not None:
+            current = step.window
+        found[step.id] = current
+        if step.verb == "open":
+            current = OPENED_PREFIX + step.id
+    return found
 
 
 def _check_window_order(steps: tuple[Step, ...], path: str) -> None:
@@ -551,6 +629,14 @@ def _encode(predicate: Predicate) -> dict[str, Any]:  # noqa: PLR0911 - one kind
         body = {"role": predicate.role, "delta": predicate.delta}
         body.update(_encode_within(predicate.within))
         return {"count_delta": body}
+    if isinstance(predicate, FieldValue):
+        return {
+            "value": {
+                "role": predicate.role,
+                "name": predicate.name_pattern,
+                "text": predicate.text,
+            }
+        }
     if isinstance(predicate, TitleMatches):
         return {"title": {"pattern": predicate.pattern}}
     if isinstance(predicate, WindowExists):
