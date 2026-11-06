@@ -475,3 +475,161 @@ def test_the_window_reference_is_part_of_the_key_only_when_set(tmp_path: Path) -
         ledger.set_window_ref(None)
         assert ledger.key_for(step) == start_key
         assert opened_key != start_key
+
+
+# ---- the plan chain of a replanned task (packet replan-2026-11-06, addendum items 2, 3) -------
+
+
+def test_a_replan_extends_the_chain_and_only_the_last_link_resumes(tmp_path: Path) -> None:
+    with Ledger(tmp_path, task_id="t-chain", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["o1"])
+        ledger.set_window_ref("opened:o1")
+        ledger.extend_plan("b" * 64, ["p2.s1"])
+    with Ledger(tmp_path, task_id="t-chain", started_at=1.0) as ledger:
+        with pytest.raises(LedgerError, match="plan_superseded"):
+            ledger.bind_plan("a" * 64)
+        with pytest.raises(LedgerError, match="plan_changed"):
+            ledger.bind_plan("c" * 64)
+        refused_ref = ledger.window_ref
+        assert refused_ref is None
+        ledger.bind_plan("b" * 64)
+        assert ledger.window_ref == "opened:o1", "the link's window: keys match the first run"
+        assert ledger.plan_count() == 2
+
+
+def test_the_first_link_resumes_in_the_start_window(tmp_path: Path) -> None:
+    with Ledger(tmp_path, task_id="t-first", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["o1", "s2"])
+        ledger.set_window_ref("opened:o1")  # plan 1 opened a window, then the process died
+    with Ledger(tmp_path, task_id="t-first", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64)
+        assert ledger.window_ref is None, "steps before the open keyed without a window"
+
+
+def test_step_ids_are_unique_across_the_chain_after_a_restart(tmp_path: Path) -> None:
+    with Ledger(tmp_path, task_id="t-ids", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["s1"])
+        with pytest.raises(LedgerError, match="step_id_reused"):
+            ledger.extend_plan("b" * 64, ["s1"])
+        ledger.extend_plan("b" * 64, ["p2.s1"])
+    with Ledger(tmp_path, task_id="t-ids", started_at=1.0) as ledger:
+        ledger.bind_plan("b" * 64)
+        with pytest.raises(LedgerError, match="step_id_reused"):
+            ledger.extend_plan("c" * 64, ["p2.s1"])
+        with pytest.raises(LedgerError, match="step_id_reused"):
+            ledger.extend_plan("c" * 64, ["s1"])
+
+
+def test_a_chain_needs_a_first_plan_and_never_repeats_a_link(tmp_path: Path) -> None:
+    with Ledger(tmp_path, task_id="t-empty", started_at=1.0) as ledger:
+        with pytest.raises(LedgerError, match="plan_unbound"):
+            ledger.extend_plan("b" * 64, ["p2.s1"])
+        ledger.bind_plan("a" * 64, step_ids=["s1"])
+        with pytest.raises(LedgerError, match="plan_repeated"):
+            ledger.extend_plan("a" * 64, ["p2.s1"])
+
+
+def test_a_state_from_before_the_chain_loads_as_one_link(tmp_path: Path) -> None:
+    with Ledger(tmp_path, task_id="t-old", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64)
+    state_path = next(tmp_path.rglob("state.ledger"))
+    payload = json.loads(dpapi.unprotect(state_path.read_bytes(), entropy=b"steer-ledger-v1"))
+    for key in ("plan_chain",):
+        payload.pop(key, None)
+    state_path.write_bytes(dpapi.protect(json.dumps(payload).encode(), entropy=b"steer-ledger-v1"))
+    with Ledger(tmp_path, task_id="t-old", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64)
+        ledger.extend_plan("b" * 64, ["p2.s1"])
+        with pytest.raises(LedgerError, match="plan_superseded"):
+            ledger.bind_plan("a" * 64)
+
+
+def test_an_opened_window_is_found_by_its_reference_after_a_restart(tmp_path: Path) -> None:
+    with Ledger(tmp_path, task_id="t-byref", started_at=1.0) as ledger:
+        ledger.record_open(_open_step("o1"), WINDOW)
+    with Ledger(tmp_path, task_id="t-byref", started_at=1.0) as ledger:
+        window = ledger.opened_by_ref("opened:o1")
+        assert window is not None
+        assert (window["hwnd"], window["pid"], window["image"]) == (0x30, 500, "chrome.exe")
+        assert ledger.opened_by_ref("opened:o2") is None
+        assert ledger.opened_by_ref("o1") is None, "only an opened: reference names a window"
+
+
+def test_a_chained_task_never_rewrites_its_chain_even_when_a_change_is_allowed(
+    tmp_path: Path,
+) -> None:
+    """Hunter RP-07: a replaced link would lose its window ref and every key with it."""
+    with Ledger(tmp_path, task_id="t-allow", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["o1"])
+        ledger.set_window_ref("opened:o1")
+        ledger.extend_plan("b" * 64, ["p2.s1"])
+        with pytest.raises(LedgerError, match="plan_changed"):
+            ledger.bind_plan("c" * 64, allow_change=True)
+        with pytest.raises(LedgerError, match="plan_superseded"):
+            ledger.bind_plan("a" * 64, allow_change=True)
+
+
+def test_closed_by_names_the_step_that_closed_a_key(tmp_path: Path) -> None:
+    with Ledger(tmp_path, task_id="t-closed", started_at=1.0) as ledger:
+        step = _open_step("o1")
+        key = ledger.key_for(step)
+        assert ledger.closed_by(key) is None
+        ledger.record_open(step, WINDOW)
+        assert ledger.closed_by(key) == "o1"
+
+
+def test_unsettled_is_any_attempt_not_known_done_or_not_sent(tmp_path: Path) -> None:
+    """Hunter RP-06: an uncertain attempt of an earlier run stops a replan too."""
+    with Ledger(tmp_path, task_id="t-unsettled", started_at=1.0) as ledger:
+        assert ledger.unsettled() is False
+        ledger.record_open(_open_step("o1"), WINDOW)
+        assert ledger.unsettled() is False
+        ledger.record_open_attempt(_open_step("o2"), "delivered_unverified")
+        assert ledger.unsettled() is True
+
+
+def test_an_open_write_ahead_record_is_unsettled_and_nothing_sent_is_settled(
+    tmp_path: Path,
+) -> None:
+    """RP-06 boundaries: a crash between write-ahead and outcome may have acted; a launch that
+    delivered nothing did not."""
+    with Ledger(tmp_path, task_id="t-wal", started_at=1.0) as ledger:
+        ledger.record_open_attempt(_open_step("o1"), "not_delivered")
+        assert ledger.unsettled() is False
+        step = _send()
+        key = ledger.key_for(step)
+        ledger.write_ahead(step, _snapshot(), _decision(key, "approve"))
+        assert ledger.unsettled() is True
+    with Ledger(tmp_path, task_id="t-wal", started_at=1.0) as ledger:
+        assert ledger.unsettled() is True, "an open record survives a restart"
+
+
+def test_a_state_from_before_the_chain_is_bound_to_its_one_plan(tmp_path: Path) -> None:
+    """Addendum item 3: the legacy digest is the chain's one link, not an empty chain."""
+    with Ledger(tmp_path, task_id="t-legacy", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64)
+    state_path = next(tmp_path.rglob("state.ledger"))
+    payload = json.loads(dpapi.unprotect(state_path.read_bytes(), entropy=b"steer-ledger-v1"))
+    payload.pop("plan_chain")
+    state_path.write_bytes(dpapi.protect(json.dumps(payload).encode(), entropy=b"steer-ledger-v1"))
+    with Ledger(tmp_path, task_id="t-legacy", started_at=1.0) as ledger:
+        assert ledger.plan_count() == 1
+        with pytest.raises(LedgerError, match="plan_changed"):
+            ledger.bind_plan("c" * 64)
+
+
+def test_a_resumed_link_records_its_step_ids_for_the_next_replan(tmp_path: Path) -> None:
+    """A legacy link loads with no step ids; the resume's bind fills them, so a later replan
+    cannot reuse one (addendum item 2)."""
+    with Ledger(tmp_path, task_id="t-fill", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64)
+    state_path = next(tmp_path.rglob("state.ledger"))
+    payload = json.loads(dpapi.unprotect(state_path.read_bytes(), entropy=b"steer-ledger-v1"))
+    payload.pop("plan_chain")
+    state_path.write_bytes(dpapi.protect(json.dumps(payload).encode(), entropy=b"steer-ledger-v1"))
+    with Ledger(tmp_path, task_id="t-fill", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["s1"])
+    with Ledger(tmp_path, task_id="t-fill", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64)
+        with pytest.raises(LedgerError, match="step_id_reused"):
+            ledger.extend_plan("b" * 64, ["s1"])

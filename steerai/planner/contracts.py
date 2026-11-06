@@ -15,6 +15,32 @@ from steerai.errors import ErrorCode, SteerError
 from steerai.orchestrator.contracts import Plan
 
 MAX_OPEN_WINDOWS = 20
+MAX_PROGRESS_LINES = 40
+"""Cap on the done steps and on the open subgoals a continuation lists (two plans of at most
+`DEFAULT_MAX_STEPS` steps fit)."""
+
+
+@dataclass(frozen=True, slots=True)
+class DoneStep:
+    """A step the task verified (T1) or found done: what it did, never its text, params,
+    chosen row or evidence (replan item 5)."""
+
+    verb: str
+    role: str
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
+class OpenSubgoal:
+    id: str
+    desc: str
+
+
+@dataclass(frozen=True, slots=True)
+class FailedStep:
+    step_id: str
+    code: str
+    """The taxonomy code (5.4), never a message."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,12 +51,26 @@ class PlanRequest:
     app_hint: str = ""
     open_windows: Sequence[str] = ()
     """Titles of the open windows of registry apps (screen content, fenced; OW-21)."""
+    continuation: int = 0
+    """How many plans of this task came before: 0 for the first plan (replan [v2.1])."""
+    done: Sequence[DoneStep] = ()
+    remaining: Sequence[OpenSubgoal] = ()
+    failure: FailedStep | None = None
 
     def __post_init__(self) -> None:
         if not self.goal.strip():
             raise ValueError("goal must not be empty")
         object.__setattr__(self, "screen_lines", tuple(self.screen_lines))
         object.__setattr__(self, "open_windows", tuple(self.open_windows)[:MAX_OPEN_WINDOWS])
+        object.__setattr__(self, "done", tuple(self.done)[:MAX_PROGRESS_LINES])
+        object.__setattr__(self, "remaining", tuple(self.remaining)[:MAX_PROGRESS_LINES])
+        if self.continuation < 0:
+            raise ValueError("continuation must not be negative")
+        progress = bool(self.done or self.remaining or self.failure is not None)
+        if self.continuation == 0 and progress:
+            raise ValueError("progress belongs to a continuation")
+        if self.continuation > 0 and not self.remaining:
+            raise ValueError("a continuation needs the subgoals still open")
 
 
 @dataclass(frozen=True, slots=True)

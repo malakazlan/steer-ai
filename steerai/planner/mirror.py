@@ -31,6 +31,7 @@ class Decoration(enum.StrEnum):
 
     google_search = "google_search"
     wikipedia = "wikipedia"
+    youtube = "youtube"
 
 
 class SiteKey(enum.StrEnum):

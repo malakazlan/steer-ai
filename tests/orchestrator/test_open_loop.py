@@ -6,7 +6,7 @@ tier and a resume re-binds by identity, never by title."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pytest
@@ -481,3 +481,118 @@ def test_a_resume_after_an_unverified_open_asks_before_launching_again() -> None
     assert ask.previous_attempt == "delivered_unverified"
     assert rig2.launcher.calls == []
     assert result.ok is False
+
+
+# ---- a continuation plan starts in the window the task reached (replan addendum item 3) ------
+
+
+def _in_window_plan() -> Plan:
+    return Plan(
+        goal="search YouTube for drake latest video and play the first video",
+        subgoals=(Subgoal(id="g2", desc="playing", condition=TitleMatches(pattern="x")),),
+        steps=(replace(_click(step_id="p2.c1", expect=TitleMatches(pattern="x")), subgoal="g2"),),
+    )
+
+
+def test_a_continuation_rebinds_the_opened_window_by_its_reference_first() -> None:
+    rig = Rig()
+    rig.ledger.record_open(_open(), IDENTITY)
+    rig.ledger.set_window_ref("opened:o1")  # the link's ref, restored by bind_plan
+    session = rig.build()
+    result = session.run_task(_in_window_plan())
+    assert result.evidence.get("detail") != "window_gone", result
+    assert session.hwnd == 0x30
+    assert rig.launcher.calls == []
+    assert rig.world.observed[0]["hwnd"] == 0x30, "the start observe is of the opened window"
+
+
+def test_a_continuation_whose_window_changed_identity_stops_before_any_step() -> None:
+    rig = Rig(desk=Desk(identity={**IDENTITY, "start": 99}))
+    rig.ledger.record_open(_open(), IDENTITY)
+    rig.ledger.set_window_ref("opened:o1")
+    session = rig.build()
+    result = session.run_task(_in_window_plan())
+    assert result.status == "stopped"
+    assert result.code is ErrorCode.ELEMENT_NOT_FOUND
+    assert result.evidence["detail"] == "window_gone"
+    assert result.results == []
+    assert session.hwnd == START.hwnd
+
+
+def test_a_continuation_whose_reference_names_no_recorded_window_stops() -> None:
+    rig = Rig()
+    rig.ledger.set_window_ref("opened:o9")
+    result = rig.build().run_task(_in_window_plan())
+    assert result.evidence["detail"] == "window_gone"
+    assert result.results == []
+
+
+def test_a_continuation_never_ticks_a_subgoal_at_start() -> None:
+    """Hunter RP-01: a rewritten condition that already holds would end the task with nothing
+    done; in a continuation only a verified step ticks."""
+    rig = Rig()
+    rig.ledger.record_open(_open(), IDENTITY)
+    rig.ledger.set_window_ref("opened:o1")
+    holds = Plan(
+        goal="search YouTube for drake latest video and play the first video",
+        subgoals=(Subgoal(id="g2", desc="playing", condition=TitleMatches(pattern="Amir")),),
+        steps=(replace(_click(step_id="p2.c1", expect=TitleMatches(pattern="x")), subgoal="g2"),),
+    )
+    first = rig.build().run_task(holds)
+    assert first.ticked == {"g2"}, "a first plan still ticks what holds at its start"
+    assert first.results == []
+    again = Rig(ledger=rig.ledger)
+    result = again.build().run_task(holds, continuation=True)
+    assert len(result.results) == 1, "the step ran"
+    assert result.results[0].ok is False
+    assert "g2" not in result.ticked
+
+
+def test_a_done_already_by_another_step_ticks_nothing() -> None:
+    """Hunter RP-03: a later step keyed like an earlier verified one is done_already, but its
+    own subgoal is not proven by it."""
+    rig = Rig()
+    plan = Plan(
+        goal="search YouTube for drake latest video",
+        subgoals=(Subgoal(id="g7", desc="other", condition=TitleMatches(pattern="never")),),
+        steps=(
+            replace(
+                _click(step_id="c1", risk="R2", expect=TitleMatches(pattern="x")), subgoal="g7"
+            ),
+        ),
+    )
+    session = rig.build()
+    click = plan.steps[0]
+    key = rig.ledger.key_for(click)
+    rig.ledger.executions[key] = {
+        "step_id": "c0",
+        "phase": "verified",
+        "outcome": "delivered_verified",
+    }
+    result = session.run_task(plan)
+    assert result.results[0].gate == "done_already"
+    assert result.results[0].evidence["done_by"] == "another_step"
+    assert "g7" not in result.ticked
+
+
+def test_a_done_already_by_its_own_earlier_attempt_still_ticks() -> None:
+    rig = Rig()
+    plan = Plan(
+        goal="search YouTube for drake latest video",
+        subgoals=(Subgoal(id="g7", desc="other", condition=TitleMatches(pattern="never")),),
+        steps=(
+            replace(
+                _click(step_id="c1", risk="R2", expect=TitleMatches(pattern="x")), subgoal="g7"
+            ),
+        ),
+    )
+    session = rig.build()
+    key = rig.ledger.key_for(plan.steps[0])
+    rig.ledger.executions[key] = {
+        "step_id": "c1",
+        "phase": "verified",
+        "outcome": "delivered_verified",
+    }
+    result = session.run_task(plan)
+    assert result.results[0].evidence["done_by"] == "this_step"
+    assert result.ticked == {"g7"}

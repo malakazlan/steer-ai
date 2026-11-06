@@ -139,9 +139,12 @@ class ExecutorLike(Protocol):
 
 
 class TaskLedger(Protocol):
+    window_ref: str | None
+
     def key_for(self, step: Step) -> str: ...
     def admit(self, key: str, decision: GateDecision | None = None) -> str: ...
     def outcome_of(self, key: str) -> str | None: ...
+    def closed_by(self, key: str) -> str | None: ...
     def write_ahead(
         self,
         step: Step,
@@ -156,6 +159,7 @@ class TaskLedger(Protocol):
     def set_window_ref(self, ref: str | None) -> None: ...
     def record_open(self, step: Step, window: Mapping[str, Any]) -> None: ...
     def opened_window(self, step: Step) -> dict[str, Any] | None: ...
+    def opened_by_ref(self, ref: str) -> dict[str, Any] | None: ...
     def record_open_attempt(self, step: Step, outcome: str) -> None: ...
 
 
@@ -268,6 +272,8 @@ class Session:
         self._secure_step = False
         self.hwnd = hwnd
         self.max_steps = max_steps
+        self._steps_run = 0
+        """Steps run by this session over all its plans: a replanned task is one budget."""
         self._observer = observer
         self._semantic = semantic
         self._physical = physical
@@ -315,7 +321,7 @@ class Session:
                 risk = self._ceiling(step, key, before, effective_risk(step))
             previous = self._admission(step, key, risk, before)
             if previous == "done":
-                return self._done_already(step, stage, evidence)
+                return self._done_already(step, key, stage, evidence)
             before, element_id = self._resolve_settling(step, before, stage, evidence)
             self._secure_step = before.element(element_id).secure
             risk = self._settled_tier(step, risk)
@@ -413,7 +419,7 @@ class Session:
             if self._ledger.admit(key) == "done":
                 self._rebind_opened(step)
                 evidence["window"] = "rebound"
-                return self._done_already(step, stage, evidence)
+                return self._done_already(step, key, stage, evidence)
             prior = self._ledger.outcome_of(key)
             if prior is not None and prior != "not_delivered" and risk in ("R0", "R1"):
                 # an earlier attempt launched and may have opened a window: never a silent second
@@ -506,7 +512,7 @@ class Session:
             )
         self._close(step, risk, Delivery.DELIVERED_VERIFIED.value)
         self._ledger.record_open(step, identity)  # the observed title, digested
-        self._adopt(hwnd, step)
+        self._adopt(hwnd, f"opened:{step.id}")
         evidence["window"] = "opened"
         if self._foreground is not None:
             evidence["foreground_after_open"] = self._foreground() == hwnd
@@ -538,17 +544,26 @@ class Session:
                 return False
             self._sleep(OPEN_POLL_S)
 
-    def _adopt(self, hwnd: int, step: Step) -> None:
+    def _adopt(self, hwnd: int, ref: str) -> None:
         """The opened window becomes the current one; nothing observed before carries over."""
         self.hwnd = hwnd
         self._last_after = None
         self._last_pair = None
-        self._ledger.set_window_ref(f"opened:{step.id}")
+        self._ledger.set_window_ref(ref)
 
     def _rebind_opened(self, step: Step) -> None:
         """A resume: the recorded window again, by identity (handle, pid, process start time,
         image), never by title (P7, decision 3); anything else stops `window_gone`."""
-        record = self._ledger.opened_window(step)
+        self._rebind(self._ledger.opened_window(step), f"opened:{step.id}")
+
+    def _rebind_ref(self) -> None:
+        """A continuation plan, or its resume, starts in the window its link names, rebound by
+        identity before anything is observed (replan item 3)."""
+        ref = self._ledger.window_ref
+        if ref is not None:
+            self._rebind(self._ledger.opened_by_ref(ref), ref)
+
+    def _rebind(self, record: Mapping[str, Any] | None, ref: str) -> None:
         hwnd = None if record is None else record.get("hwnd")
         current = (
             self._identify(hwnd) if self._identify is not None and isinstance(hwnd, int) else None
@@ -560,7 +575,7 @@ class Session:
         )
         if not same or not isinstance(hwnd, int):
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "window_gone")
-        self._adopt(hwnd, step)
+        self._adopt(hwnd, ref)
 
     def _holds_in_window(self, predicate: Predicate) -> bool:
         """An `open`'s subgoal in the window it opened: every element there is new, so a
@@ -604,8 +619,18 @@ class Session:
         verdict, after = stage.measure(
             "verify", lambda: self._verify(expect, before_of_record, windows_before)
         )
-        label = label_of_record(
-            verdict, predicate=expect, action_key=key, before=before_of_record, after=after
+        renamed_at_risk = risk in ("R2", "R3") and verdict.holds and "renamed" in verdict.evidence
+        if renamed_at_risk:
+            # a page renamed in place keeps its RuntimeId: no new element, so never the
+            # effect of an R2/R3 step (5.10 [v1.2]); unverified, and no label (review item 2)
+            reason = {**verdict.evidence, "reason": "renamed_at_risk"}
+            verdict = replace(verdict, holds=False, code=ErrorCode.VERIFY_TIMEOUT, evidence=reason)
+        label = (
+            None
+            if renamed_at_risk
+            else label_of_record(
+                verdict, predicate=expect, action_key=key, before=before_of_record, after=after
+            )
         )
         self._remember(before_of_record, after)
         outcome = self._outcome(verdict.holds, action, verdict.evidence.get("reason"))
@@ -1213,7 +1238,12 @@ class Session:
 
     # ---- results ----------------------------------------------------------------------------
 
-    def _done_already(self, step: Step, stage: _Stage, evidence: dict[str, Any]) -> StepResult:
+    def _done_already(
+        self, step: Step, key: str, stage: _Stage, evidence: dict[str, Any]
+    ) -> StepResult:
+        # a twin keyed like an earlier step proves that step's effect, not its own subgoal
+        closed_by = self._ledger.closed_by(key)
+        evidence["done_by"] = "this_step" if closed_by in (None, step.id) else "another_step"
         return self._finish(
             step,
             stage,
@@ -1270,8 +1300,12 @@ class Session:
 
     # ---- a whole plan --------------------------------------------------------------------------
 
-    def run_task(self, plan: Plan) -> TaskResult:
+    def run_task(self, plan: Plan, *, continuation: bool = False) -> TaskResult:
+        """Run one plan. A continuation (plan n>1 of a replanned task) ticks no subgoal at
+        start: its conditions were written from the screen it starts on (hunter RP-01)."""
         self._goal = plan.goal
+        self._last_after = None  # nothing observed for another plan is reused (RP-35/47)
+        self._last_pair = None
         self._trace.write(
             {
                 "kind": "task",
@@ -1281,6 +1315,10 @@ class Session:
             }
         )
         results: list[StepResult] = []
+        try:
+            self._rebind_ref()
+        except _StepFailureError as failure:
+            return self._ended_at_start(failure.code, failure.detail)
         try:
             start = self._observer.observe(self.hwnd)
         except SteerError as failure:
@@ -1305,7 +1343,7 @@ class Session:
         ticked = {
             s.id
             for s in plan.subgoals
-            if s.id not in opening and self._holds_now(s.condition, start)
+            if not continuation and s.id not in opening and self._holds_now(s.condition, start)
         }
         outcome = self._run_steps(plan, ticked, results)
         if outcome is not None:
@@ -1332,6 +1370,14 @@ class Session:
             evidence=evidence,
         )
 
+    def _ended_at_start(self, code: ErrorCode, detail: str) -> TaskResult:
+        self._trace.write(
+            {"kind": "task_end", "task_id": self.task_id, "status": "stopped", "detail": detail}
+        )
+        return TaskResult(
+            status="stopped", results=[], ticked=set(), code=code, evidence={"detail": detail}
+        )
+
     def _run_steps(
         self, plan: Plan, ticked: set[str], results: list[StepResult]
     ) -> tuple[Literal["stopped", "paused", "blocked"], ErrorCode, str] | None:
@@ -1339,8 +1385,9 @@ class Session:
         for step in plan.steps:
             if step.subgoal in ticked:
                 continue
-            if len(results) >= self.max_steps:
+            if self._steps_run >= self.max_steps:
                 return "stopped", ErrorCode.BUDGET_EXCEEDED, "max_steps"
+            self._steps_run += 1
             result = self.run_step(step)
             results.append(result)
             stop = (
@@ -1355,7 +1402,8 @@ class Session:
                 continue
             if result.gate == "done_already":
                 # the earlier verified attempt (or the persisted before) proved the effect
-                ticked.add(step.subgoal)
+                if result.evidence.get("done_by") != "another_step":
+                    ticked.add(step.subgoal)
                 strikes = 0
                 continue
             if result.ok and self._last_pair is not None:

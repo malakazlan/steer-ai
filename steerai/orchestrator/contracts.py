@@ -143,6 +143,9 @@ class Plan:
         ids = {s.id for s in self.subgoals}
         if not ids:
             raise ValueError("a plan needs at least one subgoal with a condition")
+        if len(ids) != len(self.subgoals):
+            # a second, easier copy of a subgoal would tick it (replan hunter RP-02)
+            raise ValueError("duplicate subgoal ids in the plan")
         for step in self.steps:
             if step.subgoal not in ids:
                 raise ValueError(f"step {step.id} names an unknown subgoal {step.subgoal}")

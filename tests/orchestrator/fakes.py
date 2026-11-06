@@ -229,6 +229,13 @@ class MemoryLedger:
         window = None if entry is None else entry.get("window")
         return None if window is None else dict(window)
 
+    def opened_by_ref(self, ref: str) -> dict[str, Any] | None:
+        step_id = ref.removeprefix("opened:") if ref.startswith("opened:") else None
+        for entry in self.executions.values():
+            if step_id is not None and entry.get("step_id") == step_id and "window" in entry:
+                return dict(entry["window"])
+        return None
+
     def admit(self, key: str, decision: GateDecision | None = None) -> str:
         record = self.executions.get(key)
         if record is None or record.get("outcome") == "not_delivered":
@@ -242,6 +249,10 @@ class MemoryLedger:
     def outcome_of(self, key: str) -> str | None:
         record = self.executions.get(key)
         return None if record is None else record.get("outcome")
+
+    def closed_by(self, key: str) -> str | None:
+        record = self.executions.get(key)
+        return None if record is None else record.get("step_id")
 
     def write_ahead(
         self,

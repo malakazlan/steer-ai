@@ -16,6 +16,7 @@ DECORATIONS: Final = MappingProxyType(
     {
         "google_search": "{content} - Google Search",
         "wikipedia": "{content} - Wikipedia",
+        "youtube": "{content} - YouTube",
     }
 )
 """Decoration key -> frame with exactly one `{content}` placeholder."""

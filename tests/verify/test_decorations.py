@@ -28,6 +28,11 @@ def test_the_registry_is_code_owned_and_fills_the_content_in() -> None:
         decorate("nope", QUERY)
 
 
+def test_a_youtube_watch_page_is_its_title_in_the_youtube_frame() -> None:
+    """Measured 2026-11-06: the watch page Document is "Drake - Janice STFU - YouTube"."""
+    assert decorate("youtube", "Drake - Janice STFU") == "Drake - Janice STFU - YouTube"
+
+
 def test_a_decorated_appeared_matches_the_full_decorated_name() -> None:
     predicate = Appeared(role="Document", name_pattern=QUERY, decoration="google_search")
     assert predicate.name_match == f"{QUERY} - Google Search"
@@ -208,3 +213,165 @@ def test_the_label_shape_carries_decoration_and_replaces() -> None:
     assert spec["decoration"] == "google_search"
     assert spec["replaces"] is True
     assert "name" not in json.dumps(spec)
+
+
+# ---- a page replaced in place (live replan run 2026-11-06: YouTube renames its Document) ----
+
+RESULTS_YT = (40, "Document", "drake latest video - YouTube", (42, 90), WINDOW[0])
+WATCH_YT = (40, "Document", "Drake - Janice STFU - YouTube", (42, 90), WINDOW[0])
+
+
+def _watch(*, replaces: bool = True) -> Appeared:
+    return Appeared(
+        role="Document", name_pattern="Drake - Janice STFU", decoration="youtube", replaces=replaces
+    )
+
+
+def test_a_page_renamed_in_place_is_a_replacement() -> None:
+    """Measured: the results page's Document kept its RuntimeId and took the video's name."""
+    before_snap = build([*BASE_ROWS, RESULTS_YT], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, WATCH_YT], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(), before_snap, after_snap)
+    assert verdict.holds is True, verdict.evidence
+    assert verdict.evidence["renamed"] == 1
+
+
+def test_a_renamed_element_without_the_replacing_form_is_not_new() -> None:
+    before_snap = build([*BASE_ROWS, RESULTS_YT], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, WATCH_YT], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(replaces=False), before_snap, after_snap)
+    assert verdict.holds is False
+    assert verdict.evidence["reason"] == "not_new"
+
+
+def test_a_page_that_already_had_the_name_is_no_replacement() -> None:
+    same = build([*BASE_ROWS, WATCH_YT], snapshot_id="before")
+    again = build([*BASE_ROWS, WATCH_YT], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(), same, again)
+    assert verdict.holds is False
+    assert verdict.evidence["reason"] == "not_new"
+
+
+def test_a_renamed_nested_frame_is_not_the_page() -> None:
+    frame_before = (41, "Document", "ad", (42, 93), 40)
+    frame_after = (41, "Document", "Drake - Janice STFU - YouTube", (42, 93), 40)
+    page = (40, "Document", "drake latest video - YouTube", (42, 90), WINDOW[0])
+    before_snap = build([*BASE_ROWS, page, frame_before], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, page, frame_after], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(), before_snap, after_snap)
+    assert verdict.holds is False
+
+
+def test_two_pages_renamed_to_the_name_is_no_replacement() -> None:
+    other_before = (41, "Document", "Other tab", (42, 92), WINDOW[0])
+    other_after = (41, "Document", "Drake - Janice STFU - YouTube", (42, 92), WINDOW[0])
+    before_snap = build([*BASE_ROWS, RESULTS_YT, other_before], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, WATCH_YT, other_after], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(), before_snap, after_snap)
+    assert verdict.holds is False
+
+
+# ---- a page name's notification counter (probe yt-click 2026-11-06) --------------------------
+
+COUNTED_WATCH = (40, "Document", "(1) Drake - Janice STFU - YouTube", (42, 90), WINDOW[0])
+
+
+def test_a_replacing_page_matches_with_its_notification_counter_stripped() -> None:
+    """Measured: 3 of 5 live runs named the watch page "(1) Drake - Janice STFU - YouTube"."""
+    before_snap = build([*BASE_ROWS, RESULTS_YT], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, COUNTED_WATCH], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(), before_snap, after_snap)
+    assert verdict.holds is True, verdict.evidence
+
+
+def test_a_new_counted_page_is_a_replacement_too() -> None:
+    old = (40, "Document", "Google", (42, 90), WINDOW[0])
+    new = (41, "Document", f"(3) {QUERY} - Google Search", (42, 91), WINDOW[0])
+    before_snap = build([*BASE_ROWS, old], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, new], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_nav(replaces=True), before_snap, after_snap)
+    assert verdict.holds is True, verdict.evidence
+
+
+def test_a_counter_change_alone_is_no_replacement() -> None:
+    """The results page gaining a counter is not the watch page."""
+    counted_results = (40, "Document", "(1) drake latest video - YouTube", (42, 90), WINDOW[0])
+    before_snap = build([*BASE_ROWS, RESULTS_YT], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, counted_results], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(), before_snap, after_snap)
+    assert verdict.holds is False
+
+
+def test_a_counted_page_that_already_had_the_name_is_no_replacement() -> None:
+    before_snap = build([*BASE_ROWS, WATCH_YT], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, COUNTED_WATCH], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(), before_snap, after_snap)
+    assert verdict.holds is False
+
+
+def test_the_counter_is_stripped_only_for_the_replacing_form() -> None:
+    before_snap = build([*BASE_ROWS, RESULTS_YT], snapshot_id="before")
+    counted = (41, "Document", "(1) Drake - Janice STFU - YouTube", (42, 95), WINDOW[0])
+    after_snap = build([*BASE_ROWS, RESULTS_YT, counted], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(replaces=False), before_snap, after_snap)
+    assert verdict.holds is False
+    assert verdict.evidence["reason"] == "no_match"
+
+
+def test_a_query_that_starts_with_a_counter_still_matches_itself() -> None:
+    query = "(1) first"
+    predicate = Appeared(
+        role="Document", name_pattern=query, decoration="google_search", replaces=True
+    )
+    old = (40, "Document", "Google", (42, 90), WINDOW[0])
+    new = (41, "Document", f"{query} - Google Search", (42, 91), WINDOW[0])
+    before_snap = build([*BASE_ROWS, old], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, new], snapshot_id="after", taken_at=1.0)
+    assert evaluate(predicate, before_snap, after_snap).holds is True
+
+
+def test_a_page_that_became_a_nested_frame_is_not_renamed_in_place() -> None:
+    """A top-level Document re-parented under the page and renamed is a frame now, never the
+    page that replaced itself."""
+    frame_before = (41, "Document", "ad", (42, 93), WINDOW[0])
+    frame_after = (41, "Document", "Drake - Janice STFU - YouTube", (42, 93), 40)
+    before_snap = build([*BASE_ROWS, RESULTS_YT, frame_before], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, RESULTS_YT, frame_after], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(), before_snap, after_snap)
+    assert verdict.holds is False
+    assert "renamed" not in verdict.evidence
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "(1)Drake - Janice STFU - YouTube",
+        "(12345) Drake - Janice STFU - YouTube",
+        "(a) Drake - Janice STFU - YouTube",
+    ],
+)
+def test_only_a_spaced_one_to_four_digit_counter_is_stripped(name: str) -> None:
+    """The counter rule's edges: no space, five digits or a letter is part of the name."""
+    before_snap = build([*BASE_ROWS, RESULTS_YT], snapshot_id="before")
+    after_snap = build(
+        [*BASE_ROWS, (40, "Document", name, (42, 90), WINDOW[0])], snapshot_id="after", taken_at=1.0
+    )
+    assert evaluate(_watch(), before_snap, after_snap).holds is False
+
+
+def test_a_four_digit_counter_is_stripped() -> None:
+    before_snap = build([*BASE_ROWS, RESULTS_YT], snapshot_id="before")
+    counted = (40, "Document", "(9999) Drake - Janice STFU - YouTube", (42, 90), WINDOW[0])
+    after_snap = build([*BASE_ROWS, counted], snapshot_id="after", taken_at=1.0)
+    assert evaluate(_watch(), before_snap, after_snap).holds is True
+
+
+def test_an_all_keeps_the_rename_flag_of_its_parts() -> None:
+    """Principal re-review of PR #29: the R2/R3 rename rule reads `renamed` from the verdict."""
+    from steerai.verify.predicates import All  # noqa: PLC0415
+
+    before_snap = build([*BASE_ROWS, RESULTS_YT], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, WATCH_YT], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(All(parts=(_watch(), _watch())), before_snap, after_snap)
+    assert verdict.holds is True, verdict.evidence
+    assert verdict.evidence["renamed"] == 2
