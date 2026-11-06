@@ -7,7 +7,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,7 +19,7 @@ from typing import Any
 import pytest
 
 from steerai.orchestrator.plan_io import plan_from_json
-from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome
+from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome, stop_chrome
 from steerai.probes.uia_snapshot import UiaClient
 from steerai.probes.win_input import _send, _user32, build_keyboard_input
 from steerai.probes.windows import wait_window_for_pid
@@ -241,10 +240,7 @@ def test_the_runner_sends_once_resumes_as_done_and_honours_the_risk_limit(tmp_pa
         assert {r["step_id"]: r["gate"] for r in out["results"]}["send"] == "block"
         assert "ASK " in err
     finally:
-        proc.terminate()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=10)
-        shutil.rmtree(profile_dir, ignore_errors=True)
+        stop_chrome(proc, profile_dir)
 
 
 def _person_plan_doc() -> dict[str, Any]:
@@ -309,7 +305,4 @@ def test_a_person_target_asks_which_row_and_clicks_the_chosen_one(tmp_path: Path
         assert code == EXIT_PAUSED, (out, err)
         assert out["detail"] == "unanswered"
     finally:
-        proc.terminate()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=10)
-        shutil.rmtree(profile_dir, ignore_errors=True)
+        stop_chrome(proc, profile_dir)

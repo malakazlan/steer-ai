@@ -4,10 +4,8 @@ credential in the environment and Chrome). It calls `ClaudePlanner.plan` only; t
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import time
@@ -17,7 +15,7 @@ import pytest
 
 from steerai.planner.claude_planner import ClaudePlanner
 from steerai.planner.contracts import PlanRequest
-from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome
+from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome, stop_chrome
 from steerai.probes.uia_snapshot import UiaClient
 from steerai.probes.windows import wait_window_for_pid
 from steerai.world.model import WorldModel
@@ -61,6 +59,4 @@ def test_the_planner_writes_a_valid_plan_for_the_google_page(tmp_path: Path) -> 
         assert outcome.input_tokens is not None
         assert outcome.latency_ms > 0
     finally:
-        proc.terminate()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=10)
+        stop_chrome(proc, profile)

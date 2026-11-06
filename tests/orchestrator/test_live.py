@@ -3,9 +3,6 @@ DPAPI ledger: type, confirm, send, verify; run again and resume as done already.
 
 from __future__ import annotations
 
-import contextlib
-import shutil
-import subprocess
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -22,7 +19,7 @@ from steerai.orchestrator.gate import Ask, Gate
 from steerai.orchestrator.ledger import Ledger
 from steerai.orchestrator.loop import Session
 from steerai.orchestrator.trace import ListTrace
-from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome
+from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome, stop_chrome
 from steerai.probes.uia_snapshot import UiaClient
 from steerai.probes.win_input import acquire_foreground
 from steerai.probes.windows import wait_window_for_pid
@@ -158,7 +155,4 @@ def test_a_send_task_runs_end_to_end_and_resumes_as_done(tmp_path: Path) -> None
         assert fresh.run_step(plan.steps[2]).gate == "done_already"
         assert len(confirmer.asked) == 1, "resume never asked and never sent again"
     finally:
-        proc.terminate()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=10)
-        shutil.rmtree(profile_dir, ignore_errors=True)
+        stop_chrome(proc, profile_dir)
