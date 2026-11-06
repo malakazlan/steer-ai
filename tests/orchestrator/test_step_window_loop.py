@@ -335,3 +335,14 @@ def test_the_foreground_rule_leaves_the_start_windows_own_steps_alone() -> None:
     assert session is not None
     result = session.run_step(_step("c1", risk="R2"))
     assert result.evidence.get("detail") != "not_foreground"
+
+
+def test_a_continuations_own_start_window_steps_keep_the_send_path() -> None:
+    """PR #35 re-review: the continuation's start check sets the identity, not a switch."""
+    rig, win = _rig()
+    win.foreground = 0x99  # the console after a semantic R2 answer
+    session = rig.session
+    assert session is not None
+    result = session.run_task(_plan(_step("p2.c1", risk="R2")), continuation=True)
+    assert all(r.evidence.get("detail") != "not_foreground" for r in result.results)
+    assert result.results, "the step ran"

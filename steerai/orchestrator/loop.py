@@ -269,9 +269,12 @@ class Session:
         """The session's lock state; None means not read (pure tests only)."""
         self._step_refs: dict[str, str | None] = {}
         """Each step's window from plan order (None: the start window; SW-01)."""
+        self._switched = False
+        """The task moved to another window (a selection or an `open`): its R2/R3 steps need
+        that window in front (SW-15); the start window's own steps keep the send path."""
         self._identity_now: Mapping[str, Any] | None = None
-        """The recorded identity of the current window when the task selected or opened
-        it, re-read before a dispatch; None in the start window never switched to."""
+        """The recorded identity of the current window once the task checked it (a selection,
+        an `open`, a continuation's start), re-read before a dispatch."""
         self.task_id = task_id
         self._launcher = launcher
         self._window_title = window_title
@@ -529,6 +532,7 @@ class Session:
         self._ledger.record_open(step, identity)  # the observed title, digested
         self._adopt(hwnd, f"opened:{step.id}")
         self._identity_now = identity
+        self._switched = True
         evidence["window"] = "opened"
         if self._foreground is not None:
             evidence["foreground_after_open"] = self._foreground() == hwnd
@@ -630,6 +634,7 @@ class Session:
             # measurement (SW-11); a continuation there still runs (review item 1)
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "frame_host")
         self._rebind(record, ref)
+        self._switched = True
         evidence["window"] = "selected"
 
     def _record_of(self, ref: str | None) -> Mapping[str, Any] | None:
@@ -670,7 +675,7 @@ class Session:
         opens: the person sees where a send lands; there is no selection tap (SW-15, gate
         item 2). The start window's own steps keep the measured send path (review item 3)."""
         front = self._foreground
-        selected = self._identity_now is not None
+        selected = self._switched
         if risk in ("R2", "R3") and selected and front is not None and front() != self.hwnd:
             raise _StepFailureError(ErrorCode.FOCUS_LOST, "not_foreground")
 
