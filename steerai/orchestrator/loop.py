@@ -788,8 +788,7 @@ class Session:
         """Before anything that acts: the kill switch, the monitor's health, and the person's
         idle time (5.1 [v1.4], TK-22/29/30/31). Returns whether it waited. A locked or
         unknown session is never acted on (issue #31)."""
-        if self._locked is not None and self._locked() is not False:
-            raise _StepFailureError(ErrorCode.SECURE_DESKTOP, "session_locked")
+        self._refuse_locked()
         monitor = self._monitor
         if monitor is None:
             return False
@@ -804,7 +803,13 @@ class Session:
         waited_s = self._monotonic() - started
         if waited_s > 0:
             evidence["waited_s"] = round(evidence.get("waited_s", 0.0) + waited_s, 3)
+            # Win+L is input: a lock that came while the person was busy is read now
+            self._refuse_locked()
         return waited_s > 0
+
+    def _refuse_locked(self) -> None:
+        if self._locked is not None and self._locked() is not False:
+            raise _StepFailureError(ErrorCode.SECURE_DESKTOP, "session_locked")
 
     def _after_ask(
         self, step: Step, before: Snapshot, stage: _Stage, evidence: dict[str, Any]

@@ -1017,6 +1017,9 @@ def _replanning(r: Replan, plan: Plan, result: TaskResult) -> TaskResult:
         if number >= MAX_REPLANS:
             r.out.note(f"stopped after {MAX_REPLANS} replans; the goal needs a person to look")
             return progress.ended("stopped", ErrorCode.BUDGET_EXCEEDED, "replan_limit")
+        if r.deps.session_locked is not None and r.deps.session_locked() is not False:
+            # nothing on screen leaves the machine for a person who is away (review item 2)
+            return progress.ended("stopped", ErrorCode.SECURE_DESKTOP, "session_locked")
         number += 1
         r.trace.write(
             {"kind": "replan", "task_id": r.options.task_id, "number": number, "trigger": trigger}
