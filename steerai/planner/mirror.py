@@ -124,6 +124,11 @@ class StepDoc(_Doc):
     expect: PredicateDoc | None = Field(
         default=None, description="the step's own effect in the predicate language"
     )
+    window: str | None = Field(
+        default=None,
+        description='"start" or "opened:<id of an earlier open step>": the window this step '
+        "and the next ones act in; leave unset to stay in the window of the step before",
+    )
 
 
 class SubgoalDoc(_Doc):

@@ -9,6 +9,7 @@ and names stay out of every repr because plans, decisions and results end up in 
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -86,6 +87,31 @@ class Target:
         return f"{self.role}|{name}|{self.automation_id}|{self.match}"
 
 
+START_WINDOW = "start"
+OPENED_PREFIX = "opened:"
+_STEP_ID = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
+
+def is_window_ref(value: object) -> bool:
+    """`start`, or `opened:` followed by a step id (the plan id alphabet, at most 64)."""
+    if value == START_WINDOW:
+        return True
+    return (
+        isinstance(value, str)
+        and value.startswith(OPENED_PREFIX)
+        and _STEP_ID.fullmatch(value.removeprefix(OPENED_PREFIX)) is not None
+    )
+
+
+def _check_window(window: str | None, verb: str) -> None:
+    if window is None:
+        return
+    if not is_window_ref(window):
+        raise ValueError("window must be start or opened:<step id>")
+    if verb == "open":
+        raise ValueError("an open step takes no window: it opens one")
+
+
 @dataclass(frozen=True, slots=True)
 class Step:
     id: str
@@ -100,6 +126,9 @@ class Step:
     text_provenance: TextProvenance = "verbatim"
     path: Path | None = None
     """Overrides the verb table's executor path (a physical click to focus a field)."""
+    window: str | None = None
+    """`start` or `opened:<step id>`: the window this step and the ones after it act in
+    (packet step-window-2026-11-07). A reference, never a title (OW-05)."""
 
     def __post_init__(self) -> None:
         if self.verb not in VERBS:
@@ -117,6 +146,7 @@ class Step:
         composer = self.params.get("composer_id")
         if composer is not None and not composer.isdigit():
             raise ValueError("composer_id must be a snapshot element id")
+        _check_window(self.window, self.verb)
         if self.path is not None and self.path not in ("semantic", "physical"):
             raise ValueError("path must be semantic or physical")
         if self.preapproved_by_request and self.text_provenance != "verbatim":
