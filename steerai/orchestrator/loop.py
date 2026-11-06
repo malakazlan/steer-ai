@@ -1630,6 +1630,10 @@ class Session:
             detail = str(result.evidence.get("detail", result.gate))
             return "stopped", result.code or ErrorCode.VERIFY_TIMEOUT, detail
         subgoal = next(s for s in plan.subgoals if s.id == step.subgoal)
+        if any(s.verb != "open" for s in plan.steps if s.subgoal == subgoal.id):
+            # the subgoal's other steps reach it, judged after them: an open that ticked here
+            # skipped them, a false done (hunter OS-02)
+            return None
         # a value is the type step's doing, never the open's (field-value FV-01/03)
         if not field_values(subgoal.condition) and self._holds_in_window(subgoal.condition):
             ticked.add(subgoal.id)
