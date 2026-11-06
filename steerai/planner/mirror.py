@@ -25,8 +25,9 @@ Kind = Literal["appeared", "disappeared", "title", "window_exists", "window_gone
 ConditionKind = Literal[
     "appeared", "disappeared", "title", "window_exists", "window_gone", "count_delta", "value"
 ]
-"""A subgoal condition's kinds: `value` is a condition only, never a step's expect, so the
-grammar itself keeps it out of `expect` (field-value gate item 5)."""
+"""One kind set for conditions and expects: a second predicate schema made the compiled grammar
+too large for the API (HTTP 400, measured 2026-11-06), so `value` in an `expect` is refused by
+the plan boundary at its path instead (field-value gate item 5, reality wins)."""
 
 
 class Decoration(enum.StrEnum):
@@ -61,7 +62,7 @@ class PredicateDoc(_Doc):
     expected?, order?, decoration?, replaces?; disappeared: role, name, within?; title:
     pattern; window_exists / window_gone: name; count_delta: role, delta, within?."""
 
-    kind: Kind
+    kind: ConditionKind
     role: str | None = None
     name: str | None = Field(default=None, description="the full plain-text name as shown")
     within: str | None = Field(default=None, description="landmark container name to look in")
@@ -75,6 +76,9 @@ class PredicateDoc(_Doc):
     replaces: bool | None = Field(
         default=None, description="true only for a Document that replaces the previous page"
     )
+    text: str | None = Field(
+        default=None, description="value (a subgoal condition only): the exact text the field holds"
+    )
 
     def to_file_form(self) -> dict[str, Any]:  # Any: a JSON body for the plan boundary
         """The 6.3 one-key object; a missing required field is left out so the plan boundary
@@ -87,14 +91,6 @@ class PredicateDoc(_Doc):
         if within is not None and self.kind in _SCOPED_KINDS:
             body["within"] = {"landmark": within}
         return {self.kind: body}
-
-
-class ConditionDoc(PredicateDoc):
-    """A subgoal condition: the predicate kinds plus value: role, name, text (the field of that
-    role and name holds exactly this text; only for text a type step of the subgoal typed)."""
-
-    kind: ConditionKind  # type: ignore[assignment]  # a superset of the expect kinds, by design
-    text: str | None = Field(default=None, description="value: the exact text the field holds")
 
 
 _KIND_FIELDS: dict[str, frozenset[str]] = {
@@ -148,7 +144,7 @@ class StepDoc(_Doc):
 class SubgoalDoc(_Doc):
     id: str
     desc: str
-    condition: ConditionDoc
+    condition: PredicateDoc
 
 
 class PlanDoc(_Doc):
