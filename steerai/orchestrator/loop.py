@@ -265,7 +265,11 @@ class Session:
         identify: Callable[[int], dict[str, Any] | None] | None = None,
         foreground: Callable[[], int] | None = None,
         locked: Callable[[], bool | None] | None = None,
+        bring_forward: Callable[[int], str] | None = None,
     ) -> None:
+        self._bring_forward = bring_forward
+        """Brings a window the task switched to in front (the procedure name); raises
+        OSError when refused (issue #38)."""
         self._locked = locked
         """The session's lock state; None means not read (pure tests only)."""
         self._step_refs: dict[str, str | None] = {}
@@ -323,8 +327,7 @@ class Session:
         self._begin_step(windows_before)
         recorded = False
         try:
-            self._boundary(evidence)
-            self._select(step, evidence)  # the window first: it is part of the key
+            self._enter_window(step, evidence)
             key = self._ledger.key_for(step)
             self._act_evidence = evidence
             before = stage.measure("observe", lambda: self._before(risk, evidence))
@@ -588,13 +591,38 @@ class Session:
         elif continuation and self._ledger.start_window() is not None:
             self._rebind(self._record_of(None), None)
 
-    def _rebind(self, record: Mapping[str, Any] | None, ref: str | None) -> None:
+    def _rebind(self, record: Mapping[str, Any] | None, ref: str | None) -> bool:
+        """Re-bind by identity; True when the current window changed."""
         hwnd = self._checked(record)
-        if hwnd != self.hwnd:
+        changed = hwnd != self.hwnd
+        if changed:
             self._adopt(hwnd, ref)
         else:
             self._ledger.set_window_ref(ref)  # the same window: what was observed holds
         self._identity_now = record
+        return changed
+
+    def _enter_window(self, step: Step, evidence: dict[str, Any]) -> None:
+        """The window first (it is part of the key), then the boundary, then the tap: the
+        person's typing never moves into the window brought forward (SW-07, issue #38)."""
+        changed = self._select(step, evidence)
+        self._boundary(evidence)
+        if changed:
+            self._to_front(evidence)
+
+    def _to_front(self, evidence: dict[str, Any]) -> None:
+        """Bring the window just switched to in front, then re-read the lock (SW-07). A
+        refused tap is evidence, never a stop: the executor's own checks decide (gate Q2)."""
+        if self._bring_forward is None:
+            return
+        try:
+            procedure = self._bring_forward(self.hwnd)
+        except OSError:
+            evidence["foreground_after_select"] = False
+        else:
+            front = self._foreground is None or self._foreground() == self.hwnd
+            evidence["foreground_after_select"] = procedure if front else False
+        self._refuse_locked()
 
     def _checked(self, record: Mapping[str, Any] | None) -> int:
         """The recorded window, still the same one: handle, pid, process start and image
@@ -615,17 +643,17 @@ class Session:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "minimized")
         return hwnd
 
-    def _select(self, step: Step, evidence: dict[str, Any]) -> None:
+    def _select(self, step: Step, evidence: dict[str, Any]) -> bool:
         """The step's window from plan order, re-bound by identity; naming the current
-        window is accepted and still checked (gate Q2)."""
+        window is accepted and still checked (gate Q2). True when the window changed."""
         if step.id in self._step_refs:
             ref = self._step_refs[step.id]
         elif step.window is not None:
             ref = _ledger_ref(step.window)
         else:
-            return
+            return False
         if step.window is None and ref == self._ledger.window_ref:
-            return
+            return False
         record = self._record_of(ref)
         if (
             ref is None
@@ -635,9 +663,10 @@ class Session:
             # every UWP frame shares the host's pid and image: `window: start` waits for a
             # measurement (SW-11); a continuation there still runs (review item 1)
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "frame_host")
-        self._rebind(record, ref)
+        changed = self._rebind(record, ref)
         self._switched = True
         evidence["window"] = "selected"
+        return changed
 
     def _record_of(self, ref: str | None) -> Mapping[str, Any] | None:
         if ref is None:

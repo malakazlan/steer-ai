@@ -614,3 +614,107 @@ def test_a_resumed_link_in_an_opened_window_needs_it_in_front_for_r2() -> None:
         (ErrorCode.FOCUS_LOST, "not_foreground")
     ]
     assert rig.confirmer.asked == []
+
+
+# ---- bring a switched-to window forward (issue #38, packet switch-forward, gate REVISE 6) -------
+
+
+def _tapping(rig: Rig, win: Windows, *, refuse: bool = False) -> list[int]:
+    taps: list[int] = []
+
+    def bring_forward(hwnd: int) -> str:
+        taps.append(hwnd)
+        if refuse:
+            raise OSError("foreground refused")
+        win.foreground = hwnd
+        return "alt-tap"
+
+    session = rig.session
+    assert session is not None
+    session._bring_forward = bring_forward
+    return taps
+
+
+def test_a_window_change_brings_the_window_forward_once() -> None:
+    rig, win = _rig()
+    taps = _tapping(rig, win)
+    session = rig.session
+    assert session is not None
+    result = session.run_task(_plan(_step("c1", window="opened:o1"), _step("c2")))
+    assert taps == [0x30]
+    assert result.results[0].evidence["foreground_after_select"] == "alt-tap"
+    assert "foreground_after_select" not in result.results[1].evidence
+
+
+def test_naming_the_current_window_taps_nothing() -> None:
+    rig, win = _rig()
+    taps = _tapping(rig, win)
+    session = rig.session
+    assert session is not None
+    session.run_step(_step("c1", window="start"))
+    assert taps == []
+
+
+def test_an_open_taps_nothing() -> None:
+    rig, win = _rig()
+    taps = _tapping(rig, win)
+    session = rig.session
+    assert session is not None
+    session.run_step(replace(_open(step_id="o2"), subgoal="g1"))
+    assert taps == []
+
+
+def test_the_tap_follows_the_boundary_and_a_lock_after_it_stops_before_observe() -> None:
+    """SW-07: identity, boundary, tap, lock re-check, observe."""
+    rig, win = _rig()
+    order: list[str] = []
+    taps = _tapping(rig, win)
+    session = rig.session
+    assert session is not None
+    boundary = session._boundary
+
+    def spy_boundary(evidence: dict[str, Any]) -> bool:
+        order.append(f"boundary after {len(taps)} taps")
+        return boundary(evidence)
+
+    session._boundary = spy_boundary  # type: ignore[method-assign]
+    session._locked = lambda: bool(taps)  # the session locks right after the tap
+    observed = len(rig.world.observed)
+    result = session.run_step(_step("c1", window="opened:o1"))
+    assert order[0] == "boundary after 0 taps", "the boundary guards the tap"
+    assert taps, "and then the tap"
+    assert (result.code, result.evidence["detail"]) == (ErrorCode.SECURE_DESKTOP, "session_locked")
+    assert len(rig.world.observed) == observed, "nothing observed after the lock"
+
+
+def test_a_refused_tap_is_evidence_and_the_step_still_runs() -> None:
+    """Gate Q2: the executor's own checks are the postcondition."""
+    rig, win = _rig()
+    _tapping(rig, win, refuse=True)
+    session = rig.session
+    assert session is not None
+    result = session.run_step(_step("c1", window="opened:o1"))
+    assert result.evidence["foreground_after_select"] is False
+    assert rig.semantic is not None
+    assert rig.semantic.calls, "the R0 click still ran"
+
+
+def test_an_r2_step_after_a_refused_tap_stops_not_foreground() -> None:
+    rig, win = _rig()
+    win.foreground = 0x10
+    _tapping(rig, win, refuse=True)
+    session = rig.session
+    assert session is not None
+    result = session.run_step(_step("c1", window="opened:o1", risk="R2"))
+    assert (result.code, result.evidence["detail"]) == (ErrorCode.FOCUS_LOST, "not_foreground")
+
+
+def test_a_tap_that_reports_success_but_leaves_the_window_behind_is_false() -> None:
+    """Gate item 3: the evidence is the foreground re-read, never the procedure's word."""
+    rig, win = _rig()
+    session = rig.session
+    assert session is not None
+    session._bring_forward = lambda _hwnd: "alt-tap"  # says done, foreground unchanged
+    win.foreground = 0x10
+    result = session.run_step(_step("c1", window="opened:o1"))
+    assert result.evidence["foreground_after_select"] is False
