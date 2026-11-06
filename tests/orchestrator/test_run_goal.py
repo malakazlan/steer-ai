@@ -399,3 +399,16 @@ def test_the_planner_sees_the_open_windows_of_registry_apps(tmp_path: Path) -> N
     stdout, stderr = io.StringIO(), io.StringIO()
     run(_options(tmp_path), deps, stdin=io.StringIO("no\n"), stdout=stdout, stderr=stderr)
     assert list(planner.requests[0].open_windows) == ["Inbox - Google Chrome"]
+
+
+def test_the_preview_shows_the_window_a_step_names() -> None:
+    """Step-window SW-09: where a step lands is in the plan the person approves."""
+    from dataclasses import replace  # noqa: PLC0415
+
+    plan = _plan()
+    moved = replace(plan.steps[0], window="start")
+    plan = Plan(goal=plan.goal, subgoals=plan.subgoals, steps=(moved, *plan.steps[1:]))
+    line = next(x for x in preview_lines(plan, "0123456789ab") if "step t:" in x)
+    assert line.endswith(" window=start")
+    other = next(x for x in preview_lines(plan, "0123456789ab") if "step s:" in x)
+    assert "window=" not in other

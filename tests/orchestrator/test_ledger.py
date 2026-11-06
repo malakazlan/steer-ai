@@ -671,3 +671,17 @@ def test_an_allowed_window_change_forgets_the_start_identity(tmp_path: Path) -> 
         ledger.bind_window(pid=500, title="Amir Khan - Chat", identity=START_IDENTITY)
         ledger.bind_window(pid=501, title="Sara Ali - Chat", identity=other, allow_change=True)
         assert ledger.start_window() is None
+
+
+def test_a_state_from_before_the_start_identity_resumes_without_it(tmp_path: Path) -> None:
+    """SW-21: an old state (pid + title digest only) still resumes; `window: start` then has
+    no identity to check against and stops `window_gone` in the loop."""
+    with Ledger(tmp_path, task_id="t-pre-start", started_at=1.0) as ledger:
+        ledger.bind_window(pid=500, title="Amir Khan - Chat", identity=START_IDENTITY)
+    state_path = next(tmp_path.rglob("state.ledger"))
+    payload = json.loads(dpapi.unprotect(state_path.read_bytes(), entropy=b"steer-ledger-v1"))
+    payload.pop("start_window")
+    state_path.write_bytes(dpapi.protect(json.dumps(payload).encode(), entropy=b"steer-ledger-v1"))
+    with Ledger(tmp_path, task_id="t-pre-start", started_at=1.0) as ledger:
+        ledger.bind_window(pid=500, title="Amir Khan - Chat", identity=START_IDENTITY)
+        assert ledger.start_window() is None

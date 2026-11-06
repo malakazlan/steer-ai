@@ -434,3 +434,17 @@ def test_start_is_refused_on_a_desktop_task() -> None:
     plan = _second_plan(_click("p2.s1", window="start"))
     assert continuation_refusal(plan, _progress(), desktop=True) == "steps[0].window"
     assert continuation_refusal(plan, _progress(), desktop=False) is None
+
+
+def test_a_continuation_may_name_an_open_earlier_in_its_own_plan() -> None:
+    notepad = Step(
+        id="p2.o1", subgoal="g2", verb="open", target=Target(role="App", name="notepad"), risk="R1"
+    )
+    plan = _second_plan(notepad, _click("p2.s1", window="opened:p2.o1"))
+    assert continuation_refusal(plan, _progress()) is None
+
+
+def test_a_continuation_naming_a_done_step_that_is_not_an_open_is_refused() -> None:
+    progress = _progress(_one_click_plan(), _unfinished(_result("c1"), ticked=set()))
+    plan = _second_plan(_click("p2.s1", window="opened:c1"))
+    assert continuation_refusal(plan, progress) == "steps[0].window"

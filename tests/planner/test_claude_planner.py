@@ -20,7 +20,14 @@ from steerai.planner.claude_planner import (
     ClaudePlanner,
     build_prompt,
 )
-from steerai.planner.contracts import DoneStep, FailedStep, OpenSubgoal, PlannerError, PlanRequest
+from steerai.planner.contracts import (
+    MAX_OPEN_WINDOWS,
+    DoneStep,
+    FailedStep,
+    OpenSubgoal,
+    PlannerError,
+    PlanRequest,
+)
 from steerai.planner.mirror import (
     Decoration,
     ParamsDoc,
@@ -643,3 +650,14 @@ def test_a_reused_raw_id_that_names_a_step_of_this_plan_is_refused() -> None:
         planner.plan(_continuation())
     assert caught.value.detail == "invalid_plan"
     assert caught.value.path == "$.steps[1].window"
+
+
+def test_a_window_is_listed_only_by_its_reference() -> None:
+    """SW-24: a title can never stand in for a reference in the data block."""
+    with pytest.raises(ValueError, match="reference"):
+        _continuation(windows=(("WhatsApp", "x"),))
+
+
+def test_the_tasks_windows_are_capped() -> None:
+    many = tuple((f"opened:s{i}", "t") for i in range(MAX_OPEN_WINDOWS + 1))
+    assert len(_continuation(windows=many).windows) == MAX_OPEN_WINDOWS

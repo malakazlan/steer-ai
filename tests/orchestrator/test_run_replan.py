@@ -675,7 +675,9 @@ def test_a_monitor_lost_before_the_continuation_blocks_with_its_detail(tmp_path:
     assert len(rig.session.ran) == 1
 
 
-def _desktop_rig(tmp_path: Path, *, opens: bool) -> tuple[int, dict[str, Any], Rig]:
+def _desktop_rig(
+    tmp_path: Path, *, opens: bool, titles: dict[str, str] | None = None
+) -> tuple[int, dict[str, Any], Rig]:
     desktop = WindowInfo(hwnd=0x50, title="Program Manager", pid=900)
     first_plan = _first() if opens else _continuation(prefix="p1", subgoal="g2")
     if not opens:
@@ -689,7 +691,9 @@ def _desktop_rig(tmp_path: Path, *, opens: bool) -> tuple[int, dict[str, Any], R
         )
     first, cont = _outcome(first_plan), _outcome(_continuation())
     one = "s1" if opens else "p1.s1"
-    session = ScriptedSession([_unfinished(_step(one)), _done("p2.s1")], hwnd=desktop.hwnd)
+    session = ScriptedSession(
+        [_unfinished(_step(one)), _done("p2.s1")], hwnd=desktop.hwnd, titles=dict(titles or {})
+    )
     rig = Rig(session, ScriptedPlanner([first, cont]), tmp_path)
     base = rig.world.deps
 
@@ -761,3 +765,19 @@ def test_the_continuation_sees_the_tasks_windows_by_reference(tmp_path: Path) ->
         ("start", "Inbox - Chrome"),
         ("opened:s1", "drake - YouTube"),
     ]
+
+
+def test_a_desktop_task_never_lists_a_start_window_to_the_planner(tmp_path: Path) -> None:
+    """Step-window SW-05: the shell's desktop is never a window a step may go back to."""
+    titles = {"start": "Program Manager", "opened:s1": "drake - YouTube"}
+    _code, _out, rig = _desktop_rig(tmp_path, opens=True, titles=titles)
+    assert list(rig.planner.requests[0].windows) == []
+    assert list(rig.planner.requests[1].windows) == [("opened:s1", "drake - YouTube")]
+
+
+def test_a_window_whose_identity_no_longer_holds_is_not_listed(tmp_path: Path) -> None:
+    """SW-36: `live_title` None (the window is not the task's any more) drops the line."""
+    rig, first, cont = _two_plan_rig(tmp_path)
+    rig.session.titles = {"opened:s1": "drake - YouTube"}
+    rig.run(f"{_go(first)}\n{_go(cont)}\n")
+    assert list(rig.planner.requests[1].windows) == [("opened:s1", "drake - YouTube")]

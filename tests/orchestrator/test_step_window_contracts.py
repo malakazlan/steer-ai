@@ -71,6 +71,8 @@ def test_a_step_without_window_has_none() -> None:
         "WhatsApp",
         "opened:" + "x" * 65,
         "opened:s\x07",
+        "opened:s1\n",
+        "start\n",
     ],
 )
 def test_anything_but_a_reference_is_refused_at_its_path(window: Any) -> None:
@@ -109,4 +111,22 @@ def test_the_contract_refuses_a_malformed_reference_too() -> None:
             verb="click",
             target=Target(role="Button", name="OK"),
             window="WhatsApp",
+        )
+
+
+def test_a_step_id_at_the_plan_limit_is_a_reference() -> None:
+    """SW-35 boundary: 64 characters, the plan's own step id limit (65 is refused above)."""
+    ref = "opened:" + "x" * 64
+    assert plan_from_json(_doc(_click(ref, step_id="p2.s1"))).steps[0].window == ref
+
+
+def test_the_contract_refuses_a_window_on_an_open_step() -> None:
+    with pytest.raises(ValueError, match="open step takes no window"):
+        Step(
+            id="s1",
+            subgoal="g1",
+            verb="open",
+            target=Target(role="App", name="notepad"),
+            risk="R1",
+            window="start",
         )
