@@ -6,6 +6,7 @@ bound row, a released key after `not_delivered`, and a sentinel scan over every 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import replace
 from typing import Any
 
@@ -464,12 +465,18 @@ SENTINELS = (
 )
 
 
+_HEX_ID = re.compile(r"[0-9a-f]{12,}")
+
+
 def _scan(h: Harness, *results: StepResult) -> None:
     text = "\n".join(h.trace.lines)
     for result in results:
         text += "\n" + json.dumps(result.to_dict(), ensure_ascii=False) + "\n" + repr(result)
     for ask in h.confirmer.asked:
         text += "\n" + repr(ask)
+    # generated ids (ask ids, decision ids, keys) are random hex and once held "9173" by
+    # chance (CI 2026-11-06): masked, since a leaked RuntimeId part is a bare number
+    text = _HEX_ID.sub("<id>", text)
     for sentinel in SENTINELS:
         assert sentinel not in text, (sentinel, text)
 
