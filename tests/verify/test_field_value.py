@@ -227,3 +227,74 @@ def test_a_value_subgoal_acting_in_two_windows_is_refused() -> None:
     with pytest.raises(PlanError) as caught:
         plan_from_json(json.dumps(doc))
     assert caught.value.path == "$.subgoals[1].condition"
+
+
+# ---- the loop's tick rules (rulings FV-01, FV-20) ---------------------------------------------
+
+
+def _value_plan(*steps: Any) -> Any:
+    from steerai.orchestrator.contracts import Plan, Subgoal  # noqa: PLC0415
+
+    return Plan(
+        goal="type hello there",
+        subgoals=(
+            Subgoal(
+                id="g1",
+                desc="typed",
+                condition=FieldValue(role="Edit", name_pattern="Message", text="hello there"),
+            ),
+        ),
+        steps=steps,
+    )
+
+
+def test_a_value_subgoal_ticks_after_its_type_step() -> None:
+    from tests.orchestrator.test_loop import Harness, _type  # noqa: PLC0415
+
+    h = Harness()
+    result = h.session.run_task(_value_plan(_type()))
+    assert result.status == "done", result
+    assert result.ticked == {"g1"}
+
+
+def test_a_value_subgoal_never_ticks_at_a_runs_start() -> None:
+    """FV-01/03: a field already holding the text is the type step's business."""
+    from tests.orchestrator.test_loop import Harness, _type  # noqa: PLC0415
+
+    h = Harness()
+    h.world.composer_value = "hello there"
+    result = h.session.run_task(_value_plan(_type()))
+    assert len(result.results) == 1, "the type step ran: nothing ticked at start"
+
+
+def test_a_value_subgoal_waits_for_its_last_step() -> None:
+    """FV-01: the type held the value; the click after it is part of the subgoal."""
+    from dataclasses import replace  # noqa: PLC0415
+
+    from steerai.verify.predicates import TitleMatches  # noqa: PLC0415
+    from tests.orchestrator.test_loop import Harness, _click, _type  # noqa: PLC0415
+
+    h = Harness()
+    after = replace(_click(step_id="c9", name="Chat options"), expect=TitleMatches(pattern="nope"))
+    result = h.session.run_task(_value_plan(_type(), after))
+    assert [r.step_id for r in result.results] == ["s2", "c9"], "the click was not skipped"
+    assert "g1" not in result.ticked, "the click failed: the subgoal is not done"
+
+
+def test_the_persons_input_during_a_step_withholds_the_tick() -> None:
+    """FV-20: the person may have typed the text."""
+    from tests.orchestrator.test_loop import Harness, _type  # noqa: PLC0415
+    from tests.orchestrator.test_takeover_loop import FakeMonitor, _wire  # noqa: PLC0415
+
+    h = Harness()
+    h.clock["t"] = 100.0
+    monitor = FakeMonitor(h.clock, last_user=10.0)
+    _wire(h, monitor)
+
+    def person_types(_executor: Any, _action: Any) -> None:
+        monitor.user_events += 1  # input counted during the step
+
+    h.semantic.on_execute = person_types
+    h.physical.on_execute = person_types
+    result = h.session.run_task(_value_plan(_type()))
+    assert "g1" not in result.ticked

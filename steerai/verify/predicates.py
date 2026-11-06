@@ -256,3 +256,12 @@ Predicate = (
 def _check_role(role: str) -> None:
     if not role.strip():
         raise ValueError("role must be named")
+
+
+def field_values(predicate: Predicate) -> list[FieldValue]:
+    """Every `value` part of a condition, at any depth."""
+    if isinstance(predicate, FieldValue):
+        return [predicate]
+    if isinstance(predicate, All | AnyOf):
+        return [found for part in predicate.parts for found in field_values(part)]
+    return []

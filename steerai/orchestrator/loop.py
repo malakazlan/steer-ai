@@ -68,6 +68,7 @@ from steerai.verify.predicates import (
     TitleMatches,
     WindowExists,
     WindowGone,
+    field_values,
 )
 from steerai.verify.t1 import (
     NO_LABEL_REASONS,
@@ -1470,6 +1471,7 @@ class Session:
             if not continuation
             and s.id not in opening
             and s.id not in elsewhere
+            and not field_values(s.condition)  # a value is a step's doing (FV-01/03)
             and self._holds_now(s.condition, start)
         }
         outcome = self._run_steps(plan, ticked, results)
@@ -1529,14 +1531,18 @@ class Session:
                 continue
             if result.gate == "done_already":
                 # the earlier verified attempt (or the persisted before) proved the effect
-                if result.evidence.get("done_by") != "another_step":
+                if result.evidence.get("done_by") != "another_step" and _value_ready(
+                    plan, step, result, results
+                ):
                     ticked.add(step.subgoal)
                 strikes = 0
                 continue
             if result.ok and self._last_pair is not None:
                 before, after = self._last_pair
                 subgoal = next(s for s in plan.subgoals if s.id == step.subgoal)
-                if self._subgoal_holds(subgoal.condition, before, after):
+                if _value_ready(plan, step, result, results) and self._subgoal_holds(
+                    subgoal.condition, before, after
+                ):
                     ticked.add(subgoal.id)
                     strikes = 0
                     continue
@@ -1599,6 +1605,18 @@ class Session:
 FRAME_HOST = "applicationframehost.exe"
 WINDOW_TITLE_CHARS = 80
 """How much of a page's own title an ask shows: a page sets it, so code caps it."""
+
+
+def _value_ready(plan: Plan, step: Step, result: StepResult, results: list[StepResult]) -> bool:
+    """A `value` subgoal is judged only after its last step, which ran below R2, with no
+    input from the person during any of its steps (rulings FV-01, FV-20)."""
+    subgoal = next(s for s in plan.subgoals if s.id == step.subgoal)
+    if not field_values(subgoal.condition):
+        return True
+    own = [s.id for s in plan.steps if s.subgoal == subgoal.id]
+    if own[-1] != step.id or result.evidence.get("risk") in ("R2", "R3"):
+        return False
+    return not any(r.evidence.get("user_input_during_step") for r in results if r.step_id in own)
 
 
 def _ledger_ref(window: str) -> str | None:

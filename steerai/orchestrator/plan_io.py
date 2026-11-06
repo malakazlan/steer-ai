@@ -42,6 +42,7 @@ from steerai.verify.predicates import (
     WindowExists,
     WindowGone,
     Within,
+    field_values,
 )
 from steerai.world.model import normalise_name
 from steerai.world.people import name_part
@@ -473,15 +474,6 @@ def _plan(value: object, path: str) -> Plan:
 
 
 _NO_VALUE_VERBS = frozenset({"send", "submit", "delete"})
-
-
-def field_values(predicate: Predicate) -> list[FieldValue]:
-    """Every `value` part of a condition, at any depth."""
-    if isinstance(predicate, FieldValue):
-        return [predicate]
-    if isinstance(predicate, All | AnyOf):
-        return [found for part in predicate.parts for found in field_values(part)]
-    return []
 
 
 def _check_values(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: str) -> None:
