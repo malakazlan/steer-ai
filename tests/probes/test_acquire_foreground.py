@@ -152,3 +152,61 @@ def test_every_rung_refused_detaches_and_raises(user32: Callable[..., _FakeUser3
         (OWN_THREAD, FOREGROUND_THREAD, True),
         (OWN_THREAD, FOREGROUND_THREAD, False),
     ]
+
+
+# ---- in_menu_mode (GUITHREADINFO.flags, winuser.h) ---------------------------------------------
+
+
+class _GuiThreads:
+    """`GetWindowThreadProcessId` and `GetGUIThreadInfo`; `readable=False` makes the read fail."""
+
+    def __init__(self, *, thread: int = 7, flags: int = 0, readable: bool = True) -> None:
+        self.read: list[int] = []
+
+        def thread_of(_hwnd: int, _pid: Any) -> int:
+            return thread
+
+        def gui_thread_info(thread_id: int, ref: Any) -> int:
+            info = ref._obj  # the structure behind ctypes.byref
+            assert info.cbSize == ctypes.sizeof(info), "GetGUIThreadInfo fails without cbSize"
+            self.read.append(thread_id)
+            if not readable:
+                return 0
+            info.flags = flags
+            return 1
+
+        # Plain functions accept the `.argtypes` / `.restype` assignments the module makes.
+        self.GetWindowThreadProcessId = thread_of
+        self.GetGUIThreadInfo = gui_thread_info
+
+
+@pytest.mark.parametrize(
+    ("flags", "menu"),
+    [
+        (0x0, False),
+        (0x1, False),  # GUI_CARETBLINKING
+        (0x2, False),  # GUI_INMOVESIZE
+        (0x4, True),  # GUI_INMENUMODE
+        (0x8, True),  # GUI_SYSTEMMENUMODE
+        (0x10, True),  # GUI_POPUPMENUMODE
+        (0x1 | 0x10, True),
+    ],
+)
+def test_menu_mode_reads_the_menu_flags(
+    monkeypatch: pytest.MonkeyPatch, flags: int, menu: bool
+) -> None:
+    threads = _GuiThreads(flags=flags)
+    monkeypatch.setattr(win_input, "_user32", lambda: threads)
+    assert win_input.in_menu_mode(0x30) is menu
+    assert threads.read == [7]
+
+
+def test_an_unreadable_thread_counts_as_in_a_menu(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unclear means no typing."""
+    threads = _GuiThreads(readable=False)
+    monkeypatch.setattr(win_input, "_user32", lambda: threads)
+    assert win_input.in_menu_mode(0x30) is True
+    gone = _GuiThreads(thread=0)
+    monkeypatch.setattr(win_input, "_user32", lambda: gone)
+    assert win_input.in_menu_mode(0x30) is True
+    assert gone.read == [], "thread 0 is never read: GetGUIThreadInfo(0) is the foreground thread"

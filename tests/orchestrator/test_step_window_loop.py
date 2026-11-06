@@ -14,7 +14,7 @@ from steerai.errors import ErrorCode
 from steerai.orchestrator.contracts import Plan, Step, Subgoal
 from steerai.orchestrator.trace import ListTrace
 from steerai.verify.predicates import TitleMatches
-from tests.orchestrator.test_loop import HELLO, _click, _send
+from tests.orchestrator.test_loop import HELLO, _click, _send, _type
 from tests.orchestrator.test_open_loop import Rig, _open
 
 START_ID = {"hwnd": 0x10, "pid": 600, "start": 11, "image": "notepad.exe"}
@@ -858,3 +858,186 @@ def test_an_unreadable_tap_guard_skips_the_tap_and_never_kills_the_task() -> Non
     assert taps == []
     assert result.evidence["foreground_after_select"] is False
     assert result.evidence["tap_skipped"] == "guard_unreadable"
+
+
+# ---- tester gaps on the switch tap (surviving mutants, PR #46) ---------------------------------
+
+
+def test_a_physical_step_naming_the_current_window_taps_nothing() -> None:
+    """Gate Q2: no change, no tap, for a step that needs the window in front too."""
+    rig, win = _rig()
+    taps = _tapping(rig, win)
+    session = rig.session
+    assert session is not None
+    result = session.run_step(_step("c1", window="start", path="physical"))
+    assert taps == []
+    assert "foreground_after_select" not in result.evidence
+
+
+def test_a_second_physical_step_in_the_switched_to_window_taps_nothing() -> None:
+    """Addendum item 2: the tap follows a window change, never `_switched` alone."""
+    rig, win = _rig()
+    taps = _tapping(rig, win)
+    session = rig.session
+    assert session is not None
+    plan = _plan(
+        _step("c1", window="opened:o1", path="physical"),
+        _step("c2", path="physical"),
+        _step("c3", window="opened:o1", path="physical"),
+    )
+    result = session.run_task(plan)
+    assert len(result.results) == 3
+    assert taps == [0x30]
+
+
+def test_a_physical_step_after_an_open_taps_nothing() -> None:
+    """The launch already put the window in front (packet proposal 3)."""
+    rig, win = _rig()
+    taps = _tapping(rig, win)
+    session = rig.session
+    assert session is not None
+    result = session.run_task(_plan(replace(_open(step_id="o2"), subgoal="g1"), _step("c1")))
+    assert [r.evidence.get("window") for r in result.results][:1] == ["opened"]
+    session.run_step(_step("c2", path="physical"))
+    assert taps == []
+
+
+def test_a_type_step_after_a_switch_taps_without_a_declared_path() -> None:
+    """SF-13: `type` runs on the physical path by its verb, not only by `path`."""
+    rig, win = _rig()
+    taps = _tapping(rig, win)
+    session = rig.session
+    assert session is not None
+    session.run_step(replace(_type("c1"), window="opened:o1"))
+    assert taps == [0x30]
+
+
+def test_an_r3_step_after_a_switch_taps() -> None:
+    rig, win = _rig()
+    taps = _tapping(rig, win)
+    session = rig.session
+    assert session is not None
+    session.run_step(_step("c1", window="opened:o1", risk="R3"))
+    assert taps == [0x30]
+
+
+def test_a_step_raised_to_r2_by_its_name_taps() -> None:
+    """SF-13: the effective tier decides (a deny pattern on the name), never the declared one."""
+    rig, win = _rig()
+    taps = _tapping(rig, win)
+    session = rig.session
+    assert session is not None
+    session.run_step(_step("c1", name="Post", window="opened:o1"))
+    assert taps == [0x30]
+
+
+def test_a_locked_session_stops_as_locked_before_the_window_is_checked() -> None:
+    """A locked session stops `session_locked`, never `window_gone` (issue #31)."""
+    win = Windows()
+    del win.live[0x30]
+    rig, _ = _rig(win)
+    session = rig.session
+    assert session is not None
+    session._locked = lambda: True
+    result = _stopped_with(rig, _step("c1", window="opened:o1", path="physical"))
+    assert (result.code, result.evidence["detail"]) == (ErrorCode.SECURE_DESKTOP, "session_locked")
+
+
+def test_a_gone_window_stops_without_waiting_for_the_person() -> None:
+    """Addendum item 1: the identity comes before the boundary's idle wait."""
+    from tests.orchestrator.test_takeover_loop import FakeMonitor  # noqa: PLC0415
+
+    win = Windows()
+    del win.live[0x30]
+    rig, _ = _rig(win)
+    session = rig.session
+    assert session is not None
+    session._monitor = FakeMonitor(rig.clock, input_until=5.0)
+    result = _stopped_with(rig, _step("c1", window="opened:o1", path="physical"))
+    assert result.evidence["detail"] == "window_gone"
+    assert "waited_s" not in result.evidence
+    assert rig.clock["t"] == 0.0
+
+
+def test_a_cloaked_window_stops_before_a_minimized_one() -> None:
+    """SF-10: a window on another desktop also reads minimized there; the reason is the desktop."""
+    win = Windows()
+    win.live[0x30]["cloaked"] = True
+    win.live[0x30]["minimized"] = True
+    rig, _ = _rig(win)
+    result = _stopped_with(rig, _step("c1", window="opened:o1"))
+    assert result.evidence["detail"] == "window_other_desktop"
+
+
+def test_a_lock_that_comes_with_a_skipped_tap_stops_before_observe() -> None:
+    """SF-19: the lock re-check is in a `finally`: a skipped or refused tap is checked too."""
+    for refuse, guard in ((False, "hands_on"), (True, None)):
+        rig, win = _rig()
+        _tapping(rig, win, refuse=refuse)
+        session = rig.session
+        assert session is not None
+        read: list[str] = []
+
+        def tap_guard(guard: str | None = guard, read: list[str] = read) -> str | None:
+            read.append("guard")
+            return guard
+
+        session._tap_guard = tap_guard
+        session._locked = lambda read=read: bool(read)
+        observed = len(rig.world.observed)
+        result = session.run_step(_step("c1", window="opened:o1", path="physical"))
+        assert (result.code, result.evidence["detail"]) == (
+            ErrorCode.SECURE_DESKTOP,
+            "session_locked",
+        ), guard
+        assert len(rig.world.observed) == observed, "nothing observed after the lock"
+
+
+def test_a_resume_taps_once_then_the_window_is_in_front() -> None:
+    """SF-31: the pending tap is spent on the first step that needs it, once."""
+    rig, win = _rig()
+    taps = _tapping(rig, win)
+    rig.ledger.set_window_ref("opened:o1")
+    session = rig.session
+    assert session is not None
+    plan = _plan(_step("p2.c1"), _step("p2.c2", path="physical"), _step("p2.c3", path="physical"))
+    result = session.run_task(plan, continuation=True)
+    assert len(result.results) == 3
+    assert taps == [0x30], "the semantic step kept the tap pending; the first physical spent it"
+
+
+def test_a_resume_in_the_window_already_bound_taps_nothing() -> None:
+    """SF-31: only a rebind that changed the window leaves a tap pending."""
+    rig, win = _rig()
+    taps = _tapping(rig, win)
+    rig.ledger.set_window_ref("opened:o1")
+    session = rig.session
+    assert session is not None
+    session.hwnd = 0x30  # the runner bound the opened window and tapped it
+    session.run_task(_plan(_step("p2.c1", path="physical")), continuation=True)
+    assert taps == []
+
+
+def test_a_switch_on_a_semantic_step_still_taps_before_the_next_physical_step() -> None:
+    """Tester T-01: the switch is carried to the first step that needs the window in front."""
+    rig, win = _rig()
+    taps = _tapping(rig, win)
+    session = rig.session
+    assert session is not None
+    result = session.run_task(_plan(_step("c1", window="opened:o1"), _step("c2", path="physical")))
+    assert len(result.results) == 2
+    assert taps == [0x30]
+
+
+def test_a_skipped_tap_is_tried_again_on_the_next_step_that_needs_it() -> None:
+    """Tester N6: `hands_on` passes; the window is still behind."""
+    rig, win = _rig()
+    taps = _tapping(rig, win)
+    session = rig.session
+    assert session is not None
+    reasons = ["hands_on", None]
+    session._tap_guard = lambda: reasons.pop(0) if reasons else None
+    session.run_task(
+        _plan(_step("c1", window="opened:o1", path="physical"), _step("c2", path="physical"))
+    )
+    assert taps == [0x30], "the second step tapped once the keys were released"
