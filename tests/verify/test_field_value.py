@@ -298,3 +298,42 @@ def test_the_persons_input_during_a_step_withholds_the_tick() -> None:
     h.physical.on_execute = person_types
     result = h.session.run_task(_value_plan(_type()))
     assert "g1" not in result.ticked
+
+
+def test_a_failed_live_read_never_ticks_and_never_escapes_the_task() -> None:
+    """FV-16: the subgoal check after the type step."""
+    from steerai.errors import ErrorCode, SteerError  # noqa: PLC0415
+    from tests.orchestrator.test_loop import Harness, _type  # noqa: PLC0415
+
+    h = Harness()
+    reads = {"n": 0}
+    live = h.session._live
+    assert live is not None
+    real = live.value
+
+    def value(handle: Any) -> str | None:
+        reads["n"] += 1
+        if reads["n"] > 1:  # the type's own check reads first; the subgoal check fails
+            raise SteerError(ErrorCode.PERCEPTION_TIMEOUT, "live_read_failed")
+        return real(handle)
+
+    live.value = value  # type: ignore[method-assign]
+    result = h.session.run_task(_value_plan(_type()))
+    assert "g1" not in result.ticked
+
+
+def test_a_failed_live_read_in_the_type_verify_is_a_failed_step_not_a_crash() -> None:
+    """Ruling 4: the `type` step's own value check, the other caller of the live read."""
+    from steerai.errors import ErrorCode, SteerError  # noqa: PLC0415
+    from tests.orchestrator.test_loop import Harness, _type  # noqa: PLC0415
+
+    h = Harness()
+    live = h.session._live
+    assert live is not None
+
+    def value(_handle: Any) -> str | None:
+        raise SteerError(ErrorCode.PERCEPTION_TIMEOUT, "live_read_failed")
+
+    live.value = value  # type: ignore[method-assign]
+    result = h.session.run_step(_type())
+    assert result.ok is False

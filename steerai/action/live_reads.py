@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from steerai.action.execution import UIA_VALUE_PATTERN
+from steerai.action.execution import UIA_VALUE_PATTERN, code_for
+from steerai.errors import SteerError
 
 
 class _FocusSource(Protocol):
@@ -25,8 +26,16 @@ class UiaLiveReads:
         self._bindings = bindings
 
     def value(self, handle: Any) -> str | None:
-        pattern = self._bindings.pattern(handle, UIA_VALUE_PATTERN, "ValuePattern")
-        raw = pattern.CurrentValue
+        """The field's value; a COM failure (a stale handle, a provider timeout) is a taxonomy
+        failure the verifier reads as "does not hold" (FV-16); a programming error raises."""
+        try:
+            pattern = self._bindings.pattern(handle, UIA_VALUE_PATTERN, "ValuePattern")
+            raw = pattern.CurrentValue
+        except Exception as exc:  # COMError has no stubs: mapped by code_for, or re-raised
+            code, _extra = code_for(exc)
+            if code is None:
+                raise
+            raise SteerError(code, "live_read_failed") from exc
         return None if raw is None else str(raw)
 
     def toggle_state(self, _handle: Any) -> int | None:

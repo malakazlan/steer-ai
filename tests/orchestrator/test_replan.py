@@ -448,3 +448,42 @@ def test_a_continuation_naming_a_done_step_that_is_not_an_open_is_refused() -> N
     progress = _progress(_one_click_plan(), _unfinished(_result("c1"), ticked=set()))
     plan = _second_plan(_click("p2.s1", window="opened:c1"))
     assert continuation_refusal(plan, progress) == "steps[0].window"
+
+
+# ---- a value subgoal's text is fixed across plans (field-value ruling 2, FV-04) ---------------
+
+
+def _value_first_plan() -> Plan:
+    from steerai.verify.predicates import FieldValue  # noqa: PLC0415
+
+    return Plan(
+        goal=GOAL,
+        subgoals=(
+            Subgoal(id="g1", desc="results", condition=WindowExists(name_pattern=YT)),
+            Subgoal(
+                id="g2",
+                desc="hello in notepad",
+                condition=FieldValue(role="Document", name_pattern="Text Editor", text="hello"),
+            ),
+        ),
+        steps=(_open(),),
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "text", "refused"), [("Text editor", "hello", False), ("Text Editor", "hi", True)]
+)
+def test_a_continuation_keeps_a_value_subgoals_text(name: str, text: str, refused: bool) -> None:
+    from steerai.verify.predicates import FieldValue  # noqa: PLC0415
+
+    progress = _progress(_value_first_plan())
+    plan = _second_plan(
+        subgoals=(
+            Subgoal(
+                id="g2",
+                desc="hello in notepad",
+                condition=FieldValue(role="Document", name_pattern=name, text=text),
+            ),
+        )
+    )
+    assert continuation_refusal(plan, progress) == ("subgoals" if refused else None)
