@@ -126,6 +126,10 @@ class ScriptedSession:
     results: list[TaskResult]
     hwnd: int = 0x10
     ran: list[tuple[Plan, bool]] = field(default_factory=list)
+    titles: dict[str, str] = field(default_factory=dict)
+
+    def live_title(self, ref: str) -> str | None:
+        return self.titles.get(ref)
 
     def run_task(self, plan: Plan, *, continuation: bool = False) -> TaskResult:
         self.ran.append((plan, continuation))
@@ -745,3 +749,15 @@ def test_a_locked_session_is_never_read_or_planned_for_a_replan(tmp_path: Path) 
     assert out["detail"] == "session_locked"
     assert rig.screens == [0x10], "the continuation's screen is never read"
     assert len(rig.planner.requests) == 1
+
+
+def test_the_continuation_sees_the_tasks_windows_by_reference(tmp_path: Path) -> None:
+    """Step-window packet item 6: the verified opens and the start window, live titles."""
+    rig, first, cont = _two_plan_rig(tmp_path)
+    rig.session.titles = {"start": "Inbox - Chrome", "opened:s1": "drake - YouTube"}
+    rig.run(f"{_go(first)}\n{_go(cont)}\n")
+    assert list(rig.planner.requests[0].windows) == [("start", "YouTube - Google Chrome")]
+    assert list(rig.planner.requests[1].windows) == [
+        ("start", "Inbox - Chrome"),
+        ("opened:s1", "drake - YouTube"),
+    ]

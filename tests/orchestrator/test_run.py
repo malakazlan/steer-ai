@@ -237,6 +237,9 @@ class FakeSession:
     hwnd: int = 0x10
     continuations: list[bool] = field(default_factory=list)
 
+    def live_title(self, ref: str) -> str | None:  # noqa: ARG002 - the fake has no windows
+        return None
+
     def run_task(self, plan: Plan, *, continuation: bool = False) -> TaskResult:
         self.ran.append(plan)
         self.continuations.append(continuation)

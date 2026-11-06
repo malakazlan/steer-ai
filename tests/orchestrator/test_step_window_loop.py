@@ -269,3 +269,18 @@ def test_a_continuation_in_the_start_window_checks_its_identity_first() -> None:
     result = session.run_task(_plan(_step("p2.c1")), continuation=True)
     assert result.evidence["detail"] == "window_gone"
     assert result.results == []
+
+
+def test_live_title_reads_a_reference_only_while_its_identity_holds() -> None:
+    """SW-36: the planner sees only windows that are still the task's."""
+    win = Windows()
+    win.live[0x30]["title"] = "drake - YouTube"
+    win.live[0x10]["title"] = "Untitled - Notepad"
+    rig, _ = _rig(win)
+    session = rig.session
+    assert session is not None
+    assert session.live_title("opened:o1") == "drake - YouTube"
+    assert session.live_title("start") == "Untitled - Notepad"
+    win.live[0x30]["start"] = 99
+    assert session.live_title("opened:o1") is None
+    assert session.live_title("opened:o9") is None

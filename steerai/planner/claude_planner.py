@@ -32,7 +32,7 @@ DEFAULT_MAX_TOKENS = 8192
 """Unmeasured: enough for the 6.3 form of a ten-step plan; a `max_tokens` stop is `truncated`."""
 DEFAULT_MAX_RETRIES = 1
 EFFORT = "medium"
-PROMPT_VERSION = "planner-8"
+PROMPT_VERSION = "planner-9"
 MECHANICAL_VERBS = frozenset({"type", "focus", "open"})
 """Steps whose effect code verifies (value typed, focus held, window opened): any model
 `expect` is dropped."""
@@ -100,6 +100,12 @@ Wikipedia", youtube = "<name> - YouTube"), and "replaces": true. A click on a li
 a page is verified the same way; the page is named by its own title, which can be shorter
 than the link's name (a video link adds its length and views: leave those out).
 
+Windows: a step acts in the window of the step before it, and an open moves the next
+steps into the window it opened. To act in another window give the step "window": "start"
+(the window the task began in) or "opened:<id of an earlier open step>"; it holds for the
+steps after it too. A window is named by that reference, never a title. The data block
+lists the task's windows as "window <reference>: <title>" lines.
+
 A continuation: when the data block lists "done step" and "open subgoal" lines, the task
 already ran a plan and is now in the window shown. Plan only the open subgoals and keep their
 ids (you may rewrite a condition for this screen); never repeat a done step and never open again
@@ -133,6 +139,7 @@ def build_prompt(request: PlanRequest, *, tag: str | None = None) -> tuple[str, 
     if request.app_hint:
         lines.append(f"app: {_one_line(request.app_hint)}")
     lines.extend(f"open window: {_one_line(title)}" for title in request.open_windows)
+    lines.extend(f"window {ref}: {_one_line(title)}" for ref, title in request.windows)
     lines.extend(_progress_lines(request))
     lines.extend(_one_line(line) for line in request.screen_lines)
     lines.append(f"{fence}>>>")
@@ -251,7 +258,12 @@ def _document_bytes(doc: PlanDoc, request: PlanRequest) -> bytes:
     body["goal"] = " ".join(request.goal.split())  # one line: the file form takes no newline
     goal_key = normalise_name(request.goal)
     prefix = f"p{request.continuation + 1}." if request.continuation > 0 else ""
+    own = {s.get("id") for s in body.get("steps", [])}
     for step in body.get("steps", []):
+        window = step.get("window")
+        if prefix and isinstance(window, str) and window.removeprefix("opened:") in own:
+            # a reference to an open of this plan follows its renamed id
+            step["window"] = "opened:" + prefix + window.removeprefix("opened:")
         if prefix and isinstance(step.get("id"), str):
             # unique across the task's plans by construction: a write-ahead record's path is
             # its step id's digest (replan item 2)

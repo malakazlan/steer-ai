@@ -27,7 +27,14 @@ from typing import Any, Protocol, TextIO
 
 from steerai.errors import ErrorCode, SteerError
 from steerai.orchestrator.console import ConsoleConfirmer, escape_text
-from steerai.orchestrator.contracts import RISKS, START_WINDOW, Plan, Risk, Step
+from steerai.orchestrator.contracts import (
+    OPENED_PREFIX,
+    RISKS,
+    START_WINDOW,
+    Plan,
+    Risk,
+    Step,
+)
 from steerai.orchestrator.gate import Confirmer, effective_risk
 from steerai.orchestrator.ledger import LedgerError
 from steerai.orchestrator.loop import DEFAULT_MAX_STEPS, TaskResult, wait_for_idle
@@ -146,6 +153,7 @@ class SessionLike(Protocol):
     """The window the task is in now: the opened one after an `open`."""
 
     def run_task(self, plan: Plan, *, continuation: bool = False) -> TaskResult: ...
+    def live_title(self, ref: str) -> str | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -896,7 +904,12 @@ def _planned(  # noqa: PLR0913 - the run's state at planning time
     out.note(f"planning from {len(lines)} screen lines; the model call may take a while")
     open_windows = deps.open_windows() if deps.open_windows is not None else ()
     request = PlanRequest(
-        goal=options.goal, screen_lines=lines, window_title=title, open_windows=open_windows
+        goal=options.goal,
+        screen_lines=lines,
+        window_title=title,
+        open_windows=open_windows,
+        # the first plan's only window to come back to is the one the task starts in
+        windows=() if options.desktop else ((START_WINDOW, title),),
     )
     started = deps.monotonic()
     try:
@@ -1095,6 +1108,7 @@ def _continuation_plan(r: Replan, progress: Progress, number: int) -> Plan | Tas
         window_title=title,
         open_windows=r.deps.open_windows() if r.deps.open_windows is not None else (),
         continuation=number,
+        windows=_task_windows(r, progress),
         done=progress.done_steps(),
         remaining=progress.remaining(),
         failure=progress.failure(),
@@ -1113,6 +1127,19 @@ def _continuation_plan(r: Replan, progress: Progress, number: int) -> Plan | Tas
         r.out.note(f"planner: the continuation breaks a rule at {refusal}; nothing was written")
         return progress.ended("stopped", ErrorCode.MODEL_ERROR, "invalid_plan")
     return _bound_continuation(r, progress, number, outcome)
+
+
+def _task_windows(r: Replan, progress: Progress) -> list[tuple[str, str]]:
+    """The windows a continuation's steps may name, by reference with the live title: the
+    start window (never the shell's desktop) and each verified `open` still the task's."""
+    refs = [] if r.options.desktop else [START_WINDOW]
+    refs += [
+        OPENED_PREFIX + result.step_id
+        for result in progress.results()
+        if result.ok and progress.steps[result.step_id].verb == "open"
+    ]
+    found = [(ref, r.session.live_title(ref)) for ref in refs]
+    return [(ref, title) for ref, title in found if title is not None]
 
 
 def _bound_continuation(

@@ -634,6 +634,18 @@ class Session:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "window_ambiguous")
         return records[0] if records else None
 
+    def live_title(self, ref: str) -> str | None:
+        """The live title of a task window named by reference, None unless its recorded
+        identity still holds (SW-36): the planner never sees a window that is not the
+        task's any more."""
+        try:
+            hwnd = self._checked(self._record_of(_ledger_ref(ref)))
+        except _StepFailureError:
+            return None
+        current = self._identify(hwnd) if self._identify is not None else None
+        title = None if current is None else current.get("title")
+        return title if isinstance(title, str) else None
+
     def _in_front(self, risk: Risk) -> None:
         """An R2/R3 step's window is in front when its ask opens: the person sees where
         a send lands; there is no selection tap (SW-15, gate item 2)."""
