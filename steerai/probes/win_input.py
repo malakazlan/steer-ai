@@ -344,11 +344,12 @@ def acquire_foreground(hwnd: int) -> str:
     """Bring `hwnd` to the foreground; return the procedure that worked.
 
     Windows refuses SetForegroundWindow from a process that did not receive the last input.
-    Procedures, cheapest first: direct call; a harmless ALT tap via SendInput (this process then
-    counts as the last input source) then the call; AttachThreadInput to the foreground thread.
+    Procedures, cheapest first: direct call; a tagged zero-distance mouse move via SendInput (this
+    process then received the last input event) then the call; AttachThreadInput to the foreground
+    thread. Never an ALT tap: a lone ALT puts the window entered in menu mode (16 of 17 taps into
+    classic Notepad, 2026-11-07), so its next typed keys would be menu mnemonics (issue #38).
     """
     user32 = _user32()
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
     def is_foreground() -> bool:
         return int(user32.GetForegroundWindow() or 0) == hwnd
@@ -359,10 +360,10 @@ def acquire_foreground(hwnd: int) -> str:
     if is_foreground():
         return "direct"
 
-    key_tap(VK_MENU)
+    nudge_in_place()
     user32.SetForegroundWindow(hwnd)
     if is_foreground():
-        return "alt-tap"
+        return "input-nudge"
 
     current = user32.GetForegroundWindow()
     user32.IsHungAppWindow.argtypes = (wintypes.HWND,)
@@ -371,6 +372,7 @@ def acquire_foreground(hwnd: int) -> str:
         # Attaching to a non-pumping thread blocks indefinitely (PX-24): skip the rung.
         raise OSError(f"could not bring hwnd {hwnd:#x} to the foreground")
     current_thread = user32.GetWindowThreadProcessId(current, None)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # the attach rung only
     kernel32.GetCurrentThreadId.restype = wintypes.DWORD
     own_thread = kernel32.GetCurrentThreadId()
     user32.AttachThreadInput(own_thread, current_thread, True)
@@ -413,3 +415,40 @@ def window_rect(hwnd: int) -> tuple[int, int, int, int]:
     if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
         raise OSError(f"GetWindowRect failed for hwnd {hwnd:#x}: error {ctypes.get_last_error()}")
     return rect.left, rect.top, rect.right, rect.bottom
+
+
+class _GuiThreadInfo(ctypes.Structure):
+    """`GUITHREADINFO` (Microsoft Learn, winuser.h)."""
+
+    _fields_ = (
+        ("cbSize", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("hwndActive", wintypes.HWND),
+        ("hwndFocus", wintypes.HWND),
+        ("hwndCapture", wintypes.HWND),
+        ("hwndMenuOwner", wintypes.HWND),
+        ("hwndMoveSize", wintypes.HWND),
+        ("hwndCaret", wintypes.HWND),
+        ("rcCaret", wintypes.RECT),
+    )
+
+
+_GUI_MENU_FLAGS = 0x4 | 0x8 | 0x10
+"""GUI_INMENUMODE, GUI_SYSTEMMENUMODE, GUI_POPUPMENUMODE (GUITHREADINFO.flags, winuser.h)."""
+
+
+def in_menu_mode(hwnd: int) -> bool:
+    """Whether the window's GUI thread is in a menu (menu bar, system menu, pop-up): typed keys
+    there are mnemonics, not text (issue #38: a lone ALT put classic Notepad in menu mode 16 of
+    17 times). An unreadable thread counts as in a menu: unclear means no typing."""
+    user32 = _user32()
+    user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.GetGUIThreadInfo.argtypes = (wintypes.DWORD, ctypes.POINTER(_GuiThreadInfo))
+    user32.GetGUIThreadInfo.restype = wintypes.BOOL
+    thread = user32.GetWindowThreadProcessId(hwnd, None)
+    info = _GuiThreadInfo()
+    info.cbSize = ctypes.sizeof(info)
+    if not thread or not user32.GetGUIThreadInfo(thread, ctypes.byref(info)):
+        return True
+    return bool(info.flags & _GUI_MENU_FLAGS)

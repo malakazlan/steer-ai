@@ -85,6 +85,7 @@ class FakeInput:
     cursor_override: tuple[int, int] | None = None
     double_click_s: float = 0.5
     double_click_px: int = 4
+    menu_mode: bool = False
     fail_chunk: int | None = None
     """Raise InjectionError on this 1-based burst."""
     after_burst: Callable[[FakeInput, int], None] | None = None
@@ -93,6 +94,12 @@ class FakeInput:
     clicks: list[tuple[int, int]] = field(default_factory=list)
     bursts: list[str] = field(default_factory=list)
     chords: list[str] = field(default_factory=list)
+
+    def window_pid(self, hwnd: int) -> int:
+        return 777 if hwnd else 0
+
+    def in_menu_mode(self, hwnd: int) -> bool:
+        return self.menu_mode and hwnd != 0
 
     def dpi_aware(self) -> bool:
         return self.dpi
@@ -1498,3 +1505,107 @@ def test_press_with_no_focused_element_and_no_runtime_id_is_refused(fast_clock: 
     assert result.code is ErrorCode.FOCUS_LOST
     assert result.evidence["detail"] == "target_not_focused"
     assert inputs.chords == []
+
+
+# ---- the switch tap's guards and the menu-mode refusal (issue #38, hunter SF-01/03/05/06/20) ---
+
+
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        ({"desktop": "Winlogon"}, "secure_desktop"),
+        ({"modifiers": ["ctrl"]}, "hands_on"),
+        ({"buttons": ["left"]}, "hands_on"),
+        ({"filters": True}, "accessibility_filter"),
+        ({"integrity": 0x3000, "caller": 0x2000}, "foreground_elevated"),
+        ({}, None),
+    ],
+)
+def test_the_tap_refusal_reuses_the_executors_readers(
+    changes: dict[str, Any], reason: str | None
+) -> None:
+    from steerai.action.physical import tap_refusal  # noqa: PLC0415
+
+    inputs = FakeInput(**changes)
+    assert tap_refusal(inputs) == reason
+
+
+def test_typing_into_a_window_in_menu_mode_is_refused_with_nothing_sent(fast_clock: Any) -> None:
+    """SF-03: a lone ALT put classic Notepad in menu mode 16/17 times (2026-11-07): typed keys
+    would be menu mnemonics."""
+    inputs = FakeInput(foreground=0x99, acquire_procedure="input-nudge", menu_mode=True)
+    result = _executor(inputs).execute(_type("hello"), _snapshot(_edit(), role="Edit"))
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.evidence.get("detail") == "menu_mode"
+    assert inputs.bursts == []
+
+
+def test_a_chord_into_a_window_in_menu_mode_is_refused(fast_clock: Any) -> None:
+    inputs = FakeInput(foreground=0x99, acquire_procedure="input-nudge", menu_mode=True)
+    action = PhysicalAction(verb="press", element_id=1, chord="enter")
+    result = _executor(inputs).execute(action, _snapshot(FakeHandle()))
+    assert result.evidence.get("detail") == "menu_mode"
+    assert inputs.chords == []
+
+
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        ({"desktop": ""}, "secure_desktop"),
+        ({"desktop": "Screen-saver"}, "secure_desktop"),
+        ({"desktop": "Winlogon", "modifiers": ["alt"], "filters": True}, "secure_desktop"),
+        ({"modifiers": ["shift"], "buttons": ["right"]}, "hands_on"),
+        ({"integrity": None}, "foreground_elevated"),
+        ({"integrity": 0x2000, "caller": 0x2000}, None),
+        ({"integrity": 0x1000, "caller": 0x2000}, None),
+        ({"integrity": 0x3000, "caller": 0x3000}, None),
+    ],
+)
+def test_the_tap_refusal_boundaries(changes: dict[str, Any], reason: str | None) -> None:
+    """Unclear is a refusal (an unread desktop, an unreadable level); a secure desktop wins."""
+    from steerai.action.physical import tap_refusal  # noqa: PLC0415
+
+    assert tap_refusal(FakeInput(**changes)) == reason
+
+
+@dataclass
+class _ElevatedFront(FakeInput):
+    """Only the foreground window's process (pid 777) runs elevated."""
+
+    def integrity_level(self, pid: int) -> int | None:
+        return 0x3000 if pid == 777 else 0x2000
+
+
+def test_the_tap_refusal_reads_the_foreground_windows_process() -> None:
+    from steerai.action.physical import tap_refusal  # noqa: PLC0415
+
+    assert tap_refusal(_ElevatedFront(foreground=0x99)) == "foreground_elevated"
+    assert tap_refusal(_ElevatedFront(foreground=0)) is None, "no window in front, no level read"
+
+
+def test_menu_mode_is_read_after_the_window_is_brought_forward(fast_clock: Any) -> None:
+    """SF-03: the bring-forward itself can leave the window in a menu; the read follows it."""
+
+    @dataclass
+    class _MenuOnActivate(FakeInput):
+        def acquire_foreground(self, hwnd: int) -> str:
+            self.menu_mode = True
+            return super().acquire_foreground(hwnd)
+
+    inputs = _MenuOnActivate(foreground=0x99, acquire_procedure="input-nudge")
+    result = _executor(inputs).execute(_type("hello"), _snapshot(_edit(), role="Edit"))
+    assert (result.code, result.evidence.get("detail")) == (ErrorCode.FOCUS_LOST, "menu_mode")
+    assert inputs.bursts == []
+    inputs = _MenuOnActivate(foreground=0x99, acquire_procedure="input-nudge")
+    action = PhysicalAction(verb="press", element_id=1, chord="enter")
+    result = _executor(inputs).execute(action, _snapshot(FakeHandle()))
+    assert (result.code, result.evidence.get("detail")) == (ErrorCode.FOCUS_LOST, "menu_mode")
+    assert inputs.chords == []
+
+
+def test_a_chord_into_a_window_in_menu_mode_is_focus_lost(fast_clock: Any) -> None:
+    inputs = FakeInput(foreground=0x99, acquire_procedure="input-nudge", menu_mode=True)
+    action = PhysicalAction(verb="press", element_id=1, chord="enter")
+    result = _executor(inputs).execute(action, _snapshot(FakeHandle()))
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.delivery is Delivery.NOT_DELIVERED

@@ -1,7 +1,8 @@
 """`acquire_foreground` rungs (design 5.9 [v0.6], PX-23, PX-24) against a fake user32, so the
-ladder is checked without a desktop: already → direct → ALT tap → AttachThreadInput, the last
-rung skipped when the foreground is missing or hung (attaching to a thread that does not pump
-messages blocks for good)."""
+ladder is checked without a desktop: already → direct → a tagged zero-distance mouse nudge →
+AttachThreadInput, the last rung skipped when the foreground is missing or hung (attaching to a
+thread that does not pump messages blocks for good). Never an ALT tap (issue #38): a lone ALT put
+classic Notepad in menu mode 16 of 17 times (probe 2026-11-07), so its next keys were mnemonics."""
 
 from __future__ import annotations
 
@@ -41,7 +42,7 @@ class _FakeUser32:
             if self.attached:
                 rung = "attach-thread-input"
             elif self.taps:
-                rung = "alt-tap"
+                rung = "input-nudge"
             else:
                 rung = "direct"
             if rung == self.grant_at:
@@ -72,15 +73,18 @@ def user32(monkeypatch: pytest.MonkeyPatch) -> Callable[..., _FakeUser32]:
     def install(**kwargs: Any) -> _FakeUser32:
         fake = _FakeUser32(**kwargs)
 
-        def tap(vk: int) -> None:
-            assert vk == win_input.VK_MENU, "the harmless tap is ALT"
+        def nudge() -> None:
             fake.taps += 1
+
+        def key(vk: int) -> None:
+            raise AssertionError(f"acquire_foreground pressed a key ({vk:#x}): never an ALT tap")
 
         def current_thread_id() -> int:
             return OWN_THREAD
 
         monkeypatch.setattr(win_input, "_user32", lambda: fake)
-        monkeypatch.setattr(win_input, "key_tap", tap)
+        monkeypatch.setattr(win_input, "nudge_in_place", nudge)
+        monkeypatch.setattr(win_input, "key_tap", key)
         kernel32 = SimpleNamespace(GetCurrentThreadId=current_thread_id)
         monkeypatch.setattr(ctypes, "WinDLL", lambda *_a, **_k: kernel32, raising=False)
         return fake
@@ -104,9 +108,9 @@ def test_direct_call_when_windows_allows_it(user32: Callable[..., _FakeUser32]) 
     assert fake.attach_calls == []
 
 
-def test_alt_tap_then_the_call(user32: Callable[..., _FakeUser32]) -> None:
-    fake = user32(foreground=OTHER, grant_at="alt-tap")
-    assert win_input.acquire_foreground(HWND) == "alt-tap"
+def test_a_nudge_then_the_call_never_a_key(user32: Callable[..., _FakeUser32]) -> None:
+    fake = user32(foreground=OTHER, grant_at="input-nudge")
+    assert win_input.acquire_foreground(HWND) == "input-nudge"
     assert fake.taps == 1
     assert fake.set_calls == [HWND, HWND]
     assert fake.attach_calls == []
@@ -148,3 +152,61 @@ def test_every_rung_refused_detaches_and_raises(user32: Callable[..., _FakeUser3
         (OWN_THREAD, FOREGROUND_THREAD, True),
         (OWN_THREAD, FOREGROUND_THREAD, False),
     ]
+
+
+# ---- in_menu_mode (GUITHREADINFO.flags, winuser.h) ---------------------------------------------
+
+
+class _GuiThreads:
+    """`GetWindowThreadProcessId` and `GetGUIThreadInfo`; `readable=False` makes the read fail."""
+
+    def __init__(self, *, thread: int = 7, flags: int = 0, readable: bool = True) -> None:
+        self.read: list[int] = []
+
+        def thread_of(_hwnd: int, _pid: Any) -> int:
+            return thread
+
+        def gui_thread_info(thread_id: int, ref: Any) -> int:
+            info = ref._obj  # the structure behind ctypes.byref
+            assert info.cbSize == ctypes.sizeof(info), "GetGUIThreadInfo fails without cbSize"
+            self.read.append(thread_id)
+            if not readable:
+                return 0
+            info.flags = flags
+            return 1
+
+        # Plain functions accept the `.argtypes` / `.restype` assignments the module makes.
+        self.GetWindowThreadProcessId = thread_of
+        self.GetGUIThreadInfo = gui_thread_info
+
+
+@pytest.mark.parametrize(
+    ("flags", "menu"),
+    [
+        (0x0, False),
+        (0x1, False),  # GUI_CARETBLINKING
+        (0x2, False),  # GUI_INMOVESIZE
+        (0x4, True),  # GUI_INMENUMODE
+        (0x8, True),  # GUI_SYSTEMMENUMODE
+        (0x10, True),  # GUI_POPUPMENUMODE
+        (0x1 | 0x10, True),
+    ],
+)
+def test_menu_mode_reads_the_menu_flags(
+    monkeypatch: pytest.MonkeyPatch, flags: int, menu: bool
+) -> None:
+    threads = _GuiThreads(flags=flags)
+    monkeypatch.setattr(win_input, "_user32", lambda: threads)
+    assert win_input.in_menu_mode(0x30) is menu
+    assert threads.read == [7]
+
+
+def test_an_unreadable_thread_counts_as_in_a_menu(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unclear means no typing."""
+    threads = _GuiThreads(readable=False)
+    monkeypatch.setattr(win_input, "_user32", lambda: threads)
+    assert win_input.in_menu_mode(0x30) is True
+    gone = _GuiThreads(thread=0)
+    monkeypatch.setattr(win_input, "_user32", lambda: gone)
+    assert win_input.in_menu_mode(0x30) is True
+    assert gone.read == [], "thread 0 is never read: GetGUIThreadInfo(0) is the foreground thread"
