@@ -213,3 +213,59 @@ def test_the_label_shape_carries_decoration_and_replaces() -> None:
     assert spec["decoration"] == "google_search"
     assert spec["replaces"] is True
     assert "name" not in json.dumps(spec)
+
+
+# ---- a page replaced in place (live replan run 2026-11-06: YouTube renames its Document) ----
+
+RESULTS_YT = (40, "Document", "drake latest video - YouTube", (42, 90), WINDOW[0])
+WATCH_YT = (40, "Document", "Drake - Janice STFU - YouTube", (42, 90), WINDOW[0])
+
+
+def _watch(*, replaces: bool = True) -> Appeared:
+    return Appeared(
+        role="Document", name_pattern="Drake - Janice STFU", decoration="youtube", replaces=replaces
+    )
+
+
+def test_a_page_renamed_in_place_is_a_replacement() -> None:
+    """Measured: the results page's Document kept its RuntimeId and took the video's name."""
+    before_snap = build([*BASE_ROWS, RESULTS_YT], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, WATCH_YT], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(), before_snap, after_snap)
+    assert verdict.holds is True, verdict.evidence
+    assert verdict.evidence["renamed"] == 1
+
+
+def test_a_renamed_element_without_the_replacing_form_is_not_new() -> None:
+    before_snap = build([*BASE_ROWS, RESULTS_YT], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, WATCH_YT], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(replaces=False), before_snap, after_snap)
+    assert verdict.holds is False
+    assert verdict.evidence["reason"] == "not_new"
+
+
+def test_a_page_that_already_had_the_name_is_no_replacement() -> None:
+    same = build([*BASE_ROWS, WATCH_YT], snapshot_id="before")
+    again = build([*BASE_ROWS, WATCH_YT], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(), same, again)
+    assert verdict.holds is False
+    assert verdict.evidence["reason"] == "not_new"
+
+
+def test_a_renamed_nested_frame_is_not_the_page() -> None:
+    frame_before = (41, "Document", "ad", (42, 93), 40)
+    frame_after = (41, "Document", "Drake - Janice STFU - YouTube", (42, 93), 40)
+    page = (40, "Document", "drake latest video - YouTube", (42, 90), WINDOW[0])
+    before_snap = build([*BASE_ROWS, page, frame_before], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, page, frame_after], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(), before_snap, after_snap)
+    assert verdict.holds is False
+
+
+def test_two_pages_renamed_to_the_name_is_no_replacement() -> None:
+    other_before = (41, "Document", "Other tab", (42, 92), WINDOW[0])
+    other_after = (41, "Document", "Drake - Janice STFU - YouTube", (42, 92), WINDOW[0])
+    before_snap = build([*BASE_ROWS, RESULTS_YT, other_before], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, WATCH_YT, other_after], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(_watch(), before_snap, after_snap)
+    assert verdict.holds is False

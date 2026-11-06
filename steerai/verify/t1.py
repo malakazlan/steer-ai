@@ -309,6 +309,10 @@ def _appeared(predicate: Appeared, before: Snapshot, after: Snapshot) -> Verdict
         return _miss(scope, "scope_churn")
     seen = _appearance(predicate, before, after, scope)
     if not seen.new_matches:
+        renamed = _renamed_in_place(predicate, before, after, scope) if predicate.replaces else []
+        if len(renamed) == 1:
+            in_place = {"level": scope.level, "matched": 1, "renamed": 1}
+            return Verdict(holds=True, code=None, level=scope.level, polls=0, evidence=in_place)
         present = any(
             _scoped(scope, e, predicate.role, predicate.name_match) for e in after.elements
         )
@@ -360,6 +364,30 @@ def _appeared(predicate: Appeared, before: Snapshot, after: Snapshot) -> Verdict
     if predicate.replaces:
         evidence["replaced"] = seen.vanished
     return Verdict(holds=True, code=None, level=scope.level, polls=0, evidence=evidence)
+
+
+def _renamed_in_place(
+    predicate: Appeared, before: Snapshot, after: Snapshot, scope: Scope
+) -> list[Element]:
+    """A single-page app navigates by renaming its top-level page element: same RuntimeId, a
+    name that did not match before and matches now (live replan run 2026-11-06: YouTube's
+    results Document became the watch page's). Only the replacing form asks this."""
+    whole_before = resolve_scope(before, None)
+    nested_before = _nested_ids(before, predicate.role)
+    was = {
+        e.runtime_id: e
+        for e in before.elements
+        if e.runtime_id and e.role == predicate.role and e.id not in nested_before
+    }
+    nested_after = _nested_ids(after, predicate.role)
+    return [
+        e
+        for e in after.elements
+        if e.id not in nested_after
+        and e.runtime_id in was
+        and _scoped(scope, e, predicate.role, predicate.name_match)
+        and not _scoped(whole_before, was[e.runtime_id], predicate.role, predicate.name_match)
+    ]
 
 
 def _descendant_ids(snapshot: Snapshot, roots: list[int]) -> set[int]:
