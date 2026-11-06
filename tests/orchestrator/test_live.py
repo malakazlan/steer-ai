@@ -104,7 +104,7 @@ def test_a_send_task_runs_end_to_end_and_resumes_as_done(tmp_path: Path) -> None
     profile_dir = Path(tempfile.mkdtemp(prefix="steer-orch-"))
     proc = launch_chrome(CHROME_DEFAULT, profile_dir, 9338, PAGE.as_uri(), window_size=(1000, 640))
     try:
-        window = wait_window_for_pid(proc.pid, title_contains="Google Chrome")
+        window = wait_window_for_pid(proc.pid, title_contains="Google Chrome", image="chrome.exe")
         acquire_foreground(window.hwnd)
         client = UiaClient()
         bindings = UiaBindings.load()

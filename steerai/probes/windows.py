@@ -281,7 +281,11 @@ def process_name(pid: int) -> str:
 
 
 def wait_window_for_pid(
-    pid: int, *, title_contains: str | None = None, timeout_s: float = 30.0
+    pid: int,
+    *,
+    title_contains: str | None = None,
+    timeout_s: float = 30.0,
+    image: str | None = None,
 ) -> WindowInfo:
     """First visible titled window owned by `pid`, polling until it appears (30 s: a cold Chrome
     on a CI runner took over 15 s, 2026-11-04)."""
@@ -291,8 +295,20 @@ def wait_window_for_pid(
             if window.pid == pid and (title_contains is None or title_contains in window.title):
                 return window
         if time.monotonic() >= deadline:
-            raise TimeoutError(f"no visible window for pid {pid} within {timeout_s} s")
+            seen = _windows_of(image) if image is not None else ""
+            raise TimeoutError(f"no visible window for pid {pid} within {timeout_s} s{seen}")
         time.sleep(0.2)
+
+
+def _windows_of(image: str) -> str:
+    """The visible windows of `image` by pid and title length (never the title: it can name
+    a person), so a launch handed to another process is told from no window at all."""
+    found = [
+        f"pid {w.pid} ({len(w.title)} chars{', minimized' if w.minimized else ''})"
+        for w in list_top_windows()
+        if process_name(w.pid).lower() == image.lower()
+    ]
+    return f"; {image} windows: " + (", ".join(found) if found else "none")
 
 
 def desktop_window() -> WindowInfo:
