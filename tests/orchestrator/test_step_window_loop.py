@@ -840,3 +840,21 @@ def test_a_resumed_link_that_rebinds_another_window_taps_on_its_first_step() -> 
     assert session is not None
     session.run_task(_plan(_step("p2.c1", path="physical")), continuation=True)
     assert taps == [0x30]
+
+
+def test_an_unreadable_tap_guard_skips_the_tap_and_never_kills_the_task() -> None:
+    """Principal review of PR #46, item 2: the guard's readers raise OSError (integrity,
+    input desktop, accessibility filters); a refused tap is evidence (gate Q2)."""
+    rig, win = _rig()
+    taps = _tapping(rig, win)
+    session = rig.session
+    assert session is not None
+
+    def unreadable() -> str | None:
+        raise OSError("cannot read this process's own integrity level")
+
+    session._tap_guard = unreadable
+    result = session.run_step(_step("c1", window="opened:o1", path="physical"))
+    assert taps == []
+    assert result.evidence["foreground_after_select"] is False
+    assert result.evidence["tap_skipped"] == "guard_unreadable"

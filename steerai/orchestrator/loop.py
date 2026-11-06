@@ -629,7 +629,10 @@ class Session:
         if self._identity_now is not None:
             self._checked(self._identity_now)  # changed while the boundary waited (SF-09)
         try:
-            reason = None if self._tap_guard is None else self._tap_guard()
+            try:
+                reason = None if self._tap_guard is None else self._tap_guard()
+            except OSError:
+                reason = "guard_unreadable"  # unclear: no tap, the step goes on (gate Q2)
             if reason == "secure_desktop":
                 raise _StepFailureError(ErrorCode.SECURE_DESKTOP, "secure_desktop")
             if reason is not None:
