@@ -160,6 +160,11 @@ def test_a_confirmed_open_shows_the_app_the_host_and_the_content() -> None:
         ("search \uff39\uff4f\uff55\uff34\uff55\uff42\uff45 for drake", "drake", "R1"),
         ("search YouTube for drake", "drake's", "R2"),
         ("search YouTube for drake", "drake\u200blatest", "R2"),
+        ("search YouTube for my code", "4821", "R2"),
+        ("search YouTube for drake", "drake 4821", "R2"),
+        ("search YouTube for drake", "drake \u0664\u0668\u0662\u0661", "R2"),
+        ("search YouTube for drake", "+++", "R2"),
+        ("search YouTube for DRAKE!", "drake?", "R2"),
     ],
 )
 def test_the_content_tier_with_unicode_and_punctuation(goal: str, text: str, tier: str) -> None:
