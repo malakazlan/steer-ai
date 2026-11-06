@@ -663,9 +663,11 @@ def test_a_state_without_the_start_identity_reads_none(tmp_path: Path) -> None:
         assert ledger.start_window() is None, "never read on a resume (a reused pid would pass)"
 
 
-def test_an_allowed_window_change_replaces_the_start_identity(tmp_path: Path) -> None:
+def test_an_allowed_window_change_forgets_the_start_identity(tmp_path: Path) -> None:
+    """SW-22, gate Q3: the start keys (ref None) belong to the old window, and the new identity
+    would be a resume-time read; `window: start` then stops `window_gone`."""
     other = {**START_IDENTITY, "hwnd": 0x20, "pid": 501}
     with Ledger(tmp_path, task_id="t-change", started_at=1.0) as ledger:
         ledger.bind_window(pid=500, title="Amir Khan - Chat", identity=START_IDENTITY)
         ledger.bind_window(pid=501, title="Sara Ali - Chat", identity=other, allow_change=True)
-        assert ledger.start_window() == other
+        assert ledger.start_window() is None

@@ -293,9 +293,13 @@ class Ledger:
         if self._window not in (None, window) and not allow_change:
             raise LedgerError("window_changed: this task id was bound to another window")
         if self._window != window:
+            first = self._window is None
             self._window = window
+            # only the first bind records it; a changed window forgets it (SW-22, gate Q3)
             self._start_window = (
-                None if identity is None else {k: identity[k] for k in OPENED_WINDOW_KEYS[:4]}
+                {k: identity[k] for k in OPENED_WINDOW_KEYS[:4]}
+                if first and identity is not None
+                else None
             )
             self._save_state()
 
