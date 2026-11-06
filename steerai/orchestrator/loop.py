@@ -583,6 +583,7 @@ class Session:
         ref = self._ledger.window_ref
         if ref is not None:
             self._rebind(self._record_of(ref), ref)
+            self._switched = True  # a window the task opened, as on the first run (SW-15)
         elif continuation and self._ledger.start_window() is not None:
             self._rebind(self._record_of(None), None)
 

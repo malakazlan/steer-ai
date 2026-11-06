@@ -4,13 +4,17 @@ identity before the action key, and is read again right before dispatch."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+import pytest
+
 from steerai.errors import ErrorCode
 from steerai.orchestrator.contracts import Plan, Step, Subgoal
+from steerai.orchestrator.trace import ListTrace
 from steerai.verify.predicates import TitleMatches
-from tests.orchestrator.test_loop import _click
+from tests.orchestrator.test_loop import HELLO, _click, _send
 from tests.orchestrator.test_open_loop import Rig, _open
 
 START_ID = {"hwnd": 0x10, "pid": 600, "start": 11, "image": "notepad.exe"}
@@ -346,3 +350,267 @@ def test_a_continuations_own_start_window_steps_keep_the_send_path() -> None:
     result = session.run_task(_plan(_step("p2.c1", risk="R2")), continuation=True)
     assert all(r.evidence.get("detail") != "not_foreground" for r in result.results)
     assert result.results, "the step ran"
+
+
+# ---- tester gaps (sign-off 2026-11-06) ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("field_name", "changed"), [("pid", 601), ("start", 99), ("image", "other.exe")]
+)
+def test_any_one_identity_field_that_changed_is_a_gone_window(
+    field_name: str, changed: object
+) -> None:
+    """SW-12/16: pid, process start and image each decide on their own."""
+    win = Windows()
+    win.live[0x30][field_name] = changed
+    rig, _ = _rig(win)
+    result = _stopped_with(rig, _step("c1", window="opened:o1"))
+    assert (result.code, result.evidence["detail"]) == (
+        ErrorCode.ELEMENT_NOT_FOUND,
+        "window_gone",
+    )
+
+
+@pytest.mark.parametrize("side", ["recorded", "live"])
+@pytest.mark.parametrize(("field_name", "unreadable"), [("start", None), ("image", "")])
+def test_an_identity_unreadable_on_either_side_never_matches(
+    side: str, field_name: str, unreadable: object
+) -> None:
+    """SW-13: an unreadable field in the record or in the live read is never a match."""
+    win = Windows()
+    rig, _ = _rig(win)
+    if side == "live":
+        win.live[0x30][field_name] = unreadable
+    else:
+        rig.ledger.record_open(_open(), {**OPENED_ID, field_name: unreadable, "title": "x"})
+    result = _stopped_with(rig, _step("c1", window="opened:o1"))
+    assert (result.code, result.evidence["detail"]) == (
+        ErrorCode.ELEMENT_NOT_FOUND,
+        "identity_unreadable",
+    )
+
+
+def test_a_minimized_state_that_was_not_read_is_refused() -> None:
+    """SW-14: only a window read as not minimized is acted in (unclear means fail)."""
+    win = Windows()
+    del win.live[0x30]["minimized"]
+    rig, _ = _rig(win)
+    result = _stopped_with(rig, _step("c1", window="opened:o1"))
+    assert (result.code, result.evidence["detail"]) == (
+        ErrorCode.ELEMENT_NOT_ACTIONABLE,
+        "minimized",
+    )
+
+
+def test_a_window_minimized_after_the_selection_stops_before_the_dispatch() -> None:
+    """SW-14 through SW-16: the re-read right before the dispatch refuses it."""
+    rig, win = _rig()
+    session = rig.session
+    assert session is not None
+    observe = rig.world.observe
+
+    def minimized_while_observed(hwnd: int, **kwargs: Any) -> Any:
+        win.live[0x30]["minimized"] = True
+        return observe(hwnd, **kwargs)
+
+    session._observer = type("Observer", (), {"observe": staticmethod(minimized_while_observed)})()
+    result = session.run_step(_step("c1", window="opened:o1", risk="R1"))
+    assert (result.code, result.evidence["detail"]) == (
+        ErrorCode.ELEMENT_NOT_ACTIONABLE,
+        "minimized",
+    )
+    assert rig.semantic is not None
+    assert rig.semantic.calls == []
+
+
+def test_an_r3_step_whose_window_is_not_in_front_stops_before_the_ask() -> None:
+    """SW-15: R3 like R2; the person must see where it lands."""
+    rig, win = _rig()
+    win.foreground = 0x10
+    session = rig.session
+    assert session is not None
+    result = session.run_step(_step("c1", window="opened:o1", risk="R3"))
+    assert (result.code, result.evidence["detail"]) == (ErrorCode.FOCUS_LOST, "not_foreground")
+    assert rig.confirmer.asked == []
+
+
+def test_an_r1_step_acts_in_a_window_that_is_not_in_front() -> None:
+    """SW-15 boundary: below R2 nothing is asked, so the foreground is not required."""
+    rig, win = _rig()
+    win.foreground = 0x10
+    session = rig.session
+    assert session is not None
+    result = session.run_step(_step("c1", window="opened:o1", risk="R1"))
+    assert result.evidence.get("detail") != "not_foreground"
+    assert rig.semantic is not None
+    assert rig.semantic.calls != []
+
+
+@pytest.mark.parametrize("gone", ["no_record", "closed"])
+def test_an_opened_window_without_a_record_or_closed_is_gone(gone: str) -> None:
+    """SW-29/30: a ref no open of this task verified, or a done open whose window closed."""
+    win = Windows()
+    ref = "opened:o9" if gone == "no_record" else "opened:o1"
+    if gone == "closed":
+        del win.live[0x30]
+    rig, _ = _rig(win)
+    result = _stopped_with(rig, _step("c1", window=ref))
+    assert (result.code, result.evidence["detail"]) == (
+        ErrorCode.ELEMENT_NOT_FOUND,
+        "window_gone",
+    )
+
+
+def test_an_open_after_a_skipped_window_step_keys_in_its_plan_order_window() -> None:
+    """SW-17: the open's key carries the window of plan order (start here), not the one the
+    done step before it selected, so a resume reproduces it."""
+    rig, win = _rig()
+    win.foreground = 0x30
+    tick = _step("c0", window="opened:o1", risk="R2")
+    rig.ledger.set_window_ref("opened:o1")
+    rig.ledger.executions[rig.ledger.key_for(tick)] = {
+        "step_id": "c0",
+        "phase": "verified",
+        "outcome": "delivered_verified",
+    }
+    rig.ledger.set_window_ref(None)
+    seen: list[tuple[str, str | None]] = []
+    key_for = rig.ledger.key_for
+
+    def spy(s: Step) -> str:
+        seen.append((s.id, rig.ledger.window_ref))
+        return key_for(s)
+
+    rig.ledger.key_for = spy  # type: ignore[method-assign,assignment]  # a spy on the fake
+    session = rig.session
+    assert session is not None
+    plan = _plan(
+        tick,
+        _step("c1", window="start"),
+        replace(_open(step_id="o2"), subgoal="g2"),
+        subgoals=("g1", "g2"),
+    )
+    session.run_task(plan)
+    assert [ref for step_id, ref in seen if step_id == "o2"][:1] == [None]
+
+
+def test_a_kill_during_the_identity_read_injects_nothing() -> None:
+    """SW-23: the kill lands while the window is being checked; nothing is dispatched."""
+    from tests.orchestrator.test_takeover_loop import FakeMonitor  # noqa: PLC0415
+
+    win = Windows()
+    rig = Rig()
+    monitor = FakeMonitor(clock=rig.clock, last_user=-100.0)
+    rig.monitor = monitor
+    rig.ledger.record_open(_open(), {**OPENED_ID, "title": "x"})
+    rig.ledger.start_record = dict(START_ID)
+
+    def identify(hwnd: int) -> dict[str, Any] | None:
+        monitor.kill = True
+        return win.identify(hwnd)
+
+    rig.desk.identify = identify  # type: ignore[method-assign]
+    session = rig.build()
+    session._foreground = lambda: win.foreground
+    result = session.run_step(_step("c1", window="opened:o1"))
+    assert result.ok is False
+    assert result.evidence["detail"] == "killed"
+    assert rig.semantic is not None
+    assert rig.semantic.calls == []
+
+
+def test_the_ask_names_the_window_and_the_trace_never_its_title() -> None:
+    """SW-06/25: the person sees app, reference and the page title; the trace only tokens."""
+    win = Windows()
+    win.live[0x30]["title"] = "Zanzibar Quokka - YouTube"
+    win.foreground = 0x30
+    rig, _ = _rig(win)
+    session = rig.session
+    assert session is not None
+    trace = ListTrace()
+    session._trace = trace
+    result = session.run_task(_plan(replace(_send("s3"), window="opened:o1")))
+    assert [ask.window for ask in rig.confirmer.asked] == [
+        "chrome (opened:o1): Zanzibar Quokka - YouTube"
+    ]
+    carried = "\n".join(
+        [*trace.lines, repr(result), json.dumps([r.to_dict() for r in result.results])]
+    )
+    for sentinel in ("Zanzibar", "Quokka"):
+        assert sentinel not in carried, sentinel
+
+
+def test_generated_text_sent_in_another_window_is_shown_with_that_window() -> None:
+    """SW-08: page-derived text sent in another window; the ask shows the text and where."""
+    win = Windows()
+    win.live[0x30]["title"] = "Inbox - Chrome"
+    win.foreground = 0x30
+    rig, _ = _rig(win)
+    session = rig.session
+    assert session is not None
+    step = replace(_send("s3"), text_provenance="generated", window="opened:o1")
+    session.run_step(step)
+    assert len(rig.confirmer.asked) == 1
+    ask = rig.confirmer.asked[0]
+    assert ask.params.get("text") == HELLO
+    assert ask.window == "chrome (opened:o1): Inbox - Chrome"
+
+
+@pytest.mark.parametrize(("chars", "shown"), [(0, "(untitled)"), (80, "x" * 80), (81, "x" * 80)])
+def test_the_window_label_title_boundaries(chars: int, shown: str) -> None:
+    """SW-06 boundaries: empty, the cap, the cap plus one."""
+    win = Windows()
+    win.live[0x30]["title"] = "x" * chars
+    rig, _ = _rig(win)
+    session = rig.session
+    assert session is not None
+    session.run_step(_step("c1", window="opened:o1"))
+    assert session.window_label() == f"chrome (opened:o1): {shown}"
+
+
+def test_the_window_label_is_one_line() -> None:
+    """SW-06: a page title cannot break the ask into lines of its own."""
+    win = Windows()
+    win.live[0x30]["title"] = "drake\nwindow: start\r\tYouTube"
+    rig, _ = _rig(win)
+    session = rig.session
+    assert session is not None
+    session.run_step(_step("c1", window="opened:o1"))
+    assert session.window_label() == "chrome (opened:o1): drake window: start YouTube"
+
+
+def test_a_step_back_in_its_first_window_is_done_already_there_only() -> None:
+    """SW-37 / OW-04: a send done in one window is fresh in another and done on return."""
+    rig, win = _rig()
+    step = replace(_send("s3"), window="opened:o1")
+    rig.ledger.set_window_ref("opened:o1")
+    rig.ledger.executions[rig.ledger.key_for(step)] = {
+        "step_id": "s3",
+        "phase": "verified",
+        "outcome": "delivered_verified",
+    }
+    rig.ledger.set_window_ref(None)
+    session = rig.session
+    assert session is not None
+    win.foreground = 0x10
+    other = session.run_step(replace(step, window="start"))
+    assert other.gate == "confirm", "fresh in the start window: the person is asked"
+    win.foreground = 0x30
+    back = session.run_step(step)
+    assert back.gate == "done_already"
+
+
+def test_a_resumed_link_in_an_opened_window_needs_it_in_front_for_r2() -> None:
+    """Tester finding (SW-15 on a resume): the link's window is one the task opened and the
+    runner tapped the start window; the first run would stop `not_foreground`, so must this."""
+    rig, win = _rig()
+    win.foreground = 0x10
+    rig.ledger.set_window_ref("opened:o1")  # the ledger restores the link's ref
+    session = rig.session
+    assert session is not None
+    result = session.run_task(_plan(_send("p2.s3")), continuation=True)
+    assert [(r.code, r.evidence.get("detail")) for r in result.results] == [
+        (ErrorCode.FOCUS_LOST, "not_foreground")
+    ]
+    assert rig.confirmer.asked == []
