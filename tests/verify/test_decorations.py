@@ -364,3 +364,14 @@ def test_a_four_digit_counter_is_stripped() -> None:
     counted = (40, "Document", "(9999) Drake - Janice STFU - YouTube", (42, 90), WINDOW[0])
     after_snap = build([*BASE_ROWS, counted], snapshot_id="after", taken_at=1.0)
     assert evaluate(_watch(), before_snap, after_snap).holds is True
+
+
+def test_an_all_keeps_the_rename_flag_of_its_parts() -> None:
+    """Principal re-review of PR #29: the R2/R3 rename rule reads `renamed` from the verdict."""
+    from steerai.verify.predicates import All  # noqa: PLC0415
+
+    before_snap = build([*BASE_ROWS, RESULTS_YT], snapshot_id="before")
+    after_snap = build([*BASE_ROWS, WATCH_YT], snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(All(parts=(_watch(), _watch())), before_snap, after_snap)
+    assert verdict.holds is True, verdict.evidence
+    assert verdict.evidence["renamed"] == 2

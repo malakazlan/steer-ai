@@ -410,3 +410,26 @@ def test_an_in_place_rename_verifies_an_r1_click() -> None:
     result = h.session.run_step(step)
     assert result.ok is True, result.to_dict()
     assert result.evidence["renamed"] == 1
+
+
+def test_an_in_place_rename_inside_an_all_never_verifies_an_r2_step() -> None:
+    """Principal re-review of PR #29: a file plan can wrap the replacing form in `all`."""
+    from steerai.verify.predicates import All  # noqa: PLC0415
+
+    h = Harness()
+    h.world.composer_value = HELLO
+    _rebuild(h, live=FocusLive(h.world, focused=COMPOSER[3]))
+    _renaming_page(h)
+    step = Step(
+        id="s3",
+        subgoal="g1",
+        verb="submit",
+        target=Target(role="Edit", name="Message"),
+        risk="R2",
+        params=PARAMS,
+        expect=All(parts=(_replacing(), _replacing())),
+    )
+    result = h.session.run_step(step)
+    assert result.ok is False, result.to_dict()
+    assert result.evidence["reason"] == "renamed_at_risk"
+    assert result.label_kind is None

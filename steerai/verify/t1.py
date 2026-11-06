@@ -688,12 +688,17 @@ def _all(predicate: All, before: Snapshot, after: Snapshot, ctx: Context) -> Ver
         # conjunction on its own: it cannot un-happen while a sibling part is still pending.
         settled = next((v for v in verdicts if not v.holds and v.state is not None), None)
         return settled if settled is not None else replace(failing, state=None)
+    evidence: dict[str, Any] = {"parts": len(verdicts)}
+    renamed = sum(int(v.evidence.get("renamed", 0)) for v in verdicts)
+    if renamed:
+        # the loop's R2/R3 rule reads it: a rename inside an `all` is still no new element
+        evidence["renamed"] = renamed
     return Verdict(
         holds=True,
         code=None,
         level=min(v.level for v in verdicts),
         polls=0,
-        evidence={"parts": len(verdicts)},
+        evidence=evidence,
     )
 
 
