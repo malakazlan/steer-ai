@@ -22,7 +22,7 @@ import os
 import sys
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
@@ -154,10 +154,12 @@ class Ledger:
         self._lock_path = self._dir / "lock"
         self._executions: dict[str, dict[str, Any]] = {}
         self._secret = b""
-        self._plan_digest: str | None = None
+        self._chain: list[dict[str, Any]] = []
+        """The task's plans in order (replan [v2.1]): digest, step ids, the window ref in effect."""
         self._window: dict[str, Any] | None = None
         self.window_ref: str | None = None
-        """The window steps act in once the task left its start window (in memory)."""
+        """The window steps act in once the task left its start window; a resumed link restores
+        the ref it started with, so its keys match the first run's (replan item 3)."""
         self._lock_token = uuid.uuid4().hex
         self._locked = False
         self._acquire_lock()
@@ -226,14 +228,48 @@ class Ledger:
 
     # ---- what the task is bound to (RN-16/17) ----------------------------------------
 
-    def bind_plan(self, digest: str, *, allow_change: bool = False) -> None:
-        """A task id runs one plan; a different plan under the same id is refused unless
-        the caller says the change is deliberate."""
-        if self._plan_digest not in (None, digest) and not allow_change:
+    def bind_plan(
+        self, digest: str, *, allow_change: bool = False, step_ids: Iterable[str] = ()
+    ) -> None:
+        """A task id runs one chain of plans and resumes only its last link; a different plan
+        is refused unless the caller says the change is deliberate (it then replaces the last
+        link). Binding a link restores the window ref it started in."""
+        ids = sorted(set(step_ids))
+        last = self._chain[-1] if self._chain else None
+        if last is not None and last["digest"] == digest:
+            self.window_ref = last["window_ref"]
+            if not set(ids) <= set(last["step_ids"]):
+                last["step_ids"] = sorted(set(last["step_ids"]) | set(ids))
+                self._save_state()
+            return
+        if last is not None and not allow_change:
+            if any(link["digest"] == digest for link in self._chain):
+                raise LedgerError("plan_superseded: a later plan of this task replaced it")
             raise LedgerError("plan_changed: this task id already ran a different plan")
-        if self._plan_digest != digest:
-            self._plan_digest = digest
-            self._save_state()
+        link: dict[str, Any] = {"digest": digest, "step_ids": ids, "window_ref": None}
+        if last is None:
+            self._chain = [link]
+        else:
+            link["window_ref"] = last["window_ref"]
+            self._chain[-1] = link
+        self.window_ref = link["window_ref"]
+        self._save_state()
+
+    def extend_plan(self, digest: str, step_ids: Iterable[str]) -> None:
+        """A replan: the successor of the last link, in the window the task is in now; a step
+        id the task already used is refused (its write-ahead path is the id's digest)."""
+        if not self._chain:
+            raise LedgerError("plan_unbound: a replan needs the task's first plan")
+        if any(link["digest"] == digest for link in self._chain):
+            raise LedgerError("plan_repeated: this plan is already a link of the task")
+        ids = set(step_ids)
+        used = {i for link in self._chain for i in link["step_ids"]}
+        if ids & used:
+            raise LedgerError("step_id_reused: a step id of an earlier plan of this task")
+        self._chain.append(
+            {"digest": digest, "step_ids": sorted(ids), "window_ref": self.window_ref}
+        )
+        self._save_state()
 
     def bind_window(self, *, pid: int, title: str, allow_change: bool = False) -> None:
         """A task's done keys mean nothing in another window: the pid and a title digest
@@ -283,6 +319,10 @@ class Ledger:
         entry = self._executions.get(self.key_for(step))
         window = None if entry is None else entry.get("window")
         return None if window is None else dict(window)
+
+    def opened_by_ref(self, ref: str) -> dict[str, Any] | None:
+        """The window an `opened:<step id>` ref names (step ids are unique in a task)."""
+        return _opened_by_ref(self._executions, ref)
 
     def admit(self, key: str, decision: GateDecision | None = None) -> Admission:
         """Whether `key` may execute now: fresh (never ran, or nothing was delivered), done
@@ -428,8 +468,7 @@ class Ledger:
             self.started_at = float(payload["started_at"])
             self._secret = bytes.fromhex(str(payload["secret"]))
             self._executions = {str(k): dict(v) for k, v in payload["executions"].items()}
-            plan = payload.get("plan_digest")
-            self._plan_digest = None if plan is None else str(plan)
+            self._chain = _loaded_chain(payload)
             window = payload.get("window")
             self._window = None if window is None else dict(window)
         except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -442,10 +481,45 @@ class Ledger:
             "started_at": self.started_at,
             "secret": self._secret.hex(),
             "executions": self._executions,
-            "plan_digest": self._plan_digest,
+            "plan_digest": self._chain[-1]["digest"] if self._chain else None,
+            "plan_chain": self._chain,
             "window": self._window,
         }
         try:
             self._write_encrypted(self._state_path, json.dumps(payload, separators=(",", ":")))
         except OSError as exc:
             raise LedgerError(f"ledger state could not be written: {exc}") from exc
+
+
+def _opened_by_ref(executions: Mapping[str, Mapping[str, Any]], ref: str) -> dict[str, Any] | None:
+    if not ref.startswith("opened:"):
+        return None
+    step_id = ref.removeprefix("opened:")
+    for entry in executions.values():
+        window = entry.get("window")
+        if entry.get("step_id") == step_id and isinstance(window, dict):
+            return dict(window)
+    return None
+
+
+def _loaded_chain(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The persisted chain; a state written before the chain is a one-link chain."""
+    chain = payload.get("plan_chain")
+    if chain is None:
+        digest = payload.get("plan_digest")
+        return (
+            [] if digest is None else [{"digest": str(digest), "step_ids": [], "window_ref": None}]
+        )
+    if not isinstance(chain, list):
+        raise ValueError("plan chain is not a list")
+    links = []
+    for link in chain:
+        ref = link["window_ref"]
+        links.append(
+            {
+                "digest": str(link["digest"]),
+                "step_ids": [str(i) for i in link["step_ids"]],
+                "window_ref": None if ref is None else str(ref),
+            }
+        )
+    return links
