@@ -350,7 +350,6 @@ def acquire_foreground(hwnd: int) -> str:
     classic Notepad, 2026-11-07), so its next typed keys would be menu mnemonics (issue #38).
     """
     user32 = _user32()
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
     def is_foreground() -> bool:
         return int(user32.GetForegroundWindow() or 0) == hwnd
@@ -373,6 +372,7 @@ def acquire_foreground(hwnd: int) -> str:
         # Attaching to a non-pumping thread blocks indefinitely (PX-24): skip the rung.
         raise OSError(f"could not bring hwnd {hwnd:#x} to the foreground")
     current_thread = user32.GetWindowThreadProcessId(current, None)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # the attach rung only
     kernel32.GetCurrentThreadId.restype = wintypes.DWORD
     own_thread = kernel32.GetCurrentThreadId()
     user32.AttachThreadInput(own_thread, current_thread, True)
