@@ -471,7 +471,8 @@ def _value_first_plan() -> Plan:
 
 
 @pytest.mark.parametrize(
-    ("name", "text", "refused"), [("Text editor", "hello", False), ("Text Editor", "hi", True)]
+    ("name", "text", "refused"),
+    [("Text editor", "hello", False), ("Text Editor", "hi", True), ("Text Editor", "Hello", True)],
 )
 def test_a_continuation_keeps_a_value_subgoals_text(name: str, text: str, refused: bool) -> None:
     from steerai.verify.predicates import FieldValue  # noqa: PLC0415
