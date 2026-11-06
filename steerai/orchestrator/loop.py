@@ -571,12 +571,15 @@ class Session:
         image), never by title (P7, decision 3); anything else stops `window_gone`."""
         self._rebind(self._ledger.opened_window(step), f"opened:{step.id}")
 
-    def _rebind_ref(self) -> None:
+    def _rebind_ref(self, *, continuation: bool) -> None:
         """A continuation plan, or its resume, starts in the window its link names, rebound by
-        identity before anything is observed (replan item 3)."""
+        identity before anything is observed (replan item 3); a link in the start window is
+        checked the same way once its identity was recorded (SW-26)."""
         ref = self._ledger.window_ref
         if ref is not None:
-            self._rebind(self._ledger.opened_by_ref(ref), ref)
+            self._rebind(self._record_of(ref), ref)
+        elif continuation and self._ledger.start_window() is not None:
+            self._rebind(self._record_of(None), None)
 
     def _rebind(self, record: Mapping[str, Any] | None, ref: str | None) -> None:
         hwnd = self._checked(record)
@@ -1392,7 +1395,7 @@ class Session:
         )
         results: list[StepResult] = []
         try:
-            self._rebind_ref()
+            self._rebind_ref(continuation=continuation)
         except _StepFailureError as failure:
             return self._ended_at_start(failure.code, failure.detail)
         try:

@@ -257,3 +257,15 @@ def test_naming_the_current_window_is_accepted_and_still_checked() -> None:
     rig, _ = _rig(win)
     result = _stopped_with(rig, _step("c1", window="start"))
     assert result.evidence["detail"] == "window_gone"
+
+
+def test_a_continuation_in_the_start_window_checks_its_identity_first() -> None:
+    """SW-26: a link that starts in `start` is re-bound like an opened one."""
+    win = Windows()
+    win.live[0x10]["start"] = 99  # the start window's process was replaced
+    rig, _ = _rig(win)
+    session = rig.session
+    assert session is not None
+    result = session.run_task(_plan(_step("p2.c1")), continuation=True)
+    assert result.evidence["detail"] == "window_gone"
+    assert result.results == []
