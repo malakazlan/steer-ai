@@ -93,7 +93,16 @@ class Launcher:
             return _refused(ErrorCode.ELEMENT_NOT_ACTIONABLE, "launch_failed")
         steps = [Step(label="launch", mechanism="launch", outcome="succeeded")]
         evidence: dict[str, Any] = {"launched": PurePath(exe).name.lower()}
+        launched_at = self._monotonic()
         found = self._new_window(spec.process_names, {w.hwnd for w in windows_before})
+        if isinstance(found, tuple):
+            # several windows: say what they were, never their titles (#75)
+            fresh = found
+            found = "several_new_windows"
+            evidence["fresh_windows"] = [
+                {"same_process": w.pid == fresh[0].pid, "title_chars": len(w.title)} for w in fresh
+            ]
+            evidence["seen_after_s"] = round(self._monotonic() - launched_at, 1)
         if isinstance(found, str):
             evidence["detail"] = found
             timed_out = found in ("no_new_window", "several_new_windows")
@@ -114,8 +123,11 @@ class Launcher:
             evidence=evidence,
         )
 
-    def _new_window(self, process_names: frozenset[str], seen: set[int]) -> WindowInfo | str:
-        """The one new, non-minimized window of the app's process, or a fixed detail token."""
+    def _new_window(
+        self, process_names: frozenset[str], seen: set[int]
+    ) -> WindowInfo | tuple[WindowInfo, ...] | str:
+        """The one new, non-minimized window of the app's process; the several new ones; or a
+        fixed detail token."""
         deadline = self._monotonic() + OPEN_WINDOW_S
         while True:
             fresh = [
@@ -129,7 +141,7 @@ class Launcher:
             if len(fresh) == 1:
                 return fresh[0]
             if len(fresh) > 1:
-                return "several_new_windows"
+                return tuple(fresh)
             if self._monotonic() >= deadline:
                 return "no_new_window"
             if self._blocker is not None and (token := self._blocker()) is not None:

@@ -212,3 +212,19 @@ def test_any_blocker_token_during_the_poll_is_a_block() -> None:
     result = _launcher(machine, blocker=blocker).execute(_open(), [CHROME_OLD])
     assert result.code is ErrorCode.GATE_BLOCKED
     assert result.evidence["detail"] == "monitor_lost"
+
+
+def test_several_new_windows_say_what_they_were_without_titles() -> None:
+    """Issue #75: the stop is diagnosed, never explained away: per window, whether it shares the
+    first one's process and its title length, and when they were seen (no title text)."""
+    twin = WindowInfo(hwnd=0x31, title="Restore pages? - Google Chrome", pid=501)
+    machine = Machine(appears=[NEW_CHROME, twin], appear_after=0)
+    machine.names[501] = "chrome.exe"  # a second Chrome process
+    result = _launcher(machine).execute(_open(), [CHROME_OLD, NOTEPAD])
+    assert result.evidence["detail"] == "several_new_windows"
+    assert result.evidence["fresh_windows"] == [
+        {"same_process": True, "title_chars": len(NEW_CHROME.title)},
+        {"same_process": False, "title_chars": len(twin.title)},
+    ]
+    assert result.evidence["seen_after_s"] == 0.0
+    assert "Restore" not in repr(result.evidence)
