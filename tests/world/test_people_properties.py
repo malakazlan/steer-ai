@@ -11,13 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from steerai.world.people import (
-    CONFUSABLE_TO_LATIN,
-    comparable,
-    generate_confusable_table,
-    matches,
-    name_part,
-)
+from steerai.verify.confusables import CONFUSABLE_TO_LATIN, generate_confusable_table
+from steerai.world.people import comparable, matches, name_part
 
 DATA = Path(__file__).resolve().parents[1] / "data" / "confusables.txt"
 MID = "\u00b7"
