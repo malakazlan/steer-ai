@@ -16,7 +16,15 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
-from steerai.verify.predicates import All, AnyOf, Appeared, Predicate, TitleMatches, WindowExists
+from steerai.verify.predicates import (
+    All,
+    AnyOf,
+    Appeared,
+    Predicate,
+    TitleMatches,
+    WindowExists,
+    comparable,
+)
 
 MAX_CONTENT_CHARS = 500
 CONTENT: Final = "{content}"
@@ -229,7 +237,24 @@ def open_title_judges(predicate: Predicate) -> bool:
 
 
 def _contained(pattern: str, expected: str) -> bool:
-    return _fold(_COUNTER.sub("", pattern.strip())) in _fold(expected)
+    """The pattern's words appear, in order and whole, among the title's words (issue #53: a
+    substring like "e" is in almost any title), compared in the shared comparable form. A word
+    is a whitespace token without its enclosing quotes or brackets and trailing sentence
+    punctuation; a token with no letter or digit is no word ("-" or a dash proves nothing).
+    `+`, `#` and a leading `.` stay: "C++", "C#" and ".NET" are not "C" and "NET"."""
+    wanted = _words(_COUNTER.sub("", pattern.strip()))
+    words = _words(expected)
+    size = len(wanted)
+    return size > 0 and any(words[i : i + size] == wanted for i in range(len(words) - size + 1))
+
+
+_WORD_LEAD = "\"'([{"
+_WORD_TRAIL = ",;:.!?\"')]}"
+
+
+def _words(text: str) -> list[str]:
+    stripped = (token.lstrip(_WORD_LEAD).rstrip(_WORD_TRAIL) for token in comparable(text).split())
+    return [word for word in stripped if any(ch.isalnum() for ch in word)]
 
 
 def _fold(text: str) -> str:
