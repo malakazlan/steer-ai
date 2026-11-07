@@ -193,6 +193,9 @@ class Ledger:
                 raise LedgerError(f"ledger lock could not be taken: {exc}") from exc
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump({"pid": os.getpid(), "token": self._lock_token}, handle)
+            if self._lock_token_on_disk() != self._lock_token:
+                # a racing runner removed this lock as stale and took its own (#58)
+                raise LedgerError("ledger_locked: another runner took this task's lock")
             self._locked = True
             return
         raise LedgerError("ledger_locked: the lock could not be taken")
@@ -536,6 +539,13 @@ class Ledger:
     # ---- encrypted files -----------------------------------------------------------------------
 
     def _write_encrypted(self, path: Path, text: str) -> None:
+        # this runner writes only while the lock on disk is still its own: a racing stale-lock
+        # takeover, or a later instance in this process, would otherwise lose its links (#58)
+        if self._lock_token_on_disk() != self._lock_token:
+            raise LedgerError(
+                "ledger_locked: another runner took this task's lock; "
+                f"the lock is {self._lock_path}"
+            )
         blob = dpapi.protect(text.encode(), entropy=_ENTROPY)
         temporary = path.with_suffix(path.suffix + ".tmp")
         temporary.write_bytes(blob)

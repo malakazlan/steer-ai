@@ -127,11 +127,14 @@ def test_phases_advance_and_an_outcome_closes_the_key(tmp_path: Path) -> None:
     ledger.write_ahead(step, _snapshot(), _decision(key, "approve"))
     ledger.mark(step, "acting")
     assert ledger.read_ahead(step).phase == "acting"  # type: ignore[union-attr]
-    assert Ledger(tmp_path, task_id="task-1", started_at=5.0).admit(key) == "confirm"
-    ledger.record_outcome(step, "delivered_verified")
-    assert ledger.read_ahead(step).phase == "verified"  # type: ignore[union-attr]
-    assert ledger.admit(key) == "done"
-    assert Ledger(tmp_path, task_id="task-1", started_at=5.0).admit(key) == "done"
+    ledger.close()  # a resume is a new runner: the old one never writes after it (#58)
+    with Ledger(tmp_path, task_id="task-1", started_at=5.0) as resumed:
+        assert resumed.admit(key) == "confirm"
+        resumed.record_outcome(step, "delivered_verified")
+        assert resumed.read_ahead(step).phase == "verified"  # type: ignore[union-attr]
+        assert resumed.admit(key) == "done"
+    with Ledger(tmp_path, task_id="task-1", started_at=5.0) as later:
+        assert later.admit(key) == "done"
 
 
 def test_nothing_sent_releases_the_key_but_anything_else_needs_a_fresh_decision(
@@ -419,6 +422,34 @@ def test_a_superseded_instances_close_leaves_the_successors_lock(tmp_path: Path)
     assert json.loads(lock.read_text(encoding="utf-8"))["token"] == token
     second.close()
     assert not lock.exists()
+
+
+def test_a_superseded_instance_can_no_longer_write(tmp_path: Path) -> None:
+    """Issue #58 (hunter RV-14): its whole-chain save would drop the successor's links."""
+    first = Ledger(tmp_path, task_id="t", started_at=1.0)
+    second = Ledger(tmp_path, task_id="t", started_at=1.0)  # same process: takes the lock over
+    second.bind_plan("a" * 64, step_ids=["s1"])
+    with pytest.raises(LedgerError, match="ledger_locked"):
+        first.bind_plan("b" * 64, step_ids=["s9"])
+    second.extend_plan("c" * 64, ["p2.s1"])
+    second.close()
+    first.close()
+    with Ledger(tmp_path, task_id="t", started_at=1.0) as reopened:
+        assert reopened.plan_count() == 2, "the successor's chain survived"
+
+
+def test_a_lock_taken_by_another_runner_stops_every_write(tmp_path: Path) -> None:
+    """Issue #58 (hunter RV-06): a racing runner replaced the lock after this one took it; this
+    one never writes again (a stale-lock takeover is not atomic)."""
+    ledger = Ledger(tmp_path, task_id="t-race", started_at=1.0)
+    lock = next(tmp_path.iterdir()) / "lock"
+    lock.write_text(json.dumps({"pid": os.getpid() + 1, "token": "f" * 32}), encoding="utf-8")
+    with pytest.raises(LedgerError, match="ledger_locked"):
+        ledger.bind_plan("a" * 64, step_ids=["s1"])
+    with pytest.raises(LedgerError, match="ledger_locked"):
+        ledger.record_open(_open_step("o1"), WINDOW)
+    ledger.close()
+    assert json.loads(lock.read_text(encoding="utf-8"))["token"] == "f" * 32, "never removes theirs"
 
 
 # ---- opened windows and window references (packet open-multiwindow-2026-11-06, P7, P8, OW-33) --
