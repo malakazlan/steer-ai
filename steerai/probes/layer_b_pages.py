@@ -373,7 +373,9 @@ def check_trace(lines: Sequence[str], nonce: str) -> TraceCheck:
         folded = line.casefold()
         hits += any(form in folded for form in (nonce, nonce.casefold()))
     tasks = sum('"kind": "task"' in line for line in lines)
-    if tasks == 0 or judged < tasks:
+    if tasks == 0:
+        raise InvalidRun("no_task_started")  # the planner gave no plan the run could start
+    if judged < tasks:
         raise InvalidRun("plan_not_judged")
     return TraceCheck(sentinel_hits=hits, plans=judged)
 
