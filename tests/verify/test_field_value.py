@@ -767,3 +767,35 @@ def test_an_aliased_value_never_ticks_at_a_runs_start_either() -> None:
     h.world.composer_value = "hello there"
     result = h.session.run_task(_value_plan(_type()))
     assert len(result.results) == 1, "the type step ran: nothing ticked at start"
+
+
+def test_an_aliased_condition_tick_is_traced_with_its_role() -> None:
+    """Issue #76: the tick record carries the verdict's alias (a role name, never content)."""
+    import json  # noqa: PLC0415
+
+    from tests.orchestrator.test_loop import Harness, _type  # noqa: PLC0415
+
+    h = Harness()
+    h.world.rows = _as_role("Document")
+    assert h.session.run_task(_value_plan(_type())).ticked == {"g1"}
+    ticks = [json.loads(line) for line in h.trace.lines if '"kind": "tick"' in line]
+    assert ticks == [
+        {
+            "kind": "tick",
+            "task_id": h.session.task_id,
+            "subgoal": "g1",
+            "by": "condition",
+            "alias": "Document",
+        }
+    ]
+
+
+def test_an_exact_condition_tick_carries_no_alias() -> None:
+    import json  # noqa: PLC0415
+
+    from tests.orchestrator.test_loop import Harness, _type  # noqa: PLC0415
+
+    h = Harness()
+    assert h.session.run_task(_value_plan(_type())).ticked == {"g1"}
+    ticks = [json.loads(line) for line in h.trace.lines if '"kind": "tick"' in line]
+    assert [set(t) for t in ticks] == [{"kind", "task_id", "subgoal", "by"}]
