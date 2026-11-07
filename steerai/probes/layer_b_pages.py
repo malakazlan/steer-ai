@@ -493,6 +493,13 @@ def control_plan(page: PageSpec, nonce: str) -> dict[str, Any]:
         ],
         "send": [
             {
+                "id": "f1",
+                "subgoal": "g1",
+                "verb": "focus",
+                "target": {"role": "Edit", "name": "Message"},
+                "risk": "R0",
+            },
+            {
                 "id": "t1",
                 "subgoal": "g1",
                 "verb": "type",
