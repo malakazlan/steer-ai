@@ -71,3 +71,23 @@ def test_the_title_judges_a_tree_only_when_it_speaks_for_every_part() -> None:
     assert not open_title_judges(All(parts=(title, CountDelta(role="ListItem", delta=1))))
     assert not open_title_judges(WindowGone(name_pattern="Notepad"))
     assert not open_title_judges(Disappeared(role="Document", name_pattern="drake"))
+
+
+def test_a_pattern_must_be_whole_words_of_the_title() -> None:
+    """Issue #53: a substring like "e" or "Note" is in almost any title and proves nothing."""
+    assert not open_condition_holds(TitleMatches(pattern="e"), NOTEPAD)
+    assert not open_condition_holds(WindowExists(name_pattern="Note"), NOTEPAD)
+    assert not open_condition_holds(TitleMatches(pattern="latest vid"), RESULTS)
+    assert open_condition_holds(TitleMatches(pattern="latest video"), RESULTS)
+    assert open_condition_holds(WindowExists(name_pattern="Notepad"), NOTEPAD)
+
+
+def test_the_words_must_be_in_the_titles_order() -> None:
+    assert not open_condition_holds(TitleMatches(pattern="video latest"), RESULTS)
+
+
+def test_matching_uses_the_shared_comparable_form() -> None:
+    """Issue #53: NFKC, as every other name match (an invisible character is refused when the
+    predicate is built)."""
+    fullwidth = "".join(chr(0xFEE0 + ord(c)) for c in "Notepad")  # fullwidth letters
+    assert open_condition_holds(WindowExists(name_pattern=fullwidth), NOTEPAD)

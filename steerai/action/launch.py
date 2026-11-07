@@ -16,7 +16,15 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
-from steerai.verify.predicates import All, AnyOf, Appeared, Predicate, TitleMatches, WindowExists
+from steerai.verify.predicates import (
+    All,
+    AnyOf,
+    Appeared,
+    Predicate,
+    TitleMatches,
+    WindowExists,
+    comparable,
+)
 
 MAX_CONTENT_CHARS = 500
 CONTENT: Final = "{content}"
@@ -229,7 +237,12 @@ def open_title_judges(predicate: Predicate) -> bool:
 
 
 def _contained(pattern: str, expected: str) -> bool:
-    return _fold(_COUNTER.sub("", pattern.strip())) in _fold(expected)
+    """The pattern's words appear, in order and whole, among the title's words (issue #53: a
+    substring like "e" is in almost any title), compared in the shared comparable form."""
+    wanted = comparable(_COUNTER.sub("", pattern.strip())).split()
+    words = comparable(expected).split()
+    size = len(wanted)
+    return size > 0 and any(words[i : i + size] == wanted for i in range(len(words) - size + 1))
 
 
 def _fold(text: str) -> str:
