@@ -156,6 +156,19 @@ def parent_chain(
     return chain
 
 
+def filetime_now() -> int:
+    """The system time as a FILETIME count (100 ns units since 1601, UTC), the unit
+    `process_start_time` uses: GetSystemTimePreciseAsFileTime (Microsoft Learn, Windows 8+)."""
+    if sys.platform != "win32":
+        raise OSError("the system clock as a FILETIME requires Windows")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetSystemTimePreciseAsFileTime.argtypes = (ctypes.POINTER(wintypes.FILETIME),)
+    kernel32.GetSystemTimePreciseAsFileTime.restype = None
+    now = wintypes.FILETIME()
+    kernel32.GetSystemTimePreciseAsFileTime(ctypes.byref(now))
+    return (now.dwHighDateTime << 32) | now.dwLowDateTime
+
+
 def process_start_time(pid: int) -> int | None:
     """The process creation time as a FILETIME count (100 ns units), or None when the process
     cannot be opened."""

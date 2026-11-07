@@ -534,6 +534,7 @@ class Session:
                 raise _StepFailureError(ErrorCode.GATE_BLOCKED, _wal_detail(exc)) from exc
         windows_before = list(self._windows())  # the last thing before the launch (P4)
         launcher = self._launcher
+        launched_at = self._monotonic()
         action = stage.measure(
             "act",
             lambda: launcher.execute(
@@ -546,6 +547,10 @@ class Session:
         if not isinstance(hwnd, int):
             self._close_open(step, risk, action.delivery.value, launched=bool(action.steps))
             evidence["detail"] = str(action.evidence.get("detail", "no_new_window"))
+            if evidence["detail"] == "several_new_windows" and self._monitor is not None:
+                # did the person act after the launch? (#75: a window they opened themselves)
+                last = self._monitor.last_user_input()
+                evidence["input_since_launch"] = last >= launched_at
             return self._finish(step, stage, evidence, gate=gate, action=action, code=action.code)
         holds = stage.measure("verify", lambda: self._title_arrives(hwnd, title))
         identity = self._identify(hwnd) if holds else None
