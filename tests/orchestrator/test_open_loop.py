@@ -26,7 +26,7 @@ YT_TITLE = "drake latest video - YouTube - Google Chrome"
 START = WindowInfo(hwnd=0x10, title="Program Manager", pid=900)
 NEW = WindowInfo(hwnd=0x30, title="New Tab - Google Chrome", pid=500)
 IDENTITY = {"hwnd": 0x30, "pid": 500, "start": 7, "image": "chrome.exe", "title": YT_TITLE}
-LIVE = {"visible": True, "root": True, "minimized": False}
+LIVE = {"visible": True, "root": True, "minimized": False, "cloaked": False}
 """What a live window reads besides its identity (step-window SW-12/14)."""
 
 
@@ -73,7 +73,7 @@ class Desk:
         return self.titles[min(self.reads - 1, len(self.titles) - 1)]
 
     def identify(self, hwnd: int) -> dict[str, Any] | None:
-        return None if self.identity is None else {**self.identity, **LIVE, "hwnd": hwnd}
+        return None if self.identity is None else {**LIVE, **self.identity, "hwnd": hwnd}
 
     def windows(self) -> list[WindowInfo]:
         return list(self.windows_now)
@@ -171,6 +171,17 @@ def test_an_open_whose_title_never_matches_stops_the_task_in_the_old_window() ->
     assert len(result.results) == 1, "nothing ran after the failed open (OW-03)"
     assert session.hwnd == START.hwnd
     assert rig.ledger.window_ref is None
+
+
+@pytest.mark.parametrize("cloaked", [True, None])
+def test_an_open_whose_window_dwm_hides_or_cannot_read_is_unverified(cloaked: bool | None) -> None:
+    """Issue #48 (CU-09): the title matched, but the window is cloaked or its cloak unreadable."""
+    rig = Rig(desk=Desk(identity={**IDENTITY, "cloaked": cloaked}))
+    session = rig.build()
+    result = session.run_task(_plan(_open()))
+    assert result.status == "stopped"
+    assert result.evidence["detail"] == "open_unverified"
+    assert session.hwnd == START.hwnd
 
 
 def test_a_launch_with_no_window_stops_the_task() -> None:

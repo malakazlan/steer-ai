@@ -63,7 +63,8 @@ def test_find_window_returns_none_when_absent() -> None:
 
 
 def test_listed_windows_are_never_cloaked() -> None:
-    assert not any(is_cloaked(w.hwnd) for w in list_top_windows())
+    # issue #48: an unflagged listed window reads as not cloaked, never as unclear
+    assert all(is_cloaked(w.hwnd) is False for w in list_top_windows() if not w.cloak_unreadable)
 
 
 def test_process_name_of_a_listed_window_ends_with_exe() -> None:
@@ -82,9 +83,10 @@ def test_window_info_minimized_defaults_to_false() -> None:
     assert WindowInfo(hwnd=1, title="t", pid=1).minimized is False
 
 
-def test_is_cloaked_is_false_for_an_invalid_hwnd() -> None:
-    assert is_cloaked(0) is False
-    assert is_cloaked(0x7FFF_FFF1) is False
+def test_is_cloaked_is_unclear_for_an_invalid_hwnd() -> None:
+    """Issue #48: DWM answers E_HANDLE (measured 0x80070006); unclear, never visible."""
+    assert is_cloaked(0) is None
+    assert is_cloaked(0x7FFF_FFF1) is None
 
 
 def test_process_name_of_the_current_process_is_a_bare_executable_name() -> None:

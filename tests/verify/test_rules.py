@@ -391,8 +391,8 @@ def test_title_match_strips_counters_and_keeps_digits() -> None:
 
 
 def test_window_exists_for_open_requires_a_window_new_since_before() -> None:
-    old = SimpleNamespace(title="Save As", hwnd=0x100, pid=50)
-    new = SimpleNamespace(title="Save As", hwnd=0x200, pid=50)
+    old = SimpleNamespace(title="Save As", hwnd=0x100, pid=50, cloak_unreadable=False)
+    new = SimpleNamespace(title="Save As", hwnd=0x200, pid=50, cloak_unreadable=False)
     assert (
         evaluate(
             WindowExists(name_pattern="Save As"),
@@ -415,8 +415,42 @@ def test_window_exists_for_open_requires_a_window_new_since_before() -> None:
     )
 
 
+def test_a_window_whose_cloak_cannot_be_read_never_verifies_window_exists() -> None:
+    """Issue #48: counted in `seen` before; never the new window after."""
+    theirs = SimpleNamespace(title="Save As", hwnd=0x100, pid=50, cloak_unreadable=True)
+    readable = SimpleNamespace(title="Save As", hwnd=0x100, pid=50, cloak_unreadable=False)
+    unclear_new = SimpleNamespace(title="Save As", hwnd=0x200, pid=50, cloak_unreadable=True)
+    exists = WindowExists(name_pattern="Save As")
+    unread_before = evaluate(
+        exists, before(), after_with(), windows=[readable], windows_before=[theirs]
+    )
+    assert unread_before.holds is False, "unreadable before, readable after: not new"
+    unread_after = evaluate(
+        exists, before(), after_with(), windows=[unclear_new], windows_before=[]
+    )
+    assert unread_after.holds is False, "an unclear new window is never the match"
+
+
+def test_a_window_unreadable_after_is_not_gone() -> None:
+    """Issue #48: listed, flagged, so a window DWM cannot read is still present."""
+    compose = SimpleNamespace(
+        title="Untitled - Message", hwnd=0x300, pid=50, cloak_unreadable=False
+    )
+    flagged = SimpleNamespace(title="Untitled - Message", hwnd=0x300, pid=50, cloak_unreadable=True)
+    gone = evaluate(
+        WindowGone(name_pattern="Untitled - Message"),
+        before(),
+        after_with(),
+        windows=[flagged],
+        windows_before=[compose],
+    )
+    assert gone.holds is False
+
+
 def test_window_gone_needs_presence_before_and_absence_after() -> None:
-    compose = SimpleNamespace(title="Untitled - Message", hwnd=0x300, pid=50)
+    compose = SimpleNamespace(
+        title="Untitled - Message", hwnd=0x300, pid=50, cloak_unreadable=False
+    )
     assert (
         evaluate(
             WindowGone(name_pattern="Untitled - Message"),

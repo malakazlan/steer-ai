@@ -299,8 +299,12 @@ class WorldModel:
             )
         if not is_window(hwnd):
             raise SteerError(ErrorCode.APP_CRASHED, f"hwnd {hwnd:#x} is not a window")
-        if is_cloaked(hwnd):
+        cloaked = is_cloaked(hwnd)
+        if cloaked is True:
             raise SteerError(ErrorCode.WINDOW_OTHER_DESKTOP, f"hwnd {hwnd:#x} is cloaked")
+        if cloaked is not False:
+            # DWM did not answer: unclear, never visible (issue #48)
+            raise SteerError(ErrorCode.WINDOW_OTHER_DESKTOP, f"hwnd {hwnd:#x} cloak_unreadable")
         if not is_window_enabled(hwnd):
             raise SteerError(ErrorCode.INTERRUPT_MODAL, f"hwnd {hwnd:#x} is disabled by a modal")
 

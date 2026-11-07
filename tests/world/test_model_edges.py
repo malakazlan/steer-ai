@@ -281,6 +281,19 @@ def _model(client: _FakeClient) -> WorldModel:
     return WorldModel(cast(UiaClient, client))
 
 
+def test_observe_refuses_a_window_whose_cloak_cannot_be_read(
+    clock: _FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #48 (CU-02): DWM did not answer; unclear is never visible, and nothing is fetched."""
+    monkeypatch.setattr(model_module, "is_cloaked", lambda _h: None)
+    client = _FakeClient([_tree(5)])
+    with pytest.raises(SteerError) as refused:
+        _model(client).observe(HWND)
+    assert refused.value.code is ErrorCode.WINDOW_OTHER_DESKTOP
+    assert "cloak_unreadable" in str(refused.value)
+    assert client.calls == []
+
+
 def test_observe_is_stable_after_two_equal_runtime_id_sets(clock: _FakeClock) -> None:
     # Measured defaults [v1.0]: two fetches, 50 ms poll (design section 4).
     client = _FakeClient([_tree(5)])

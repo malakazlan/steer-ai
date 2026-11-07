@@ -157,13 +157,13 @@ class FakeWindows:
     """Stands in for the Win32 window re-check (probes.windows)."""
 
     alive: bool = True
-    cloaked: bool = False
+    cloaked: bool | None = False
     enabled: bool = True
 
     def is_window(self, _hwnd: int) -> bool:
         return self.alive
 
-    def is_cloaked(self, _hwnd: int) -> bool:
+    def is_cloaked(self, _hwnd: int) -> bool | None:
         return self.cloaked
 
     def is_window_enabled(self, _hwnd: int) -> bool:

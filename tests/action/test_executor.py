@@ -392,6 +392,7 @@ def test_snapshot_older_than_the_cap_is_refused(fast_clock: None) -> None:
     [
         (FakeWindows(alive=False), ErrorCode.APP_CRASHED),
         (FakeWindows(cloaked=True), ErrorCode.WINDOW_OTHER_DESKTOP),
+        (FakeWindows(cloaked=None), ErrorCode.WINDOW_OTHER_DESKTOP),  # unreadable (#48)
         (FakeWindows(enabled=False), ErrorCode.INTERRUPT_MODAL),
     ],
 )

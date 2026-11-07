@@ -123,6 +123,7 @@ class Launcher:
                 for w in self._list_windows()
                 if w.hwnd not in seen
                 and not w.minimized
+                and not w.cloak_unreadable  # unclear is never the new window (#48)
                 and self._process_name(w.pid).lower() in process_names
             ]
             if len(fresh) == 1:

@@ -27,8 +27,14 @@ class Windows:
 
     live: dict[int, dict[str, Any]] = field(
         default_factory=lambda: {
-            0x10: {**START_ID, "visible": True, "root": True, "minimized": False},
-            0x30: {**OPENED_ID, "visible": True, "root": True, "minimized": False},
+            0x10: {**START_ID, "visible": True, "root": True, "minimized": False, "cloaked": False},
+            0x30: {
+                **OPENED_ID,
+                "visible": True,
+                "root": True,
+                "minimized": False,
+                "cloaked": False,
+            },
         }
     )
     foreground: int = 0x10
@@ -787,6 +793,19 @@ def test_a_cloaked_window_is_on_another_desktop() -> None:
     assert (result.code, result.evidence["detail"]) == (
         ErrorCode.WINDOW_OTHER_DESKTOP,
         "window_other_desktop",
+    )
+
+
+def test_a_window_whose_cloak_cannot_be_read_never_matches() -> None:
+    """Issue #48: an unreadable DWMWA_CLOAKED is unclear, never visible (SW: unreadable never
+    matches)."""
+    win = Windows()
+    win.live[0x30]["cloaked"] = None
+    rig, _ = _rig(win)
+    result = _stopped_with(rig, _step("c1", window="opened:o1"))
+    assert (result.code, result.evidence["detail"]) == (
+        ErrorCode.ELEMENT_NOT_FOUND,
+        "identity_unreadable",
     )
 
 

@@ -102,6 +102,21 @@ def test_resolve_window_reports_the_candidates_on_ambiguity_and_none_on_a_miss()
     assert missing.value.detail == "no_match"
 
 
+def test_resolve_window_counts_an_unreadable_twin_and_never_picks_an_unreadable_window() -> None:
+    """Issue #48 (CU-05/24): a window DWM cannot read stays a candidate for ambiguity, but is
+    never the one picked."""
+    twin = WindowInfo(hwnd=0x41, title=CHROME.title, pid=CHROME.pid, cloak_unreadable=True)
+    with pytest.raises(RunnerError) as ambiguous:
+        resolve_window([CHROME, twin], "chrome", excluded_hwnds=set(), excluded_pids=set())
+    assert ambiguous.value.detail == "ambiguous_target"
+    with pytest.raises(RunnerError) as unclear:
+        resolve_window([twin, NOTEPAD], "chrome", excluded_hwnds=set(), excluded_pids=set())
+    assert (unclear.value.code, unclear.value.detail) == (
+        ErrorCode.WINDOW_OTHER_DESKTOP,
+        "cloak_unreadable",
+    )
+
+
 def test_resolve_window_compares_normalised_casefolded_titles() -> None:
     title = chr(0xFF21) + "mir Khan " + chr(0x2013) + " Chat"
     fullwidth = WindowInfo(hwnd=0x40, title=title, pid=800)
