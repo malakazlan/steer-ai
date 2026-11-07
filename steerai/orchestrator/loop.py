@@ -60,9 +60,11 @@ from steerai.orchestrator.gate import (
     Gate,
     GateResult,
     ask_reasons,
+    deny_tier,
     effective_risk,
     open_tier,
     params_for,
+    rename_counts,
 )
 from steerai.orchestrator.identity import (
     Binding,
@@ -876,6 +878,10 @@ class Session:
             "verify", lambda: self._verify(expect, before_of_record, windows_before)
         )
         renamed_at_risk = risk in ("R2", "R3") and verdict.holds and "renamed" in verdict.evidence
+        if renamed_at_risk and self._rename_counts(step, expect, risk, before_of_record):
+            # a search submit's page renamed to the framed query (5.10 [v2.39])
+            renamed_at_risk = False
+            verdict = replace(verdict, evidence={**verdict.evidence, "reason": "renamed_submit"})
         if renamed_at_risk:
             # a page renamed in place keeps its RuntimeId: no new element, so never the
             # effect of an R2/R3 step (5.10 [v1.2]); unverified, and no label (review item 2)
@@ -1451,12 +1457,14 @@ class Session:
         except _StepFailureError:
             return record.phase
         expect = self._gate.predicate_for(step, composer_id=composer_id, bound=self._binding)
-        if expect is not None and self._effect_present(expect, record.before, before):
+        if expect is not None and self._effect_present(expect, record.before, before, step):
             self._ledger.record_outcome(step, "done_already")
             return "done"
         return record.phase
 
-    def _effect_present(self, predicate: Predicate, persisted: Snapshot, now: Snapshot) -> bool:
+    def _effect_present(
+        self, predicate: Predicate, persisted: Snapshot, now: Snapshot, step: Step
+    ) -> bool:
         if persisted.hwnd != now.hwnd or (persisted.pid and now.pid and persisted.pid != now.pid):
             return False
         structural = _structural_part(predicate)
@@ -1466,7 +1474,20 @@ class Session:
             verdict = evaluate(structural, persisted, now)
         except (SteerError, ValueError):
             return False
+        if verdict.holds and "renamed" in verdict.evidence:
+            # the same rule as a live verify, so a crash after Enter resumes the same way
+            risk = effective_risk(step, element_ids=self._step_ids(step, persisted))
+            return self._rename_counts(step, predicate, risk, persisted)
         return verdict.holds and verdict.level != 3
+
+    def _rename_counts(self, step: Step, expect: Predicate, risk: Risk, before: Snapshot) -> bool:
+        bound = self._binding.full_name if self._binding is not None else None
+        deny = deny_tier(step, bound, self._step_ids(step, before))
+        return rename_counts(step, expect, risk=risk, deny=deny, goal=self._goal)
+
+    def _step_ids(self, step: Step, snapshot: Snapshot) -> tuple[str, ...]:
+        """The automation ids of the elements the step's target resolves to (#84)."""
+        return () if step.target is None else self._resolvable_ids(step.target, snapshot)
 
     def _admitted(
         self, key: str, previous: str | None, gate_result: GateResult
