@@ -105,3 +105,18 @@ def test_punctuation_at_a_words_edge_is_not_part_of_the_word() -> None:
     assert open_condition_holds(TitleMatches(pattern="drake"), title)
     assert open_condition_holds(TitleMatches(pattern="drake kendrick"), title)
     assert not open_condition_holds(TitleMatches(pattern="drak"), title)
+
+
+def test_meaningful_symbols_keep_words_apart() -> None:
+    """Principal re-review of #53: "C++", "C#" and ".NET" are not "C" and "NET"."""
+    search = "C tutorial - Google Search - Google Chrome"
+    assert not open_condition_holds(TitleMatches(pattern="C++ tutorial"), search)
+    assert not open_condition_holds(TitleMatches(pattern="C# tutorial"), search)
+    assert not open_condition_holds(TitleMatches(pattern=".NET 8"), "NET 8 - Google Search")
+    assert not open_condition_holds(TitleMatches(pattern="C"), "C++ tutorial - Google Search")
+
+
+def test_a_dash_or_dot_of_any_script_is_no_word() -> None:
+    dash, middle_dot = chr(0x2014), chr(0x00B7)
+    assert not open_condition_holds(TitleMatches(pattern=dash), f"a {dash} b")
+    assert not open_condition_holds(TitleMatches(pattern=middle_dot), f"a {middle_dot} b")
