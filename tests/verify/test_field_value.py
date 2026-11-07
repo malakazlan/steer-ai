@@ -690,3 +690,64 @@ def test_a_person_target_type_is_not_the_values_match() -> None:
         step["target"] = {**step["target"], **extra}
         with pytest.raises(PlanError):
             plan_from_json(_plan_doc([step]))
+
+
+# ---- the value condition takes the step's text-role alias (alias gate re-review, option A) ----
+
+
+def _as_role(role: str) -> list[Row]:
+    return [(r[0], role, *r[2:]) if r[0] == COMPOSER[0] else r for r in BASE_ROWS]
+
+
+def test_a_value_condition_naming_edit_holds_on_the_same_named_document() -> None:
+    """Live alias-4/5 (2026-11-07): the plan named Edit "Text Editor", Notepad shows a Document;
+    the steps aliased and the value condition never held."""
+    verdict, _ = _judge(MESSAGE, "hello there", _as_role("Document"))
+    assert verdict.holds is True
+    assert verdict.evidence == {"alias": "Document"}
+
+
+def test_the_exact_role_is_judged_before_an_alias() -> None:
+    other = (21, "Document", "Message", (42, 61), COMPOSER_AREA[0])
+    verdict, _ = _judge(MESSAGE, "hello there", [*BASE_ROWS, other])
+    assert verdict.holds is True
+    assert "alias" not in verdict.evidence
+
+
+def test_two_alias_fields_never_hold() -> None:
+    twin = (21, "ComboBox", "Message", (42, 61), COMPOSER_AREA[0])
+    verdict, live = _judge(MESSAGE, "hello there", [*_as_role("Document"), twin])
+    assert verdict.holds is False
+    assert verdict.evidence == {"reason": "ambiguous_target"}
+    assert live.reads == 0
+
+
+def test_a_secure_alias_field_is_never_read() -> None:
+    verdict, live = _judge(MESSAGE, "hello there", _as_role("Document"), secure=True)
+    assert verdict.holds is False
+    assert verdict.evidence == {"reason": "secure_target"}
+    assert live.reads == 0
+
+
+def test_a_plan_naming_edit_ticks_when_the_field_is_a_document() -> None:
+    """Alias gate option A end to end (live alias-4/5): the type step and the value condition
+    both name Edit; the field is a Document; the steps alias and the subgoal ticks."""
+    from tests.orchestrator.test_loop import Harness, _type  # noqa: PLC0415
+
+    h = Harness()
+    h.world.rows = _as_role("Document")
+    result = h.session.run_task(_value_plan(_type()))
+    assert result.status == "done", result
+    assert result.ticked == {"g1"}
+    assert result.results[0].evidence["alias"] == "Document"
+
+
+def test_an_aliased_value_never_ticks_at_a_runs_start_either() -> None:
+    """Parity with the exact field: a value is the type step's business (FV-01/03)."""
+    from tests.orchestrator.test_loop import Harness, _type  # noqa: PLC0415
+
+    h = Harness()
+    h.world.rows = _as_role("Document")
+    h.world.composer_value = "hello there"
+    result = h.session.run_task(_value_plan(_type()))
+    assert len(result.results) == 1, "the type step ran: nothing ticked at start"
