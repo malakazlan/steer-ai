@@ -90,6 +90,8 @@ class PlanOutcome:
     stop_reason: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    repaired: bool = False
+    """The first document was refused at the plan boundary and one repair turn fixed it."""
 
     def trace_record(self) -> dict[str, Any]:
         """Counts and codes only (5.14 [v1.2]): never the goal, the screen or the plan."""
@@ -103,6 +105,7 @@ class PlanOutcome:
             "output_tokens": self.output_tokens,
             "steps": len(self.plan.steps),
             "subgoals": len(self.plan.subgoals),
+            "repaired": self.repaired,
         }
 
 

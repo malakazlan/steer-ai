@@ -202,35 +202,55 @@ class ClaudePlanner:
         return cls(parse=parse, model=os.environ.get("STEER_PLANNER_MODEL") or DEFAULT_MODEL)
 
     def plan(self, request: PlanRequest) -> PlanOutcome:
+        """One call; when the plan boundary refuses the document, one repair turn that shows
+        the model its own answer and the refused path with the boundary's reason (never screen
+        content); a second refusal is `invalid_plan`."""
         system, user = build_prompt(request)
         started = time.perf_counter_ns()
-        response = self._call(system, user)
-        latency_ms = (time.perf_counter_ns() - started) / 1e6
-        doc = response.parsed_output
-        stop_reason = _attr(response, "stop_reason")
-        model_used = str(response.model)
-        if not isinstance(doc, PlanDoc):
-            raise self._error(_empty_detail(stop_reason), model=model_used)
-        if not doc.steps:
-            # the prompt asks for no steps when the goal cannot be done here: its own token,
-            # so the invalid-plan rate stays honest (decision Q2)
-            raise self._error("no_steps", model=model_used)
+        messages: list[dict[str, str]] = [{"role": "user", "content": user}]
+        response = self._call(system, messages)
+        doc = self._document(response)
         data = _document_bytes(doc, request)
+        responses = [response]
         try:
             plan = plan_from_bytes(data)
         except PlanError as exc:
-            raise self._error("invalid_plan", path=exc.path, model=model_used) from exc
-        usage = _attr(response, "usage")
+            messages += [
+                {"role": "assistant", "content": doc.model_dump_json(exclude_none=True)},
+                {"role": "user", "content": _repair_note(exc)},
+            ]
+            response = self._call(system, messages)
+            responses.append(response)
+            data = _document_bytes(self._document(response), request)
+            try:
+                plan = plan_from_bytes(data)
+            except PlanError as again:
+                raise self._error(
+                    "invalid_plan", path=again.path, model=str(response.model)
+                ) from again
+        stop_reason = _attr(response, "stop_reason")
         return PlanOutcome(
             plan=plan,
             data=data,
             model=str(response.model),
             prompt_version=PROMPT_VERSION,
-            latency_ms=latency_ms,
+            latency_ms=(time.perf_counter_ns() - started) / 1e6,
             stop_reason=None if stop_reason is None else str(stop_reason),
-            input_tokens=_count(usage, "input_tokens"),
-            output_tokens=_count(usage, "output_tokens"),
+            input_tokens=_total(responses, "input_tokens"),
+            output_tokens=_total(responses, "output_tokens"),
+            repaired=len(responses) > 1,
         )
+
+    def _document(self, response: ParsedLike) -> PlanDoc:
+        doc = response.parsed_output
+        model_used = str(response.model)
+        if not isinstance(doc, PlanDoc):
+            raise self._error(_empty_detail(_attr(response, "stop_reason")), model=model_used)
+        if not doc.steps:
+            # the prompt asks for no steps when the goal cannot be done here: its own token,
+            # so the invalid-plan rate stays honest (decision Q2); never repaired
+            raise self._error("no_steps", model=model_used)
+        return doc
 
     def _error(
         self,
@@ -248,14 +268,14 @@ class ClaudePlanner:
             prompt_version=PROMPT_VERSION,
         )
 
-    def _call(self, system: str, user: str) -> ParsedLike:
+    def _call(self, system: str, messages: list[dict[str, str]]) -> ParsedLike:
         model_calls.count("planner")
         try:
             return self._parse(
                 model=self.model,
                 max_tokens=self._max_tokens,
                 system=system,
-                messages=[{"role": "user", "content": user}],
+                messages=list(messages),
                 output_format=PlanDoc,
                 output_config={"effort": EFFORT},
             )
@@ -266,6 +286,25 @@ class ClaudePlanner:
             if mapped is None:
                 raise
             raise self._error(mapped.detail, path=mapped.path, code=mapped.code) from exc
+
+
+REPAIR_NOTE_CHARS = 300
+"""The boundary's reason is code-authored; the cap keeps a reason that echoes a model value
+from growing the turn."""
+
+
+def _repair_note(exc: PlanError) -> str:
+    reason = _one_line(str(exc))[:REPAIR_NOTE_CHARS]
+    return (
+        f"The agent refused that plan at {exc.path}: {reason}. Return the whole plan again, "
+        "corrected, following every rule in the instructions."
+    )
+
+
+def _total(responses: list[ParsedLike], name: str) -> int | None:
+    counts = [_count(_attr(r, "usage"), name) for r in responses]
+    known = [c for c in counts if c is not None]
+    return sum(known) if known else None
 
 
 def _document_bytes(doc: PlanDoc, request: PlanRequest) -> bytes:
