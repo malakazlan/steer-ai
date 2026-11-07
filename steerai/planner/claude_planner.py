@@ -17,6 +17,7 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
+from steerai import model_calls
 from steerai.action.launch import APPS, SITES
 from steerai.errors import ErrorCode
 from steerai.orchestrator.contracts import verbatim_in
@@ -239,6 +240,7 @@ class ClaudePlanner:
         )
 
     def _call(self, system: str, user: str) -> ParsedLike:
+        model_calls.count("planner")
         try:
             return self._parse(
                 model=self.model,

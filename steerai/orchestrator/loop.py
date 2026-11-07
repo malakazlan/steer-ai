@@ -303,6 +303,9 @@ class Session:
         self._verdicts: Mapping[str, str] | None = None
         """The current plan's verdict per step id; None while goal-match is off."""
         self._done_steps: list[Step] = []
+        self._preset: tuple[Plan, Mapping[str, str]] | None = None
+        """Verdicts a trusted plan-cache entry carries, for exactly that plan (5.12 [v2.33])."""
+        self._judge_failure: str | None = None
         """Steps this session ran, the context a continuation's judgement reads (GM-08)."""
         self._tap_guard = tap_guard
         """A reason not to tap now (held keys, accessibility filters, an elevated window
@@ -1712,11 +1715,26 @@ class Session:
     def _judge(self, plan: Plan) -> None:
         """One goal-match call per plan, before any step: verdict tokens to the trace, never
         the goal, names or texts; a continuation is judged with the steps already done."""
+        if self._preset is not None and self._preset[0] == plan:
+            self._verdicts = dict(self._preset[1])
+            self._judge_failure = None
+            self._trace.write(
+                {
+                    "kind": "goal_match",
+                    "task_id": self.task_id,
+                    "verdicts": dict(self._verdicts),
+                    "failure": None,
+                    "model": "cache",
+                    "latency_ms": 0.0,
+                }
+            )
+            return
         if self._goal_matcher is None:
             self._verdicts = None
             self._trace.write({"kind": "goal_match", "task_id": self.task_id, "goal_match": "off"})
             return
         judgement = self._goal_matcher.judge(plan.goal, plan.steps, self._done_steps)
+        self._judge_failure = judgement.failure
         judged = [s for s in plan.steps if s.verb != "open"]
         self._verdicts = {s.id: judgement.verdict(s.id) for s in judged}
         self._trace.write(
@@ -1729,6 +1747,16 @@ class Session:
                 "latency_ms": round(judgement.latency_ms, 1),
             }
         )
+
+    def preset(self, plan: Plan, verdicts: Mapping[str, str]) -> None:
+        """A trusted cache entry's verdicts stand for this exact plan only; any other plan (a
+        continuation) is judged live (hunter PC-12)."""
+        self._preset = (plan, dict(verdicts))
+
+    @property
+    def judged(self) -> tuple[dict[str, str], str | None]:
+        """The last plan's verdict tokens and its judgement's failure token (cache write)."""
+        return dict(self._verdicts or {}), self._judge_failure
 
     def _note_done(self, step: Step, result: StepResult) -> None:
         if result.ok:

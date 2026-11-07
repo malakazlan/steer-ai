@@ -79,7 +79,7 @@ def _outcome(plan: Plan) -> PlanOutcome:
 
 
 def _go(outcome: PlanOutcome) -> str:
-    return "go:" + hashlib.sha256(outcome.data).hexdigest()[:12]
+    return "go:" + hashlib.sha256(outcome.data + b"rp-1").hexdigest()[:12]
 
 
 def _step(

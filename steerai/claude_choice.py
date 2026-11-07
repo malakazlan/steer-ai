@@ -16,6 +16,7 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
+from steerai import model_calls
 from steerai.decision import NONE_OPTION, ElementChoice, option_ids, peakedness, top2_margin
 
 DEFAULT_MODEL = "claude-opus-5"
@@ -107,6 +108,7 @@ class ClaudeChooser:
         model_used = self._model
         for vote in range(self._votes):
             nonce = f"\n\nrequest: {uuid.uuid4().hex}" if self._votes > 1 else ""
+            model_calls.count("chooser")
             response = self._parse(
                 model=self._model,
                 max_tokens=_MAX_TOKENS,

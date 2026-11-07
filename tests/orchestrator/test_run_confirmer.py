@@ -75,7 +75,7 @@ def test_a_made_confirmer_answers_the_preview_and_reaches_the_session(tmp_path: 
     assert code == EXIT_DONE, stderr.getvalue()
     assert json.loads(stdout.getvalue())["status"] == "done"
     assert len(made) == 1, "one confirmer for the preview and the session"
-    assert made[0].go_ids == [hashlib.sha256(outcome.data).hexdigest()[:12]]
+    assert made[0].go_ids == [hashlib.sha256(outcome.data + b"goal-1").hexdigest()[:12]]
     assert world.bound[0].confirmer is made[0]
     assert made[0].made_with is not None
     assert made[0].made_with[1] is stderr
