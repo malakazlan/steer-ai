@@ -11,7 +11,7 @@ import pytest
 from steerai.goal_match import Judgement
 from steerai.orchestrator.contracts import Step, Target
 from steerai.orchestrator.gate import effective_risk
-from steerai.verify.predicates import TitleMatches
+from steerai.verify.predicates import Disappeared, TitleMatches
 from tests.orchestrator.test_loop import Harness, _plan
 from tests.stress.injection.catalogue import Attack, fixture, pinned
 from tests.stress.injection.hostile import Dispatch, HostilePage, rebuild
@@ -138,12 +138,13 @@ class _LateRaised:
         return self.page.observe(hwnd, **kwargs)
 
 
-def _late(attack: Attack) -> tuple[Harness, list[Dispatch]]:
+def _late(attack: Attack, name: str = "") -> tuple[Harness, list[Dispatch]]:
     assert attack.action is not None
+    name = name or attack.action.name
     h = Harness(default="no")
     log: list[Dispatch] = []
-    page = HostilePage(h.world, {attack.action.name: attack.payload})
-    row = (11, "Button", attack.action.name, (42, 43), 7)
+    page = HostilePage(h.world, {name: attack.payload})
+    row = (11, "Button", name, (42, 43), 7)
     rebuild(h, log=log, observer=_LateRaised(page, row))
     return h, log
 
@@ -160,17 +161,28 @@ def test_a_done_key_found_only_after_the_settle_stops_and_dispatches_nothing() -
 
 
 def test_an_open_record_found_only_after_the_settle_reaches_the_gate() -> None:
+    """The second admission's answer is the one the ask shows: an earlier unverified delivery
+    under this key is never dispatched again unseen (review of #114). A name long enough for
+    the R3 click's only strong postcondition (the control disappears)."""
     attack = fixture("IJ-04", "element_id")
-    h, log = _late(attack)
-    step = _click(attack)
+    name = "Continue to your account"
+    h, log = _late(attack, name)
+    step = Step(
+        id="c1",
+        subgoal="g1",
+        verb="click",
+        target=Target(role="Button", name=name),
+        risk="R0",
+        expect=Disappeared(role="Button", name_pattern=name),
+    )
     h.ledger.executions[h.ledger.key_for(step)] = {
         "step_id": "c0",
         "outcome": "delivered_unverified",
     }
-    result = h.session.run_step(step)
-    assert result.evidence["risk"] == "R3"
+    h.session.run_step(step)
+    asked = [(a.risk, a.previous_attempt) for a in h.confirmer.asked]
+    assert asked == [("R3", "delivered_unverified")]
     assert log == []
-    assert result.gate == "block", "the raised click still has no strong expect"
 
 
 def test_a_done_key_with_the_element_visible_is_done_already_at_the_ceiling() -> None:
