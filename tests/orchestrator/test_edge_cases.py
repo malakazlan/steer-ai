@@ -511,7 +511,8 @@ def test_twin_targets_are_ambiguous_and_nothing_is_asked_written_or_sent() -> No
     assert "s3" not in h.ledger.records
 
 
-def test_a_retry_whose_re_resolve_is_ambiguous_fails_element_not_found_after_one_dispatch() -> None:
+def test_a_retry_whose_re_resolve_is_ambiguous_is_a_changed_screen_after_one_dispatch() -> None:
+    """#89: a twin appearing after the yes cannot be proven the element asked about."""
     h = Harness()
     h.session.run_step(_type())
 
@@ -526,8 +527,8 @@ def test_a_retry_whose_re_resolve_is_ambiguous_fails_element_not_found_after_one
     h.semantic.on_execute = twin_appears
     result = h.session.run_step(_send())
     assert result.ok is False
-    assert result.code is ErrorCode.ELEMENT_NOT_FOUND
-    assert result.evidence["detail"] == "ambiguous_target"
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.evidence["detail"] == "screen_changed_during_act"
     assert [c[0] for c in h.semantic.calls] == ["click"]
     assert h.world.sent == []
     key = h.ledger.key_for(_send())

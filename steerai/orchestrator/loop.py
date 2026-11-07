@@ -394,8 +394,10 @@ class Session:
                     if gate_result.outcome == "confirm"
                     else "screen_changed_during_wait"
                 )
+                asked = element_id
                 before, element_id = stage.measure(
-                    "observe", lambda: self._reobserve(step, before, evidence, mismatch=token)
+                    "observe",
+                    lambda: self._reobserve(step, before, evidence, asked=asked, mismatch=token),
                 )
                 if self._binding is not None:
                     # the bound row's text may have moved on: the postcondition follows it,
@@ -1019,31 +1021,49 @@ class Session:
         if self._locked is not None and self._locked() is not False:
             raise _StepFailureError(ErrorCode.SECURE_DESKTOP, "session_locked")
 
-    def _after_ask(
-        self, step: Step, before: Snapshot, stage: _Stage, evidence: dict[str, Any]
-    ) -> tuple[Snapshot, int]:
-        """The approved thing must be the executed thing (OR-31): observe again, on the screen
-        the ask was made on (RN-13), and resolve the target again."""
-        pair: tuple[Snapshot, int] = stage.measure(
-            "observe", lambda: self._reobserve(step, before, evidence)
-        )
-        return pair
-
     def _reobserve(
         self,
         step: Step,
         before: Snapshot,
         evidence: dict[str, Any],
         *,
+        asked: int,
         mismatch: str = "screen_changed_during_ask",
     ) -> tuple[Snapshot, int]:
+        """The approved thing must be the executed thing (OR-31, #89): the same window, and for
+        an exact or aliased target the same element (RuntimeId and role) as the one asked
+        about; a page that moves the target's label onto another element, or removes it, is a
+        changed screen, never a click elsewhere."""
         fresh = self._observe_fresh(evidence)
         if fresh.title != before.title:
             raise _StepFailureError(ErrorCode.FOCUS_LOST, mismatch)
         # no settle here (OR-31): a target gone while the ask was open is a changed screen
-        element_id = self._resolve_again(step, fresh, evidence)
+        element_id = self._same_target(step, fresh, before.element(asked), mismatch, evidence)
         self._secure_step = fresh.element(element_id).secure
         return fresh, element_id
+
+    def _same_target(
+        self,
+        step: Step,
+        snapshot: Snapshot,
+        asked: Element,
+        mismatch: str,
+        evidence: dict[str, Any] | None = None,
+    ) -> int:
+        """The target resolved again in `snapshot`, which must be the element asked about
+        (#89): for an exact or aliased target the same RuntimeId and role; a person target
+        keeps its identity binding (`rebind`). Gone, ambiguous or another element is the
+        `mismatch` token under `focus_lost`, never a dispatch elsewhere."""
+        try:
+            element_id = self._resolve_again(step, snapshot, evidence)
+        except _StepFailureError as failure:
+            if failure.detail in ("no_match", "ambiguous_target"):
+                raise _StepFailureError(ErrorCode.FOCUS_LOST, mismatch) from failure
+            raise
+        person = step.target is not None and step.target.match == "person"
+        if not person and not _same_element(asked, snapshot.element(element_id)):
+            raise _StepFailureError(ErrorCode.FOCUS_LOST, mismatch)
+        return element_id
 
     def _refused(  # noqa: PLR0913 - the step's state at the refusal
         self,
@@ -1372,6 +1392,8 @@ class Session:
         executor = self._physical if path == "physical" else self._semantic
         retries = 0
         scrolled = False
+        # the element approved or observed: every re-resolve below must find it again (#89)
+        asked = before.element(element_id)
         while True:
             self._still_the_window()  # a gone window never leaves an acting record
             if risk in ("R2", "R3"):
@@ -1382,7 +1404,11 @@ class Session:
             if self._boundary(self._act_evidence):
                 # a wait here ended after the observe too: same screen, fresh target (TK-03)
                 before, element_id = self._reobserve(
-                    step, before, self._act_evidence, mismatch="screen_changed_during_wait"
+                    step,
+                    before,
+                    self._act_evidence,
+                    asked=element_id,
+                    mismatch="screen_changed_during_wait",
                 )
                 self._act_evidence["restarted"] = True
             self._still_the_window()
@@ -1406,12 +1432,12 @@ class Session:
                 )
                 self._scrolled = scroll_result.delivery.value
                 before = self._observer.observe(self.hwnd, stable_window=1)
-                element_id = self._resolve_again(step, before)
+                element_id = self._same_target(step, before, asked, ACT_MISMATCH)
                 continue
             if result.code is ErrorCode.ELEMENT_NOT_FOUND and retries == 0:
                 retries += 1
                 before = self._observer.observe(self.hwnd, stable_window=1)
-                element_id = self._resolve_again(step, before)
+                element_id = self._same_target(step, before, asked, ACT_MISMATCH)
                 continue
             return result, before, retries
 
@@ -1435,7 +1461,11 @@ class Session:
             return result, before, element_id
         if self._boundary(self._act_evidence):
             before, element_id = self._reobserve(
-                step, before, self._act_evidence, mismatch="screen_changed_during_wait"
+                step,
+                before,
+                self._act_evidence,
+                asked=element_id,
+                mismatch="screen_changed_during_wait",
             )
             self._act_evidence["restarted"] = True
             if self._monitor is not None:
@@ -1830,6 +1860,17 @@ class Session:
             )
         except (SteerError, ValueError):
             return None
+
+
+ACT_MISMATCH = "screen_changed_during_act"
+"""A re-resolve inside the act loop (the retry after a refusal, the scroll) found another
+element than the one asked about (#89): `focus_lost`, nothing more dispatched."""
+
+
+def _same_element(asked: Element, now: Element) -> bool:
+    """The element asked about, still: the same UIA RuntimeId and role (#89). An element
+    without a RuntimeId cannot be proven the same: unclear means a changed screen."""
+    return bool(asked.runtime_id) and now.runtime_id == asked.runtime_id and now.role == asked.role
 
 
 FRAME_HOST = "applicationframehost.exe"

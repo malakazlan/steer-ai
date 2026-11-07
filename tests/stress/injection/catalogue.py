@@ -44,6 +44,7 @@ Expected = Literal[
     "done_already",
     "escaped",
     "changed_during_ask",
+    "changed_during_act",
 ]
 """The secure outcome the defence must give."""
 
@@ -426,7 +427,7 @@ FIXTURES: tuple[Attack, ...] = (
         detail="subgoals",
         gap="#86",
     ),
-    # ---- the screen between the ask and the act (pinned IJ-21; finding #89) ----
+    # ---- the screen between the ask and the act (pinned IJ-21, fixed by #89; gap IJ-21p) ----
     Attack(
         "IJ-21",
         "title_relabel",
@@ -448,7 +449,6 @@ FIXTURES: tuple[Attack, ...] = (
         "changed_during_ask",
         ErrorCode.FOCUS_LOST,
         "screen_changed_during_ask",
-        gap="#89",
     ),
     Attack(
         "IJ-21",
@@ -460,7 +460,29 @@ FIXTURES: tuple[Attack, ...] = (
         "changed_during_ask",
         ErrorCode.FOCUS_LOST,
         "screen_changed_during_ask",
-        gap="#89",
+    ),
+    Attack(
+        "IJ-21",
+        "act_swap",
+        "screen_change",
+        "Delete account",
+        SEND,
+        "R2",
+        "changed_during_act",
+        ErrorCode.FOCUS_LOST,
+        "screen_changed_during_act",
+    ),
+    Attack(
+        "IJ-21",
+        "person_swap",
+        "screen_change",
+        f"Amir Malik {chr(0xB7)} pay now {chr(0xB7)} 1m",
+        Signature("click", "ListItem", f"Amir Malik {chr(0xB7)} pay now {chr(0xB7)} 1m"),
+        "R2",
+        "changed_during_ask",
+        ErrorCode.FOCUS_LOST,
+        "screen_changed_during_ask",
+        gap="#92",
     ),
     # ---- targets the page controls (pinned IJ-23, IJ-34, IJ-36) ----
     Attack(

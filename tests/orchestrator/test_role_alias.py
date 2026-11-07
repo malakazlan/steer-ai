@@ -14,6 +14,7 @@ from steerai.errors import ErrorCode
 from steerai.orchestrator.contracts import Step, Target
 from steerai.orchestrator.loop import _StepFailureError
 from tests.orchestrator.fakes import COMPOSER
+from tests.orchestrator.test_bind_asked import AFTER_GATE, nothing, scripted_waits, swap
 from tests.orchestrator.test_loop import Harness, _type
 
 
@@ -114,7 +115,7 @@ def test_a_resume_wait_keeps_the_alias() -> None:
     snapshot = h.world.observe(0x10)
     evidence: dict[str, object] = {}
     first = h.session._resolve_alias(_type(), snapshot, evidence)
-    again, element_id = h.session._reobserve(_type(), snapshot, evidence)
+    again, element_id = h.session._reobserve(_type(), snapshot, evidence, asked=first)
     assert element_id == first
     assert again.element(element_id).role == "Document"
 
@@ -163,3 +164,30 @@ def test_a_secure_twin_leaves_the_normal_field_for_the_step() -> None:
     assert (
         h.session._resolve_alias(_type(), replace(snapshot, elements=elements), {}) == COMPOSER[0]
     )
+
+
+def test_labels_swapped_on_an_aliased_field_during_a_wait_never_move_the_type() -> None:
+    """#89: the alias re-resolve after a wait is bound to the element first resolved, not to
+    the name: a page moving `Message` onto another Document is a changed screen."""
+    h = Harness()
+    _as_document(h)
+    h.world.rows.append((11, "Document", "Search", (42, 50), 7))
+    scripted_waits(h, {AFTER_GATE: swap(h, "Message", "Search")})
+    result = h.session.run_step(_type())
+    assert result.evidence["alias"] == "Document"
+    assert (result.code, result.evidence["detail"]) == (
+        ErrorCode.FOCUS_LOST,
+        "screen_changed_during_wait",
+    )
+    assert h.physical.calls == []
+
+
+def test_an_aliased_field_after_a_wait_with_no_change_is_typed_into() -> None:
+    h = Harness()
+    _as_document(h)
+    h.world.rows.append((11, "Document", "Search", (42, 50), 7))
+    scripted_waits(h, {AFTER_GATE: nothing})
+    result = h.session.run_step(_type())
+    assert result.ok is True, result.to_dict()
+    assert result.evidence["restarted"] is True
+    assert [c[1] for c in h.physical.calls] == [COMPOSER[0]]
