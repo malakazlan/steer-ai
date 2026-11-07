@@ -6,11 +6,13 @@ exactly one match; the model never changes the element."""
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any
 
 import pytest
 
 from steerai.errors import ErrorCode
 from steerai.orchestrator.contracts import Step, Target
+from steerai.orchestrator.loop import _StepFailureError
 from tests.orchestrator.fakes import COMPOSER
 from tests.orchestrator.test_loop import Harness, _type
 
@@ -49,7 +51,7 @@ def test_an_r2_step_never_takes_an_alias() -> None:
     _as_document(h)
     result = h.session.run_step(replace(_type(), risk="R2"))
     assert result.evidence["detail"] == "no_match"
-    assert "alias" not in result.evidence or result.evidence["alias"] == "none"
+    assert "alias" not in result.evidence, "an R2 step never even looks for an alias"
 
 
 def test_two_text_fields_with_the_name_are_ambiguous() -> None:
@@ -80,8 +82,29 @@ def test_a_resolved_element_whose_own_words_raise_the_tier_stops() -> None:
         for e in snapshot.elements
     ]
     marked = replace(snapshot, elements=elements)
-    with pytest.raises(Exception, match="alias_risk"):
+    with pytest.raises(_StepFailureError) as refused:
         h.session._resolve_alias(_type(), marked, {})
+    assert (refused.value.code, refused.value.detail) == (ErrorCode.GATE_BLOCKED, "alias_risk")
+
+
+def test_a_raised_tier_dispatches_nothing() -> None:
+    """Principal re-review: the refusal reaches the step result and nothing is sent or typed."""
+    h = Harness()
+    _as_document(h)
+    observe = h.world.observe
+
+    def marked(hwnd: int, **kwargs: object) -> Any:
+        snapshot = observe(hwnd, **kwargs)
+        elements = [
+            replace(e, automation_id="deleteAccountField") if e.id == COMPOSER[0] else e
+            for e in snapshot.elements
+        ]
+        return replace(snapshot, elements=elements)
+
+    h.world.observe = marked  # type: ignore[method-assign]  # every look shows the automation id
+    result = h.session.run_step(_type())
+    assert (result.code, result.evidence["detail"]) == (ErrorCode.GATE_BLOCKED, "alias_risk")
+    assert h.semantic.calls == []
 
 
 def test_a_resume_wait_keeps_the_alias() -> None:
@@ -111,5 +134,19 @@ def test_a_secure_field_is_never_an_alias() -> None:
     _as_document(h)
     snapshot = h.world.observe(0x10)
     elements = [replace(e, secure=True) if e.id == COMPOSER[0] else e for e in snapshot.elements]
-    with pytest.raises(Exception, match="no_match"):
+    with pytest.raises(_StepFailureError) as refused:
         h.session._resolve_alias(_type(), replace(snapshot, elements=elements), {})
+    assert (refused.value.code, refused.value.detail) == (ErrorCode.ELEMENT_NOT_FOUND, "no_match")
+
+
+def test_a_re_resolve_keeps_the_role_the_step_first_resolved() -> None:
+    """Principal note: after a wait the step acts on the same kind of field, never a new one."""
+    h = Harness()
+    _as_document(h)
+    snapshot = h.world.observe(0x10)
+    h.session._resolve_alias(_type(), snapshot, {})
+    combo = [(r[0], "ComboBox", *r[2:]) if r[0] == COMPOSER[0] else r for r in h.world.rows]
+    h.world.rows = combo
+    with pytest.raises(_StepFailureError) as gone:
+        h.session._resolve_again(_type(), h.world.observe(0x10))
+    assert gone.value.detail == "no_match"

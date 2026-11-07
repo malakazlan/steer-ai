@@ -256,7 +256,7 @@ class _Stage:
 
 
 class Session:
-    def __init__(  # noqa: PLR0913 - every collaborator is injected so the loop runs pure in tests
+    def __init__(  # noqa: PLR0913, PLR0915 - every collaborator injected; per-step state declared
         self,
         *,
         task_id: str,
@@ -340,6 +340,8 @@ class Session:
         self._sent_in_act = False
         self._binding: Binding | None = None
         self._candidates: tuple[str, list[Element]] | None = None
+        self._aliased: str | None = None
+        """The text role the step resolved by alias, kept for its later re-resolves."""
 
     # ---- one step ----------------------------------------------------------------------------
 
@@ -1098,7 +1100,7 @@ class Session:
         self._sent_in_act = False
         self._binding = None
         self._candidates = None
-        self._aliased = False
+        self._aliased = None
         self._counts_at_step = self._monitor.counts() if self._monitor is not None else {}
 
     def _input_evidence(self, evidence: dict[str, Any]) -> None:
@@ -1190,7 +1192,7 @@ class Session:
     ) -> int:
         """A later resolve in the same step (after an ask, a wait, a scroll or the act retry)
         goes the way the step first resolved (hunter CH-12)."""
-        if self._aliased:
+        if self._aliased is not None:
             return self._resolve_alias(step, snapshot, {} if evidence is None else evidence)
         return self._resolve(step, snapshot)
 
@@ -1213,6 +1215,7 @@ class Session:
             for e in snapshot.elements
             if e.role in ALIAS_ROLES
             and e.role != target.role
+            and (self._aliased is None or e.role == self._aliased)  # the role first resolved
             and not e.secure  # never a password field (hunter CH-04)
             and normalise_name(e.name).casefold() == wanted
         ]
@@ -1227,7 +1230,7 @@ class Session:
         if _RISK_RANK[effective_risk(replace(step, target=shown))] > _RISK_RANK[step.risk]:
             raise _StepFailureError(ErrorCode.GATE_BLOCKED, "alias_risk")
         evidence["alias"] = element.role
-        self._aliased = True
+        self._aliased = element.role
         return element.id
 
     def _resolve_person(self, step: Step, target: Target, snapshot: Snapshot) -> int:
