@@ -389,6 +389,8 @@ class Session:
                 "gate", lambda: self._decide(step, key, before, previous, element_id, risk=risk)
             )
             gate_stage = gate_result.outcome
+            if "ask_reasons" in gate_result.evidence:
+                evidence["ask_reasons"] = gate_result.evidence["ask_reasons"]
             if gate_result.outcome in ("block", "pending"):
                 return self._gate_stopped(step, gate_result, stage, evidence)
             decision, expect = self._admitted(key, previous, gate_result)
@@ -497,6 +499,8 @@ class Session:
                 "gate", lambda: self._decide(step, key, before, previous, None, risk=risk)
             )
             gate_stage = gate_result.outcome
+            if "ask_reasons" in gate_result.evidence:
+                evidence["ask_reasons"] = gate_result.evidence["ask_reasons"]
             if gate_result.outcome in ("block", "pending"):
                 return self._gate_stopped(step, gate_result, stage, evidence)
             decision, _expect = self._admitted(key, previous, gate_result)

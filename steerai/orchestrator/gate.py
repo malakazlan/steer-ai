@@ -132,17 +132,21 @@ def _contains(words: list[str], pattern: str) -> bool:
     return any(words[i : i + len(wanted)] == wanted for i in range(len(words) - len(wanted) + 1))
 
 
-def _declined(answer: str, risk: Risk, decision_id: str) -> GateResult:
-    """Anything but a yes: a no blocks, the kill switch blocks (TK-23), silence pauses."""
+def _declined(
+    answer: str, risk: Risk, decision_id: str, reasons: tuple[str, ...] = ()
+) -> GateResult:
+    """Anything but a yes: a no blocks, the kill switch blocks (TK-23), silence pauses. Why a
+    step below R2 asked rides along as closed tokens, never text."""
+    why: dict[str, Any] = {"ask_reasons": list(reasons)} if reasons else {}
     if answer in ("no", f"no:{decision_id}"):
-        return _block("user_declined", risk, decision_id=decision_id)
+        return _block("user_declined", risk, decision_id=decision_id, **why)
     if answer == "killed":
-        return _block("killed", risk, decision_id=decision_id)
+        return _block("killed", risk, decision_id=decision_id, **why)
     return GateResult(
         outcome="pending",
         decision=None,
         code=ErrorCode.GATE_PENDING_USER,
-        evidence={"risk": risk, "decision_id": decision_id, "detail": "unanswered"},
+        evidence={"risk": risk, "decision_id": decision_id, "detail": "unanswered", **why},
     )
 
 
@@ -478,7 +482,7 @@ class Gate:
                 expect=predicate,
                 params=params,
             )
-        return _declined(answer, risk, decision_id)
+        return _declined(answer, risk, decision_id, reasons)
 
     def postcondition(
         self, step: Step, expect: Predicate | None, risk: Risk, params: Params
