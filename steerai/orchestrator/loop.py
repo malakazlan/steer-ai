@@ -105,6 +105,12 @@ SETTLE_S = 0.5
 """A target missing right after the page changed is a timing gap first: settle this long and
 re-observe before calling it absent (first real-site run 2026-11-04; unmeasured)."""
 SETTLE_RETRIES = 2
+_RISK_RANK = {risk: rank for rank, risk in enumerate(RISKS)}
+ALIAS_ROLES: frozenset[str] = frozenset({"Edit", "Document", "ComboBox"})
+"""Text roles one app shows for another's field: a `focus` or `type` whose exact role is not
+on screen resolves by its exact name among these (chooser-wiring gate; live run osg-4 named
+`Edit` where Notepad shows `Document`)."""
+_ALIAS_VERBS: frozenset[str] = frozenset({"focus", "type"})
 OPEN_POLL_S = 0.1
 NAVIGATION_VERIFY_S = 10.0
 """Verify deadline for a replacing `appeared` (a page replacing itself; 5.10 [v1.9]): a heavy
@@ -1026,7 +1032,10 @@ class Session:
         if fresh.title != before.title:
             raise _StepFailureError(ErrorCode.FOCUS_LOST, mismatch)
         # no settle here (OR-31): a target gone while the ask was open is a changed screen
-        element_id = self._resolve(step, fresh)
+        if self._aliased:
+            element_id = self._resolve_alias(step, fresh, evidence)
+        else:
+            element_id = self._resolve(step, fresh)
         self._secure_step = fresh.element(element_id).secure
         return fresh, element_id
 
@@ -1092,6 +1101,7 @@ class Session:
         self._sent_in_act = False
         self._binding = None
         self._candidates = None
+        self._aliased = False
         self._counts_at_step = self._monitor.counts() if self._monitor is not None else {}
 
     def _input_evidence(self, evidence: dict[str, Any]) -> None:
@@ -1143,8 +1153,12 @@ class Session:
             try:
                 return before, stage.measure("decide", partial(self._resolve, step, before))
             except _StepFailureError as failure:
-                if person or failure.detail != "no_match" or settled >= SETTLE_RETRIES:
+                if person or failure.detail != "no_match":
                     raise
+                if settled >= SETTLE_RETRIES:
+                    # the final no_match: a text field shown under another text role (gate item 1)
+                    resolved = partial(self._resolve_alias, step, before, evidence)
+                    return before, stage.measure("decide", resolved)
             settled += 1
             evidence["settled"] = settled
             stage.measure("settle", partial(self._sleep, SETTLE_S))
@@ -1173,6 +1187,41 @@ class Session:
         if len(matches) > 1:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
         return matches[0].id
+
+    def _resolve_alias(self, step: Step, snapshot: Snapshot, evidence: dict[str, Any]) -> int:
+        """An exact text target not on screen under its role: the one element of another text
+        role with the same name, for `focus` and `type` at R0/R1 only; the model never changes
+        the element (chooser-wiring gate items 1-3). The action key stays the plan's."""
+        target = step.target
+        if (
+            target is None
+            or target.element_id is not None
+            or step.verb not in _ALIAS_VERBS
+            or target.role not in ALIAS_ROLES
+            or effective_risk(step) not in ("R0", "R1")
+        ):
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_match")
+        wanted = normalise_name(target.name).casefold()
+        matches = [
+            e
+            for e in snapshot.elements
+            if e.role in ALIAS_ROLES
+            and e.role != target.role
+            and normalise_name(e.name).casefold() == wanted
+        ]
+        if not matches:
+            evidence["alias"] = "none"
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_match")
+        if len(matches) > 1:
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
+        element = matches[0]
+        # the tier read on the element that will be touched, never only on the plan's words
+        shown = replace(target, name=element.name, automation_id=element.automation_id)
+        if _RISK_RANK[effective_risk(replace(step, target=shown))] > _RISK_RANK[step.risk]:
+            raise _StepFailureError(ErrorCode.GATE_BLOCKED, "alias_risk")
+        evidence["alias"] = element.role
+        self._aliased = True
+        return element.id
 
     def _resolve_person(self, step: Step, target: Target, snapshot: Snapshot) -> int:
         """A person target (5.8 [v1.5]): the bound row once bound; else the candidates, with
