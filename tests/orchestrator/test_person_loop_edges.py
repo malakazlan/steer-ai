@@ -389,6 +389,30 @@ def test_a_deny_word_only_in_the_bound_name_part_raises_the_tier_for_the_whole_s
     assert monitor.asks == ["open", "closed"], "the confirm ask is bracketed for the monitor"
 
 
+@pytest.mark.parametrize("mark", [chr(0xA1), chr(0xD7), chr(0x0661)])
+def test_a_deny_word_before_a_character_the_fold_makes_a_letter_still_raises(mark: str) -> None:
+    """The tier reads the raw name part: the confusable fold turns these marks into letters, so
+    a folded "delete" + U+00A1 is one word, "deletei", and would never be raised."""
+    h = Harness()
+    _without_base_amir(h)
+    h.world.rows.append((16, "ListItem", f"Amir delete{mark} {MID} hi {MID} 2h", (42, 18), 1))
+    result = h.session.run_step(_r1_click("Amir"))
+    assert result.gate == "confirm", result.evidence
+    assert [a.risk for a in h.confirmer.asked] == ["R3"]
+    assert result.evidence["risk"] == "R3", "the step's own tier follows the gate's"
+    assert "p1" in h.ledger.records, "an R3 action has a write-ahead record"
+
+
+def test_the_candidates_ceiling_reads_the_raw_name_part() -> None:
+    """Admission's ceiling is never below the bound row's tier: both read the name as shown."""
+    h = Harness()
+    _without_base_amir(h)
+    h.world.rows.append((16, "ListItem", f"Amir delete{chr(0xA1)} {MID} hi {MID} 2h", (42, 18), 1))
+    step = _r1_click("Amir")
+    before = h.world.observe(0x10)
+    assert h.session._ceiling(step, h.ledger.key_for(step), before, "R1") == "R3"
+
+
 def test_a_deny_word_in_the_preview_never_raises_the_tier() -> None:
     h = Harness()
     h.world.rows.append((16, "ListItem", f"Sara {MID} delete everything {MID} 2h", (42, 18), 1))

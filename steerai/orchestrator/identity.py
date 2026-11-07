@@ -34,11 +34,18 @@ class Binding:
     role: str
     runtime_id: tuple[int, ...] = field(repr=False)
     name_part: str = field(repr=False)
-    """The comparable name part (NFKC, case-folded, confusables folded)."""
+    """The comparable name part (NFKC, case-folded, confusables folded), for identity matching
+    only: never the deny patterns' input, the fold joins marks like U+00A1 onto words (#97)."""
     full_name: str = field(repr=False)
     unique_name: bool = True
     """Whether the full name was unique among the ask-time candidates; only then may a
     re-rendered row be found again by its name (PT-08, review item 3)."""
+
+    @property
+    def shown_name_part(self) -> str:
+        """The name part as the screen shows it: what the deny patterns read. The folded
+        `name_part` makes marks like U+00A1 letters, so a deny word before one would vanish."""
+        return name_part(self.full_name)
 
     def to_record(self) -> dict[str, Any]:
         return {
