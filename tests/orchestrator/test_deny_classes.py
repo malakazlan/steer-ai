@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 
 from steerai.orchestrator.contracts import Step, Target
-from steerai.orchestrator.gate import DENY_PATTERNS, _words, effective_risk
+from steerai.orchestrator.gate import CONTROL_PATTERNS, DENY_PATTERNS, _words, effective_risk
 
 
 def _click(name: str, role: str = "Button", automation_id: str = "") -> Step:
@@ -22,7 +22,7 @@ def _click(name: str, role: str = "Button", automation_id: str = "") -> Step:
 
 def test_every_pattern_is_in_the_form_it_is_matched() -> None:
     """Gate item 1: "don't save" split into don/t/save never matched; keys are word forms."""
-    for pattern in DENY_PATTERNS:
+    for pattern in [*DENY_PATTERNS, *CONTROL_PATTERNS]:
         assert " ".join(_words(pattern)) == pattern, pattern
 
 
@@ -54,10 +54,9 @@ def test_the_new_words_raise_a_control(name: str, risk: str) -> None:
     assert effective_risk(_click(name)) == risk
 
 
-def test_the_words_apply_on_every_role() -> None:
-    """Gate Q1: a link is not exempt (an email "Unsubscribe" link acts)."""
-    assert effective_risk(_click("Unsubscribe", role="Hyperlink")) == "R2"
-    assert effective_risk(_click("Check out this video", role="Hyperlink")) == "R2"
+def test_check_out_in_a_link_title_keeps_the_declared_tier() -> None:
+    """Re-review ruling (a): "check out" is in the control-role class."""
+    assert effective_risk(_click("Check out this video", role="Hyperlink")) == "R0"
 
 
 def test_automation_ids_carry_the_words() -> None:
@@ -82,3 +81,45 @@ def test_any_apostrophe_splits_dont_save(apostrophe: int) -> None:
     """Hunter DC-15: a modifier-letter apostrophe (U+02BC) is a word character to the matcher,
     so it would keep "Don" + it + "t" one token; every apostrophe form splits for matching."""
     assert effective_risk(_click(f"Don{chr(apostrophe)}t save")) == "R3"
+
+
+# ---- schema gate re-review: option (a), control roles for the engagement class ---------------
+
+
+def test_an_engagement_word_in_a_link_title_keeps_the_declared_tier() -> None:
+    """DC-19/20: a raised click has no template and blocks; "Like That" is a video title."""
+    assert effective_risk(_click("Drake - Like That (Official)", role="Hyperlink")) == "R0"
+    assert effective_risk(_click("Like", role="Button")) == "R2"
+
+
+@pytest.mark.parametrize("verb", ["type", "focus"])
+def test_a_check_out_date_field_keeps_the_declared_tier(verb: str) -> None:
+    """DC-24: a hotel "Check-out" date Edit is not a checkout."""
+    step = Step(
+        id="d1",
+        subgoal="g1",
+        verb=verb,
+        target=Target(role="Edit", name="Check-out"),
+        risk="R1",
+        text="2026-12-01" if verb == "type" else None,
+    )
+    assert effective_risk(step) == "R1"
+
+
+def test_an_automation_id_raises_on_every_role() -> None:
+    assert effective_risk(_click("Watch", role="Hyperlink", automation_id="follow-button")) == "R2"
+
+
+def test_a_person_row_named_like_a_word_keeps_the_declared_tier() -> None:
+    """DC-25: a contact "Lee Block" is a ListItem, not a control."""
+    assert effective_risk(_click("Lee Block", role="ListItem")) == "R0"
+
+
+def test_the_every_role_words_still_raise_a_link() -> None:
+    assert effective_risk(_click("Unsubscribe", role="Hyperlink")) == "R2"
+    assert effective_risk(_click("Checkout", role="Hyperlink")) == "R3"
+    assert effective_risk(_click("Log out", role="Hyperlink")) == "R2"
+
+
+def test_a_planned_r1_click_on_a_checkout_button_is_r3() -> None:
+    assert effective_risk(_click("Checkout")) == "R3"

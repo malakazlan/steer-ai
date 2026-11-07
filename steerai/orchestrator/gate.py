@@ -62,15 +62,20 @@ DENY_PATTERNS: Mapping[str, Risk] = {
     "discard": "R3",
     "don t save": "R3",  # "Don't Save", any apostrophe, as the word matcher splits it
     "clear history": "R3",
-    "check out": "R2",  # "Check out this video" is a title too: R2, never R3
     "log out": "R2",
     "log off": "R2",
     "sign off": "R2",
     "logout": "R2",
     "logoff": "R2",
     "signoff": "R2",
+    "unsubscribe": "R2",  # every role: an email Unsubscribe link acts (DC-07)
+}
+"""5.13 1a: words (or word sequences) in a target's name or automation id that raise the step's
+tier. Matched on whole words of the comparable form (NFKC, format characters removed,
+case-folded), so punctuation or a zero-width character never hides a word (RN-04)."""
+CONTROL_PATTERNS: Mapping[str, Risk] = {
+    "check out": "R2",
     "subscribe": "R2",
-    "unsubscribe": "R2",
     "join": "R2",
     "like": "R2",
     "follow": "R2",
@@ -80,9 +85,13 @@ DENY_PATTERNS: Mapping[str, Risk] = {
     "accept": "R2",
     "allow": "R2",
 }
-"""5.13 1a: words (or word sequences) in a target's name or automation id that raise the step's
-tier. Matched on whole words of the comparable form (NFKC, format characters removed,
-case-folded), so punctuation or a zero-width character never hides a word (RN-04)."""
+"""5.13 1a [v2.17], ruling (a): words that are also common in titles ("Like That", "Check out
+this video") raise a target's name only on a control role, and its automation id on any role. A
+raised click has no strength template and blocks `weak_predicate` (DC-19/20), so a title hit
+would fail a navigation click outright."""
+CONTROL_ROLES: frozenset[str] = frozenset(
+    {"Button", "SplitButton", "MenuItem", "CheckBox", "RadioButton"}
+)
 _RISK_ORDER = {risk: index for index, risk in enumerate(RISKS)}
 _WHICH = re.compile(r"([1-9][0-9]{0,2}):(w-[0-9a-f]{12})")
 _WORD = re.compile(r"[^\W\d_]+")
@@ -141,12 +150,16 @@ def effective_risk(step: Step, bound_name: str | None = None) -> Risk:
     risk: Risk = step.risk
     if step.target is None:
         return risk
-    words = [*_words(step.target.name), "", *_id_words(step.target.automation_id)]
+    name = _words(step.target.name)
+    ids = _id_words(step.target.automation_id)
+    words = [*name, "", *ids]
     if bound_name:
         words += ["", *_words(bound_name)]
-    for pattern, tier in DENY_PATTERNS.items():
-        if _RISK_ORDER[tier] > _RISK_ORDER[risk] and _contains(words, pattern):
-            risk = tier
+    controlled = [*name, "", *ids] if step.target.role in CONTROL_ROLES else ids
+    for patterns, scope in ((DENY_PATTERNS, words), (CONTROL_PATTERNS, controlled)):
+        for pattern, tier in patterns.items():
+            if _RISK_ORDER[tier] > _RISK_ORDER[risk] and _contains(scope, pattern):
+                risk = tier
     return risk
 
 
