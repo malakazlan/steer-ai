@@ -19,6 +19,7 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
+from steerai import model_calls
 from steerai.orchestrator.contracts import Step
 
 Verdict = Literal["serves", "unrelated", "contrary", "unknown"]
@@ -27,6 +28,9 @@ _WORSE: dict[str, int] = {"serves": 0, "unknown": 1, "unrelated": 2, "contrary":
 """Verdicts that make a step ask (gate ruling Q3: `contrary` asks until the evaluation shows 0
 `contrary` among steps that serve)."""
 DEFAULT_MODEL = "claude-opus-5"
+GOAL_MATCH_PROMPT_VERSION = "goal-match-1"
+"""Bump with any change to the system prompt or the row format: cached verdicts judged by an
+older prompt never stand for a newer one (plan cache key, 5.12 [v2.33])."""
 MAX_STEPS = 64
 _MAX_TOKENS = 2048
 _NAME_CAP = 200
@@ -148,6 +152,7 @@ class ClaudeGoalMatcher:
         if len(wanted) > MAX_STEPS:
             return _failed("too_many_steps", self._model, started)
         system, user = build_prompt(goal, wanted, tag=uuid.uuid4().hex[:8], done=done[-MAX_STEPS:])
+        model_calls.count("goal_match")
         try:
             response = self._parse(
                 model=self._model,
@@ -176,6 +181,12 @@ class ClaudeGoalMatcher:
             model=str(response.model),
             latency_ms=(time.perf_counter_ns() - started) / 1_000_000,
         )
+
+
+def matcher_id() -> str:
+    """The matcher a verdict came from: its model and prompt version (the cache key's part)."""
+    model = os.environ.get("STEER_GOAL_MATCH_MODEL") or DEFAULT_MODEL
+    return f"{model}|{GOAL_MATCH_PROMPT_VERSION}"
 
 
 def _failure_token(exc: Exception) -> str:

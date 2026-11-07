@@ -133,7 +133,7 @@ def _run_goal(
 
 
 def _go(outcome: PlanOutcome) -> str:
-    return "go:" + hashlib.sha256(outcome.data).hexdigest()[:12]
+    return "go:" + hashlib.sha256(outcome.data + b"goal-1").hexdigest()[:12]
 
 
 # ---- arguments ---------------------------------------------------------------------------------
