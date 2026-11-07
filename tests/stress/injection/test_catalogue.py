@@ -15,7 +15,8 @@ from tests.stress.injection.catalogue import (
     sentinels,
 )
 
-PINNED = {"IJ-06", "IJ-11", "IJ-12", "IJ-13", "IJ-14", "IJ-15", "IJ-16", "IJ-17", "IJ-18"} | {
+PINNED = {"IJ-02", "IJ-06", "IJ-11", "IJ-12", "IJ-13", "IJ-14", "IJ-15", "IJ-16", "IJ-17"} | {
+    "IJ-18",
     "IJ-19",
     "IJ-20",
     "IJ-21",
@@ -26,7 +27,6 @@ PINNED = {"IJ-06", "IJ-11", "IJ-12", "IJ-13", "IJ-14", "IJ-15", "IJ-16", "IJ-17"
 GAPS = {
     "IJ-01": "#81",
     "IJ-05": "#81",
-    "IJ-02": "#82",
     "IJ-03": "#83",
     "IJ-04": "#84",
     "IJ-10": "#86",

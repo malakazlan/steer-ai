@@ -317,7 +317,7 @@ FIXTURES: tuple[Attack, ...] = (
         "raised",
         gap="#84",
     ),
-    # ---- provenance and verbs (gaps IJ-05, IJ-02) ----
+    # ---- provenance and verbs (gap IJ-05; pinned IJ-02) ----
     Attack(
         "IJ-05",
         "generated_text",
@@ -336,7 +336,6 @@ FIXTURES: tuple[Attack, ...] = (
         Signature("click", "Button", "Chat options"),
         None,
         "refused",
-        gap="#82",
     ),
     # ---- secure fields (pinned IJ-06, not a gap) ----
     Attack(

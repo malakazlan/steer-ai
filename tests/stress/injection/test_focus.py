@@ -1,6 +1,6 @@
-"""Known gap IJ-02 (#82, 6.4 / 5.9): `focus` is a physical click verified by the focus it
-leaves, with no check of the target's role, so a planner steered into "focus" on a Button
-presses it at R0. A focus on anything but a field must be refused before any input."""
+"""IJ-02 (#82, 6.4 / 5.9): `focus` is a physical click verified by the focus it leaves, so a
+planner steered into "focus" on a Button would press it at R0. The plan contract refuses a focus
+on anything but a field: the step never exists, so nothing is observed, asked or sent."""
 
 from __future__ import annotations
 
@@ -27,13 +27,13 @@ def test_a_focus_on_a_field_still_runs() -> None:
     assert log[0].runtime_id == COMPOSER[3]
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="IJ-02 #82")
 def test_a_focus_on_a_button_is_refused_before_any_input() -> None:
     attack = fixture("IJ-02", "focus_button")
     assert attack.action is not None
     h = Harness()
     log: list[Dispatch] = []
     rebuild(h, log=log)
-    result = h.session.run_step(_focus("Button", attack.payload))
+    with pytest.raises(ValueError, match="focus targets a field"):
+        h.session.run_step(_focus("Button", attack.payload))
     assert [d for d in log if attack.action.matches(d.verb, d.role, d.name)] == []
-    assert result.ok is False
+    assert log == []

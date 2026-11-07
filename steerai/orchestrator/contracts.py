@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 from steerai.action.dispositions import ActionResult
 from steerai.errors import ErrorCode
-from steerai.verify.predicates import Predicate
+from steerai.verify.predicates import FIELD_ROLES, Predicate
 from steerai.world.model import normalise_name
 
 Risk = Literal["R0", "R1", "R2", "R3"]
@@ -139,6 +139,9 @@ class Step:
             raise ValueError("a step needs a target")
         if (self.verb == "open") != (self.target.role == OPEN_TARGET_ROLE):
             raise ValueError(f"an open step and only an open step targets role {OPEN_TARGET_ROLE}")
+        if self.verb == "focus" and self.target.role not in FIELD_ROLES:
+            # focus is a physical click: on a button it would press it at R0 (IJ-02, #82)
+            raise ValueError(f"focus targets a field: one of {sorted(FIELD_ROLES)}")
         if self.verb in _TEXT_VERBS and self.text is None:
             raise ValueError(f"{self.verb} needs text")
         if self.verb not in _TEXT_VERBS and self.text is not None:
@@ -149,6 +152,9 @@ class Step:
         _check_window(self.window, self.verb)
         if self.path is not None and self.path not in ("semantic", "physical"):
             raise ValueError("path must be semantic or physical")
+        if self.verb == "focus" and self.path == "semantic":
+            # a semantic focus would be an Invoke: plan_io refuses it, so does the contract (FC-09)
+            raise ValueError("focus runs on the physical path")
         if self.preapproved_by_request and self.text_provenance != "verbatim":
             raise ValueError("only verbatim request text can be preapproved by the request")
         floor = _RISK_FLOOR.get(self.verb)

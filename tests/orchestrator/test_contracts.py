@@ -74,6 +74,23 @@ def test_step_validates_verb_risk_and_parameters() -> None:
         _step(target=None)
 
 
+@pytest.mark.parametrize("role", ["Edit", "ComboBox", "Document"])
+def test_a_focus_step_targets_a_field(role: str) -> None:
+    assert _step(verb="focus", target=Target(role=role, name="Message"), text=None).verb == "focus"
+
+
+@pytest.mark.parametrize("role", ["Button", "Hyperlink", "ListItem", "MenuItem", "Custom", "Pane"])
+def test_a_focus_step_on_anything_but_a_field_is_refused(role: str) -> None:
+    """IJ-02 (#82): `focus` is a physical click, so a focus on a button would press it at R0."""
+    with pytest.raises(ValueError, match="focus targets a field"):
+        _step(verb="focus", target=Target(role=role, name="Send"), text=None, risk="R0")
+
+
+def test_a_focus_on_a_person_row_is_refused() -> None:
+    with pytest.raises(ValueError, match="focus targets a field"):
+        _step(verb="focus", target=Target(role="ListItem", name="Amir", match="person"), text=None)
+
+
 def test_step_text_is_out_of_the_repr() -> None:
     assert "hello there" not in repr(_step())
 
@@ -186,3 +203,10 @@ def test_step_path_override_is_validated() -> None:
     assert _step(verb="click", text=None, path="physical").path == "physical"
     with pytest.raises(ValueError, match="path"):
         _step(verb="click", text=None, path="teleport")
+
+
+def test_a_focus_step_never_runs_on_the_semantic_path() -> None:
+    """FC-09 (#82): plan_io refuses it; a step built in code must not get past the contract."""
+    assert _step(verb="focus", text=None, path="physical").path == "physical"
+    with pytest.raises(ValueError, match="focus runs on the physical path"):
+        _step(verb="focus", text=None, path="semantic")
