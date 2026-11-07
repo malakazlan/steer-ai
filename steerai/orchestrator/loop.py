@@ -67,6 +67,7 @@ from steerai.orchestrator.identity import (
 from steerai.orchestrator.ledger import LedgerError, WriteAheadRecord
 from steerai.orchestrator.trace import NullTrace, Trace
 from steerai.verify.predicates import (
+    FIELD_ROLES,
     All,
     AnyOf,
     Appeared,
@@ -106,7 +107,7 @@ SETTLE_S = 0.5
 re-observe before calling it absent (first real-site run 2026-11-04; unmeasured)."""
 SETTLE_RETRIES = 2
 _RISK_RANK = {risk: rank for rank, risk in enumerate(RISKS)}
-ALIAS_ROLES: frozenset[str] = frozenset({"Edit", "Document", "ComboBox"})
+ALIAS_ROLES: frozenset[str] = FIELD_ROLES
 """Text roles one app shows for another's field: a `focus` or `type` whose exact role is not
 on screen resolves by its exact name among these (chooser-wiring gate; live run osg-4 named
 `Edit` where Notepad shows `Document`)."""
