@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Protocol, TextIO
 
 from steerai.errors import ErrorCode, SteerError
+from steerai.goal_match import GoalMatcher
 from steerai.orchestrator.console import ConsoleConfirmer, escape_text
 from steerai.orchestrator.contracts import (
     OPENED_PREFIX,
@@ -1299,7 +1300,18 @@ def _build_session(bound: Bound) -> SessionLike:
         bring_forward=acquire_foreground,
         tap_guard=lambda: tap_refusal(LiveInput(client)),
         locked=session_locked,
+        goal_matcher=goal_matcher(),
     )
+
+
+def goal_matcher() -> GoalMatcher | None:
+    """Goal-match rides on the planner's key (5.13 step 2 [v2.27], gate ruling Q4): a key
+    means a matcher, so a model-planned run is always judged; no key means `off`, traced."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return None
+    from steerai.goal_match import ClaudeGoalMatcher  # noqa: PLC0415 - the SDK
+
+    return ClaudeGoalMatcher.from_env()
 
 
 def _kill_blocker(monitor: Any) -> Callable[[], str | None]:

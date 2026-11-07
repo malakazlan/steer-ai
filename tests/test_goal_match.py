@@ -103,3 +103,12 @@ def test_the_prompt_marks_who_wrote_the_text() -> None:
     _, user = build_prompt(GOAL, [step], tag="abcd1234")
     assert '"text_from": "request"' in user
     assert "<steps-abcd1234>" in user
+
+
+def test_a_key_means_a_matcher_and_no_key_means_off(monkeypatch: Any) -> None:
+    from steerai.run import goal_matcher  # noqa: PLC0415 - the CLI module, read late
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert goal_matcher() is None
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    assert isinstance(goal_matcher(), ClaudeGoalMatcher)
