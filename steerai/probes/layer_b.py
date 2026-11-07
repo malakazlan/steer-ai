@@ -281,7 +281,7 @@ def _measure(  # noqa: PLR0913 - one run's whole state, passed once by keyword
         plan=plan_path,
         window=None,
         hwnd=window.hwnd,
-        task_id=f"lb-{page.page_id}-{kind}-{number}-{nonce}",
+        task_id=f"lb-{page.page_id}-{kind}-{number}-{secrets.token_hex(4)}",  # never the nonce
         ledger_dir=tmp / "ledger",
         trace=tmp / "trace.jsonl",
         max_risk="R3",
