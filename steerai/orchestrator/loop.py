@@ -30,7 +30,13 @@ from typing import Any, Literal, Protocol
 
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.action.executor import Action
-from steerai.action.launch import APPS, expected_title, title_matches
+from steerai.action.launch import (
+    APPS,
+    expected_title,
+    open_condition_holds,
+    open_title_judges,
+    title_matches,
+)
 from steerai.action.launcher import OpenAction
 from steerai.action.physical import TEXT_ROLES, PhysicalAction
 from steerai.action.sanitize import normalise_newlines
@@ -44,6 +50,7 @@ from steerai.orchestrator.contracts import (
     Risk,
     Step,
     StepResult,
+    Subgoal,
     Target,
     executor_verb,
 )
@@ -300,6 +307,10 @@ class Session:
         self.max_steps = max_steps
         self._steps_run = 0
         """Steps run by this session over all its plans: a replanned task is one budget."""
+        self._verbs: dict[str, set[str]] = {}
+        """The verbs each subgoal has held over the plans this session ran (gate ruling R1):
+        the ledger chain does not keep them, so a resumed continuation has only its own."""
+        self._ran_first_plan = False
         self._observer = observer
         self._semantic = semantic
         self._physical = physical
@@ -1500,6 +1511,9 @@ class Session:
             }
         )
         results: list[StepResult] = []
+        self._ran_first_plan = self._ran_first_plan or not continuation
+        for s in plan.steps:
+            self._verbs.setdefault(s.subgoal, set()).add(s.verb)
         try:
             self._rebind_ref(continuation=continuation)
         except _StepFailureError as failure:
@@ -1538,6 +1552,8 @@ class Session:
             and not field_values(s.condition)  # a value is a step's doing (FV-01/03)
             and self._holds_now(s.condition, start)
         }
+        for subgoal_id in sorted(ticked):
+            self._trace_tick(subgoal_id, "start")
         outcome = self._run_steps(plan, ticked, results)
         if outcome is not None:
             stopped, code, detail = outcome
@@ -1584,7 +1600,7 @@ class Session:
             result = self.run_step(step)
             results.append(result)
             stop = (
-                self._after_open(plan, step, result, ticked)
+                self._after_open(plan, step, results, ticked)
                 if step.verb == "open"
                 else _stop_for(result)
             )
@@ -1599,6 +1615,7 @@ class Session:
                     plan, step, result, results
                 ):
                     ticked.add(step.subgoal)
+                    self._trace_tick(step.subgoal, "done_already")
                 strikes = 0
                 continue
             if result.ok and self._last_pair is not None:
@@ -1608,6 +1625,7 @@ class Session:
                     subgoal.condition, before, after
                 ):
                     ticked.add(subgoal.id)
+                    self._trace_tick(subgoal.id, "condition")
                     strikes = 0
                     continue
             if result.ok:
@@ -1619,10 +1637,12 @@ class Session:
         return None
 
     def _after_open(
-        self, plan: Plan, step: Step, result: StepResult, ticked: set[str]
+        self, plan: Plan, step: Step, results: list[StepResult], ticked: set[str]
     ) -> tuple[Literal["stopped", "paused", "blocked"], ErrorCode, str] | None:
         """A failed `open` stops: the next steps would act in the old window, maybe the
-        person's own (P6); a verified one ticks its subgoal when it holds in the new window."""
+        person's own (P6); the last verified open of an open-only subgoal ticks it when its
+        condition holds on that window (5.5 [v2.6])."""
+        result = results[-1]
         stop = _stop_for(result)
         if stop is not None:
             return stop
@@ -1630,10 +1650,48 @@ class Session:
             detail = str(result.evidence.get("detail", result.gate))
             return "stopped", result.code or ErrorCode.VERIFY_TIMEOUT, detail
         subgoal = next(s for s in plan.subgoals if s.id == step.subgoal)
-        # a value is the type step's doing, never the open's (field-value FV-01/03)
-        if not field_values(subgoal.condition) and self._holds_in_window(subgoal.condition):
+        own = [s for s in plan.steps if s.subgoal == subgoal.id]
+        if not self._open_judges(subgoal, own, results):
+            return None
+        try:
+            self._checked(self._identity_now)  # the window may have gone since (OS-04)
+        except _StepFailureError as failure:
+            self._trace_tick(subgoal.id, "none", detail=failure.detail)
+            return None
+        if len(own) == 1 and self._ran_first_plan and open_title_judges(subgoal.condition):
+            # the code-owned title the open verified is the evidence (gate R1-R3, issue #47)
+            site, text = step.params.get("site"), step.params.get("text")
+            title = expected_title(step.target.name if step.target else "", site, text)
+            by, holds = "open_title", open_condition_holds(subgoal.condition, title)
+        else:
+            by, holds = "open_window", self._holds_in_window(subgoal.condition)
+        if holds:
             ticked.add(subgoal.id)
+            self._trace_tick(subgoal.id, by)
         return None
+
+    def _open_judges(self, subgoal: Subgoal, own: list[Step], results: list[StepResult]) -> bool:
+        """Whether an open may judge its subgoal: only opens, in this plan and every earlier one
+        (an open that ticked a subgoal with other steps skipped them, a false done: hunter
+        OS-02/03); no value (the type step's doing, FV-01/03); every open of it verified, so
+        only its last one judges (OS-06)."""
+        if self._verbs.get(subgoal.id, set()) - {"open"} or field_values(subgoal.condition):
+            return False
+        verified = {r.step_id for r in results if r.ok}
+        return all(s.id in verified for s in own)
+
+    def _trace_tick(self, subgoal_id: str, by: str, *, detail: str | None = None) -> None:
+        """What ticked a subgoal, as tokens: a plan id (plan_io's id pattern), never a title,
+        pattern or content (hunter OS-20/23/24)."""
+        record: dict[str, Any] = {
+            "kind": "tick",
+            "task_id": self.task_id,
+            "subgoal": subgoal_id,
+            "by": by,
+        }
+        if detail is not None:
+            record["detail"] = detail
+        self._trace.write(record)
 
     def _holds_now(self, predicate: Predicate, snapshot: Snapshot) -> bool:
         """Presence conditions already true at task start; diff conditions never tick here."""

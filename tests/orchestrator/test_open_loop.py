@@ -90,6 +90,7 @@ class Rig:
     semantic: FakeExecutor | None = None
     session: Session | None = None
     monitor: Any = None
+    trace: Any = None  # Any: a ListTrace or None
 
     def build(self) -> Session:
         self.semantic = FakeExecutor(self.world, "semantic")
@@ -111,14 +112,15 @@ class Rig:
             identify=self.desk.identify,
             foreground=lambda: 0x30,
             monitor=self.monitor,
+            trace=self.trace,
         )
         return self.session
 
 
-def _open(text: str = "drake latest video", step_id: str = "o1") -> Step:
+def _open(text: str = "drake latest video", step_id: str = "o1", subgoal: str = "g1") -> Step:
     return Step(
         id=step_id,
-        subgoal="g1",
+        subgoal=subgoal,
         verb="open",
         target=Target(role="App", name="chrome"),
         risk="R1",
@@ -404,6 +406,22 @@ def test_a_rebound_open_never_ticks_its_subgoal_without_a_check() -> None:
     session = rig.build()
     result = session.run_task(_two_step_plan())
     assert [r.step_id for r in result.results] == ["o1", "c1"], "the click still runs"
+
+
+def test_an_open_never_ticks_a_subgoal_that_still_has_another_step() -> None:
+    """Hunter OS-02 (issue #47): the condition held in the fresh window, the open ticked and the
+    click never ran, a false `done`. The click runs; a title that was already true before it is
+    not its effect, so the task ends unfinished: unclear means fail."""
+    rig = Rig(desk=Desk(titles=[YT_TITLE]))
+    plan = Plan(
+        goal="search YouTube for drake latest video",
+        subgoals=(Subgoal(id="g1", desc="video", condition=TitleMatches(pattern="YouTube")),),
+        steps=(_open(), _click(step_id="c1", expect=TitleMatches(pattern="Amir Khan - Chat"))),
+    )
+    result = rig.build().run_task(plan)
+    assert [r.step_id for r in result.results] == ["o1", "c1"], "the click still runs"
+    assert result.status == "stopped"
+    assert result.ticked == set()
 
 
 def test_an_open_subgoal_is_never_ticked_at_task_start() -> None:

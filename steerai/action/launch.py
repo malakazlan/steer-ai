@@ -16,6 +16,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
+from steerai.verify.predicates import All, AnyOf, Appeared, Predicate, TitleMatches, WindowExists
+
 MAX_CONTENT_CHARS = 500
 CONTENT: Final = "{content}"
 _ALLOWED_VARS: Final = frozenset(
@@ -194,6 +196,40 @@ _LAUNCH_ENV: Final = frozenset(
 def title_matches(title: str, expected: str) -> bool:
     """Full-string, case-insensitive, whitespace-folded, after stripping a leading counter."""
     return _fold(_COUNTER.sub("", title.strip())) == _fold(expected)
+
+
+def open_condition_holds(predicate: Predicate, expected: str) -> bool:
+    """Whether an open-only subgoal's condition holds on the title its open verified (issue #47,
+    5.5 [v2.6]): every name the condition asks for is contained in that code-owned title, folded,
+    counter stripped. A replacing `appeared` names the page the open navigated to; any other kind
+    is about content the title cannot show, so it does not hold here."""
+    match predicate:
+        case All(parts=parts):
+            return all(open_condition_holds(part, expected) for part in parts)
+        case AnyOf(parts=parts):
+            return any(open_condition_holds(part, expected) for part in parts)
+        case TitleMatches(pattern=pattern) | WindowExists(name_pattern=pattern):
+            return _contained(pattern, expected)
+        case Appeared(replaces=True):
+            return _contained(predicate.name_match, expected)
+        case _:
+            return False
+
+
+def open_title_judges(predicate: Predicate) -> bool:
+    """Whether the open's title can speak for every part of the condition (gate ruling R3): a
+    mix, a count, a removal or a non-replacing `appeared` keeps the live in-window check."""
+    match predicate:
+        case All(parts=parts) | AnyOf(parts=parts):
+            return all(open_title_judges(part) for part in parts)
+        case TitleMatches() | WindowExists() | Appeared(replaces=True):
+            return True
+        case _:
+            return False
+
+
+def _contained(pattern: str, expected: str) -> bool:
+    return _fold(_COUNTER.sub("", pattern.strip())) in _fold(expected)
 
 
 def _fold(text: str) -> str:
