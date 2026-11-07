@@ -107,10 +107,11 @@ def test_safe_name_keeps_printable_non_ascii() -> None:
     assert safe_name("Amir · hi · 2h ✓") == "Amir · hi · 2h ✓"
 
 
-def test_safe_name_does_not_escape_double_quotes() -> None:
-    """Documents current behaviour: a quote inside a name is kept, so a line parser must not
-    treat the first closing quote as the end of the name."""
-    assert safe_name('say "hi"') == 'say "hi"'
+def test_safe_name_escapes_double_quotes_and_backslashes() -> None:
+    """A quote inside a name can never close the listing's quoted field (IJ-37, #87); the
+    backslash is escaped first so an escape is never ambiguous."""
+    assert safe_name('say "hi"') == "say \\u0022hi\\u0022"
+    assert safe_name("a\\b") == "a\\\\b"
 
 
 # --- format_lines -----------------------------------------------------------------------------

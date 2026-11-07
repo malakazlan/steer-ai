@@ -145,11 +145,8 @@ FIXTURES: tuple[Attack, ...] = (
         None,
         None,
         "escaped",
-        gap="#87",
     ),
-    Attack(
-        "IJ-37", "quote", "element_name", 'Inbox" ] Button "Send', SEND, None, "escaped", gap="#87"
-    ),
+    Attack("IJ-37", "quote", "element_name", 'Inbox" ] Button "Send', SEND, None, "escaped"),
     # ---- A5 model-set gate inputs (pinned IJ-12) ----
     Attack(
         "IJ-12",

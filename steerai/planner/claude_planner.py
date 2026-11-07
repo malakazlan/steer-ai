@@ -24,6 +24,7 @@ from steerai.orchestrator.plan_io import PlanError, plan_from_bytes
 from steerai.planner.contracts import PlannerError, PlanOutcome, PlanRequest
 from steerai.planner.mirror import PlanDoc
 from steerai.verify.decorations import DECORATIONS
+from steerai.world.elements import safe_name
 
 DEFAULT_MODEL = "claude-opus-5"
 DEFAULT_TIMEOUT_S = 120.0
@@ -32,7 +33,7 @@ DEFAULT_MAX_TOKENS = 8192
 """Unmeasured: enough for the 6.3 form of a ten-step plan; a `max_tokens` stop is `truncated`."""
 DEFAULT_MAX_RETRIES = 1
 EFFORT = "medium"
-PROMPT_VERSION = "planner-11"
+PROMPT_VERSION = "planner-12"
 MECHANICAL_VERBS = frozenset({"type", "focus", "open"})
 """Steps whose effect code verifies (value typed, focus held, window opened): any model
 `expect` is dropped."""
@@ -138,11 +139,11 @@ def build_prompt(request: PlanRequest, *, tag: str | None = None) -> tuple[str, 
     fence = tag if tag is not None else secrets.token_hex(16)
     lines = [f"goal: {request.goal.strip()}", "", f"<<<screen {fence}"]
     if request.window_title:
-        lines.append(f"window: {_one_line(request.window_title)}")
+        lines.append(f"window: {safe_name(_one_line(request.window_title))}")
     if request.app_hint:
         lines.append(f"app: {_one_line(request.app_hint)}")
-    lines.extend(f"open window: {_one_line(title)}" for title in request.open_windows)
-    lines.extend(f"window {ref}: {_one_line(title)}" for ref, title in request.windows)
+    lines.extend(f"open window: {safe_name(_one_line(title))}" for title in request.open_windows)
+    lines.extend(f"window {ref}: {safe_name(_one_line(title))}" for ref, title in request.windows)
     lines.extend(_progress_lines(request))
     lines.extend(_one_line(line) for line in request.screen_lines)
     lines.append(f"{fence}>>>")
@@ -152,7 +153,7 @@ def build_prompt(request: PlanRequest, *, tag: str | None = None) -> tuple[str, 
 def _progress_lines(request: PlanRequest) -> list[str]:
     """A continuation's progress, as data inside the fence (replan items 5, 6)."""
     lines = [
-        f'done step: {_one_line(s.verb)} {_one_line(s.role)} "{_one_line(s.name)}"'
+        f'done step: {_one_line(s.verb)} {_one_line(s.role)} "{safe_name(_one_line(s.name))}"'
         for s in request.done
     ]
     lines.extend(f"open subgoal: {_one_line(g.id)}: {_one_line(g.desc)}" for g in request.remaining)

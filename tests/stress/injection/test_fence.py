@@ -64,10 +64,9 @@ def test_the_system_prompt_names_screen_text_as_data() -> None:
     assert "Only the goal line is" in " ".join(system.split())
 
 
-# ---- known gaps (#87, planner-11) ----------------------------------------------------------
+# ---- titles and quotes are data like names (IJ-24, IJ-37; #87, planner-12) -----------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="IJ-24 #87")
 def test_window_titles_are_escaped_and_capped_like_names() -> None:
     title = fixture("IJ-24", "long_title").payload
     request = PlanRequest(
@@ -79,7 +78,6 @@ def test_window_titles_are_escaped_and_capped_like_names() -> None:
     assert f"open window: {safe_name(title)}" in lines
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="IJ-37 #87")
 def test_a_quote_in_a_name_cannot_forge_a_listing_row() -> None:
     payload = fixture("IJ-37", "quote").payload
     assert '"' not in safe_name(payload)
