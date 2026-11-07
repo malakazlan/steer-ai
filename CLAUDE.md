@@ -65,8 +65,10 @@ The design of record is `docs/design/STEERAI_ARCHITECTURE.md` (local only, see "
 
 ## Project review agents (run in parallel)
 
-Three project skills in `.claude/skills/` with matching agents in `.claude/agents/`. For any feature
-beyond a one-file fix, dispatch them together on the feature packet and act only on their contracts:
+Three project skills in `.claude/skills/` with matching agents in `.claude/agents/`. For a new
+component or a change to the safety gate's core, dispatch them together on the feature packet and
+act only on their contracts. A small self-contained fix gets one principal pass plus CI; push
+non-blocking findings to issues instead of more review rounds; progress is measured by phases.
 
 | Agent | Skill | Produces |
 |---|---|---|
