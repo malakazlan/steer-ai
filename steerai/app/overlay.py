@@ -194,7 +194,10 @@ class Overlay:
             *(
                 w
                 for w in self._list_windows()
-                if w.hwnd not in hidden_hwnds and w.pid not in hidden_pids and not w.minimized
+                if w.hwnd not in hidden_hwnds
+                and w.pid not in hidden_pids
+                and not w.minimized
+                and not w.cloak_unreadable  # it would end in a refusal (#48)
             ),
         ]
         self.window_box["values"] = [

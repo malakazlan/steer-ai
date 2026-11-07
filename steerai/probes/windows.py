@@ -92,7 +92,7 @@ def is_cloaked(hwnd: int) -> bool | None:
     )
     dwmapi.DwmGetWindowAttribute.restype = ctypes.c_long
     dwmwa_cloaked = 14
-    cloaked = wintypes.DWORD(0)
+    cloaked = ctypes.c_uint32(0)  # a DWORD is 32 bits; wintypes.DWORD is 8 bytes off Windows
     result = dwmapi.DwmGetWindowAttribute(
         hwnd, dwmwa_cloaked, ctypes.byref(cloaked), ctypes.sizeof(cloaked)
     )
