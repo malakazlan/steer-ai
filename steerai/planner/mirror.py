@@ -22,7 +22,14 @@ from pydantic import BaseModel, ConfigDict, Field
 Verb = Literal["click", "focus", "type", "send", "submit", "delete", "open"]
 Risk = Literal["R0", "R1", "R2", "R3"]
 ConditionKind = Literal[
-    "appeared", "disappeared", "title", "window_exists", "window_gone", "count_delta", "value"
+    "appeared",
+    "disappeared",
+    "title",
+    "window_exists",
+    "window_gone",
+    "count_delta",
+    "value",
+    "present",
 ]
 """One kind set for conditions and expects: a second predicate schema made the compiled grammar
 too large for the API (HTTP 400, measured 2026-11-06), so `value` in an `expect` is refused by
@@ -59,7 +66,8 @@ class _Doc(BaseModel):
 class PredicateDoc(_Doc):
     """One predicate: `kind` says which fields matter. appeared: role, name, within?,
     expected?, order?, decoration?, replaces?; disappeared: role, name, within?; title:
-    pattern; window_exists / window_gone: name; count_delta: role, delta, within?."""
+    pattern; window_exists / window_gone: name; count_delta: role, delta, within?; present:
+    role, name, within (a selection click's expect and its one-step subgoal's condition)."""
 
     kind: ConditionKind
     role: str | None = None
@@ -97,11 +105,12 @@ _KIND_FIELDS: dict[str, frozenset[str]] = {
     "appeared": frozenset({"role", "name", "expected", "order", "decoration", "replaces"}),
     "disappeared": frozenset({"role", "name"}),
     "count_delta": frozenset({"role", "delta"}),
+    "present": frozenset({"role", "name"}),
     "title": frozenset({"pattern"}),
     "window_exists": frozenset({"name"}),
     "window_gone": frozenset({"name"}),
 }
-_SCOPED_KINDS = frozenset({"appeared", "disappeared", "count_delta"})
+_SCOPED_KINDS = frozenset({"appeared", "disappeared", "count_delta", "present"})
 
 
 class TargetDoc(_Doc):

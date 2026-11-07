@@ -26,6 +26,7 @@ from steerai.verify.predicates import (
     ValueEquals,
     WindowExists,
     Within,
+    presents,
 )
 from steerai.world.model import normalise_name
 
@@ -172,6 +173,9 @@ def strength(predicate: Predicate, tier: Tier, params: Params) -> Strength:
     if isinstance(predicate, Focused):
         # The honest effect of an R0 focus click; never a postcondition for anything that acts.
         return Strength(tier == "R0", None if tier == "R0" else "focused_alone")
+    if presents(predicate):
+        # a state proves a selection below R2, never an effect (#124, hunter PS-06)
+        return Strength(tier in ("R0", "R1"), None if tier in ("R0", "R1") else "present_alone")
     if tier in ("R0", "R1"):
         return Strength(True)
     return _content_strength(predicate, params)

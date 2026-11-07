@@ -73,6 +73,15 @@ def resolve_scope(
     return Scope(level=3, ids={e.id for e in snapshot.elements} - excluded, strict=True)
 
 
+def container_of(snapshot: Snapshot, element_id: int) -> int | None:
+    """The id of the element's nearest container (itself when it is one), or None."""
+    by_id = {e.id: e for e in snapshot.elements}
+    if element_id not in by_id:
+        return None
+    container = _nearest_container(by_id[element_id], by_id)
+    return None if container is None else container.id
+
+
 def _children(elements: list[Element]) -> dict[int | None, list[int]]:
     out: dict[int | None, list[int]] = {}
     for element in elements:

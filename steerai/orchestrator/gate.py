@@ -17,7 +17,7 @@ import re
 import urllib.parse
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol
 
 from steerai.action.launch import SITES, LaunchError, expected_title, site_url
@@ -33,7 +33,7 @@ from steerai.orchestrator.contracts import (
 )
 from steerai.orchestrator.identity import Binding, CandidateLine, lines_for
 from steerai.verify.deny_skeleton import camel_split, holds
-from steerai.verify.predicates import Predicate, Within, comparable
+from steerai.verify.predicates import Predicate, Present, Within, comparable, presents
 from steerai.verify.strength import Params, strength, strengthen, template_for
 from steerai.verify.t1 import redact
 from steerai.world.elements import Element
@@ -253,6 +253,18 @@ class GateResult:
     evidence: dict[str, Any]
     expect: Predicate | None = None
     params: Params | None = None
+
+
+def _bound_present(
+    candidate: Predicate, step: Step, params: Params, risk: Risk
+) -> Predicate | GateResult:
+    """A `present` proves a click's selection only with the clicked element bound: its
+    container never counts (#124, hunter PS-02). Anything else is blocked, never verified."""
+    if not presents(candidate):
+        return candidate
+    if not isinstance(candidate, Present) or step.verb != "click" or params.target_id is None:
+        return _block("weak_predicate", risk, reason="present_unbound")
+    return replace(candidate, target_id=params.target_id)
 
 
 def _block(detail: str, risk: Risk, **extra: Any) -> GateResult:
@@ -520,7 +532,7 @@ class Gate:
                 return _block("no_predicate", risk)
         verdict = strength(candidate, risk, params)
         if verdict.ok:
-            return candidate
+            return _bound_present(candidate, step, params, risk)
         strengthened = strengthen(candidate, template_verb(step.verb), risk, params)
         if strengthened is None:
             return _block("weak_predicate", risk, reason=verdict.reason)

@@ -92,6 +92,48 @@
       composer.value = "";
     });
   })();
+  // Deterministic chat switching for the #124 probe: a row's hash link opens that chat (the
+  // header, the call button and the messages); the same chat stays as it is. ?open=<row id>
+  // starts on another chat, ?stay=1 makes every row a no-op (a dropped click), and
+  // ?namebubble=1 adds a message reading exactly "Amir Khan" to the chat open at start.
+  (function () {
+    var chats = {
+      "chat-amir-khan": ["Amir Khan", ["ok", "are we still on for friday?", "yes, 6pm works"]],
+      "chat-amir": ["Amir", ["hi bro"]],
+      "chat-sara": ["Sara Ahmed", ["invoice attached", "can you check it today?"]],
+      "chat-bilal": ["Bilal", ["see you tomorrow"]]
+    };
+    var query = window.location.search;
+    var stay = /[?&]stay=1/.test(query);
+    var named = /[?&]namebubble=1/.test(query);
+    var start = /[?&]open=([a-z-]+)/.exec(query);
+    var current = "chat-amir-khan";
+    document.body.dataset.chat = current;
+    function show(id, extra) {
+      var chat = chats[id];
+      if (!chat || id === current) { return; }
+      current = id;
+      document.body.dataset.chat = id;
+      document.querySelector("header h1").textContent = chat[0];
+      var call = Array.prototype.filter.call(document.querySelectorAll("header button"),
+        function (b) { return b.textContent.indexOf("Call ") === 0; })[0];
+      call.textContent = "Call " + chat[0];
+      var messages = document.querySelector("section.msgs");
+      Array.prototype.forEach.call(messages.querySelectorAll(".bubble"),
+        function (b) { b.remove(); });
+      var older = messages.querySelector("button");
+      chat[1].concat(extra).forEach(function (text) {
+        var bubble = document.createElement("div");
+        bubble.className = "bubble";
+        bubble.textContent = text;
+        messages.insertBefore(bubble, older);
+      });
+    }
+    if (start) { show(start[1], named ? ["Amir Khan"] : []); }
+    window.addEventListener("hashchange", function () {
+      if (!stay) { show(window.location.hash.slice(1), []); }
+    });
+  })();
 </script>
 </body>
 </html>

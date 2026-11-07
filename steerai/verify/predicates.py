@@ -165,6 +165,34 @@ class FieldValue:
 
 
 @dataclass(frozen=True, slots=True)
+class Present:
+    """A state (#124, 5.10 [v2.36]): exactly one visible element of this role and full name in
+    the landmark, judged on one snapshot. Only the proof of an R0/R1 click that selects what may
+    already be selected (a chat already open), and that click's one-step subgoal; never a start
+    tick, never inside `all`/`any_of`, never an effect for R2/R3 (hunter PS-01..07)."""
+
+    role: str
+    name_pattern: str = field(repr=False)
+    within: Within
+    target_id: int | None = None
+    """The clicked element in the before snapshot, bound by the gate: the subtree of its nearest
+    container never counts, so the clicked row's own text never proves the selection."""
+    excluding: tuple[str, ...] = ()
+    """The plan's content landmarks, bound by the loop: a message there reading exactly the
+    name never proves the chat (hunter PS-09); each must resolve to one container."""
+
+    def __post_init__(self) -> None:
+        _check_role(self.role)
+        object.__setattr__(self, "name_pattern", _clean_pattern(self.name_pattern, "name"))
+        if self.within.landmark is None:
+            raise ValueError("present takes a landmark, never an anchor")
+        names = tuple(normalise_name(name).casefold() for name in self.excluding)
+        if not all(names):
+            raise ValueError("an excluding landmark is empty")
+        object.__setattr__(self, "excluding", names)
+
+
+@dataclass(frozen=True, slots=True)
 class Focused:
     """Never a valid postcondition on its own (5.10 [v0.3])."""
 
@@ -242,6 +270,7 @@ Predicate = (
     | Disappeared
     | ValueEquals
     | FieldValue
+    | Present
     | Focused
     | State
     | TitleMatches
@@ -256,6 +285,15 @@ Predicate = (
 def _check_role(role: str) -> None:
     if not role.strip():
         raise ValueError("role must be named")
+
+
+def presents(predicate: Predicate) -> list[Present]:
+    """Every `present` part of a predicate, at any depth."""
+    if isinstance(predicate, Present):
+        return [predicate]
+    if isinstance(predicate, All | AnyOf):
+        return [found for part in predicate.parts for found in presents(part)]
+    return []
 
 
 def field_values(predicate: Predicate) -> list[FieldValue]:

@@ -57,6 +57,7 @@ from steerai.probes.layer_b_pages import (
     render,
     summary,
 )
+from steerai.probes.win_input import foreground_hwnd
 from steerai.probes.windows import session_locked, wait_window_for_pid
 
 IDLE_S = 60.0
@@ -173,6 +174,17 @@ def _loaded(cdp: CdpSession, timeout_s: float = 20.0) -> None:
                 return
         time.sleep(0.5)
     raise InvalidRun("page_not_loaded")
+
+
+def _in_front(hwnd: int) -> None:
+    """The probe's Chrome in front before Steer observes: a Chrome started by a background
+    process opens behind the foreground window, and a covered Chromium window keeps a partial
+    accessibility tree (31 of 75 lines measured 2026-11-08: no plan, or a covered row)."""
+    from steerai.probes.win_input import acquire_foreground  # noqa: PLC0415 - Windows only
+
+    acquire_foreground(hwnd)
+    if foreground_hwnd() != hwnd:
+        raise InvalidRun("not_in_front")
 
 
 def _prove_no_egress(cdp: CdpSession, server_port: int) -> None:
@@ -309,6 +321,7 @@ def _measure(  # noqa: PLR0913 - one run's whole state, passed once by keyword
     _prove_no_egress(cdp, server.port)
     _evaluate(cdp, 'localStorage.removeItem("steer-layer-b"); "ok"', "clear")
     cdp.close()
+    _in_front(window.hwnd)
     seen: list[str] = []
 
     def screen(hwnd: int) -> tuple[str, Sequence[str]]:
