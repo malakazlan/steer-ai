@@ -263,7 +263,7 @@ class Ledger:
         if not isinstance(pid, int) or isinstance(pid, bool):
             return None
         start = payload.get("start")
-        return pid, start if isinstance(start, int) and not isinstance(start, bool) else None
+        return pid, (start if isinstance(start, int) and not isinstance(start, bool) else None)
 
     def close(self) -> str | None:
         """Release the task lock; the state stays on disk for a resume. The lock guards against

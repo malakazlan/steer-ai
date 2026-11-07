@@ -920,29 +920,36 @@ def test_a_lock_another_process_is_reading_is_left_for_the_next_runner(tmp_path:
 
 def test_a_recycled_holder_pid_does_not_hold_the_lock(tmp_path: Path) -> None:
     """Issue #64: a left or crashed lock whose pid Windows gave to another process reads as
-    stale when that process started at another time; the same start still holds."""
+    stale when that process started at another time; the same start still holds. The other
+    process is one this test owns (a parent pid may itself be reused, Python docs)."""
     from steerai.probes.windows import process_start_time  # noqa: PLC0415
 
     with Ledger(tmp_path, task_id="t-recycled", started_at=1.0):
         task_dir = next(tmp_path.iterdir())
-    other = os.getppid()  # a live process that is not this one
-    real_start = process_start_time(other)
-    assert process_alive(other) is True
-    assert real_start is not None
-    lock = task_dir / "lock"
-    lock.write_text(
-        json.dumps({"pid": other, "token": "0" * 32, "start": real_start + 1}), encoding="utf-8"
-    )
-    with Ledger(tmp_path, task_id="t-recycled", started_at=1.0) as ledger:
-        ledger.bind_plan("a" * 64, step_ids=["s1"])
-    lock.write_text(
-        json.dumps({"pid": other, "token": "0" * 32, "start": real_start}), encoding="utf-8"
-    )
-    with pytest.raises(LedgerError, match="ledger_locked"):
-        Ledger(tmp_path, task_id="t-recycled", started_at=1.0)
-    lock.write_text(json.dumps({"pid": other, "token": "0" * 32}), encoding="utf-8")
-    with pytest.raises(LedgerError, match="ledger_locked"):
-        Ledger(tmp_path, task_id="t-recycled", started_at=1.0)  # no start recorded: live
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        real_start = process_start_time(other.pid)
+        assert process_alive(other.pid) is True
+        assert real_start is not None
+        lock = task_dir / "lock"
+
+        def holder(**extra: int) -> None:
+            lock.write_text(
+                json.dumps({"pid": other.pid, "token": "0" * 32, **extra}), encoding="utf-8"
+            )
+
+        holder(start=real_start + 1)
+        with Ledger(tmp_path, task_id="t-recycled", started_at=1.0) as ledger:
+            ledger.bind_plan("a" * 64, step_ids=["s1"])
+        holder(start=real_start)
+        with pytest.raises(LedgerError, match="ledger_locked"):
+            Ledger(tmp_path, task_id="t-recycled", started_at=1.0)
+        holder()
+        with pytest.raises(LedgerError, match="ledger_locked"):
+            Ledger(tmp_path, task_id="t-recycled", started_at=1.0)  # no start recorded: live
+    finally:
+        other.kill()
+        other.wait()
 
 
 def test_the_lock_records_its_holders_start(tmp_path: Path) -> None:
