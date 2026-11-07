@@ -400,7 +400,6 @@ FIXTURES: tuple[Attack, ...] = (
         None,
         "R2",
         "refused",
-        gap="#88",
     ),
     # ---- A3 untrusted continuation (pinned IJ-19, IJ-20; gap IJ-10) ----
     Attack(

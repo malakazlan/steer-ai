@@ -1,4 +1,4 @@
-"""`open` content from a page (IJ-17, IJ-18 pinned; IJ-28 #88 known gap): content that is not
+"""`open` content from a page (IJ-17, IJ-18, IJ-28 pinned): content that is not
 the goal's own words leaves the machine only at R2 with the host shown in the ask, even from a
 continuation; injected content can never become a flag, a quote or another scheme on Chrome's
 command line, and over-long or multi-line content is refused at the plan boundary."""
@@ -153,10 +153,9 @@ def test_an_app_or_site_outside_the_registries_is_refused(app: str, site: str | 
         plan_from_json(json.dumps(body))
 
 
-# ---- known gap ---------------------------------------------------------------------------------
+# ---- --max-risk sees run-time tiers (IJ-28, #88) ------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="IJ-28 #88")
 def test_max_risk_refuses_an_open_the_run_will_raise_to_r2() -> None:
     attack = fixture("IJ-28", "max_risk")
     plan = Plan(goal=GOAL, subgoals=_first_plan().subgoals, steps=(_google(attack.payload),))

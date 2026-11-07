@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -520,7 +520,10 @@ def test_a_chain_refusal_blocks_with_its_token_and_runs_nothing_more(tmp_path: P
 
 
 def test_a_continuation_over_the_risk_limit_is_refused_before_its_ask(tmp_path: Path) -> None:
-    first = _outcome(_first())
+    plan = _first()
+    # the open types the goal's own words: page content would be R2 and refused up front (#88)
+    own = replace(plan.steps[0], params={"site": "youtube_search", "text": "drake latest video"})
+    first = _outcome(replace(plan, steps=(own, *plan.steps[1:])))
     risky = Plan(
         goal=GOAL,
         subgoals=_continuation().subgoals,
