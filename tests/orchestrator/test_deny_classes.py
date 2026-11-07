@@ -69,3 +69,16 @@ def test_continue_and_unsourced_purchase_labels_wait() -> None:
     """Gate Q2 and item 5: "continue" has no checkable scope yet; "place order" is from memory."""
     assert effective_risk(_click("Continue")) == "R0"
     assert effective_risk(_click("Place order")) == "R0"
+
+
+@pytest.mark.parametrize("name", ["Logout", "LOGOFF", "signoff"])
+def test_single_token_sign_out_forms_raise(name: str) -> None:
+    """Hunter DC-10: the existing list has `signout` for the same reason."""
+    assert effective_risk(_click(name)) == "R2"
+
+
+@pytest.mark.parametrize("apostrophe", [0x27, 0x2019, 0x02BC, 0xFF07, 0x60, 0xB4])
+def test_any_apostrophe_splits_dont_save(apostrophe: int) -> None:
+    """Hunter DC-15: a modifier-letter apostrophe (U+02BC) is a word character to the matcher,
+    so it would keep "Don" + it + "t" one token; every apostrophe form splits for matching."""
+    assert effective_risk(_click(f"Don{chr(apostrophe)}t save")) == "R3"

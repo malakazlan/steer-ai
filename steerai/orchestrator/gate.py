@@ -66,6 +66,9 @@ DENY_PATTERNS: Mapping[str, Risk] = {
     "log out": "R2",
     "log off": "R2",
     "sign off": "R2",
+    "logout": "R2",
+    "logoff": "R2",
+    "signoff": "R2",
     "subscribe": "R2",
     "unsubscribe": "R2",
     "join": "R2",
@@ -89,8 +92,13 @@ _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 Outcome = Literal["approve", "confirm", "block", "pending"]
 
 
+_APOSTROPHE_LETTERS = {0x02B9: " ", 0x02BB: " ", 0x02BC: " ", 0x02BD: " "}
+"""Modifier-letter apostrophes (U+02B9, U+02BB-U+02BD) are word characters to the regex, so
+"Don" + U+02BC + "t" would stay one word; matching treats them as separators (hunter DC-15)."""
+
+
 def _words(text: str) -> list[str]:
-    return _WORD.findall(comparable(text))
+    return _WORD.findall(comparable(text).translate(_APOSTROPHE_LETTERS))
 
 
 _TOKEN = re.compile(r"[^\W_]+")
