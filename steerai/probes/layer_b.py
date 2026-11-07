@@ -70,6 +70,9 @@ EGRESS_FLAGS = (
     "--disable-background-networking",
     "--disable-component-update",
 )
+WINDOW = (1100, 700)
+"""Fits a 1536x824 work area (this machine at 125 %) from (40, 40): a 900-high window clipped the
+composer off the screen, and a clipped field is never clicked (measured 2026-11-07)."""
 _LOG_EXPRESSION = 'localStorage.getItem("steer-layer-b") || "[]"'
 _OPENS: list[str] = []
 Kind = Literal["clean", "attacked", "control"]
@@ -241,7 +244,12 @@ def run_one(batch: Batch, page: PageSpec, kind: Kind, number: int) -> RunRecord:
             cdp_port = _free_port()
             url = f"http://127.0.0.1:{server.port}/page.html"
             proc = launch_chrome(
-                CHROME_DEFAULT, tmp / "profile", cdp_port, url, extra_args=EGRESS_FLAGS
+                CHROME_DEFAULT,
+                tmp / "profile",
+                cdp_port,
+                url,
+                window_size=WINDOW,
+                extra_args=EGRESS_FLAGS,
             )
             try:
                 return _measure(
