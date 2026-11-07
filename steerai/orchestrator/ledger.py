@@ -22,6 +22,7 @@ import os
 import sys
 import time
 import uuid
+import weakref
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -49,6 +50,16 @@ class LedgerError(SteerError):
 
     def __init__(self, message: str) -> None:
         super().__init__(ErrorCode.GATE_BLOCKED, message)
+
+    @property
+    def locked(self) -> bool:
+        """Another runner holds the task (RN-12, #58): never this instance's own failure."""
+        return self.message.startswith("ledger_locked")
+
+
+_HOLDERS: weakref.WeakValueDictionary[str, Ledger] = weakref.WeakValueDictionary()
+"""The instance of this process that holds each task lock (by lock path): a second ledger for
+the task takes the lock over and the first never writes again (#58, hunter RV-14)."""
 
 
 def action_key(secret: bytes, verb: str, target: Target, params: Mapping[str, str]) -> str:
@@ -163,6 +174,10 @@ class Ledger:
         the ref it started with, so its keys match the first run's (replan item 3)."""
         self._lock_token = uuid.uuid4().hex
         self._locked = False
+        self._lock_fd: int | None = None
+        """The lock file stays open while this instance holds it: Windows refuses to delete an
+        open file, so a racing runner cannot remove a live lock as stale, and the OS closes
+        it when the process dies (#58; DeleteFile, Microsoft Learn)."""
         self._acquire_lock()
         try:
             if self._state_path.exists():
@@ -177,9 +192,13 @@ class Ledger:
     # ---- one runner per task (RN-12) -----------------------------------------------------
 
     def _acquire_lock(self) -> None:
+        key = str(self._lock_path.resolve())
+        previous = _HOLDERS.get(key)
+        if previous is not None and previous is not self:
+            previous._release_handle()  # superseded in this process: it never writes again
         for _ in range(2):
             try:
-                fd = os.open(self._lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+                fd = os.open(self._lock_path, os.O_RDWR | os.O_CREAT | os.O_EXCL)
             except FileExistsError:
                 holder = self._lock_holder()
                 if holder is not None and holder != os.getpid() and process_alive(holder):
@@ -187,18 +206,31 @@ class Ledger:
                         f"ledger_locked: another runner (pid {holder}) holds this task; "
                         f"the lock is {self._lock_path}"
                     ) from None
-                self._lock_path.unlink(missing_ok=True)  # stale: the holder is gone
+                try:
+                    self._lock_path.unlink(missing_ok=True)  # stale: no process holds it open
+                except OSError as exc:  # held open: a live runner is taking or holds it
+                    raise LedgerError(
+                        f"ledger_locked: the lock is held open; the lock is {self._lock_path}"
+                    ) from exc
                 continue
             except OSError as exc:
                 raise LedgerError(f"ledger lock could not be taken: {exc}") from exc
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump({"pid": os.getpid(), "token": self._lock_token}, handle)
-            if self._lock_token_on_disk() != self._lock_token:
-                # a racing runner removed this lock as stale and took its own (#58)
-                raise LedgerError("ledger_locked: another runner took this task's lock")
+            payload = json.dumps({"pid": os.getpid(), "token": self._lock_token})
+            try:
+                os.write(fd, payload.encode("utf-8"))
+            except OSError as exc:
+                os.close(fd)
+                raise LedgerError(f"ledger lock could not be taken: {exc}") from exc
+            self._lock_fd = fd
             self._locked = True
+            _HOLDERS[key] = self
             return
         raise LedgerError("ledger_locked: the lock could not be taken")
+
+    def _release_handle(self) -> None:
+        if self._lock_fd is not None:
+            os.close(self._lock_fd)
+            self._lock_fd = None
 
     def _lock_token_on_disk(self) -> str | None:
         try:
@@ -220,8 +252,15 @@ class Ledger:
         """Release the task lock; the state stays on disk for a resume. The lock guards against
         another runner process; a second ledger in this process takes it over."""
         if self._locked:
+            self._release_handle()
             if self._lock_token_on_disk() == self._lock_token:
-                self._lock_path.unlink(missing_ok=True)
+                try:
+                    self._lock_path.unlink(missing_ok=True)
+                except OSError as exc:  # another runner is reading or taking it right now
+                    raise LedgerError(
+                        f"ledger_locked: the lock could not be released; the lock is "
+                        f"{self._lock_path}"
+                    ) from exc
             self._locked = False
 
     def __enter__(self) -> Ledger:
@@ -478,13 +517,15 @@ class Ledger:
         }
         try:
             self._save_state()
-        except LedgerError:
+        except LedgerError as exc:
             # no action and no consumed key: this instance must agree with the disk
             if previous is None:
                 del self._executions[key]
             else:
                 self._executions[key] = previous
-            path.unlink(missing_ok=True)
+            if not exc.locked:
+                # never after losing the lock: the record may be the successor's (#58)
+                path.unlink(missing_ok=True)
             raise
         return record
 
@@ -547,7 +588,7 @@ class Ledger:
                 f"the lock is {self._lock_path}"
             )
         blob = dpapi.protect(text.encode(), entropy=_ENTROPY)
-        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary = path.with_suffix(f"{path.suffix}.{self._lock_token}.tmp")
         temporary.write_bytes(blob)
         temporary.replace(path)
 

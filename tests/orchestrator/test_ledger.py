@@ -424,6 +424,51 @@ def test_a_superseded_instances_close_leaves_the_successors_lock(tmp_path: Path)
     assert not lock.exists()
 
 
+def test_a_held_lock_cannot_be_removed_as_stale(tmp_path: Path) -> None:
+    """Issue #58: the lock stays open while held, so a racing runner that thinks it stale
+    cannot delete it (Windows refuses to delete an open file: WinError 32)."""
+    with Ledger(tmp_path, task_id="t-held", started_at=1.0):
+        lock = next(tmp_path.iterdir()) / "lock"
+        with pytest.raises(PermissionError):
+            lock.unlink()
+
+
+def test_a_dead_holders_lock_is_taken_over(tmp_path: Path) -> None:
+    """A lock nobody holds open (its runner died) is stale: the next runner takes it."""
+    task_dir = tmp_path / "x"
+    with Ledger(tmp_path, task_id="t-dead", started_at=1.0):
+        task_dir = next(tmp_path.iterdir())
+    (task_dir / "lock").write_text(
+        json.dumps({"pid": 2**31 - 7, "token": "0" * 32}), encoding="utf-8"
+    )
+    with Ledger(tmp_path, task_id="t-dead", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["s1"])
+
+
+def test_a_write_ahead_refused_for_a_lost_lock_keeps_the_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #58 (principal item 4): the record on disk may be the successor's; never removed."""
+    ledger = Ledger(tmp_path, task_id="t-lost", started_at=1.0)
+    step = _send()
+    key = ledger.key_for(step)
+
+    def lost() -> None:
+        raise LedgerError("ledger_locked: another runner took this task's lock")
+
+    monkeypatch.setattr(ledger, "_save_state", lost)
+    with pytest.raises(LedgerError, match="ledger_locked"):
+        ledger.write_ahead(step, _snapshot(), _decision(key, "approve"))
+    records = [
+        p
+        for p in next(tmp_path.iterdir()).rglob("*")
+        if p.is_file() and p.name not in ("lock", "state.ledger")
+    ]
+    assert records, "the record written before the refused save stays on disk"
+    monkeypatch.undo()
+    ledger.close()
+
+
 def test_a_superseded_instance_can_no_longer_write(tmp_path: Path) -> None:
     """Issue #58 (hunter RV-14): its whole-chain save would drop the successor's links."""
     first = Ledger(tmp_path, task_id="t", started_at=1.0)
