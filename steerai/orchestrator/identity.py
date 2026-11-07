@@ -34,7 +34,8 @@ class Binding:
     role: str
     runtime_id: tuple[int, ...] = field(repr=False)
     name_part: str = field(repr=False)
-    """The comparable name part (NFKC, case-folded, confusables folded)."""
+    """The comparable name part (NFKC, case-folded, confusables folded), for identity matching
+    only: never the deny patterns' input, the fold joins marks like U+00A1 onto words (#97)."""
     full_name: str = field(repr=False)
     unique_name: bool = True
     """Whether the full name was unique among the ask-time candidates; only then may a
