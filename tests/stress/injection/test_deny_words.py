@@ -120,3 +120,65 @@ def test_admission_runs_at_the_tier_the_page_element_raises_to() -> None:
     step = _click(attack)
     before = h.session._observer.observe(0x10)
     assert h.session._ceiling(step, h.ledger.key_for(step), before, "R0") == "R3"
+
+
+class _LateRaised:
+    """The plan's "OK" is absent on the first look and appears after the settle carrying the
+    page's btnDeleteAccount: the ceiling saw nothing, the settled tier rises (#84 review)."""
+
+    def __init__(self, page: HostilePage, row: tuple[int, str, str, tuple[int, ...], int]) -> None:
+        self.page = page
+        self.row = row
+        self.calls = 0
+
+    def observe(self, hwnd: int, **kwargs: object) -> object:
+        self.calls += 1
+        if self.calls == 2 and self.row not in self.page.world.rows:
+            self.page.world.rows.append(self.row)
+        return self.page.observe(hwnd, **kwargs)
+
+
+def _late(attack: Attack) -> tuple[Harness, list[Dispatch]]:
+    assert attack.action is not None
+    h = Harness(default="no")
+    log: list[Dispatch] = []
+    page = HostilePage(h.world, {attack.action.name: attack.payload})
+    row = (11, "Button", attack.action.name, (42, 43), 7)
+    rebuild(h, log=log, observer=_LateRaised(page, row))
+    return h, log
+
+
+def test_a_done_key_found_only_after_the_settle_stops_and_dispatches_nothing() -> None:
+    attack = fixture("IJ-04", "element_id")
+    h, log = _late(attack)
+    step = _click(attack)
+    h.ledger.executions[h.ledger.key_for(step)] = {"step_id": "c0", "outcome": "delivered_verified"}
+    result = h.session.run_step(step)
+    assert result.evidence["detail"] == "done_at_raised_tier", result.to_dict()
+    assert result.code is not None
+    assert log == []
+
+
+def test_an_open_record_found_only_after_the_settle_reaches_the_gate() -> None:
+    attack = fixture("IJ-04", "element_id")
+    h, log = _late(attack)
+    step = _click(attack)
+    h.ledger.executions[h.ledger.key_for(step)] = {
+        "step_id": "c0",
+        "outcome": "delivered_unverified",
+    }
+    result = h.session.run_step(step)
+    assert result.evidence["risk"] == "R3"
+    assert log == []
+    assert result.gate == "block", "the raised click still has no strong expect"
+
+
+def test_a_done_key_with_the_element_visible_is_done_already_at_the_ceiling() -> None:
+    attack = fixture("IJ-04", "element_id")
+    assert attack.action is not None
+    h, log = _on_page(attack, automation_ids={attack.action.name: attack.payload})
+    step = _click(attack)
+    h.ledger.executions[h.ledger.key_for(step)] = {"step_id": "c0", "outcome": "delivered_verified"}
+    result = h.session.run_step(step)
+    assert result.gate == "done_already"
+    assert log == []
