@@ -154,3 +154,33 @@ def test_a_reply_in_the_chat_already_open_is_done() -> None:
     result = h.session.run_task(_reply_plan())
     assert result.status == "done", [r.to_dict() for r in result.results]
     assert h.world.sent == ["hello there"]
+
+
+def test_a_click_raised_to_r2_after_a_present_with_no_content_landmark_stops() -> None:
+    """A deny word raises an unscoped click to R2 at run time: nothing would be excluded from
+    the present, so it never starts (#124 re-review, blocking 1)."""
+    from dataclasses import replace  # noqa: PLC0415 - this test only
+
+    from steerai.verify.predicates import TitleMatches  # noqa: PLC0415
+
+    h = _harness("Amir Khan")
+    h.world.rows.append((22, "Button", "Delete chat now", (42, 64), HEADER[0]))
+    raised = replace(
+        _click(),
+        id="s2",
+        subgoal="g2",
+        target=Target(role="Button", name="Delete chat now"),
+        expect=TitleMatches(pattern="Chat deleted"),
+    )
+    plan = Plan(
+        goal=GOAL,
+        subgoals=(
+            Subgoal(id="g1", desc="open", condition=PRESENT),
+            Subgoal(id="g2", desc="gone", condition=TitleMatches(pattern="Chat deleted")),
+        ),
+        steps=(_click(), raised),
+    )
+    result = h.session.run_task(plan)
+    assert result.status == "stopped"
+    assert result.evidence["detail"] == "content_unscoped"
+    assert [c[1] for c in h.semantic.calls] == [ROW[0]], "the raised step never runs"
