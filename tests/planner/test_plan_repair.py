@@ -112,7 +112,7 @@ def test_the_reason_is_escaped_like_fenced_data() -> None:
     note = _repair_note(PlanError("$.steps[0].target.role", reason))
     assert '"Edit' not in note
     assert "\n" not in note
-    assert "\u0022" in note
+    assert chr(92) + "u0022" in note  # the quote is escaped, never raw
 
 
 def test_a_refusal_at_the_goal_is_never_repaired(monkeypatch: pytest.MonkeyPatch) -> None:
