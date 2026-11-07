@@ -1,4 +1,4 @@
-"""Deny words (5.13 1a; IJ-15 pinned; IJ-01 #81, IJ-03 #83 and IJ-04 #84 known gaps): a page
+"""Deny words (5.13 1a; IJ-03 and IJ-15 pinned; IJ-01 #81 and IJ-04 #84 known gaps): a page
 that names a control to slip past the deny matcher still has the step raised, so the gate asks
 or blocks and nothing is dispatched without the person's yes."""
 
@@ -76,7 +76,6 @@ def test_a_control_with_an_unlisted_external_effect_asks_or_blocks() -> None:
     assert result.gate != "approve"
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="IJ-03 #83")
 def test_a_homoglyph_deny_word_is_raised() -> None:
     attack = fixture("IJ-03", "homoglyph")
     assert effective_risk(_click(attack)) == attack.tier

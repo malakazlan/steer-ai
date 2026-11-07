@@ -403,6 +403,16 @@ def test_a_deny_word_before_a_character_the_fold_makes_a_letter_still_raises(mar
     assert "p1" in h.ledger.records, "an R3 action has a write-ahead record"
 
 
+def test_a_lookalike_deny_word_in_a_person_rows_name_part_raises_the_tier() -> None:
+    """The gate reads the row's name as shown through the closure matcher (#83 on #97)."""
+    h = Harness()
+    _without_base_amir(h)
+    h.world.rows.append((16, "ListItem", f"Amir D{chr(0x0435)}lete {MID} hi {MID} 2h", (42, 18), 1))
+    result = h.session.run_step(_r1_click("Amir"))
+    assert result.gate == "confirm", result.evidence
+    assert [a.risk for a in h.confirmer.asked] == ["R3"]
+
+
 def test_the_candidates_ceiling_reads_the_raw_name_part() -> None:
     """Admission's ceiling is never below the bound row's tier: both read the name as shown."""
     h = Harness()

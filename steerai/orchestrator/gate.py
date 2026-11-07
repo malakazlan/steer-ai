@@ -30,6 +30,7 @@ from steerai.orchestrator.contracts import (
     template_verb,
 )
 from steerai.orchestrator.identity import Binding, CandidateLine, lines_for
+from steerai.verify.deny_skeleton import camel_split, holds
 from steerai.verify.predicates import Predicate, Within, comparable
 from steerai.verify.strength import Params, strength, strengthen, template_for
 from steerai.verify.t1 import redact
@@ -150,17 +151,30 @@ def effective_risk(step: Step, bound_name: str | None = None) -> Risk:
     risk: Risk = step.risk
     if step.target is None:
         return risk
-    name = _words(step.target.name)
-    ids = _id_words(step.target.automation_id)
-    words = [*name, "", *ids]
-    if bound_name:
-        words += ["", *_words(bound_name)]
-    controlled = [*name, "", *ids] if step.target.role in CONTROL_ROLES else ids
-    for patterns, scope in ((DENY_PATTERNS, words), (CONTROL_PATTERNS, controlled)):
+    names = [step.target.name, *([bound_name] if bound_name else [])]
+    ids = [step.target.automation_id] if step.target.automation_id else []
+    controlled = [step.target.name] if step.target.role in CONTROL_ROLES else []
+    for patterns, scope in ((DENY_PATTERNS, names), (CONTROL_PATTERNS, controlled)):
         for pattern, tier in patterns.items():
-            if _RISK_ORDER[tier] > _RISK_ORDER[risk] and _contains(scope, pattern):
+            if _RISK_ORDER[tier] <= _RISK_ORDER[risk]:
+                continue
+            if any(_reads(name, pattern) for name in scope) or any(
+                _reads_id(automation_id, pattern) for automation_id in ids
+            ):
                 risk = tier
     return risk
+
+
+def _reads(text: str, pattern: str) -> bool:
+    """The plain words (5.13 1a [v1.3]), or the closure through lookalikes ([v2.26], #83)."""
+    return _contains(_words(text), pattern) or holds(text, pattern)
+
+
+def _reads_id(automation_id: str, pattern: str) -> bool:
+    if _contains(_id_words(automation_id), pattern):
+        return True
+    # split and whole: a case change inside the word ("SUBMit") must not hide it either
+    return holds(camel_split(automation_id), pattern) or holds(automation_id, pattern)
 
 
 @dataclass(frozen=True, slots=True)
