@@ -394,8 +394,10 @@ class Session:
                     if gate_result.outcome == "confirm"
                     else "screen_changed_during_wait"
                 )
+                asked = element_id
                 before, element_id = stage.measure(
-                    "observe", lambda: self._reobserve(step, before, evidence, mismatch=token)
+                    "observe",
+                    lambda: self._reobserve(step, before, evidence, asked=asked, mismatch=token),
                 )
                 if self._binding is not None:
                     # the bound row's text may have moved on: the postcondition follows it,
@@ -1019,29 +1021,32 @@ class Session:
         if self._locked is not None and self._locked() is not False:
             raise _StepFailureError(ErrorCode.SECURE_DESKTOP, "session_locked")
 
-    def _after_ask(
-        self, step: Step, before: Snapshot, stage: _Stage, evidence: dict[str, Any]
-    ) -> tuple[Snapshot, int]:
-        """The approved thing must be the executed thing (OR-31): observe again, on the screen
-        the ask was made on (RN-13), and resolve the target again."""
-        pair: tuple[Snapshot, int] = stage.measure(
-            "observe", lambda: self._reobserve(step, before, evidence)
-        )
-        return pair
-
     def _reobserve(
         self,
         step: Step,
         before: Snapshot,
         evidence: dict[str, Any],
         *,
+        asked: int,
         mismatch: str = "screen_changed_during_ask",
     ) -> tuple[Snapshot, int]:
+        """The approved thing must be the executed thing (OR-31, #89): the same window, and for
+        an exact or aliased target the same element (RuntimeId and role) as the one asked
+        about; a page that moves the target's label onto another element, or removes it, is a
+        changed screen, never a click elsewhere."""
         fresh = self._observe_fresh(evidence)
         if fresh.title != before.title:
             raise _StepFailureError(ErrorCode.FOCUS_LOST, mismatch)
         # no settle here (OR-31): a target gone while the ask was open is a changed screen
-        element_id = self._resolve_again(step, fresh, evidence)
+        try:
+            element_id = self._resolve_again(step, fresh, evidence)
+        except _StepFailureError as failure:
+            if failure.detail in ("no_match", "ambiguous_target"):
+                raise _StepFailureError(ErrorCode.FOCUS_LOST, mismatch) from failure
+            raise
+        person = step.target is not None and step.target.match == "person"
+        if not person and not _same_element(before.element(asked), fresh.element(element_id)):
+            raise _StepFailureError(ErrorCode.FOCUS_LOST, mismatch)
         self._secure_step = fresh.element(element_id).secure
         return fresh, element_id
 
@@ -1382,7 +1387,11 @@ class Session:
             if self._boundary(self._act_evidence):
                 # a wait here ended after the observe too: same screen, fresh target (TK-03)
                 before, element_id = self._reobserve(
-                    step, before, self._act_evidence, mismatch="screen_changed_during_wait"
+                    step,
+                    before,
+                    self._act_evidence,
+                    asked=element_id,
+                    mismatch="screen_changed_during_wait",
                 )
                 self._act_evidence["restarted"] = True
             self._still_the_window()
@@ -1435,7 +1444,11 @@ class Session:
             return result, before, element_id
         if self._boundary(self._act_evidence):
             before, element_id = self._reobserve(
-                step, before, self._act_evidence, mismatch="screen_changed_during_wait"
+                step,
+                before,
+                self._act_evidence,
+                asked=element_id,
+                mismatch="screen_changed_during_wait",
             )
             self._act_evidence["restarted"] = True
             if self._monitor is not None:
@@ -1830,6 +1843,12 @@ class Session:
             )
         except (SteerError, ValueError):
             return None
+
+
+def _same_element(asked: Element, now: Element) -> bool:
+    """The element asked about, still: the same UIA RuntimeId and role (#89). An element
+    without a RuntimeId cannot be proven the same: unclear means a changed screen."""
+    return bool(asked.runtime_id) and now.runtime_id == asked.runtime_id and now.role == asked.role
 
 
 FRAME_HOST = "applicationframehost.exe"

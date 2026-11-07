@@ -114,7 +114,7 @@ def test_a_resume_wait_keeps_the_alias() -> None:
     snapshot = h.world.observe(0x10)
     evidence: dict[str, object] = {}
     first = h.session._resolve_alias(_type(), snapshot, evidence)
-    again, element_id = h.session._reobserve(_type(), snapshot, evidence)
+    again, element_id = h.session._reobserve(_type(), snapshot, evidence, asked=first)
     assert element_id == first
     assert again.element(element_id).role == "Document"
 

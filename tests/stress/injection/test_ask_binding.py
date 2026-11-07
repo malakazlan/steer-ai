@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-import pytest
-
 from steerai.errors import ErrorCode
 from steerai.orchestrator.contracts import StepResult
 from steerai.orchestrator.gate import Ask
@@ -69,7 +67,6 @@ def test_a_target_relabelled_during_the_ask_is_never_dispatched() -> None:
     assert result.ok is False
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="IJ-21 #89")
 def test_a_target_relabelled_during_the_ask_is_screen_changed_during_ask() -> None:
     attack = fixture("IJ-21", "target_relabel")
     h = Harness()
@@ -81,7 +78,6 @@ def test_a_target_relabelled_during_the_ask_is_screen_changed_during_ask() -> No
     assert (result.code, result.evidence.get("detail")) == (ErrorCode.FOCUS_LOST, attack.detail)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="IJ-21 #89")
 def test_labels_swapped_during_the_ask_never_move_the_click_to_another_element() -> None:
     attack = fixture("IJ-21", "label_swap")
     h = Harness()
