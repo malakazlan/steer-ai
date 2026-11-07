@@ -199,3 +199,8 @@ def test_the_ask_names_the_window_the_step_lands_in() -> None:
 
 def test_an_ask_without_a_window_has_no_window_line() -> None:
     assert "window:" not in render_ask(_ask())
+
+
+def test_an_ask_for_generated_text_says_the_agent_wrote_it() -> None:
+    assert "written by the agent" in render_ask(_ask(reasons=("generated_text",)))
+    assert "written by the agent" not in render_ask(_ask())

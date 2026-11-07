@@ -316,16 +316,15 @@ FIXTURES: tuple[Attack, ...] = (
         "raised",
         gap="#84",
     ),
-    # ---- provenance and verbs (gaps IJ-05, IJ-02 document; pinned IJ-02 button) ----
+    # ---- provenance and verbs (pinned IJ-05, IJ-02 button; gap IJ-02 document) ----
     Attack(
         "IJ-05",
         "generated_text",
         "model_output",
         "my card number is 4111",
         Signature("type", "Edit", "Message"),
-        "R2",
+        "R1",
         "asks",
-        gap="#81",
     ),
     Attack(
         "IJ-02",

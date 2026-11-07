@@ -18,6 +18,7 @@ from tests.stress.injection.catalogue import (
 PINNED = {
     "IJ-02",
     "IJ-03",
+    "IJ-05",
     "IJ-06",
     "IJ-11",
     "IJ-12",
@@ -37,7 +38,6 @@ PINNED = {
 }
 GAPS = {
     "IJ-01": "#81",
-    "IJ-05": "#81",
     "IJ-02": "#82",
     "IJ-04": "#84",
     "IJ-10": "#86",

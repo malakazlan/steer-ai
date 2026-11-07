@@ -55,7 +55,14 @@ from steerai.orchestrator.contracts import (
     executor_verb,
     subgoal_verbs,
 )
-from steerai.orchestrator.gate import Gate, GateResult, effective_risk, open_tier, params_for
+from steerai.orchestrator.gate import (
+    Gate,
+    GateResult,
+    ask_reasons,
+    effective_risk,
+    open_tier,
+    params_for,
+)
 from steerai.orchestrator.identity import (
     Binding,
     bind,
@@ -976,7 +983,9 @@ class Session:
     ) -> GateResult:
         """The gate's decision; while an R2/R3 gate may be asking, the person's input is their
         answer, not a takeover (TK-07; the console brackets its own read as well)."""
-        asking = self._monitor is not None and risk in ("R2", "R3")
+        asking = self._monitor is not None and (
+            risk in ("R2", "R3") or bool(ask_reasons(step, self._goal))
+        )
         if asking and self._monitor is not None:
             self._monitor.mark_ask_open()
         try:
@@ -990,6 +999,7 @@ class Session:
                 composer_id=self._composer(step, before),
                 bound=self._binding,
                 window=self.window_label(),
+                goal=self._goal,
             )
         finally:
             if asking and self._monitor is not None:

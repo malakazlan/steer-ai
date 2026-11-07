@@ -28,6 +28,7 @@ from steerai.orchestrator.contracts import (
     Risk,
     Step,
     template_verb,
+    verbatim_in,
 )
 from steerai.orchestrator.identity import Binding, CandidateLine, lines_for
 from steerai.verify.deny_skeleton import camel_split, holds
@@ -145,6 +146,19 @@ def _declined(answer: str, risk: Risk, decision_id: str) -> GateResult:
     )
 
 
+def ask_reasons(step: Step, goal: str) -> tuple[str, ...]:
+    """Why a step asks whatever its tier (5.13 1b [v2.27]): text typed into a page that is not
+    the person's own words. The label is never trusted alone: with the goal known, text absent
+    from it is generated whatever the plan says. The tier, and so the verification, is
+    unchanged: the person answers intent, not the effect's proof ([v2.17] ruling (b))."""
+    if step.verb != "type" or step.text is None:
+        return ()
+    generated = step.text_provenance != "verbatim" or (
+        bool(goal) and not verbatim_in(step.text, goal)
+    )
+    return ("generated_text",) if generated else ()
+
+
 def effective_risk(step: Step, bound_name: str | None = None) -> Risk:
     """The plan's tier raised by the deny patterns on the target's name and automation id,
     and on the bound element's name part for a person target (PT-31), never lowered."""
@@ -198,6 +212,8 @@ class Ask:
     window: str = field(default="", repr=False)
     """Where the step lands: the app and reference by code, then the page's own title
     (step-window SW-06). Never in the trace."""
+    reasons: tuple[str, ...] = ()
+    """Why a step below R2 asks anyway (5.13 [v2.27]): closed tokens, e.g. `generated_text`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -395,6 +411,7 @@ class Gate:
         composer_id: int | None = None,
         bound: Binding | None = None,
         window: str = "",
+        goal: str = "",
     ) -> GateResult:
         risk = effective_risk(step, bound.shown_name_part if bound is not None else None)
         if target_pid == self._own_pid:
@@ -406,7 +423,8 @@ class Gate:
         if isinstance(predicate, GateResult):
             return predicate
         decision_id = f"d-{uuid.uuid4().hex[:12]}"
-        if risk in ("R0", "R1"):
+        reasons = ask_reasons(step, goal)
+        if risk in ("R0", "R1") and not reasons:
             decision = GateDecision(
                 decision_id=decision_id, action_key=action_key, outcome="approve"
             )
@@ -441,6 +459,7 @@ class Gate:
             ),
             automation_id=step.target.automation_id if step.target is not None else "",
             window=window,
+            reasons=reasons,
         )
         answer = self._confirmer.ask(ask)
         if answer in ("yes", f"yes:{decision_id}"):
@@ -451,7 +470,11 @@ class Gate:
                 outcome="confirm",
                 decision=decision,
                 code=None,
-                evidence={"risk": risk, "decision_id": decision_id},
+                evidence={
+                    "risk": risk,
+                    "decision_id": decision_id,
+                    **({"ask_reasons": list(reasons)} if reasons else {}),
+                },
                 expect=predicate,
                 params=params,
             )

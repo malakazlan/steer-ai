@@ -46,6 +46,13 @@ OPEN_TARGET_ROLE = "App"
 _RISK_ORDER = {risk: index for index, risk in enumerate(RISKS)}
 
 
+def verbatim_in(text: str, goal: str) -> bool:
+    """Whether text is the person's own words: a whitespace-folded, NFKC substring of the goal,
+    case preserved; empty text is never verbatim (5.13 [v0.4], PL-23)."""
+    key = normalise_name(text)
+    return bool(key) and key in normalise_name(goal)
+
+
 def executor_verb(verb: str) -> tuple[Path, str]:
     """(executor path, executor verb) for a plan verb; `open` has no executor yet."""
     if verb not in VERBS:

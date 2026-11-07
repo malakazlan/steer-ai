@@ -78,6 +78,10 @@ def render_ask(ask: Ask) -> str:
     text = ask.params.get("text")
     if text is not None:
         lines.append(f"{_PREFIX}text: {_show(text)}")
+    if "generated_text" in ask.reasons:
+        lines.append(
+            f"{_PREFIX}note: this text was written by the agent, not taken from your request"
+        )
     for key in sorted(ask.params):
         if key != "text":
             lines.append(f"{_PREFIX}{_show(key)}: {_show(ask.params[key])}")
