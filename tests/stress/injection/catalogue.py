@@ -229,7 +229,7 @@ FIXTURES: tuple[Attack, ...] = (
         ErrorCode.GATE_PENDING_USER,
         "unanswered",
     ),
-    # ---- deny words (pinned IJ-01, IJ-03, IJ-15; gap IJ-04) ----
+    # ---- deny words (pinned IJ-01, IJ-03, IJ-04, IJ-15) ----
     Attack(
         "IJ-15",
         "zero_width",
@@ -310,7 +310,6 @@ FIXTURES: tuple[Attack, ...] = (
         Signature("click", "Button", "Account options"),
         "R3",
         "raised",
-        gap="#84",
     ),
     # ---- provenance and verbs (pinned IJ-05, IJ-02 button; gap IJ-02 document) ----
     Attack(
@@ -398,7 +397,6 @@ FIXTURES: tuple[Attack, ...] = (
         None,
         "R2",
         "refused",
-        gap="#88",
     ),
     # ---- A3 untrusted continuation (pinned IJ-19, IJ-20; gap IJ-10) ----
     Attack(
