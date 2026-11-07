@@ -197,11 +197,12 @@ def measure_cold_start(  # noqa: PLR0913 - the OS calls are injected so the meas
             image="chrome.exe",
             process=proc,
         )
-    except TimeoutError as exc:
+        # timed here: stopping Chrome and removing its profile are not the cold start
+        return ColdStart(seconds=monotonic() - started, timeout_s=timeout_s)
+    except OSError as exc:  # TimeoutError included: a measurement never aborts the run
         return ColdStart(seconds=monotonic() - started, timeout_s=timeout_s, error=str(exc))
     finally:
         stop(proc, profile_dir)
-    return ColdStart(seconds=monotonic() - started, timeout_s=timeout_s)
 
 
 PROFILE_RELEASE_S = 5.0

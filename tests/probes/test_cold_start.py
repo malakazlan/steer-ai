@@ -41,6 +41,7 @@ class _Rig:
 
     def stop(self, proc: Any, profile: Path) -> None:
         self.stopped.append((proc.pid, profile))
+        self.now += 7.0  # taskkill, the exit wait and the profile removal are not the cold start
 
     def run(self, tmp_path: Path) -> Any:
         return measure_cold_start(
@@ -94,3 +95,17 @@ def test_the_warm_up_has_its_own_port_and_a_blank_page(tmp_path: Path) -> None:
     assert port == COLD_START_PORT
     assert port not in PORTS_IN_TESTS
     assert url == "about:blank"
+
+
+def test_a_wait_that_fails_otherwise_is_a_diagnosis_not_an_abort(tmp_path: Path) -> None:
+    """Principal note: an OSError from the wait must not end the whole session."""
+    rig = _Rig(window_after=1.0)
+
+    def broken(*_a: Any, **_k: Any) -> WindowInfo:
+        raise OSError("EnumWindows failed")
+
+    rig.wait = broken  # type: ignore[method-assign]  # a window list that cannot be read
+    result = rig.run(tmp_path)
+    assert result.error is not None
+    assert "EnumWindows failed" in result.error
+    assert len(rig.stopped) == 1
