@@ -15,7 +15,7 @@ from typing import Any
 
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.errors import ErrorCode, SteerError
-from steerai.orchestrator.contracts import Plan, Step, StepResult, Subgoal, Target
+from steerai.orchestrator.contracts import Plan, Step, StepResult, Subgoal, Target, subgoal_verbs
 from steerai.orchestrator.loop import TaskResult
 from steerai.orchestrator.plan_io import plan_from_bytes, plan_to_json
 from steerai.planner.contracts import DoneStep, OpenSubgoal, PlannerError, PlanOutcome, PlanRequest
@@ -233,6 +233,8 @@ def test_an_unfinished_run_is_replanned_previewed_and_run_after_its_own_go(tmp_p
     assert rig.ledger.extended == [hashlib.sha256(cont.data).hexdigest()]
     assert [c for _p, c in rig.session.ran] == [False, True]
     assert rig.ledger.step_ids == ["s1", "p2.s1"], "every plan's ids reach the ledger"
+    # each link keeps its plan's subgoal verbs, the same map the session uses (#51)
+    assert rig.ledger.verb_maps == [subgoal_verbs(first.plan), subgoal_verbs(cont.plan)]
     assert rig.world.foreground_calls[-1] == OPENED, "plan 2 starts with its window in front"
     assert "continuation 1/2" in err
     assert "plan " + _go(cont)[3:] in err

@@ -34,6 +34,7 @@ from steerai.orchestrator.contracts import (
     Plan,
     Risk,
     Step,
+    subgoal_verbs,
 )
 from steerai.orchestrator.gate import Confirmer, effective_risk
 from steerai.orchestrator.ledger import LedgerError
@@ -117,9 +118,19 @@ class Options:
 
 class LedgerLike(Protocol):
     def bind_plan(
-        self, digest: str, *, allow_change: bool = False, step_ids: Sequence[str] = ()
+        self,
+        digest: str,
+        *,
+        allow_change: bool = False,
+        step_ids: Sequence[str] = (),
+        subgoal_verbs: Mapping[str, Sequence[str]] | None = None,
     ) -> None: ...
-    def extend_plan(self, digest: str, step_ids: Sequence[str]) -> None: ...
+    def extend_plan(
+        self,
+        digest: str,
+        step_ids: Sequence[str],
+        subgoal_verbs: Mapping[str, Sequence[str]] | None = None,
+    ) -> None: ...
     def plan_count(self) -> int: ...
     def unsettled(self) -> bool: ...
     def bind_window(
@@ -654,6 +665,7 @@ def _run_bound(  # noqa: PLR0913 - the run's state, one return per exit path
                 _digest(data),
                 allow_change=options.allow_plan_change,
                 step_ids=[s.id for s in plan.steps],
+                subgoal_verbs=subgoal_verbs(plan),
             )
         monitor = _started_monitor(deps, options)
     except UsageError as exc:
@@ -929,6 +941,7 @@ def _planned(  # noqa: PLR0913 - the run's state at planning time
         _digest(outcome.data),
         allow_change=options.allow_plan_change,
         step_ids=[s.id for s in outcome.plan.steps],
+        subgoal_verbs=subgoal_verbs(outcome.plan),
     )
     offending = over_limit(outcome.plan, options.max_risk)
     if offending is not None:
@@ -1155,7 +1168,11 @@ def _bound_continuation(
     path = r.options.plan.with_suffix(f".{number + 1}.json")
     _write_atomic(path, outcome.data)
     try:
-        r.ledger.extend_plan(_digest(outcome.data), [s.id for s in outcome.plan.steps])
+        r.ledger.extend_plan(
+            _digest(outcome.data),
+            [s.id for s in outcome.plan.steps],
+            subgoal_verbs(outcome.plan),
+        )
     except LedgerError as exc:
         r.out.note(f"ledger: {exc.message}")
         return progress.ended("blocked", ErrorCode.GATE_BLOCKED, _ledger_detail(exc))

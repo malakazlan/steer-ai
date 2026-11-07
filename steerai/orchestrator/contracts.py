@@ -235,3 +235,12 @@ class StepResult:
             "latency_ms": dict(self.latency_ms),
             "evidence": dict(self.evidence),
         }
+
+
+def subgoal_verbs(plan: Plan) -> dict[str, list[str]]:
+    """Each subgoal's verbs in the plan, sorted: what decides whether an open may judge it (5.5
+    [v2.6]); the same map in the session and on the plan's ledger link (issue #51)."""
+    verbs: dict[str, set[str]] = {s.id: set() for s in plan.subgoals}
+    for step in plan.steps:
+        verbs.setdefault(step.subgoal, set()).add(step.verb)
+    return {subgoal: sorted(names) for subgoal, names in verbs.items()}

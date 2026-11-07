@@ -200,11 +200,16 @@ class MemoryLedger:
     started_at: float
     secret: bytes = b"\x07" * 32
     executions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    earlier: dict[str, set[str]] | None = None
+    """The ledger chain's earlier links' subgoal verbs (issue #51); None: unknown."""
     records: dict[str, WriteAheadRecord] = field(default_factory=dict)
     fail_writes: bool = False
     unreadable: set[str] = field(default_factory=set)
     window_ref: str | None = None
     start_record: dict[str, Any] | None = None
+
+    def earlier_verbs(self) -> dict[str, set[str]] | None:
+        return self.earlier
 
     def start_window(self) -> dict[str, Any] | None:
         return None if self.start_record is None else dict(self.start_record)

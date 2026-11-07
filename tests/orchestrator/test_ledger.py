@@ -685,3 +685,64 @@ def test_a_state_from_before_the_start_identity_resumes_without_it(tmp_path: Pat
     with Ledger(tmp_path, task_id="t-pre-start", started_at=1.0) as ledger:
         ledger.bind_window(pid=500, title="Amir Khan - Chat", identity=START_IDENTITY)
         assert ledger.start_window() is None
+
+
+# ---- each link keeps its plan's subgoal verbs across processes (issue #51) ---------------------
+
+
+def test_each_links_subgoal_verbs_survive_a_restart(tmp_path: Path) -> None:
+    """Gate blocking 1: a field `_loaded_chain` did not rebuild would vanish on the next load."""
+    with Ledger(tmp_path, task_id="t-verbs", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["s1", "s2"], subgoal_verbs={"g1": ["open", "type"]})
+        ledger.extend_plan("b" * 64, ["p2.s1"], subgoal_verbs={"g1": ["open"]})
+    with Ledger(tmp_path, task_id="t-verbs", started_at=1.0) as ledger:
+        assert ledger.earlier_verbs() == {"g1": {"open", "type"}}
+
+
+def test_a_link_without_verbs_makes_the_earlier_verbs_unknown(tmp_path: Path) -> None:
+    """A link written before #51 holds no map: unknown, never "only opens"."""
+    with Ledger(tmp_path, task_id="t-old-verbs", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["s1"])
+        ledger.extend_plan("b" * 64, ["p2.s1"], subgoal_verbs={"g1": ["open"]})
+        assert ledger.earlier_verbs() is None
+    with Ledger(tmp_path, task_id="t-old-verbs", started_at=1.0) as ledger:
+        assert ledger.earlier_verbs() is None
+
+
+def test_a_rebind_fills_a_missing_map_and_keeps_a_stored_one(tmp_path: Path) -> None:
+    """Gate blocking 5: the map is a pure function of the bytes the digest matched."""
+    with Ledger(tmp_path, task_id="t-rebind", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["s1"])
+        ledger.bind_plan("a" * 64, step_ids=["s1"], subgoal_verbs={"g1": ["open", "type"]})
+        ledger.extend_plan("b" * 64, ["p2.s1"], subgoal_verbs={"g1": ["open"]})
+        assert ledger.earlier_verbs() == {"g1": {"open", "type"}}
+    with Ledger(tmp_path, task_id="t-rebind2", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["s1"], subgoal_verbs={"g1": ["open"]})
+        ledger.bind_plan(
+            "c" * 64, allow_change=True, step_ids=["s1"], subgoal_verbs={"g1": ["type"]}
+        )
+        ledger.extend_plan("b" * 64, ["p2.s1"], subgoal_verbs={"g1": ["open"]})
+        assert ledger.earlier_verbs() == {"g1": {"type"}}, "a replaced link writes its own map"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [{"g1": ["open", "launch_rocket"]}, {"g1": "open"}, ["open"], {"g1": [7]}],
+)
+def test_a_malformed_verbs_map_is_refused_on_load(tmp_path: Path, bad: object) -> None:
+    with Ledger(tmp_path, task_id="t-bad", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["s1"], subgoal_verbs={"g1": ["open"]})
+    state_path = next(tmp_path.rglob("state.ledger"))
+    payload = json.loads(dpapi.unprotect(state_path.read_bytes(), entropy=b"steer-ledger-v1"))
+    payload["plan_chain"][0]["subgoal_verbs"] = bad
+    state_path.write_bytes(dpapi.protect(json.dumps(payload).encode(), entropy=b"steer-ledger-v1"))
+    with pytest.raises(LedgerError, match="ledger state unreadable"):
+        Ledger(tmp_path, task_id="t-bad", started_at=1.0)
+
+
+def test_a_chain_with_no_earlier_link_cannot_say_what_came_before(tmp_path: Path) -> None:
+    """Hunter RV-12: an empty or one-link chain is never "known, nothing earlier"."""
+    with Ledger(tmp_path, task_id="t-short", started_at=1.0) as ledger:
+        assert ledger.earlier_verbs() is None
+        ledger.bind_plan("a" * 64, step_ids=["s1"], subgoal_verbs={"g1": ["open"]})
+        assert ledger.earlier_verbs() is None

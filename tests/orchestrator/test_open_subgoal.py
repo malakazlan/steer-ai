@@ -145,9 +145,9 @@ def test_a_window_gone_at_the_tick_is_traced_with_its_reason() -> None:
     assert [(t["by"], t.get("detail")) for t in _ticks(trace)] == [("none", "window_gone")]
 
 
-def test_a_resumed_continuation_with_no_verb_record_keeps_todays_rule() -> None:
-    """Gate change 1: a continuation link in a new process does not know what the subgoal held
-    in earlier plans; the live in-window check decides ("Notepad" is not the full title)."""
+def test_a_resumed_continuation_with_no_verb_record_never_ticks_by_its_title() -> None:
+    """Gate change 1 of #47, tightened by #51 (gate Q2): a link from before #51 cannot say what the
+    subgoal held earlier, so no open ticks it (traced `verbs_unknown`)."""
     trace = ListTrace()
     result = _rig(trace).build().run_task(_notepad_only("p2.s1"), continuation=True)
     assert result.ticked == set()
@@ -538,3 +538,55 @@ def test_two_opens_tick_by_the_live_window_and_trace_it() -> None:
     assert _rig(trace).build().run_task(plan).ticked == {"g1"}
     tick = _only_tick(trace)
     assert (tick["subgoal"], tick["by"]) == ("g1", "open_window")
+
+
+# ---- a resumed continuation knows each subgoal's earlier verbs (issue #51) --------------------
+
+
+def _resumed(earlier: dict[str, set[str]] | None, trace: ListTrace) -> Any:
+    rig = _rig(trace)
+    rig.ledger.earlier = earlier
+    return rig.build().run_task(_notepad_only("p2.s1"), continuation=True)
+
+
+def test_a_resumed_continuation_never_ticks_a_subgoal_that_was_typed_into_earlier() -> None:
+    """OS-03 in a new process: plan 1 gave g1 an open and a type; the ledger remembers it."""
+    trace = ListTrace()
+    assert _resumed({"g1": {"open", "type"}}, trace).ticked == set()
+    assert _ticks(trace) == []
+
+
+def test_a_resumed_continuation_whose_subgoal_held_only_opens_ticks_by_its_title() -> None:
+    trace = ListTrace()
+    assert _resumed({"g1": {"open"}}, trace).ticked == {"g1"}
+    assert [t["by"] for t in _ticks(trace)] == ["open_title"]
+
+
+def test_unknown_earlier_verbs_refuse_the_tick_and_say_why() -> None:
+    """Gate Q2: a ledger from before #51 cannot say; unclear means fail."""
+    trace = ListTrace()
+    assert _resumed(None, trace).ticked == set()
+    assert [(t["by"], t.get("detail")) for t in _ticks(trace)] == [("none", "verbs_unknown")]
+
+
+def test_a_resume_decides_as_the_same_session_would() -> None:
+    """Gate blocking 6: parity between one process and a resumed one."""
+    for plan_one_verbs, expected in (({"open", "type"}, set()), ({"open"}, {"g1"})):
+        same = _rig()
+        session = same.build()
+        first = Plan(
+            goal="open notepad",
+            subgoals=(Subgoal(id="g1", desc="open", condition=TitleMatches(pattern="Chat")),),
+            steps=tuple(
+                [_notepad()]
+                + (
+                    [_click(step_id="c1", expect=TitleMatches(pattern="Amir Khan - Chat"))]
+                    if "type" in plan_one_verbs
+                    else []
+                )
+            ),
+        )
+        session.run_task(first)
+        in_process = session.run_task(_notepad_only("p2.s1"), continuation=True).ticked
+        resumed = _resumed({"g1": plan_one_verbs}, ListTrace()).ticked
+        assert in_process == resumed == expected
