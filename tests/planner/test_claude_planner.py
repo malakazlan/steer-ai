@@ -203,7 +203,18 @@ def test_the_prompt_says_focus_targets_a_field_role() -> None:
     system, _ = build_prompt(_request(), tag="t")
     prose = " ".join(system.split())
     assert "focus (put keyboard focus in a field: an Edit, ComboBox or Document)" in prose
-    assert PROMPT_VERSION == "planner-12"
+    assert PROMPT_VERSION == "planner-13"
+
+
+def test_the_prompt_says_a_selection_click_is_proven_by_present() -> None:
+    """#124: a chat already open made `appeared` never hold; the click's state proof names the
+    header, inside the page, in a one-click subgoal."""
+    system, _ = build_prompt(_request(), tag="t")
+    prose = " ".join(system.split())
+    assert "present: role, name, within" in prose
+    assert 'its "name" equal to the click target\'s name' in prose
+    assert "never a list, never the window" in prose
+    assert "The subgoal's condition is that same present." in prose
 
 
 def test_the_prompt_says_a_link_opens_a_page_named_by_its_title() -> None:

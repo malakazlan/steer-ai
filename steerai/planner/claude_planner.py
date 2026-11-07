@@ -34,7 +34,7 @@ DEFAULT_MAX_TOKENS = 8192
 """Unmeasured: enough for the 6.3 form of a ten-step plan; a `max_tokens` stop is `truncated`."""
 DEFAULT_MAX_RETRIES = 1
 EFFORT = "medium"
-PROMPT_VERSION = "planner-12"
+PROMPT_VERSION = "planner-13"
 MECHANICAL_VERBS = frozenset({"type", "focus", "open"})
 """Steps whose effect code verifies (value typed, focus held, window opened): any model
 `expect` is dropped."""
@@ -80,8 +80,9 @@ to type into. For a person in a chat list use
 Predicates: one object with a "kind" and the fields that kind uses. appeared: role, name,
 within?, expected?, order?, decoration?, replaces? (an element with that role and exact name is
 new on screen); disappeared: role, name, within? (it is gone); title: pattern (the window title
-holds this plain text); window_exists / window_gone: name; count_delta: role, delta, within?.
-"within" names a landmark container by its exact name. Patterns are plain text, never regular
+holds this plain text); window_exists / window_gone: name; count_delta: role, delta, within?;
+present: role, name, within (exactly one element with that role and exact name is on screen
+now). "within" names a landmark container by its exact name. Patterns are plain text, never regular
 expressions. Leave fields the kind does not use unset.
 
 Do not write "expect" for focus, type or open steps: the agent verifies the focus, the
@@ -91,6 +92,14 @@ after an action (a page replaced, a message appeared, an item gone, a window ope
 review), the end state is the field's content: use value: role, name, text, only as a subgoal
 condition, never as an expect; the field (Edit, ComboBox or Document) and the exact text must be
 those of a type step of the same subgoal, and that subgoal holds no send, submit or delete.
+
+Selecting what may already be selected (opening a chat, a conversation, a mail, a tab's item
+that can already be the open one): give it its own subgoal of exactly one click on the item,
+risk R1, whose "expect" is a present of the element that shows what is open (the chat's header
+name, not the list row), its "name" equal to the click target's name, "within" the page's
+Document (named like the page title) or a named pane holding that header, never a list, never
+the window. The subgoal's condition is that same present. The agent always clicks; the click
+is verified even when the item was already open. Never use present for anything else.
 
 Verification rule for R2 and R3 steps: the step's "expect" must be an "appeared" or
 "disappeared" whose "name" is the step's own content (the text typed or sent, or the name of

@@ -82,10 +82,12 @@ from steerai.verify.predicates import (
     CountDelta,
     Disappeared,
     Predicate,
+    Present,
     TitleMatches,
     WindowExists,
     WindowGone,
     field_values,
+    presents,
 )
 from steerai.verify.t1 import (
     NO_LABEL_REASONS,
@@ -332,6 +334,7 @@ class Session:
         self._identify = identify
         self._foreground = foreground
         self._goal = ""
+        self._content_landmarks: tuple[str, ...] = ()
         self._monitor = monitor
         self._counts_at_step: dict[str, int] = {}
         self._secure_step = False
@@ -358,6 +361,8 @@ class Session:
         self._verify_deadline_s = verify_deadline_s
         self._last_after: tuple[Snapshot, float] | None = None
         self._last_pair: tuple[Snapshot, Snapshot] | None = None
+        self._proof: tuple[Predicate, Verdict] | None = None
+        """The step's own verified postcondition, as bound by the gate (#124)."""
         self._windows_at_step: list[WindowLike] | None = None
         self._scrolled: str | None = None
         self._act_evidence: dict[str, Any] = {}
@@ -963,7 +968,7 @@ class Session:
 
     def _rebuilt(self, step: Step, risk: Risk, before: Snapshot, element_id: int) -> Predicate:
         params = params_for(step, element_id, self._composer(step, before), self._binding)
-        checked = self._gate.postcondition(step, step.expect, risk, params)
+        checked = self._gate.postcondition(step, self._expect_of(step), risk, params)
         if isinstance(checked, GateResult):
             detail = str(checked.evidence.get("detail", "weak_predicate"))
             raise _StepFailureError(checked.code or ErrorCode.GATE_BLOCKED, detail)
@@ -1071,7 +1076,7 @@ class Session:
             return self._gate.decide(
                 step,
                 action_key=key,
-                expect=step.expect,
+                expect=self._expect_of(step),
                 target_pid=before.pid,
                 previous_attempt=previous,
                 target_id=element_id,
@@ -1216,6 +1221,7 @@ class Session:
 
     def _begin_step(self, windows_before: list[WindowLike] | None) -> None:
         self._windows_at_step = windows_before
+        self._proof = None
         self._scrolled = None
         self._secure_step = False
         self._sent_in_act = False
@@ -1625,6 +1631,7 @@ class Session:
             sleep=self._sleep,
         )
         after = next((s for s in decided if s.id == verdict.after_id), decided[-1])
+        self._proof = (expect, verdict) if verdict.holds else None
         return verdict, after
 
     def _remember(self, before: Snapshot, after: Snapshot) -> None:
@@ -1773,6 +1780,7 @@ class Session:
         """Run one plan. A continuation (plan n>1 of a replanned task) ticks no subgoal at
         start: its conditions were written from the screen it starts on (hunter RP-01)."""
         self._goal = plan.goal
+        self._content_landmarks = _content_landmarks(plan)
         self._last_after = None  # nothing observed for another plan is reused (RP-35/47)
         self._last_pair = None
         self._trace.write(
@@ -1872,11 +1880,12 @@ class Session:
         self, plan: Plan, ticked: set[str], results: list[StepResult]
     ) -> tuple[Literal["stopped", "paused", "blocked"], ErrorCode, str] | None:
         strikes = 0
-        for step in plan.steps:
+        for index, step in enumerate(plan.steps):
             if step.subgoal in ticked:
                 continue
-            if self._steps_run >= self.max_steps:
-                return "stopped", ErrorCode.BUDGET_EXCEEDED, "max_steps"
+            refused = self._refused_start(plan, index, ticked)
+            if refused is not None:
+                return refused
             self._steps_run += 1
             result = self.run_step(step)
             results.append(result)
@@ -1904,7 +1913,7 @@ class Session:
                 before, after = self._last_pair
                 subgoal = next(s for s in plan.subgoals if s.id == step.subgoal)
                 verdict = (
-                    self._subgoal_verdict(subgoal.condition, before, after)
+                    self._condition_verdict(subgoal.condition, before, after)
                     if _value_ready(plan, step, result, results)
                     else None
                 )
@@ -1921,6 +1930,19 @@ class Session:
                 strikes += 1
             if strikes >= SCREEN_GUARD_STRIKES:
                 return "stopped", ErrorCode.BUDGET_EXCEEDED, "loop"
+        return None
+
+    def _refused_start(
+        self, plan: Plan, index: int, ticked: set[str]
+    ) -> tuple[Literal["stopped"], ErrorCode, str] | None:
+        """Why the step at `index` must not start: an irreversible step acts only on reached
+        preconditions, so a failed chat click never lets the reply land in whichever chat is
+        open (#124); and the step budget."""
+        if _unmet_before(plan, index, ticked):
+            self._trace_tick(plan.steps[index].subgoal, "none", detail="precondition_unmet")
+            return "stopped", ErrorCode.VERIFY_FAILED, "precondition_unmet"
+        if self._steps_run >= self.max_steps:
+            return "stopped", ErrorCode.BUDGET_EXCEEDED, "max_steps"
         return None
 
     def _after_open(
@@ -1988,8 +2010,10 @@ class Session:
         self._trace.write(record)
 
     def _holds_now(self, predicate: Predicate, snapshot: Snapshot) -> bool:
-        """Presence conditions already true at task start; diff conditions never tick here."""
-        if isinstance(predicate, _DIFF_PREDICATES):
+        """Presence conditions already true at task start; diff conditions never tick here, and
+        neither does `present`: its click always runs, so the selection is made, not assumed
+        (#124: a chat open at start may be another person's, hunter PS-01/10/19)."""
+        if isinstance(predicate, _DIFF_PREDICATES) or presents(predicate):
             return False
         if isinstance(predicate, TitleMatches):
             return title_holds(predicate.pattern, snapshot.title)
@@ -2004,6 +2028,30 @@ class Session:
             ).holds
         except (SteerError, ValueError):
             return False
+
+    def _expect_of(self, step: Step) -> Predicate | None:
+        """The plan's expect, a `present` bound to the plan's content landmarks (#124)."""
+        if isinstance(step.expect, Present):
+            return replace(step.expect, excluding=self._content_landmarks)
+        return step.expect
+
+    def _condition_verdict(
+        self, condition: Predicate, before: Snapshot, after: Snapshot
+    ) -> Verdict | None:
+        """A `present` condition holds only through its own click's bound, verified proof: an
+        unbound one would count the clicked row's text, and any other step proves nothing
+        about the selection (#124, hunter PS-02/03/20)."""
+        if not presents(condition):
+            return self._subgoal_verdict(condition, before, after)
+        if self._proof is None:
+            return None
+        proof, verdict = self._proof
+        same = (
+            isinstance(proof, Present)
+            and isinstance(condition, Present)
+            and replace(proof, target_id=None, excluding=()) == condition
+        )
+        return verdict if same else None
 
     def _subgoal_holds(self, predicate: Predicate, before: Snapshot, after: Snapshot) -> bool:
         verdict = self._subgoal_verdict(predicate, before, after)
@@ -2084,6 +2132,40 @@ def _plan_refs(plan: Plan, link: str | None) -> dict[str, str | None]:
         if step.verb == "open":
             current = f"opened:{step.id}"
     return refs
+
+
+def _unmet_before(plan: Plan, index: int, ticked: set[str]) -> bool:
+    """An R2/R3 step (by its plan tier and deny words) with an earlier subgoal unticked whose
+    steps ran before it; the person-candidate ceiling is judged inside the step."""
+    step = plan.steps[index]
+    if effective_risk(step) not in ("R2", "R3"):
+        return False
+    earlier = {s.subgoal for s in plan.steps[:index]} - {step.subgoal}
+    return bool(earlier - ticked)
+
+
+def _leaves(predicate: Predicate) -> list[Predicate]:
+    if isinstance(predicate, All | AnyOf):
+        return [leaf for part in predicate.parts for leaf in _leaves(part)]
+    return [predicate]
+
+
+def _content_landmarks(plan: Plan) -> tuple[str, ...]:
+    """Every landmark the plan's content checks name (a send's scope, an `appeared` within):
+    where messages are, so never where a `present` may be proven (hunter PS-09)."""
+    found: set[str] = set()
+    predicates = [s.condition for s in plan.subgoals] + [
+        s.expect for s in plan.steps if s.expect is not None
+    ]
+    for leaf in (leaf for p in predicates for leaf in _leaves(p)):
+        within = leaf.within if isinstance(leaf, Appeared | Disappeared | CountDelta) else None
+        if within is not None and within.landmark is not None:
+            found.add(within.landmark)
+    for step in plan.steps:
+        scope = step.params.get("scope")
+        if isinstance(scope, str) and scope.strip():
+            found.add(normalise_name(scope).casefold())
+    return tuple(sorted(found))
 
 
 def _structural_part(predicate: Predicate) -> Predicate | None:

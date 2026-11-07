@@ -38,6 +38,7 @@ from steerai.verify.predicates import (
     FieldValue,
     Focused,
     Predicate,
+    Present,
     State,
     TitleMatches,
     ValueEquals,
@@ -46,7 +47,7 @@ from steerai.verify.predicates import (
     Within,
     name_matches,
 )
-from steerai.verify.scope import Scope, resolve_scope
+from steerai.verify.scope import Scope, container_of, resolve_scope
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot, normalise_name, resolve_in
 
@@ -499,6 +500,73 @@ def _disappeared(predicate: Disappeared, before: Snapshot, after: Snapshot) -> V
     )
 
 
+def _present(predicate: Present, before: Snapshot, after: Snapshot) -> Verdict:
+    """The state on `after` alone (#124): one visible match in the landmark, outside the
+    clicked target's container and the plan's content landmarks."""
+    scope = _present_scope(predicate, before, after)
+    if isinstance(scope, Verdict):
+        return scope
+    found = [
+        e
+        for e in after.elements
+        if not e.offscreen and _scoped(scope, e, predicate.role, predicate.name_pattern)
+    ]
+    if len(found) > 1:
+        return _contradiction(scope, "ambiguous_match")
+    if not found:
+        return _miss(scope, "absent")
+    return Verdict(
+        holds=True,
+        code=None,
+        level=scope.level,
+        polls=0,
+        evidence={"level": scope.level, "matched": 1},
+    )
+
+
+def _present_scope(predicate: Present, before: Snapshot, after: Snapshot) -> Scope | Verdict:
+    """The landmark minus the excluded subtrees, or the miss; never window-wide, so a missing
+    landmark is a miss and never a fallback."""
+    excluding: int | None = None
+    if predicate.target_id is not None:
+        excluding = _same_container(before, after, container_of(before, predicate.target_id))
+        if excluding is None:
+            return _plain("target_container_gone")
+    scope = resolve_scope(after, predicate.within, excluding=excluding)
+    if scope.level == 0:
+        return _miss(scope, scope.reason or "ambiguous_landmark")
+    if scope.level == 3 or scope.container_id is None:
+        return _miss(scope, "landmark_absent")
+    if after.element(scope.container_id).parent_id is None:
+        # the window holds a browser's tab strip and title bar, never the page (PS-14)
+        return _miss(scope, "landmark_is_window")
+    ids = set(scope.ids)
+    for landmark in predicate.excluding:
+        content = resolve_scope(after, Within(landmark=landmark))
+        if content.level != 1:
+            return _miss(scope, "content_landmark_unresolved")
+        ids -= content.ids
+    return replace(scope, ids=ids)
+
+
+def _same_container(before: Snapshot, after: Snapshot, element_id: int | None) -> int | None:
+    """The container in `after` by its own RuntimeId and role: a list's name may change on the
+    click (an unread count clearing), its identity does not (principal item 2)."""
+    if element_id is None:
+        return None
+    container = before.element(element_id)
+    if not container.runtime_id:
+        return None
+    return next(
+        (
+            e.id
+            for e in after.elements
+            if e.runtime_id == container.runtime_id and e.role == container.role
+        ),
+        None,
+    )
+
+
 def _count_delta(predicate: CountDelta, before: Snapshot, after: Snapshot) -> Verdict:
     scope_before = resolve_scope(before, predicate.within)
     try:
@@ -755,6 +823,7 @@ _EVALUATORS: dict[type, Callable[[Any, Snapshot, Snapshot, Context], Verdict]] =
     Appeared: lambda p, b, a, _c: _appeared(p, b, a),
     Disappeared: lambda p, b, a, _c: _disappeared(p, b, a),
     CountDelta: lambda p, b, a, _c: _count_delta(p, b, a),
+    Present: lambda p, b, a, _c: _present(p, b, a),
     ValueEquals: _value_equals,
     FieldValue: lambda p, _b, a, c: _field_value(p, a, c),
     Focused: _focused,
@@ -909,6 +978,9 @@ def redact(predicate: Predicate) -> dict[str, Any]:
                 spec.update(_appeared_spec(predicate))
         case FieldValue():
             spec["role"] = predicate.role  # never the name, the text or a value read
+        case Present():
+            spec["role"] = predicate.role  # never the name: it is a contact's (PS-35)
+            spec["within"] = _within_spec(predicate.within)
         case ValueEquals() | Focused() | State():
             spec["target_id"] = predicate.target_id
             if isinstance(predicate, State):

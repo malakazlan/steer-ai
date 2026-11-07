@@ -38,11 +38,13 @@ from steerai.verify.predicates import (
     Disappeared,
     FieldValue,
     Predicate,
+    Present,
     TitleMatches,
     WindowExists,
     WindowGone,
     Within,
     field_values,
+    presents,
 )
 from steerai.world.model import normalise_name
 from steerai.world.people import name_part
@@ -83,6 +85,7 @@ _KINDS = frozenset(
         "window_gone",
         "count_delta",
         "value",
+        "present",
         "all",
         "any_of",
     }
@@ -94,6 +97,7 @@ VALUE_KEYS = frozenset({"role", "name", "text"})
 APPEARED_KEYS = frozenset({"role", "name", "within", "expected", "order", "decoration", "replaces"})
 DISAPPEARED_KEYS = frozenset({"role", "name", "within"})
 COUNT_DELTA_KEYS = frozenset({"role", "delta", "within"})
+PRESENT_KEYS = frozenset({"role", "name", "within"})
 TITLE_KEYS = frozenset({"pattern"})
 WINDOW_KEYS = frozenset({"name"})
 PREDICATE_KEYS: Mapping[str, frozenset[str]] = {
@@ -104,6 +108,7 @@ PREDICATE_KEYS: Mapping[str, frozenset[str]] = {
     "window_exists": WINDOW_KEYS,
     "window_gone": WINDOW_KEYS,
     "value": VALUE_KEYS,
+    "present": PRESENT_KEYS,
 }
 FILE_VERBS = _FILE_VERBS
 STEP_KEYS = _STEP_KEYS
@@ -307,7 +312,24 @@ def _predicate_body(value: object, path: str, depth: int, *, condition: bool) ->
         )
     if kind == "value":
         return _field_value(fields, inner, condition=condition)
+    if kind == "present":
+        return _present(fields, inner, depth)
     return _leaf(kind, fields, inner)
+
+
+def _present(fields: Mapping[str, Any], inner: str, depth: int) -> Present:
+    if depth > 1:
+        # a branch of all/any_of would hold with no proof of its own (hunter PS-04)
+        raise PlanError(inner, "present is never inside all or any_of")
+    _keys(fields, PRESENT_KEYS, inner)
+    within = _within(fields.get("within"), f"{inner}.within")
+    if within is None:
+        raise PlanError(f"{inner}.within", "present needs a landmark")
+    return Present(
+        role=_text(fields.get("role"), f"{inner}.role"),
+        name_pattern=_text(fields.get("name"), f"{inner}.name"),
+        within=within,
+    )
 
 
 def _leaf(kind: str, fields: Mapping[str, Any], inner: str) -> Predicate:
@@ -413,7 +435,25 @@ def _step(value: object, path: str) -> Step:
         if isinstance(exc, PlanError):
             raise
         raise PlanError(path, str(exc)) from exc
-    return _checked_open(step, path)
+    return _checked_present(_checked_open(step, path), path)
+
+
+def _checked_present(step: Step, path: str) -> Step:
+    """A `present` expect proves an R0/R1 click selected what it names (#124, 5.10 [v2.36])."""
+    expect = step.expect
+    if expect is None or not isinstance(expect, Present):
+        return step
+    where = f"{path}.expect"
+    if step.verb != "click":
+        raise PlanError(where, "present is the expect of a click only")
+    if step.risk not in ("R0", "R1"):
+        raise PlanError(where, "present proves a selection below R2, never an effect")
+    wanted = normalise_name(expect.name_pattern).casefold()
+    if step.target is None or normalise_name(step.target.name).casefold() != wanted:
+        raise PlanError(where, "present names the clicked target")
+    if wanted == expect.within.landmark:
+        raise PlanError(where, "present never names its landmark")
+    return step
 
 
 def _window(obj: dict[str, Any], verb: str, path: str) -> str | None:
@@ -467,6 +507,7 @@ def _plan(value: object, path: str) -> Plan:
     )
     _check_window_order(steps, path)
     _check_values(subgoals, steps, path)
+    _check_presents(subgoals, steps, path)
     try:
         return Plan(goal=goal, subgoals=subgoals, steps=steps)
     except ValueError as exc:
@@ -495,6 +536,20 @@ def _check_values(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: 
         for value in wanted:
             if not any(_typed_into(s, value) for s in typed):
                 raise PlanError(where, "value names the field and text a type step of it typed")
+
+
+def _check_presents(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: str) -> None:
+    """A `present` condition ticks only through its own click's bound proof: its subgoal is
+    exactly one click whose expect is that present (hunter PS-03/05/50)."""
+    for index, subgoal in enumerate(subgoals):
+        if not presents(subgoal.condition):
+            continue
+        own = [s for s in steps if s.subgoal == subgoal.id]
+        if len(own) != 1 or own[0].verb != "click" or own[0].expect != subgoal.condition:
+            raise PlanError(
+                f"{path}.subgoals[{index}].condition",
+                "a present subgoal is one click whose expect is that present",
+            )
 
 
 def _typed_into(step: Step, value: FieldValue) -> bool:
@@ -637,6 +692,12 @@ def _encode(predicate: Predicate) -> dict[str, Any]:  # noqa: PLR0911 - one kind
                 "text": predicate.text,
             }
         }
+    if isinstance(predicate, Present):
+        if predicate.target_id is not None or predicate.excluding:
+            raise PlanError("$", "a bound present is snapshot-scoped and has no file form")
+        body = {"role": predicate.role, "name": predicate.name_pattern}
+        body.update(_encode_within(predicate.within))
+        return {"present": body}
     if isinstance(predicate, TitleMatches):
         return {"title": {"pattern": predicate.pattern}}
     if isinstance(predicate, WindowExists):
