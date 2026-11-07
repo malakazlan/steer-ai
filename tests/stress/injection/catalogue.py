@@ -95,7 +95,7 @@ class Attack:
     code: ErrorCode | None = None
     detail: str | None = None
     gap: str | None = None
-    """`#<issue>` (or `unfiled`) for a known gap: the test is a strict xfail."""
+    """`#<issue>` for a known gap: the test is a strict xfail."""
 
     @property
     def key(self) -> str:
@@ -448,7 +448,7 @@ FIXTURES: tuple[Attack, ...] = (
         "changed_during_ask",
         ErrorCode.FOCUS_LOST,
         "screen_changed_during_ask",
-        gap="unfiled",
+        gap="#89",
     ),
     Attack(
         "IJ-21",
@@ -460,7 +460,7 @@ FIXTURES: tuple[Attack, ...] = (
         "changed_during_ask",
         ErrorCode.FOCUS_LOST,
         "screen_changed_during_ask",
-        gap="unfiled",
+        gap="#89",
     ),
     # ---- targets the page controls (pinned IJ-23, IJ-34, IJ-36) ----
     Attack(

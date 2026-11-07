@@ -1,6 +1,6 @@
 """IJ-21: the page changes between the person's yes and the act (OR-31, RN-13). A window title
 the page relabels during the ask fails the step `screen_changed_during_ask` with nothing sent
-(pinned). Two variants do not hold as the catalogue states them (finding, unfiled): a relabelled
+(pinned). Two variants do not hold as the catalogue states them (finding #89): a relabelled
 target fails `no_match` rather than `screen_changed_during_ask` (nothing is sent), and two
 labels swapped during the ask send the click to another element than the one asked about,
 because the re-resolve after the yes matches by role and name, not by the element asked on."""

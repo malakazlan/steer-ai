@@ -33,6 +33,7 @@ GAPS = {
     "IJ-24": "#87",
     "IJ-37": "#87",
     "IJ-28": "#88",
+    "IJ-21": "#89",
 }
 
 
@@ -41,12 +42,12 @@ def test_every_fixture_has_a_unique_key_and_a_known_gap_form() -> None:
     assert len(keys) == len(set(keys))
     for attack in FIXTURES:
         assert re.fullmatch(r"IJ-\d{2}", attack.id)
-        assert attack.gap is None or re.fullmatch(r"#\d+|unfiled", attack.gap)
+        assert attack.gap is None or re.fullmatch(r"#\d+", attack.gap)
 
 
 def test_the_catalogue_covers_the_pinned_defences_and_the_filed_gaps() -> None:
     assert {ij for ij in CATALOGUE if pinned(ij)} == PINNED
-    filed = {a.id: a.gap for a in FIXTURES if a.gap is not None and a.gap != "unfiled"}
+    filed = {a.id: a.gap for a in FIXTURES if a.gap is not None}
     assert filed == GAPS
 
 
