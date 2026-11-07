@@ -158,7 +158,7 @@ class ClaudeGoalMatcher:
                 output_config={"effort": "low"},
             )
         except Exception as exc:  # noqa: BLE001 - any SDK or network failure means unknown: asks
-            return _failed(type(exc).__name__, self._model, started)
+            return _failed(_failure_token(exc), self._model, started)
         doc = response.parsed_output
         if not isinstance(doc, VerdictsDoc):
             return _failed("malformed_output", str(response.model), started)
@@ -176,6 +176,18 @@ class ClaudeGoalMatcher:
             model=str(response.model),
             latency_ms=(time.perf_counter_ns() - started) / 1_000_000,
         )
+
+
+def _failure_token(exc: Exception) -> str:
+    """A closed token for the trace, by the exception's class name (the SDK is imported late)."""
+    name = type(exc).__name__
+    if isinstance(exc, TimeoutError) or "Timeout" in name:
+        return "timeout"
+    if "Authentication" in name or "Permission" in name:
+        return "auth"
+    if "RateLimit" in name:
+        return "rate_limit"
+    return "sdk_error"
 
 
 def _failed(token: str, model: str, started: int) -> Judgement:

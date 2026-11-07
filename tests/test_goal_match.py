@@ -77,7 +77,9 @@ def test_done_steps_are_context_never_numbered() -> None:
 
 def test_a_failed_call_or_a_malformed_answer_is_unknown_with_a_token() -> None:
     failed = ClaudeGoalMatcher(parse=_Parse(error=TimeoutError())).judge(GOAL, [_click("s1", "a")])
-    assert failed.failure == "TimeoutError"
+    assert failed.failure == "timeout"
+    other = ClaudeGoalMatcher(parse=_Parse(error=ValueError("x"))).judge(GOAL, [_click("s1", "a")])
+    assert other.failure == "sdk_error", "a closed token, never a class name"
     assert failed.verdict("s1") == "unknown"
     malformed = ClaudeGoalMatcher(parse=_Parse("nope")).judge(GOAL, [_click("s1", "a")])
     assert malformed.failure == "malformed_output"
@@ -108,7 +110,9 @@ def test_the_prompt_marks_who_wrote_the_text() -> None:
 def test_a_key_means_a_matcher_and_no_key_means_off(monkeypatch: Any) -> None:
     from steerai.run import goal_matcher  # noqa: PLC0415 - the CLI module, read late
 
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    assert goal_matcher() is None
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
-    assert isinstance(goal_matcher(), ClaudeGoalMatcher)
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE"):
+        monkeypatch.delenv(name, raising=False)
+    assert goal_matcher(model_planned=False) is None, "a replay with no credentials is off"
+    assert isinstance(goal_matcher(model_planned=True), ClaudeGoalMatcher)
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "test-token-not-real")
+    assert isinstance(goal_matcher(model_planned=False), ClaudeGoalMatcher)

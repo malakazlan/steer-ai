@@ -48,7 +48,7 @@ def test_a_failed_judgement_or_a_step_without_a_verdict_asks_as_unknown() -> Non
     h.session.run_task(_plan(_click()))
     assert [ask.reasons for ask in h.confirmer.asked] == [("goal_unknown",)]
     line = next(line for line in h.trace.lines if '"kind": "goal_match"' in line)
-    assert '"failure": "TimeoutError"' in line
+    assert '"failure": "TimeoutError"' in line, "the fake reports its own token"
 
 
 def test_no_matcher_is_off_and_traced_so() -> None:
