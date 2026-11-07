@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import string
 import urllib.parse
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -238,11 +239,18 @@ def open_title_judges(predicate: Predicate) -> bool:
 
 def _contained(pattern: str, expected: str) -> bool:
     """The pattern's words appear, in order and whole, among the title's words (issue #53: a
-    substring like "e" is in almost any title), compared in the shared comparable form."""
-    wanted = comparable(_COUNTER.sub("", pattern.strip())).split()
-    words = comparable(expected).split()
+    substring like "e" is in almost any title), compared in the shared comparable form. A word
+    is a whitespace token with the punctuation at its edges removed; a token of punctuation
+    alone is no word, so "-" proves nothing and "drake," shows the word "drake"."""
+    wanted = _words(_COUNTER.sub("", pattern.strip()))
+    words = _words(expected)
     size = len(wanted)
     return size > 0 and any(words[i : i + size] == wanted for i in range(len(words) - size + 1))
+
+
+def _words(text: str) -> list[str]:
+    stripped = (token.strip(string.punctuation) for token in comparable(text).split())
+    return [word for word in stripped if word]
 
 
 def _fold(text: str) -> str:

@@ -91,3 +91,17 @@ def test_matching_uses_the_shared_comparable_form() -> None:
     predicate is built)."""
     fullwidth = "".join(chr(0xFEE0 + ord(c)) for c in "Notepad")  # fullwidth letters
     assert open_condition_holds(WindowExists(name_pattern=fullwidth), NOTEPAD)
+
+
+def test_punctuation_alone_proves_nothing() -> None:
+    """Principal review of #53: every registry title holds " - "."""
+    assert not open_condition_holds(TitleMatches(pattern="-"), RESULTS)
+    assert not open_condition_holds(TitleMatches(pattern="- :"), NOTEPAD)
+
+
+def test_punctuation_at_a_words_edge_is_not_part_of_the_word() -> None:
+    """A title like "drake, kendrick - YouTube" still shows the word "drake"."""
+    title = "drake, kendrick - YouTube - Google Chrome"
+    assert open_condition_holds(TitleMatches(pattern="drake"), title)
+    assert open_condition_holds(TitleMatches(pattern="drake kendrick"), title)
+    assert not open_condition_holds(TitleMatches(pattern="drak"), title)
