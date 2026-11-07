@@ -6,16 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from steerai.world.elements import Element
-from steerai.world.people import (
+from steerai.verify.confusables import (
     CONFUSABLE_TO_LATIN,
     UNICODE_VERSION,
-    candidates,
-    comparable,
     generate_confusable_table,
-    matches,
-    name_part,
 )
+from steerai.world.elements import Element
+from steerai.world.people import candidates, comparable, matches, name_part
 
 DATA = Path(__file__).resolve().parents[1] / "data" / "confusables.txt"
 

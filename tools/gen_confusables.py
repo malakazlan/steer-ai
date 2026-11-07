@@ -1,10 +1,12 @@
-"""Regenerate the confusable fold table in `steerai/world/people.py` from Unicode UTS #39
-`confusables.txt` (the vendored copy under `tests/data/`, or a path given on the command line).
+"""Regenerate the lookalike tables in `steerai/verify/confusables.py` from the vendored Unicode
+data under `tests/data/`: the UTS #39 `confusables.txt` fold and ASCII lookalikes, and the
+Default_Ignorable_Code_Point ranges extracted from `DerivedCoreProperties.txt`.
 
-    uv run python tools/gen_confusables.py [path/to/confusables.txt]
+    uv run python tools/gen_confusables.py
 
-The table and the Unicode version are written between the generated markers; a test holds the
-vendored table to the generator's output, so this script and the test agree by construction.
+The tables and the Unicode version are written between the generated markers; tests hold every
+table to the generators' output on the same data, so this script and the tests agree by
+construction. Both data files must name the same Unicode version.
 """
 
 from __future__ import annotations
@@ -14,36 +16,48 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TARGET = ROOT / "steerai" / "world" / "people.py"
-DATA = ROOT / "tests" / "data" / "confusables.txt"
+TARGET = ROOT / "steerai" / "verify" / "confusables.py"
+CONFUSABLES = ROOT / "tests" / "data" / "confusables.txt"
+IGNORABLE = ROOT / "tests" / "data" / "default_ignorable.txt"
 START = "# --- generated: do not edit; run `python tools/gen_confusables.py` ---\n"
 END = "# --- end generated ---\n"
 
 
-def main(argv: list[str]) -> int:
+def main() -> int:
     sys.path.insert(0, str(ROOT))
-    from steerai.world.people import generate_confusable_table  # noqa: PLC0415 - after sys.path
+    from steerai.verify import confusables as gen  # noqa: PLC0415 - after sys.path
 
-    data_path = Path(argv[1]) if len(argv) > 1 else DATA
-    text = data_path.read_text(encoding="utf-8-sig")
-    version = re.search(r"^# Version: (\S+)", text, re.MULTILINE)
-    if version is None:
-        sys.stderr.write("no Version line in the data file\n")
+    confusables = CONFUSABLES.read_text(encoding="utf-8-sig")
+    ignorable = IGNORABLE.read_text(encoding="utf-8")
+    version = gen.unicode_version(confusables)
+    if version is None or gen.unicode_version(ignorable) != version:
+        sys.stderr.write("the data files do not name one Unicode version\n")
         return 1
-    table = generate_confusable_table(text)
+    table = gen.generate_confusable_table(confusables)
+    ascii_table = gen.generate_ascii_lookalikes(confusables)
+    ranges = gen.generate_default_ignorable(ignorable)
     lines = ["CONFUSABLE_TO_LATIN: dict[str, str] = {"]
     lines.extend(f"    {source!a}: {target!r}," for source, target in table.items())
     lines.append("}")
+    lines.append("ASCII_LOOKALIKES: dict[str, str] = {")
+    lines.extend(f"    {source!r}: {target!r}," for source, target in ascii_table.items())
+    lines.append("}")
+    lines.append("DEFAULT_IGNORABLE: tuple[tuple[int, int], ...] = (")
+    lines.extend(f"    (0x{low:04X}, 0x{high:04X})," for low, high in ranges)
+    lines.append(")")
     block = START + "\n".join(lines) + "\n" + END
     source = TARGET.read_bytes().decode()
     begin = source.index(START)
     finish = source.index(END) + len(END)
     source = source[:begin] + block + source[finish:]
-    source = re.sub(r'UNICODE_VERSION = "[^"]*"', f'UNICODE_VERSION = "{version.group(1)}"', source)
+    source = re.sub(r'UNICODE_VERSION = "[^"]*"', f'UNICODE_VERSION = "{version}"', source)
     TARGET.write_bytes(source.encode())
-    sys.stdout.write(f"{len(table)} entries, Unicode {version.group(1)}\n")
+    sys.stdout.write(
+        f"{len(table)} fold entries, {len(ascii_table)} ASCII, {len(ranges)} ignorable ranges, "
+        f"Unicode {version}\n"
+    )
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(main())
