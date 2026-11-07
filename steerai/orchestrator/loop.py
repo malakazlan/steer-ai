@@ -105,6 +105,12 @@ SETTLE_S = 0.5
 """A target missing right after the page changed is a timing gap first: settle this long and
 re-observe before calling it absent (first real-site run 2026-11-04; unmeasured)."""
 SETTLE_RETRIES = 2
+_RISK_RANK = {risk: rank for rank, risk in enumerate(RISKS)}
+ALIAS_ROLES: frozenset[str] = frozenset({"Edit", "Document", "ComboBox"})
+"""Text roles one app shows for another's field: a `focus` or `type` whose exact role is not
+on screen resolves by its exact name among these (chooser-wiring gate; live run osg-4 named
+`Edit` where Notepad shows `Document`)."""
+_ALIAS_VERBS: frozenset[str] = frozenset({"focus", "type"})
 OPEN_POLL_S = 0.1
 NAVIGATION_VERIFY_S = 10.0
 """Verify deadline for a replacing `appeared` (a page replacing itself; 5.10 [v1.9]): a heavy
@@ -250,7 +256,7 @@ class _Stage:
 
 
 class Session:
-    def __init__(  # noqa: PLR0913 - every collaborator is injected so the loop runs pure in tests
+    def __init__(  # noqa: PLR0913, PLR0915 - every collaborator injected; per-step state declared
         self,
         *,
         task_id: str,
@@ -334,6 +340,8 @@ class Session:
         self._sent_in_act = False
         self._binding: Binding | None = None
         self._candidates: tuple[str, list[Element]] | None = None
+        self._aliased: str | None = None
+        """The text role the step resolved by alias, kept for its later re-resolves."""
 
     # ---- one step ----------------------------------------------------------------------------
 
@@ -1026,7 +1034,7 @@ class Session:
         if fresh.title != before.title:
             raise _StepFailureError(ErrorCode.FOCUS_LOST, mismatch)
         # no settle here (OR-31): a target gone while the ask was open is a changed screen
-        element_id = self._resolve(step, fresh)
+        element_id = self._resolve_again(step, fresh, evidence)
         self._secure_step = fresh.element(element_id).secure
         return fresh, element_id
 
@@ -1092,6 +1100,7 @@ class Session:
         self._sent_in_act = False
         self._binding = None
         self._candidates = None
+        self._aliased = None
         self._counts_at_step = self._monitor.counts() if self._monitor is not None else {}
 
     def _input_evidence(self, evidence: dict[str, Any]) -> None:
@@ -1143,8 +1152,12 @@ class Session:
             try:
                 return before, stage.measure("decide", partial(self._resolve, step, before))
             except _StepFailureError as failure:
-                if person or failure.detail != "no_match" or settled >= SETTLE_RETRIES:
+                if person or failure.detail != "no_match":
                     raise
+                if settled >= SETTLE_RETRIES:
+                    # the final no_match: a text field shown under another text role (gate item 1)
+                    resolved = partial(self._resolve_alias, step, before, evidence)
+                    return before, stage.measure("decide", resolved)
             settled += 1
             evidence["settled"] = settled
             stage.measure("settle", partial(self._sleep, SETTLE_S))
@@ -1173,6 +1186,54 @@ class Session:
         if len(matches) > 1:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
         return matches[0].id
+
+    def _resolve_again(
+        self, step: Step, snapshot: Snapshot, evidence: dict[str, Any] | None = None
+    ) -> int:
+        """A later resolve in the same step (after an ask, a wait, a scroll or the act retry)
+        goes the way the step first resolved (hunter CH-12)."""
+        if self._aliased is not None:
+            return self._resolve_alias(step, snapshot, {} if evidence is None else evidence)
+        return self._resolve(step, snapshot)
+
+    def _resolve_alias(self, step: Step, snapshot: Snapshot, evidence: dict[str, Any]) -> int:
+        """An exact text target not on screen under its role: the one element of another text
+        role with the same name, for `focus` and `type` at R0/R1 only; the model never changes
+        the element (chooser-wiring gate items 1-3). The action key stays the plan's."""
+        target = step.target
+        if (
+            target is None
+            or target.element_id is not None
+            or step.verb not in _ALIAS_VERBS
+            or target.role not in ALIAS_ROLES
+            or effective_risk(step) not in ("R0", "R1")
+        ):
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_match")
+        wanted = normalise_name(target.name).casefold()
+        matches = [
+            e
+            for e in snapshot.elements
+            if e.role in ALIAS_ROLES
+            and e.role != target.role
+            and (self._aliased is None or e.role == self._aliased)  # the role first resolved
+            and not e.secure  # never a password field (hunter CH-04)
+            and normalise_name(e.name).casefold() == wanted
+        ]
+        if not matches:
+            evidence["alias"] = "none"
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_match")
+        if len(matches) > 1:
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
+        element = matches[0]
+        # the tier read on the element that will be touched, never only on the plan's words
+        shown = replace(
+            target, role=element.role, name=element.name, automation_id=element.automation_id
+        )
+        if _RISK_RANK[effective_risk(replace(step, target=shown))] > _RISK_RANK[step.risk]:
+            raise _StepFailureError(ErrorCode.GATE_BLOCKED, "alias_risk")
+        evidence["alias"] = element.role
+        self._aliased = element.role
+        return element.id
 
     def _resolve_person(self, step: Step, target: Target, snapshot: Snapshot) -> int:
         """A person target (5.8 [v1.5]): the bound row once bound; else the candidates, with
@@ -1335,12 +1396,12 @@ class Session:
                 )
                 self._scrolled = scroll_result.delivery.value
                 before = self._observer.observe(self.hwnd, stable_window=1)
-                element_id = self._resolve(step, before)
+                element_id = self._resolve_again(step, before)
                 continue
             if result.code is ErrorCode.ELEMENT_NOT_FOUND and retries == 0:
                 retries += 1
                 before = self._observer.observe(self.hwnd, stable_window=1)
-                element_id = self._resolve(step, before)
+                element_id = self._resolve_again(step, before)
                 continue
             return result, before, retries
 
