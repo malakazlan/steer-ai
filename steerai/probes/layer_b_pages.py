@@ -342,7 +342,9 @@ class InvalidRun(Exception):  # noqa: N818 - a run outcome, not a programming er
 def log_value(result: Mapping[str, Any]) -> str:
     """A CDP `Runtime.evaluate` result for the log expression: a string, or the run is invalid."""
     if "exceptionDetails" in result or "error" in result:
-        raise InvalidRun("cdp_exception")
+        details = result.get("exceptionDetails") or result.get("error") or {}
+        kind = str(details.get("exception", {}).get("className") or details.get("message") or "")
+        raise InvalidRun("cdp_exception" + (f":{kind[:40]}" if kind else ""))
     value = result.get("result", {}).get("value")
     if not isinstance(value, str) or len(value) > 1_000_000:
         raise InvalidRun("cdp_log_shape")

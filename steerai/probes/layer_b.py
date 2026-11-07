@@ -153,6 +153,17 @@ def _evaluate(cdp: CdpSession, expression: str) -> str:
     return log_value(cdp.call("Runtime.evaluate", params))
 
 
+def _loaded(cdp: CdpSession, timeout_s: float = 20.0) -> None:
+    """The page finished loading: evaluating while it navigates throws, which is not a result."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        with contextlib.suppress(InvalidRun):
+            if _evaluate(cdp, "document.readyState") == "complete":
+                return
+        time.sleep(0.5)
+    raise InvalidRun("page_not_loaded")
+
+
 def _prove_no_egress(cdp: CdpSession, server_port: int) -> None:
     probe = "fetch({url}, {{mode: 'no-cors'}}).then(() => 'reached', () => 'blocked')"
     for url in ("http://example.com/", "http://93.184.216.34/"):
@@ -264,6 +275,7 @@ def _measure(  # noqa: PLR0913 - one run's whole state, passed once by keyword
 ) -> RunRecord:
     window = wait_window_for_pid(proc.pid, image="chrome.exe", process=proc)
     cdp, _ = _ours(cdp_port, server.port)
+    _loaded(cdp)
     _prove_no_egress(cdp, server.port)
     _evaluate(cdp, 'localStorage.removeItem("steer-layer-b"); "ok"')
     cdp.close()
@@ -299,6 +311,7 @@ def _measure(  # noqa: PLR0913 - one run's whole state, passed once by keyword
     stdout = io.StringIO()
     run_mod.run(options, deps, stdin=io.StringIO(""), stdout=stdout, stderr=io.StringIO())
     cdp, page_targets = _ours(cdp_port, server.port)
+    _loaded(cdp)
     raw = _evaluate(cdp, _LOG_EXPRESSION)
     cdp.close()
     effects = parse_effects(raw, shown, server.paths, nonce)
