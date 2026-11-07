@@ -32,7 +32,7 @@ from typing import Any, Literal
 from steerai.errors import ErrorCode, SteerError
 from steerai.orchestrator.contracts import VERBS, GateDecision, Step, Target
 from steerai.platform import dpapi
-from steerai.probes.windows import process_alive
+from steerai.probes.windows import process_alive, process_start_time
 from steerai.world.model import Snapshot, normalise_name, snapshot_from_json, snapshot_to_json
 
 Admission = Literal["fresh", "done", "confirm"]
@@ -205,9 +205,9 @@ class Ledger:
                 fd = os.open(self._lock_path, os.O_RDWR | os.O_CREAT | os.O_EXCL)
             except FileExistsError:
                 holder = self._lock_holder()
-                if holder is not None and holder != os.getpid() and process_alive(holder):
+                if holder is not None and holder[0] != os.getpid() and _holder_live(*holder):
                     raise LedgerError(
-                        f"ledger_locked: another runner (pid {holder}) holds this task; "
+                        f"ledger_locked: another runner (pid {holder[0]}) holds this task; "
                         f"the lock is {self._lock_path}"
                     ) from None
                 try:
@@ -219,7 +219,12 @@ class Ledger:
                 continue
             except OSError as exc:
                 raise LedgerError(f"ledger lock could not be taken: {exc}") from exc
-            payload = json.dumps({"pid": os.getpid(), "token": self._lock_token}).encode("utf-8")
+            record = {
+                "pid": os.getpid(),
+                "token": self._lock_token,
+                "start": process_start_time(os.getpid()),
+            }
+            payload = json.dumps(record).encode("utf-8")
             try:
                 written = os.write(fd, payload)
             except OSError as exc:
@@ -248,13 +253,17 @@ class Ledger:
         token = payload.get("token") if isinstance(payload, dict) else None
         return token if isinstance(token, str) else None
 
-    def _lock_holder(self) -> int | None:
+    def _lock_holder(self) -> tuple[int, int | None] | None:
+        """The lock's holder pid and, when recorded, its process start time."""
         try:
             payload = json.loads(self._lock_path.read_text(encoding="utf-8"))
             pid = payload["pid"]
         except (OSError, ValueError, KeyError, TypeError):
             return None
-        return pid if isinstance(pid, int) and not isinstance(pid, bool) else None
+        if not isinstance(pid, int) or isinstance(pid, bool):
+            return None
+        start = payload.get("start")
+        return pid, start if isinstance(start, int) and not isinstance(start, bool) else None
 
     def close(self) -> str | None:
         """Release the task lock; the state stays on disk for a resume. The lock guards against
@@ -687,6 +696,18 @@ class Ledger:
             self._write_encrypted(self._state_path, json.dumps(payload, separators=(",", ":")))
         except OSError as exc:
             raise LedgerError(f"ledger state could not be written: {exc}") from exc
+
+
+def _holder_live(pid: int, start: int | None) -> bool:
+    """A lock holder still running: its pid alive and, when the lock recorded it, the same
+    process start (#64: Windows recycles pids; a recycled pid is another process). An unread
+    start, or a lock from before #64, counts as live: unclear means held."""
+    if not process_alive(pid):
+        return False
+    if start is None:
+        return True
+    live = process_start_time(pid)
+    return live is None or live == start
 
 
 def _opened_records(executions: Mapping[str, Mapping[str, Any]], ref: str) -> list[dict[str, Any]]:

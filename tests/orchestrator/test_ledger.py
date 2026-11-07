@@ -916,3 +916,39 @@ def test_a_lock_another_process_is_reading_is_left_for_the_next_runner(tmp_path:
     with Ledger(tmp_path, task_id="t-left", started_at=1.0) as again:
         again.bind_plan("a" * 64, step_ids=["s1"])
     assert ledger.close() is None, "closing twice is a no-op"
+
+
+def test_a_recycled_holder_pid_does_not_hold_the_lock(tmp_path: Path) -> None:
+    """Issue #64: a left or crashed lock whose pid Windows gave to another process reads as
+    stale when that process started at another time; the same start still holds."""
+    from steerai.probes.windows import process_start_time  # noqa: PLC0415
+
+    with Ledger(tmp_path, task_id="t-recycled", started_at=1.0):
+        task_dir = next(tmp_path.iterdir())
+    other = os.getppid()  # a live process that is not this one
+    real_start = process_start_time(other)
+    assert process_alive(other) is True
+    assert real_start is not None
+    lock = task_dir / "lock"
+    lock.write_text(
+        json.dumps({"pid": other, "token": "0" * 32, "start": real_start + 1}), encoding="utf-8"
+    )
+    with Ledger(tmp_path, task_id="t-recycled", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["s1"])
+    lock.write_text(
+        json.dumps({"pid": other, "token": "0" * 32, "start": real_start}), encoding="utf-8"
+    )
+    with pytest.raises(LedgerError, match="ledger_locked"):
+        Ledger(tmp_path, task_id="t-recycled", started_at=1.0)
+    lock.write_text(json.dumps({"pid": other, "token": "0" * 32}), encoding="utf-8")
+    with pytest.raises(LedgerError, match="ledger_locked"):
+        Ledger(tmp_path, task_id="t-recycled", started_at=1.0)  # no start recorded: live
+
+
+def test_the_lock_records_its_holders_start(tmp_path: Path) -> None:
+    from steerai.probes.windows import process_start_time  # noqa: PLC0415
+
+    with Ledger(tmp_path, task_id="t-start", started_at=1.0):
+        lock = next(tmp_path.iterdir()) / "lock"
+        payload = json.loads(lock.read_text(encoding="utf-8"))
+    assert payload["start"] == process_start_time(os.getpid())
