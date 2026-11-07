@@ -150,3 +150,16 @@ def test_a_re_resolve_keeps_the_role_the_step_first_resolved() -> None:
     with pytest.raises(_StepFailureError) as gone:
         h.session._resolve_again(_type(), h.world.observe(0x10))
     assert gone.value.detail == "no_match"
+
+
+def test_a_secure_twin_leaves_the_normal_field_for_the_step() -> None:
+    """Issue #77 parity: the step picks the normal field, as its value condition does."""
+    h = Harness()
+    _as_document(h)
+    twin = (99, "ComboBox", "Message", (42, 99), 7)
+    h.world.rows = [*h.world.rows, twin]
+    snapshot = h.world.observe(0x10)
+    elements = [replace(e, secure=True) if e.id == twin[0] else e for e in snapshot.elements]
+    assert (
+        h.session._resolve_alias(_type(), replace(snapshot, elements=elements), {}) == COMPOSER[0]
+    )

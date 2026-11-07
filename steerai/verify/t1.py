@@ -589,7 +589,9 @@ def _field_value(predicate: FieldValue, snapshot: Snapshot, ctx: Context) -> Ver
     if not found:
         # the step's text-role alias, one rule for steps and conditions (alias gate option A):
         # the one same-named field of another field role, only when the exact role is absent
-        found = [e for e in named if e.role in FIELD_ROLES and e.role != predicate.role]
+        found = [
+            e for e in named if e.role in FIELD_ROLES and e.role != predicate.role and not e.secure
+        ]  # secure fields are never alias candidates, as for the step (#77)
         if found:
             evidence = {"alias": found[0].role}
     if not found:
