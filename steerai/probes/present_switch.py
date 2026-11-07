@@ -31,6 +31,7 @@ from steerai.probes.layer_b import (
     WINDOW,
     _evaluate,
     _free_port,
+    _in_front,
     _loaded,
     _ours,
     _prove_no_egress,
@@ -111,6 +112,38 @@ class _Planner:
         return run_mod._planner(request)
 
 
+def _landmarks(tmp: Path) -> list[str]:
+    """The landmark of each `present` the plans wrote (fixture page names, never a person's)."""
+    found: list[str] = []
+    for path in sorted(tmp.glob("*.plan*.json")):
+        for step in json.loads(path.read_text(encoding="utf-8")).get("steps", []):
+            present = (step.get("expect") or {}).get("present")
+            if isinstance(present, dict):
+                role = (step.get("target") or {}).get("role", "")
+                found.append(f"{role}->{(present.get('within') or {}).get('landmark', '')}")
+    return found
+
+
+def _steps(records: Sequence[dict[str, Any]]) -> list[str]:
+    """Each step's outcome as tokens: id, ok, the verify reason or detail, the scope level."""
+    out: list[str] = []
+    for r in records:
+        if r.get("kind") != "step":
+            continue
+        evidence = r.get("evidence") or {}
+        reason = evidence.get("reason") or evidence.get("detail") or ""
+        ok = "ok" if r.get("ok") else "no"
+        action = r.get("action") or {}
+        keys = json.dumps(
+            {k: action.get(k) for k in ("delivery", "code", "evidence", "steps")}, sort_keys=True
+        )
+        out.append(
+            f"{r.get('step_id')}:{ok}:{r.get('gate')}:{r.get('code')}:{reason}:"
+            f"{evidence.get('level', '')}:{keys}"
+        )
+    return out
+
+
 def _plan_kinds(tmp: Path) -> list[str]:
     """The predicate kind of each first-plan step expect, as tokens."""
     kinds: list[str] = []
@@ -168,6 +201,7 @@ def _measure(  # noqa: PLR0913 - one run's state, passed once by keyword
     _prove_no_egress(cdp, server.port)
     _evaluate(cdp, 'localStorage.removeItem("steer-present"); "ok"', "clear")
     cdp.close()
+    _in_front(window.hwnd)
     reply_page = next(p for p in PAGES if p.person_goal == REPLY_GOAL)
     oracle = Oracle(reply_page.expected_asks, chat="Amir Khan")
     options = run_mod.Options(
@@ -185,7 +219,15 @@ def _measure(  # noqa: PLR0913 - one run's state, passed once by keyword
         allow_window_change=False,
         goal=REPLY_GOAL,
     )
+    seen: list[int] = []
+
+    def screen(hwnd: int) -> tuple[str, Sequence[str]]:
+        title, lines = run_mod._screen(hwnd)
+        seen.append(len(lines))
+        return title, lines
+
     deps = run_mod._real_deps().replace(
+        screen=screen,
         make_confirmer=lambda *_: oracle,
         open_windows=lambda: [],
         planner=planner,
@@ -206,6 +248,9 @@ def _measure(  # noqa: PLR0913 - one run's state, passed once by keyword
         "detail": result.get("detail"),
         "sends": sends(raw),
         "expects": _plan_kinds(tmp),
+        "landmarks": _landmarks(tmp),
+        "screen_lines": seen,
+        "steps": _steps(records),
         "ticks": [
             f"{r.get('subgoal')}:{r.get('by')}:{r.get('detail', '')}"
             for r in records
