@@ -32,6 +32,7 @@ def test_the_identity_and_the_action_key_carry_the_mode() -> None:
 
 def test_the_codec_reads_and_writes_person_targets_and_omits_exact() -> None:
     doc = _doc()
+    doc["steps"][0]["verb"] = "click"  # a focus targets only a field (#82)
     doc["steps"][0]["target"] = {"role": "ListItem", "name": "Amir", "match": "person"}
     plan = plan_from_json(json.dumps(doc))
     target = plan.steps[0].target
