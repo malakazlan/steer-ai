@@ -53,6 +53,7 @@ from steerai.orchestrator.contracts import (
     Subgoal,
     Target,
     executor_verb,
+    subgoal_verbs,
 )
 from steerai.orchestrator.gate import Gate, GateResult, effective_risk, open_tier, params_for
 from steerai.orchestrator.identity import (
@@ -171,6 +172,7 @@ class TaskLedger(Protocol):
     def opened_by_ref(self, ref: str) -> dict[str, Any] | None: ...
     def opened_records(self, ref: str) -> list[dict[str, Any]]: ...
     def start_window(self) -> dict[str, Any] | None: ...
+    def earlier_verbs(self) -> dict[str, set[str]] | None: ...
     def record_open_attempt(self, step: Step, outcome: str) -> None: ...
 
 
@@ -308,9 +310,11 @@ class Session:
         self._steps_run = 0
         """Steps run by this session over all its plans: a replanned task is one budget."""
         self._verbs: dict[str, set[str]] = {}
-        """The verbs each subgoal has held over the plans this session ran (gate ruling R1):
-        the ledger chain does not keep them, so a resumed continuation has only its own."""
-        self._ran_first_plan = False
+        """The verbs each subgoal has held over every plan of the task (gate ruling R1): this
+        session's plans, and on a resumed continuation the ledger chain's earlier links (#51)."""
+        self._verbs_complete = False
+        """Whether `_verbs` covers every plan of the task; a resumed continuation whose ledger
+        cannot say is unknown, and no open ticks then (issue #51, gate Q2)."""
         self._observer = observer
         self._semantic = semantic
         self._physical = physical
@@ -1517,9 +1521,16 @@ class Session:
             }
         )
         results: list[StepResult] = []
-        self._ran_first_plan = self._ran_first_plan or not continuation
-        for s in plan.steps:
-            self._verbs.setdefault(s.subgoal, set()).add(s.verb)
+        if not continuation:
+            self._verbs_complete = True
+        elif not self._verbs_complete:
+            earlier = self._ledger.earlier_verbs()
+            if earlier is not None:
+                for subgoal, names in earlier.items():
+                    self._verbs.setdefault(subgoal, set()).update(names)
+                self._verbs_complete = True
+        for subgoal, listed in subgoal_verbs(plan).items():
+            self._verbs.setdefault(subgoal, set()).update(listed)
         try:
             self._rebind_ref(continuation=continuation)
         except _StepFailureError as failure:
@@ -1664,7 +1675,7 @@ class Session:
         except _StepFailureError as failure:
             self._trace_tick(subgoal.id, "none", detail=failure.detail)
             return None
-        if len(own) == 1 and self._ran_first_plan and open_title_judges(subgoal.condition):
+        if len(own) == 1 and open_title_judges(subgoal.condition):
             # the code-owned title the open verified is the evidence (gate R1-R3, issue #47)
             site, text = step.params.get("site"), step.params.get("text")
             title = expected_title(step.target.name if step.target else "", site, text)
@@ -1682,6 +1693,9 @@ class Session:
         OS-02/03); no value (the type step's doing, FV-01/03); every open of it verified, so
         only its last one judges (OS-06)."""
         if self._verbs.get(subgoal.id, set()) - {"open"} or field_values(subgoal.condition):
+            return False
+        if not self._verbs_complete:
+            self._trace_tick(subgoal.id, "none", detail="verbs_unknown")
             return False
         verified = {r.step_id for r in results if r.ok}
         return all(s.id in verified for s in own)

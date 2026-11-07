@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from steerai.errors import ErrorCode, SteerError
-from steerai.orchestrator.contracts import GateDecision, Step, Target
+from steerai.orchestrator.contracts import VERBS, GateDecision, Step, Target
 from steerai.platform import dpapi
 from steerai.probes.windows import process_alive
 from steerai.world.model import Snapshot, normalise_name, snapshot_from_json, snapshot_to_json
@@ -230,17 +230,29 @@ class Ledger:
     # ---- what the task is bound to (RN-16/17) ----------------------------------------
 
     def bind_plan(
-        self, digest: str, *, allow_change: bool = False, step_ids: Iterable[str] = ()
+        self,
+        digest: str,
+        *,
+        allow_change: bool = False,
+        step_ids: Iterable[str] = (),
+        subgoal_verbs: Mapping[str, Iterable[str]] | None = None,
     ) -> None:
         """A task id runs one chain of plans and resumes only its last link; a different plan
         is refused unless the caller says the change is deliberate (it then replaces the last
         link). Binding a link restores the window ref it started in."""
         ids = sorted(set(step_ids))
         last = self._chain[-1] if self._chain else None
+        verbs = _verbs_field(subgoal_verbs)
         if last is not None and last["digest"] == digest:
             self.window_ref = last["window_ref"]
-            if not set(ids) <= set(last["step_ids"]):
+            changed = not set(ids) <= set(last["step_ids"])
+            if changed:
                 last["step_ids"] = sorted(set(last["step_ids"]) | set(ids))
+            if last.get("subgoal_verbs") is None and verbs is not None:
+                # the map is a pure function of the bytes this digest matched (gate item 5)
+                last["subgoal_verbs"] = verbs
+                changed = True
+            if changed:
                 self._save_state()
             return
         if last is not None and (not allow_change or len(self._chain) > 1):
@@ -248,7 +260,12 @@ class Ledger:
             if any(link["digest"] == digest for link in self._chain):
                 raise LedgerError("plan_superseded: a later plan of this task replaced it")
             raise LedgerError("plan_changed: this task id already ran a different plan")
-        link: dict[str, Any] = {"digest": digest, "step_ids": ids, "window_ref": None}
+        link: dict[str, Any] = {
+            "digest": digest,
+            "step_ids": ids,
+            "window_ref": None,
+            "subgoal_verbs": verbs,
+        }
         if last is None:
             self._chain = [link]
         else:
@@ -261,7 +278,12 @@ class Ledger:
         """How many plans the task's chain holds; the bound one is the last."""
         return len(self._chain)
 
-    def extend_plan(self, digest: str, step_ids: Iterable[str]) -> None:
+    def extend_plan(
+        self,
+        digest: str,
+        step_ids: Iterable[str],
+        subgoal_verbs: Mapping[str, Iterable[str]] | None = None,
+    ) -> None:
         """A replan: the successor of the last link, in the window the task is in now; a step
         id the task already used is refused (its write-ahead path is the id's digest)."""
         if not self._chain:
@@ -273,9 +295,29 @@ class Ledger:
         if ids & used:
             raise LedgerError("step_id_reused: a step id of an earlier plan of this task")
         self._chain.append(
-            {"digest": digest, "step_ids": sorted(ids), "window_ref": self.window_ref}
+            {
+                "digest": digest,
+                "step_ids": sorted(ids),
+                "window_ref": self.window_ref,
+                "subgoal_verbs": _verbs_field(subgoal_verbs),
+            }
         )
         self._save_state()
+
+    def earlier_verbs(self) -> dict[str, set[str]] | None:
+        """Each subgoal's verbs over every link before the bound one (issue #51): a resumed
+        continuation decides what an open may tick as the same process would; None when a link
+        holds no map (written before #51): unknown, never "only opens"."""
+        if len(self._chain) < 2:
+            return None  # no earlier link: a continuation here cannot know (hunter RV-12)
+        merged: dict[str, set[str]] = {}
+        for link in self._chain[:-1]:
+            verbs = link.get("subgoal_verbs")
+            if verbs is None:
+                return None
+            for subgoal, names in verbs.items():
+                merged.setdefault(subgoal, set()).update(names)
+        return merged
 
     def bind_window(
         self,
@@ -576,6 +618,28 @@ def _loaded_chain(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "digest": str(link["digest"]),
                 "step_ids": [str(i) for i in link["step_ids"]],
                 "window_ref": None if ref is None else str(ref),
+                "subgoal_verbs": _loaded_verbs(link.get("subgoal_verbs")),
             }
         )
     return links
+
+
+def _verbs_field(verbs: Mapping[str, Iterable[str]] | None) -> dict[str, list[str]] | None:
+    return (
+        None if verbs is None else {str(k): sorted({str(v) for v in vs}) for k, vs in verbs.items()}
+    )
+
+
+def _loaded_verbs(raw: object) -> dict[str, list[str]] | None:
+    """A link's subgoal verbs as stored: absent is unknown; anything but subgoal ids to lists of
+    closed-set verbs is refused, never guessed (gate blocking 1)."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("subgoal verbs are not a map")
+    loaded: dict[str, list[str]] = {}
+    for subgoal, names in raw.items():
+        if not isinstance(names, list) or not all(isinstance(n, str) and n in VERBS for n in names):
+            raise ValueError("subgoal verbs hold something that is not a verb")
+        loaded[str(subgoal)] = sorted(names)
+    return loaded

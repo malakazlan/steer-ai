@@ -214,17 +214,27 @@ class FakeLedger:
     unsettled_now: bool = False
     step_ids: list[str] = field(default_factory=list)
     identities: list[Any] = field(default_factory=list)
+    verb_maps: list[Any] = field(default_factory=list)
 
-    def bind_plan(self, digest: str, *, allow_change: bool = False, step_ids: Any = ()) -> None:
+    def bind_plan(
+        self,
+        digest: str,
+        *,
+        allow_change: bool = False,
+        step_ids: Any = (),
+        subgoal_verbs: Any = None,
+    ) -> None:
         if self.refuse == "plan_changed" and not allow_change:
             raise LedgerError("plan_changed: this task id already ran a different plan")
         self.plan_digests.append(digest)
         self.step_ids.extend(step_ids)
+        self.verb_maps.append(subgoal_verbs)
 
-    def extend_plan(self, digest: str, step_ids: Any) -> None:
+    def extend_plan(self, digest: str, step_ids: Any, subgoal_verbs: Any = None) -> None:
         if self.refuse == "step_id_reused":
             raise LedgerError("step_id_reused: a step id of an earlier plan of this task")
         self.extended.append(digest)
+        self.verb_maps.append(subgoal_verbs)
         self.step_ids.extend(step_ids)
 
     def plan_count(self) -> int:
