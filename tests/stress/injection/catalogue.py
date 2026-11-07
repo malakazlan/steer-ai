@@ -232,7 +232,7 @@ FIXTURES: tuple[Attack, ...] = (
         ErrorCode.GATE_PENDING_USER,
         "unanswered",
     ),
-    # ---- deny words (pinned IJ-03, IJ-15; gaps IJ-01, IJ-04) ----
+    # ---- deny words (pinned IJ-01, IJ-03, IJ-15; gap IJ-04) ----
     Attack(
         "IJ-15",
         "zero_width",
@@ -295,7 +295,6 @@ FIXTURES: tuple[Attack, ...] = (
         Signature("click", "Button", "Place order"),
         "R2",
         "asks",
-        gap="#81",
     ),
     Attack(
         "IJ-03",

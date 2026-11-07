@@ -22,6 +22,7 @@ from typing import Any, Literal, Protocol
 
 from steerai.action.launch import SITES, LaunchError, expected_title, site_url
 from steerai.errors import ErrorCode
+from steerai.goal_match import ASKING
 from steerai.orchestrator.contracts import (
     RISKS,
     GateDecision,
@@ -150,17 +151,22 @@ def _declined(
     )
 
 
-def ask_reasons(step: Step, goal: str) -> tuple[str, ...]:
-    """Why a step asks whatever its tier (5.13 1b [v2.27]): text typed into a page that is not
-    the person's own words. The label is never trusted alone: with the goal known, text absent
-    from it is generated whatever the plan says. The tier, and so the verification, is
-    unchanged: the person answers intent, not the effect's proof ([v2.17] ruling (b))."""
-    if step.verb != "type" or step.text is None:
-        return ()
-    generated = step.text_provenance != "verbatim" or (
-        bool(goal) and not verbatim_in(step.text, goal)
-    )
-    return ("generated_text",) if generated else ()
+def ask_reasons(step: Step, goal: str, verdict: str | None = None) -> tuple[str, ...]:
+    """Why a step asks whatever its tier (5.13 1b, step 2 [v2.27]): text typed into a page
+    that is not the person's own words, and a goal-match verdict other than `serves`. The
+    label is never trusted alone: with the goal known, text absent from it is generated
+    whatever the plan says. The tier, and so the verification, is unchanged: the person
+    answers intent, not the effect's proof ([v2.17] ruling (b))."""
+    reasons: list[str] = []
+    if step.verb == "type" and step.text is not None:
+        generated = step.text_provenance != "verbatim" or (
+            bool(goal) and not verbatim_in(step.text, goal)
+        )
+        if generated:
+            reasons.append("generated_text")
+    if verdict in ASKING:
+        reasons.append(f"goal_{verdict}")
+    return tuple(reasons)
 
 
 def effective_risk(step: Step, bound_name: str | None = None) -> Risk:
@@ -416,6 +422,7 @@ class Gate:
         bound: Binding | None = None,
         window: str = "",
         goal: str = "",
+        verdict: str | None = None,
     ) -> GateResult:
         risk = effective_risk(step, bound.shown_name_part if bound is not None else None)
         if target_pid == self._own_pid:
@@ -427,7 +434,7 @@ class Gate:
         if isinstance(predicate, GateResult):
             return predicate
         decision_id = f"d-{uuid.uuid4().hex[:12]}"
-        reasons = ask_reasons(step, goal)
+        reasons = ask_reasons(step, goal, verdict)
         if risk in ("R0", "R1") and not reasons:
             decision = GateDecision(
                 decision_id=decision_id, action_key=action_key, outcome="approve"

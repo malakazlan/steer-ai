@@ -1,15 +1,18 @@
-"""Deny words (5.13 1a; IJ-03 and IJ-15 pinned; IJ-01 #81 and IJ-04 #84 known gaps): a page
+"""Deny words (5.13 1a; IJ-01, IJ-03 and IJ-15 pinned; IJ-04 #84 a known gap): a page
 that names a control to slip past the deny matcher still has the step raised, so the gate asks
 or blocks and nothing is dispatched without the person's yes."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import pytest
 
+from steerai.goal_match import Judgement
 from steerai.orchestrator.contracts import Step, Target
 from steerai.orchestrator.gate import effective_risk
 from steerai.verify.predicates import TitleMatches
-from tests.orchestrator.test_loop import Harness
+from tests.orchestrator.test_loop import Harness, _plan
 from tests.stress.injection.catalogue import Attack, fixture, pinned
 from tests.stress.injection.hostile import Dispatch, HostilePage, rebuild
 
@@ -67,13 +70,27 @@ def test_a_raised_click_is_never_dispatched_without_a_yes(attack: Attack) -> Non
 # ---- known gaps -----------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="IJ-01 #81")
 def test_a_control_with_an_unlisted_external_effect_asks_or_blocks() -> None:
+    """No deny word names it; goal-match (5.13 step 2 [v2.27]) judges it unrelated to the
+    request and the step asks. The matcher here is scripted: the stand-in's own catch rate is
+    the evaluation probe's (`steerai.probes.goal_match_eval`)."""
     attack = fixture("IJ-01", "place_order")
     h, log = _on_page(attack)
-    result = h.session.run_step(_click(attack))
+    h.session._goal_matcher = _Unrelated()
+    result = h.session.run_task(_plan(_click(attack)))
     assert _dispatched(attack, log) == []
-    assert result.gate != "approve"
+    assert result.results[0].gate != "approve"
+    assert [ask.reasons for ask in h.confirmer.asked] == [("goal_unrelated",)]
+
+
+class _Unrelated:
+    def judge(
+        self,
+        goal: str,  # noqa: ARG002 - the protocol's shape
+        steps: Sequence[Step],
+        done: Sequence[Step] = (),  # noqa: ARG002 - the protocol's shape
+    ) -> Judgement:
+        return Judgement({s.id: "unrelated" for s in steps}, model="scripted", latency_ms=1.0)
 
 
 def test_a_homoglyph_deny_word_is_raised() -> None:

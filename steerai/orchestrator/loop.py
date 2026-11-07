@@ -41,6 +41,7 @@ from steerai.action.launcher import OpenAction
 from steerai.action.physical import TEXT_ROLES, PhysicalAction
 from steerai.action.sanitize import normalise_newlines
 from steerai.errors import ErrorCode, SteerError
+from steerai.goal_match import GoalMatcher
 from steerai.orchestrator.contracts import (
     RISKS,
     START_WINDOW,
@@ -291,7 +292,14 @@ class Session:
         locked: Callable[[], bool | None] | None = None,
         bring_forward: Callable[[int], str] | None = None,
         tap_guard: Callable[[], str | None] | None = None,
+        goal_matcher: GoalMatcher | None = None,
     ) -> None:
+        self._goal_matcher = goal_matcher
+        """Judges each plan's steps against the goal (5.13 step 2 [v2.27]); None is `off`."""
+        self._verdicts: Mapping[str, str] | None = None
+        """The current plan's verdict per step id; None while goal-match is off."""
+        self._done_steps: list[Step] = []
+        """Steps this session ran, the context a continuation's judgement reads (GM-08)."""
         self._tap_guard = tap_guard
         """A reason not to tap now (held keys, accessibility filters, an elevated window
         in front, a secure desktop), or None (hunter SF-01/05/06/20)."""
@@ -985,8 +993,9 @@ class Session:
     ) -> GateResult:
         """The gate's decision; while an R2/R3 gate may be asking, the person's input is their
         answer, not a takeover (TK-07; the console brackets its own read as well)."""
+        verdict = self._verdict(step)
         asking = self._monitor is not None and (
-            risk in ("R2", "R3") or bool(ask_reasons(step, self._goal))
+            risk in ("R2", "R3") or bool(ask_reasons(step, self._goal, verdict))
         )
         if asking and self._monitor is not None:
             self._monitor.mark_ask_open()
@@ -1002,6 +1011,7 @@ class Session:
                 bound=self._binding,
                 window=self.window_label(),
                 goal=self._goal,
+                verdict=verdict,
             )
         finally:
             if asking and self._monitor is not None:
@@ -1620,6 +1630,38 @@ class Session:
 
     # ---- a whole plan --------------------------------------------------------------------------
 
+    def _judge(self, plan: Plan) -> None:
+        """One goal-match call per plan, before any step: verdict tokens to the trace, never
+        the goal, names or texts; a continuation is judged with the steps already done."""
+        if self._goal_matcher is None:
+            self._verdicts = None
+            self._trace.write({"kind": "goal_match", "task_id": self.task_id, "goal_match": "off"})
+            return
+        judgement = self._goal_matcher.judge(plan.goal, plan.steps, self._done_steps)
+        judged = [s for s in plan.steps if s.verb != "open"]
+        self._verdicts = {s.id: judgement.verdict(s.id) for s in judged}
+        self._trace.write(
+            {
+                "kind": "goal_match",
+                "task_id": self.task_id,
+                "verdicts": dict(self._verdicts),
+                "failure": judgement.failure,
+                "model": judgement.model,
+                "latency_ms": round(judgement.latency_ms, 1),
+            }
+        )
+
+    def _note_done(self, step: Step, result: StepResult) -> None:
+        if result.ok:
+            self._done_steps.append(step)
+
+    def _verdict(self, step: Step) -> str | None:
+        """A step's verdict; a step the plan's judgement never saw is `unknown` (it asks), and
+        an `open` is the code's own (`open_tier`)."""
+        if self._verdicts is None or step.verb == "open":
+            return None
+        return self._verdicts.get(step.id, "unknown")
+
     def run_task(self, plan: Plan, *, continuation: bool = False) -> TaskResult:
         """Run one plan. A continuation (plan n>1 of a replanned task) ticks no subgoal at
         start: its conditions were written from the screen it starts on (hunter RP-01)."""
@@ -1634,6 +1676,7 @@ class Session:
                 "subgoals": len(plan.subgoals),
             }
         )
+        self._judge(plan)
         results: list[StepResult] = []
         if not continuation:
             self._verbs_complete = True
@@ -1730,6 +1773,7 @@ class Session:
             self._steps_run += 1
             result = self.run_step(step)
             results.append(result)
+            self._note_done(step, result)
             stop = (
                 self._after_open(plan, step, results, ticked)
                 if step.verb == "open"

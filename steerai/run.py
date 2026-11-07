@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Protocol, TextIO
 
 from steerai.errors import ErrorCode, SteerError
+from steerai.goal_match import GoalMatcher
 from steerai.orchestrator.console import ConsoleConfirmer, escape_text
 from steerai.orchestrator.contracts import (
     OPENED_PREFIX,
@@ -1299,7 +1300,24 @@ def _build_session(bound: Bound) -> SessionLike:
         bring_forward=acquire_foreground,
         tap_guard=lambda: tap_refusal(LiveInput(client)),
         locked=session_locked,
+        goal_matcher=goal_matcher(model_planned=bound.options.goal is not None),
     )
+
+
+CREDENTIAL_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE")
+"""The SDK's environment credentials; a model-planned run is judged whatever it authenticates
+with (an on-disk profile too), and a matcher that cannot authenticate asks (`goal_unknown`)."""
+
+
+def goal_matcher(*, model_planned: bool) -> GoalMatcher | None:
+    """Goal-match whenever a model is in the run (5.13 step 2 [v2.27], gate ruling Q4): a
+    `--goal` run always has one; a `--plan` replay has one when any credential is set. `off`,
+    traced, only for a replay with no credentials of any kind."""
+    if not model_planned and not any(os.environ.get(name) for name in CREDENTIAL_VARS):
+        return None
+    from steerai.goal_match import ClaudeGoalMatcher  # noqa: PLC0415 - the SDK
+
+    return ClaudeGoalMatcher.from_env()
 
 
 def _kill_blocker(monitor: Any) -> Callable[[], str | None]:
