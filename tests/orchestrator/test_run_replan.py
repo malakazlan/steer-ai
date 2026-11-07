@@ -515,6 +515,8 @@ def test_a_chain_refusal_blocks_with_its_token_and_runs_nothing_more(tmp_path: P
     )
     assert len(rig.session.ran) == 1
     assert [r["step_id"] for r in out["results"]] == ["s1"]
+    # the link is proposed before its file is written: a refused link leaves no file (#57)
+    assert not (tmp_path / "l" / "rp-1.plan.2.json").exists()
 
 
 def test_a_continuation_over_the_risk_limit_is_refused_before_its_ask(tmp_path: Path) -> None:
