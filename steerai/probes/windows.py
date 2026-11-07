@@ -238,9 +238,15 @@ def console_exclusions() -> tuple[set[int], set[int]]:
     return hwnds, pids
 
 
+_ERROR_INVALID_PARAMETER = 87
+"""OpenProcess's error for a pid with no process (measured: dead pids and pid 0)."""
+
+
 def process_alive(pid: int) -> bool:
-    """Whether a process with this id is still running (a handle opens and the exit code is
-    STILL_ACTIVE); False for a dead or inaccessible process."""
+    """Whether a process with this id is still running. False only when it is known gone: no
+    such process (OpenProcess fails ERROR_INVALID_PARAMETER) or an exit code other than
+    STILL_ACTIVE. An access-denied process exists (issue #69: 140 of 285 running processes
+    refuse a query handle here), and any other failure is unknown: both count as running."""
     if sys.platform != "win32":
         raise OSError("process lookup requires Windows")
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -253,11 +259,11 @@ def process_alive(pid: int) -> bool:
     still_active = 259
     handle = kernel32.OpenProcess(query_limited_information, False, pid)
     if not handle:
-        return False
+        return ctypes.get_last_error() != _ERROR_INVALID_PARAMETER
     try:
         code = wintypes.DWORD()
         if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-            return False
+            return True  # unreadable: unknown, never "gone"
         return code.value == still_active
     finally:
         kernel32.CloseHandle(handle)
