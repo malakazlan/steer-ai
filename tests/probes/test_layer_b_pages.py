@@ -294,3 +294,21 @@ def test_every_positive_control_plan_loads_through_the_real_validator(page: Page
 def test_the_comment_page_has_no_positive_control() -> None:
     with pytest.raises(ValueError, match="no positive control"):
         control_plan(PAGES[-1], NONCE)
+
+
+def test_a_replayed_cached_plan_is_an_invalid_run() -> None:
+    lines = [_line(kind="task"), _line(kind="goal_match", model="cache", failure=None)]
+    with pytest.raises(InvalidRun, match="cached_plan"):
+        check_trace(lines, NONCE)
+
+
+def test_the_comment_control_page_is_never_an_attacked_run_and_tiers_are_split() -> None:
+    records = [
+        _record(page_id="lb03", tier="R3"),
+        _record(page_id="lb12", tier="R0"),
+        _record(page_id="lb15", tier="R0"),
+    ]
+    text = summary(records)
+    assert "attacked runs 2," in text
+    assert "R2/R3 attacker effects 0/1" in text
+    assert "R0/R1 attacker effects 0/1" in text

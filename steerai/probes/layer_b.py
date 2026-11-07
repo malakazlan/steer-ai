@@ -189,6 +189,8 @@ def _prove_no_egress(cdp: CdpSession, server_port: int) -> None:
 class Batch:
     planner_calls: int = 0
     records: list[RunRecord] = field(default_factory=list)
+    last: tuple[str, str] = ("", "")
+    """The last run's own status and detail tokens: an invalid run says what Steer did."""
 
     def planner(self, request: PlanRequest) -> PlanOutcome:
         if self.planner_calls >= MAX_PLANNER_CALLS:
@@ -197,7 +199,10 @@ class Batch:
         return run_mod._planner(request)
 
 
-def _invalid(page: PageSpec, kind: Kind, number: int, detail: str) -> RunRecord:
+def _invalid(
+    page: PageSpec, kind: Kind, number: int, detail: str, run: tuple[str, str] = ("", "")
+) -> RunRecord:
+    status, run_detail = run
     return RunRecord(
         page_id=page.page_id,
         kind="clean" if kind == "clean" else "attacked",
@@ -213,8 +218,16 @@ def _invalid(page: PageSpec, kind: Kind, number: int, detail: str) -> RunRecord:
         mismatches=0,
         invalid=True,
         detail=detail,
-        extra={"control": kind == "control"},
+        extra={"control": kind == "control", "status": status, "run_detail": run_detail},
     )
+
+
+def _status_of(payload: str) -> tuple[str, str]:
+    text = payload.strip()
+    if not text.startswith("{"):
+        return "", ""
+    doc = json.loads(text)
+    return str(doc.get("status", "")), str(doc.get("detail", ""))
 
 
 def run_one(batch: Batch, page: PageSpec, kind: Kind, number: int) -> RunRecord:
@@ -235,6 +248,7 @@ def run_one(batch: Batch, page: PageSpec, kind: Kind, number: int) -> RunRecord:
     tmp = Path(tempfile.mkdtemp(prefix="steer-lb-"))
     chat = "Amir Khan" if "Amir" in page.person_goal else "Sara Ahmed"
     oracle = Oracle(page.expected_asks, chat=chat, yes_to_all=kind == "control")
+    batch.last = ("", "")
     try:
         wait_until_idle()
         with (
@@ -269,7 +283,7 @@ def run_one(batch: Batch, page: PageSpec, kind: Kind, number: int) -> RunRecord:
             finally:
                 stop_chrome(proc, tmp / "profile")
     except InvalidRun as exc:
-        return _invalid(page, kind, number, str(exc))
+        return _invalid(page, kind, number, str(exc), batch.last)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -322,10 +336,15 @@ def _measure(  # noqa: PLR0913 - one run's whole state, passed once by keyword
     )
     confirm: Callable[..., Any] = lambda *_: oracle  # noqa: E731 - the oracle for every run
     deps = run_mod._real_deps().replace(
-        make_confirmer=confirm, open_windows=lambda: [], screen=screen, planner=batch.planner
+        make_confirmer=confirm,
+        open_windows=lambda: [],
+        screen=screen,
+        planner=batch.planner,
+        plan_cache=None,  # never the person's cache, never a replayed plan (#113 review)
     )
     stdout = io.StringIO()
     run_mod.run(options, deps, stdin=io.StringIO(""), stdout=stdout, stderr=io.StringIO())
+    batch.last = _status_of(stdout.getvalue())
     cdp, page_targets = _ours(cdp_port, server.port)
     _loaded(cdp)
     raw = _evaluate(cdp, _LOG_EXPRESSION, "read")
