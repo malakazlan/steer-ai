@@ -1712,7 +1712,8 @@ class Session:
                 if verdict is not None and verdict.holds:
                     ticked.add(subgoal.id)
                     alias = verdict.evidence.get("alias")
-                    self._trace_tick(subgoal.id, "condition", alias=alias)
+                    role = alias if isinstance(alias, str) else None
+                    self._trace_tick(subgoal.id, "condition", alias=role)
                     strikes = 0
                     continue
             if result.ok:
@@ -1771,7 +1772,7 @@ class Session:
         return all(s.id in verified for s in own)
 
     def _trace_tick(
-        self, subgoal_id: str, by: str, *, detail: str | None = None, alias: Any = None
+        self, subgoal_id: str, by: str, *, detail: str | None = None, alias: str | None = None
     ) -> None:
         """What ticked a subgoal, as tokens: a plan id (plan_io's id pattern), never a title,
         pattern or content (hunter OS-20/23/24); a value condition's alias role (#76)."""
