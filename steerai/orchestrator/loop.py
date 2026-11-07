@@ -390,8 +390,15 @@ class Session:
                 return self._done_already(step, key, stage, evidence)
             before, element_id = self._resolve_settling(step, before, stage, evidence)
             self._secure_step = before.element(element_id).secure
-            risk = self._settled_tier(step, risk)
-            evidence["risk"] = risk
+            risk, previous = self._readmitted(
+                step,
+                key=key,
+                risk=risk,
+                before=before,
+                element_id=element_id,
+                evidence=evidence,
+                previous=previous,
+            )
             self._in_front(risk)
             gate_result = stage.measure(
                 "gate", lambda: self._decide(step, key, before, previous, element_id, risk=risk)
@@ -954,8 +961,12 @@ class Session:
         record or an outcome, so an earlier raised attempt is found even when the raising
         row has left the screen (never bypassed, 5.8 [v1.6])."""
         target = step.target
-        if target is None or target.match != "person":
+        if target is None:
             return risk
+        if target.match != "person":
+            # the ids of every element the exact target could resolve to (#84)
+            ids = self._resolvable_ids(target, before)
+            return effective_risk(step, element_ids=ids) if ids else risk
         found = pick(before, target)
         self._candidates = (before.id, found)
         tiers: list[Risk] = [risk]
@@ -975,11 +986,54 @@ class Session:
         except LedgerError:
             return True  # unreadable means unknown: admission decides
 
-    def _settled_tier(self, step: Step, ceiling: Risk) -> Risk:
-        """The bound row's own tier, never below the plan's (PT-31)."""
+    def _settled_tier(self, step: Step, ceiling: Risk, automation_id: str = "") -> Risk:
+        """The bound row's own tier, never below the plan's (PT-31); for any target, raised by
+        the resolved element's own automation id (#84)."""
+        ids = (automation_id,) if automation_id else ()
         if self._binding is None:
-            return ceiling
-        return effective_risk(step, self._binding.shown_name_part)
+            raised = effective_risk(step, element_ids=ids)
+            return max(ceiling, raised, key=_RISK_ORDER.__getitem__)
+        return effective_risk(step, self._binding.shown_name_part, ids)
+
+    def _readmitted(  # noqa: PLR0913 - the step's admission state, passed once by keyword
+        self,
+        step: Step,
+        *,
+        key: str,
+        risk: Risk,
+        before: Snapshot,
+        element_id: int,
+        evidence: dict[str, Any],
+        previous: str | None,
+    ) -> tuple[Risk, str | None]:
+        """The settled tier, recorded; when the element that resolved (after the settle)
+        raises the step into R2/R3 past the tier admission ran at, admission runs again (#84).
+        Returns the tier and the admission answer that stands (the first, unless re-run)."""
+        settled = self._settled_tier(step, risk, before.element(element_id).automation_id)
+        evidence["risk"] = settled
+        if _RISK_ORDER[settled] > _RISK_ORDER[risk] and settled in ("R2", "R3"):
+            previous = self._admission(step, key, settled, before)
+            if previous == "done":
+                # done under a key the plan's own tier never admitted: stop for the person,
+                # nothing is dispatched (a rerun on a page that raised the element)
+                raise _StepFailureError(ErrorCode.GATE_BLOCKED, "done_at_raised_tier")
+        return settled, previous
+
+    @staticmethod
+    def _resolvable_ids(target: Target, snapshot: Snapshot) -> tuple[str, ...]:
+        if target.element_id is not None:
+            try:
+                return (snapshot.element(target.element_id).automation_id,)
+            except SteerError:
+                return ()
+        wanted = normalise_name(target.name).casefold()
+        return tuple(
+            e.automation_id
+            for e in snapshot.elements
+            if e.automation_id
+            and e.role == target.role
+            and normalise_name(e.name).casefold() == wanted
+        )
 
     def _decide(  # noqa: PLR0913 - the step's state at the gate
         self,
@@ -1012,6 +1066,9 @@ class Session:
                 window=self.window_label(),
                 goal=self._goal,
                 verdict=verdict,
+                element_automation_id=(
+                    before.element(element_id).automation_id if element_id is not None else ""
+                ),
             )
         finally:
             if asking and self._monitor is not None:

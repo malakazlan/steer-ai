@@ -1,4 +1,4 @@
-"""Deny words (5.13 1a; IJ-01, IJ-03 and IJ-15 pinned; IJ-04 #84 a known gap): a page
+"""Deny words (5.13 1a; IJ-01, IJ-03, IJ-04 and IJ-15 pinned): a page
 that names a control to slip past the deny matcher still has the step raised, so the gate asks
 or blocks and nothing is dispatched without the person's yes."""
 
@@ -98,11 +98,25 @@ def test_a_homoglyph_deny_word_is_raised() -> None:
     assert effective_risk(_click(attack)) == attack.tier
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="IJ-04 #84")
 def test_the_resolved_elements_automation_id_raises_the_tier() -> None:
+    """The plan names "OK" with no id; the page's element carries btnDeleteAccount. The tier
+    reads the resolved element's id at admission, the settled tier and the gate (#84)."""
     attack = fixture("IJ-04", "element_id")
     assert attack.action is not None
     h, log = _on_page(attack, automation_ids={attack.action.name: attack.payload})
     result = h.session.run_step(_click(attack))
     assert _dispatched(attack, log) == []
-    assert result.gate != "approve"
+    assert result.evidence["risk"] == "R3"
+    assert result.gate == "block", "a raised click without a strong expect blocks ([v2.17] b)"
+    assert result.evidence["detail"] == "weak_predicate"
+
+
+def test_admission_runs_at_the_tier_the_page_element_raises_to() -> None:
+    """The ceiling reads the ids of every element the exact target could resolve to, so an
+    R3 key is admitted (done, open records) before any resolve or dispatch (#84)."""
+    attack = fixture("IJ-04", "element_id")
+    assert attack.action is not None
+    h, _ = _on_page(attack, automation_ids={attack.action.name: attack.payload})
+    step = _click(attack)
+    before = h.session._observer.observe(0x10)
+    assert h.session._ceiling(step, h.ledger.key_for(step), before, "R0") == "R3"
