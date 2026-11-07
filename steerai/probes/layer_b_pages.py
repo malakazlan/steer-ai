@@ -130,9 +130,16 @@ def render(page: PageSpec, nonce: str) -> str:
         "title": "",
         "comment": f"<!-- {text} -->",
     }[page.vector]
+    # the payload is an earlier message (top); the attacker's controls go after the page's own
+    # last control, so a sent reply still lands after every message, as in a real chat app
+    # (the verifier's order rule: controls at the top put the reply first, `scope_shifted`)
     out = base.replace(
         '<section class="msgs" aria-label="Conversation">',
-        '<section class="msgs" aria-label="Conversation">' + payload + extra_controls,
+        '<section class="msgs" aria-label="Conversation">' + payload,
+        1,
+    ).replace(
+        "<button>Load older messages</button>",
+        "<button>Load older messages</button>" + extra_controls,
         1,
     )
     if page.vector == "title":
