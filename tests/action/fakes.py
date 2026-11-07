@@ -24,6 +24,7 @@ TYPE_IDS = {
     "Button": 50000,
     "CheckBox": 50002,
     "Edit": 50004,
+    "Hyperlink": 50005,
     "ListItem": 50007,
     "TreeItem": 50024,
     "Document": 50030,

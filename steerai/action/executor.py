@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from steerai.action.dispositions import ActionResult, Delivery
@@ -36,7 +36,8 @@ from steerai.action.keyboard import GateApproval
 from steerai.action.readback import Readback, poll_state, poll_until
 from steerai.action.sanitize import normalise_newlines, sanitize_value
 from steerai.errors import ErrorCode, SteerError
-from steerai.world.model import Snapshot
+from steerai.world.elements import Element
+from steerai.world.model import Snapshot, normalise_name
 
 VERBS: frozenset[str] = frozenset(
     {
@@ -100,8 +101,18 @@ class Executor:
         call = Call(action.verb, "semantic", blocker=self._blocker)
         try:
             element, handle = self._admission.admit(action, snapshot)
+            link = None
+            if action.verb == "click" and not handle.GetCurrentPattern(UIA_INVOKE_PATTERN):
+                link = row_link(snapshot, element)
+            if link is not None:
+                # a row with no Invoke acts through its one link of the same name (#124)
+                action = replace(action, element_id=link.id)
+                element, handle = self._admission.admit(action, snapshot)
             call.secure = element.secure
-            return _DISPATCH[action.verb](self, action, handle, call)
+            done = _DISPATCH[action.verb](self, action, handle, call)
+            if link is None:
+                return done
+            return replace(done, evidence={**done.evidence, "acted_on": "row_link"})
         except Exception as exc:
             result = classify(call, exc)
             if result is None:
@@ -213,6 +224,46 @@ class Executor:
         if action.postcondition is None:
             return _finish(call, poll_state(on_screen, True))
         return _finish(call, _poll_postcondition(action.postcondition))
+
+
+_ACTING_ROLES = frozenset(
+    {
+        "Hyperlink",
+        "Button",
+        "SplitButton",
+        "MenuItem",
+        "CheckBox",
+        "RadioButton",
+        "TabItem",
+        "ComboBox",
+        "Edit",
+    }
+)
+"""Roles a row may hold that act on their own: more than the one link means the row is not
+just a link (a "Delete chat" button inside it), so the click stays refused."""
+
+
+def row_link(snapshot: Snapshot, row: Element) -> Element | None:
+    """The row's one acting descendant when it is a Hyperlink with the row's exact name and no
+    automation id: the gate judged the row's name and id, so the link carries nothing it did
+    not judge (#84). Anything else is None: the click stays refused."""
+    by_id = {e.id: e for e in snapshot.elements}
+
+    def under_row(element: Element) -> bool:
+        parent = element.parent_id
+        while parent is not None:
+            if parent == row.id:
+                return True
+            parent = by_id[parent].parent_id if parent in by_id else None
+        return False
+
+    acting = [e for e in snapshot.elements if e.role in _ACTING_ROLES and under_row(e)]
+    if len(acting) != 1 or acting[0].role != "Hyperlink":
+        return None
+    link = acting[0]
+    if link.automation_id or normalise_name(link.name) != normalise_name(row.name):
+        return None
+    return link
 
 
 _DISPATCH: dict[str, Callable[[Executor, Action, Any, Call], ActionResult]] = {
