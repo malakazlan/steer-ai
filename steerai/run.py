@@ -21,7 +21,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol, TextIO
 
@@ -37,7 +37,7 @@ from steerai.orchestrator.contracts import (
     Step,
     subgoal_verbs,
 )
-from steerai.orchestrator.gate import Confirmer, effective_risk
+from steerai.orchestrator.gate import Confirmer, effective_risk, open_tier
 from steerai.orchestrator.ledger import LedgerError
 from steerai.orchestrator.loop import DEFAULT_MAX_STEPS, TaskResult, wait_for_idle
 from steerai.orchestrator.plan_io import PlanError, encode_predicate, plan_from_bytes
@@ -230,11 +230,20 @@ class Deps:
 # ---- pure parts --------------------------------------------------------------------------
 
 
+def plan_tier(plan: Plan, step: Step) -> Risk:
+    """A step's tier as far as the plan alone decides it: floors and deny patterns, and for an
+    `open` the tier its content gives (`open_tier`, page content is R2). The screen can only
+    raise it further at run time, where the session enforces the same limit (#88)."""
+    if step.verb == "open":
+        step = replace(step, risk=open_tier(plan.goal, step))
+    return effective_risk(step)
+
+
 def over_limit(plan: Plan, max_risk: Risk) -> Step | None:
-    """The first step whose effective risk (floors and deny patterns included) is over the
-    limit, checked over the whole plan before anything runs (RN-02)."""
+    """The first step whose tier is over the limit, checked over the whole plan before anything
+    runs (RN-02, IJ-28)."""
     for step in plan.steps:
-        if _RISK_ORDER[effective_risk(step)] > _RISK_ORDER[max_risk]:
+        if _RISK_ORDER[plan_tier(plan, step)] > _RISK_ORDER[max_risk]:
             return step
     return None
 
@@ -1004,7 +1013,7 @@ def preview_lines(
         where = "" if target is None else f' {target.role} "{target.name}"'
         if target is not None and target.match == "person":
             where += " (person)"
-        line = f"  step {step.id}: {step.verb}{where} {effective_risk(step)}"
+        line = f"  step {step.id}: {step.verb}{where} {plan_tier(plan, step)}"
         if step.text is not None:
             line += f" text={step.text!r}"
         if step.params:
@@ -1292,6 +1301,7 @@ def _build_session(bound: Bound) -> SessionLike:
         trace=bound.trace,
         verify_deadline_s=bound.options.verify_deadline_s,
         max_steps=bound.options.max_steps,
+        max_risk=bound.options.max_risk,
         monitor=monitor,
         launcher=Launcher(blocker=blocker),
         window_title=window_title,

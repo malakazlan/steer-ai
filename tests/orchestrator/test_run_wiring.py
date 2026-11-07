@@ -44,7 +44,9 @@ def test_the_real_session_brings_a_switched_window_forward_through_the_guard(
     bound = SimpleNamespace(
         hwnd=0x10,
         task_id="t",
-        options=SimpleNamespace(warmup_s=0.0, verify_deadline_s=1.0, max_steps=5, goal=None),
+        options=SimpleNamespace(
+            warmup_s=0.0, verify_deadline_s=1.0, max_steps=5, goal=None, max_risk="R3"
+        ),
         confirmer=None,
         ledger=None,
         trace=None,

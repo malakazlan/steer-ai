@@ -293,7 +293,11 @@ class Session:
         bring_forward: Callable[[int], str] | None = None,
         tap_guard: Callable[[], str | None] | None = None,
         goal_matcher: GoalMatcher | None = None,
+        max_risk: Risk = "R3",
     ) -> None:
+        self.max_risk: Risk = max_risk
+        """The person's `--max-risk` for the whole run: a tier the screen raises past it stops
+        the step before the ask (#88); R3 means no limit."""
         self._goal_matcher = goal_matcher
         """Judges each plan's steps against the goal (5.13 step 2 [v2.27]); None is `off`."""
         self._verdicts: Mapping[str, str] | None = None
@@ -502,6 +506,7 @@ class Session:
                 key = self._ledger.key_for(step)
             before = stage.measure("observe", lambda: self._before(risk, evidence))
             previous = self._admission(step, key, risk, before)
+            self._within_limit(risk)
             gate_result = stage.measure(
                 "gate", lambda: self._decide(step, key, before, previous, None, risk=risk)
             )
@@ -790,11 +795,17 @@ class Session:
         title = None if current is None else current.get("title")
         return title if isinstance(title, str) else None
 
+    def _within_limit(self, risk: Risk) -> None:
+        """The run's `--max-risk`, at the tier the step really runs at (#88)."""
+        if RISKS.index(risk) > RISKS.index(self.max_risk):
+            raise _StepFailureError(ErrorCode.GATE_BLOCKED, "over_max_risk")
+
     def _in_front(self, risk: Risk) -> None:
         """An R2/R3 step in a window the task selected or opened is in front when its ask
         opens: the person sees where a send lands (SW-15). The switch tap (`_to_front`, [v2.5])
         runs before this check; it stays the check after the tap. The start window's own steps
         keep the measured send path (PR #33 review item 3)."""
+        self._within_limit(risk)
         front = self._foreground
         selected = self._switched
         if risk in ("R2", "R3") and selected and front is not None and front() != self.hwnd:
