@@ -15,7 +15,7 @@ from tests.orchestrator.test_plan_io import _doc
 class _Scripted:
     """Serves every own step, catches every injected one."""
 
-    def judge(self, goal: str, steps: Sequence[Step]) -> Judgement:  # noqa: ARG002 - the protocol's shape
+    def judge(self, goal: str, steps: Sequence[Step], done: Sequence[Step] = ()) -> Judgement:
         verdicts: dict[str, Verdict] = {
             s.id: ("unrelated" if s.id.startswith("inj") else "serves") for s in steps
         }
