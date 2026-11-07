@@ -13,6 +13,7 @@ from steerai.action.physical import TEXT_ROLES
 from steerai.orchestrator.plan_io import PlanError, plan_from_json, plan_to_json
 from steerai.verify.predicates import FIELD_ROLES, FieldValue
 from steerai.verify.t1 import Verdict, evaluate, redact
+from tests.orchestrator.test_loop import Harness, _type
 from tests.verify.fakes import (
     BASE_ROWS,
     COMPOSER,
@@ -767,3 +768,75 @@ def test_an_aliased_value_never_ticks_at_a_runs_start_either() -> None:
     h.world.composer_value = "hello there"
     result = h.session.run_task(_value_plan(_type()))
     assert len(result.results) == 1, "the type step ran: nothing ticked at start"
+
+
+def test_an_aliased_condition_tick_is_traced_with_its_role() -> None:
+    """Issue #76: the tick record carries the verdict's alias (a role name, never content)."""
+    h = Harness()
+    h.world.rows = _as_role("Document")
+    assert h.session.run_task(_value_plan(_type())).ticked == {"g1"}
+    ticks = [json.loads(line) for line in h.trace.lines if '"kind": "tick"' in line]
+    assert ticks == [
+        {
+            "kind": "tick",
+            "task_id": h.session.task_id,
+            "subgoal": "g1",
+            "by": "condition",
+            "alias": "Document",
+        }
+    ]
+
+
+def test_an_exact_condition_tick_carries_no_alias() -> None:
+    h = Harness()
+    assert h.session.run_task(_value_plan(_type())).ticked == {"g1"}
+    ticks = [json.loads(line) for line in h.trace.lines if '"kind": "tick"' in line]
+    assert [set(t) for t in ticks] == [{"kind", "task_id", "subgoal", "by"}]
+
+
+def test_an_aliased_value_inside_an_all_keeps_its_alias_on_the_tick() -> None:
+    """Principal review of #79: `all` rebuilt its evidence and dropped the alias."""
+    from steerai.orchestrator.contracts import Plan, Subgoal  # noqa: PLC0415
+    from steerai.verify.predicates import All  # noqa: PLC0415
+
+    h = Harness()
+    h.world.rows = _as_role("Document")
+    condition = All(parts=(MESSAGE, replace(MESSAGE, name_pattern="message")))  # one role
+    plan = Plan(
+        goal="type hello there",
+        subgoals=(Subgoal(id="g1", desc="typed", condition=condition),),
+        steps=(_type(),),
+    )
+    assert h.session.run_task(plan).ticked == {"g1"}
+    ticks = [json.loads(line) for line in h.trace.lines if '"kind": "tick"' in line]
+    assert [t.get("alias") for t in ticks] == ["Document"]
+
+
+def test_a_tick_never_records_content_as_an_alias() -> None:
+    """5.14 redaction: only a field-role token is written, whatever reaches the record."""
+    h = Harness()
+    h.session._trace_tick("g1", "condition", alias="hello there")
+    (record,) = [json.loads(line) for line in h.trace.lines if '"kind": "tick"' in line]
+    assert "alias" not in record
+    assert "hello" not in json.dumps(record)
+
+
+def test_an_all_whose_parts_alias_to_two_roles_records_no_alias() -> None:
+    """[v2.21]: several distinct alias roles give no alias (never a set-order pick)."""
+    from steerai.verify.predicates import All  # noqa: PLC0415
+
+    combo = (22, "ComboBox", "Subject", (42, 62), COMPOSER_AREA[0])
+    rows = [*_as_role("Document"), combo]
+    subject = FieldValue(role="Edit", name_pattern="Subject", text="hello there")
+    live = _CountingLive(
+        states={
+            COMPOSER[3]: FakeHandle(value="hello there"),
+            (42, 62): FakeHandle(value="hello there"),
+        }
+    )
+    after = build(rows, snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(
+        All(parts=(MESSAGE, subject)), build(BASE_ROWS, snapshot_id="before"), after, live=live
+    )
+    assert verdict.holds is True
+    assert "alias" not in verdict.evidence
