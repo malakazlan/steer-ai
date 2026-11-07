@@ -521,7 +521,7 @@ class Session:
             try:
                 self._ledger.mark(step, "acting")
             except LedgerError as exc:
-                raise _StepFailureError(ErrorCode.GATE_BLOCKED, "wal_unavailable") from exc
+                raise _StepFailureError(ErrorCode.GATE_BLOCKED, _wal_detail(exc)) from exc
         windows_before = list(self._windows())  # the last thing before the launch (P4)
         launcher = self._launcher
         action = stage.measure(
@@ -831,9 +831,9 @@ class Session:
         outcome = self._outcome(verdict.holds, action, verdict.evidence.get("reason"))
         try:
             self._close(step, risk, outcome)
-        except LedgerError:
+        except LedgerError as exc:
             # the action ran; the attempt stays open in the ledger (unknown next time)
-            evidence["detail"] = "wal_unavailable"
+            evidence["detail"] = _wal_detail(exc)
             return self._finish(
                 step,
                 stage,
@@ -870,7 +870,7 @@ class Session:
             chosen = self._binding.to_record() if self._binding is not None else None
             self._ledger.write_ahead(step, before_of_record, decision, chosen=chosen)
         except LedgerError as exc:
-            raise _StepFailureError(ErrorCode.GATE_BLOCKED, "wal_unavailable") from exc
+            raise _StepFailureError(ErrorCode.GATE_BLOCKED, _wal_detail(exc)) from exc
         return before_of_record, True
 
     def _undelivered(  # noqa: PLR0913 - the step's state after the dispatch
@@ -1048,8 +1048,8 @@ class Session:
         if release:
             try:
                 self._close(step, risk, "not_delivered")
-            except LedgerError:
-                evidence["ledger"] = "wal_unavailable"  # the attempt stays open (D5)
+            except LedgerError as exc:
+                evidence["ledger"] = _wal_detail(exc)  # the attempt stays open (D5)
         if isinstance(failure, _TakeoverError) or failure.code is ErrorCode.GATE_PENDING_USER:
             gate = "pending"
         elif failure.detail == "none_chosen" or (
@@ -1307,7 +1307,7 @@ class Session:
                 try:
                     self._ledger.mark(step, "acting")
                 except LedgerError as exc:
-                    raise _StepFailureError(ErrorCode.GATE_BLOCKED, "wal_unavailable") from exc
+                    raise _StepFailureError(ErrorCode.GATE_BLOCKED, _wal_detail(exc)) from exc
             if self._boundary(self._act_evidence):
                 # a wait here ended after the observe too: same screen, fresh target (TK-03)
                 before, element_id = self._reobserve(
@@ -1839,3 +1839,9 @@ def _is_navigation(predicate: Predicate) -> bool:
     """Only a bare replacing `appeared`: the model's mirror cannot combine predicates, and a
     file plan that wraps one in `all` / `any_of` keeps the step deadline."""
     return isinstance(predicate, Appeared) and predicate.replaces
+
+
+def _wal_detail(exc: LedgerError) -> str:
+    """`ledger_locked` when another runner took the task (5.4 [v1.3], #58), else the ledger
+    could not write (`wal_unavailable`)."""
+    return "ledger_locked" if exc.locked else "wal_unavailable"

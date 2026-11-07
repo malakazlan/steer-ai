@@ -10,6 +10,7 @@ import pytest
 from steerai.errors import ErrorCode
 from steerai.orchestrator.contracts import GateDecision, Plan, Risk, Step, Subgoal, Target
 from steerai.orchestrator.gate import Gate
+from steerai.orchestrator.ledger import LedgerError
 from steerai.orchestrator.loop import Session
 from steerai.orchestrator.trace import ListTrace
 from steerai.verify.predicates import Appeared, TitleMatches, ValueEquals, Within
@@ -235,6 +236,22 @@ def test_own_process_is_blocked_before_the_ask() -> None:
     assert result.gate == "block"
     assert result.evidence["detail"] == "self_target"
     assert h.confirmer.asked == []
+
+
+def test_a_lost_lock_is_reported_as_ledger_locked_and_nothing_is_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #58: another runner took the task (5.4 [v1.3] `ledger_locked`), not a broken WAL."""
+    h = Harness()
+    h.session.run_step(_type())
+
+    def taken(*_a: Any, **_k: Any) -> Any:
+        raise LedgerError("ledger_locked: another runner took this task's lock")
+
+    monkeypatch.setattr(h.ledger, "write_ahead", taken)
+    result = h.session.run_step(_send())
+    assert (result.code, result.evidence["detail"]) == (ErrorCode.GATE_BLOCKED, "ledger_locked")
+    assert h.world.sent == []
 
 
 def test_wal_failure_means_no_action() -> None:
