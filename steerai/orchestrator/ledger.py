@@ -215,12 +215,15 @@ class Ledger:
                 continue
             except OSError as exc:
                 raise LedgerError(f"ledger lock could not be taken: {exc}") from exc
-            payload = json.dumps({"pid": os.getpid(), "token": self._lock_token})
+            payload = json.dumps({"pid": os.getpid(), "token": self._lock_token}).encode("utf-8")
             try:
-                os.write(fd, payload.encode("utf-8"))
+                written = os.write(fd, payload)
             except OSError as exc:
                 os.close(fd)
                 raise LedgerError(f"ledger lock could not be taken: {exc}") from exc
+            if written != len(payload):
+                os.close(fd)
+                raise LedgerError("ledger lock could not be taken: a short write")
             self._lock_fd = fd
             self._locked = True
             _HOLDERS[key] = self

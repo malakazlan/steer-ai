@@ -1048,8 +1048,8 @@ class Session:
         if release:
             try:
                 self._close(step, risk, "not_delivered")
-            except LedgerError:
-                evidence["ledger"] = "wal_unavailable"  # the attempt stays open (D5)
+            except LedgerError as exc:
+                evidence["ledger"] = _wal_detail(exc)  # the attempt stays open (D5)
         if isinstance(failure, _TakeoverError) or failure.code is ErrorCode.GATE_PENDING_USER:
             gate = "pending"
         elif failure.detail == "none_chosen" or (
