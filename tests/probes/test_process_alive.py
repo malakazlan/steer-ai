@@ -8,39 +8,30 @@ from __future__ import annotations
 
 import ctypes
 import os
+import subprocess
 import sys
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from steerai.probes import windows
 
 
-class _Kernel:
-    def __init__(self, *, opened: bool, exit_code: int = 259, read: bool = True) -> None:
-        self.opened, self.exit_code, self.read = opened, exit_code, read
+def _kernel(*, opened: bool, exit_code: int, read: bool) -> SimpleNamespace:
+    """kernel32 as `process_alive` calls it: OpenProcess, GetExitCodeProcess, CloseHandle."""
 
-    def handles(self) -> SimpleNamespace:
-        kernel = self
+    def get_exit(_handle: object, out: Any) -> int:  # Any: the byref() DWORD the probe passes
+        if not read:
+            return 0
+        out._obj.value = exit_code
+        return 1
 
-        class _Fn:
-            def __init__(self, fn: object) -> None:
-                self.fn = fn
-
-            def __call__(self, *args: object) -> object:
-                return self.fn(*args)  # type: ignore[operator]  # fn is one of the lambdas below
-
-        def get_exit(_h: object, out: object) -> int:
-            if not kernel.read:
-                return 0
-            out._obj.value = kernel.exit_code  # type: ignore[attr-defined]  # the byref() DWORD
-            return 1
-
-        return SimpleNamespace(
-            OpenProcess=_Fn(lambda *_a: 7 if kernel.opened else None),
-            GetExitCodeProcess=_Fn(get_exit),
-            CloseHandle=_Fn(lambda _h: 1),
-        )
+    return SimpleNamespace(
+        OpenProcess=lambda *_a: 7 if opened else None,
+        GetExitCodeProcess=get_exit,
+        CloseHandle=lambda _h: 1,
+    )
 
 
 @pytest.mark.parametrize(
@@ -63,7 +54,7 @@ def test_only_a_missing_process_is_dead(
     read: bool,
     alive: bool,
 ) -> None:
-    kernel = _Kernel(opened=opened, exit_code=exit_code, read=read).handles()
+    kernel = _kernel(opened=opened, exit_code=exit_code, read=read)
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(ctypes, "WinDLL", lambda *_a, **_k: kernel, raising=False)
     monkeypatch.setattr(ctypes, "get_last_error", lambda: error, raising=False)
@@ -76,3 +67,12 @@ def test_the_real_system_process_is_alive_and_a_dead_pid_is_not() -> None:
     assert windows.process_alive(4) is True
     assert windows.process_alive(os.getpid()) is True
     assert windows.process_alive(2**31 - 7) is False
+
+
+@pytest.mark.windows
+def test_a_child_that_exited_is_not_alive() -> None:
+    """Principal review of #70: the exit-code branch on the real API. The open Popen handle keeps
+    the pid from being reused, so the result is deterministic."""
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    assert windows.process_alive(child.pid) is False
