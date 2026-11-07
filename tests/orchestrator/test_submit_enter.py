@@ -461,3 +461,24 @@ def test_a_send_button_runs_when_the_composer_shows_the_approved_text() -> None:
     result = h.session.run_step(_send())
     assert result.ok is True, result.to_dict()
     assert h.world.sent == [HELLO]
+
+
+def test_a_send_that_names_no_composer_is_refused_before_the_click() -> None:
+    """Composer params are optional in a plan; a send whose text cannot be checked is never
+    clicked (principal review of #112)."""
+    from steerai.verify.predicates import Appeared, Within  # noqa: PLC0415 - this test only
+
+    h = Harness()
+    h.world.composer_value = HELLO
+    step = Step(
+        id="s9",
+        subgoal="g1",
+        verb="send",
+        target=Target(role="Button", name="Send"),
+        risk="R2",
+        params={"text": HELLO},
+        expect=Appeared(role="Text", name_pattern=HELLO, within=Within(landmark="Conversation")),
+    )
+    result = h.session.run_step(step)
+    assert h.world.sent == []
+    assert result.evidence.get("detail") == "composer_unknown", result.to_dict()

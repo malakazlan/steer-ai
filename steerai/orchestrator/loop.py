@@ -1481,6 +1481,10 @@ class Session:
             composer = self._composer(step, before)
             if composer is not None:
                 self._check_composer(step, before, composer)
+            elif step.verb == "send" or step.params.get("text") or step.text:
+                # text that cannot be checked is never sent; a plain form button (no text,
+                # no composer) has nothing to check (principal review of #112)
+                raise _StepFailureError(ErrorCode.GATE_BLOCKED, "composer_unknown")
         result = executor.execute(action, before)
         fallback = (
             step.verb == "focus"
