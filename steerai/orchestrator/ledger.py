@@ -254,20 +254,23 @@ class Ledger:
             return None
         return pid if isinstance(pid, int) and not isinstance(pid, bool) else None
 
-    def close(self) -> None:
+    def close(self) -> str | None:
         """Release the task lock; the state stays on disk for a resume. The lock guards against
-        another runner process; a second ledger in this process takes it over."""
-        if self._locked:
-            self._release_handle()
-            if self._lock_token_on_disk() == self._lock_token:
-                try:
-                    self._lock_path.unlink(missing_ok=True)
-                except OSError as exc:  # another runner is reading or taking it right now
-                    raise LedgerError(
-                        f"ledger_locked: the lock could not be released; the lock is "
-                        f"{self._lock_path}"
-                    ) from exc
-            self._locked = False
+        another runner process; a second ledger in this process takes it over. Never raises
+        (#61: it runs in the runner's `finally`, where a raise replaced the run's exit code):
+        `lock_left` when another process held the lock file open at that instant; its handle is
+        closed, so the next runner removes it as stale."""
+        if not self._locked:
+            return None
+        self._locked = False
+        self._release_handle()
+        if self._lock_token_on_disk() != self._lock_token:
+            return None
+        try:
+            self._lock_path.unlink(missing_ok=True)
+        except OSError:
+            return "lock_left"
+        return None
 
     def __enter__(self) -> Ledger:
         return self

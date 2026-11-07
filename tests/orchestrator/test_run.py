@@ -216,6 +216,7 @@ class FakeLedger:
     identities: list[Any] = field(default_factory=list)
     verb_maps: list[Any] = field(default_factory=list)
     proposed: list[Any] = field(default_factory=list)
+    close_result: str | None = None
 
     def bind_plan(
         self,
@@ -262,8 +263,9 @@ class FakeLedger:
             raise LedgerError("window_changed: bound to another window")
         self.windows.append((pid, title))
 
-    def close(self) -> None:
+    def close(self) -> str | None:
         self.closed = True
+        return self.close_result
 
 
 @dataclass
@@ -627,3 +629,22 @@ def test_a_chained_task_is_never_told_to_pass_allow_plan_change(tmp_path: Path, 
     assert json.loads(stdout.getvalue())["detail"] == token
     assert "--allow-plan-change if" not in stderr.getvalue()
     assert "last plan file" in stderr.getvalue()
+
+
+def test_a_lock_left_at_close_is_said_and_never_replaces_the_exit_code(tmp_path: Path) -> None:
+    """Issue #61: the run's own outcome stands; the left lock is a note, not a failure."""
+    plan = _plan(_type(), _send())
+    world = World(session=FakeSession(_done(plan)))
+    base = world.deps()
+
+    def leaving(root: Path, task_id: str) -> Any:
+        ledger: Any = base.open_ledger(root, task_id)  # Any: the test's FakeLedger
+        ledger.close_result = "lock_left"
+        return ledger
+
+    deps = base.replace(open_ledger=leaving)
+    stdout, stderr = io.StringIO(), io.StringIO()
+    code = run(_options(tmp_path, plan), deps, stdin=io.StringIO(), stdout=stdout, stderr=stderr)
+    assert code == EXIT_DONE
+    assert json.loads(stdout.getvalue())["status"] == "done"
+    assert "task lock was in use by another process and was left" in stderr.getvalue()

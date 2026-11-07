@@ -149,7 +149,7 @@ class LedgerLike(Protocol):
         allow_change: bool = False,
         identity: Mapping[str, Any] | None = None,
     ) -> None: ...
-    def close(self) -> None: ...
+    def close(self) -> str | None: ...
 
 
 class GoConfirmer(Confirmer, Protocol):
@@ -641,7 +641,7 @@ def _run_from_plan(
             stderr=stderr,
         )
     finally:
-        ledger.close()
+        _closed(ledger, out)
 
 
 def _open_trace(options: Options) -> Trace:
@@ -908,7 +908,7 @@ def _run_from_goal(
             stderr=stderr,
         )
     finally:
-        ledger.close()
+        _closed(ledger, out)
 
 
 def _planned(  # noqa: PLR0913 - the run's state at planning time
@@ -1396,3 +1396,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def _closed(ledger: LedgerLike, out: _Out) -> None:
+    """Close the ledger without replacing the run's exit code (#61); a lock left behind is said."""
+    if ledger.close() == "lock_left":
+        out.note(
+            "ledger: the task lock was in use by another process and was left; "
+            "the next run removes it"
+        )

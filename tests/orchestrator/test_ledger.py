@@ -896,3 +896,19 @@ def test_a_one_link_chain_with_nothing_pending_still_takes_a_deliberate_change(
         ledger.bind_plan("a" * 64, step_ids=["s1"])
         ledger.bind_plan("c" * 64, allow_change=True, step_ids=["s1"])
         assert ledger.plan_count() == 1
+
+
+def test_a_lock_another_process_is_reading_is_left_for_the_next_runner(tmp_path: Path) -> None:
+    """Issue #61: close never raises (it ran in run.py's finally and replaced the exit code);
+    the lock it could not remove has no handle left, so the next runner takes it as stale."""
+    ledger = Ledger(tmp_path, task_id="t-left", started_at=1.0)
+    lock = next(tmp_path.iterdir()) / "lock"
+    reader = os.open(lock, os.O_RDONLY)  # another process reading it: delete is refused
+    try:
+        assert ledger.close() == "lock_left"
+    finally:
+        os.close(reader)
+    assert lock.exists()
+    with Ledger(tmp_path, task_id="t-left", started_at=1.0) as again:
+        again.bind_plan("a" * 64, step_ids=["s1"])
+    assert ledger.close() is None, "closing twice is a no-op"
