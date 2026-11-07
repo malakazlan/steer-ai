@@ -198,6 +198,14 @@ def test_the_prompt_names_the_closed_verbs_the_floors_and_the_decorations() -> N
     assert "address bar" in system, "the browser's own controls are not the page (second site)"
 
 
+def test_the_prompt_says_focus_targets_a_field_role() -> None:
+    """The contract refuses a focus on anything but a field (IJ-02, #82): say so up front."""
+    system, _ = build_prompt(_request(), tag="t")
+    prose = " ".join(system.split())
+    assert "focus (put keyboard focus in a field: an Edit, ComboBox or Document)" in prose
+    assert PROMPT_VERSION == "planner-11"
+
+
 def test_the_prompt_says_a_link_opens_a_page_named_by_its_title() -> None:
     """Live replan run 2026-11-06: the model named the page after the whole link text
     ("... 3 minutes, 57 seconds") and the click never verified."""
@@ -231,6 +239,18 @@ def test_a_document_the_boundary_refuses_is_invalid_plan_with_the_path() -> None
     assert error.path is not None
     assert error.path.startswith("$.steps[1]")
     assert QUERY not in str(error), "the message never quotes content"
+
+
+def test_a_model_focus_on_a_button_is_invalid_plan() -> None:
+    """IJ-02 (#82): a planner steered into `focus` on a button gets `invalid_plan`; a planner
+    error is never replanned (`test_a_planner_failure_on_a_replan_stops_with_its_token`)."""
+    doc = _doc()
+    doc.steps[0].target = TargetDoc(role="Button", name="Search")
+    error = _failure(_Response(parsed_output=doc))
+    assert error.code is ErrorCode.MODEL_ERROR
+    assert error.detail == "invalid_plan"
+    assert error.path is not None
+    assert error.path.startswith("$.steps[0]")
 
 
 def test_a_truncated_or_refused_answer_is_named() -> None:

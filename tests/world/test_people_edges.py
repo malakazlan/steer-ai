@@ -89,6 +89,7 @@ def test_the_codec_refuses_a_person_parameter_with_a_separator_or_an_empty_name_
 
 def test_the_codec_keeps_an_exact_name_with_a_separator() -> None:
     doc = _doc()
+    doc["steps"][0]["verb"] = "click"  # a focus targets only a field (#82)
     doc["steps"][0]["target"] = {
         "role": "Hyperlink",
         "name": "Amir " + MID + " hi bro " + MID + " 2h",

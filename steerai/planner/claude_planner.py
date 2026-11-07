@@ -32,7 +32,7 @@ DEFAULT_MAX_TOKENS = 8192
 """Unmeasured: enough for the 6.3 form of a ten-step plan; a `max_tokens` stop is `truncated`."""
 DEFAULT_MAX_RETRIES = 1
 EFFORT = "medium"
-PROMPT_VERSION = "planner-10"
+PROMPT_VERSION = "planner-11"
 MECHANICAL_VERBS = frozenset({"type", "focus", "open"})
 """Steps whose effect code verifies (value typed, focus held, window opened): any model
 `expect` is dropped."""
@@ -45,11 +45,11 @@ proves it is done. Each step acts on one on-screen element from the screen listi
 effect in the same language. List every subgoal the goal needs, also those on a screen you
 cannot see yet: a subgoal may have no steps, and the agent plans it from the screen it reaches.
 
-Verbs (closed set): click (a button or link), focus (put keyboard focus in a field), type (type
-single-line text into the focused field; needs "text"), send (press the send button of a
-message composer), submit (submit a form; on a text field this presses Enter), delete (remove
-something), open (launch an app; every later step acts in the window it opened). There is no
-other verb.
+Verbs (closed set): click (a button or link), focus (put keyboard focus in a field: an Edit,
+ComboBox or Document), type (type single-line text into the focused field; needs "text"), send
+(press the send button of a message composer), submit (submit a form; on a text field this
+presses Enter), delete (remove something), open (launch an app; every later step acts in the
+window it opened). There is no other verb.
 
 An open step: {{"verb": "open", "target": {{"role": "App", "name": <one of {sorted(APPS)}>}},
 "params": {{"site": <one of {sorted(SITES)}>, "text": <the words to search>}}}}. A site opens in

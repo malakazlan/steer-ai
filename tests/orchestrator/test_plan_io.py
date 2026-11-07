@@ -181,6 +181,15 @@ def test_names_round_trip_losslessly_after_nfkc() -> None:
 # ---- shapes that are refused, with the field path -----------------------------------------
 
 
+def test_a_focus_step_on_a_button_is_refused_at_its_path() -> None:
+    """IJ-02 (#82): a scripted plan focusing a button never loads."""
+    doc = _doc()
+    doc["steps"][0]["target"] = {"role": "Button", "name": "Send"}
+    error = _error(doc)
+    assert error.path == "$.steps[0]"
+    assert "focus targets a field" in str(error)
+
+
 def test_an_unknown_key_is_refused_wherever_it_appears() -> None:
     assert _error(_doc(extra=1)).path == "$.extra"
     doc = _doc()
