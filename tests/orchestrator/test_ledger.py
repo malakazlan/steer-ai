@@ -970,3 +970,24 @@ def test_a_lock_holder_pid_out_of_range_is_no_holder(tmp_path: Path, pid: int) -
         lock = next(tmp_path.iterdir()) / "lock"
         lock.write_text(json.dumps({"pid": pid, "token": "0" * 32}), encoding="utf-8")
         assert ledger._lock_holder() is None
+
+
+def test_a_lock_whose_pid_wraps_onto_a_live_process_is_taken(tmp_path: Path) -> None:
+    """Principal review of #73: ctypes wraps 2**32 + pid onto that live pid (measured), so the
+    old reader called the lock held; out of the DWORD range it is no holder."""
+    with Ledger(tmp_path, task_id="t-wrap", started_at=1.0):
+        task_dir = next(tmp_path.iterdir())
+    wrapped = {"pid": 2**32 + os.getpid(), "token": "0" * 32}
+    (task_dir / "lock").write_text(json.dumps(wrapped), encoding="utf-8")
+    with Ledger(tmp_path, task_id="t-wrap", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["s1"])
+
+
+@pytest.mark.parametrize("pid", [1, 2**32 - 1])
+def test_the_dword_range_edges_are_holders(tmp_path: Path, pid: int) -> None:
+    with Ledger(tmp_path, task_id="t-edge", started_at=1.0) as ledger:
+        lock = next(tmp_path.iterdir()) / "lock"
+        lock.write_text(json.dumps({"pid": pid, "token": "0" * 32}), encoding="utf-8")
+        holder = ledger._lock_holder()
+        assert holder is not None
+        assert holder[0] == pid
