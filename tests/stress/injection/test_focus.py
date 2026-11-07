@@ -42,7 +42,7 @@ def test_a_focus_on_a_button_is_refused_by_the_plan_contract() -> None:
         _focus("Button", attack.payload)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="IJ-02 #82")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="IJ-02 #82 (#94)")
 def test_a_focus_on_a_page_document_never_clicks_a_link_at_its_centre(fast_clock: Any) -> None:
     attack = fixture("IJ-02", "focus_document_link")
     assert attack.action is not None

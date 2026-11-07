@@ -241,8 +241,9 @@ def test_a_document_the_boundary_refuses_is_invalid_plan_with_the_path() -> None
     assert QUERY not in str(error), "the message never quotes content"
 
 
-def test_a_model_focus_on_a_button_is_invalid_plan_and_never_replanned() -> None:
-    """IJ-02 (#82): a planner steered into `focus` on a button gets `invalid_plan`."""
+def test_a_model_focus_on_a_button_is_invalid_plan() -> None:
+    """IJ-02 (#82): a planner steered into `focus` on a button gets `invalid_plan`; a planner
+    error is never replanned (`test_a_planner_failure_on_a_replan_stops_with_its_token`)."""
     doc = _doc()
     doc.steps[0].target = TargetDoc(role="Button", name="Search")
     error = _failure(_Response(parsed_output=doc))
