@@ -100,3 +100,17 @@ def test_the_ask_carries_the_target_name_and_automation_id_out_of_its_repr() -> 
     assert ask.automation_id == "row-7"
     assert "Amir" not in repr(ask)
     assert "row-7" not in repr(ask)
+
+
+def test_a_resolved_elements_automation_id_raises_never_lowers() -> None:
+    """#84: the element the step resolves to brings its own id to the deny matcher."""
+    from steerai.orchestrator.contracts import Step, Target  # noqa: PLC0415 - this test only
+    from steerai.orchestrator.gate import effective_risk  # noqa: PLC0415
+
+    ok = Step(id="c", subgoal="g", verb="click", target=Target(role="Button", name="OK"), risk="R0")
+    assert effective_risk(ok, element_ids=("btnDeleteAccount",)) == "R3"
+    assert effective_risk(ok, element_ids=("btnOk", "")) == "R0"
+    raised = Step(
+        id="c", subgoal="g", verb="delete", target=Target(role="Button", name="OK"), risk="R3"
+    )
+    assert effective_risk(raised, element_ids=("btnOk",)) == "R3"
