@@ -124,6 +124,7 @@ class PlanError(ValueError):
     def __init__(self, path: str, message: str) -> None:
         super().__init__(f"{path}: {message}")
         self.path = path
+        self.reason = message
 
 
 # ---- decoding --------------------------------------------------------------------------------

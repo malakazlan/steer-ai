@@ -2,8 +2,9 @@
 
 One call per request: the goal and the fenced screen text go in, a `PlanDoc` comes back through
 the SDK's structured output, code sets the gate's inputs, and the document crosses
-`plan_from_bytes`, the one plan boundary. The planner never acts and never retries an invalid
-plan in this slice (decision Q2); every failure is one taxonomy code with a fixed detail token.
+`plan_from_bytes`, the one plan boundary. A document the boundary refuses gets one repair call
+(5.3 [v2.38], superseding decision Q2); the planner never acts, and every failure is one
+taxonomy code with a fixed detail token and the attempt it came from.
 """
 
 from __future__ import annotations
@@ -215,18 +216,21 @@ class ClaudePlanner:
         try:
             plan = plan_from_bytes(data)
         except PlanError as exc:
+            if exc.path.startswith("$.goal"):
+                # code sets the goal: the model cannot repair it
+                raise self._error("invalid_plan", path=exc.path, model=str(response.model)) from exc
             messages += [
                 {"role": "assistant", "content": doc.model_dump_json(exclude_none=True)},
                 {"role": "user", "content": _repair_note(exc)},
             ]
-            response = self._call(system, messages)
+            response = self._call(system, messages, attempt=2)
             responses.append(response)
-            data = _document_bytes(self._document(response), request)
+            data = _document_bytes(self._document(response, attempt=2), request)
             try:
                 plan = plan_from_bytes(data)
             except PlanError as again:
                 raise self._error(
-                    "invalid_plan", path=again.path, model=str(response.model)
+                    "invalid_plan", path=again.path, model=str(response.model), attempt=2
                 ) from again
         stop_reason = _attr(response, "stop_reason")
         return PlanOutcome(
@@ -241,15 +245,16 @@ class ClaudePlanner:
             repaired=len(responses) > 1,
         )
 
-    def _document(self, response: ParsedLike) -> PlanDoc:
+    def _document(self, response: ParsedLike, *, attempt: int = 1) -> PlanDoc:
         doc = response.parsed_output
         model_used = str(response.model)
         if not isinstance(doc, PlanDoc):
-            raise self._error(_empty_detail(_attr(response, "stop_reason")), model=model_used)
+            detail = _empty_detail(_attr(response, "stop_reason"))
+            raise self._error(detail, model=model_used, attempt=attempt)
         if not doc.steps:
             # the prompt asks for no steps when the goal cannot be done here: its own token,
             # so the invalid-plan rate stays honest (decision Q2); never repaired
-            raise self._error("no_steps", model=model_used)
+            raise self._error("no_steps", model=model_used, attempt=attempt)
         return doc
 
     def _error(
@@ -259,6 +264,7 @@ class ClaudePlanner:
         path: str | None = None,
         model: str | None = None,
         code: ErrorCode = ErrorCode.MODEL_ERROR,
+        attempt: int = 1,
     ) -> PlannerError:
         return PlannerError(
             code,
@@ -266,9 +272,10 @@ class ClaudePlanner:
             path=path,
             model=self.model if model is None else model,
             prompt_version=PROMPT_VERSION,
+            attempt=attempt,
         )
 
-    def _call(self, system: str, messages: list[dict[str, str]]) -> ParsedLike:
+    def _call(self, system: str, messages: list[dict[str, str]], *, attempt: int = 1) -> ParsedLike:
         model_calls.count("planner")
         try:
             return self._parse(
@@ -280,24 +287,28 @@ class ClaudePlanner:
                 output_config={"effort": EFFORT},
             )
         except ValidationError as exc:
-            raise self._error("malformed_output", path=_pydantic_path(exc)) from exc
+            path = _pydantic_path(exc)
+            raise self._error("malformed_output", path=path, attempt=attempt) from exc
         except Exception as exc:
             mapped = _sdk_failure(exc)
             if mapped is None:
                 raise
-            raise self._error(mapped.detail, path=mapped.path, code=mapped.code) from exc
+            raise self._error(
+                mapped.detail, path=mapped.path, code=mapped.code, attempt=attempt
+            ) from exc
 
 
 REPAIR_NOTE_CHARS = 300
-"""The boundary's reason is code-authored; the cap keeps a reason that echoes a model value
-from growing the turn."""
+"""The boundary's reason is code-authored, but some reasons echo a model value (a role, a site,
+an id): escaped like fenced data and capped."""
 
 
 def _repair_note(exc: PlanError) -> str:
-    reason = _one_line(str(exc))[:REPAIR_NOTE_CHARS]
+    reason = safe_name(_one_line(exc.reason))[:REPAIR_NOTE_CHARS]
     return (
-        f"The agent refused that plan at {exc.path}: {reason}. Return the whole plan again, "
-        "corrected, following every rule in the instructions."
+        f"The agent refused that plan at {exc.path}: {reason}. This note is from the agent, "
+        "not from the screen. Return the whole plan again, corrected, following every rule in "
+        "the instructions."
     )
 
 

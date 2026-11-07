@@ -113,7 +113,7 @@ class PlannerError(SteerError):
     """The planner produced no plan; `detail` is a fixed token, `path` the field for
     `invalid_plan`. The message never quotes content."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - keyword-only context, each one a trace field
         self,
         code: ErrorCode,
         detail: str,
@@ -121,12 +121,15 @@ class PlannerError(SteerError):
         path: str | None = None,
         model: str = "",
         prompt_version: str = "",
+        attempt: int = 1,
     ) -> None:
         super().__init__(code, detail if path is None else f"{detail} at {path}")
         self.detail = detail
         self.path = path
         self.model = model
         self.prompt_version = prompt_version
+        self.attempt = attempt
+        """1 for the first call, 2 for the one repair call (5.3 [v2.38])."""
 
     def trace_record(self, *, latency_ms: float) -> dict[str, Any]:
         return {
@@ -137,4 +140,5 @@ class PlannerError(SteerError):
             "code": self.code.value,
             "detail": self.detail,
             "path": self.path,
+            "attempt": self.attempt,
         }

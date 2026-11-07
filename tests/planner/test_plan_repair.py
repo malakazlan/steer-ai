@@ -75,3 +75,30 @@ def test_no_steps_and_empty_answers_are_never_repaired() -> None:
     assert caught.value.detail == "no_steps"
     assert len(parse.calls) == 1
     assert GOAL  # the request goal is unchanged by a repair
+
+
+def test_errors_say_which_attempt_failed() -> None:
+    """A failure on the repair call is told apart from a first-call failure (review item 2)."""
+    parse = Sequence(_Response(parsed_output=_refused()), _Response(parsed_output=_refused()))
+    with pytest.raises(PlannerError) as caught:
+        ClaudePlanner(parse=parse).plan(_request())
+    assert caught.value.attempt == 2
+    assert caught.value.trace_record(latency_ms=1.0)["attempt"] == 2
+    empty = _doc()
+    empty.steps = []
+    parse = Sequence(_Response(parsed_output=_refused()), _Response(parsed_output=empty))
+    with pytest.raises(PlannerError) as caught:
+        ClaudePlanner(parse=parse).plan(_request())
+    assert (caught.value.detail, caught.value.attempt) == ("no_steps", 2)
+    parse = Sequence(_Response(parsed_output=empty))
+    with pytest.raises(PlannerError) as caught:
+        ClaudePlanner(parse=parse).plan(_request())
+    assert caught.value.attempt == 1
+
+
+def test_the_note_names_the_path_once_and_escapes_the_reason() -> None:
+    parse = Sequence(_Response(parsed_output=_refused()), _Response(parsed_output=_doc()))
+    ClaudePlanner(parse=parse).plan(_request())
+    note = parse.calls[1]["messages"][2]["content"]
+    path = note.split(" at ", 1)[1].split(":", 1)[0]
+    assert note.count(path) == 1
