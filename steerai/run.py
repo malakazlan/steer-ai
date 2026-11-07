@@ -626,7 +626,7 @@ def _run_from_plan(
         return out.error("invalid_plan", note=f"plan: {exc}")
     offending = over_limit(plan, options.max_risk)
     if offending is not None:
-        return _risk_refusal(out, options, offending)
+        return _risk_refusal(out, options, plan, offending)
     try:
         ledger = deps.open_ledger(options.ledger_dir, options.task_id)
     except LedgerError as exc:
@@ -858,16 +858,17 @@ def _digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _risk_refusal(out: _Out, options: Options, offending: Step) -> int:
+def _risk_refusal(out: _Out, options: Options, plan: Plan, offending: Step) -> int:
+    tier = plan_tier(plan, offending)
     out.note(
-        f"refused: step {offending.id} is {effective_risk(offending)}, over --max-risk "
+        f"refused: step {offending.id} is {tier}, over --max-risk "
         f"{options.max_risk}; nothing was run"
     )
     if options.goal is not None:
         out.note(
             f"the plan is written; to run it: python -m steerai.run --plan {options.plan} "
             f"--task-id {options.task_id} --ledger-dir {options.ledger_dir} "
-            f"--max-risk {effective_risk(offending)}"
+            f"--max-risk {tier}"
         )
     out.emit(
         {
@@ -875,7 +876,7 @@ def _risk_refusal(out: _Out, options: Options, offending: Step) -> int:
             "code": ErrorCode.GATE_BLOCKED.value,
             "detail": "risk_over_limit",
             "step_id": offending.id,
-            "risk": effective_risk(offending),
+            "risk": tier,
             "ticked": [],
             "results": [],
         }
@@ -963,7 +964,7 @@ def _planned(  # noqa: PLR0913 - the run's state at planning time
     )
     offending = over_limit(outcome.plan, options.max_risk)
     if offending is not None:
-        return _risk_refusal(out, options, offending)
+        return _risk_refusal(out, options, outcome.plan, offending)
     go_id = _digest(outcome.data)[:GO_ID_CHARS]
     for line in preview_lines(outcome.plan, go_id):
         out.note(line)
@@ -1205,8 +1206,8 @@ def _bound_continuation(
     offending = over_limit(outcome.plan, r.options.max_risk)
     if offending is not None:
         r.out.note(
-            f"refused: step {offending.id} is {effective_risk(offending)}, over --max-risk "
-            f"{r.options.max_risk}; the continuation was not run"
+            f"refused: step {offending.id} is {plan_tier(outcome.plan, offending)}, over "
+            f"--max-risk {r.options.max_risk}; the continuation was not run"
         )
         return progress.ended("blocked", ErrorCode.GATE_BLOCKED, "risk_over_limit")
     go_id = _digest(outcome.data)[:GO_ID_CHARS]

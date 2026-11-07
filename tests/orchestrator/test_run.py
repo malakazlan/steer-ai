@@ -648,3 +648,30 @@ def test_a_lock_left_at_close_is_said_and_never_replaces_the_exit_code(tmp_path:
     assert code == EXIT_DONE
     assert json.loads(stdout.getvalue())["status"] == "done"
     assert "task lock was in use by another process and was left" in stderr.getvalue()
+
+
+def test_an_open_of_page_content_is_refused_at_the_tier_the_run_would_give_it(
+    tmp_path: Path,
+) -> None:
+    """IJ-28 (#88): the preflight reports the open's content tier (R2), not its planned R1."""
+    from steerai.orchestrator.contracts import Plan, Step, Subgoal, Target  # noqa: PLC0415
+    from steerai.verify.predicates import TitleMatches  # noqa: PLC0415
+
+    open_step = Step(
+        id="o1",
+        subgoal="g1",
+        verb="open",
+        target=Target(role="App", name="chrome"),
+        risk="R1",
+        params={"site": "google_search", "text": "verify my account now"},
+    )
+    plan = Plan(
+        goal="open chrome",
+        subgoals=(Subgoal(id="g1", desc="open", condition=TitleMatches(pattern="Google")),),
+        steps=(open_step,),
+    )
+    world = World(session=FakeSession(_done(plan)))
+    code, out, err = _run(_options(tmp_path, plan, max_risk="R1"), world)
+    assert code == EXIT_BLOCKED
+    assert (out["detail"], out["step_id"], out["risk"]) == ("risk_over_limit", "o1", "R2")
+    assert "is R2, over --max-risk R1" in err
