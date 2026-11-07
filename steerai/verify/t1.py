@@ -29,6 +29,7 @@ from typing import Any, Literal, Protocol
 from steerai.action.sanitize import normalise_newlines
 from steerai.errors import ErrorCode, SteerError
 from steerai.verify.predicates import (
+    FIELD_ROLES,
     All,
     AnyOf,
     Appeared,
@@ -582,11 +583,15 @@ def _field_value(predicate: FieldValue, snapshot: Snapshot, ctx: Context) -> Ver
     snapshot's handle (field-value gate item 4, FV-39)."""
     live = _live(ctx, "FieldValue")
     wanted = normalise_name(predicate.name_pattern).casefold()
-    found = [
-        e
-        for e in snapshot.elements
-        if e.role == predicate.role and normalise_name(e.name).casefold() == wanted
-    ]
+    named = [e for e in snapshot.elements if normalise_name(e.name).casefold() == wanted]
+    found = [e for e in named if e.role == predicate.role]
+    evidence: dict[str, Any] = {}
+    if not found:
+        # the step's text-role alias, one rule for steps and conditions (alias gate option A):
+        # the one same-named field of another field role, only when the exact role is absent
+        found = [e for e in named if e.role in FIELD_ROLES and e.role != predicate.role]
+        if found:
+            evidence = {"alias": found[0].role}
     if not found:
         return _plain("target_not_found", settles=True)
     if len(found) > 1:
@@ -595,7 +600,7 @@ def _field_value(predicate: FieldValue, snapshot: Snapshot, ctx: Context) -> Ver
         return _plain("secure_target", settles=True)  # never read: no use in polling
     value = _read_value(found[0], snapshot, live)
     if value == normalise_newlines(predicate.text):
-        return Verdict(holds=True, code=None, level=3, polls=0, evidence={})
+        return Verdict(holds=True, code=None, level=3, polls=0, evidence=evidence)
     return _plain("value_empty" if value == "" else "value_differs", settles=True)
 
 
