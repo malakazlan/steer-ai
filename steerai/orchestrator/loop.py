@@ -1032,10 +1032,7 @@ class Session:
         if fresh.title != before.title:
             raise _StepFailureError(ErrorCode.FOCUS_LOST, mismatch)
         # no settle here (OR-31): a target gone while the ask was open is a changed screen
-        if self._aliased:
-            element_id = self._resolve_alias(step, fresh, evidence)
-        else:
-            element_id = self._resolve(step, fresh)
+        element_id = self._resolve_again(step, fresh, evidence)
         self._secure_step = fresh.element(element_id).secure
         return fresh, element_id
 
@@ -1188,6 +1185,15 @@ class Session:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
         return matches[0].id
 
+    def _resolve_again(
+        self, step: Step, snapshot: Snapshot, evidence: dict[str, Any] | None = None
+    ) -> int:
+        """A later resolve in the same step (after an ask, a wait, a scroll or the act retry)
+        goes the way the step first resolved (hunter CH-12)."""
+        if self._aliased:
+            return self._resolve_alias(step, snapshot, {} if evidence is None else evidence)
+        return self._resolve(step, snapshot)
+
     def _resolve_alias(self, step: Step, snapshot: Snapshot, evidence: dict[str, Any]) -> int:
         """An exact text target not on screen under its role: the one element of another text
         role with the same name, for `focus` and `type` at R0/R1 only; the model never changes
@@ -1207,6 +1213,7 @@ class Session:
             for e in snapshot.elements
             if e.role in ALIAS_ROLES
             and e.role != target.role
+            and not e.secure  # never a password field (hunter CH-04)
             and normalise_name(e.name).casefold() == wanted
         ]
         if not matches:
@@ -1384,12 +1391,12 @@ class Session:
                 )
                 self._scrolled = scroll_result.delivery.value
                 before = self._observer.observe(self.hwnd, stable_window=1)
-                element_id = self._resolve(step, before)
+                element_id = self._resolve_again(step, before)
                 continue
             if result.code is ErrorCode.ELEMENT_NOT_FOUND and retries == 0:
                 retries += 1
                 before = self._observer.observe(self.hwnd, stable_window=1)
-                element_id = self._resolve(step, before)
+                element_id = self._resolve_again(step, before)
                 continue
             return result, before, retries
 

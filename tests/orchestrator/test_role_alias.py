@@ -94,3 +94,22 @@ def test_a_resume_wait_keeps_the_alias() -> None:
     again, element_id = h.session._reobserve(_type(), snapshot, evidence)
     assert element_id == first
     assert again.element(element_id).role == "Document"
+
+
+def test_every_later_resolve_in_the_step_keeps_the_alias() -> None:
+    """Hunter CH-12: the act retry and the scroll re-resolve as the step first resolved."""
+    h = Harness()
+    _as_document(h)
+    snapshot = h.world.observe(0x10)
+    first = h.session._resolve_alias(_type(), snapshot, {})
+    assert h.session._resolve_again(_type(), snapshot) == first
+
+
+def test_a_secure_field_is_never_an_alias() -> None:
+    """Hunter CH-04: a password field is never typed into by a role alias."""
+    h = Harness()
+    _as_document(h)
+    snapshot = h.world.observe(0x10)
+    elements = [replace(e, secure=True) if e.id == COMPOSER[0] else e for e in snapshot.elements]
+    with pytest.raises(Exception, match="no_match"):
+        h.session._resolve_alias(_type(), replace(snapshot, elements=elements), {})
