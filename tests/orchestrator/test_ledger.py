@@ -564,7 +564,7 @@ def test_a_replan_extends_the_chain_and_only_the_last_link_resumes(tmp_path: Pat
     with Ledger(tmp_path, task_id="t-chain", started_at=1.0) as ledger:
         with pytest.raises(LedgerError, match="plan_superseded"):
             ledger.bind_plan("a" * 64)
-        with pytest.raises(LedgerError, match="plan_changed"):
+        with pytest.raises(LedgerError, match="plan_chained"):
             ledger.bind_plan("c" * 64)
         refused_ref = ledger.window_ref
         assert refused_ref is None
@@ -639,7 +639,7 @@ def test_a_chained_task_never_rewrites_its_chain_even_when_a_change_is_allowed(
         ledger.bind_plan("a" * 64, step_ids=["o1"])
         ledger.set_window_ref("opened:o1")
         ledger.extend_plan("b" * 64, ["p2.s1"])
-        with pytest.raises(LedgerError, match="plan_changed"):
+        with pytest.raises(LedgerError, match="plan_chained"):
             ledger.bind_plan("c" * 64, allow_change=True)
         with pytest.raises(LedgerError, match="plan_superseded"):
             ledger.bind_plan("a" * 64, allow_change=True)
@@ -822,3 +822,77 @@ def test_a_chain_with_no_earlier_link_cannot_say_what_came_before(tmp_path: Path
         assert ledger.earlier_verbs() is None
         ledger.bind_plan("a" * 64, step_ids=["s1"], subgoal_verbs={"g1": ["open"]})
         assert ledger.earlier_verbs() is None
+
+
+# ---- a continuation's link is proposed before its file is written (issue #57, option D) ------
+
+
+def test_a_crash_before_extend_resumes_the_file_as_the_next_link(tmp_path: Path) -> None:
+    """Hunter RV-02: the file was written, extend_plan never ran; binding that file's digest
+    promotes the pending link, so the run is a continuation and keeps the earlier map."""
+    with Ledger(tmp_path, task_id="t-pend", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["s1", "s2"], subgoal_verbs={"g1": ["open", "type"]})
+        ledger.set_window_ref("opened:s1")
+        ledger.propose_plan("b" * 64, ["p2.s1"], subgoal_verbs={"g1": ["open"]})
+        # the process dies here: the file is on disk, extend_plan never ran
+    with Ledger(tmp_path, task_id="t-pend", started_at=1.0) as ledger:
+        ledger.bind_plan("b" * 64, step_ids=["p2.s1"], subgoal_verbs={"g1": ["open"]})
+        assert ledger.plan_count() == 2
+        assert ledger.earlier_verbs() == {"g1": {"open", "type"}}
+        assert ledger.window_ref == "opened:s1", "the link starts in the window the task was in"
+
+
+def test_extend_promotes_the_proposed_link(tmp_path: Path) -> None:
+    with Ledger(tmp_path, task_id="t-prom", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["s1"], subgoal_verbs={"g1": ["open"]})
+        ledger.propose_plan("b" * 64, ["p2.s1"], subgoal_verbs={"g2": ["click"]})
+        ledger.extend_plan("b" * 64, ["p2.s1"], subgoal_verbs={"g2": ["click"]})
+        assert ledger.plan_count() == 2
+    with Ledger(tmp_path, task_id="t-prom", started_at=1.0) as ledger:
+        ledger.bind_plan("b" * 64, step_ids=["p2.s1"])
+        assert ledger.plan_count() == 2, "nothing pending is left to promote twice"
+
+
+def test_a_proposal_is_checked_before_the_file_is_written(tmp_path: Path) -> None:
+    with Ledger(tmp_path, task_id="t-check", started_at=1.0) as ledger:
+        with pytest.raises(LedgerError, match="plan_unbound"):
+            ledger.propose_plan("b" * 64, ["p2.s1"])
+        ledger.bind_plan("a" * 64, step_ids=["s1"])
+        with pytest.raises(LedgerError, match="plan_repeated"):
+            ledger.propose_plan("a" * 64, ["p2.s1"])
+        with pytest.raises(LedgerError, match="step_id_reused"):
+            ledger.propose_plan("b" * 64, ["s1"])
+
+
+def test_a_pending_link_blocks_a_deliberate_change(tmp_path: Path) -> None:
+    """Gate item 2: never replace a link while a continuation is pending."""
+    with Ledger(tmp_path, task_id="t-block", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["s1"])
+        ledger.propose_plan("b" * 64, ["p2.s1"])
+    with (
+        Ledger(tmp_path, task_id="t-block", started_at=1.0) as ledger,
+        pytest.raises(LedgerError, match="plan_pending"),
+    ):
+        ledger.bind_plan("c" * 64, allow_change=True, step_ids=["s1"])
+
+
+def test_a_different_plan_on_a_chain_says_it_cannot_be_replaced(tmp_path: Path) -> None:
+    """Gate item 4: the runner hints --allow-plan-change only where it can work."""
+    with Ledger(tmp_path, task_id="t-chained", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["s1"])
+        with pytest.raises(LedgerError, match="plan_changed:"):
+            ledger.bind_plan("c" * 64, step_ids=["s1"])
+        ledger.extend_plan("b" * 64, ["p2.s1"])
+        with pytest.raises(LedgerError, match="plan_chained"):
+            ledger.bind_plan("c" * 64, step_ids=["s1"])
+        with pytest.raises(LedgerError, match="plan_chained"):
+            ledger.bind_plan("c" * 64, allow_change=True, step_ids=["s1"])
+
+
+def test_a_one_link_chain_with_nothing_pending_still_takes_a_deliberate_change(
+    tmp_path: Path,
+) -> None:
+    with Ledger(tmp_path, task_id="t-edit", started_at=1.0) as ledger:
+        ledger.bind_plan("a" * 64, step_ids=["s1"])
+        ledger.bind_plan("c" * 64, allow_change=True, step_ids=["s1"])
+        assert ledger.plan_count() == 1
