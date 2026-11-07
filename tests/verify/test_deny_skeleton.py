@@ -39,7 +39,7 @@ def _sources(letter: str) -> list[str]:
 def test_cell_precedence_blank_table_ascii_letter_foreign_hard() -> None:
     assert cells(chr(0x3164)) == ("~", "~"), "a Hangul filler is blank before and after NFKC"
     assert cells(chr(0x0C02)) == ("O", "O"), "a spacing mark in the table is a soft letter"
-    assert cells("I") == ("L", "i"), "I is a soft l before casefold, an i after"
+    assert cells("I") == ("%", "i"), "I is an i-or-l letter before casefold, an i after"
     assert cells("0|1") == ("OLL", "OLL")
     assert cells(f"S{CYR_IE}nd") == ("send", "send")
     assert cells(chr(0x00E9)) == ("#", "#"), "a letter with no prototype is foreign"
@@ -105,6 +105,12 @@ def test_a_lookalike_letter_with_a_second_feature_is_read(second: str) -> None:
                 assert holds(text, pattern), (pattern, second, ascii(text))
                 cases += 1
     assert cases > 500, cases
+
+
+@pytest.mark.parametrize("word", ["POSTING", "PUBLISHING", "FORMATION", "FOLLOWING", "POSTIE"])
+def test_a_capital_i_is_never_a_word_edge(word: str) -> None:
+    """Measured false positives of a soft I in an English word list (en_US, capitals)."""
+    assert not any(holds(word, pattern) for pattern in PATTERNS)
 
 
 @pytest.mark.parametrize(

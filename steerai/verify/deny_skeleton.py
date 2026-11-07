@@ -8,8 +8,10 @@ before fold: a capital and its small letter can have different prototypes, Greek
   marks, control characters other than whitespace). It is nothing or a boundary.
 - `a`-`z`: a letter, ASCII or a lookalike that is a word character, folded to its prototype.
 - `A`-`Z` soft letter: a lookalike that is not a word character (U+00A1 for i, Arabic-Indic one
-  for l) and the gate-only ASCII lookalikes (0, 1, |, and I before casefold). It is its letter
-  or a boundary; a soft i or l stands for either (Subm1t, DeIete).
+  for l) and the gate-only ASCII lookalikes 0, 1 and |. It is its letter or a boundary; a soft i
+  or l stands for either (Subm1t).
+- `%`: a capital I before casefold. A letter, never a boundary ("POSTING" is not "post"), that
+  reads as i or l (DeIete).
 - `#`: any other word character. Part of a word; it never stands for a pattern letter.
 - ` `: a boundary (whitespace, punctuation, other digits, `_`, modifier apostrophes).
 
@@ -30,6 +32,7 @@ from steerai.verify.confusables import ASCII_LOOKALIKES, CONFUSABLE_TO_LATIN, de
 
 BLANK = "~"
 FOREIGN = "#"
+I_OR_L = "%"
 HARD = " "
 _GAP = frozenset(" ~ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 _PATTERN = re.compile(r"[a-z]+(?: [a-z]+)*")
@@ -58,8 +61,10 @@ def _known(ch: str, *, capital_i: bool) -> str | None:
     prototype = CONFUSABLE_TO_LATIN.get(ch)
     if prototype is not None:
         return prototype if _word(ch) else prototype.upper()
+    if ch == "I":
+        return I_OR_L if capital_i else None
     lookalike = ASCII_LOOKALIKES.get(ch)
-    if lookalike is not None and (ch != "I" or capital_i):
+    if lookalike is not None:
         return lookalike.upper()
     if "a" <= ch <= "z":
         return ch
@@ -105,16 +110,16 @@ def _compiled(pattern: str) -> tuple[re.Pattern[str], ...]:
     if not _PATTERN.fullmatch(pattern):
         raise ValueError("a deny pattern is lowercase ASCII words")
     return tuple(
-        re.compile("(?<![a-z#])" + "~*+".join(_letter(c) for c in word) + "(?![a-z#])")
+        re.compile("(?<![a-z#%])" + "~*+".join(_letter(c) for c in word) + "(?![a-z#%])")
         for word in pattern.split()
     )
 
 
 def _letter(c: str) -> str:
-    """A pattern letter's class: the letter, its soft form, and for i and l both soft forms (a
-    1, an I or a | reads as either)."""
+    """A pattern letter's class: the letter and its soft form; for i and l both soft forms and
+    the capital I (a 1, a | or an I reads as either)."""
     if c in "il":
-        return f"[{c}IL]"
+        return f"[{c}IL%]"
     return f"[{c}{c.upper()}]"
 
 
