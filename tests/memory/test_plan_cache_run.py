@@ -164,3 +164,45 @@ def test_the_trace_counts_model_calls_and_holds_no_goal(tmp_path: Path) -> None:
     traces: list[Any] = list((tmp_path / "t-1").rglob("*.jsonl"))
     text = "\n".join(p.read_text(encoding="utf-8") for p in traces)
     assert "hello there" not in text
+
+
+def test_a_browser_plan_that_opens_its_page_misses_when_the_start_screen_lacks_its_target(
+    tmp_path: Path,
+) -> None:
+    """The first-target check reads the start screen and skips `open` steps: a plan that opens
+    a page hits only if the start screen already shows that page's first target; otherwise it
+    is a miss and plans (fails safe; 5.12 [v2.34] known limit)."""
+    from dataclasses import replace  # noqa: PLC0415 - this test only
+
+    from steerai.orchestrator.contracts import Step, Target  # noqa: PLC0415
+
+    plan = _plan()
+    opened = Step(
+        id="o",
+        subgoal="g1",
+        verb="open",
+        target=Target(role="App", name="chrome"),
+        risk="R1",
+        params={"site": "google_search", "text": "send hello there"},
+    )
+    browser_plan = replace(plan, steps=(opened, *plan.steps))
+    cache = PlanCache(tmp_path / "cache", protect=_fake_protect, unprotect=_fake_unprotect)
+    planner = FakePlanner(_outcome(browser_plan))
+    for n, lines in ((1, SCREEN_LINES), (2, ['1 Document "New Tab"'])):
+        world = World(session=JudgedSession())  # type: ignore[arg-type]
+        deps = world.deps().replace(
+            screen=lambda _hwnd, lines=lines: ("New Tab - Google Chrome", list(lines)),
+            planner=planner,
+            plan_cache=cache,
+            identify=lambda _hwnd: {"image": "chrome.exe"},
+        )
+        data = _outcome(browser_plan).data
+        options = _options(tmp_path / f"b{n}", "--task-id", f"b-{n}")
+        run(
+            options,
+            deps,
+            stdin=io.StringIO(_go(data, f"b-{n}") + "\n"),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+    assert len(planner.requests) == 2, "the second start screen lacks the target: a miss"
