@@ -71,6 +71,8 @@ _LEDGER_TOKENS = frozenset(
     {
         "ledger_locked",
         "plan_changed",
+        "plan_chained",
+        "plan_pending",
         "plan_superseded",
         "plan_repeated",
         "plan_unbound",
@@ -123,6 +125,12 @@ class LedgerLike(Protocol):
         *,
         allow_change: bool = False,
         step_ids: Sequence[str] = (),
+        subgoal_verbs: Mapping[str, Sequence[str]] | None = None,
+    ) -> None: ...
+    def propose_plan(
+        self,
+        digest: str,
+        step_ids: Sequence[str],
         subgoal_verbs: Mapping[str, Sequence[str]] | None = None,
     ) -> None: ...
     def extend_plan(
@@ -1166,6 +1174,13 @@ def _bound_continuation(
     """Write the exact bytes as `<task>.plan.<n>.json`, bind them as the chain's next link,
     apply the risk limit, preview (decision Q1) and wait for this plan's own `go:<id>`."""
     path = r.options.plan.with_suffix(f".{number + 1}.json")
+    verbs = subgoal_verbs(outcome.plan)
+    try:
+        # the link first, then its file: a crash between them resumes the file as this link
+        r.ledger.propose_plan(_digest(outcome.data), [s.id for s in outcome.plan.steps], verbs)
+    except LedgerError as exc:
+        r.out.note(f"ledger: {exc.message}")
+        return progress.ended("blocked", ErrorCode.GATE_BLOCKED, _ledger_detail(exc))
     _write_atomic(path, outcome.data)
     try:
         r.ledger.extend_plan(

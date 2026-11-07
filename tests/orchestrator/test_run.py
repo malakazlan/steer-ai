@@ -215,6 +215,7 @@ class FakeLedger:
     step_ids: list[str] = field(default_factory=list)
     identities: list[Any] = field(default_factory=list)
     verb_maps: list[Any] = field(default_factory=list)
+    proposed: list[Any] = field(default_factory=list)
 
     def bind_plan(
         self,
@@ -226,13 +227,23 @@ class FakeLedger:
     ) -> None:
         if self.refuse == "plan_changed" and not allow_change:
             raise LedgerError("plan_changed: this task id already ran a different plan")
+        if self.refuse in ("plan_chained", "plan_pending"):
+            raise LedgerError(
+                f"{self.refuse}: this task's plans are chained; resume its last plan file"
+            )
         self.plan_digests.append(digest)
         self.step_ids.extend(step_ids)
         self.verb_maps.append(subgoal_verbs)
 
-    def extend_plan(self, digest: str, step_ids: Any, subgoal_verbs: Any = None) -> None:
+    def propose_plan(self, digest: str, step_ids: Any, subgoal_verbs: Any = None) -> None:
+        """The link is checked and recorded before its file is written (#57)."""
         if self.refuse == "step_id_reused":
             raise LedgerError("step_id_reused: a step id of an earlier plan of this task")
+        self.proposed.append((digest, list(step_ids), subgoal_verbs))
+
+    def extend_plan(self, digest: str, step_ids: Any, subgoal_verbs: Any = None) -> None:
+        assert self.proposed, "a link is proposed before its file is written (#57)"
+        assert self.proposed[-1] == (digest, list(step_ids), subgoal_verbs)
         self.extended.append(digest)
         self.verb_maps.append(subgoal_verbs)
         self.step_ids.extend(step_ids)
@@ -596,3 +607,23 @@ def test_warm_up_absorbs_a_provider_that_fails_for_a_while_then_answers() -> Non
         warm_up(never, cap_s=1.0, monotonic=lambda: clock["t"], sleep=sleep)
     assert caught.value.code is ErrorCode.PERCEPTION_TIMEOUT
     assert clock["t"] >= 1.0
+
+
+@pytest.mark.parametrize("token", ["plan_chained", "plan_pending"])
+def test_a_chained_task_is_never_told_to_pass_allow_plan_change(tmp_path: Path, token: str) -> None:
+    """Issue #57 (gate item 4): the flag can never replace a chained or pending plan, so the
+    hint never offers it; the token is reported as itself, never as wal_unavailable."""
+    plan = _plan(_type(), _send())
+    world = World(session=FakeSession(_done(plan)))
+
+    def refusing(_root: Path, task_id: str) -> Any:
+        world.ledger = FakeLedger(task_id, refuse=token)
+        return world.ledger
+
+    deps = world.deps().replace(open_ledger=refusing)
+    stdout, stderr = io.StringIO(), io.StringIO()
+    code = run(_options(tmp_path, plan), deps, stdin=io.StringIO(), stdout=stdout, stderr=stderr)
+    assert code == EXIT_USAGE
+    assert json.loads(stdout.getvalue())["detail"] == token
+    assert "--allow-plan-change if" not in stderr.getvalue()
+    assert "last plan file" in stderr.getvalue()

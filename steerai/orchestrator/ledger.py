@@ -169,6 +169,9 @@ class Ledger:
         """The task's plans in order (replan [v2.1]): digest, step ids, the window ref in effect."""
         self._window: dict[str, Any] | None = None
         self._start_window: dict[str, Any] | None = None
+        self._pending: dict[str, Any] | None = None
+        """A continuation's link proposed before its plan file is written (#57): a crash before
+        `extend_plan` leaves it here, and binding its digest promotes it as the next link."""
         self.window_ref: str | None = None
         """The window steps act in once the task left its start window; a resumed link restores
         the ref it started with, so its keys match the first run's (replan item 3)."""
@@ -300,10 +303,20 @@ class Ledger:
             if changed:
                 self._save_state()
             return
-        if last is not None and (not allow_change or len(self._chain) > 1):
-            # a replanned task's links carry its window refs: never rewritten (RP-07)
-            if any(link["digest"] == digest for link in self._chain):
-                raise LedgerError("plan_superseded: a later plan of this task replaced it")
+        if self._pending is not None and self._pending["digest"] == digest:
+            # the file of a continuation whose extend_plan never ran (#57): its next link
+            self._promote_pending()
+            return
+        if last is not None and any(link["digest"] == digest for link in self._chain):
+            raise LedgerError("plan_superseded: a later plan of this task replaced it")
+        if last is not None and (len(self._chain) > 1 or self._pending is not None):
+            # a replanned task's links carry its window refs: never rewritten (RP-07, #57)
+            token = "plan_pending" if self._pending is not None and allow_change else "plan_chained"
+            raise LedgerError(
+                f"{token}: this task's plans are chained; resume its last plan file "
+                "(--allow-plan-change cannot replace a chained or pending plan)"
+            )
+        if last is not None and not allow_change:
             raise LedgerError("plan_changed: this task id already ran a different plan")
         link: dict[str, Any] = {
             "digest": digest,
@@ -323,6 +336,43 @@ class Ledger:
         """How many plans the task's chain holds; the bound one is the last."""
         return len(self._chain)
 
+    def propose_plan(
+        self,
+        digest: str,
+        step_ids: Iterable[str],
+        subgoal_verbs: Mapping[str, Iterable[str]] | None = None,
+    ) -> None:
+        """A replan's link, recorded before its plan file is written (#57, the write-ahead
+        pattern applied to the chain): the same checks as `extend_plan`, and the window ref in
+        effect now, so a resume of that file continues where the task was."""
+        ids = set(step_ids)
+        self._check_successor(digest, ids)
+        self._pending = {
+            "digest": digest,
+            "step_ids": sorted(ids),
+            "window_ref": self.window_ref,
+            "subgoal_verbs": _verbs_field(subgoal_verbs),
+        }
+        self._save_state()
+
+    def _check_successor(self, digest: str, ids: set[str]) -> None:
+        if not self._chain:
+            raise LedgerError("plan_unbound: a replan needs the task's first plan")
+        if any(link["digest"] == digest for link in self._chain):
+            raise LedgerError("plan_repeated: this plan is already a link of the task")
+        used = {i for link in self._chain for i in link["step_ids"]}
+        if ids & used:
+            raise LedgerError("step_id_reused: a step id of an earlier plan of this task")
+
+    def _promote_pending(self) -> None:
+        pending = self._pending
+        if pending is None:  # callers check it; kept for the type checker
+            raise LedgerError("plan_unbound: no pending plan")
+        self._chain.append(pending)
+        self._pending = None
+        self.window_ref = pending["window_ref"]
+        self._save_state()
+
     def extend_plan(
         self,
         digest: str,
@@ -331,14 +381,12 @@ class Ledger:
     ) -> None:
         """A replan: the successor of the last link, in the window the task is in now; a step
         id the task already used is refused (its write-ahead path is the id's digest)."""
-        if not self._chain:
-            raise LedgerError("plan_unbound: a replan needs the task's first plan")
-        if any(link["digest"] == digest for link in self._chain):
-            raise LedgerError("plan_repeated: this plan is already a link of the task")
+        if self._pending is not None and self._pending["digest"] == digest:
+            self._promote_pending()
+            return
         ids = set(step_ids)
-        used = {i for link in self._chain for i in link["step_ids"]}
-        if ids & used:
-            raise LedgerError("step_id_reused: a step id of an earlier plan of this task")
+        self._check_successor(digest, ids)
+        self._pending = None
         self._chain.append(
             {
                 "digest": digest,
@@ -611,6 +659,8 @@ class Ledger:
             self._window = None if window is None else dict(window)
             start = payload.get("start_window")
             self._start_window = None if start is None else dict(start)
+            pending = payload.get("pending_link")
+            self._pending = None if pending is None else _loaded_chain({"plan_chain": [pending]})[0]
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise LedgerError(f"ledger state unreadable: {exc}") from exc
 
@@ -625,6 +675,7 @@ class Ledger:
             "plan_chain": self._chain,
             "window": self._window,
             "start_window": self._start_window,
+            "pending_link": self._pending,
         }
         try:
             self._write_encrypted(self._state_path, json.dumps(payload, separators=(",", ":")))
