@@ -1226,7 +1226,9 @@ class Session:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
         element = matches[0]
         # the tier read on the element that will be touched, never only on the plan's words
-        shown = replace(target, name=element.name, automation_id=element.automation_id)
+        shown = replace(
+            target, role=element.role, name=element.name, automation_id=element.automation_id
+        )
         if _RISK_RANK[effective_risk(replace(step, target=shown))] > _RISK_RANK[step.risk]:
             raise _StepFailureError(ErrorCode.GATE_BLOCKED, "alias_risk")
         evidence["alias"] = element.role
