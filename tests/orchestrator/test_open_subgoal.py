@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from steerai.errors import ErrorCode
-from steerai.orchestrator.contracts import Plan, Step, Subgoal, Target
+from steerai.orchestrator.contracts import Plan, Step, Subgoal, Target, subgoal_verbs
 from steerai.orchestrator.trace import ListTrace
 from steerai.verify.predicates import (
     All,
@@ -543,10 +543,22 @@ def test_two_opens_tick_by_the_live_window_and_trace_it() -> None:
 # ---- a resumed continuation knows each subgoal's earlier verbs (issue #51) --------------------
 
 
+def _live_notepad(step_id: str = "p2.s1") -> Plan:
+    """A condition the live window holds, so today's `open_window` would tick it (gate re-review
+    of #51: a condition no read can hold proves nothing)."""
+    return Plan(
+        goal="open notepad",
+        subgoals=(
+            Subgoal(id="g1", desc="open", condition=WindowExists(name_pattern=NOTEPAD_TITLE)),
+        ),
+        steps=(_notepad(step_id=step_id),),
+    )
+
+
 def _resumed(earlier: dict[str, set[str]] | None, trace: ListTrace) -> Any:
     rig = _rig(trace)
     rig.ledger.earlier = earlier
-    return rig.build().run_task(_notepad_only("p2.s1"), continuation=True)
+    return rig.build().run_task(_live_notepad(), continuation=True)
 
 
 def test_a_resumed_continuation_never_ticks_a_subgoal_that_was_typed_into_earlier() -> None:
@@ -571,7 +583,7 @@ def test_unknown_earlier_verbs_refuse_the_tick_and_say_why() -> None:
 
 def test_a_resume_decides_as_the_same_session_would() -> None:
     """Gate blocking 6: parity between one process and a resumed one."""
-    for plan_one_verbs, expected in (({"open", "type"}, set()), ({"open"}, {"g1"})):
+    for plan_one_verbs, expected in (({"open", "click"}, set()), ({"open"}, {"g1"})):
         same = _rig()
         session = same.build()
         first = Plan(
@@ -581,12 +593,14 @@ def test_a_resume_decides_as_the_same_session_would() -> None:
                 [_notepad()]
                 + (
                     [_click(step_id="c1", expect=TitleMatches(pattern="Amir Khan - Chat"))]
-                    if "type" in plan_one_verbs
+                    if "click" in plan_one_verbs
                     else []
                 )
             ),
         )
         session.run_task(first)
-        in_process = session.run_task(_notepad_only("p2.s1"), continuation=True).ticked
-        resumed = _resumed({"g1": plan_one_verbs}, ListTrace()).ticked
+        in_process = session.run_task(_live_notepad(), continuation=True).ticked
+        # the resumed side gets plan 1's map through the same function the ledger link stores
+        earlier = {k: set(v) for k, v in subgoal_verbs(first).items()}
+        resumed = _resumed(earlier, ListTrace()).ticked
         assert in_process == resumed == expected
