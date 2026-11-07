@@ -733,17 +733,16 @@ def test_a_secure_alias_field_is_never_a_candidate() -> None:
 def test_a_secure_twin_leaves_the_normal_alias_field_as_the_one() -> None:
     """Issue #77: a secure and a normal field of alias roles with the same name: the step
     resolves the normal one, and the condition judges the same one."""
-    from steerai.verify.t1 import evaluate as judge  # noqa: PLC0415
-
     twin = (21, "ComboBox", "Message", (42, 61), COMPOSER_AREA[0])
     rows = [*_as_role("Document"), twin]
     live = _CountingLive(states={COMPOSER[3]: FakeHandle(value="hello there")})
     after = build(rows, snapshot_id="after", taken_at=1.0)
     secured = [replace(e, secure=True) if e.id == twin[0] else e for e in after.elements]
     after = replace(after, elements=secured)
-    verdict = judge(MESSAGE, build(BASE_ROWS, snapshot_id="before"), after, live=live)
+    verdict = evaluate(MESSAGE, build(BASE_ROWS, snapshot_id="before"), after, live=live)
     assert verdict.holds is True
     assert verdict.evidence == {"alias": "Document"}
+    assert live.reads == 1, "only the normal field was read; the secure twin never"
 
 
 def test_a_plan_naming_edit_ticks_when_the_field_is_a_document() -> None:
