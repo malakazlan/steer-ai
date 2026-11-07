@@ -1467,13 +1467,20 @@ class Session:
     def _dispatch(
         self, step: Step, executor: ExecutorLike, action: Any, before: Snapshot
     ) -> tuple[ActionResult, Snapshot, int]:
-        """One execution. Enter on a composer first proves the composer shows the approved text
-        (OR-31). A focus click refused for a transparent overlay under the pointer
-        (`hit_test_miss`, nothing sent) falls back to UIA SetFocus on a fresh look if the
-        boundary waited (TK-03), verified like any focus step (5.9 [v1.7])."""
+        """One execution. A send or submit first proves the composer shows the approved text
+        (OR-31): Enter on the composer itself, and a Send button through the composer its
+        template names, so a failed type or a page that rewrote the field after the yes never
+        gets the click (Layer B positive control, 2026-11-07). A focus click refused for a
+        transparent overlay under the pointer (`hit_test_miss`, nothing sent) falls back to UIA
+        SetFocus on a fresh look if the boundary waited (TK-03), verified like any focus step
+        (5.9 [v1.7])."""
         element_id: int = action.element_id
         if getattr(action, "chord", None) == "enter":
             self._check_composer(step, before, element_id)
+        elif step.verb in ("send", "submit"):
+            composer = self._composer(step, before)
+            if composer is not None:
+                self._check_composer(step, before, composer)
         result = executor.execute(action, before)
         fallback = (
             step.verb == "focus"
