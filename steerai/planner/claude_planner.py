@@ -253,7 +253,7 @@ class ClaudePlanner:
             raise self._error(detail, model=model_used, attempt=attempt)
         if not doc.steps:
             # the prompt asks for no steps when the goal cannot be done here: its own token,
-            # so the invalid-plan rate stays honest (decision Q2); never repaired
+            # so the invalid-plan rate stays honest (5.3 [v1.8]); never repaired ([v2.38])
             raise self._error("no_steps", model=model_used, attempt=attempt)
         return doc
 
