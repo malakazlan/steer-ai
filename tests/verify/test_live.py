@@ -64,12 +64,15 @@ def _subtree_roles(snapshot: Snapshot, root: Element, name: str) -> list[str]:
 
 
 @pytest.mark.skipif(not CHROME_DEFAULT.is_file(), reason="Chrome is not installed")
+@pytest.mark.usefixtures("warm_chrome")  # the first Chrome start, measured (#39)
 def test_send_on_the_inbox_page_is_verified_by_t1() -> None:
     profile_dir = Path(tempfile.mkdtemp(prefix="steer-verify-"))
     # 1000x640 logical fits a 1080-pixel screen at 125 % DPI (measured 2026-11-04).
     proc = launch_chrome(CHROME_DEFAULT, profile_dir, 9335, PAGE.as_uri(), window_size=(1000, 640))
     try:
-        window = wait_window_for_pid(proc.pid, title_contains="Google Chrome", image="chrome.exe")
+        window = wait_window_for_pid(
+            proc.pid, title_contains="Google Chrome", image="chrome.exe", process=proc
+        )
         acquire_foreground(window.hwnd)
         client = UiaClient()
         model = WorldModel(client)

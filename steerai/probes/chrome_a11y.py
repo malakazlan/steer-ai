@@ -148,6 +148,63 @@ def launch_chrome(
     return subprocess.Popen(args)  # noqa: S603 - fixed argv built from validated paths
 
 
+COLD_START_S = 90.0
+"""How long the once-per-run warm-up waits for the first Chrome window (issue #39; unmeasured:
+CI showed more than 30 s once; set from the measured maximum once CI has reported it)."""
+COLD_START_PORT = 9349
+"""The warm-up's own debugging port: never one a test uses (9335, 9338, 9339, 9341)."""
+
+
+@dataclass(frozen=True, slots=True)
+class ColdStart:
+    """The first Chrome start of a run: the seconds to its first window, or why there was none."""
+
+    seconds: float
+    timeout_s: float
+    error: str | None = None
+
+    def summary(self) -> str:
+        if self.error is None:
+            return f"chrome cold start: {self.seconds:.1f} s (window)"
+        return f"chrome cold start: no window in {self.timeout_s:.0f} s: {self.error}"
+
+
+def measure_cold_start(  # noqa: PLR0913 - the OS calls are injected so the measure runs pure
+    chrome: Path,
+    profile_dir: Path,
+    *,
+    launch: Any = None,  # Any: launch_chrome or a test's recorder
+    wait: Any = wait_window_for_pid,  # Any: wait_window_for_pid or a test's fake
+    stop: Any = None,  # Any: stop_chrome or a test's recorder
+    monotonic: Any = time.monotonic,  # Any: time.monotonic or a test's fake clock
+    timeout_s: float = COLD_START_S,
+) -> ColdStart:
+    """Start Chrome once on a blank page and time its first window, then stop it on every path
+    (issue #39: the first Chrome start of a CI job showed no window in 30 s, three times). One
+    launch, never a relaunch: this is a measured precondition, not a retry."""
+    launch = launch_chrome if launch is None else launch
+    stop = stop_chrome if stop is None else stop
+    started = monotonic()
+    try:
+        proc = launch(chrome, profile_dir, COLD_START_PORT, "about:blank")
+    except OSError as exc:
+        return ColdStart(seconds=monotonic() - started, timeout_s=timeout_s, error=str(exc))
+    try:
+        wait(
+            proc.pid,
+            title_contains="Google Chrome",
+            timeout_s=timeout_s,
+            image="chrome.exe",
+            process=proc,
+        )
+        # timed here: stopping Chrome and removing its profile are not the cold start
+        return ColdStart(seconds=monotonic() - started, timeout_s=timeout_s)
+    except OSError as exc:  # TimeoutError included: a measurement never aborts the run
+        return ColdStart(seconds=monotonic() - started, timeout_s=timeout_s, error=str(exc))
+    finally:
+        stop(proc, profile_dir)
+
+
 PROFILE_RELEASE_S = 5.0
 """How long a test waits for Chrome's processes to let go of its profile folder (unmeasured
 beyond the leftovers seen: a crash reporter file held after the browser exited)."""
