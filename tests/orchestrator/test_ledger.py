@@ -959,3 +959,14 @@ def test_the_lock_records_its_holders_start(tmp_path: Path) -> None:
         lock = next(tmp_path.iterdir()) / "lock"
         payload = json.loads(lock.read_text(encoding="utf-8"))
     assert payload["start"] == process_start_time(os.getpid())
+
+
+@pytest.mark.parametrize("pid", [0, -5, 2**32, 2**40])
+def test_a_lock_holder_pid_out_of_range_is_no_holder(tmp_path: Path, pid: int) -> None:
+    """Issue #71: ctypes wraps a negative pid or one >= 2**32 into a DWORD that may name an
+    unrelated process; the lock's pid is validated at the boundary (1 <= pid < 2**32) and an
+    invalid one is no holder."""
+    with Ledger(tmp_path, task_id="t-range", started_at=1.0) as ledger:
+        lock = next(tmp_path.iterdir()) / "lock"
+        lock.write_text(json.dumps({"pid": pid, "token": "0" * 32}), encoding="utf-8")
+        assert ledger._lock_holder() is None

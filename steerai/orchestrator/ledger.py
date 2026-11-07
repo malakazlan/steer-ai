@@ -260,8 +260,8 @@ class Ledger:
             pid = payload["pid"]
         except (OSError, ValueError, KeyError, TypeError):
             return None
-        if not isinstance(pid, int) or isinstance(pid, bool):
-            return None
+        if not isinstance(pid, int) or isinstance(pid, bool) or not 0 < pid < 2**32:
+            return None  # a DWORD pid only: ctypes would wrap anything else (#71)
         start = payload.get("start")
         return pid, (start if isinstance(start, int) and not isinstance(start, bool) else None)
 
