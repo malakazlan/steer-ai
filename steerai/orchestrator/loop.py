@@ -389,8 +389,7 @@ class Session:
                 "gate", lambda: self._decide(step, key, before, previous, element_id, risk=risk)
             )
             gate_stage = gate_result.outcome
-            if "ask_reasons" in gate_result.evidence:
-                evidence["ask_reasons"] = gate_result.evidence["ask_reasons"]
+            _note_reasons(evidence, gate_result)
             if gate_result.outcome in ("block", "pending"):
                 return self._gate_stopped(step, gate_result, stage, evidence)
             decision, expect = self._admitted(key, previous, gate_result)
@@ -499,8 +498,7 @@ class Session:
                 "gate", lambda: self._decide(step, key, before, previous, None, risk=risk)
             )
             gate_stage = gate_result.outcome
-            if "ask_reasons" in gate_result.evidence:
-                evidence["ask_reasons"] = gate_result.evidence["ask_reasons"]
+            _note_reasons(evidence, gate_result)
             if gate_result.outcome in ("block", "pending"):
                 return self._gate_stopped(step, gate_result, stage, evidence)
             decision, _expect = self._admitted(key, previous, gate_result)
@@ -1880,6 +1878,12 @@ class Session:
 ACT_MISMATCH = "screen_changed_during_act"
 """A re-resolve inside the act loop (the retry after a refusal, the scroll) found another
 element than the one asked about (#89): `focus_lost`, nothing more dispatched."""
+
+
+def _note_reasons(evidence: dict[str, Any], gate_result: GateResult) -> None:
+    """Why a step below R2 asked, as closed tokens, on every answer (#81 part A review)."""
+    if "ask_reasons" in gate_result.evidence:
+        evidence["ask_reasons"] = gate_result.evidence["ask_reasons"]
 
 
 def _same_element(asked: Element, now: Element) -> bool:
