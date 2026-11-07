@@ -202,18 +202,26 @@ def _result(
 
 def test_outcome_rules() -> None:
     plan = _plan(_type(), _click("Button", "Save", "c2"))
-    assert outcome_of(plan, [_result("t1"), _result("c2")], replanned=False) == "success"
-    assert outcome_of(plan, [_result("t1")], replanned=False) == "neutral", "a skipped step"
     assert (
-        outcome_of(plan, [_result("t1"), _result("c2", label=None)], replanned=False) == "neutral"
+        outcome_of(plan, [_result("t1"), _result("c2")], replanned=False, status="done")
+        == "success"
+    )
+    assert outcome_of(plan, [_result("t1")], replanned=False, status="done") == "neutral", (
+        "a skipped step"
+    )
+    assert (
+        outcome_of(plan, [_result("t1"), _result("c2", label=None)], replanned=False, status="done")
+        == "neutral"
     )
     asked = _result("t1", ask_reasons=["generated_text"])
-    assert outcome_of(plan, [asked, _result("c2")], replanned=False) == "neutral"
+    assert outcome_of(plan, [asked, _result("c2")], replanned=False, status="done") == "neutral"
     failed = _result("c2", ok=False, code=ErrorCode.VERIFY_FAILED)
-    assert outcome_of(plan, [_result("t1"), failed], replanned=False) == "fail"
+    assert outcome_of(plan, [_result("t1"), failed], replanned=False, status="done") == "fail"
     declined = _result("c2", ok=False, code=ErrorCode.GATE_BLOCKED)
-    assert outcome_of(plan, [_result("t1"), declined], replanned=False) == "neutral"
-    assert outcome_of(plan, [_result("t1"), _result("c2")], replanned=True) == "neutral"
+    assert outcome_of(plan, [_result("t1"), declined], replanned=False, status="done") == "neutral"
+    assert (
+        outcome_of(plan, [_result("t1"), _result("c2")], replanned=True, status="done") == "neutral"
+    )
 
 
 @pytest.mark.windows
@@ -226,3 +234,48 @@ def test_a_real_dpapi_round_trip_and_a_wrong_entropy_blob_is_corrupt(tmp_path: P
     path = cache._path(_key())
     path.write_bytes(dpapi.protect(b"{}", entropy=b"another purpose"))
     assert cache.get(_key()).event == "corrupt", "a blob of another purpose never decrypts"
+
+
+def test_a_task_that_ended_stopped_is_never_a_success() -> None:
+    plan = _plan(_type())
+    assert outcome_of(plan, [_result("t1")], replanned=False, status="stopped") == "neutral"
+
+
+def test_an_unreadable_secret_empties_the_cache_and_reports_corrupt(tmp_path: Path) -> None:
+    cache = _cache(tmp_path)
+    cache.put(_key(), b"p", {})
+    (tmp_path / "secret.bin").write_bytes(b"another-purpose|garbage")
+    fresh = _cache(tmp_path)
+    assert fresh.get(_key()).event == "corrupt"
+    assert list(tmp_path.glob("*.entry")) == [], "no entry survives a new secret"
+    assert fresh.get(_key()).event == "miss"
+    assert (tmp_path / "secret.bin").read_bytes().startswith(b"steer-plan-cache-secret-v1|")
+
+
+def test_a_file_that_cannot_be_removed_is_still_only_a_miss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = _cache(tmp_path)
+    cache.put(_key(), b"p", {})
+    next(tmp_path.glob("*.entry")).write_bytes(b"garbage")
+
+    def locked(self: Path, missing_ok: bool = False) -> None:
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(Path, "unlink", locked)
+    assert cache.get(_key()).event == "corrupt"
+
+
+def test_a_failed_write_leaves_no_temporary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = _cache(tmp_path)
+    cache.put(_key(), b"p", {})
+
+    def refuse(self: Path, target: Path) -> Path:
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(Path, "replace", refuse)
+    with pytest.raises(OSError, match="in use"):
+        cache.put(_key("open notepad and type bye"), b"q", {})
+    assert list(tmp_path.glob("*.tmp")) == []

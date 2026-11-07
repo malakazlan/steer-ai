@@ -14,6 +14,7 @@ prompt version (gate item 1): any change is a miss.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -42,6 +43,14 @@ _HOST_KINDS = frozenset({"applicationframehost.exe"})
 _BROWSER_KINDS = frozenset({"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe"})
 _CONTENT_ROLES = frozenset({"ListItem", "Hyperlink", "DataItem", "TreeItem", "Text"})
 _PLAN_CAUSED = frozenset({"verify_failed", "verify_timeout", "element_not_found"})
+_SECRET_BYTES = 32
+
+
+def _discard(path: Path) -> None:
+    """Best-effort removal of a cache file: a file that cannot be removed is left for the next
+    lookup, never an error for the task (PC-27/28)."""
+    with contextlib.suppress(OSError):
+        path.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,18 +103,23 @@ class PlanCache:
     unprotect: Protect
     clock: Callable[[], float] = time.time
     _secret: bytes | None = None
+    _reset: bool = False
+    """The secret was unreadable and the cache was emptied: the next lookup reports it."""
 
     def get(self, key: CacheKey) -> Lookup:
         path = self._path(key)
+        if self._reset:
+            self._reset = False
+            return Lookup(None, "corrupt")
         if not path.exists():
             return Lookup(None, "miss")
         try:
             entry = self._decode(path.read_bytes())
         except (OSError, ValueError, KeyError, TypeError):
-            path.unlink(missing_ok=True)
+            _discard(path)
             return Lookup(None, "corrupt")
         if entry.key != key:  # a file copied over another key's name (PC-25)
-            path.unlink(missing_ok=True)
+            _discard(path)
             return Lookup(None, "corrupt")
         return Lookup(entry, "hit")
 
@@ -129,7 +143,7 @@ class PlanCache:
             return state
         consecutive = entry.consecutive_fails + 1
         if consecutive >= EVICTED_AFTER:
-            self._path(entry.key).unlink(missing_ok=True)
+            _discard(self._path(entry.key))
             return "evicted"
         self._write(
             replace(
@@ -145,17 +159,39 @@ class PlanCache:
         return self.root / f"{name[:40]}.entry"
 
     def _key_secret(self) -> bytes:
+        """The HMAC secret for file names. One that cannot be read (another profile, a corrupt
+        file) empties the cache: no entry can be found under a new secret anyway."""
         if self._secret is not None:
             return self._secret
         path = self.root / "secret.bin"
         self.root.mkdir(parents=True, exist_ok=True)
-        if path.exists():
-            self._secret = self.unprotect(path.read_bytes(), entropy=SECRET_ENTROPY)
-        else:
-            fresh = secrets.token_bytes(32)
-            self._atomic(path, self.protect(fresh, entropy=SECRET_ENTROPY))
-            self._secret = fresh
-        return self._secret
+        for _ in range(2):
+            try:
+                secret = self.unprotect(path.read_bytes(), entropy=SECRET_ENTROPY)
+            except FileNotFoundError:
+                secret = self._create_secret(path)
+            except (OSError, ValueError):
+                secret = b""
+            if len(secret) == _SECRET_BYTES:
+                self._secret = secret
+                return secret
+            self._empty(path)
+        raise OSError("plan cache secret could not be created")
+
+    def _create_secret(self, path: Path) -> bytes:
+        fresh = secrets.token_bytes(_SECRET_BYTES)
+        try:
+            with path.open("xb") as handle:  # exclusive: a racing creator wins, we re-read
+                handle.write(self.protect(fresh, entropy=SECRET_ENTROPY))
+        except FileExistsError:
+            return self.unprotect(path.read_bytes(), entropy=SECRET_ENTROPY)
+        return fresh
+
+    def _empty(self, secret_path: Path) -> None:
+        _discard(secret_path)
+        for entry in self.root.glob("*.entry"):
+            _discard(entry)
+        self._reset = True
 
     def _write(self, entry: Entry) -> None:
         payload = {
@@ -178,9 +214,15 @@ class PlanCache:
 
     @staticmethod
     def _atomic(path: Path, blob: bytes) -> None:
+        """Whole or absent; a failed write leaves no temporary file and raises OSError (the
+        runner traces it `unwritable`, the task's outcome unchanged)."""
         temporary = path.with_name(f"{path.name}.{secrets.token_hex(6)}.tmp")
-        temporary.write_bytes(blob)
-        temporary.replace(path)
+        try:
+            temporary.write_bytes(blob)
+            temporary.replace(path)
+        except OSError:
+            _discard(temporary)
+            raise
 
     def _decode(self, blob: bytes) -> Entry:
         data = json.loads(self.unprotect(blob, entropy=ENTRY_ENTROPY).decode())
@@ -192,8 +234,12 @@ class PlanCache:
             raise ValueError("verdicts")
         state = data["state"]
         counts = [data["uses"], data["fails"], data["consecutive_fails"]]
-        if state not in _STATES or not all(isinstance(c, int) and c >= 0 for c in counts):
+        if state not in _STATES or not all(
+            isinstance(c, int) and not isinstance(c, bool) and c >= 0 for c in counts
+        ):
             raise ValueError("state or counts")
+        if (state == "trusted" and counts[0] < TRUSTED_AFTER) or counts[2] > counts[1]:
+            raise ValueError("counts disagree with the state")
         return Entry(
             CacheKey(goal, app_kind, prompt_version, matcher),
             base64.b64decode(data["plan"], validate=True),
@@ -228,16 +274,23 @@ def refusal(plan: Plan, goal: str, app_kind: str | None) -> str | None:
     return None
 
 
-def outcome_of(plan: Plan, results: Sequence[StepResult], *, replanned: bool) -> Outcome:
-    """A run's verdict for the cache (gate items 2-3): a success only when every step of the
-    plan ran in this run and passed T1 with no forced ask; a failure only when the plan caused
-    it (a verify or resolve code); anything the person or the session decided is neutral."""
+def outcome_of(
+    plan: Plan, results: Sequence[StepResult], *, replanned: bool, status: str
+) -> Outcome:
+    """A run's verdict for the cache (gate items 2-3): a success only when the task ended
+    `done` and every step of the plan ran in this run and passed T1 with no forced ask; a
+    failure only when the plan caused it (a verify or resolve code); anything the person or
+    the session decided is neutral."""
     if replanned:
         return "fail" if _plan_caused(results) else "neutral"
     ran = {r.step_id for r in results}
     complete = ran == {s.id for s in plan.steps} and len(results) == len(plan.steps)
-    if complete and all(
-        r.ok and r.label_kind == "t1" and not r.evidence.get("ask_reasons") for r in results
+    if (
+        status == "done"
+        and complete
+        and all(
+            r.ok and r.label_kind == "t1" and not r.evidence.get("ask_reasons") for r in results
+        )
     ):
         return "success"
     return "fail" if _plan_caused(results) else "neutral"
