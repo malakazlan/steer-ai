@@ -4,7 +4,7 @@ process. Pure: `popen`, the window list, the process-name reader and the clock a
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pytest
@@ -114,6 +114,23 @@ def test_a_minimized_new_window_is_not_drivable() -> None:
     hidden = WindowInfo(hwnd=0x32, title="YouTube - Google Chrome", pid=500, minimized=True)
     machine = Machine(appears=[hidden], appear_after=0)
     result = _launcher(machine).execute(_open(), [CHROME_OLD, NOTEPAD])
+    assert result.evidence["detail"] == "no_new_window"
+
+
+def test_a_new_window_whose_cloak_cannot_be_read_is_never_bound() -> None:
+    """Issue #48 (schema gate item 1): DWM did not answer; unclear is never the new window."""
+    unclear = WindowInfo(hwnd=0x33, title="YouTube - Google Chrome", pid=500, cloak_unreadable=True)
+    machine = Machine(appears=[unclear], appear_after=0)
+    result = _launcher(machine).execute(_open(), [CHROME_OLD, NOTEPAD])
+    assert result.evidence["detail"] == "no_new_window"
+
+
+def test_a_window_unreadable_before_and_readable_after_is_not_new() -> None:
+    """Issue #48: the person's own window was listed (flagged) before, so it is in `seen`."""
+    theirs = WindowInfo(hwnd=0x34, title="YouTube - Google Chrome", pid=500)
+    before = [CHROME_OLD, NOTEPAD, replace(theirs, cloak_unreadable=True)]
+    machine = Machine(appears=[theirs], appear_after=0)
+    result = _launcher(machine).execute(_open(), before)
     assert result.evidence["detail"] == "no_new_window"
 
 

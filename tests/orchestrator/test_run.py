@@ -102,6 +102,21 @@ def test_resolve_window_reports_the_candidates_on_ambiguity_and_none_on_a_miss()
     assert missing.value.detail == "no_match"
 
 
+def test_resolve_window_counts_an_unreadable_twin_and_never_picks_an_unreadable_window() -> None:
+    """Issue #48 (CU-05/24): a window DWM cannot read stays a candidate for ambiguity, but is
+    never the one picked."""
+    twin = WindowInfo(hwnd=0x41, title=CHROME.title, pid=CHROME.pid, cloak_unreadable=True)
+    with pytest.raises(RunnerError) as ambiguous:
+        resolve_window([CHROME, twin], "chrome", excluded_hwnds=set(), excluded_pids=set())
+    assert ambiguous.value.detail == "ambiguous_target"
+    with pytest.raises(RunnerError) as unclear:
+        resolve_window([twin, NOTEPAD], "chrome", excluded_hwnds=set(), excluded_pids=set())
+    assert (unclear.value.code, unclear.value.detail) == (
+        ErrorCode.WINDOW_OTHER_DESKTOP,
+        "cloak_unreadable",
+    )
+
+
 def test_resolve_window_compares_normalised_casefolded_titles() -> None:
     title = chr(0xFF21) + "mir Khan " + chr(0x2013) + " Chat"
     fullwidth = WindowInfo(hwnd=0x40, title=title, pid=800)
@@ -418,6 +433,25 @@ def test_window_resolution_failures_exit_1_with_the_candidates_on_stderr(
     assert out["detail"] == "ambiguous_target"
     assert "0x30" in err or "48" in err
     assert world.foreground_calls == []
+
+
+def test_hwnd_naming_a_window_whose_cloak_cannot_be_read_is_refused_before_any_bind(
+    tmp_path: Path,
+) -> None:
+    """Issue #48 (CU-24): `--hwnd` skips `resolve_window`, so its own check refuses the flagged
+    window with `cloak_unreadable`; nothing is brought forward or bound."""
+    plan = _plan(_type())
+    unclear = WindowInfo(hwnd=0x41, title=CHROME.title, pid=CHROME.pid, cloak_unreadable=True)
+    world = World(session=FakeSession(_done(plan)), windows=(unclear, NOTEPAD, CONSOLE))
+    code, out, _ = _run(_options(tmp_path, plan, window=None, hwnd=unclear.hwnd), world)
+    assert code == EXIT_USAGE
+    assert (out["status"], out["code"], out["detail"]) == (
+        "error",
+        "window_other_desktop",
+        "cloak_unreadable",
+    )
+    assert world.foreground_calls == []
+    assert world.bound == []
 
 
 def test_a_locked_or_rebound_ledger_exits_1_before_any_window_work(tmp_path: Path) -> None:

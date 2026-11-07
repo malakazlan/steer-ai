@@ -538,6 +538,8 @@ class Session:
         images = APPS[step.target.name].process_names if step.target.name in APPS else frozenset()
         if identity is not None and str(identity.get("image", "")).lower() not in images:
             identity = None  # the window is not the app's after all
+        if identity is not None and identity.get("cloaked") is not False:
+            identity = None  # hidden by DWM, or DWM did not answer: not verified (CU-09)
         if identity is None:
             self._close_open(step, risk, Delivery.DELIVERED_UNVERIFIED.value, launched=True)
             evidence["detail"] = "open_unverified"
@@ -681,9 +683,13 @@ class Session:
         same = all(current.get(k) == record.get(k) for k in ("pid", "start", "image"))
         if not same or current.get("visible") is not True or current.get("root") is not True:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "window_gone")
-        if current.get("cloaked") is True:
+        cloaked = current.get("cloaked")
+        if cloaked is True:
             # DWMWA_CLOAKED: on another virtual desktop (SF-10)
             raise _StepFailureError(ErrorCode.WINDOW_OTHER_DESKTOP, "window_other_desktop")
+        if cloaked is not False:
+            # DWM did not answer: unclear, never visible (issue #48)
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "identity_unreadable")
         if current.get("minimized") is not False:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "minimized")
         return hwnd

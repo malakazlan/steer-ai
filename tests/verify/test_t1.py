@@ -58,7 +58,10 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> dict[str, float]:
 
 
 def _windows(*names: str) -> list[Any]:
-    return [SimpleNamespace(title=n, hwnd=0x100 + i, pid=50 + i) for i, n in enumerate(names)]
+    return [
+        SimpleNamespace(title=n, hwnd=0x100 + i, pid=50 + i, cloak_unreadable=False)
+        for i, n in enumerate(names)
+    ]
 
 
 # ---- appeared / disappeared / count ------------------------------------------------------------
@@ -311,7 +314,7 @@ def test_window_exists_consults_the_window_list_and_skips_our_own_process() -> N
     assert check("Save As") is True
     assert check("save as") is True
     assert check("Save") is False
-    own = [SimpleNamespace(title="Steer", hwnd=0x1, pid=4242)]
+    own = [SimpleNamespace(title="Steer", hwnd=0x1, pid=4242, cloak_unreadable=False)]
     assert (
         evaluate(
             WindowExists(name_pattern="Steer"),

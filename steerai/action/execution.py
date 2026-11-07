@@ -63,7 +63,7 @@ HRESULT_CODES = {
 
 class WindowState(Protocol):
     def is_window(self, hwnd: int) -> bool: ...
-    def is_cloaked(self, hwnd: int) -> bool: ...
+    def is_cloaked(self, hwnd: int) -> bool | None: ...
     def is_window_enabled(self, hwnd: int) -> bool: ...
 
 
@@ -73,7 +73,7 @@ class LiveWindows:
     def is_window(self, hwnd: int) -> bool:
         return win.is_window(hwnd)
 
-    def is_cloaked(self, hwnd: int) -> bool:
+    def is_cloaked(self, hwnd: int) -> bool | None:
         return win.is_cloaked(hwnd)
 
     def is_window_enabled(self, hwnd: int) -> bool:
@@ -183,8 +183,12 @@ class Admission:
             raise RefusalError(ErrorCode.GATE_BLOCKED, "secure_field")
         if not self.windows.is_window(snapshot.hwnd):
             raise RefusalError(ErrorCode.APP_CRASHED, "window_gone")
-        if self.windows.is_cloaked(snapshot.hwnd):
+        cloaked = self.windows.is_cloaked(snapshot.hwnd)
+        if cloaked is True:
             raise RefusalError(ErrorCode.WINDOW_OTHER_DESKTOP, "window_cloaked")
+        if cloaked is not False:
+            # DWM did not answer: unclear, never visible (issue #48)
+            raise RefusalError(ErrorCode.WINDOW_OTHER_DESKTOP, "cloak_unreadable")
         if not self.windows.is_window_enabled(snapshot.hwnd):
             raise RefusalError(ErrorCode.INTERRUPT_MODAL, "window_disabled")
         type_id = int(handle.CurrentControlType)

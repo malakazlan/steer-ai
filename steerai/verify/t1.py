@@ -93,6 +93,8 @@ class WindowLike(Protocol):
     def hwnd(self) -> int: ...
     @property
     def pid(self) -> int: ...
+    @property
+    def cloak_unreadable(self) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -676,7 +678,8 @@ def _window_exists(predicate: WindowExists, ctx: Context) -> Verdict:
         for w in _matching_windows(
             _windows(ctx, "WindowExists"), predicate.name_pattern, ctx.own_pid
         )
-        if w.hwnd not in seen
+        # a window whose cloak DWM cannot read counts in `seen`, never as the new one (#48)
+        if w.hwnd not in seen and not w.cloak_unreadable
     ]
     reason = "not_new"
     if matched:

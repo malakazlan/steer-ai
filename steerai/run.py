@@ -235,10 +235,13 @@ def resolve_window(
     matches = [w for w in visible if wanted in normalise_name(w.title).casefold()]
     if not matches:
         raise RunnerError(ErrorCode.ELEMENT_NOT_FOUND, "no_match", visible)
+    # an unreadable twin still counts: dropping it would turn ambiguity into a pick (CU-05)
     if len(matches) > 1:
         raise RunnerError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target", matches)
     if matches[0].minimized:
         raise RunnerError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "minimized", matches)
+    if matches[0].cloak_unreadable:
+        raise RunnerError(ErrorCode.WINDOW_OTHER_DESKTOP, "cloak_unreadable", matches)
     return matches[0]
 
 
@@ -542,6 +545,8 @@ def _pick_window(options: Options, deps: Deps) -> WindowInfo:
             raise UsageError("--hwnd names this runner's own console")
         if window.minimized:
             raise RunnerError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "minimized", listed)
+        if window.cloak_unreadable:
+            raise RunnerError(ErrorCode.WINDOW_OTHER_DESKTOP, "cloak_unreadable", listed)
         return window
     if options.window is None:  # the parser requires one of the two
         raise UsageError("--window or --hwnd is required")

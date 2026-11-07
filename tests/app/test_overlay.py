@@ -101,6 +101,20 @@ def test_the_picker_excludes_steers_own_tree_and_preselects_nothing(
     assert overlay.selected_window() is None
 
 
+def test_a_window_whose_cloak_cannot_be_read_is_not_offered(root: tk.Tk, tmp_path: Path) -> None:
+    """Issue #48: picking it would end in `cloak_unreadable`; the person never sees a dead end."""
+    unclear = WindowInfo(hwnd=0x20, title="Inbox - Google Chrome", pid=500, cloak_unreadable=True)
+    overlay = Overlay(
+        root=root,
+        list_windows=lambda: [CHROME, unclear, CONSOLE],
+        exclusions=lambda: ({CONSOLE.hwnd}, {CONSOLE.pid}),
+        ledger_dir=tmp_path / "l",
+        trace_dir=tmp_path / "t",
+        make_process=_fake_child("go-then-ask"),
+    )
+    assert list(overlay.window_box["values"]) == [DESKTOP_LABEL, f"{CHROME.title}  [0x10]"]
+
+
 def test_the_desktop_choice_runs_the_task_with_desktop(root: tk.Tk, tmp_path: Path) -> None:
     overlay = _overlay(root, tmp_path)
     argv = overlay.argv_for("open notepad", DESKTOP_HWND)

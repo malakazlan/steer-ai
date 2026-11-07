@@ -20,6 +20,9 @@ class WindowInfo:
     pid: int
     minimized: bool = False
     """Minimized windows sit at (-32000, -32000) with an empty UIA rect; they are not drivable."""
+    cloak_unreadable: bool = False
+    """DWM did not answer whether it hides the window (issue #48): it counts in a before/after
+    window list, so a diff never sees a change that did not happen, but never as a target."""
 
 
 def list_top_windows() -> list[WindowInfo]:
@@ -44,7 +47,10 @@ def list_top_windows() -> list[WindowInfo]:
     found: list[WindowInfo] = []
 
     def on_window(hwnd: int, _lparam: int) -> bool:
-        if not user32.IsWindowVisible(hwnd) or is_cloaked(hwnd):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        cloaked = is_cloaked(hwnd)
+        if cloaked is True:
             return True
         length = user32.GetWindowTextLengthW(hwnd)
         if length == 0:
@@ -59,6 +65,7 @@ def list_top_windows() -> list[WindowInfo]:
                 title=buffer.value,
                 pid=pid.value,
                 minimized=bool(user32.IsIconic(hwnd)),
+                cloak_unreadable=cloaked is None,
             )
         )
         return True
@@ -67,10 +74,12 @@ def list_top_windows() -> list[WindowInfo]:
     return found
 
 
-def is_cloaked(hwnd: int) -> bool:
+def is_cloaked(hwnd: int) -> bool | None:
     """True for windows DWM hides although IsWindowVisible says visible (UWP hosts, other desktops).
 
-    Such windows have a Win32 rect but an empty UIA tree and rect; they are never targets.
+    Such windows have a Win32 rect but an empty UIA tree and rect; they are never targets. None
+    when DWM does not answer (any HRESULT but S_OK; measured E_HANDLE for a dead handle): unclear,
+    never visible (issue #48).
     """
     if sys.platform != "win32":
         raise OSError("DWM attributes require Windows")
@@ -83,11 +92,13 @@ def is_cloaked(hwnd: int) -> bool:
     )
     dwmapi.DwmGetWindowAttribute.restype = ctypes.c_long
     dwmwa_cloaked = 14
-    cloaked = wintypes.DWORD(0)
+    cloaked = ctypes.c_uint32(0)  # a DWORD is 32 bits; wintypes.DWORD is 8 bytes off Windows
     result = dwmapi.DwmGetWindowAttribute(
         hwnd, dwmwa_cloaked, ctypes.byref(cloaked), ctypes.sizeof(cloaked)
     )
-    return result == 0 and cloaked.value != 0
+    if result != 0:
+        return None
+    return cloaked.value != 0
 
 
 def parent_pids(pid: int, *, limit: int = 16) -> list[int]:
@@ -292,6 +303,8 @@ def wait_window_for_pid(
     deadline = time.monotonic() + timeout_s
     while True:
         for window in list_top_windows():
+            if window.cloak_unreadable:
+                continue  # unclear is never a match (issue #48)
             if window.pid == pid and (title_contains is None or title_contains in window.title):
                 return window
         if time.monotonic() >= deadline:
@@ -349,7 +362,7 @@ def find_window(title_substring: str) -> WindowInfo | None:
     """First visible top-level window whose title contains the text, case-insensitive."""
     needle = title_substring.lower()
     for window in list_top_windows():
-        if needle in window.title.lower():
+        if not window.cloak_unreadable and needle in window.title.lower():
             return window
     return None
 
