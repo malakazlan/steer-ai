@@ -200,14 +200,48 @@ def _subgoals_refused(plan: Plan, progress: Progress) -> bool:
     if not remaining <= ids or ids & ticked:
         return True
     before = progress.subgoals()
+    opened = _open_only(progress)
     return any(
-        s.id in before and _texts(before[s.id].condition) != _texts(s.condition)
+        s.id in before
+        and (
+            _texts(before[s.id].condition) != _texts(s.condition)
+            or _weakened(before[s.id].condition, s.condition, open_only=s.id in opened)
+        )
         for s in plan.subgoals
     )
 
 
 def _texts(condition: Predicate) -> list[str]:
     return sorted(value.text for value in field_values(condition))
+
+
+_WINDOW_KINDS = frozenset({"WindowExists", "TitleMatches"})
+
+
+def _kind(condition: Predicate) -> str:
+    """A condition's shape: its type, and for All / AnyOf the sorted shapes of its parts."""
+    parts = getattr(condition, "parts", None)
+    if parts is None:
+        return type(condition).__name__
+    return f"{type(condition).__name__}({','.join(sorted(_kind(p) for p in parts))})"
+
+
+def _weakened(before: Predicate, after: Predicate, *, open_only: bool) -> bool:
+    """IJ-10 (#86): a continuation written from a page never changes a remaining condition's
+    kind, so an `appeared` diff cannot become a title the page controls. A subgoal reached
+    only by an `open` may move between its window and its title (5.3 [v2.6])."""
+    old, new = _kind(before), _kind(after)
+    if old == new:
+        return False
+    return not (open_only and {old, new} <= _WINDOW_KINDS)
+
+
+def _open_only(progress: Progress) -> set[str]:
+    """Subgoals every earlier step of which is an `open`."""
+    verbs: dict[str, set[str]] = {}
+    for step in progress.steps.values():
+        verbs.setdefault(step.subgoal, set()).add(step.verb)
+    return {subgoal for subgoal, seen in verbs.items() if seen == {"open"}}
 
 
 def _bad_window(window: str | None, opens: set[str], *, desktop: bool) -> bool:
