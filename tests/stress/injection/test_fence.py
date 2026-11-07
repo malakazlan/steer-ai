@@ -64,10 +64,9 @@ def test_the_system_prompt_names_screen_text_as_data() -> None:
     assert "Only the goal line is" in " ".join(system.split())
 
 
-# ---- known gaps (#87, planner-11) ----------------------------------------------------------
+# ---- titles and quotes are data like names (IJ-24, IJ-37; #87, planner-12) -----------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="IJ-24 #87")
 def test_window_titles_are_escaped_and_capped_like_names() -> None:
     title = fixture("IJ-24", "long_title").payload
     request = PlanRequest(
@@ -79,7 +78,6 @@ def test_window_titles_are_escaped_and_capped_like_names() -> None:
     assert f"open window: {safe_name(title)}" in lines
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="IJ-37 #87")
 def test_a_quote_in_a_name_cannot_forge_a_listing_row() -> None:
     payload = fixture("IJ-37", "quote").payload
     assert '"' not in safe_name(payload)
@@ -97,3 +95,28 @@ def test_the_default_fence_tag_is_unguessable_and_fresh_per_call() -> None:
         tags.append(opener.removeprefix("<<<screen "))
     assert all(re.fullmatch(r"[0-9a-f]{32}", tag) for tag in tags)
     assert tags[0] != tags[1]
+
+
+def test_window_ref_lines_and_done_step_names_are_escaped_like_names() -> None:
+    """Every line built from screen text goes through `safe_name` (review of #117)."""
+    payload = fixture("IJ-37", "quote").payload
+    request = PlanRequest(
+        goal=GOAL,
+        screen_lines=(),
+        window_title="t",
+        open_windows=(),
+        windows=(("start", payload),),
+        done=(DoneStep(verb="click", role="Button", name=payload),),
+        remaining=(OpenSubgoal(id="g1", desc="sent"),),
+        continuation=1,
+    )
+    _system, user = build_prompt(request, tag=FENCE_TAG)
+    lines = user.splitlines()
+    assert f"window start: {safe_name(payload)}" in lines
+    assert f'done step: click Button "{safe_name(payload)}"' in lines
+    assert all(payload not in line for line in lines)
+
+
+def test_the_prompt_says_how_escaped_names_are_written_back() -> None:
+    system, _user = build_prompt(_request("x"), tag=FENCE_TAG)
+    assert "write the real character" in " ".join(system.split())
