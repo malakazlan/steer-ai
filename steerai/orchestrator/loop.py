@@ -55,7 +55,14 @@ from steerai.orchestrator.contracts import (
     executor_verb,
     subgoal_verbs,
 )
-from steerai.orchestrator.gate import Gate, GateResult, effective_risk, open_tier, params_for
+from steerai.orchestrator.gate import (
+    Gate,
+    GateResult,
+    ask_reasons,
+    effective_risk,
+    open_tier,
+    params_for,
+)
 from steerai.orchestrator.identity import (
     Binding,
     bind,
@@ -382,6 +389,7 @@ class Session:
                 "gate", lambda: self._decide(step, key, before, previous, element_id, risk=risk)
             )
             gate_stage = gate_result.outcome
+            _note_reasons(evidence, gate_result)
             if gate_result.outcome in ("block", "pending"):
                 return self._gate_stopped(step, gate_result, stage, evidence)
             decision, expect = self._admitted(key, previous, gate_result)
@@ -490,6 +498,7 @@ class Session:
                 "gate", lambda: self._decide(step, key, before, previous, None, risk=risk)
             )
             gate_stage = gate_result.outcome
+            _note_reasons(evidence, gate_result)
             if gate_result.outcome in ("block", "pending"):
                 return self._gate_stopped(step, gate_result, stage, evidence)
             decision, _expect = self._admitted(key, previous, gate_result)
@@ -976,7 +985,9 @@ class Session:
     ) -> GateResult:
         """The gate's decision; while an R2/R3 gate may be asking, the person's input is their
         answer, not a takeover (TK-07; the console brackets its own read as well)."""
-        asking = self._monitor is not None and risk in ("R2", "R3")
+        asking = self._monitor is not None and (
+            risk in ("R2", "R3") or bool(ask_reasons(step, self._goal))
+        )
         if asking and self._monitor is not None:
             self._monitor.mark_ask_open()
         try:
@@ -990,6 +1001,7 @@ class Session:
                 composer_id=self._composer(step, before),
                 bound=self._binding,
                 window=self.window_label(),
+                goal=self._goal,
             )
         finally:
             if asking and self._monitor is not None:
@@ -1866,6 +1878,12 @@ class Session:
 ACT_MISMATCH = "screen_changed_during_act"
 """A re-resolve inside the act loop (the retry after a refusal, the scroll) found another
 element than the one asked about (#89): `focus_lost`, nothing more dispatched."""
+
+
+def _note_reasons(evidence: dict[str, Any], gate_result: GateResult) -> None:
+    """Why a step below R2 asked, as closed tokens, on every answer (#81 part A review)."""
+    if "ask_reasons" in gate_result.evidence:
+        evidence["ask_reasons"] = gate_result.evidence["ask_reasons"]
 
 
 def _same_element(asked: Element, now: Element) -> bool:

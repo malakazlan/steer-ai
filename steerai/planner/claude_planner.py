@@ -19,11 +19,11 @@ from pydantic import ValidationError
 
 from steerai.action.launch import APPS, SITES
 from steerai.errors import ErrorCode
+from steerai.orchestrator.contracts import verbatim_in
 from steerai.orchestrator.plan_io import PlanError, plan_from_bytes
 from steerai.planner.contracts import PlannerError, PlanOutcome, PlanRequest
 from steerai.planner.mirror import PlanDoc
 from steerai.verify.decorations import DECORATIONS
-from steerai.world.model import normalise_name
 
 DEFAULT_MODEL = "claude-opus-5"
 DEFAULT_TIMEOUT_S = 120.0
@@ -259,7 +259,6 @@ def _document_bytes(doc: PlanDoc, request: PlanRequest) -> bytes:
     the request's (PL-02), provenance follows 5.13 [v0.4], preapproval is never set."""
     body = doc.to_file_form()
     body["goal"] = " ".join(request.goal.split())  # one line: the file form takes no newline
-    goal_key = normalise_name(request.goal)
     prefix = f"p{request.continuation + 1}." if request.continuation > 0 else ""
     own = {s.get("id") for s in body.get("steps", [])}
     for step in body.get("steps", []):
@@ -273,18 +272,12 @@ def _document_bytes(doc: PlanDoc, request: PlanRequest) -> bytes:
             step["id"] = prefix + step["id"]
         text = step.get("text")
         if isinstance(text, str):
-            step["text_provenance"] = "verbatim" if _in_goal(text, goal_key) else "generated"
+            step["text_provenance"] = "verbatim" if verbatim_in(text, request.goal) else "generated"
         if step.get("verb") in MECHANICAL_VERBS:
             # the effect of typing is the value, of focusing the focus: the gate's templates
             # verify those; a model-written effect here cannot be right
             step.pop("expect", None)
     return json.dumps(body, ensure_ascii=False).encode("utf-8")
-
-
-def _in_goal(text: str, goal_key: str) -> bool:
-    """Whitespace-folded, NFKC substring, case preserved; empty text is never verbatim (PL-23)."""
-    key = normalise_name(text)
-    return bool(key) and key in goal_key
 
 
 def _empty_detail(stop_reason: object) -> str:

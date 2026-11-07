@@ -60,7 +60,7 @@ def _plan(content_role: str) -> Plan:
         role=content_role, name_pattern=MESSAGE, within=Within(landmark="Conversation")
     )
     return Plan(
-        goal="send a message in the inbox page",
+        goal=f"send {MESSAGE} in the inbox page",
         subgoals=(Subgoal(id="g1", desc="message sent", condition=condition),),
         steps=(
             Step(

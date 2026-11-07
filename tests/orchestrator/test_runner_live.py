@@ -51,7 +51,7 @@ def _press_kill_key() -> None:
 def _plan_doc(content_role: str) -> dict[str, Any]:
     conversation = {"landmark": "Conversation"}
     return {
-        "goal": "send a message in the inbox page",
+        "goal": f"send {MESSAGE} in the inbox page",
         "subgoals": [
             {
                 "id": "g1",
