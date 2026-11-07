@@ -203,7 +203,7 @@ def test_the_prompt_says_focus_targets_a_field_role() -> None:
     system, _ = build_prompt(_request(), tag="t")
     prose = " ".join(system.split())
     assert "focus (put keyboard focus in a field: an Edit, ComboBox or Document)" in prose
-    assert PROMPT_VERSION == "planner-11"
+    assert PROMPT_VERSION == "planner-12"
 
 
 def test_the_prompt_says_a_link_opens_a_page_named_by_its_title() -> None:
