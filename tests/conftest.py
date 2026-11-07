@@ -51,7 +51,10 @@ def pytest_collection_finish(session: pytest.Session) -> None:
     if not any(_needs_chrome(item) for item in session.items):
         return
     profile = Path(tempfile.mkdtemp(prefix="steer-cold-start-"))
-    session.config.stash[COLD_START] = measure_cold_start(CHROME_DEFAULT, profile)
+    measured = measure_cold_start(CHROME_DEFAULT, profile)
+    session.config.stash[COLD_START] = measured
+    # written now too: a run ended by pytest-timeout never reaches the summary (hunter CC-05)
+    sys.stderr.write(measured.summary() + "\n")
 
 
 def pytest_terminal_summary(

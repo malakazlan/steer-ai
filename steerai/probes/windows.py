@@ -308,7 +308,8 @@ def wait_window_for_pid(
 ) -> WindowInfo:
     """First visible titled window owned by `pid`, polling until it appears (30 s: a cold Chrome
     on a CI runner took over 15 s, 2026-11-04). On timeout the message says whether `process`
-    is still running or exited, and with what code (issue #39)."""
+    is still running or exited, and with what code (issue #39). A process that has exited can
+    no longer own a window: the wait ends at once (hunter CC-11)."""
     started = time.monotonic()
     deadline = started + timeout_s
     while True:
@@ -317,12 +318,12 @@ def wait_window_for_pid(
                 continue  # unclear is never a match (issue #48)
             if window.pid == pid and (title_contains is None or title_contains in window.title):
                 return window
-        if time.monotonic() >= deadline:
+        code = None if process is None else process.poll()
+        if code is not None or time.monotonic() >= deadline:
             seen = _windows_of(image) if image is not None else ""
             state = ""
             if process is not None:
-                code = process.poll()
-                state = "; process running" if code is None else f"; process exit={code}"
+                state = "; process running" if code is None else f"; process {exit_state(code)}"
             waited = time.monotonic() - started
             raise TimeoutError(
                 f"no visible window for pid {pid} within {timeout_s} s"
@@ -331,11 +332,18 @@ def wait_window_for_pid(
         time.sleep(0.2)
 
 
+def exit_state(code: int) -> str:
+    """An exit code as CI logs read it: a crash's NTSTATUS in hex too (hunter CC-31)."""
+    unsigned = code & 0xFFFFFFFF
+    return f"exit={code}" + (f" (0x{unsigned:08X})" if unsigned >= 0x80000000 else "")
+
+
 def _windows_of(image: str) -> str:
     """The visible windows of `image` by pid and title length (never the title: it can name
     a person), so a launch handed to another process is told from no window at all."""
     found = [
-        f"pid {w.pid} ({len(w.title)} chars{', minimized' if w.minimized else ''})"
+        f"pid {w.pid} ({len(w.title)} chars{', minimized' if w.minimized else ''}"
+        f"{', cloak unreadable' if w.cloak_unreadable else ''})"
         for w in list_top_windows()
         if process_name(w.pid).lower() == image.lower()
     ]

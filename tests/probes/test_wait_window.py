@@ -34,9 +34,7 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
     return fake
 
 
-@pytest.mark.parametrize(
-    ("returncode", "state"), [(None, "running"), (0, "exit=0"), (21, "exit=21")]
-)
+@pytest.mark.parametrize(("returncode", "state"), [(None, "running")])
 def test_the_timeout_says_whether_the_process_is_still_there(
     clock: _Clock, returncode: int | None, state: str
 ) -> None:
@@ -72,3 +70,18 @@ def test_the_hidden_window_counts_tell_no_window_from_a_hidden_one() -> None:
     assert windows.hidden_counts(rows) == (
         "; all top windows 5: invisible 1, untitled 1, cloaked 1, cloak unreadable 1"
     )
+
+
+def test_a_process_that_exited_ends_the_wait_at_once(clock: _Clock) -> None:
+    """Hunter CC-11: an exited process can no longer own a window; no 30 s burnt."""
+    process = SimpleNamespace(poll=lambda: 0)
+    with pytest.raises(TimeoutError) as timed_out:
+        windows.wait_window_for_pid(4242, timeout_s=30.0, image="chrome.exe", process=process)
+    assert "after 0.0 s" in str(timed_out.value)
+    assert "process exit=0" in str(timed_out.value)
+
+
+def test_a_crash_code_is_shown_in_hex_too() -> None:
+    assert windows.exit_state(-1073741819) == "exit=-1073741819 (0xC0000005)"
+    assert windows.exit_state(3221225477) == "exit=3221225477 (0xC0000005)"
+    assert windows.exit_state(21) == "exit=21"
