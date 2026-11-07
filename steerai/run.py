@@ -1384,6 +1384,15 @@ def _real_deps() -> Deps:
     )
 
 
+def _closed(ledger: LedgerLike, out: _Out) -> None:
+    """Close the ledger without replacing the run's exit code (#61); a lock left behind is said."""
+    if ledger.close() == "lock_left":
+        out.note(
+            "ledger_locked: the task lock was in use by another process and was left; "
+            "the next run removes it"
+        )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         options = parse_args(sys.argv[1:] if argv is None else argv)
@@ -1396,12 +1405,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
-
-def _closed(ledger: LedgerLike, out: _Out) -> None:
-    """Close the ledger without replacing the run's exit code (#61); a lock left behind is said."""
-    if ledger.close() == "lock_left":
-        out.note(
-            "ledger: the task lock was in use by another process and was left; "
-            "the next run removes it"
-        )

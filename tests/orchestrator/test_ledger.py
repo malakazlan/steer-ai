@@ -909,6 +909,10 @@ def test_a_lock_another_process_is_reading_is_left_for_the_next_runner(tmp_path:
     finally:
         os.close(reader)
     assert lock.exists()
+    # the next runner is another process whose holder check sees a dead pid (the stale branch)
+    payload = json.loads(lock.read_text(encoding="utf-8"))
+    lock.write_text(json.dumps({**payload, "pid": 2**31 - 7}), encoding="utf-8")
+    assert process_alive(2**31 - 7) is False
     with Ledger(tmp_path, task_id="t-left", started_at=1.0) as again:
         again.bind_plan("a" * 64, step_ids=["s1"])
     assert ledger.close() is None, "closing twice is a no-op"

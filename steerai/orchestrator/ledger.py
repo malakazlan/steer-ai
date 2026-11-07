@@ -15,6 +15,7 @@ ran". Everything on disk is DPAPI-encrypted: no DPAPI, no ledger, no action.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import json
@@ -234,9 +235,10 @@ class Ledger:
         raise LedgerError("ledger_locked: the lock could not be taken")
 
     def _release_handle(self) -> None:
-        if self._lock_fd is not None:
-            os.close(self._lock_fd)
-            self._lock_fd = None
+        fd, self._lock_fd = self._lock_fd, None
+        if fd is not None:
+            with contextlib.suppress(OSError):  # an already-closed handle: nothing to release
+                os.close(fd)
 
     def _lock_token_on_disk(self) -> str | None:
         try:
@@ -259,7 +261,8 @@ class Ledger:
         another runner process; a second ledger in this process takes it over. Never raises
         (#61: it runs in the runner's `finally`, where a raise replaced the run's exit code):
         `lock_left` when another process held the lock file open at that instant; its handle is
-        closed, so the next runner removes it as stale."""
+        closed, so the next runner removes it as stale. `__exit__` and a failed `__init__` drop
+        that token: the left file is recovered the same way."""
         if not self._locked:
             return None
         self._locked = False
