@@ -82,6 +82,7 @@ from steerai.verify.predicates import (
 from steerai.verify.t1 import (
     NO_LABEL_REASONS,
     LiveReads,
+    Verdict,
     WindowLike,
     evaluate,
     label_of_record,
@@ -1708,11 +1709,16 @@ class Session:
             if result.ok and self._last_pair is not None:
                 before, after = self._last_pair
                 subgoal = next(s for s in plan.subgoals if s.id == step.subgoal)
-                if _value_ready(plan, step, result, results) and self._subgoal_holds(
-                    subgoal.condition, before, after
-                ):
+                verdict = (
+                    self._subgoal_verdict(subgoal.condition, before, after)
+                    if _value_ready(plan, step, result, results)
+                    else None
+                )
+                if verdict is not None and verdict.holds:
                     ticked.add(subgoal.id)
-                    self._trace_tick(subgoal.id, "condition")
+                    alias = verdict.evidence.get("alias")
+                    role = alias if isinstance(alias, str) else None
+                    self._trace_tick(subgoal.id, "condition", alias=role)
                     strikes = 0
                     continue
             if result.ok:
@@ -1770,9 +1776,11 @@ class Session:
         verified = {r.step_id for r in results if r.ok}
         return all(s.id in verified for s in own)
 
-    def _trace_tick(self, subgoal_id: str, by: str, *, detail: str | None = None) -> None:
+    def _trace_tick(
+        self, subgoal_id: str, by: str, *, detail: str | None = None, alias: str | None = None
+    ) -> None:
         """What ticked a subgoal, as tokens: a plan id (plan_io's id pattern), never a title,
-        pattern or content (hunter OS-20/23/24)."""
+        pattern or content (hunter OS-20/23/24); a value condition's alias role (#76)."""
         record: dict[str, Any] = {
             "kind": "tick",
             "task_id": self.task_id,
@@ -1781,6 +1789,8 @@ class Session:
         }
         if detail is not None:
             record["detail"] = detail
+        if alias in FIELD_ROLES:  # a role token from the verdict, never content
+            record["alias"] = alias
         self._trace.write(record)
 
     def _holds_now(self, predicate: Predicate, snapshot: Snapshot) -> bool:
@@ -1802,6 +1812,13 @@ class Session:
             return False
 
     def _subgoal_holds(self, predicate: Predicate, before: Snapshot, after: Snapshot) -> bool:
+        verdict = self._subgoal_verdict(predicate, before, after)
+        return verdict is not None and verdict.holds
+
+    def _subgoal_verdict(
+        self, predicate: Predicate, before: Snapshot, after: Snapshot
+    ) -> Verdict | None:
+        """The condition's verdict, or None when it cannot be judged (an error never holds)."""
         try:
             return evaluate(
                 predicate,
@@ -1810,9 +1827,9 @@ class Session:
                 live=self._live,
                 windows=self._windows() if self._windows else None,
                 windows_before=self._windows_at_step,
-            ).holds
+            )
         except (SteerError, ValueError):
-            return False
+            return None
 
 
 FRAME_HOST = "applicationframehost.exe"

@@ -727,6 +727,10 @@ def _all(predicate: All, before: Snapshot, after: Snapshot, ctx: Context) -> Ver
     if renamed:
         # the loop's R2/R3 rule reads it: a rename inside an `all` is still no new element
         evidence["renamed"] = renamed
+    aliases = {v.evidence["alias"] for v in verdicts if "alias" in v.evidence}
+    if len(aliases) == 1:
+        # one aliased field role across the parts reaches the tick record (#76); several do not
+        evidence["alias"] = aliases.pop()
     return Verdict(
         holds=True,
         code=None,
