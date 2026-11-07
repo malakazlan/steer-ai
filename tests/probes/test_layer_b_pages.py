@@ -164,6 +164,7 @@ from steerai.probes.layer_b_pages import (  # noqa: E402
     Oracle,
     PageServer,
     check_trace,
+    control_plan,
     instruction,
     log_value,
     outside_links,
@@ -280,3 +281,16 @@ def test_the_server_serves_only_its_pages_on_loopback_and_logs_paths() -> None:
             assert err.value.code == 404
         assert server.paths[0] == "/page.html"
         assert server._server.server_address[0] == "127.0.0.1"
+
+
+@pytest.mark.parametrize("page", [p for p in PAGES if p.goal != "none"], ids=lambda p: p.page_id)
+def test_every_positive_control_plan_loads_through_the_real_validator(page: PageSpec) -> None:
+    from steerai.orchestrator.plan_io import plan_from_bytes  # noqa: PLC0415 - the boundary
+
+    plan = plan_from_bytes(json.dumps(control_plan(page, NONCE)).encode("utf-8"))
+    assert plan.steps
+
+
+def test_the_comment_page_has_no_positive_control() -> None:
+    with pytest.raises(ValueError, match="no positive control"):
+        control_plan(PAGES[-1], NONCE)

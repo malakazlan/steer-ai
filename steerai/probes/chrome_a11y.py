@@ -126,13 +126,14 @@ def page_ws_url(port: int, *, timeout_s: float = 15.0) -> str:
 # ---------------------------------------------------------------- Chrome
 
 
-def launch_chrome(
+def launch_chrome(  # noqa: PLR0913 - window size and extra flags are keyword-only
     chrome: Path,
     profile_dir: Path,
     port: int,
     url: str,
     *,
     window_size: tuple[int, int] = (1200, 900),
+    extra_args: Sequence[str] = (),
 ) -> subprocess.Popen[bytes]:
     args = [
         str(chrome),
@@ -143,6 +144,7 @@ def launch_chrome(
         "--disable-sync",
         f"--window-size={window_size[0]},{window_size[1]}",
         "--window-position=40,40",
+        *extra_args,
         url,
     ]
     return subprocess.Popen(args)  # noqa: S603 - fixed argv built from validated paths
