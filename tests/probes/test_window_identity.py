@@ -83,3 +83,87 @@ def test_is_cloaked_reads_a_failed_call_as_unclear(
         raising=False,  # WinDLL exists only on Windows
     )
     assert windows.is_cloaked(0x30) is expected
+
+
+def _fake_user32(desk: dict[int, tuple[str, int]]) -> SimpleNamespace:
+    """`user32` for `list_top_windows`: enumerates `desk` (hwnd -> title, pid) in order, every
+    window visible and restored; takes the argtypes the probe sets."""
+
+    def enum_windows(callback: Any, _lparam: int) -> int:
+        # Any: the probe's EnumWindows callback (WINFUNCTYPE is patched to hand it back as is)
+        for hwnd in desk:
+            callback(hwnd, 0)
+        return 1
+
+    def get_text(hwnd: int, buffer: Any, _size: int) -> int:
+        # Any: the ctypes unicode buffer the probe passes
+        buffer.value = desk[hwnd][0]
+        return len(desk[hwnd][0])
+
+    def get_pid(hwnd: int, out: Any) -> int:
+        # Any: the ctypes byref() argument; `_obj` is the DWORD behind it
+        out._obj.value = desk[hwnd][1]
+        return 1
+
+    return SimpleNamespace(
+        EnumWindows=enum_windows,
+        IsWindowVisible=lambda _h: 1,
+        GetWindowTextLengthW=lambda h: len(desk[h][0]),
+        GetWindowTextW=get_text,
+        GetWindowThreadProcessId=get_pid,
+        IsIconic=lambda _h: 0,
+    )
+
+
+def test_a_window_whose_cloak_cannot_be_read_is_listed_flagged_and_a_cloaked_one_is_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #48 (CU-03/06/07): DWM's None is listed, so a before/after diff never sees a change
+    that did not happen, but flagged so it is never a target; True is skipped; False is plain."""
+    desk = {
+        0x10: ("Inbox - Google Chrome", 500),
+        0x20: ("Untitled - Notepad", 600),
+        0x30: ("Settings", 700),
+    }
+    cloak: dict[int, bool | None] = {0x10: False, 0x20: None, 0x30: True}
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_a, **_k: _fake_user32(desk), raising=False)
+    monkeypatch.setattr(ctypes, "WINFUNCTYPE", lambda *_t: lambda fn: fn, raising=False)
+    monkeypatch.setattr(windows, "is_cloaked", lambda h: cloak[h])
+    listed = windows.list_top_windows()
+    assert [(w.hwnd, w.pid, w.cloak_unreadable) for w in listed] == [
+        (0x10, 500, False),
+        (0x20, 600, True),
+    ]
+
+
+UNCLEAR = windows.WindowInfo(
+    hwnd=0x20, title="New Tab - Google Chrome", pid=500, cloak_unreadable=True
+)
+READABLE = windows.WindowInfo(hwnd=0x10, title="New Tab - Google Chrome", pid=500)
+
+
+def test_find_window_never_returns_a_window_whose_cloak_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #48: the first title match is unclear, so the readable one behind it is found."""
+    monkeypatch.setattr(windows, "list_top_windows", lambda: [UNCLEAR, READABLE])
+    assert windows.find_window("new tab") is READABLE
+    monkeypatch.setattr(windows, "list_top_windows", lambda: [UNCLEAR])
+    assert windows.find_window("new tab") is None
+
+
+def _no_sleep(_s: float) -> None:
+    raise AssertionError("a zero timeout never sleeps")
+
+
+def test_wait_window_for_pid_never_matches_a_window_whose_cloak_cannot_be_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #48: an unclear window of the pid is skipped; alone, it times out."""
+    monkeypatch.setattr(windows, "time", SimpleNamespace(monotonic=lambda: 100.0, sleep=_no_sleep))
+    monkeypatch.setattr(windows, "list_top_windows", lambda: [UNCLEAR, READABLE])
+    assert windows.wait_window_for_pid(500, timeout_s=0.0) is READABLE
+    monkeypatch.setattr(windows, "list_top_windows", lambda: [UNCLEAR])
+    with pytest.raises(TimeoutError, match=r"^no visible window for pid 500 within 0\.0 s$"):
+        windows.wait_window_for_pid(500, timeout_s=0.0)

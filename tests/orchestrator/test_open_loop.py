@@ -184,6 +184,24 @@ def test_an_open_whose_window_dwm_hides_or_cannot_read_is_unverified(cloaked: bo
     assert session.hwnd == START.hwnd
 
 
+class _NoCloakDesk(Desk):
+    """An identity read that carries no `cloaked` key at all."""
+
+    def identify(self, hwnd: int) -> dict[str, Any] | None:
+        found = super().identify(hwnd)
+        return None if found is None else {k: v for k, v in found.items() if k != "cloaked"}
+
+
+def test_an_open_whose_identity_has_no_cloak_reading_is_unverified() -> None:
+    """Issue #48 (CU-09/11): a missing `cloaked` key is unclear like None, never adopted."""
+    rig = Rig(desk=_NoCloakDesk())
+    session = rig.build()
+    result = session.run_task(_plan(_open()))
+    assert result.status == "stopped"
+    assert result.evidence["detail"] == "open_unverified"
+    assert session.hwnd == START.hwnd
+
+
 def test_a_launch_with_no_window_stops_the_task() -> None:
     rig = Rig(launcher=FakeLauncher(result_hwnd=None))
     session = rig.build()

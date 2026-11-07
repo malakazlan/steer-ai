@@ -809,6 +809,18 @@ def test_a_window_whose_cloak_cannot_be_read_never_matches() -> None:
     )
 
 
+def test_an_identity_with_no_cloak_reading_never_matches() -> None:
+    """Issue #48 (CU-11): a missing `cloaked` key is unclear like None, never visible."""
+    win = Windows()
+    del win.live[0x30]["cloaked"]
+    rig, _ = _rig(win)
+    result = _stopped_with(rig, _step("c1", window="opened:o1"))
+    assert (result.code, result.evidence["detail"]) == (
+        ErrorCode.ELEMENT_NOT_FOUND,
+        "identity_unreadable",
+    )
+
+
 def test_the_identity_is_read_again_right_before_the_tap() -> None:
     """SF-09: the window was minimized while the boundary waited."""
     rig, win = _rig()

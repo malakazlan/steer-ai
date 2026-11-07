@@ -20,7 +20,7 @@ import os
 import sys
 import time
 import tkinter as tk
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from tkinter import ttk
 from typing import Any
@@ -129,6 +129,21 @@ class NoActivate:
             self._previous = 0
 
 
+def pickable(
+    windows: Iterable[WindowInfo], hidden_hwnds: set[int], hidden_pids: set[int]
+) -> list[WindowInfo]:
+    """The windows the person may pick: not Steer's own, not minimized, and never one whose
+    cloak DWM cannot read (a pick would end in `cloak_unreadable`, issue #48)."""
+    return [
+        w
+        for w in windows
+        if w.hwnd not in hidden_hwnds
+        and w.pid not in hidden_pids
+        and not w.minimized
+        and not w.cloak_unreadable
+    ]
+
+
 class Overlay:
     def __init__(  # noqa: PLR0913 - every collaborator is injected so the window runs in tests
         self,
@@ -189,17 +204,7 @@ class Overlay:
     def refresh_windows(self) -> None:
         hidden_hwnds, hidden_pids = self._exclusions()
         desktop = WindowInfo(hwnd=DESKTOP_HWND, title=DESKTOP_LABEL, pid=0)
-        self._windows = [
-            desktop,
-            *(
-                w
-                for w in self._list_windows()
-                if w.hwnd not in hidden_hwnds
-                and w.pid not in hidden_pids
-                and not w.minimized
-                and not w.cloak_unreadable  # it would end in a refusal (#48)
-            ),
-        ]
+        self._windows = [desktop, *pickable(self._list_windows(), hidden_hwnds, hidden_pids)]
         self.window_box["values"] = [
             w.title if w.hwnd == DESKTOP_HWND else f"{w.title}  [0x{w.hwnd:x}]"
             for w in self._windows

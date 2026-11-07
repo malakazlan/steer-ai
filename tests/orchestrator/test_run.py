@@ -435,6 +435,25 @@ def test_window_resolution_failures_exit_1_with_the_candidates_on_stderr(
     assert world.foreground_calls == []
 
 
+def test_hwnd_naming_a_window_whose_cloak_cannot_be_read_is_refused_before_any_bind(
+    tmp_path: Path,
+) -> None:
+    """Issue #48 (CU-24): `--hwnd` skips `resolve_window`, so its own check refuses the flagged
+    window with `cloak_unreadable`; nothing is brought forward or bound."""
+    plan = _plan(_type())
+    unclear = WindowInfo(hwnd=0x41, title=CHROME.title, pid=CHROME.pid, cloak_unreadable=True)
+    world = World(session=FakeSession(_done(plan)), windows=(unclear, NOTEPAD, CONSOLE))
+    code, out, _ = _run(_options(tmp_path, plan, window=None, hwnd=unclear.hwnd), world)
+    assert code == EXIT_USAGE
+    assert (out["status"], out["code"], out["detail"]) == (
+        "error",
+        "window_other_desktop",
+        "cloak_unreadable",
+    )
+    assert world.foreground_calls == []
+    assert world.bound == []
+
+
 def test_a_locked_or_rebound_ledger_exits_1_before_any_window_work(tmp_path: Path) -> None:
     plan = _plan(_type())
     world = World(
