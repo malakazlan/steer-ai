@@ -5,6 +5,8 @@ even when the attacker knows the fence tag."""
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from steerai.planner.claude_planner import build_prompt
@@ -82,3 +84,16 @@ def test_a_quote_in_a_name_cannot_forge_a_listing_row() -> None:
     payload = fixture("IJ-37", "quote").payload
     assert '"' not in safe_name(payload)
     assert format_lines([_element(payload)])[0].count('"') == 2
+
+
+def test_the_default_fence_tag_is_unguessable_and_fresh_per_call() -> None:
+    """PL-22 (tester mutation M1): with no tag given, each prompt gets a new 128-bit tag; a
+    constant one would let a page guess the closer."""
+    request = _request("hello")
+    tags = []
+    for _ in range(2):
+        _system, user = build_prompt(request)
+        opener = next(line for line in user.splitlines() if line.startswith("<<<screen "))
+        tags.append(opener.removeprefix("<<<screen "))
+    assert all(re.fullmatch(r"[0-9a-f]{32}", tag) for tag in tags)
+    assert tags[0] != tags[1]

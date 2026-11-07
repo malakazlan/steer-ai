@@ -39,7 +39,7 @@ def test_a_step_on_steers_own_window_is_blocked_before_the_ask(step: Step) -> No
     rebuild(h, log=log, observer=HostilePage(h.world, title=ATTACK.payload))
     result = h.session.run_step(step)
     assert (result.gate, result.code) == ("block", ATTACK.code)
-    assert result.evidence["detail"] == ATTACK.detail
+    assert result.evidence.get("detail") == ATTACK.detail
     assert h.confirmer.asked == []
     assert log == []
     assert h.ledger.records == {}
@@ -50,6 +50,6 @@ def test_the_physical_executor_refuses_a_point_over_its_own_window() -> None:
     result = physical._executor(inputs).execute(
         physical.CLICK, physical._snapshot(FakeHandle(), name=ATTACK.payload)
     )
-    assert (result.code, result.evidence["detail"]) == (ATTACK.code, ATTACK.detail)
+    assert (result.code, result.evidence.get("detail")) == (ATTACK.code, ATTACK.detail)
     assert result.delivery is Delivery.NOT_DELIVERED
     assert (inputs.clicks, inputs.moves) == ([], [])

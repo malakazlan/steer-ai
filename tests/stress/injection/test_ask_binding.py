@@ -51,7 +51,7 @@ def test_a_title_the_page_relabels_during_the_ask_stops_the_step() -> None:
     h.confirmer.on_ask = retitle
     result = h.session.run_step(_send())
     assert result.gate == "confirm", "the person did say yes"
-    assert (result.code, result.evidence["detail"]) == (attack.code, attack.detail)
+    assert (result.code, result.evidence.get("detail")) == (attack.code, attack.detail)
     assert log == []
     assert h.world.sent == []
 
@@ -78,7 +78,7 @@ def test_a_target_relabelled_during_the_ask_is_screen_changed_during_ask() -> No
     h.confirmer.on_ask = _relabel(h, {"Send": attack.payload})
     h.session.run_step(_type())
     result = h.session.run_step(_send())
-    assert (result.code, result.evidence["detail"]) == (ErrorCode.FOCUS_LOST, attack.detail)
+    assert (result.code, result.evidence.get("detail")) == (ErrorCode.FOCUS_LOST, attack.detail)
 
 
 @pytest.mark.xfail(strict=True, raises=AssertionError, reason="IJ-21 #89")
@@ -92,4 +92,4 @@ def test_labels_swapped_during_the_ask_never_move_the_click_to_another_element()
     log.clear()
     result = h.session.run_step(_send())
     assert [d.runtime_id for d in log if d.runtime_id != SEND_ROW[3]] == [], "another element"
-    assert (result.code, result.evidence["detail"]) == (attack.code, attack.detail)
+    assert (result.code, result.evidence.get("detail")) == (attack.code, attack.detail)

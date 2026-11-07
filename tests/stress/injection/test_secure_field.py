@@ -23,7 +23,7 @@ def test_the_semantic_executor_refuses_a_secure_field_without_approval(verb: str
     snapshot = semantic._snapshot(handle, role="Edit", name="Password", secure=True)
     text = ATTACK.payload if verb == "set_value" else None
     result = semantic._executor().execute(Action(verb=verb, element_id=1, text=text), snapshot)
-    assert (result.code, result.evidence["detail"]) == (ATTACK.code, ATTACK.detail)
+    assert (result.code, result.evidence.get("detail")) == (ATTACK.code, ATTACK.detail)
     assert result.delivery is Delivery.NOT_DELIVERED
     assert handle.calls == []
     assert ATTACK.payload not in str(result.to_dict())
@@ -36,7 +36,7 @@ def test_the_physical_executor_refuses_a_secure_field_without_approval(verb: str
     text = ATTACK.payload if verb == "type" else None
     action = PhysicalAction(verb=verb, element_id=1, text=text)
     result = physical._executor(inputs).execute(action, snapshot)
-    assert (result.code, result.evidence["detail"]) == (ATTACK.code, ATTACK.detail)
+    assert (result.code, result.evidence.get("detail")) == (ATTACK.code, ATTACK.detail)
     assert result.delivery is Delivery.NOT_DELIVERED
     assert (inputs.bursts, inputs.clicks, inputs.moves) == ([], [], [])
     assert ATTACK.payload not in str(result.to_dict())
