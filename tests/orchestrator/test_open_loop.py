@@ -645,3 +645,24 @@ def test_a_done_already_by_its_own_earlier_attempt_still_ticks() -> None:
     result = session.run_task(plan)
     assert result.results[0].evidence["done_by"] == "this_step"
     assert result.ticked == {"g7"}
+
+
+@pytest.mark.parametrize("acted_after_launch", [True, False])
+def test_several_new_windows_say_whether_the_person_acted_since_the_launch(
+    acted_after_launch: bool,
+) -> None:
+    """Issue #75: the direct check for "a window the person opened": input after the launch."""
+    from tests.orchestrator.test_takeover_loop import FakeMonitor  # noqa: PLC0415
+
+    rig = Rig(launcher=FakeLauncher(result_hwnd=None, detail="several_new_windows"))
+    rig.monitor = FakeMonitor(clock=rig.clock, last_user=-100.0)
+    rig.clock["t"] = 10.0
+
+    def person_acts() -> None:
+        if acted_after_launch:
+            rig.monitor.last_user = rig.clock["t"]
+
+    rig.launcher.after_launch = person_acts
+    result = rig.build().run_task(_plan(_open()))
+    assert result.evidence["detail"] == "several_new_windows"
+    assert result.results[0].evidence["input_since_launch"] is acted_after_launch

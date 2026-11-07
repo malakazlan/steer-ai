@@ -61,7 +61,16 @@ class Launcher:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         blocker: Callable[[], str | None] | None = None,
+        process_started: Callable[[int], int | None] | None = None,
+        filetime_now: Callable[[], int] | None = None,
     ) -> None:
+        if process_started is None or filetime_now is None:
+            from steerai.probes import windows as win  # noqa: PLC0415 - Win32
+
+            process_started = process_started or win.process_start_time
+            filetime_now = filetime_now or win.filetime_now
+        self._process_started = process_started
+        self._filetime_now = filetime_now
         if list_windows is None or process_name is None:
             from steerai.probes.windows import list_top_windows  # noqa: PLC0415 - Win32
             from steerai.probes.windows import process_name as real_process_name  # noqa: PLC0415
@@ -87,6 +96,7 @@ class Launcher:
             return _refused(ErrorCode.ELEMENT_NOT_ACTIONABLE, "launch_refused")
         if self._blocker is not None and (token := self._blocker()) is not None:
             return _refused(ErrorCode.GATE_BLOCKED, token)
+        launch_ft = self._filetime_now()  # before the launch: a process started after is new
         try:
             self._popen(argv)
         except OSError:
@@ -100,7 +110,13 @@ class Launcher:
             fresh = found
             found = "several_new_windows"
             evidence["fresh_windows"] = [
-                {"same_process": w.pid == fresh[0].pid, "title_chars": len(w.title)} for w in fresh
+                {
+                    "z": index,  # list order is z-order, foreground first
+                    "same_process": w.pid == fresh[0].pid,
+                    "process_new": _started_after(self._process_started(w.pid), launch_ft),
+                    "title_chars": len(w.title),
+                }
+                for index, w in enumerate(fresh)
             ]
             evidence["seen_after_s"] = round(self._monotonic() - launched_at, 1)
         if isinstance(found, str):
@@ -147,6 +163,12 @@ class Launcher:
             if self._blocker is not None and (token := self._blocker()) is not None:
                 return token
             self._sleep(POLL_S)
+
+
+def _started_after(started: int | None, launch_ft: int) -> bool | None:
+    """Whether a window's process started with this launch (a session restore needs a cold
+    start), None when its start cannot be read (#75)."""
+    return None if started is None else started >= launch_ft
 
 
 def _refused(code: ErrorCode, detail: str) -> ActionResult:

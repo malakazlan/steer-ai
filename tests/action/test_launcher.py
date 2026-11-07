@@ -18,6 +18,8 @@ CHROME_OLD = WindowInfo(hwnd=0x10, title="Inbox - Google Chrome", pid=500)
 NOTEPAD = WindowInfo(hwnd=0x20, title="Untitled - Notepad", pid=600)
 NEW_CHROME = WindowInfo(hwnd=0x30, title="YouTube - Google Chrome", pid=500)
 OTHER_APP = WindowInfo(hwnd=0x40, title="Calculator", pid=700)
+LAUNCH_FT = 133_000_000_000_000_000
+"""The launch instant as a FILETIME (100 ns units)."""
 
 
 @dataclass
@@ -32,6 +34,7 @@ class Machine:
     polls: int = 0
     clock: float = 0.0
     fail_launch: Exception | None = None
+    started: dict[int, int] = field(default_factory=dict)
 
     def popen(self, argv: list[str]) -> Any:
         if self.fail_launch is not None:
@@ -61,6 +64,8 @@ def _launcher(machine: Machine, *, blocker: Any = None) -> Launcher:
         monotonic=lambda: machine.clock,
         sleep=machine.sleep,
         blocker=blocker,
+        process_started=machine.started.get,
+        filetime_now=lambda: LAUNCH_FT,
     )
 
 
@@ -215,16 +220,26 @@ def test_any_blocker_token_during_the_poll_is_a_block() -> None:
 
 
 def test_several_new_windows_say_what_they_were_without_titles() -> None:
-    """Issue #75: the stop is diagnosed, never explained away: per window, whether it shares the
-    first one's process and its title length, and when they were seen (no title text)."""
+    """Issue #75: the stop is diagnosed, never explained away: per window its z-order, whether
+    it shares the first one's process, whether that process started with this launch (a
+    session restore needs a cold start) and its title length; when they were seen. No titles."""
     twin = WindowInfo(hwnd=0x31, title="Restore pages? - Google Chrome", pid=501)
-    machine = Machine(appears=[NEW_CHROME, twin], appear_after=0)
+    machine = Machine(appears=[NEW_CHROME, twin], appear_after=2)
     machine.names[501] = "chrome.exe"  # a second Chrome process
+    machine.started = {500: LAUNCH_FT - 10, 501: LAUNCH_FT + 10}
     result = _launcher(machine).execute(_open(), [CHROME_OLD, NOTEPAD])
     assert result.evidence["detail"] == "several_new_windows"
     assert result.evidence["fresh_windows"] == [
-        {"same_process": True, "title_chars": len(NEW_CHROME.title)},
-        {"same_process": False, "title_chars": len(twin.title)},
+        {"z": 0, "same_process": True, "process_new": False, "title_chars": len(NEW_CHROME.title)},
+        {"z": 1, "same_process": False, "process_new": True, "title_chars": len(twin.title)},
     ]
-    assert result.evidence["seen_after_s"] == 0.0
-    assert "Restore" not in repr(result.evidence)
+    assert result.evidence["seen_after_s"] == 0.2, "two polls of 0.1 s before they appeared"
+    for window in result.evidence["fresh_windows"]:
+        assert all(isinstance(v, bool | int) or v is None for v in window.values())
+
+
+def test_an_unreadable_process_start_is_unknown_not_old() -> None:
+    twin = WindowInfo(hwnd=0x31, title="x", pid=500)
+    machine = Machine(appears=[NEW_CHROME, twin], appear_after=0)
+    result = _launcher(machine).execute(_open(), [CHROME_OLD, NOTEPAD])
+    assert [w["process_new"] for w in result.evidence["fresh_windows"]] == [None, None]
