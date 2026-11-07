@@ -169,14 +169,18 @@ def ask_reasons(step: Step, goal: str, verdict: str | None = None) -> tuple[str,
     return tuple(reasons)
 
 
-def effective_risk(step: Step, bound_name: str | None = None) -> Risk:
+def effective_risk(
+    step: Step, bound_name: str | None = None, element_ids: Sequence[str] = ()
+) -> Risk:
     """The plan's tier raised by the deny patterns on the target's name and automation id,
-    and on the bound element's name part for a person target (PT-31), never lowered."""
+    on the bound element's name part for a person target (PT-31), and on the automation ids
+    of the elements the step resolves to (#84: the page owns them, the plan may name none),
+    never lowered."""
     risk: Risk = step.risk
     if step.target is None:
         return risk
     names = [step.target.name, *([bound_name] if bound_name else [])]
-    ids = [step.target.automation_id] if step.target.automation_id else []
+    ids = [i for i in (step.target.automation_id, *element_ids) if i]
     controlled = [step.target.name] if step.target.role in CONTROL_ROLES else []
     for patterns, scope in ((DENY_PATTERNS, names), (CONTROL_PATTERNS, controlled)):
         for pattern, tier in patterns.items():
@@ -423,8 +427,13 @@ class Gate:
         window: str = "",
         goal: str = "",
         verdict: str | None = None,
+        element_automation_id: str = "",
     ) -> GateResult:
-        risk = effective_risk(step, bound.shown_name_part if bound is not None else None)
+        risk = effective_risk(
+            step,
+            bound.shown_name_part if bound is not None else None,
+            (element_automation_id,) if element_automation_id else (),
+        )
         if target_pid == self._own_pid:
             return _block("self_target", risk)
         params = params_for(step, target_id, composer_id, bound)
