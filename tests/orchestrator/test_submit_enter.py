@@ -433,3 +433,52 @@ def test_an_in_place_rename_inside_an_all_never_verifies_an_r2_step() -> None:
     assert result.ok is False, result.to_dict()
     assert result.evidence["reason"] == "renamed_at_risk"
     assert result.label_kind is None
+
+
+@pytest.mark.parametrize("shown", ["", "my password is n1234"])
+def test_a_send_button_is_refused_when_the_composer_shows_other_text(shown: str) -> None:
+    """Found by the Layer B positive control: the click path never read the composer, so a type
+    that failed (or a page that rewrote the field after the yes) still got the approved Send
+    clicked. Every send and submit reads the composer first (OR-31, SE-02)."""
+    from tests.orchestrator.test_loop import _send  # noqa: PLC0415 - the loop's own send step
+
+    h = Harness()
+    h.world.composer_value = shown
+    result = h.session.run_step(_send())
+    assert result.ok is False
+    assert result.code is ErrorCode.GATE_BLOCKED
+    assert result.evidence["detail"] == "composer_differs"
+    assert h.semantic.calls == []
+    assert h.world.sent == []
+    assert "n1234" not in json.dumps(result.to_dict())
+
+
+def test_a_send_button_runs_when_the_composer_shows_the_approved_text() -> None:
+    from tests.orchestrator.test_loop import _send  # noqa: PLC0415 - the loop's own send step
+
+    h = Harness()
+    h.world.composer_value = HELLO
+    result = h.session.run_step(_send())
+    assert result.ok is True, result.to_dict()
+    assert h.world.sent == [HELLO]
+
+
+def test_a_send_that_names_no_composer_is_refused_before_the_click() -> None:
+    """Composer params are optional in a plan; a send whose text cannot be checked is never
+    clicked (principal review of #112)."""
+    from steerai.verify.predicates import Appeared, Within  # noqa: PLC0415 - this test only
+
+    h = Harness()
+    h.world.composer_value = HELLO
+    step = Step(
+        id="s9",
+        subgoal="g1",
+        verb="send",
+        target=Target(role="Button", name="Send"),
+        risk="R2",
+        params={"text": HELLO},
+        expect=Appeared(role="Text", name_pattern=HELLO, within=Within(landmark="Conversation")),
+    )
+    result = h.session.run_step(step)
+    assert h.world.sent == []
+    assert result.evidence.get("detail") == "composer_unknown", result.to_dict()
