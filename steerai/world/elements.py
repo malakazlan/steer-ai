@@ -86,9 +86,12 @@ def prune(elements: Sequence[Element], *, cap: int) -> list[Element]:
 
 
 def safe_name(name: str) -> str:
-    """One printable line, capped head and tail so the end of a long name is still visible."""
+    """One printable line, capped head and tail so the end of a long name is still visible.
+    A backslash and a double quote are escaped too: a name can never close its quoted field
+    and forge a listing row (IJ-37, #87)."""
+    quoted = name.replace("\\", "\\\\").replace('"', "\\u0022")
     escaped = "".join(
-        ch if ch.isprintable() else ch.encode("unicode_escape").decode("ascii") for ch in name
+        ch if ch.isprintable() else ch.encode("unicode_escape").decode("ascii") for ch in quoted
     )
     if len(escaped) <= MAX_NAME_CHARS:
         return escaped

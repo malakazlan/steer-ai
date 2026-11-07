@@ -567,3 +567,23 @@ def test_the_trace_is_clean_on_the_cap_no_match_and_done_paths() -> None:
     done = h.session.run_step(_person_delete("Amir"))
     assert done.gate == "done_already"
     _scan(h, capped, missing, done)
+
+
+def test_a_run_time_raise_over_max_risk_stops_before_any_ask() -> None:
+    """--max-risk is the person's limit for the whole run: a tier only the screen raises (a
+    row named "delete") stops the step before the ask, never asks past the limit (#88)."""
+    h = Harness()
+    _without_base_amir(h)
+    h.world.rows.append(_amir_delete_row())
+    h.session.max_risk = "R1"
+    result = h.session.run_step(_r1_click("Amir"))
+    assert result.evidence["detail"] == "over_max_risk", result.to_dict()
+    assert h.confirmer.asked == []
+    assert _clicked_runtime_ids(h) == []
+
+
+def test_the_default_limit_changes_nothing() -> None:
+    h = Harness()
+    h.world.rows.append(_delete_chat_row())
+    result = h.session.run_step(_r1_click("Delete"))
+    assert result.gate == "confirm", result.evidence

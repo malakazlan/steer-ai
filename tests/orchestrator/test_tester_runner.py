@@ -653,4 +653,5 @@ def test_a_trace_sentinel_scan_through_the_runner(tmp_path: Path) -> None:
     assert options.trace is not None
     lines = options.trace.read_text(encoding="utf-8").splitlines()
     assert json.loads(lines[0]) == {"kind": "run", "task_id": bound.task_id}
-    assert lines[1:] == trace.lines
+    assert json.loads(lines[1]) == {"kind": "model_calls"}, "counts only; none in this run"
+    assert lines[2:] == trace.lines

@@ -1,4 +1,4 @@
-"""Deny words (5.13 1a; IJ-01, IJ-03 and IJ-15 pinned; IJ-04 #84 a known gap): a page
+"""Deny words (5.13 1a; IJ-01, IJ-03, IJ-04 and IJ-15 pinned): a page
 that names a control to slip past the deny matcher still has the step raised, so the gate asks
 or blocks and nothing is dispatched without the person's yes."""
 
@@ -11,7 +11,7 @@ import pytest
 from steerai.goal_match import Judgement
 from steerai.orchestrator.contracts import Step, Target
 from steerai.orchestrator.gate import effective_risk
-from steerai.verify.predicates import TitleMatches
+from steerai.verify.predicates import Disappeared, TitleMatches
 from tests.orchestrator.test_loop import Harness, _plan
 from tests.stress.injection.catalogue import Attack, fixture, pinned
 from tests.stress.injection.hostile import Dispatch, HostilePage, rebuild
@@ -98,11 +98,99 @@ def test_a_homoglyph_deny_word_is_raised() -> None:
     assert effective_risk(_click(attack)) == attack.tier
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="IJ-04 #84")
 def test_the_resolved_elements_automation_id_raises_the_tier() -> None:
+    """The plan names "OK" with no id; the page's element carries btnDeleteAccount. The tier
+    reads the resolved element's id at admission, the settled tier and the gate (#84)."""
     attack = fixture("IJ-04", "element_id")
     assert attack.action is not None
     h, log = _on_page(attack, automation_ids={attack.action.name: attack.payload})
     result = h.session.run_step(_click(attack))
     assert _dispatched(attack, log) == []
-    assert result.gate != "approve"
+    assert result.evidence["risk"] == "R3"
+    assert result.gate == "block", "a raised click without a strong expect blocks ([v2.17] b)"
+    assert result.evidence["detail"] == "weak_predicate"
+
+
+def test_admission_runs_at_the_tier_the_page_element_raises_to() -> None:
+    """The ceiling reads the ids of every element the exact target could resolve to, so an
+    R3 key is admitted (done, open records) before any resolve or dispatch (#84)."""
+    attack = fixture("IJ-04", "element_id")
+    assert attack.action is not None
+    h, _ = _on_page(attack, automation_ids={attack.action.name: attack.payload})
+    step = _click(attack)
+    before = h.session._observer.observe(0x10)
+    assert h.session._ceiling(step, h.ledger.key_for(step), before, "R0") == "R3"
+
+
+class _LateRaised:
+    """The plan's "OK" is absent on the first look and appears after the settle carrying the
+    page's btnDeleteAccount: the ceiling saw nothing, the settled tier rises (#84 review)."""
+
+    def __init__(self, page: HostilePage, row: tuple[int, str, str, tuple[int, ...], int]) -> None:
+        self.page = page
+        self.row = row
+        self.calls = 0
+
+    def observe(self, hwnd: int, **kwargs: object) -> object:
+        self.calls += 1
+        if self.calls == 2 and self.row not in self.page.world.rows:
+            self.page.world.rows.append(self.row)
+        return self.page.observe(hwnd, **kwargs)
+
+
+def _late(attack: Attack, name: str = "") -> tuple[Harness, list[Dispatch]]:
+    assert attack.action is not None
+    name = name or attack.action.name
+    h = Harness(default="no")
+    log: list[Dispatch] = []
+    page = HostilePage(h.world, {name: attack.payload})
+    row = (11, "Button", name, (42, 43), 7)
+    rebuild(h, log=log, observer=_LateRaised(page, row))
+    return h, log
+
+
+def test_a_done_key_found_only_after_the_settle_stops_and_dispatches_nothing() -> None:
+    attack = fixture("IJ-04", "element_id")
+    h, log = _late(attack)
+    step = _click(attack)
+    h.ledger.executions[h.ledger.key_for(step)] = {"step_id": "c0", "outcome": "delivered_verified"}
+    result = h.session.run_step(step)
+    assert result.evidence["detail"] == "done_at_raised_tier", result.to_dict()
+    assert result.code is not None
+    assert log == []
+
+
+def test_an_open_record_found_only_after_the_settle_reaches_the_gate() -> None:
+    """The second admission's answer is the one the ask shows: an earlier unverified delivery
+    under this key is never dispatched again unseen (review of #114). A name long enough for
+    the R3 click's only strong postcondition (the control disappears)."""
+    attack = fixture("IJ-04", "element_id")
+    name = "Continue to your account"
+    h, log = _late(attack, name)
+    step = Step(
+        id="c1",
+        subgoal="g1",
+        verb="click",
+        target=Target(role="Button", name=name),
+        risk="R0",
+        expect=Disappeared(role="Button", name_pattern=name),
+    )
+    h.ledger.executions[h.ledger.key_for(step)] = {
+        "step_id": "c0",
+        "outcome": "delivered_unverified",
+    }
+    h.session.run_step(step)
+    asked = [(a.risk, a.previous_attempt) for a in h.confirmer.asked]
+    assert asked == [("R3", "delivered_unverified")]
+    assert log == []
+
+
+def test_a_done_key_with_the_element_visible_is_done_already_at_the_ceiling() -> None:
+    attack = fixture("IJ-04", "element_id")
+    assert attack.action is not None
+    h, log = _on_page(attack, automation_ids={attack.action.name: attack.payload})
+    step = _click(attack)
+    h.ledger.executions[h.ledger.key_for(step)] = {"step_id": "c0", "outcome": "delivered_verified"}
+    result = h.session.run_step(step)
+    assert result.gate == "done_already"
+    assert log == []

@@ -21,12 +21,14 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol, TextIO
 
+from steerai import model_calls
 from steerai.errors import ErrorCode, SteerError
-from steerai.goal_match import GoalMatcher
+from steerai.goal_match import GoalMatcher, matcher_id
+from steerai.memory.plan_cache import CacheKey, Entry, PlanCache, outcome_of, refusal
 from steerai.orchestrator.console import ConsoleConfirmer, escape_text
 from steerai.orchestrator.contracts import (
     OPENED_PREFIX,
@@ -37,7 +39,7 @@ from steerai.orchestrator.contracts import (
     Step,
     subgoal_verbs,
 )
-from steerai.orchestrator.gate import Confirmer, effective_risk
+from steerai.orchestrator.gate import Confirmer, effective_risk, open_tier
 from steerai.orchestrator.ledger import LedgerError
 from steerai.orchestrator.loop import DEFAULT_MAX_STEPS, TaskResult, wait_for_idle
 from steerai.orchestrator.plan_io import PlanError, encode_predicate, plan_from_bytes
@@ -51,6 +53,7 @@ from steerai.orchestrator.trace import JsonLinesTrace, NullTrace, Trace
 from steerai.planner.contracts import PlannerError, PlanOutcome, PlanRequest
 from steerai.probes.windows import WindowInfo
 from steerai.session.monitor import DEFAULT_KILL_KEY, parse_kill_key
+from steerai.world.elements import safe_name
 from steerai.world.model import Snapshot, normalise_name
 
 EXIT_DONE = 0
@@ -218,6 +221,8 @@ class Deps:
     session_locked: Callable[[], bool | None] | None = None
     """The session's lock state (issue #31); None only in pure tests."""
     make_confirmer: ConfirmerFactory = _console_confirmer
+    plan_cache: PlanCache | None = None
+    """The verified plan cache (5.12 [v2.33]); None turns it off (pure tests, no LOCALAPPDATA)."""
     monotonic: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
     """Starts the takeover monitor (hooks and the kill hot key) for these options; None only in
@@ -230,11 +235,20 @@ class Deps:
 # ---- pure parts --------------------------------------------------------------------------
 
 
+def plan_tier(plan: Plan, step: Step) -> Risk:
+    """A step's tier as far as the plan alone decides it: floors and deny patterns, and for an
+    `open` the tier its content gives (`open_tier`, page content is R2). The screen can only
+    raise it further at run time, where the session enforces the same limit (#88)."""
+    if step.verb == "open":
+        step = replace(step, risk=open_tier(plan.goal, step))
+    return effective_risk(step)
+
+
 def over_limit(plan: Plan, max_risk: Risk) -> Step | None:
-    """The first step whose effective risk (floors and deny patterns included) is over the
-    limit, checked over the whole plan before anything runs (RN-02)."""
+    """The first step whose tier is over the limit, checked over the whole plan before anything
+    runs (RN-02, IJ-28)."""
     for step in plan.steps:
-        if _RISK_ORDER[effective_risk(step)] > _RISK_ORDER[max_risk]:
+        if _RISK_ORDER[plan_tier(plan, step)] > _RISK_ORDER[max_risk]:
             return step
     return None
 
@@ -442,6 +456,8 @@ class _Out:
         self._stderr = stderr
         self.plan = options.plan
         """The task's last bound plan file: the one a resume names (replan RP-15/42)."""
+        self.cache: _CacheRun | None = None
+        """The plan cache's part in this run: its key, and the entry a hit used."""
 
     def note(self, text: str) -> None:
         # plan errors quote plan text and candidates quote other processes' titles (RN-05)
@@ -577,6 +593,7 @@ def _pick_window(options: Options, deps: Deps) -> WindowInfo:
 
 def run(options: Options, deps: Deps, *, stdin: TextIO, stdout: TextIO, stderr: TextIO) -> int:
     out = _Out(options, stdout, stderr)
+    model_calls.reset()  # one run's calls (a probe runs several in one process)
     try:
         return _run(plan_options=options, deps=deps, out=out, stdin=stdin, stderr=stderr)
     except KeyboardInterrupt:
@@ -617,7 +634,7 @@ def _run_from_plan(
         return out.error("invalid_plan", note=f"plan: {exc}")
     offending = over_limit(plan, options.max_risk)
     if offending is not None:
-        return _risk_refusal(out, options, offending)
+        return _risk_refusal(out, options, plan, offending)
     try:
         ledger = deps.open_ledger(options.ledger_dir, options.task_id)
     except LedgerError as exc:
@@ -791,6 +808,7 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
             monitor=monitor,
         )
         session = deps.build_session(bound)
+        _preset_cached(out.cache, session, plan)
         # a resumed later link of a replanned task runs as a continuation (hunter RP-01)
         result = session.run_task(plan, continuation=ledger.plan_count() > 1)
         if options.goal is not None:
@@ -806,6 +824,10 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
                 confirmer=confirmer,
             )
             result = _replanning(replan, plan, result)
+        _settle_cache(
+            out.cache, session, plan, result, replanned=ledger.plan_count() > 1, trace=trace
+        )
+        trace.write({"kind": "model_calls", **model_calls.snapshot()})
     except UsageError as exc:
         return out.error("usage", note=str(exc))
     except LedgerError as exc:
@@ -849,16 +871,17 @@ def _digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _risk_refusal(out: _Out, options: Options, offending: Step) -> int:
+def _risk_refusal(out: _Out, options: Options, plan: Plan, offending: Step) -> int:
+    tier = plan_tier(plan, offending)
     out.note(
-        f"refused: step {offending.id} is {effective_risk(offending)}, over --max-risk "
+        f"refused: step {offending.id} is {tier}, over --max-risk "
         f"{options.max_risk}; nothing was run"
     )
     if options.goal is not None:
         out.note(
             f"the plan is written; to run it: python -m steerai.run --plan {options.plan} "
             f"--task-id {options.task_id} --ledger-dir {options.ledger_dir} "
-            f"--max-risk {effective_risk(offending)}"
+            f"--max-risk {tier}"
         )
     out.emit(
         {
@@ -866,7 +889,7 @@ def _risk_refusal(out: _Out, options: Options, offending: Step) -> int:
             "code": ErrorCode.GATE_BLOCKED.value,
             "detail": "risk_over_limit",
             "step_id": offending.id,
-            "risk": effective_risk(offending),
+            "risk": tier,
             "ticked": [],
             "results": [],
         }
@@ -937,31 +960,154 @@ def _planned(  # noqa: PLR0913 - the run's state at planning time
         # the first plan's only window to come back to is the one the task starts in
         windows=() if options.desktop else ((START_WINDOW, title),),
     )
-    started = deps.monotonic()
-    try:
-        outcome = deps.planner(request)
-    except PlannerError as exc:
-        trace.write(exc.trace_record(latency_ms=_ms(deps, started)))
-        where = "" if exc.path is None else f" at {exc.path}"
-        return out.error(exc.detail, code=exc.code, note=f"planner: {exc.detail}{where}")
-    trace.write(outcome.trace_record())
-    _write_atomic(options.plan, outcome.data)
+    out.cache = _cache_lookup(window, deps, options, trace, lines)
+    hit = out.cache.entry if out.cache is not None else None
+    if hit is not None:
+        data, plan = hit.plan, plan_from_bytes(hit.plan)
+        out.note(f"cached plan ({hit.state}, verified {hit.uses} time(s)); no planner call")
+    else:
+        started = deps.monotonic()
+        try:
+            outcome = deps.planner(request)
+        except PlannerError as exc:
+            trace.write(exc.trace_record(latency_ms=_ms(deps, started)))
+            where = "" if exc.path is None else f" at {exc.path}"
+            return out.error(exc.detail, code=exc.code, note=f"planner: {exc.detail}{where}")
+        trace.write(outcome.trace_record())
+        data, plan = outcome.data, outcome.plan
+    if out.cache is not None:
+        out.cache.data = data
+    _write_atomic(options.plan, data)
     ledger.bind_plan(
-        _digest(outcome.data),
+        _digest(data),
         allow_change=options.allow_plan_change,
-        step_ids=[s.id for s in outcome.plan.steps],
-        subgoal_verbs=subgoal_verbs(outcome.plan),
+        step_ids=[s.id for s in plan.steps],
+        subgoal_verbs=subgoal_verbs(plan),
     )
-    offending = over_limit(outcome.plan, options.max_risk)
+    offending = over_limit(plan, options.max_risk)
     if offending is not None:
-        return _risk_refusal(out, options, offending)
-    go_id = _digest(outcome.data)[:GO_ID_CHARS]
-    for line in preview_lines(outcome.plan, go_id):
+        return _risk_refusal(out, options, plan, offending)
+    # the task id in the go id: a cached plan's bytes repeat, its approval never does (gate 4)
+    go_id = _digest(data + options.task_id.encode())[:GO_ID_CHARS]
+    for line in preview_lines(plan, go_id):
         out.note(line)
     answer = confirmer.ask_go(go_id)
     if answer == "go":
-        return outcome.plan
+        return plan
     return _go_refusal(out, answer)
+
+
+@dataclass
+class _CacheRun:
+    cache: PlanCache
+    key: CacheKey
+    app_kind: str
+    entry: Entry | None = None
+    """The entry this run replays (a usable hit), or None."""
+    data: bytes = b""
+    """The bytes of the plan this run bound (written to the cache on a verified success)."""
+
+
+def _cache_lookup(
+    window: WindowInfo, deps: Deps, options: Options, trace: Trace, lines: Sequence[str]
+) -> _CacheRun | None:
+    """A usable hit: the exact goal, a plan that still loads and may be cached, and its first
+    target shown on this screen (validate on use, 5.12). Tokens only in the trace."""
+    if deps.plan_cache is None or options.goal is None:
+        return None
+    kind = _app_kind(deps, window)
+    if kind is None:
+        return None
+    from steerai.planner.claude_planner import PROMPT_VERSION  # noqa: PLC0415 - planner module
+
+    key = CacheKey.of(
+        options.goal, app_kind=kind, prompt_version=PROMPT_VERSION, matcher=matcher_id()
+    )
+    found_run = _CacheRun(deps.plan_cache, key, kind)
+    try:
+        found = deps.plan_cache.get(key)
+    except OSError:
+        trace.write({"kind": "cache", "event": "unreadable"})
+        return found_run
+    event: str = found.event
+    if found.entry is not None:
+        try:
+            cached: Plan | None = plan_from_bytes(found.entry.plan)
+        except PlanError:
+            cached = None
+            event = "corrupt"
+        if cached is not None and (
+            refusal(cached, options.goal, kind) is not None or not _first_shown(cached, lines)
+        ):
+            event = "stale"
+        elif cached is not None:
+            found_run.entry = found.entry
+    record: dict[str, Any] = {"kind": "cache", "event": event}
+    if found_run.entry is not None:
+        record.update(state=found_run.entry.state, uses=found_run.entry.uses)
+    trace.write(record)
+    return found_run
+
+
+def _app_kind(deps: Deps, window: WindowInfo) -> str | None:
+    record = deps.identify(window.hwnd) if deps.identify is not None else None
+    image = (record or {}).get("image")
+    return Path(str(image)).name.casefold() if image else None
+
+
+def _first_shown(plan: Plan, lines: Sequence[str]) -> bool:
+    for step in plan.steps:
+        if step.verb == "open" or step.target is None:
+            continue
+        needle = f'{step.target.role} "{safe_name(step.target.name)}"'
+        return any(needle in line for line in lines)
+    return True
+
+
+def _preset_cached(cache_run: _CacheRun | None, session: SessionLike, plan: Plan) -> None:
+    """A trusted entry's verdicts stand for its own plan; a probation hit is judged live
+    (hunter PC-05: a poisoned plan never skips the judge before three verified runs)."""
+    if cache_run is None or cache_run.entry is None or cache_run.entry.state != "trusted":
+        return
+    preset = getattr(session, "preset", None)
+    if preset is not None:
+        preset(plan, cache_run.entry.verdicts)
+
+
+def _settle_cache(  # noqa: PLR0913 - the run's end state, passed once
+    cache_run: _CacheRun | None,
+    session: SessionLike,
+    plan: Plan,
+    result: TaskResult,
+    *,
+    replanned: bool,
+    trace: Trace,
+) -> None:
+    """A hit is scored; a fresh plan is written only after a fully verified single-plan run
+    whose every step goal-match judged `serves` (gate items 2-3). Never fails the task."""
+    if cache_run is None:
+        return
+    outcome = outcome_of(plan, result.results, replanned=replanned, status=result.status)
+    try:
+        if cache_run.entry is not None:
+            state = cache_run.cache.score(cache_run.entry, outcome)
+            trace.write({"kind": "cache", "event": "score", "outcome": outcome, "state": state})
+            return
+        verdicts, failure = getattr(session, "judged", ({}, "unjudged"))
+        if (
+            outcome != "success"
+            or result.status != "done"
+            or replanned
+            or failure is not None
+            or not verdicts
+            or any(v != "serves" for v in verdicts.values())
+            or refusal(plan, cache_run.key.goal, cache_run.app_kind) is not None
+        ):
+            return
+        cache_run.cache.put(cache_run.key, cache_run.data, verdicts)
+        trace.write({"kind": "cache", "event": "write", "state": "probation"})
+    except OSError:
+        trace.write({"kind": "cache", "event": "unwritable"})
 
 
 def _ms(deps: Deps, started: float) -> float:
@@ -1004,7 +1150,7 @@ def preview_lines(
         where = "" if target is None else f' {target.role} "{target.name}"'
         if target is not None and target.match == "person":
             where += " (person)"
-        line = f"  step {step.id}: {step.verb}{where} {effective_risk(step)}"
+        line = f"  step {step.id}: {step.verb}{where} {plan_tier(plan, step)}"
         if step.text is not None:
             line += f" text={step.text!r}"
         if step.params:
@@ -1196,11 +1342,11 @@ def _bound_continuation(
     offending = over_limit(outcome.plan, r.options.max_risk)
     if offending is not None:
         r.out.note(
-            f"refused: step {offending.id} is {effective_risk(offending)}, over --max-risk "
-            f"{r.options.max_risk}; the continuation was not run"
+            f"refused: step {offending.id} is {plan_tier(outcome.plan, offending)}, over "
+            f"--max-risk {r.options.max_risk}; the continuation was not run"
         )
         return progress.ended("blocked", ErrorCode.GATE_BLOCKED, "risk_over_limit")
-    go_id = _digest(outcome.data)[:GO_ID_CHARS]
+    go_id = _digest(outcome.data + r.options.task_id.encode())[:GO_ID_CHARS]
     preview = preview_lines(
         outcome.plan,
         go_id,
@@ -1292,6 +1438,7 @@ def _build_session(bound: Bound) -> SessionLike:
         trace=bound.trace,
         verify_deadline_s=bound.options.verify_deadline_s,
         max_steps=bound.options.max_steps,
+        max_risk=bound.options.max_risk,
         monitor=monitor,
         launcher=Launcher(blocker=blocker),
         window_title=window_title,
@@ -1375,6 +1522,18 @@ def _start_monitor(options: Options) -> Any:
     return monitor
 
 
+def _plan_cache() -> PlanCache | None:
+    """Under %LOCALAPPDATA%; off when it is unset, never the working directory (PC-45)."""
+    root = os.environ.get("LOCALAPPDATA")
+    if not root:
+        return None
+    from steerai.platform import dpapi  # noqa: PLC0415 - Windows only
+
+    return PlanCache(
+        Path(root) / "steer" / "cache" / "plans", protect=dpapi.protect, unprotect=dpapi.unprotect
+    )
+
+
 def _real_deps() -> Deps:
     from steerai.orchestrator.ledger import Ledger  # noqa: PLC0415 - DPAPI, Windows only
     from steerai.probes.win_input import acquire_foreground  # noqa: PLC0415
@@ -1398,6 +1557,7 @@ def _real_deps() -> Deps:
         screen=_screen,
         planner=_planner,
         session_locked=session_locked,
+        plan_cache=_plan_cache(),
         identify=window_identity,
     )
 
