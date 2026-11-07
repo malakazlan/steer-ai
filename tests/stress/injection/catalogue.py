@@ -426,7 +426,7 @@ FIXTURES: tuple[Attack, ...] = (
         detail="subgoals",
         gap="#86",
     ),
-    # ---- the screen between the ask and the act (pinned IJ-21; finding: unfiled) ----
+    # ---- the screen between the ask and the act (pinned IJ-21; finding #89) ----
     Attack(
         "IJ-21",
         "title_relabel",
