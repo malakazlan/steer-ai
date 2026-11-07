@@ -136,21 +136,29 @@ def _ours(port: int, server_port: int, timeout_s: float = 20.0) -> tuple[CdpSess
     """A CDP session on a tab of our origin, and how many page targets exist (LB-03)."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        with contextlib.suppress(OSError, ValueError):
+        with contextlib.suppress(OSError, ValueError, InvalidRun):
             url = f"http://127.0.0.1:{port}/json"
             with urllib.request.urlopen(url, timeout=5) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             pages = [t for t in data if isinstance(t, dict) and t.get("type") == "page"]
             mine = [t for t in pages if f"127.0.0.1:{server_port}/" in str(t.get("url"))]
             if mine:
-                return CdpSession(str(mine[0]["webSocketDebuggerUrl"])), len(pages)
+                cdp = CdpSession(str(mine[0]["webSocketDebuggerUrl"]))
+                # a session attached before the navigation commits stays on the tab's initial
+                # about:blank document (measured 2026-11-07): only a session on ours counts
+                if f"127.0.0.1:{server_port}/" in _evaluate(cdp, "location.href", "attach"):
+                    return cdp, len(pages)
+                cdp.close()
         time.sleep(0.5)
     raise InvalidRun("page_not_ours")
 
 
-def _evaluate(cdp: CdpSession, expression: str) -> str:
+def _evaluate(cdp: CdpSession, expression: str, stage: str = "") -> str:
     params = {"expression": expression, "awaitPromise": True, "returnByValue": True}
-    return log_value(cdp.call("Runtime.evaluate", params))
+    try:
+        return log_value(cdp.call("Runtime.evaluate", params))
+    except InvalidRun as exc:
+        raise InvalidRun(f"{stage}:{exc}" if stage else str(exc)) from exc
 
 
 def _loaded(cdp: CdpSession, timeout_s: float = 20.0) -> None:
@@ -167,10 +175,10 @@ def _loaded(cdp: CdpSession, timeout_s: float = 20.0) -> None:
 def _prove_no_egress(cdp: CdpSession, server_port: int) -> None:
     probe = "fetch({url}, {{mode: 'no-cors'}}).then(() => 'reached', () => 'blocked')"
     for url in ("http://example.com/", "http://93.184.216.34/"):
-        if _evaluate(cdp, probe.format(url=json.dumps(url))) != "blocked":
+        if _evaluate(cdp, probe.format(url=json.dumps(url)), "egress") != "blocked":
             raise InvalidRun("egress_open")
     own = json.dumps(f"http://127.0.0.1:{server_port}/page.html")
-    if _evaluate(cdp, probe.format(url=own)) != "reached":
+    if _evaluate(cdp, probe.format(url=own), "loopback") != "reached":
         raise InvalidRun("loopback_closed")
 
 
@@ -277,7 +285,7 @@ def _measure(  # noqa: PLR0913 - one run's whole state, passed once by keyword
     cdp, _ = _ours(cdp_port, server.port)
     _loaded(cdp)
     _prove_no_egress(cdp, server.port)
-    _evaluate(cdp, 'localStorage.removeItem("steer-layer-b"); "ok"')
+    _evaluate(cdp, 'localStorage.removeItem("steer-layer-b"); "ok"', "clear")
     cdp.close()
     seen: list[str] = []
 
@@ -312,7 +320,7 @@ def _measure(  # noqa: PLR0913 - one run's whole state, passed once by keyword
     run_mod.run(options, deps, stdin=io.StringIO(""), stdout=stdout, stderr=io.StringIO())
     cdp, page_targets = _ours(cdp_port, server.port)
     _loaded(cdp)
-    raw = _evaluate(cdp, _LOG_EXPRESSION)
+    raw = _evaluate(cdp, _LOG_EXPRESSION, "read")
     cdp.close()
     effects = parse_effects(raw, shown, server.paths, nonce)
     if effects.untrusted:
