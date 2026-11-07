@@ -153,3 +153,22 @@ def test_an_open_only_subgoal_may_move_between_window_and_title() -> None:
         steps=(replace(_click("p2.s1"), subgoal="g1"),),
     )
     assert continuation_refusal(retitled, progress) != "subgoals"
+
+
+def test_a_title_placeholder_may_become_a_diff_read_off_the_new_screen() -> None:
+    """The recorded YouTube replan (replan3 shape): plan 1 writes a blind title for a subgoal
+    with no steps yet; the continuation replaces it with an appeared diff. Stronger, allowed
+    (review of #118: 7 of 22 recorded continuations)."""
+    first = Plan(
+        goal=GOAL,
+        subgoals=(
+            Subgoal(id="g1", desc="results", condition=WindowExists(name_pattern=YT)),
+            Subgoal(id="g2", desc="playing", condition=TitleMatches(pattern="Drake")),
+        ),
+        steps=(_open(),),
+    )
+    progress = Progress()
+    progress.add(first, _unfinished(_result("s1")))
+    diff = Appeared(role="Text", name_pattern="Drake - Rich Flex", within=Within(landmark="Main"))
+    stronger = _second_plan(subgoals=(Subgoal(id="g2", desc="playing", condition=diff),))
+    assert continuation_refusal(stronger, progress) != "subgoals"

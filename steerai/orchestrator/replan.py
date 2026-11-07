@@ -27,7 +27,7 @@ from steerai.orchestrator.gate import effective_risk
 from steerai.orchestrator.loop import TaskResult
 from steerai.orchestrator.plan_io import encode_predicate
 from steerai.planner.contracts import DoneStep, FailedStep, OpenSubgoal
-from steerai.verify.predicates import Predicate, field_values
+from steerai.verify.predicates import All, AnyOf, Predicate, field_values
 
 MAX_REPLANS = 2
 """Every replan counts, a continuation after `unfinished` too (design 5.3 [v2.1]: stricter than
@@ -200,12 +200,11 @@ def _subgoals_refused(plan: Plan, progress: Progress) -> bool:
     if not remaining <= ids or ids & ticked:
         return True
     before = progress.subgoals()
-    opened = _open_only(progress)
     return any(
         s.id in before
         and (
             _texts(before[s.id].condition) != _texts(s.condition)
-            or _weakened(before[s.id].condition, s.condition, open_only=s.id in opened)
+            or _weakened(before[s.id].condition, s.condition)
         )
         for s in plan.subgoals
     )
@@ -220,28 +219,19 @@ _WINDOW_KINDS = frozenset({"WindowExists", "TitleMatches"})
 
 def _kind(condition: Predicate) -> str:
     """A condition's shape: its type, and for All / AnyOf the sorted shapes of its parts."""
-    parts = getattr(condition, "parts", None)
-    if parts is None:
-        return type(condition).__name__
-    return f"{type(condition).__name__}({','.join(sorted(_kind(p) for p in parts))})"
+    if isinstance(condition, All | AnyOf):
+        inner = ",".join(sorted(_kind(part) for part in condition.parts))
+        return f"{type(condition).__name__}({inner})"
+    return type(condition).__name__
 
 
-def _weakened(before: Predicate, after: Predicate, *, open_only: bool) -> bool:
-    """IJ-10 (#86): a continuation written from a page never changes a remaining condition's
-    kind, so an `appeared` diff cannot become a title the page controls. A subgoal reached
-    only by an `open` may move between its window and its title (5.3 [v2.6])."""
-    old, new = _kind(before), _kind(after)
-    if old == new:
-        return False
-    return not (open_only and {old, new} <= _WINDOW_KINDS)
-
-
-def _open_only(progress: Progress) -> set[str]:
-    """Subgoals every earlier step of which is an `open`."""
-    verbs: dict[str, set[str]] = {}
-    for step in progress.steps.values():
-        verbs.setdefault(step.subgoal, set()).add(step.verb)
-    return {subgoal for subgoal, seen in verbs.items() if seen == {"open"}}
+def _weakened(before: Predicate, after: Predicate) -> bool:
+    """IJ-10 (#86): a continuation written from a page never weakens a remaining condition.
+    One way only: a window or title condition (which the page already controls) may become
+    any kind, as a continuation reads a stronger diff off the new screen (5.3 [v2.1]); any
+    other kind stays its kind, so an `appeared` diff never becomes a page-owned title."""
+    old = _kind(before)
+    return old not in _WINDOW_KINDS and _kind(after) != old
 
 
 def _bad_window(window: str | None, opens: set[str], *, desktop: bool) -> bool:
