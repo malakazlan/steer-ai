@@ -40,6 +40,12 @@ class Binding:
     """Whether the full name was unique among the ask-time candidates; only then may a
     re-rendered row be found again by its name (PT-08, review item 3)."""
 
+    @property
+    def shown_name_part(self) -> str:
+        """The name part as the screen shows it: what the deny patterns read. The folded
+        `name_part` makes marks like U+00A1 letters, so a deny word before one would vanish."""
+        return name_part(self.full_name)
+
     def to_record(self) -> dict[str, Any]:
         return {
             "role": self.role,

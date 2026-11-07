@@ -382,7 +382,7 @@ class Gate:
         bound: Binding | None = None,
         window: str = "",
     ) -> GateResult:
-        risk = effective_risk(step, bound.name_part if bound is not None else None)
+        risk = effective_risk(step, bound.shown_name_part if bound is not None else None)
         if target_pid == self._own_pid:
             return _block("self_target", risk)
         params = params_for(step, target_id, composer_id, bound)

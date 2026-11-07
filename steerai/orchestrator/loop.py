@@ -92,7 +92,7 @@ from steerai.verify.t1 import (
 from steerai.world.elements import Element
 from steerai.world.fingerprint import similarity
 from steerai.world.model import Snapshot, normalise_name
-from steerai.world.people import MAX_CANDIDATES, comparable, lookalike_only, name_part
+from steerai.world.people import MAX_CANDIDATES, lookalike_only, name_part
 
 REUSE_FRESHNESS_S = 5.0
 """How old a decided after snapshot may be to serve as the next R0/R1 before. Unmeasured; well
@@ -943,7 +943,8 @@ class Session:
         self._candidates = (before.id, found)
         tiers: list[Risk] = [risk]
         if len(found) <= MAX_CANDIDATES:
-            tiers += [effective_risk(step, comparable(name_part(c.name))) for c in found]
+            # the raw name part: the fold makes marks like U+00A1 letters and joins words
+            tiers += [effective_risk(step, name_part(c.name)) for c in found]
         if self._key_has_history(step, key):
             tiers.append("R2")
         return max(tiers, key=_RISK_ORDER.__getitem__)
@@ -961,7 +962,7 @@ class Session:
         """The bound row's own tier, never below the plan's (PT-31)."""
         if self._binding is None:
             return ceiling
-        return effective_risk(step, self._binding.name_part)
+        return effective_risk(step, self._binding.shown_name_part)
 
     def _decide(  # noqa: PLR0913 - the step's state at the gate
         self,
