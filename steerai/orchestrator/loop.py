@@ -1038,17 +1038,32 @@ class Session:
         if fresh.title != before.title:
             raise _StepFailureError(ErrorCode.FOCUS_LOST, mismatch)
         # no settle here (OR-31): a target gone while the ask was open is a changed screen
+        element_id = self._same_target(step, fresh, before.element(asked), mismatch, evidence)
+        self._secure_step = fresh.element(element_id).secure
+        return fresh, element_id
+
+    def _same_target(
+        self,
+        step: Step,
+        snapshot: Snapshot,
+        asked: Element,
+        mismatch: str,
+        evidence: dict[str, Any] | None = None,
+    ) -> int:
+        """The target resolved again in `snapshot`, which must be the element asked about
+        (#89): for an exact or aliased target the same RuntimeId and role; a person target
+        keeps its identity binding (`rebind`). Gone, ambiguous or another element is the
+        `mismatch` token under `focus_lost`, never a dispatch elsewhere."""
         try:
-            element_id = self._resolve_again(step, fresh, evidence)
+            element_id = self._resolve_again(step, snapshot, evidence)
         except _StepFailureError as failure:
             if failure.detail in ("no_match", "ambiguous_target"):
                 raise _StepFailureError(ErrorCode.FOCUS_LOST, mismatch) from failure
             raise
         person = step.target is not None and step.target.match == "person"
-        if not person and not _same_element(before.element(asked), fresh.element(element_id)):
+        if not person and not _same_element(asked, snapshot.element(element_id)):
             raise _StepFailureError(ErrorCode.FOCUS_LOST, mismatch)
-        self._secure_step = fresh.element(element_id).secure
-        return fresh, element_id
+        return element_id
 
     def _refused(  # noqa: PLR0913 - the step's state at the refusal
         self,
@@ -1377,6 +1392,8 @@ class Session:
         executor = self._physical if path == "physical" else self._semantic
         retries = 0
         scrolled = False
+        # the element approved or observed: every re-resolve below must find it again (#89)
+        asked = before.element(element_id)
         while True:
             self._still_the_window()  # a gone window never leaves an acting record
             if risk in ("R2", "R3"):
@@ -1415,12 +1432,12 @@ class Session:
                 )
                 self._scrolled = scroll_result.delivery.value
                 before = self._observer.observe(self.hwnd, stable_window=1)
-                element_id = self._resolve_again(step, before)
+                element_id = self._same_target(step, before, asked, ACT_MISMATCH)
                 continue
             if result.code is ErrorCode.ELEMENT_NOT_FOUND and retries == 0:
                 retries += 1
                 before = self._observer.observe(self.hwnd, stable_window=1)
-                element_id = self._resolve_again(step, before)
+                element_id = self._same_target(step, before, asked, ACT_MISMATCH)
                 continue
             return result, before, retries
 
@@ -1843,6 +1860,11 @@ class Session:
             )
         except (SteerError, ValueError):
             return None
+
+
+ACT_MISMATCH = "screen_changed_during_act"
+"""A re-resolve inside the act loop (the retry after a refusal, the scroll) found another
+element than the one asked about (#89): `focus_lost`, nothing more dispatched."""
 
 
 def _same_element(asked: Element, now: Element) -> bool:
