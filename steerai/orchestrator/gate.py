@@ -57,6 +57,25 @@ DENY_PATTERNS: Mapping[str, Risk] = {
     "uninstall": "R3",
     "format": "R3",
     "reset": "R3",
+    # Phase 3 classes (5.13 1a [v2.17], deny-classes gate): every role, raise only
+    "checkout": "R3",
+    "discard": "R3",
+    "don t save": "R3",  # "Don't Save", any apostrophe, as the word matcher splits it
+    "clear history": "R3",
+    "check out": "R2",  # "Check out this video" is a title too: R2, never R3
+    "log out": "R2",
+    "log off": "R2",
+    "sign off": "R2",
+    "subscribe": "R2",
+    "unsubscribe": "R2",
+    "join": "R2",
+    "like": "R2",
+    "follow": "R2",
+    "report": "R2",
+    "block": "R2",
+    "leave": "R2",
+    "accept": "R2",
+    "allow": "R2",
 }
 """5.13 1a: words (or word sequences) in a target's name or automation id that raise the step's
 tier. Matched on whole words of the comparable form (NFKC, format characters removed,
