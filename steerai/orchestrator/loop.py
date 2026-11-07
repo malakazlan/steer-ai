@@ -1172,9 +1172,12 @@ class Session:
             return self._resolve_person(step, target, snapshot)
         if target.element_id is not None:
             try:
-                snapshot.element(target.element_id)
+                element = snapshot.element(target.element_id)
             except SteerError as exc:
                 raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_match") from exc
+            if element.role != target.role:
+                # the tier reads the plan's role: an id of another kind is no match (5.13 [v2.17])
+                raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_match")
             return target.element_id
         wanted = normalise_name(target.name).casefold()
         matches = [
