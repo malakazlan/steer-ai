@@ -819,3 +819,24 @@ def test_a_tick_never_records_content_as_an_alias() -> None:
     (record,) = [json.loads(line) for line in h.trace.lines if '"kind": "tick"' in line]
     assert "alias" not in record
     assert "hello" not in json.dumps(record)
+
+
+def test_an_all_whose_parts_alias_to_two_roles_records_no_alias() -> None:
+    """[v2.21]: several distinct alias roles give no alias (never a set-order pick)."""
+    from steerai.verify.predicates import All  # noqa: PLC0415
+
+    combo = (22, "ComboBox", "Subject", (42, 62), COMPOSER_AREA[0])
+    rows = [*_as_role("Document"), combo]
+    subject = FieldValue(role="Edit", name_pattern="Subject", text="hello there")
+    live = _CountingLive(
+        states={
+            COMPOSER[3]: FakeHandle(value="hello there"),
+            (42, 62): FakeHandle(value="hello there"),
+        }
+    )
+    after = build(rows, snapshot_id="after", taken_at=1.0)
+    verdict = evaluate(
+        All(parts=(MESSAGE, subject)), build(BASE_ROWS, snapshot_id="before"), after, live=live
+    )
+    assert verdict.holds is True
+    assert "alias" not in verdict.evidence
