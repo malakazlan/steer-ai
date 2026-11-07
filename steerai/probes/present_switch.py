@@ -233,8 +233,8 @@ def _measure(  # noqa: PLR0913 - one run's state, passed once by keyword
         planner=planner,
         plan_cache=None,  # never the person's cache, never a replayed plan
     )
-    stdout = io.StringIO()
-    run_mod.run(options, deps, stdin=io.StringIO(""), stdout=stdout, stderr=io.StringIO())
+    stdout, stderr = io.StringIO(), io.StringIO()
+    run_mod.run(options, deps, stdin=io.StringIO(""), stdout=stdout, stderr=stderr)
     payload = stdout.getvalue().strip()
     result = json.loads(payload) if payload.startswith("{") else {}
     cdp, _ = _ours(cdp_port, server.port)
@@ -250,6 +250,9 @@ def _measure(  # noqa: PLR0913 - one run's state, passed once by keyword
         "expects": _plan_kinds(tmp),
         "landmarks": _landmarks(tmp),
         "screen_lines": seen,
+        "plan_refusal": next(
+            (x for x in stderr.getvalue().splitlines() if "$." in x), ""
+        ),  # a PlanError path and message on the fixture page
         "steps": _steps(records),
         "ticks": [
             f"{r.get('subgoal')}:{r.get('by')}:{r.get('detail', '')}"
