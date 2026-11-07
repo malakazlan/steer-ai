@@ -140,3 +140,47 @@ def test_the_mirror_keeps_the_landmark_of_a_present() -> None:
             "within": {"landmark": "Steer probe inbox"},
         }
     }
+
+
+def _with_send(*, scope: str | None, within: str | None) -> dict[str, Any]:
+    doc = _doc()
+    doc["goal"] = "reply ok thanks to Amir Khan"
+    appeared: dict[str, Any] = {"role": "Text", "name": "ok thanks"}
+    if within is not None:
+        appeared["within"] = {"landmark": within}
+    params: dict[str, Any] = {
+        "text": "ok thanks",
+        "composer_role": "Edit",
+        "composer_name": "Message",
+    }
+    if scope is not None:
+        params["scope"] = scope
+    doc["subgoals"].append({"id": "g2", "desc": "sent", "condition": {"appeared": appeared}})
+    doc["steps"].append(
+        {
+            "id": "s2",
+            "subgoal": "g2",
+            "verb": "send",
+            "target": {"role": "Button", "name": "Send"},
+            "risk": "R2",
+            "params": params,
+            "expect": {"appeared": copy.deepcopy(appeared)},
+        }
+    )
+    return doc
+
+
+def test_an_irreversible_step_after_a_selection_names_where_its_content_lands() -> None:
+    """With no content landmark nothing is excluded from the present: a message in the wrong
+    chat reading exactly the name would prove it (principal re-review, blocking 1)."""
+    message = _refused(_with_send(scope=None, within=None), "$.steps[1]")
+    assert "content lands" in message
+    _load(_with_send(scope="Conversation", within=None))
+    _load(_with_send(scope=None, within="Conversation"))
+
+
+def test_a_plan_without_a_present_needs_no_content_landmark() -> None:
+    doc = _with_send(scope=None, within=None)
+    doc["subgoals"][0]["condition"] = {"title": {"pattern": "Amir Khan"}}
+    doc["steps"][0]["expect"] = {"title": {"pattern": "Amir Khan"}}
+    _load(doc)

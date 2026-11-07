@@ -73,6 +73,7 @@ from steerai.orchestrator.identity import (
     too_many,
 )
 from steerai.orchestrator.ledger import LedgerError, WriteAheadRecord
+from steerai.orchestrator.plan_io import names_content_landmark
 from steerai.orchestrator.trace import NullTrace, Trace
 from steerai.verify.predicates import (
     FIELD_ROLES,
@@ -1941,6 +1942,10 @@ class Session:
         if _unmet_before(plan, index, ticked):
             self._trace_tick(plan.steps[index].subgoal, "none", detail="precondition_unmet")
             return "stopped", ErrorCode.VERIFY_FAILED, "precondition_unmet"
+        if _unscoped_after_present(plan, index):
+            # raised to R2/R3 by a deny word, with nothing excluded from the present (#124)
+            self._trace_tick(plan.steps[index].subgoal, "none", detail="content_unscoped")
+            return "stopped", ErrorCode.GATE_BLOCKED, "content_unscoped"
         if self._steps_run >= self.max_steps:
             return "stopped", ErrorCode.BUDGET_EXCEEDED, "max_steps"
         return None
@@ -2142,6 +2147,18 @@ def _unmet_before(plan: Plan, index: int, ticked: set[str]) -> bool:
         return False
     earlier = {s.subgoal for s in plan.steps[:index]} - {step.subgoal}
     return bool(earlier - ticked)
+
+
+def _unscoped_after_present(plan: Plan, index: int) -> bool:
+    """An R2/R3 step (deny words count) in a plan with a `present` that names no landmark for
+    its content: the plan boundary refuses the plan-tier case, this is the raised one."""
+    step = plan.steps[index]
+    if isinstance(step.expect, Present):
+        return False  # its own present above R1 is the gate's `present_alone` block
+    if effective_risk(step) not in ("R2", "R3") or names_content_landmark(step):
+        return False
+    held = [s.condition for s in plan.subgoals] + [s.expect for s in plan.steps if s.expect]
+    return any(presents(p) for p in held)
 
 
 def _leaves(predicate: Predicate) -> list[Predicate]:

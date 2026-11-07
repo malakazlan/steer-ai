@@ -540,7 +540,18 @@ def _check_values(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: 
 
 def _check_presents(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: str) -> None:
     """A `present` condition ticks only through its own click's bound proof: its subgoal is
-    exactly one click whose expect is that present (hunter PS-03/05/50)."""
+    exactly one click whose expect is that present (hunter PS-03/05/50). A plan with a present
+    names, for every irreversible step, where its content lands: that landmark is excluded from
+    the present, so a message reading the name never proves the chat (#124 re-review)."""
+    held = [s.condition for s in subgoals] + [s.expect for s in steps if s.expect is not None]
+    if any(presents(p) for p in held):
+        for index, step in enumerate(steps):
+            irreversible = step.risk in ("R2", "R3") or step.verb in _NO_VALUE_VERBS
+            if irreversible and not names_content_landmark(step):
+                raise PlanError(
+                    f"{path}.steps[{index}]",
+                    "an irreversible step after a selection names where its content lands",
+                )
     for index, subgoal in enumerate(subgoals):
         if not presents(subgoal.condition):
             continue
@@ -550,6 +561,22 @@ def _check_presents(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path
                 f"{path}.subgoals[{index}].condition",
                 "a present subgoal is one click whose expect is that present",
             )
+
+
+def names_content_landmark(step: Step) -> bool:
+    """The step's `scope` or a landmark `within` in its expect, at any depth."""
+    scope = step.params.get("scope")
+    if isinstance(scope, str) and scope.strip():
+        return True
+    return step.expect is not None and _has_landmark(step.expect)
+
+
+def _has_landmark(predicate: Predicate) -> bool:
+    if isinstance(predicate, All | AnyOf):
+        return any(_has_landmark(part) for part in predicate.parts)
+    if isinstance(predicate, Appeared | Disappeared | CountDelta):
+        return predicate.within is not None and predicate.within.landmark is not None
+    return False
 
 
 def _typed_into(step: Step, value: FieldValue) -> bool:
