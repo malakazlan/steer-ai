@@ -426,7 +426,6 @@ FIXTURES: tuple[Attack, ...] = (
         None,
         "refused",
         detail="subgoals",
-        gap="#86",
     ),
     # ---- the screen between the ask and the act (pinned IJ-21, fixed by #89; gap IJ-21p) ----
     Attack(

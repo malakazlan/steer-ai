@@ -1,12 +1,10 @@
-"""A3 untrusted continuation (IJ-19, IJ-20 pinned; IJ-10 #86 known gap): a replan written from a
+"""A3 untrusted continuation (IJ-10, IJ-19, IJ-20 pinned): a replan written from a
 hostile page cannot change the task. The goal is the request's, set by code whatever the model
 writes; the continuation rules refuse a reused ticked subgoal, a rewritten value text, a reused
 step id and a second open of the same (app, site). A condition rewritten to a weaker kind (a
 title the page controls) must be refused too."""
 
 from __future__ import annotations
-
-import pytest
 
 from steerai.orchestrator.contracts import Plan, Step, Subgoal, Target
 from steerai.orchestrator.replan import Progress, continuation_refusal
@@ -99,7 +97,6 @@ def test_a_second_open_of_the_same_pair_is_refused() -> None:
 # ---- known gap ---------------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="IJ-10 #86")
 def test_a_condition_rewritten_to_a_weaker_kind_is_refused() -> None:
     attack = fixture("IJ-10", "weaker_kind")
     sent = Appeared(role="Text", name_pattern="Message sent", within=Within(landmark="Chat"))
@@ -117,3 +114,61 @@ def test_a_condition_rewritten_to_a_weaker_kind_is_refused() -> None:
         subgoals=(Subgoal(id="g2", desc="sent", condition=TitleMatches(pattern=attack.payload)),)
     )
     assert continuation_refusal(weaker, progress) == attack.detail
+
+
+def test_a_condition_rewritten_within_its_kind_is_still_allowed() -> None:
+    """The kind rule only: a continuation may still rewrite a pattern it reads off the new
+    screen (the preview marks it rewritten)."""
+    sent = Appeared(role="Text", name_pattern="Message sent", within=Within(landmark="Chat"))
+    first = Plan(
+        goal=GOAL,
+        subgoals=(
+            Subgoal(id="g1", desc="results", condition=WindowExists(name_pattern=YT)),
+            Subgoal(id="g2", desc="sent", condition=sent),
+        ),
+        steps=(_open(),),
+    )
+    progress = Progress()
+    progress.add(first, _unfinished(_result("s1")))
+    same_kind = Appeared(role="Text", name_pattern="Delivered", within=Within(landmark="Chat"))
+    allowed = _second_plan(subgoals=(Subgoal(id="g2", desc="sent", condition=same_kind),))
+    assert continuation_refusal(allowed, progress) != "subgoals"
+
+
+def test_an_open_only_subgoal_may_move_between_window_and_title() -> None:
+    """A subgoal its plan reached only by opening an app is judged on the window or its title
+    (5.3 [v2.6]); a continuation may swap one for the other."""
+    from dataclasses import replace  # noqa: PLC0415 - this test only
+
+    first = Plan(
+        goal=GOAL,
+        subgoals=(Subgoal(id="g1", desc="results", condition=WindowExists(name_pattern=YT)),),
+        steps=(_open(),),
+    )
+    progress = Progress()
+    progress.add(first, _unfinished(_result("s1"), ticked=set()))
+    retitled = Plan(
+        goal=GOAL,
+        subgoals=(Subgoal(id="g1", desc="results", condition=TitleMatches(pattern=YT)),),
+        steps=(replace(_click("p2.s1"), subgoal="g1"),),
+    )
+    assert continuation_refusal(retitled, progress) != "subgoals"
+
+
+def test_a_title_placeholder_may_become_a_diff_read_off_the_new_screen() -> None:
+    """The recorded YouTube replan (replan3 shape): plan 1 writes a blind title for a subgoal
+    with no steps yet; the continuation replaces it with an appeared diff. Stronger, allowed
+    (review of #118: 7 of 22 recorded continuations)."""
+    first = Plan(
+        goal=GOAL,
+        subgoals=(
+            Subgoal(id="g1", desc="results", condition=WindowExists(name_pattern=YT)),
+            Subgoal(id="g2", desc="playing", condition=TitleMatches(pattern="Drake")),
+        ),
+        steps=(_open(),),
+    )
+    progress = Progress()
+    progress.add(first, _unfinished(_result("s1")))
+    diff = Appeared(role="Text", name_pattern="Drake - Rich Flex", within=Within(landmark="Main"))
+    stronger = _second_plan(subgoals=(Subgoal(id="g2", desc="playing", condition=diff),))
+    assert continuation_refusal(stronger, progress) != "subgoals"

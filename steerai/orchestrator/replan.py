@@ -27,7 +27,7 @@ from steerai.orchestrator.gate import effective_risk
 from steerai.orchestrator.loop import TaskResult
 from steerai.orchestrator.plan_io import encode_predicate
 from steerai.planner.contracts import DoneStep, FailedStep, OpenSubgoal
-from steerai.verify.predicates import Predicate, field_values
+from steerai.verify.predicates import All, AnyOf, Predicate, field_values
 
 MAX_REPLANS = 2
 """Every replan counts, a continuation after `unfinished` too (design 5.3 [v2.1]: stricter than
@@ -201,13 +201,37 @@ def _subgoals_refused(plan: Plan, progress: Progress) -> bool:
         return True
     before = progress.subgoals()
     return any(
-        s.id in before and _texts(before[s.id].condition) != _texts(s.condition)
+        s.id in before
+        and (
+            _texts(before[s.id].condition) != _texts(s.condition)
+            or _weakened(before[s.id].condition, s.condition)
+        )
         for s in plan.subgoals
     )
 
 
 def _texts(condition: Predicate) -> list[str]:
     return sorted(value.text for value in field_values(condition))
+
+
+_WINDOW_KINDS = frozenset({"WindowExists", "TitleMatches"})
+
+
+def _kind(condition: Predicate) -> str:
+    """A condition's shape: its type, and for All / AnyOf the sorted shapes of its parts."""
+    if isinstance(condition, All | AnyOf):
+        inner = ",".join(sorted(_kind(part) for part in condition.parts))
+        return f"{type(condition).__name__}({inner})"
+    return type(condition).__name__
+
+
+def _weakened(before: Predicate, after: Predicate) -> bool:
+    """IJ-10 (#86): a continuation written from a page never weakens a remaining condition.
+    One way only: a window or title condition (which the page already controls) may become
+    any kind, as a continuation reads a stronger diff off the new screen (5.3 [v2.1]); any
+    other kind stays its kind, so an `appeared` diff never becomes a page-owned title."""
+    old = _kind(before)
+    return old not in _WINDOW_KINDS and _kind(after) != old
 
 
 def _bad_window(window: str | None, opens: set[str], *, desktop: bool) -> bool:
