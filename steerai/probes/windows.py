@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable, Mapping
 from ctypes import wintypes
 from dataclasses import dataclass
+from typing import Protocol
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,16 +292,25 @@ def process_name(pid: int) -> str:
         kernel32.CloseHandle(handle)
 
 
+class Pollable(Protocol):
+    """A launched process as `wait_window_for_pid` reports it (a `subprocess.Popen`)."""
+
+    def poll(self) -> int | None: ...
+
+
 def wait_window_for_pid(
     pid: int,
     *,
     title_contains: str | None = None,
     timeout_s: float = 30.0,
     image: str | None = None,
+    process: Pollable | None = None,
 ) -> WindowInfo:
     """First visible titled window owned by `pid`, polling until it appears (30 s: a cold Chrome
-    on a CI runner took over 15 s, 2026-11-04)."""
-    deadline = time.monotonic() + timeout_s
+    on a CI runner took over 15 s, 2026-11-04). On timeout the message says whether `process`
+    is still running or exited, and with what code (issue #39)."""
+    started = time.monotonic()
+    deadline = started + timeout_s
     while True:
         for window in list_top_windows():
             if window.cloak_unreadable:
@@ -309,7 +319,15 @@ def wait_window_for_pid(
                 return window
         if time.monotonic() >= deadline:
             seen = _windows_of(image) if image is not None else ""
-            raise TimeoutError(f"no visible window for pid {pid} within {timeout_s} s{seen}")
+            state = ""
+            if process is not None:
+                code = process.poll()
+                state = "; process running" if code is None else f"; process exit={code}"
+            waited = time.monotonic() - started
+            raise TimeoutError(
+                f"no visible window for pid {pid} within {timeout_s} s"
+                f" (after {waited:.1f} s){state}{seen}"
+            )
         time.sleep(0.2)
 
 
@@ -321,7 +339,43 @@ def _windows_of(image: str) -> str:
         for w in list_top_windows()
         if process_name(w.pid).lower() == image.lower()
     ]
-    return f"; {image} windows: " + (", ".join(found) if found else "none")
+    return f"; {image} windows: " + (", ".join(found) if found else "none") + _hidden_of(image)
+
+
+def _hidden_of(image: str) -> str:
+    """Counts (never titles) of `image`'s top windows the list leaves out, so "no window" is
+    told from "a hidden window" (issue #39, schema gate item 2)."""
+    rows: list[tuple[bool, int, bool | None]] = []
+    user32 = _user32()
+    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = (enum_proc, wintypes.LPARAM)
+
+    def on_window(hwnd: int, _lparam: int) -> bool:
+        if process_name(window_pid(hwnd)).lower() == image.lower():
+            rows.append(
+                (
+                    bool(user32.IsWindowVisible(hwnd)),
+                    user32.GetWindowTextLengthW(hwnd),
+                    is_cloaked(hwnd),
+                )
+            )
+        return True
+
+    user32.EnumWindows(enum_proc(on_window), 0)
+    return hidden_counts(rows)
+
+
+def hidden_counts(rows: list[tuple[bool, int, bool | None]]) -> str:
+    """`(visible, title length, cloaked)` per top window, as counts of the kinds the visible
+    list drops."""
+    invisible = sum(1 for visible, _, _ in rows if not visible)
+    untitled = sum(1 for visible, length, _ in rows if visible and length == 0)
+    cloaked = sum(1 for visible, length, c in rows if visible and length and c is True)
+    unclear = sum(1 for visible, length, c in rows if visible and length and c is None)
+    return (
+        f"; all top windows {len(rows)}: invisible {invisible}, untitled {untitled},"
+        f" cloaked {cloaked}, cloak unreadable {unclear}"
+    )
 
 
 def desktop_window() -> WindowInfo:

@@ -165,5 +165,5 @@ def test_wait_window_for_pid_never_matches_a_window_whose_cloak_cannot_be_read(
     monkeypatch.setattr(windows, "list_top_windows", lambda: [UNCLEAR, READABLE])
     assert windows.wait_window_for_pid(500, timeout_s=0.0) is READABLE
     monkeypatch.setattr(windows, "list_top_windows", lambda: [UNCLEAR])
-    with pytest.raises(TimeoutError, match=r"^no visible window for pid 500 within 0\.0 s$"):
+    with pytest.raises(TimeoutError, match=r"^no visible window for pid 500 within 0\.0 s "):
         windows.wait_window_for_pid(500, timeout_s=0.0)

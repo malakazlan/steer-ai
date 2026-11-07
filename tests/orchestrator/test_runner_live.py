@@ -167,11 +167,14 @@ def _run_cli(
 
 
 @pytest.mark.skipif(not CHROME_DEFAULT.is_file(), reason="Chrome is not installed")
+@pytest.mark.usefixtures("warm_chrome")  # the first Chrome start, measured (#39)
 def test_the_runner_sends_once_resumes_as_done_and_honours_the_risk_limit(tmp_path: Path) -> None:
     profile_dir = Path(tempfile.mkdtemp(prefix="steer-run-"))
     proc = launch_chrome(CHROME_DEFAULT, profile_dir, 9339, PAGE.as_uri(), window_size=(1000, 640))
     try:
-        window = wait_window_for_pid(proc.pid, title_contains="Google Chrome", image="chrome.exe")
+        window = wait_window_for_pid(
+            proc.pid, title_contains="Google Chrome", image="chrome.exe", process=proc
+        )
         start = _observe_until_exposed(WorldModel(UiaClient()), window.hwnd)
         content_role = next(
             e.role for e in start.elements if e.name == "ok" and e.parent_id is not None
@@ -269,11 +272,14 @@ def _person_plan_doc() -> dict[str, Any]:
 
 
 @pytest.mark.skipif(not CHROME_DEFAULT.is_file(), reason="Chrome is not installed")
+@pytest.mark.usefixtures("warm_chrome")  # the first Chrome start, measured (#39)
 def test_a_person_target_asks_which_row_and_clicks_the_chosen_one(tmp_path: Path) -> None:
     profile_dir = Path(tempfile.mkdtemp(prefix="steer-person-"))
     proc = launch_chrome(CHROME_DEFAULT, profile_dir, 9341, PAGE.as_uri(), window_size=(1000, 640))
     try:
-        window = wait_window_for_pid(proc.pid, title_contains="Google Chrome", image="chrome.exe")
+        window = wait_window_for_pid(
+            proc.pid, title_contains="Google Chrome", image="chrome.exe", process=proc
+        )
         _observe_until_exposed(WorldModel(UiaClient()), window.hwnd)
         plan_path = tmp_path / "person.json"
         plan_path.write_text(json.dumps(_person_plan_doc()), encoding="utf-8")
