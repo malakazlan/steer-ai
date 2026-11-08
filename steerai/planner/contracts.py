@@ -90,6 +90,8 @@ class PlanOutcome:
     stop_reason: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    repaired: bool = False
+    """The first document was refused at the plan boundary and one repair turn fixed it."""
 
     def trace_record(self) -> dict[str, Any]:
         """Counts and codes only (5.14 [v1.2]): never the goal, the screen or the plan."""
@@ -103,6 +105,7 @@ class PlanOutcome:
             "output_tokens": self.output_tokens,
             "steps": len(self.plan.steps),
             "subgoals": len(self.plan.subgoals),
+            "repaired": self.repaired,
         }
 
 
@@ -110,7 +113,7 @@ class PlannerError(SteerError):
     """The planner produced no plan; `detail` is a fixed token, `path` the field for
     `invalid_plan`. The message never quotes content."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - keyword-only context, each one a trace field
         self,
         code: ErrorCode,
         detail: str,
@@ -118,12 +121,15 @@ class PlannerError(SteerError):
         path: str | None = None,
         model: str = "",
         prompt_version: str = "",
+        attempt: int = 1,
     ) -> None:
         super().__init__(code, detail if path is None else f"{detail} at {path}")
         self.detail = detail
         self.path = path
         self.model = model
         self.prompt_version = prompt_version
+        self.attempt = attempt
+        """1 for the first call, 2 for the one repair call (5.3 [v2.38])."""
 
     def trace_record(self, *, latency_ms: float) -> dict[str, Any]:
         return {
@@ -134,4 +140,5 @@ class PlannerError(SteerError):
             "code": self.code.value,
             "detail": self.detail,
             "path": self.path,
+            "attempt": self.attempt,
         }
