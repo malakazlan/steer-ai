@@ -1448,6 +1448,7 @@ def _build_session(bound: Bound) -> SessionLike:
         tap_guard=lambda: tap_refusal(LiveInput(client)),
         locked=session_locked,
         goal_matcher=goal_matcher(model_planned=bound.options.goal is not None),
+        address_bar=client.address_bar,
     )
 
 

@@ -13,6 +13,7 @@ from steerai.errors import ErrorCode
 from steerai.orchestrator.contracts import GateDecision, Step
 from steerai.orchestrator.gate import Ask
 from steerai.orchestrator.ledger import LedgerError, WriteAheadRecord, action_key, key_params
+from steerai.verify.url_query import UrlBefore
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
 
@@ -277,6 +278,7 @@ class MemoryLedger:
         before: Snapshot,
         decision: GateDecision | None,
         chosen: dict[str, Any] | None = None,
+        url_before: UrlBefore | None = None,
     ) -> WriteAheadRecord:
         key = self.key_for(step)
         if decision is None or decision.action_key != key or decision.outcome == "block":
@@ -294,6 +296,7 @@ class MemoryLedger:
             chosen=chosen,
             before=replace(before, handles=[]),
             written_at=self.started_at,
+            url_before=url_before,
         )
         self.records[step.id] = record
         self.executions[key] = {"step_id": step.id, "phase": "written", "outcome": None}

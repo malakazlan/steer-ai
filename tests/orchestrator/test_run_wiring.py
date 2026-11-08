@@ -26,7 +26,7 @@ def test_the_real_session_brings_a_switched_window_forward_through_the_guard(
     import steerai.world.model as model_mod  # noqa: PLC0415
     from steerai.probes import win_input  # noqa: PLC0415
 
-    client: object = SimpleNamespace(dpi_per_monitor_v2=True)
+    client: Any = SimpleNamespace(dpi_per_monitor_v2=True, address_bar=lambda _hwnd: None)
     built: dict[str, Any] = {}
     monkeypatch.setattr(uia_mod, "UiaClient", lambda: client)
     monkeypatch.setattr(execution_mod.UiaBindings, "load", staticmethod(lambda: None))
@@ -54,6 +54,7 @@ def test_the_real_session_brings_a_switched_window_forward_through_the_guard(
     )
     run_mod._build_session(cast("run_mod.Bound", bound))
     assert built["bring_forward"] is win_input.acquire_foreground
+    assert built["address_bar"] is client.address_bar, "#148: the omnibox reader is wired"
     guard_inputs = built["tap_guard"]()
     assert isinstance(guard_inputs, physical_mod.LiveInput)
     assert guard_inputs._client is client, "the guard reads through the session's own client"

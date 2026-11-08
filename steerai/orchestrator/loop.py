@@ -65,6 +65,7 @@ from steerai.orchestrator.gate import (
     open_tier,
     params_for,
     rename_counts,
+    url_query_eligible,
 )
 from steerai.orchestrator.identity import (
     Binding,
@@ -102,6 +103,7 @@ from steerai.verify.t1 import (
     title_holds,
     verify,
 )
+from steerai.verify.url_query import UrlBefore, names_the_words
 from steerai.world.elements import Element
 from steerai.world.fingerprint import similarity
 from steerai.world.model import Snapshot, normalise_name
@@ -190,6 +192,7 @@ class TaskLedger(Protocol):
         before: Snapshot,
         decision: GateDecision | None,
         chosen: dict[str, Any] | None = None,
+        url_before: UrlBefore | None = None,
     ) -> WriteAheadRecord: ...
     def mark(self, step: Step, phase: Any) -> None: ...
     def record_outcome(self, step: Step, outcome: str) -> None: ...
@@ -307,6 +310,7 @@ class Session:
         tap_guard: Callable[[], str | None] | None = None,
         goal_matcher: GoalMatcher | None = None,
         max_risk: Risk = "R3",
+        address_bar: Callable[[int], str | None] | None = None,
     ) -> None:
         self.max_risk: Risk = max_risk
         """The person's `--max-risk` for the whole run: a tier the screen raises past it stops
@@ -343,6 +347,11 @@ class Session:
         self._launcher = launcher
         self._window_title = window_title
         self._identify = identify
+        self._address_bar = address_bar
+        """Chrome's omnibox value for a window, None when missing, focused or empty (#148)."""
+        self._url_step = False
+        """The step in flight is a Chrome search submit the address bar may prove (#148)."""
+        self._url_before: UrlBefore | None = None
         self._foreground = foreground
         self._goal = ""
         self._content_landmarks: tuple[str, ...] = ()
@@ -446,7 +455,7 @@ class Session:
                     expect = self._rebuilt(step, risk, before, element_id)
                 if waited:
                     evidence["restarted"] = True
-            before_of_record, recorded = self._record(step, risk, before, decision)
+            before_of_record, recorded = self._record(step, risk, before, decision, expect)
             action, before, retries = stage.measure(
                 "act", lambda: self._act(step, risk, before, element_id)
             )
@@ -890,9 +899,19 @@ class Session:
             # effect of an R2/R3 step (5.10 [v1.2]); unverified, and no label (review item 2)
             reason = {**verdict.evidence, "reason": "renamed_at_risk"}
             verdict = replace(verdict, holds=False, code=ErrorCode.VERIFY_TIMEOUT, evidence=reason)
+        url_counted = False
+        if self._url_step and not verdict.holds:
+            # a Chrome search submit whose title is in no frame: the address bar's query
+            # parameter is the proof, never a label (#148 design D)
+            url_counted, url_evidence = self._url_counts(step, after)
+            verdict = (
+                replace(verdict, holds=True, code=None, evidence=url_evidence)
+                if url_counted
+                else replace(verdict, evidence={**verdict.evidence, **url_evidence})
+            )
         label = (
             None
-            if renamed_at_risk
+            if renamed_at_risk or url_counted
             else label_of_record(
                 verdict, predicate=expect, action_key=key, before=before_of_record, after=after
             )
@@ -930,15 +949,26 @@ class Session:
         )
 
     def _record(
-        self, step: Step, risk: Risk, before: Snapshot, decision: GateDecision
+        self,
+        step: Step,
+        risk: Risk,
+        before: Snapshot,
+        decision: GateDecision,
+        expect: Predicate | None = None,
     ) -> tuple[Snapshot, bool]:
         """The write-ahead record before any R2/R3 dispatch; (before of record, written)."""
+        self._url_step, self._url_before = False, None
         if risk not in ("R2", "R3"):
             return before, False
         try:
             before_of_record = self._ledger.before_of_record(step, before)
             chosen = self._binding.to_record() if self._binding is not None else None
-            self._ledger.write_ahead(step, before_of_record, decision, chosen=chosen)
+            if self._url_eligible(step, expect, risk, before_of_record):
+                self._url_step = True
+                self._url_before = self._url_before_of(step)
+            self._ledger.write_ahead(
+                step, before_of_record, decision, chosen=chosen, url_before=self._url_before
+            )
         except LedgerError as exc:
             raise _StepFailureError(ErrorCode.GATE_BLOCKED, _wal_detail(exc)) from exc
         return before_of_record, True
@@ -1520,16 +1550,34 @@ class Session:
         except _StepFailureError:
             return record.phase
         expect = self._gate.predicate_for(step, composer_id=composer_id, bound=self._binding)
-        if expect is not None and self._effect_present(expect, record.before, before, step):
+        if expect is not None and self._effect_present(
+            expect, record.before, before, step, record.url_before
+        ):
             self._ledger.record_outcome(step, "done_already")
             return "done"
         return record.phase
 
     def _effect_present(
-        self, predicate: Predicate, persisted: Snapshot, now: Snapshot, step: Step
+        self,
+        predicate: Predicate,
+        persisted: Snapshot,
+        now: Snapshot,
+        step: Step,
+        url_before: UrlBefore | None = None,
     ) -> bool:
         if persisted.hwnd != now.hwnd or (persisted.pid and now.pid and persisted.pid != now.pid):
             return False
+        risk = effective_risk(step, element_ids=self._step_ids(step, persisted))
+        if url_before is not None and self._url_eligible(step, predicate, risk, persisted):
+            # the same proof as a live verify, on the record's digest (#148 design D item 5)
+            after, text = self._read_url(), step.params.get("text")
+            if (
+                after is not None
+                and isinstance(text, str)
+                and url_before.counts(after, text)
+                and names_the_words(_document_names(now), text)
+            ):
+                return True
         structural = _structural_part(predicate)
         if structural is None:
             return False
@@ -1542,6 +1590,51 @@ class Session:
             risk = effective_risk(step, element_ids=self._step_ids(step, persisted))
             return self._rename_counts(step, predicate, risk, persisted)
         return verdict.holds and verdict.level != 3
+
+    def _url_eligible(
+        self, step: Step, expect: Predicate | None, risk: Risk, before: Snapshot
+    ) -> bool:
+        """A search submit (`url_query_eligible`) in a chrome.exe window this session can read
+        the address bar of (#148 design D item 3)."""
+        if self._address_bar is None or self._identify is None:
+            return False
+        identity = self._identify(self.hwnd)
+        if identity is None or str(identity.get("image", "")).lower() != "chrome.exe":
+            return False
+        bound = self._binding.full_name if self._binding is not None else None
+        deny = deny_tier(step, bound, self._step_ids(step, before))
+        return url_query_eligible(step, expect, risk=risk, deny=deny, goal=self._goal)
+
+    def _read_url(self) -> str | None:
+        """The task window's address bar; a failed read is no URL (the step stays unverified
+        with `no_url`), never a pass."""
+        if self._address_bar is None:
+            return None
+        try:
+            return self._address_bar(self.hwnd)
+        except (OSError, SteerError):
+            return None
+
+    def _url_before_of(self, step: Step) -> UrlBefore | None:
+        """The before URL of record: a retry keeps the first attempt's (as the before snapshot
+        of record does); else read now, before the Enter."""
+        prior = self._ledger.read_ahead(step)
+        if prior is not None:
+            return prior.url_before
+        value, text = self._read_url(), step.params.get("text")
+        return None if value is None or not isinstance(text, str) else UrlBefore.of(value, text)
+
+    def _url_counts(self, step: Step, page: Snapshot) -> tuple[bool, dict[str, Any]]:
+        """The address bar carries the words and a page named by them is there (`page` is the
+        verify's last observation)."""
+        after, text = self._read_url(), step.params.get("text")
+        if self._url_before is None or after is None or not isinstance(text, str):
+            return False, {"detail": "no_url"}
+        if not self._url_before.counts(after, text):
+            return False, {}
+        if not names_the_words(_document_names(page), text):
+            return False, {"detail": "no_load"}
+        return True, {"reason": "url_query"}
 
     def _rename_counts(self, step: Step, expect: Predicate, risk: Risk, before: Snapshot) -> bool:
         bound = self._binding.full_name if self._binding is not None else None
@@ -2346,3 +2439,7 @@ def _wal_detail(exc: LedgerError) -> str:
     """`ledger_locked` when another runner took the task (5.4 [v1.3], #58), else the ledger
     could not write (`wal_unavailable`)."""
     return "ledger_locked" if exc.locked else "wal_unavailable"
+
+
+def _document_names(snapshot: Snapshot) -> list[str]:
+    return [element.name for element in snapshot.elements if element.role == "Document"]
