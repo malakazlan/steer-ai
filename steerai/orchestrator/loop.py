@@ -103,7 +103,7 @@ from steerai.verify.t1 import (
     title_holds,
     verify,
 )
-from steerai.verify.url_query import UrlBefore, names_the_words
+from steerai.verify.url_query import UrlBefore, page_loaded
 from steerai.world.elements import Element
 from steerai.world.fingerprint import similarity
 from steerai.world.model import Snapshot, normalise_name
@@ -312,6 +312,7 @@ class Session:
         goal_matcher: GoalMatcher | None = None,
         max_risk: Risk = "R3",
         address_bar: Callable[[int], str | None] | None = None,
+        document_url: Callable[[int], str | None] | None = None,
     ) -> None:
         self.max_risk: Risk = max_risk
         """The person's `--max-risk` for the whole run: a tier the screen raises past it stops
@@ -356,6 +357,8 @@ class Session:
         `onscreen` pick never scrolls (principal blocking 1)."""
         self._twin_rid: tuple[int, ...] | None = None
         self._address_bar = address_bar
+        self._document_url = document_url
+        """The URL of the window's one top-level Document, the load signal's second rule."""
         """Chrome's omnibox value for a window, None when missing, focused or empty (#148)."""
         self._url_step = False
         """The step in flight is a Chrome search submit the address bar may prove (#148)."""
@@ -1694,8 +1697,13 @@ class Session:
                 after is not None
                 and isinstance(text, str)
                 and url_before.counts(after, text)
-                and names_the_words(
-                    _document_names(now), text, before=_document_names(persisted), url=after
+                and page_loaded(
+                    _document_names(now),
+                    text,
+                    before=_document_names(persisted),
+                    url=after,
+                    document_url=self._read_document_url(),
+                    url_before=url_before,
                 )
             ):
                 return True
@@ -1736,6 +1744,15 @@ class Session:
         except (OSError, SteerError):
             return None
 
+    def _read_document_url(self) -> str | None:
+        """The top Document's URL; a failed read is none (the words rule alone decides)."""
+        if self._document_url is None:
+            return None
+        try:
+            return self._document_url(self.hwnd)
+        except (OSError, SteerError):
+            return None
+
     def _url_before_of(self, step: Step) -> UrlBefore | None:
         """The before URL of record: a retry keeps the first attempt's (as the before snapshot
         of record does); else read now, before the Enter."""
@@ -1748,15 +1765,20 @@ class Session:
     def _url_counts(
         self, step: Step, before: Snapshot, page: Snapshot
     ) -> tuple[bool, dict[str, Any]]:
-        """The address bar carries the words and a new page named by them is there (`page` is
-        the verify's last observation, `before` the before of record)."""
+        """The address bar carries the words and a new page loaded for them (`page_loaded`;
+        `page` is the verify's last observation, `before` the before of record)."""
         after, text = self._read_url(), step.params.get("text")
         if self._url_before is None or after is None or not isinstance(text, str):
             return False, {"detail": "no_url"}
         if not self._url_before.counts(after, text):
             return False, {}
-        if not names_the_words(
-            _document_names(page), text, before=_document_names(before), url=after
+        if not page_loaded(
+            _document_names(page),
+            text,
+            before=_document_names(before),
+            url=after,
+            document_url=self._read_document_url(),
+            url_before=self._url_before,
         ):
             return False, {"detail": "no_load"}
         return True, {"reason": "url_query"}

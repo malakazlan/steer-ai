@@ -314,3 +314,47 @@ def test_the_url_proof_ticks_nothing_else(label: str, condition: Any, loaded: st
     result = h.session.run_task(plan)
     assert result.status != "done", label
     assert all(t["by"] != "url_query" for t in _ticks(h)), label
+
+
+# ---- the Document's own URL (5.10 [v2.51]; probe document_url) --------------------------------
+
+UNTITLED = "Search results | Bing"
+"""A results title without the query, as MDN ("Search | MDN") and docs.python.org measured."""
+
+
+def _with_document_url(bar: Bar, after: str | None, **kw: Any) -> Harness:
+    h = _harness(bar, loaded=UNTITLED, **kw)
+    h.session._document_url = lambda _hwnd: after if bar.pressed else "https://www.bing.com/"
+    return h
+
+
+def test_a_title_without_the_query_loads_by_the_document_url() -> None:
+    bar = Bar(HOME, RESULTS)
+    h = _with_document_url(bar, "https://" + RESULTS)
+    result = h.session.run_step(_submit())
+    assert result.ok is True, result.to_dict()
+    assert result.evidence["reason"] == "url_query"
+
+
+@pytest.mark.parametrize(
+    ("label", "after"),
+    [
+        ("an error or certificate page", "chrome-error://chromewebdata/"),
+        ("unreadable", None),
+        ("another query", "https://www.bing.com/search?q=other"),
+    ],
+)
+def test_no_document_url_proof_is_no_load(label: str, after: str | None) -> None:
+    h = _with_document_url(Bar(HOME, RESULTS), after)
+    result = h.session.run_step(_submit())
+    assert result.ok is False, label
+    assert result.evidence["detail"] == "no_load", label
+
+
+def test_a_resume_loads_by_the_document_url_too() -> None:
+    bar = Bar(HOME, RESULTS)
+    h = _with_document_url(bar, "https://" + RESULTS)
+    presses = _crash_after_enter(h)
+    result = h.session.run_step(_submit())
+    assert result.gate == "done_already", result.to_dict()
+    assert len(presses) == 1
