@@ -27,6 +27,7 @@ from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
+from steerai.action.live_reads import twin_value_of
 from steerai.action.sanitize import field_text, normalise_newlines
 from steerai.errors import ErrorCode, SteerError
 from steerai.verify.predicates import (
@@ -687,7 +688,11 @@ def _field_value(predicate: FieldValue, snapshot: Snapshot, ctx: Context) -> Ver
         return _plain("target_not_found", settles=True)
     if len(found) > 1:
         # twin fields: only the twin the verified `type` wrote (#150, D-150 v2 item 4)
-        twin = None if evidence else pinned_twin(found, snapshot, ctx.pinned)
+        twin = (
+            None
+            if evidence
+            else pinned_twin(found, snapshot, ctx.pinned, twin_value_of(snapshot, live))
+        )
         if twin is None:
             return _plain("ambiguous_target", settles=True)
         found = [twin]

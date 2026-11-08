@@ -38,6 +38,7 @@ from steerai.action.launch import (
     title_matches,
 )
 from steerai.action.launcher import OpenAction
+from steerai.action.live_reads import twin_value_of
 from steerai.action.physical import TEXT_ROLES, PhysicalAction
 from steerai.action.sanitize import field_text, normalise_newlines
 from steerai.errors import ErrorCode, SteerError
@@ -1464,7 +1465,7 @@ class Session:
         asked about, by RuntimeId; (B) focus/type at R0/R1, the one twin on screen; (C) an
         Enter submit's first resolve, the focused twin, refused when it is not the twin the
         verified type pinned. Anything else, and anything that is no twin set, is ambiguous."""
-        if not twin_set(matches, snapshot):
+        if not twin_set(matches, snapshot, self._twin_value(snapshot)):
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
         if asked is not None:
             if self._twin_pick is None:
@@ -1501,6 +1502,11 @@ class Session:
         pick's premise broke, so stop, never scroll it into view (TW-10, principal blocking 1)."""
         if self._twin_pick == "onscreen":
             raise _StepFailureError(ErrorCode.FOCUS_LOST, ACT_MISMATCH)
+
+    def _twin_value(self, snapshot: Snapshot) -> Callable[[Element], str | None]:
+        """The shared twin-value reader over this session's live reads (read only when the
+        chains differ)."""
+        return twin_value_of(snapshot, self._live)
 
     def _read_focus(self) -> tuple[int, ...]:
         """The focused RuntimeId for an Enter submit's twin pick; unreadable is none."""
@@ -1641,7 +1647,7 @@ class Session:
             # an Enter submit's composer is its own target: the twin it resolved (TW-06/07)
             twins = [e for e in snapshot.elements if e.role == role and _same_name(e, name)]
             found = [e for e in twins if e.runtime_id == self._twin_rid]
-            if not twin_set(twins, snapshot) or len(found) != 1:
+            if not twin_set(twins, snapshot, self._twin_value(snapshot)) or len(found) != 1:
                 raise
             return found[0].id
 

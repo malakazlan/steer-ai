@@ -36,23 +36,29 @@ class Page:
     bottom: Element | None = BOTTOM
     extra: list[Element] = field(default_factory=list)
     observed: int = 0
+    content_named: dict[tuple[int, ...], str | None] | None = None
+    """When set, the top field's ListItem is named from its content, as Sphinx's is."""
 
     def observe(self, hwnd: int, **_kwargs: Any) -> Snapshot:
         self.observed += 1
         edits = [e for e in (self.top, self.bottom) if e is not None]
         snap = _page(*edits, extra=tuple(self.extra))
+        elements = list(snap.elements)
+        if self.content_named is not None:
+            typed = self.content_named.get(TOP.runtime_id) or ""
+            elements = [replace(e, name=typed + e.name) if e.id == 11 else e for e in elements]
         return replace(
             snap,
             id=f"twins-{self.observed}",
             hwnd=hwnd,
-            handles=[e.runtime_id for e in snap.elements],
-            elements=list(snap.elements),
+            handles=[e.runtime_id for e in elements],
+            elements=elements,
         )
 
 
 @dataclass
 class Live:
-    values: dict[tuple[int, ...], str] = field(default_factory=dict)
+    values: dict[tuple[int, ...], str | None] = field(default_factory=dict)
     focused: tuple[int, ...] = ()
 
     def value(self, handle: Any) -> str | None:
@@ -358,3 +364,35 @@ def test_a_resume_never_uses_the_live_twin_identity() -> None:
     h.ledger.executions[key] = {"step_id": step.id, "phase": "acting", "outcome": None}
     h.session._twin_rid = TOP.runtime_id  # the step already resolved its twin
     assert h.session._resume(step, record, page.observe(0x10)) == "acting"
+
+
+# ---- an ancestor named from the typed text (#150 typed; Sphinx's list item) ------------------
+
+
+def test_after_typing_the_condition_and_the_submit_still_find_the_twin() -> None:
+    """docs.python.org: the list item holding the field reads "Go|", then "pathlibGo|"."""
+    live = Live()
+    page = Page()
+    page.content_named = live.values
+    h, _, _live = _harness(page, live)
+    assert h.session.run_step(_type()).ok is True
+    condition = FieldValue(role="Edit", name_pattern="Quick search", text=QUERY)
+    snap = page.observe(0x10)
+    assert next(e for e in snap.elements if e.id == 11).name == QUERY + "Go|"
+    assert h.session._holds_now(condition, snap) is True, "no precondition_unmet"
+    live.focused = TOP.runtime_id
+    result = h.session.run_step(_submit())
+    assert result.ok is True, result.to_dict()
+    assert result.evidence["twin"] in ("focused", "asked")
+
+
+def test_a_raw_none_on_the_plain_twin_stops_the_submit() -> None:
+    """Review of #174, blocking 1: a raw None is unreadable, never an empty plain twin."""
+    live = Live(values={TOP.runtime_id: QUERY, BOTTOM.runtime_id: None}, focused=TOP.runtime_id)
+    page = Page()
+    page.content_named = live.values
+    h, _, _live = _harness(page, live)
+    result = h.session.run_step(_submit())
+    assert result.ok is False
+    assert result.evidence.get("detail") == "ambiguous_target"
+    assert h.physical.calls == []

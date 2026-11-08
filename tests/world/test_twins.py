@@ -4,6 +4,7 @@ targets and conditions. Measured: docs.python.org/3/ shows `Edit "Quick search"`
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 
 from steerai.world.elements import Element
@@ -129,3 +130,47 @@ def test_on_screen_needs_area_inside_the_window_and_no_offscreen_flag() -> None:
     assert not on_screen(BOTTOM, snap)
     assert not on_screen(replace(TOP, box=(989, 183, 989, 209)), snap), "zero area"
     assert not on_screen(replace(TOP, box=(989, 1871, 1169, 1897)), snap), "below the window"
+
+
+# ---- a field typed into renames its content-named ancestor (#150 typed, review of #172) ------
+
+
+def _typed(top_value: str, top_row: str = "Go|", bottom_row: str = "Go|") -> Snapshot:
+    """Sphinx's ListItem is named from its content: "Go|" empty, "<text>Go|" after typing."""
+    rows = _chain(10)
+    rows[1] = replace(rows[1], name=top_row)
+    other = _chain(20)
+    other[1] = replace(other[1], name=bottom_row)
+    return _snapshot(*rows, *other, TOP, BOTTOM)
+
+
+def _values(top: str | None, bottom: str | None) -> Callable[[Element], str | None]:
+    found = {TOP.runtime_id: top, BOTTOM.runtime_id: bottom}
+    return lambda element: found[element.runtime_id]
+
+
+def test_a_typed_twin_stays_a_twin_once_its_value_is_set_aside() -> None:
+    snap = _typed("pathlib", top_row="pathlibGo|")
+    assert not twin_set([TOP, BOTTOM], snap), "no live values: the chains differ"
+    assert twin_set([TOP, BOTTOM], snap, value_of=_values("pathlib", ""))
+    spaced = _typed("pathlib", top_row="pathlib Go |", bottom_row="Go |")
+    assert twin_set([TOP, BOTTOM], spaced, value_of=_values("pathlib", ""))
+
+
+def test_rows_that_differ_by_their_own_values_are_never_twins() -> None:
+    cart = _typed("1", top_row="Qty 1 Remove", bottom_row="Qty 2 Remove")
+    assert not twin_set([TOP, BOTTOM], cart, value_of=_values("1", "2")), "two values"
+    assert not twin_set([TOP, BOTTOM], cart, value_of=_values("1", "")), "still differs"
+    collide = _typed("1", top_row="1Go|")
+    assert not twin_set([TOP, BOTTOM], collide, value_of=_values("1", "2")), "two values"
+
+
+def test_only_one_occurrence_of_the_value_is_set_aside() -> None:
+    snap = _typed("pathlib", top_row="pathlib pathlibGo|")
+    assert not twin_set([TOP, BOTTOM], snap, value_of=_values("pathlib", ""))
+
+
+def test_an_unreadable_value_is_never_a_twin_set() -> None:
+    snap = _typed("pathlib", top_row="pathlibGo|")
+    assert not twin_set([TOP, BOTTOM], snap, value_of=_values(None, ""))
+    assert not twin_set([TOP, BOTTOM], snap, value_of=_values("pathlib", None))

@@ -11,6 +11,7 @@ def test_the_page_has_two_identical_fields_far_apart() -> None:
     assert PAGE.count('aria-label="Quick search"') == 2
     assert 'name="from" value="top"' in PAGE
     assert 'name="from" value="bottom"' in PAGE
+    assert PAGE.count("<li><form") == 2, "each field in a list item, as Sphinx renders it"
 
 
 def test_submitted_reads_the_form_and_the_query_of_each_search() -> None:
