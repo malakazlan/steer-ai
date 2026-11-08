@@ -10,7 +10,7 @@ answer (WM-18). Password fields never carry a value and are tagged `secure` (WM-
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 Box = tuple[int, int, int, int]
@@ -64,11 +64,16 @@ def _wanted(element: Element) -> bool:
     )
 
 
-def prune(elements: Sequence[Element], *, cap: int) -> list[Element]:
+def prune(
+    elements: Sequence[Element], *, cap: int, offscreen: bool = False, minimized: bool = False
+) -> list[Element]:
     """Keep interactive and named elements plus each kept element's nearest ancestor; cap in order.
 
-    Ancestors are kept even when unnamed so grouping survives. Off-screen and zero-area elements
-    are never kept. `cap` must be >= 1.
+    Ancestors are kept even when unnamed so grouping survives. Zero-area elements are never kept.
+    With `offscreen`, the cap's room after every on-screen line goes to offscreen elements a
+    scroll can reach (D-OS v2): chosen nearest the window first, printed in tree order after the
+    on-screen lines, each with its nearest ancestor; none from a `minimized` window. `cap` must
+    be >= 1.
     """
     if cap < 1:
         raise ValueError("cap must be >= 1")
@@ -81,8 +86,58 @@ def prune(elements: Sequence[Element], *, cap: int) -> list[Element]:
                 parent = by_id[element.parent_id]
                 if not parent.offscreen:
                     keep.add(parent.id)
-    kept = [element for element in elements if element.id in keep]
-    return kept[:cap]
+    kept = [element for element in elements if element.id in keep][:cap]
+    if not offscreen or minimized or len(kept) >= cap:
+        return kept
+    root = next((e for e in elements if e.parent_id is None and e.depth == 0), None)
+    if root is None:
+        return kept
+    chosen = _reachable(elements, by_id, root.box, {e.id for e in kept}, cap - len(kept))
+    return kept + [element for element in elements if element.id in chosen]
+
+
+def _reachable(
+    elements: Sequence[Element],
+    by_id: Mapping[int, Element],
+    window: Box,
+    kept: set[int],
+    room: int,
+) -> set[int]:
+    """Offscreen wanted elements whose box overlaps the window horizontally (the classes a
+    ScrollIntoView brings on screen 5/5; sr-only text at x=-12440 never does, probe
+    `offscreen_reach`), nearest first by vertical distance, each with its nearest ancestor when
+    that is not listed yet; an element whose ancestor does not fit is left out."""
+    candidates = [e for e in elements if e.offscreen and _listable(e) and _overlaps(e.box, window)]
+    candidates.sort(key=lambda e: _distance(e.box, window))
+    chosen: set[int] = set()
+    for element in candidates:
+        if element.id in chosen:
+            continue
+        parent = by_id.get(element.parent_id) if element.parent_id is not None else None
+        group = {element.id}
+        if parent is not None and parent.has_area and parent.id not in kept | chosen:
+            group.add(parent.id)
+        if len(chosen) + len(group) > room:
+            continue
+        chosen |= group
+    return chosen
+
+
+def _listable(element: Element) -> bool:
+    return element.has_area and (element.role in INTERACTIVE_ROLES or bool(element.name))
+
+
+def _overlaps(box: Box, window: Box) -> bool:
+    return box[0] < window[2] and box[2] > window[0]
+
+
+def _distance(box: Box, window: Box) -> int:
+    """Vertical distance from the window's box; 0 inside its rows."""
+    if box[3] <= window[1]:
+        return window[1] - box[3]
+    if box[1] >= window[3]:
+        return box[1] - window[3]
+    return 0
 
 
 def safe_name(name: str) -> str:
@@ -110,6 +165,8 @@ def format_lines(elements: Sequence[Element], *, remaining: int = 0) -> list[str
             line += " disabled"
         if element.secure:
             line += " secure"
+        if element.offscreen:
+            line += " offscreen"
         lines.append(line)
     if remaining > 0:
         lines.append(f"(... {remaining} more not shown)")

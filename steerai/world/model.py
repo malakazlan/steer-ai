@@ -67,8 +67,13 @@ class Snapshot:
 
     @property
     def lines(self) -> list[str]:
-        kept = prune(self.elements, cap=self.cap)
-        eligible = prune(self.elements, cap=max(len(self.elements), 1))
+        kept = prune(self.elements, cap=self.cap, offscreen=True, minimized=self.minimized)
+        eligible = prune(
+            self.elements,
+            cap=max(len(self.elements), 1),
+            offscreen=True,
+            minimized=self.minimized,
+        )
         return format_lines(kept, remaining=len(eligible) - len(kept))
 
     @property
