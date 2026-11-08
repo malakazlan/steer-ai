@@ -139,7 +139,11 @@ def check_runnable(plan: Plan) -> None:
     for index, step in enumerate(plan.steps):
         path = f"$.steps[{index}]"
         if step.verb == "click" and step.expect is None:
-            raise PlanError(f"{path}.expect", "a click names its effect in expect")
+            raise PlanError(
+                f"{path}.expect",
+                "a click names its effect in expect: what it makes appear (the field, panel or "
+                "page it opens); a best guess is fine, a wrong one replans from the new screen",
+            )
         scope, text = step.params.get("scope"), step.params.get("text")
         if (
             step.verb in ("send", "submit")

@@ -54,6 +54,18 @@ class SiteKey(enum.StrEnum):
     youtube = "youtube"
 
 
+class WindowRef(enum.StrEnum):
+    """Which window a step acts in (5.3 [v2.42]): an enum, so a malformed value cannot be
+    written; the open step's id goes in `opened_step`. Live 2026-11-08, a free string field took
+    `"start','expect_placeholder"` twice, on the first call and after the repair turn."""
+
+    start = "start"
+    opened = "opened"
+
+
+MIRROR_ONLY_STEP_KEYS: frozenset[str] = frozenset({"opened_step"})
+"""Mirror fields the file form never carries: `to_file_form` folds them into `window`."""
+
 MODEL_OWNED_STEP_KEYS: frozenset[str] = frozenset(
     {"id", "subgoal", "verb", "target", "text", "risk", "params", "expect", "window"}
 )
@@ -142,10 +154,14 @@ class StepDoc(_Doc):
     expect: PredicateDoc | None = Field(
         default=None, description="the step's own effect in the predicate language"
     )
-    window: str | None = Field(
+    window: WindowRef | None = Field(
         default=None,
-        description='"start" or "opened:<id of an earlier open step>": the window this step '
-        "and the next ones act in; leave unset to stay in the window of the step before",
+        description='"start" (the window the task began in) or "opened" (the window an earlier '
+        "open step opened, named in opened_step): the window this step and the next ones act "
+        "in; leave unset to stay in the window of the step before",
+    )
+    opened_step: str | None = Field(
+        default=None, description='with window "opened": the id of the earlier open step'
     )
 
 
@@ -168,4 +184,10 @@ class PlanDoc(_Doc):
         for step, raw in zip(self.steps, body.get("steps", []), strict=True):
             if step.expect is not None:
                 raw["expect"] = step.expect.to_file_form()
+            opened = raw.pop("opened_step", None)
+            if step.window is WindowRef.start:
+                raw["window"] = "start"
+            elif step.window is WindowRef.opened or opened is not None:
+                # no id is left for the boundary to refuse at its path, never invented here
+                raw["window"] = f"opened:{opened or ''}"
         return body
