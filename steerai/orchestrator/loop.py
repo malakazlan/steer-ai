@@ -903,7 +903,7 @@ class Session:
         if self._url_step and not verdict.holds:
             # a Chrome search submit whose title is in no frame: the address bar's query
             # parameter is the proof, never a label (#148 design D)
-            url_counted, url_evidence = self._url_counts(step, after)
+            url_counted, url_evidence = self._url_counts(step, before_of_record, after)
             verdict = (
                 replace(verdict, holds=True, code=None, evidence=url_evidence)
                 if url_counted
@@ -1575,7 +1575,9 @@ class Session:
                 after is not None
                 and isinstance(text, str)
                 and url_before.counts(after, text)
-                and names_the_words(_document_names(now), text)
+                and names_the_words(
+                    _document_names(now), text, before=_document_names(persisted), url=after
+                )
             ):
                 return True
         structural = _structural_part(predicate)
@@ -1624,15 +1626,19 @@ class Session:
         value, text = self._read_url(), step.params.get("text")
         return None if value is None or not isinstance(text, str) else UrlBefore.of(value, text)
 
-    def _url_counts(self, step: Step, page: Snapshot) -> tuple[bool, dict[str, Any]]:
-        """The address bar carries the words and a page named by them is there (`page` is the
-        verify's last observation)."""
+    def _url_counts(
+        self, step: Step, before: Snapshot, page: Snapshot
+    ) -> tuple[bool, dict[str, Any]]:
+        """The address bar carries the words and a new page named by them is there (`page` is
+        the verify's last observation, `before` the before of record)."""
         after, text = self._read_url(), step.params.get("text")
         if self._url_before is None or after is None or not isinstance(text, str):
             return False, {"detail": "no_url"}
         if not self._url_before.counts(after, text):
             return False, {}
-        if not names_the_words(_document_names(page), text):
+        if not names_the_words(
+            _document_names(page), text, before=_document_names(before), url=after
+        ):
             return False, {"detail": "no_load"}
         return True, {"reason": "url_query"}
 

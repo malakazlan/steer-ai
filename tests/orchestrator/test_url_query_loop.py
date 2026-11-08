@@ -99,13 +99,15 @@ class Bar:
 LOADED = f"{HELLO} - Search"
 
 
-def _harness(bar: Bar, image: str = "chrome.exe", loaded: str = LOADED) -> Harness:
+def _harness(
+    bar: Bar, image: str = "chrome.exe", loaded: str = LOADED, home_title: str = "Bing"
+) -> Harness:
     """The page's Document is renamed on the Enter to `loaded`, a title in no registered frame,
     so the expect never matches (`no_match`)."""
     h = Harness()
     h.world.composer_value = HELLO
     _rebuild(h, live=FocusLive(h.world, focused=COMPOSER[3]))
-    home = (40, "Document", "Bing", (42, 90), 0)
+    home = (40, "Document", home_title, (42, 90), 0)
     h.world.rows.append(home)
     h.session._goal = GOAL
     h.session._identify = lambda hwnd: {"hwnd": hwnd, "image": image, "title": "Bing"}
@@ -148,6 +150,29 @@ def test_om13_the_url_with_no_page_named_by_the_words_is_no_load(loaded: str) ->
     assert result.ok is False
     assert result.code is ErrorCode.VERIFY_TIMEOUT
     assert result.evidence["detail"] == "no_load"
+
+
+REFINED_FROM = f"{HELLO} world - Search"
+"""The page before an omnibox refinement: its title already holds the new, shorter query."""
+
+
+def test_om13_a_title_already_there_before_the_submit_is_no_load() -> None:
+    """#159 review item 1(i): the pending URL shows at once under the old page's title."""
+    bar = Bar("www.bing.com/search?q=hello+there+world", RESULTS)
+    h = _harness(bar, loaded=REFINED_FROM, home_title=REFINED_FROM)
+    result = h.session.run_step(_submit())
+    assert result.ok is False
+    assert result.evidence["detail"] == "no_load"
+
+
+def test_om08_a_resume_under_the_old_title_is_not_present() -> None:
+    bar = Bar("www.bing.com/search?q=hello+there+world", RESULTS)
+    h = _harness(bar, home_title=REFINED_FROM)
+    _crash_after_enter(h)
+    h.world.rows[:] = [r for r in h.world.rows if r[0] != 40] + [
+        (40, "Document", REFINED_FROM, (42, 90), 0)
+    ]
+    assert h.session.run_step(_submit()).gate != "done_already"
 
 
 @pytest.mark.parametrize(

@@ -12,9 +12,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 
+def _split(value: str) -> urllib.parse.SplitResult:
+    return urllib.parse.urlsplit(value if "://" in value else "https://" + value)
+
+
 def _params(value: str) -> list[tuple[str, str]]:
-    url = value if "://" in value else "https://" + value
-    return urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query, keep_blank_values=True)
+    return urllib.parse.parse_qsl(_split(value).query, keep_blank_values=True)
 
 
 def _folded(text: str) -> str:
@@ -27,12 +30,24 @@ def carries(value: str, text: str) -> bool:
     return bool(wanted) and any(_folded(v) == wanted for _k, v in _params(value))
 
 
-def names_the_words(document_names: Iterable[str], text: str) -> bool:
+def names_the_words(
+    document_names: Iterable[str], text: str, *, before: Iterable[str], url: str
+) -> bool:
     """The load signal beside the URL: a Document whose name holds the typed words, case
-    folded. Chrome keeps the URL on its error page (titled by the host) and shows an
-    address-bar navigation's URL before the server answers (probe #157 `commit`)."""
+    folded, that was not among the before Documents' names and is not only the URL's host.
+    Chrome keeps the URL on its error page (titled by the host) and shows an address-bar
+    navigation's URL before the server answers, under the old page's title (probe #157
+    `commit`; #159 review item 1)."""
     wanted = _folded(text).casefold()
-    return bool(wanted) and any(wanted in _folded(name).casefold() for name in document_names)
+    host = (_split(url).hostname or "").casefold()
+    hosts = {host, host.removeprefix("www.")}
+    old = set(before)
+    return bool(wanted) and any(
+        name not in old
+        and _folded(name).casefold() not in hosts
+        and wanted in _folded(name).casefold()
+        for name in document_names
+    )
 
 
 def _digest(value: str) -> str:

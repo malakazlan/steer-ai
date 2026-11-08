@@ -5,7 +5,7 @@ allowed (the omnibox hides it, probe #157)."""
 
 from __future__ import annotations
 
-from steerai.verify.url_query import UrlBefore, url_query_counts
+from steerai.verify.url_query import UrlBefore, names_the_words, url_query_counts
 
 BEFORE = "www.example.org/"
 TEXT = "ui automation tree"
@@ -63,3 +63,19 @@ def test_om08_a_digest_judges_as_the_url_does() -> None:
     for before, after in cases:
         expected = url_query_counts(before, after, TEXT)
         assert UrlBefore.of(before, TEXT).counts(after, TEXT) is expected, (before, after)
+
+
+def test_om13_the_load_signal_is_a_new_document_named_by_the_words() -> None:
+    """#159 review item 1: a title already there before the submit (an omnibox refinement shows
+    the pending URL under the old page) or a title that is only the URL's host (Chrome's error
+    page) is not a load."""
+    url = "www.google.com/search?q=google.com"
+    assert names_the_words(["google.com - Google Search"], "google.com", before=[], url=url)
+    assert not names_the_words(["google.com"], "google.com", before=[], url=url)
+    assert not names_the_words(["www.google.com"], "google.com", before=[], url=url)
+    old = "ui automation tree - Ecosia"
+    refined = "www.ecosia.org/search?q=ui+automation"
+    assert not names_the_words([old], "ui automation", before=[old], url=refined)
+    assert names_the_words(
+        [old, "ui automation - Ecosia"], "ui automation", before=[old], url=refined
+    )
