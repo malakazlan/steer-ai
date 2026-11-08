@@ -73,9 +73,9 @@ _LOGGER = """<script>
 </script>"""
 
 
-def page_html() -> str:
+def page_html(expected: str = REPLY_TEXT) -> str:
     """The inbox with a Send logger that records the open chat (a code-owned id, no text)."""
-    logger = _LOGGER % json.dumps(REPLY_TEXT)
+    logger = _LOGGER % json.dumps(expected)
     return INBOX.read_text(encoding="utf-8").replace("</body>", logger + "</body>", 1)
 
 

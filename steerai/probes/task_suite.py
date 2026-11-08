@@ -58,8 +58,11 @@ from steerai.probes.present_switch import _plan_kinds, _steps, page_html
 from steerai.probes.windows import wait_window_for_pid
 
 NOTEPAD = Path(r"C:\Windows\System32\notepad.exe")
+WORDPAD = Path(r"C:\Program Files\Windows NT\Accessories\wordpad.exe")
 Check = Literal[
     "notepad_text",
+    "app_text",
+    "url_search",
     "google_search",
     "youtube_search",
     "youtube_watch",
@@ -82,6 +85,10 @@ class Task:
     approve: frozenset[str] = frozenset()
     """The exact texts the scripted person says yes to (casefolded equality, never a substring:
     "ok" is not "ok thanks", #139 review item 2)."""
+    path: str = ""
+    """For `url_search`: the results page's exact path."""
+    param: str = ""
+    """For `url_search`: the query parameter that holds the words."""
 
 
 def _search(task_id: str, site: str, start: str, words: str, check: Check) -> Task:
@@ -140,6 +147,69 @@ open a Wikipedia article, reply or open a chat in the probe inbox. These were th
 set for #131/#133/#134/#137 (design 12 [v2.43]): a pass here is not a held-out result."""
 
 
+def _url_search(  # noqa: PLR0913 - one task's fields
+    task_id: str, site: str, start: str, words: str, *, path: str, param: str = "q"
+) -> Task:
+    return Task(
+        task_id,
+        f"search {site} for {words}",
+        start,
+        "url_search",
+        words,
+        frozenset({words}),
+        path=path,
+        param=param,
+    )
+
+
+HELD_OUT: tuple[Task, ...] = (
+    Task(
+        "hn1",
+        "type meeting moved to 3pm, room 4 in notepad",
+        "notepad",
+        "notepad_text",
+        "meeting moved to 3pm, room 4",
+    ),
+    Task(
+        "wp1", "type quarterly plan draft in wordpad", "wordpad", "app_text", "quarterly plan draft"
+    ),
+    _url_search(
+        "bing1", "Bing", "https://www.bing.com/?cc=us", "computer use agents", path="/search"
+    ),
+    _url_search("ddg1", "DuckDuckGo", "https://duckduckgo.com/", "ui automation tree", path="/"),
+    _url_search("gh1", "GitHub", "https://github.com/", "computer use agent", path="/search"),
+    _url_search(
+        "py1", "the Python docs", "https://docs.python.org/3/", "pathlib", path="/3/search.html"
+    ),
+    _url_search(
+        "mdn1", "MDN", "https://developer.mozilla.org/en-US/", "flexbox", path="/en-US/search"
+    ),
+    Task(
+        "wk3",
+        "open the Wikipedia article on Grace Hopper",
+        "https://en.wikipedia.org/wiki/Main_Page",
+        "wiki_article",
+        "/wiki/Grace_Hopper",
+        frozenset({"Grace Hopper"}),
+    ),
+    Task("ib3", "open the chat with Bilal", "inbox", "inbox_chat", "chat-bilal"),
+    Task(
+        "ib4",
+        "reply see you tomorrow to Sara Ahmed",
+        "inbox",
+        "inbox_send",
+        "chat-sara",
+        frozenset({"see you tomorrow"}),
+    ),
+)
+"""Ten other single-app tasks, never used to fix Steer (design 12 [v2.43]): Phase 1 is met only
+when these pass the same bar. Run once, without tuning on them."""
+
+
+def task_set(name: str) -> tuple[Task, ...]:
+    return HELD_OUT if name == "held_out" else TASKS
+
+
 @dataclass
 class Person:
     """`go` to every plan; `yes` only to an ask whose text is one of the task's exact phrases."""
@@ -175,17 +245,21 @@ def query_of(url: str) -> str:
 _SEARCH_PATHS: dict[str, str] = {"google_search": "/search", "youtube_search": "/results"}
 
 
-def passed(task: Task, status: str | None, observed: str) -> bool:
+def passed(task: Task, status: str | None, observed: str) -> bool:  # noqa: PLR0911 - one per check
     """Steer said `done` and the independent read agrees exactly (#139 review item 3)."""
     if status != "done":
         return False
-    if task.check == "notepad_text":
+    if task.check in ("notepad_text", "app_text"):
         return observed.strip() == task.expected
     if task.check in ("inbox_send", "inbox_chat"):
         return observed == task.expected
     page = json.loads(observed or "{}")
     href, title = str(page.get("href", "")), str(page.get("title", ""))
     path = urllib.parse.urlsplit(href).path
+    if task.check == "url_search":
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(href).query)
+        words = " ".join(query.get(task.param, [""])[0].split())
+        return path == task.path and words.casefold() == task.expected.casefold()
     if task.check in _SEARCH_PATHS:
         return path == _SEARCH_PATHS[task.check] and (
             query_of(href).casefold() == task.expected.casefold()
@@ -210,10 +284,10 @@ def inbox_send(raw: str) -> str:
     return str(entry.get("chat"))
 
 
-def seconds_line(rows: Sequence[dict[str, Any]]) -> str:
+def seconds_line(rows: Sequence[dict[str, Any]], tasks: Sequence[Task] = TASKS) -> str:
     """p50 / p95 wall seconds per task over its measured runs."""
     parts = []
-    for task in TASKS:
+    for task in tasks:
         times = sorted(
             float(r["seconds"]) for r in rows if r.get("task") == task.task_id and "seconds" in r
         )
@@ -225,12 +299,14 @@ def seconds_line(rows: Sequence[dict[str, Any]]) -> str:
     return "seconds p50/p95: " + ", ".join(parts)
 
 
-def verdict(rows: Sequence[dict[str, Any]]) -> tuple[list[str], bool]:
-    """Every task present and every run of it passed; an invalid run is reported and fails the
-    bar too (it measured nothing, so the task is not proven)."""
+def verdict(
+    rows: Sequence[dict[str, Any]], tasks: Sequence[Task] = TASKS
+) -> tuple[list[str], bool]:
+    """Every task of the set present and every run of it passed; an invalid run is reported and
+    fails the bar too (it measured nothing, so the task is not proven)."""
     lines: list[str] = []
     ok = bool(rows)
-    for task in TASKS:
+    for task in tasks:
         runs = [r for r in rows if r.get("task") == task.task_id]
         good = sum(bool(r["passed"]) for r in runs)
         invalid = sum("invalid" in r for r in runs)
@@ -257,8 +333,9 @@ _WM_GETTEXT = 0x000D
 _WM_GETTEXTLENGTH = 0x000E
 
 
-def notepad_text(hwnd: int) -> str:
-    """Classic Notepad's text through its Edit child (WM_GETTEXT), read after the run."""
+def notepad_text(hwnd: int, edit_class: str = "Edit") -> str:
+    """An app's text through its edit child (WM_GETTEXT; classic Notepad's `Edit`, WordPad's
+    `RICHEDIT50W`), read after the run."""
     user32: Any = ctypes.WinDLL("user32")  # Any: a ctypes library handle
     user32.FindWindowExW.restype = wintypes.HWND
     user32.FindWindowExW.argtypes = (
@@ -269,7 +346,7 @@ def notepad_text(hwnd: int) -> str:
     )
     user32.SendMessageW.restype = ctypes.c_ssize_t
     user32.SendMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
-    edit = user32.FindWindowExW(hwnd, None, "Edit", None)
+    edit = user32.FindWindowExW(hwnd, None, edit_class, None)
     if not edit:
         return ""
     length = int(user32.SendMessageW(edit, _WM_GETTEXTLENGTH, 0, 0))
@@ -334,13 +411,15 @@ def _steer(task: Task, number: int, hwnd: int, tmp: Path, planner: _Planner) -> 
     }
 
 
-def _run_notepad(task: Task, number: int, tmp: Path, planner: _Planner) -> dict[str, Any]:
-    proc = subprocess.Popen([str(NOTEPAD)])  # noqa: S603 - a fixed system path
+def _run_app(  # noqa: PLR0913 - one app's start and read, passed once
+    task: Task, number: int, tmp: Path, planner: _Planner, *, exe: Path, edit_class: str
+) -> dict[str, Any]:
+    proc = subprocess.Popen([str(exe)])  # noqa: S603 - a fixed system path
     try:
-        window = wait_window_for_pid(proc.pid, image="notepad.exe", process=proc)
+        window = wait_window_for_pid(proc.pid, image=exe.name, process=proc)
         _in_front(window.hwnd)
         row = _steer(task, number, window.hwnd, tmp, planner)
-        row["observed"] = notepad_text(window.hwnd)
+        row["observed"] = notepad_text(window.hwnd, edit_class)
         return row
     finally:
         subprocess.run(  # noqa: S603 - fixed argv
@@ -421,9 +500,12 @@ def one_run(task: Task, number: int, planner: _Planner, keep: Path | None = None
 
 def _started(task: Task, number: int, tmp: Path, planner: _Planner) -> dict[str, Any]:
     if task.start == "notepad":
-        return _run_notepad(task, number, tmp, planner)
+        return _run_app(task, number, tmp, planner, exe=NOTEPAD, edit_class="Edit")
+    if task.start == "wordpad":
+        return _run_app(task, number, tmp, planner, exe=WORDPAD, edit_class="RICHEDIT50W")
     if task.start == "inbox":
-        with PageServer({"/page.html": page_html()}) as server:
+        reply = next(iter(task.approve)) if task.check == "inbox_send" else REPLY_TEXT
+        with PageServer({"/page.html": page_html(reply)}) as server:
             return _run_chrome(
                 task, number, tmp, planner, f"http://127.0.0.1:{server.port}/page.html"
             )
@@ -456,25 +538,27 @@ def _header() -> dict[str, Any]:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Phase 1 bar: ten single-app tasks, live.")
     parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--set", choices=("dev", "held_out"), default="dev")
     parser.add_argument("--tasks", default="", help="comma-separated task ids (default: all)")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--keep", type=Path, default=None, help="copy plans and traces here")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     wanted = set(filter(None, args.tasks.split(",")))
+    tasks = task_set(args.set)
     planner = _Planner()
     rows: list[dict[str, Any]] = []
     with args.out.open("w", encoding="utf-8") as out:
         out.write(json.dumps(_header()) + "\n")
         for number in range(1, args.runs + 1):
-            for task in TASKS:
+            for task in tasks:
                 if wanted and task.task_id not in wanted:
                     continue
                 row = one_run(task, number, planner, args.keep)
                 rows.append(row)
                 out.write(json.dumps(row) + "\n")
                 out.flush()
-    lines, ok = verdict(rows)
-    lines.append(seconds_line(rows))
+    lines, ok = verdict(rows, tasks)
+    lines.append(seconds_line(rows, tasks))
     sys.stdout.write("\n".join(lines) + f"\nbar {'met' if ok else 'missed'}\n")
     return 0 if ok else 1
 
