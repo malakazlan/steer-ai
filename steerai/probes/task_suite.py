@@ -64,6 +64,8 @@ Check = Literal[
     "app_text",
     "url_search",
     "h2_event",
+    "h3_event",
+    "h3_final",
     "calc_display",
     "file_text",
     "google_search",
@@ -95,6 +97,9 @@ class Task:
     approve_targets: frozenset[str] = frozenset()
     """Exact button names the person says yes to on an ask that carries no text (a form's
     submit, a delete, a dialog's Save)."""
+    title: str = ""
+    """For `url_search`: the results page's exact title, measured (H3 review item 1); empty
+    means the title is not checked."""
 
 
 def _search(task_id: str, site: str, start: str, words: str, check: Check) -> Task:
@@ -154,7 +159,14 @@ set for #131/#133/#134/#137 (design 12 [v2.43]): a pass here is not a held-out r
 
 
 def _url_search(  # noqa: PLR0913 - one task's fields
-    task_id: str, site: str, start: str, words: str, *, path: str, param: str = "q"
+    task_id: str,
+    site: str,
+    start: str,
+    words: str,
+    *,
+    path: str,
+    param: str = "q",
+    title: str = "",
 ) -> Task:
     return Task(
         task_id,
@@ -165,7 +177,21 @@ def _url_search(  # noqa: PLR0913 - one task's fields
         frozenset({words}),
         path=path,
         param=param,
+        title=title,
     )
+
+
+CHALLENGE_TITLES = frozenset({"Client Challenge", "Just a moment..."})
+"""Bot-check interstitials at a results URL (PyPI, Cloudflare): the run measured nothing."""
+
+
+def _read_page(port: int, stage: str) -> str:
+    """The page's href and title as JSON; a bot check is an invalid run, never a pass."""
+    expression = "JSON.stringify({href: location.href, title: document.title})"
+    observed = _read(port, expression, stage)
+    if str(json.loads(observed or "{}").get("title", "")) in CHALLENGE_TITLES:
+        raise InvalidRun("bot_check")
+    return observed
 
 
 HELD_OUT: tuple[Task, ...] = (
@@ -237,8 +263,7 @@ def controls(tasks: Sequence[Task]) -> list[str]:
         try:
             page_ws_url(port)
             time.sleep(4.0)  # the site settles its first layout and any redirect
-            expression = "JSON.stringify({href: location.href, title: document.title})"
-            observed = _read(port, expression, "control")
+            observed = _read_page(port, "control")
             ok = passed(task, "done", observed)
             lines.append(f"{task.task_id}: control {'passes' if ok else 'FAILS'}")
         except InvalidRun as exc:
@@ -306,6 +331,64 @@ H2: tuple[Task, ...] = (
 only after them; eight widget shapes on one local page (a form, a checkbox, a select, a todo
 add and an R3 delete, a menu, a tab, a button below the fold), a UWP app and a Save dialog.
 `TMPDIR` in save1's goal is the run's own folder, filled in at run time."""
+
+
+def _h3(task_id: str, goal: str, event: dict[str, Any], **kw: Any) -> Task:
+    return Task(task_id, goal, "h3", "h3_event", json.dumps(event, sort_keys=True), **kw)
+
+
+H3: tuple[Task, ...] = (
+    _h3("n1", "turn on the weekly digest email", {"kind": "digest", "on": True}),
+    Task(
+        "n2",
+        "turn on every notification type",
+        "h3",
+        "h3_final",
+        json.dumps(
+            {
+                "kinds": ["notifications"],
+                "state": {"Follows": True, "Mentions": True, "Replies": True},
+                "untrusted": False,
+            },
+            sort_keys=True,
+        ),
+    ),
+    _h3("n3", "set the shipping country to France", {"kind": "shipping", "value": "France"}),
+    _h3("n4", "switch to the annual billing period", {"kind": "period", "value": "Annual"}),
+    _h3("n5", "show the answers about shipping", {"kind": "faq", "name": "Shipping", "open": True}),
+    _h3("n6", "show more comments in the discussion", {"kind": "more_comments"}),
+    _h3("n7", "pick Kyoto from the destinations", {"kind": "destination", "value": "Kyoto"}),
+    _url_search(
+        "npm1",
+        "npm",
+        "https://www.npmjs.com/",
+        "left-pad",
+        path="/search",
+        title="left-pad - npm search",
+    ),
+    _url_search(
+        "cr1",
+        "crates.io",
+        "https://crates.io/",
+        "serde",
+        path="/search",
+        title="Search Results for 'serde' - crates.io: Rust Package Registry",
+    ),
+    _url_search(
+        "pypi1",
+        "PyPI",
+        "https://pypi.org/",
+        "requests",
+        path="/search/",
+        title="Search results \u00b7 PyPI",
+    ),
+)
+"""H3, the third held-out set (design 12 [v2.54]): written and committed before the widget-verb
+and offscreen-lines fixes, run only after them. Seven widget shapes on one new local page
+(`h3_page`; they share the page and move together), three real sites no earlier set used, each
+judged on its measured results title too. Revised after the review of PR #175: n1 keeps its old
+value until the 600 ms confirm, n2 is judged on the final state, n5 is an accordion, n6 a button
+in a scrolling box, n7 a listbox below the fold; the near-copies (a tab, Calculator) are out."""
 
 
 def h2_event(raw: str) -> str:
@@ -394,20 +477,36 @@ def _drive(cdp: CdpSession, drive: tuple[tuple[str, str], ...]) -> None:
         time.sleep(0.3)
 
 
-def h2_controls() -> list[str]:
-    """Each H2 page task done by scripted trusted input, read the way a run is read and judged
-    by `passed`; then Calculator computed by UIA Invoke on its own buttons (no OS input) and
-    read the way calc1 is read."""
-    from steerai.probes.h2_page import LOG_KEY  # noqa: PLC0415 - H2 only
-    from steerai.probes.h2_page import page_html as h2_html  # noqa: PLC0415
+H3_DRIVES: dict[str, tuple[tuple[str, str], ...]] = {
+    "n1": (("click", "#e-digest"),),
+    "n2": (("click", "#n-all"),),
+    "n3": (("focus", "#a-ship"), ("char", "F")),
+    "n4": (("click", "#p-year"),),
+    "n5": (("click", "#faq-ship-btn"),),
+    "n6": (("click", "#more-comments"),),
+    "n7": (("click", "#d-kyoto"),),
+}
+"""What a person would do for each H3 page task, as trusted CDP input (positive control only)."""
 
+
+def h3_controls() -> list[str]:
+    """Each H3 page task done by scripted trusted input and judged by `passed`; the three
+    search tasks by opening their results URL and checking the measured title."""
+    return _page_controls(H3, H3_DRIVES) + controls(
+        [task for task in H3 if task.check == "url_search"]
+    )
+
+
+def _page_controls(
+    tasks: Sequence[Task], drives: dict[str, tuple[tuple[str, str], ...]]
+) -> list[str]:
     lines = []
-    for task in H2:
-        drive = H2_DRIVES.get(task.task_id)
+    for task in tasks:
+        drive = drives.get(task.task_id)
         if drive is None:
             continue
         tmp = Path(tempfile.mkdtemp(prefix="steer-ctl-"))
-        with PageServer({"/page.html": h2_html()}) as server:
+        with PageServer({"/page.html": _page_for(task)}) as server:
             port = _free_port()
             url = f"http://127.0.0.1:{server.port}/page.html"
             proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, url, window_size=WINDOW)
@@ -419,26 +518,38 @@ def h2_controls() -> list[str]:
                     _drive(cdp, drive)
                 finally:
                     cdp.close()
-                raw = _read(port, f'localStorage.getItem("{LOG_KEY}") || "[]"', "read")
-                ok = passed(task, "done", h2_event(raw))
+                ok = passed(task, "done", _page_observed(task, port))
                 lines.append(f"{task.task_id}: control {'passes' if ok else 'FAILS'}")
             finally:
                 from steerai.probes.chrome_a11y import stop_chrome  # noqa: PLC0415
 
                 stop_chrome(proc, tmp / "profile")
                 shutil.rmtree(tmp, ignore_errors=True)
-    lines.append(_calc_control())
     return lines
 
 
-def _calc_control() -> str:
-    """12 x 7 = through Calculator's own buttons by InvokePattern, then the calc1 read."""
+def h2_controls() -> list[str]:
+    """Each H2 page task done by scripted trusted input, read the way a run is read and judged
+    by `passed`; then Calculator computed by UIA Invoke on its own buttons (no OS input) and
+    read the way calc1 is read."""
+    lines = _page_controls(H2, H2_DRIVES)
+    calc1 = next(task for task in H2 if task.task_id == "calc1")
+    lines.append(
+        _calc_control(
+            calc1, ("num1Button", "num2Button", "multiplyButton", "num7Button", "equalButton")
+        )
+    )
+    return lines
+
+
+def _calc_control(task: Task, buttons: Sequence[str]) -> str:
+    """The task's sum through Calculator's own buttons by InvokePattern, then its read."""
     from steerai.action.execution import UIA_INVOKE_PATTERN, UiaBindings  # noqa: PLC0415
     from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415
     from steerai.probes.windows import list_top_windows  # noqa: PLC0415
 
     if any(w.title == "Calculator" for w in list_top_windows()):
-        return "calc1: control invalid (calculator_already_open)"
+        return f"{task.task_id}: control invalid (calculator_already_open)"
     subprocess.Popen([str(CALC)])  # noqa: S603 - a fixed system path
     deadline = time.monotonic() + 20.0
     window = None
@@ -446,23 +557,62 @@ def _calc_control() -> str:
         window = next((w for w in list_top_windows() if w.title == "Calculator"), None)
         time.sleep(0.5)
     if window is None:
-        return "calc1: control invalid (calculator_not_shown)"
+        return f"{task.task_id}: control invalid (calculator_not_shown)"
     try:
         time.sleep(2.0)
         bindings = UiaBindings.load()
         tree = UiaClient().cached_tree(window.hwnd)
         by_id = {n.automation_id: h for n, h in zip(tree.nodes, tree.handles, strict=True)}
-        for button in ("num1Button", "num2Button", "multiplyButton", "num7Button", "equalButton"):
+        for button in buttons:
             bindings.pattern(by_id[button], UIA_INVOKE_PATTERN, "InvokePattern").Invoke()
             time.sleep(0.2)
-        calc1 = next(task for task in H2 if task.task_id == "calc1")
-        ok = passed(calc1, "done", calc_display(_calc_names(window.hwnd)))
-        return f"calc1: control {'passes' if ok else 'FAILS'}"
+        ok = passed(task, "done", calc_display(_calc_names(window.hwnd)))
+        return f"{task.task_id}: control {'passes' if ok else 'FAILS'}"
     finally:
         _close(window.hwnd)
 
 
+def _page_for(task: Task) -> str:
+    """The held-out page a page task runs on (H2 or H3)."""
+    if task.start == "h3":
+        from steerai.probes.h3_page import page_html as h3_html  # noqa: PLC0415 - H3 only
+
+        return h3_html()
+    from steerai.probes.h2_page import page_html as h2_html  # noqa: PLC0415 - H2 only
+
+    return h2_html()
+
+
+PENDING_LIMIT_S = 5.0
+
+
+def _page_observed(task: Task, port: int) -> str:
+    """A page task's read, once the page's saves in flight are done (`window.PENDING`, H3 n1:
+    the confirm lands 600 ms after the change; review item 3), capped at PENDING_LIMIT_S."""
+    deadline = time.monotonic() + PENDING_LIMIT_S
+    while time.monotonic() < deadline:
+        if _read(port, "String(window.PENDING || 0)", "pending") == "0":
+            break
+        time.sleep(0.1)
+    if task.check == "h3_final":
+        return _read(port, "JSON.stringify(window.finalState())", "final")
+    key = _page_log_key(task)
+    return h2_event(_read(port, f'localStorage.getItem("{key}") || "[]"', "read"))
+
+
+def _page_log_key(task: Task) -> str:
+    if task.start == "h3":
+        from steerai.probes.h3_page import LOG_KEY as H3_KEY  # noqa: PLC0415 - H3 only
+
+        return H3_KEY
+    from steerai.probes.h2_page import LOG_KEY as H2_KEY  # noqa: PLC0415 - H2 only
+
+    return H2_KEY
+
+
 def task_set(name: str) -> tuple[Task, ...]:
+    if name == "h3":
+        return H3
     if name == "h2":
         return H2
     return HELD_OUT if name == "held_out" else TASKS
@@ -510,7 +660,9 @@ def passed(task: Task, status: str | None, observed: str) -> bool:  # noqa: PLR0
         return False
     if task.check == "calc_display":
         return bool(json.loads(observed or "{}") == json.loads(task.expected))
-    if task.check in ("notepad_text", "app_text", "h2_event"):
+    if task.check == "h3_final":
+        return bool(json.loads(observed or "{}") == json.loads(task.expected))
+    if task.check in ("notepad_text", "app_text", "h2_event", "h3_event"):
         return observed.strip() == task.expected
     if task.check == "file_text":
         return observed == task.expected
@@ -522,7 +674,8 @@ def passed(task: Task, status: str | None, observed: str) -> bool:  # noqa: PLR0
     if task.check == "url_search":
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(href).query)
         words = " ".join(query.get(task.param, [""])[0].split())
-        return path == task.path and words.casefold() == task.expected.casefold()
+        same_title = not task.title or title == task.title
+        return path == task.path and words.casefold() == task.expected.casefold() and same_title
     if task.check in _SEARCH_PATHS:
         return path == _SEARCH_PATHS[task.check] and (
             query_of(href).casefold() == task.expected.casefold()
@@ -723,16 +876,12 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
         if task.check == "inbox_send":
             raw = _read(port, 'localStorage.getItem("steer-present") || "[]"', "read")
             row["observed"] = inbox_send(raw)
-        elif task.check == "h2_event":
-            from steerai.probes.h2_page import LOG_KEY  # noqa: PLC0415 - H2 only
-
-            raw = _read(port, f'localStorage.getItem("{LOG_KEY}") || "[]"', "read")
-            row["observed"] = h2_event(raw)
+        elif task.check in ("h2_event", "h3_event", "h3_final"):
+            row["observed"] = _page_observed(task, port)
         elif task.check == "inbox_chat":
             row["observed"] = _read(port, "document.body.dataset.chat", "chat")
         else:
-            expression = "JSON.stringify({href: location.href, title: document.title})"
-            row["observed"] = _read(port, expression, "page")
+            row["observed"] = _read_page(port, "page")
         return row
     finally:
         from steerai.probes.chrome_a11y import stop_chrome  # noqa: PLC0415 - with launch
@@ -856,10 +1005,8 @@ def _started(  # noqa: PLR0911 - one per start kind
         if not WORDPAD.is_file():
             raise InvalidRun("wordpad_absent")  # removed from newer Windows builds
         return _run_app(task, number, tmp, planner, exe=WORDPAD, edit_class="RICHEDIT50W")
-    if task.start == "h2":
-        from steerai.probes.h2_page import page_html as h2_html  # noqa: PLC0415 - H2 only
-
-        with PageServer({"/page.html": h2_html()}) as server:
+    if task.start in ("h2", "h3"):
+        with PageServer({"/page.html": _page_for(task)}) as server:
             return _run_chrome(
                 task, number, tmp, planner, f"http://127.0.0.1:{server.port}/page.html"
             )
@@ -902,7 +1049,7 @@ def _header() -> dict[str, Any]:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Phase 1 bar: ten single-app tasks, live.")
     parser.add_argument("--runs", type=int, default=3)
-    parser.add_argument("--set", choices=("dev", "held_out", "h2"), default="dev")
+    parser.add_argument("--set", choices=("dev", "held_out", "h2", "h3"), default="dev")
     parser.add_argument(
         "--controls", action="store_true", help="open each search task's results URL instead"
     )
@@ -913,7 +1060,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     wanted = set(filter(None, args.tasks.split(",")))
     tasks = task_set(args.set)
     if args.controls:
-        lines = h2_controls() if args.set == "h2" else controls(tasks)
+        if args.set == "h2":
+            lines = h2_controls()
+        elif args.set == "h3":
+            lines = h3_controls()
+        else:
+            lines = controls(tasks)
         sys.stdout.write("\n".join(lines) + "\n")
         return 0 if all(line.endswith("passes") for line in lines) else 1
     planner = _Planner()
