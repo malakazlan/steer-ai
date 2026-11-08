@@ -243,21 +243,38 @@ _ACTING_ROLES = frozenset(
 just a link (a "Delete chat" button inside it), so the click stays refused."""
 
 
-def row_link(snapshot: Snapshot, row: Element) -> Element | None:
-    """The row's one acting descendant when it is a Hyperlink with the row's exact name and no
-    automation id: the gate judged the row's name and id, so the link carries nothing it did
-    not judge (#84). Anything else is None: the click stays refused."""
+_FALLBACK_ROLES = frozenset({"Button", "SplitButton", "Hyperlink", "MenuItem", "TabItem"})
+"""Plain controls a physical click may stand in for when they expose no InvokePattern (#149)."""
+
+
+def _under(snapshot: Snapshot, ancestor: Element) -> list[Element]:
     by_id = {e.id: e for e in snapshot.elements}
 
-    def under_row(element: Element) -> bool:
+    def below(element: Element) -> bool:
         parent = element.parent_id
         while parent is not None:
-            if parent == row.id:
+            if parent == ancestor.id:
                 return True
             parent = by_id[parent].parent_id if parent in by_id else None
         return False
 
-    acting = [e for e in snapshot.elements if e.role in _ACTING_ROLES and under_row(e)]
+    return [e for e in snapshot.elements if below(e)]
+
+
+def physical_click_target(snapshot: Snapshot, element: Element) -> bool:
+    """Whether a physical click may stand in for a refused Invoke (5.9 [v2.50], #149): a plain
+    acting control with no acting descendant, since the physical hit test accepts any
+    descendant and a row would press the Delete button it holds (#84/#124)."""
+    return element.role in _FALLBACK_ROLES and not any(
+        e.role in _ACTING_ROLES for e in _under(snapshot, element)
+    )
+
+
+def row_link(snapshot: Snapshot, row: Element) -> Element | None:
+    """The row's one acting descendant when it is a Hyperlink with the row's exact name and no
+    automation id: the gate judged the row's name and id, so the link carries nothing it did
+    not judge (#84). Anything else is None: the click stays refused."""
+    acting = [e for e in _under(snapshot, row) if e.role in _ACTING_ROLES]
     if len(acting) != 1 or acting[0].role != "Hyperlink":
         return None
     link = acting[0]

@@ -29,7 +29,7 @@ from functools import partial
 from typing import Any, Literal, Protocol
 
 from steerai.action.dispositions import ActionResult, Delivery
-from steerai.action.executor import Action
+from steerai.action.executor import Action, physical_click_target
 from steerai.action.launch import (
     APPS,
     expected_title,
@@ -1007,6 +1007,9 @@ class Session:
                 evidence["detail"] = token
             self._close(step, risk, action.delivery.value)
         elif action.delivery is Delivery.NOT_DELIVERED and not action.steps:
+            detail = action.evidence.get("detail")
+            if isinstance(detail, str):
+                evidence.setdefault("detail", detail)  # a refusal names its cause (#149)
             self._close(step, risk, "not_delivered")
         else:
             return None
@@ -1875,13 +1878,32 @@ class Session:
         result = executor.execute(action, before)
         if action.verb == "type" and result.delivery is not Delivery.NOT_DELIVERED:
             self._typed_at = self._monotonic()
-        fallback = (
-            step.verb == "focus"
-            and result.delivery is Delivery.NOT_DELIVERED
-            and result.evidence.get("detail") == "hit_test_miss"
-        )
-        if not fallback:
+        refused = result.delivery is Delivery.NOT_DELIVERED and not result.steps
+        detail = result.evidence.get("detail")
+        if (
+            refused
+            and executor is self._semantic
+            and action.verb == "click"
+            and detail == "no_InvokePattern"
+            and physical_click_target(before, before.element(element_id))
+        ):
+            # no Invoke on a plain control: the hit-tested physical click, once (5.9 [v2.50])
+            before, element_id = self._fallback_look(step, before, element_id)
+            self._act_evidence["click_fallback"] = "physical"
+            self._act_evidence["semantic_detail"] = "no_InvokePattern"
+            physical = PhysicalAction(verb="click", element_id=element_id)
+            return self._physical.execute(physical, before), before, element_id
+        if not (step.verb == "focus" and refused and detail == "hit_test_miss"):
             return result, before, element_id
+        before, element_id = self._fallback_look(step, before, element_id)
+        result = self._semantic.execute(Action(verb="focus", element_id=element_id), before)
+        self._act_evidence["focus_fallback"] = "set_focus"
+        return result, before, element_id
+
+    def _fallback_look(self, step: Step, before: Snapshot, element_id: int) -> tuple[Snapshot, int]:
+        """Before a fallback dispatch: a boundary wait restarts from a fresh look at the same
+        element (TK-03), the window must still be the task's, the wait's input is not the
+        step's (D7), and a send or submit proves its composer again (OR-31)."""
         if self._boundary(self._act_evidence):
             before, element_id = self._reobserve(
                 step,
@@ -1892,11 +1914,13 @@ class Session:
             )
             self._act_evidence["restarted"] = True
             if self._monitor is not None:
-                # the wait's input is not the step's (D7), as in the act loop
                 self._counts_at_step = self._monitor.counts()
-        result = self._semantic.execute(Action(verb="focus", element_id=element_id), before)
-        self._act_evidence["focus_fallback"] = "set_focus"
-        return result, before, element_id
+            if step.verb in ("send", "submit"):
+                composer = self._composer(step, before)
+                if composer is not None:
+                    self._check_composer(step, before, composer)
+        self._still_the_window()
+        return before, element_id
 
     def _check_composer(self, step: Step, before: Snapshot, element_id: int) -> None:
         """Enter submits whatever the field shows: it must be the text the person approved
