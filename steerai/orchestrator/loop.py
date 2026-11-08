@@ -108,6 +108,14 @@ from steerai.world.model import Snapshot, normalise_name
 from steerai.world.people import MAX_CANDIDATES, lookalike_only, name_part
 
 REUSE_FRESHNESS_S = 5.0
+QUIET_AFTER_TYPE_S = 1.0
+"""How long the page must stay unchanged before an R2/R3 step that follows a `type` (5.11
+[v2.44]): measured 2026-11-08, Wikipedia's suggestions re-render the search widget 0.39-0.89 s
+after the text lands (n=5); other pages unmeasured."""
+SETTLE_AFTER_TYPE_CAP_S = 4.0
+"""The longest that wait lasts: a page still changing then is judged as it is (the ask and the
+re-observe after it still guard the step)."""
+SETTLE_POLL_S = 0.1
 """How old a decided after snapshot may be to serve as the next R0/R1 before. Unmeasured; well
 inside the executors' 10 s admission cap."""
 SCREEN_GUARD_THRESHOLD = 0.9
@@ -364,6 +372,8 @@ class Session:
         self._verify_deadline_s = verify_deadline_s
         self._last_after: tuple[Snapshot, float] | None = None
         self._last_pair: tuple[Snapshot, Snapshot] | None = None
+        self._typed_at: float | None = None
+        """When the last `type` was dispatched: the next R2/R3 step waits for a quiet page."""
         self._proof: tuple[Predicate, Verdict] | None = None
         """The step's own verified postcondition, as bound by the gate (#124)."""
         self._windows_at_step: list[WindowLike] | None = None
@@ -392,14 +402,7 @@ class Session:
             self._enter_window(step, evidence)
             key = self._ledger.key_for(step)
             self._act_evidence = evidence
-            before = stage.measure("observe", lambda: self._before(risk, evidence))
-            # admission first, at the candidates' tier ceiling for a person target: a done
-            # or open record under this key is never bypassed by the row the person picks
-            risk = self._ceiling(step, key, before, risk)
-            if risk in ("R2", "R3") and evidence.get("observe_reused"):
-                # a reused R0/R1 snapshot is not a before for an R2/R3 step: observe fresh
-                before = stage.measure("observe", lambda: self._observe_fresh(evidence))
-                risk = self._ceiling(step, key, before, effective_risk(step))
+            before, risk = self._before_at_ceiling(step, key, risk, stage, evidence)
             previous = self._admission(step, key, risk, before)
             if previous == "done":
                 return self._done_already(step, key, stage, evidence)
@@ -1272,6 +1275,66 @@ class Session:
                 return snapshot
         return self._observe_fresh(evidence)
 
+    def _before_at_ceiling(
+        self, step: Step, key: str, risk: Risk, stage: _Stage, evidence: dict[str, Any]
+    ) -> tuple[Snapshot, Risk]:
+        """The before snapshot and the tier admission runs at: admission first, at the
+        candidates' tier ceiling for a person target (a done or open record under this key is
+        never bypassed by the row the person picks); a reused R0/R1 snapshot is no before for
+        an R2/R3 step; right after a `type`, an R2/R3 step settles (5.11 [v2.44])."""
+        before = stage.measure("observe", lambda: self._before(risk, evidence))
+        risk = self._ceiling(step, key, before, risk)
+        if risk in ("R2", "R3") and evidence.get("observe_reused"):
+            before = stage.measure("observe", lambda: self._observe_fresh(evidence))
+            risk = self._ceiling(step, key, before, effective_risk(step))
+        if risk in ("R2", "R3") and self._settle_due():
+            # after the ceiling, so a step raised to R2 settles too; policy time (OR-39)
+            before = stage.measure("settle", partial(self._settled, before, evidence))
+            risk = self._ceiling(step, key, before, effective_risk(step))
+        return before, risk
+
+    def _settle_due(self) -> bool:
+        typed = self._typed_at
+        if typed is not None and self._monotonic() - typed > SETTLE_AFTER_TYPE_CAP_S:
+            self._typed_at = None  # the page has had the whole window: nothing to wait for
+            return False
+        return typed is not None
+
+    def _settled(self, snapshot: Snapshot, evidence: dict[str, Any]) -> Snapshot:
+        """Right after a `type`, an R2/R3 step's before waits until the page has kept its
+        elements for QUIET_AFTER_TYPE_S (5.11 [v2.44]): a suggestion list re-rendering the field
+        after the snapshot would otherwise change the screen during the ask or leave a stale
+        composer handle. Once per typing, within SETTLE_AFTER_TYPE_CAP_S of it."""
+        typed, self._typed_at = self._typed_at, None
+        if typed is None:
+            return snapshot
+        deadline = typed + SETTLE_AFTER_TYPE_CAP_S
+        ids = {e.runtime_id for e in snapshot.elements}
+        quiet_from = self._monotonic()
+        if self._last_after is not None:
+            last, stamp = self._last_after
+            if stamp >= typed and {e.runtime_id for e in last.elements} == ids:
+                # unchanged since the type's own after snapshot: quiet since then
+                quiet_from = stamp
+        # bounded by polls too: a clock that never moves must not spin (a stuck host clock)
+        for _ in range(int(SETTLE_AFTER_TYPE_CAP_S / SETTLE_POLL_S) + 1):
+            if self._monotonic() - quiet_from >= QUIET_AFTER_TYPE_S:
+                break
+            if self._monotonic() >= deadline:
+                evidence["settle"] = "capped"
+                break
+            self._sleep(SETTLE_POLL_S)
+            observed = self._observer.observe(self.hwnd)
+            if not observed.stable:
+                quiet_from = self._monotonic()  # a tree changing during the walk is not quiet
+                continue
+            now = {e.runtime_id for e in observed.elements}
+            if now != ids:
+                ids, quiet_from = now, self._monotonic()
+            snapshot = observed
+        evidence["settled_after_type"] = True
+        return snapshot
+
     def _resolve_settling(
         self, step: Step, before: Snapshot, stage: _Stage, evidence: dict[str, Any]
     ) -> tuple[Snapshot, int]:
@@ -1585,6 +1648,8 @@ class Session:
                 # no composer) has nothing to check (principal review of #112)
                 raise _StepFailureError(ErrorCode.GATE_BLOCKED, "composer_unknown")
         result = executor.execute(action, before)
+        if action.verb == "type" and result.delivery is not Delivery.NOT_DELIVERED:
+            self._typed_at = self._monotonic()
         fallback = (
             step.verb == "focus"
             and result.delivery is Delivery.NOT_DELIVERED
