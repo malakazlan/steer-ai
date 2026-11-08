@@ -47,7 +47,7 @@ from steerai.probes.layer_b import (
     wait_until_idle,
 )
 from steerai.probes.layer_b_pages import OPEN_GOAL, REPLY_GOAL, InvalidRun, PageServer
-from steerai.probes.present_switch import page_html
+from steerai.probes.present_switch import _plan_kinds, _steps, page_html
 from steerai.probes.windows import wait_window_for_pid
 
 NOTEPAD = Path(r"C:\Windows\System32\notepad.exe")
@@ -257,7 +257,13 @@ def _steer(task: Task, number: int, hwnd: int, tmp: Path, planner: _Planner) -> 
         opened = len(opens)
     payload = stdout.getvalue().strip()
     result = json.loads(payload) if payload.startswith("{") else {}
+    trace = tmp / "trace.jsonl"
+    records = (
+        [json.loads(x) for x in trace.read_text("utf-8").splitlines()] if trace.is_file() else []
+    )
     return {
+        "expects": _plan_kinds(tmp),
+        "steps": _steps(records),
         "status": result.get("status"),
         "detail": result.get("detail"),
         "seconds": round(time.monotonic() - started, 1),
@@ -320,11 +326,16 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
         stop_chrome(proc, tmp / "profile")
 
 
-def one_run(task: Task, number: int, planner: _Planner) -> dict[str, Any]:
+def one_run(task: Task, number: int, planner: _Planner, keep: Path | None = None) -> dict[str, Any]:
     wait_until_idle()
     tmp = Path(tempfile.mkdtemp(prefix="steer-suite-"))
     try:
         row = _started(task, number, tmp, planner)
+        if keep is not None:
+            # diagnosis only: the plans and trace of a fixture goal, into a local folder
+            for kept in [*tmp.glob("*.plan*.json"), tmp / "trace.jsonl"]:
+                if kept.is_file():
+                    shutil.copy(kept, keep / f"{task.task_id}-{number}-{kept.name}")
     except InvalidRun as exc:
         # the run measured nothing (the window never came to front): reported, never a pass
         return {"task": task.task_id, "run": number, "passed": False, "invalid": str(exc)}
@@ -358,6 +369,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--tasks", default="", help="comma-separated task ids (default: all)")
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--keep", type=Path, default=None, help="copy plans and traces here")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     wanted = set(filter(None, args.tasks.split(",")))
     planner = _Planner()
@@ -367,7 +379,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             for task in TASKS:
                 if wanted and task.task_id not in wanted:
                     continue
-                row = one_run(task, number, planner)
+                row = one_run(task, number, planner, args.keep)
                 rows.append(row)
                 out.write(json.dumps(row) + "\n")
                 out.flush()
