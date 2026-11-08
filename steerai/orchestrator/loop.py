@@ -108,6 +108,7 @@ from steerai.world.elements import Element
 from steerai.world.fingerprint import similarity
 from steerai.world.model import Snapshot, normalise_name
 from steerai.world.people import MAX_CANDIDATES, lookalike_only, name_part
+from steerai.world.twins import PinKey, on_screen, pin_key, twin_set
 
 REUSE_FRESHNESS_S = 5.0
 QUIET_AFTER_TYPE_S = 1.0
@@ -347,6 +348,13 @@ class Session:
         self._launcher = launcher
         self._window_title = window_title
         self._identify = identify
+        self._pins: dict[PinKey, tuple[int, ...]] = {}
+        """Which twin field each verified `type` wrote, per window, role and name (#150,
+        D-150 v2 item 4): conditions read it; a step resolve may only refuse by it."""
+        self._twin_pick: str | None = None
+        """How the step's target was first chosen among twins (`onscreen`, `focused`); an
+        `onscreen` pick never scrolls (principal blocking 1)."""
+        self._twin_rid: tuple[int, ...] | None = None
         self._address_bar = address_bar
         """Chrome's omnibox value for a window, None when missing, focused or empty (#148)."""
         self._url_step = False
@@ -666,6 +674,7 @@ class Session:
         self.hwnd = hwnd
         self._last_after = None
         self._last_pair = None
+        self._pins.clear()
         self._ledger.set_window_ref(ref)
 
     def _rebind_opened(self, step: Step) -> None:
@@ -936,6 +945,8 @@ class Session:
         evidence.update({k: v for k, v in verdict.evidence.items() if k != "level"})
         evidence["level"] = verdict.level
         ok = verdict.holds and action.delivery is not Delivery.NOT_DELIVERED
+        if ok and step.verb == "type" and step.target is not None:
+            self._pin(step.target, verdict.level)
         return self._finish(
             step,
             stage,
@@ -1194,7 +1205,7 @@ class Session:
         keeps its identity binding (`rebind`). Gone, ambiguous or another element is the
         `mismatch` token under `focus_lost`, never a dispatch elsewhere."""
         try:
-            element_id = self._resolve_again(step, snapshot, evidence)
+            element_id = self._resolve_again(step, snapshot, evidence, asked=asked.runtime_id)
         except _StepFailureError as failure:
             if failure.detail in ("no_match", "ambiguous_target"):
                 raise _StepFailureError(ErrorCode.FOCUS_LOST, mismatch) from failure
@@ -1268,6 +1279,8 @@ class Session:
         self._binding = None
         self._candidates = None
         self._aliased = None
+        self._twin_pick = None
+        self._twin_rid = None
         self._counts_at_step = self._monitor.counts() if self._monitor is not None else {}
 
     def _input_evidence(self, evidence: dict[str, Any]) -> None:
@@ -1377,7 +1390,8 @@ class Session:
         person = step.target is not None and step.target.match == "person"
         while True:
             try:
-                return before, stage.measure("decide", partial(self._resolve, step, before))
+                resolve = partial(self._resolve, step, before, focused=self._read_focus)
+                return before, stage.measure("decide", resolve)
             except _StepFailureError as failure:
                 if person or failure.detail != "no_match":
                     raise
@@ -1390,7 +1404,16 @@ class Session:
             stage.measure("settle", partial(self._sleep, SETTLE_S))
             before = stage.measure("observe", lambda: self._observe_fresh(evidence))
 
-    def _resolve(self, step: Step, snapshot: Snapshot) -> int:
+    def _resolve(
+        self,
+        step: Step,
+        snapshot: Snapshot,
+        *,
+        focused: Callable[[], tuple[int, ...]] | None = None,
+        asked: tuple[int, ...] | None = None,
+    ) -> int:
+        """The one element the target names; among twin fields (5.8 [v2.49]) a pick by the
+        asked RuntimeId, the one on screen, or the focused one, else `ambiguous_target`."""
         target = step.target
         if target is None:  # enforced by Step.__post_init__; kept for the type checker
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_target")
@@ -1414,17 +1437,79 @@ class Session:
         if not matches:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_match")
         if len(matches) > 1:
-            raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
+            return self._twin(step, snapshot, matches, focused=focused, asked=asked)
         return matches[0].id
 
+    def _twin(
+        self,
+        step: Step,
+        snapshot: Snapshot,
+        matches: list[Element],
+        *,
+        focused: Callable[[], tuple[int, ...]] | None,
+        asked: tuple[int, ...] | None,
+    ) -> int:
+        """Twin fields (D-150 v2): (A) after an ask, a wait or a retry, the twin the step
+        asked about, by RuntimeId; (B) focus/type at R0/R1, the one twin on screen; (C) an
+        Enter submit's first resolve, the focused twin, refused when it is not the twin the
+        verified type pinned. Anything else, and anything that is no twin set, is ambiguous."""
+        if not twin_set(matches, snapshot):
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
+        if asked is not None:
+            return self._picked([e for e in matches if e.runtime_id == asked], "asked")
+        risk = effective_risk(step, element_ids=(matches[0].automation_id,))
+        if step.verb in ("focus", "type") and risk in ("R0", "R1"):
+            return self._picked([e for e in matches if on_screen(e, snapshot)], "onscreen")
+        if step.verb == "submit" and matches[0].role in TEXT_ROLES and focused is not None:
+            current = focused()
+            found = [e for e in matches if current and e.runtime_id == current]
+            if len(found) != 1:
+                self._act_evidence["twin"] = "none_focused"
+                raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
+            pin = self._pins.get(pin_key(snapshot.hwnd, found[0].role, found[0].name))
+            if pin is not None and pin != found[0].runtime_id:
+                self._act_evidence["twin"] = "moved"
+                raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
+            return self._picked(found, "focused")
+        raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
+
+    def _picked(self, found: list[Element], how: str) -> int:
+        if len(found) != 1:
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
+        if self._twin_pick is None:
+            self._twin_pick = how
+            self._act_evidence["twin"] = how
+        self._twin_rid = found[0].runtime_id
+        return found[0].id
+
+    def _may_scroll(self) -> None:
+        """A twin chosen as the one on screen that the act finds offscreen or clipped: the
+        pick's premise broke, so stop, never scroll it into view (TW-10, principal blocking 1)."""
+        if self._twin_pick == "onscreen":
+            raise _StepFailureError(ErrorCode.FOCUS_LOST, ACT_MISMATCH)
+
+    def _read_focus(self) -> tuple[int, ...]:
+        """The focused RuntimeId for an Enter submit's twin pick; unreadable is none."""
+        if self._live is None:
+            return ()
+        try:
+            return tuple(self._live.focused_runtime_id())
+        except (OSError, SteerError):
+            return ()
+
     def _resolve_again(
-        self, step: Step, snapshot: Snapshot, evidence: dict[str, Any] | None = None
+        self,
+        step: Step,
+        snapshot: Snapshot,
+        evidence: dict[str, Any] | None = None,
+        *,
+        asked: tuple[int, ...] | None = None,
     ) -> int:
         """A later resolve in the same step (after an ask, a wait, a scroll or the act retry)
-        goes the way the step first resolved (hunter CH-12)."""
+        goes the way the step first resolved (hunter CH-12); twins by the asked RuntimeId."""
         if self._aliased is not None:
             return self._resolve_alias(step, snapshot, {} if evidence is None else evidence)
-        return self._resolve(step, snapshot)
+        return self._resolve(step, snapshot, asked=asked)
 
     def _resolve_alias(self, step: Step, snapshot: Snapshot, evidence: dict[str, Any]) -> int:
         """An exact text target not on screen under its role: the one element of another text
@@ -1522,7 +1607,24 @@ class Session:
             target=Target(role=role, name=name),
             risk="R0",
         )
-        return self._resolve(probe, snapshot)
+        try:
+            return self._resolve(probe, snapshot)
+        except _StepFailureError as failure:
+            own = (
+                step.verb == "submit"
+                and step.target is not None
+                and step.target.role == role
+                and step.target.role in TEXT_ROLES
+                and normalise_name(step.target.name).casefold() == normalise_name(name).casefold()
+            )
+            if failure.detail != "ambiguous_target" or not own or self._twin_rid is None:
+                raise
+            # an Enter submit's composer is its own target: the twin it resolved (TW-06/07)
+            twins = [e for e in snapshot.elements if e.role == role and _same_name(e, name)]
+            found = [e for e in twins if e.runtime_id == self._twin_rid]
+            if not twin_set(twins, snapshot) or len(found) != 1:
+                raise
+            return found[0].id
 
     def _admission(self, step: Step, key: str, risk: Risk, before: Snapshot) -> str | None:
         """None when the key is fresh, "done" when nothing may run, else the previous attempt's
@@ -1642,6 +1744,15 @@ class Session:
             return False, {"detail": "no_load"}
         return True, {"reason": "url_query"}
 
+    def _pin(self, target: Target, level: int) -> None:
+        """A verified type of a twin pins it for conditions; any other verified type of the
+        same field replaces the pin (D-150 v2 item 4)."""
+        key = pin_key(self.hwnd, target.role, target.name)
+        if self._twin_pick is not None and self._twin_rid is not None and level == 3:
+            self._pins[key] = self._twin_rid
+        else:
+            self._pins.pop(key, None)
+
     def _rename_counts(self, step: Step, expect: Predicate, risk: Risk, before: Snapshot) -> bool:
         bound = self._binding.full_name if self._binding is not None else None
         deny = deny_tier(step, bound, self._step_ids(step, before))
@@ -1709,6 +1820,7 @@ class Session:
                 return result, before, retries
             detail = result.evidence.get("detail")
             if detail in ("offscreen", "clipped") and not scrolled:
+                self._may_scroll()
                 scrolled = True
                 self._boundary(self._act_evidence)  # the scroll is a dispatch too
                 scroll_result = self._semantic.execute(
@@ -1813,6 +1925,7 @@ class Session:
             live=self._live,
             windows=self._windows() if self._windows else None,
             windows_before=windows_before,
+            pinned=self._pins,
             deadline_s=_verify_deadline(expect, self._verify_deadline_s),
             monotonic=self._monotonic,
             sleep=self._sleep,
@@ -1967,6 +2080,7 @@ class Session:
         """Run one plan. A continuation (plan n>1 of a replanned task) ticks no subgoal at
         start: its conditions were written from the screen it starts on (hunter RP-01)."""
         self._goal = plan.goal
+        self._pins.clear()  # a new plan pins afresh (D-150 v2 item 4)
         self._content_landmarks = _content_landmarks(plan)
         self._last_after = None  # nothing observed for another plan is reused (RP-35/47)
         self._last_pair = None
@@ -2218,6 +2332,7 @@ class Session:
                 live=self._live,
                 windows=self._windows() if self._windows else None,
                 windows_before=list(self._windows()) if self._windows else None,
+                pinned=self._pins,
             ).holds
         except (SteerError, ValueError):
             return False
@@ -2262,6 +2377,7 @@ class Session:
                 live=self._live,
                 windows=self._windows() if self._windows else None,
                 windows_before=self._windows_at_step,
+                pinned=self._pins,
             )
         except (SteerError, ValueError):
             return None
@@ -2449,3 +2565,7 @@ def _wal_detail(exc: LedgerError) -> str:
 
 def _document_names(snapshot: Snapshot) -> list[str]:
     return [element.name for element in snapshot.elements if element.role == "Document"]
+
+
+def _same_name(element: Element, name: str) -> bool:
+    return normalise_name(element.name).casefold() == normalise_name(name).casefold()
