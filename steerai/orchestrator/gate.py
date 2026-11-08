@@ -33,7 +33,7 @@ from steerai.orchestrator.contracts import (
 )
 from steerai.orchestrator.identity import Binding, CandidateLine, lines_for
 from steerai.verify.deny_skeleton import camel_split, holds
-from steerai.verify.predicates import Predicate, Present, Within, comparable, presents
+from steerai.verify.predicates import Appeared, Predicate, Present, Within, comparable, presents
 from steerai.verify.strength import Params, strength, strengthen, template_for
 from steerai.verify.t1 import redact
 from steerai.world.elements import Element
@@ -176,7 +176,14 @@ def effective_risk(
     on the bound element's name part for a person target (PT-31), and on the automation ids
     of the elements the step resolves to (#84: the page owns them, the plan may name none),
     never lowered."""
-    risk: Risk = step.risk
+    raised = deny_tier(step, bound_name, element_ids)
+    return raised if _RISK_ORDER[raised] > _RISK_ORDER[step.risk] else step.risk
+
+
+def deny_tier(step: Step, bound_name: str | None = None, element_ids: Sequence[str] = ()) -> Risk:
+    """The tier the deny and control patterns alone raise the step to, without the plan's tier
+    or the verb floor: R0 when nothing reads."""
+    risk: Risk = "R0"
     if step.target is None:
         return risk
     names = [step.target.name, *([bound_name] if bound_name else [])]
@@ -191,6 +198,31 @@ def effective_risk(
             ):
                 risk = tier
     return risk
+
+
+def rename_counts(
+    step: Step, expect: Predicate | None, *, risk: Risk, deny: Risk, goal: str
+) -> bool:
+    """Whether an in-place page rename is a search submit's effect (5.10 [v2.39], amending
+    [v2.1]): a `submit` at exactly R2 from its floor alone (plan tier at most R2, no deny word or
+    automation id raising it), whose expect is the bare replacing form of a Document in a
+    code-owned frame naming exactly the typed text, which the goal holds verbatim. A page that
+    sets its own title after the approved Enter is the residual risk; sends, deletes and
+    anything raised keep `renamed_at_risk`."""
+    text = step.params.get("text")
+    return (
+        step.verb == "submit"
+        and risk == "R2"
+        and _RISK_ORDER[step.risk] <= _RISK_ORDER["R2"]
+        and _RISK_ORDER[deny] < _RISK_ORDER["R2"]
+        and isinstance(expect, Appeared)
+        and expect.replaces
+        and expect.role == "Document"
+        and expect.decoration is not None
+        and isinstance(text, str)
+        and expect.name_pattern == text
+        and verbatim_in(text, goal)
+    )
 
 
 def _reads(text: str, pattern: str) -> bool:
