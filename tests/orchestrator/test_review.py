@@ -176,8 +176,10 @@ def test_done_already_in_the_middle_of_a_plan_keeps_going() -> None:
     plan = Plan(
         goal="g",
         subgoals=(
-            Subgoal(id="g1", desc="d", condition=_plan(_type()).subgoals[0].condition),
+            # a step-less precondition comes first: listed after g1 it would be a state the
+            # plan has not reached yet and never tick at start (5.11 [v2.40])
             Subgoal(id="g2", desc="d2", condition=TitleMatches(pattern="Amir Khan - Chat")),
+            Subgoal(id="g1", desc="d", condition=_plan(_type()).subgoals[0].condition),
         ),
         steps=(_type(), _send()),
     )
