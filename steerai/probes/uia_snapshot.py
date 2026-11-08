@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from steerai.probes.win_input import ensure_per_monitor_v2
+from steerai.world.address_bar import read_address_bar
 
 _COINIT_MULTITHREADED = 0x0
 _CACHED_PROPERTIES = (
@@ -171,6 +172,14 @@ class UiaClient:
             return ()
         runtime_id = element.GetRuntimeId()
         return tuple(int(v) for v in runtime_id) if runtime_id else ()
+
+    def address_bar(self, hwnd: int) -> str | None:
+        """Chrome's address bar of the window (`steerai.world.address_bar`), None when there is
+        no one omnibox out of focus with a value."""
+        try:
+            return read_address_bar(self._uia, self._uia_module, hwnd)
+        except Exception as exc:  # COMError exists only once comtypes is loaded
+            raise OSError(f"address bar unreadable: {exc}") from exc
 
     def focused_runtime_id(self) -> tuple[int, ...]:
         """RuntimeId of the element with keyboard focus (`GetFocusedElement`), empty when none."""
