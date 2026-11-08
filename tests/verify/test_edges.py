@@ -409,8 +409,9 @@ def test_indeterminate_toggle_is_neither_on_nor_off(clock: Any, wanted: str) -> 
     assert verdict.holds is False
     assert verdict.evidence["reason"] == "state_differs"
     polled = verify(predicate, before(), after_with(), lambda **_: after_with(), live=live)
-    assert polled.code is ErrorCode.VERIFY_FAILED
-    assert polled.polls == 1
+    # a state miss never settles: a server-confirmed box may still land (W2 verdict item 2)
+    assert polled.code is ErrorCode.VERIFY_TIMEOUT
+    assert polled.polls > 1
 
 
 def test_focused_settles_on_a_stable_other_focus_and_on_no_focus(clock: Any) -> None:
@@ -650,11 +651,11 @@ def test_any_of_with_one_contradiction_and_one_pending_branch_times_out(clock: A
 
 
 def test_any_of_two_settled_contradictions_fails(clock: Any) -> None:
-    live = FakeLive(states={COMPOSER[3]: FakeHandle(value=""), DELETE[3]: FakeHandle(toggle=0)})
+    live = FakeLive(states={COMPOSER[3]: FakeHandle(value="")}, focused=SEND[3])
     either = AnyOf(
         (
             ValueEquals(target_id=COMPOSER[0], text="hello there"),
-            State(target_id=DELETE[0], wanted="on"),
+            Focused(target_id=DELETE[0]),
         )
     )
     verdict = verify(either, before(), after_with(), lambda **_: after_with(), live=live)

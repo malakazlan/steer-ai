@@ -732,7 +732,9 @@ def _state(predicate: State, before: Snapshot, after: Snapshot, ctx: Context) ->
         return _plain("no_pattern", settles=True)
     if holds:
         return Verdict(holds=True, code=None, level=3, polls=0, evidence={})
-    return replace(_plain("state_differs"), state=observed)
+    # never settles: a server-confirmed box reads its old value until it answers, so T1
+    # polls to its deadline (W2 verdict item 2, WV-03)
+    return _plain("state_differs")
 
 
 # ---- window-level predicates ---------------------------------------------------------------------

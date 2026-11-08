@@ -1,7 +1,8 @@
 """The live reads the verifier needs (5.10 `LiveReads`), over the snapshot's COM handles.
 
-This slice reads the Value pattern and the focused element; toggle and selection states are
-not read yet (they return None, which the verifier treats as unreadable, never as a value).
+The Value pattern, the toggle and selection states, and the focused element. An element that
+does not expose the pattern reads None, which the verifier treats as unreadable (`no_pattern`),
+never as a value.
 """
 
 from __future__ import annotations
@@ -9,7 +10,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from steerai.action.execution import UIA_VALUE_PATTERN, code_for
+from steerai.action.execution import (
+    UIA_SELECTION_ITEM_PATTERN,
+    UIA_TOGGLE_PATTERN,
+    UIA_VALUE_PATTERN,
+    RefusalError,
+    code_for,
+)
 from steerai.action.sanitize import field_text
 from steerai.errors import SteerError
 from steerai.world.elements import Element
@@ -36,20 +43,45 @@ class UiaLiveReads:
             pattern = self._bindings.pattern(handle, UIA_VALUE_PATTERN, "ValuePattern")
             raw = pattern.CurrentValue
         except Exception as exc:  # COMError has no stubs: mapped by code_for, or re-raised
-            code, _extra = code_for(exc)
-            if code is None:
-                raise
-            raise SteerError(code, "live_read_failed") from exc
+            raise _failed(exc) from exc
         return None if raw is None else str(raw)
 
-    def toggle_state(self, _handle: Any) -> int | None:
-        return None
+    def toggle_state(self, handle: Any) -> int | None:
+        """A checkbox's ToggleState (0 off, 1 on, 2 indeterminate); None without TogglePattern
+        (probe `widget_patterns`: a native checkbox reads 1 after Toggle, 8/8)."""
+        raw = self._state(handle, UIA_TOGGLE_PATTERN, "TogglePattern", "CurrentToggleState")
+        return None if raw is None else int(raw)
 
-    def is_selected(self, _handle: Any) -> bool | None:
-        return None
+    def is_selected(self, handle: Any) -> bool | None:
+        """An item's IsSelected; None without SelectionItemPattern (probe `widget_patterns`: a
+        `role=tab` and a radio read selected after Select, 8/8 each)."""
+        raw = self._state(
+            handle, UIA_SELECTION_ITEM_PATTERN, "SelectionItemPattern", "CurrentIsSelected"
+        )
+        return None if raw is None else bool(raw)
+
+    def _state(self, handle: Any, pattern_id: int, name: str, member: str) -> Any:  # Any: COM
+        try:
+            pattern = self._bindings.pattern(handle, pattern_id, name)
+        except RefusalError:
+            return None  # the element exposes no such pattern: unreadable, never a value
+        except Exception as exc:  # COMError has no stubs: mapped by code_for, or re-raised
+            raise _failed(exc) from exc
+        try:
+            return getattr(pattern, member)
+        except Exception as exc:  # COMError has no stubs: mapped by code_for, or re-raised
+            raise _failed(exc) from exc
 
     def focused_runtime_id(self) -> tuple[int, ...]:
         return self._client.focused_runtime_id()
+
+
+def _failed(exc: Exception) -> SteerError:
+    """A COM failure as its taxonomy code; anything else is a programming error and re-raised."""
+    code, _extra = code_for(exc)
+    if code is None:
+        raise exc
+    return SteerError(code, "live_read_failed")
 
 
 class _ValueSource(Protocol):

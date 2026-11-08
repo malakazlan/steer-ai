@@ -23,6 +23,7 @@ from steerai.verify.predicates import (
     Disappeared,
     Focused,
     Predicate,
+    State,
     ValueEquals,
     WindowExists,
     Within,
@@ -31,6 +32,7 @@ from steerai.verify.predicates import (
 from steerai.world.model import normalise_name
 
 Tier = Literal["R0", "R1", "R2", "R3"]
+_STATE_WANTED: dict[str, Literal["on", "off"]] = {"check": "on", "uncheck": "off"}
 MIN_PATTERN_CHARS = 3
 _TIME_LIKE = re.compile(r"^\d{1,2}:\d{2}(:\d{2})?\s*(am|pm)?$", re.I)
 _DATE_WORDS = frozenset(
@@ -120,7 +122,7 @@ def _need_scope(value: Within | None, name: str, verb: str) -> Within:
     return value
 
 
-def template_for(verb: str, params: Params) -> Predicate:
+def template_for(verb: str, params: Params) -> Predicate:  # noqa: PLR0911 - one verb each
     """The verb's fixed postcondition, filled from the parameters by code."""
     if verb == "focus":
         return Focused(target_id=_need_int(params.target_id, "target_id", verb))
@@ -154,6 +156,10 @@ def template_for(verb: str, params: Params) -> Predicate:
     if verb == "open":
         title = params.open_title or params.window_name
         return WindowExists(name_pattern=_need_str(title, "window_name", verb))
+    if verb in _STATE_WANTED:
+        return State(
+            target_id=_need_int(params.target_id, "target_id", verb), wanted=_STATE_WANTED[verb]
+        )
     if verb == "click":
         raise ValueError(
             "click has no template: the planner supplies the effect (appeared, disappeared, "
@@ -162,7 +168,12 @@ def template_for(verb: str, params: Params) -> Predicate:
     raise ValueError(f"unknown verb {verb!r}")
 
 
-def strength(predicate: Predicate, tier: Tier, params: Params) -> Strength:
+def strength(
+    predicate: Predicate, tier: Tier, params: Params, *, verb: str | None = None
+) -> Strength:
+    if _own_state(predicate, params, verb):
+        # the exact live read of the element the person approved (W2 verdict, W2-5 ruling)
+        return Strength(True)
     if (
         isinstance(predicate, WindowExists)
         and params.open_title is not None
@@ -179,6 +190,14 @@ def strength(predicate: Predicate, tier: Tier, params: Params) -> Strength:
     if tier in ("R0", "R1"):
         return Strength(True)
     return _content_strength(predicate, params)
+
+
+def _own_state(predicate: Predicate, params: Params, verb: str | None) -> bool:
+    """A state verb's own template, bound to the resolved element: top level only, never a
+    click's expect, never inside all/any_of, never another verb's (W2-5 ruling)."""
+    if verb not in _STATE_WANTED or params.target_id is None:
+        return False
+    return predicate == State(target_id=params.target_id, wanted=_STATE_WANTED[verb])
 
 
 def _content_strength(predicate: Predicate, params: Params) -> Strength:
@@ -247,10 +266,10 @@ def _pattern_problem(
 def strengthen(predicate: Predicate, verb: str, tier: Tier, params: Params) -> Predicate | None:
     """Rung 1 of the weak-predicate ladder: keep a strong predicate, else the verb template if
     that is strong, else None (the orchestrator replans once, then asks)."""
-    if strength(predicate, tier, params).ok:
+    if strength(predicate, tier, params, verb=verb).ok:
         return predicate
     try:
         candidate = template_for(verb, params)
     except ValueError:
         return None
-    return candidate if strength(candidate, tier, params).ok else None
+    return candidate if strength(candidate, tier, params, verb=verb).ok else None

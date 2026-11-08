@@ -1038,3 +1038,36 @@ def test_focus_that_never_takes_is_verify_failed(fast_clock: Any) -> None:
     result = _executor().execute(Action(verb="focus", element_id=1), _snapshot(handle, role="Edit"))
     assert result.ok is False
     assert result.code is ErrorCode.VERIFY_FAILED
+
+
+def test_a_toggle_that_settles_on_the_initial_value_is_never_sent_twice(fast_clock: None) -> None:
+    """A server-confirmed box keeps its old value until the server answers (WV-03, H3 n1): a
+    second Toggle would double-flip it. One Toggle, unverified, and T1 decides (W2 verdict 2)."""
+
+    class _Slow(FakeHandle):
+        def GetCurrentPattern(self, pattern_id: int) -> Any:  # noqa: N802
+            if pattern_id != UIA_TOGGLE:
+                return None
+            handle = self
+
+            class _Pattern:
+                def QueryInterface(self, _iface: Any) -> Any:  # noqa: N802
+                    return self
+
+                def Toggle(self) -> None:  # noqa: N802
+                    handle.calls.append("toggle")
+
+                @property
+                def CurrentToggleState(self) -> int:  # noqa: N802
+                    return handle.toggled
+
+            return _Pattern()
+
+    handle = _Slow(toggled=0)
+    result = _executor().execute(
+        Action(verb="check", element_id=1), _snapshot(handle, role="CheckBox")
+    )
+    assert handle.calls == ["toggle"]
+    assert result.delivery is Delivery.DELIVERED_UNVERIFIED
+    assert result.code is ErrorCode.VERIFY_TIMEOUT
+    assert result.evidence == {"toggles": 1, "detail": "unchanged"}

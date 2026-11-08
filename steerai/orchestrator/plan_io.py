@@ -20,6 +20,7 @@ from steerai.action.launch import APPS, LaunchError, site_url
 from steerai.orchestrator.contracts import (
     OPENED_PREFIX,
     RISKS,
+    STATE_VERBS,
     VERBS,
     Plan,
     Risk,
@@ -440,6 +441,8 @@ def _step(value: object, path: str) -> Step:
     if provenance not in ("verbatim", "generated"):
         raise PlanError(f"{path}.text_provenance", "must be verbatim or generated")
     text = obj.get("text")
+    if verb in STATE_VERBS and "expect" in obj:
+        raise PlanError(f"{path}.expect", "the verb template owns the postcondition")
     try:
         step = Step(
             id=_ident(obj.get("id"), f"{path}.id"),
