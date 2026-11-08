@@ -13,6 +13,7 @@ from steerai.probes.h2_page import LOG_KEY, page_html
 from steerai.probes.task_suite import (
     H2,
     HELD_OUT,
+    MULTIPLY,
     TASKS,
     Person,
     calc_display,
@@ -69,11 +70,33 @@ def test_a_button_ask_is_approved_only_for_its_exact_name() -> None:
     assert person.ask(ask("Delete call mom", text="anything")) == "no:d1", "text asks need text"
 
 
-def test_the_calculator_display_is_read_from_its_name() -> None:
-    assert calc_display(["Calculator", "Display is 84", "Equals"]) == "84"
-    assert calc_display(["Calculator"]) == ""
-    assert passed(_task("calc1"), "done", "84")
-    assert not passed(_task("calc1"), "done", "12")
+def test_the_calculator_must_show_the_computation_not_just_the_number() -> None:
+    """A typed 84 is not 12 times 7 (#154 review item 1): the expression must show it."""
+    computed = calc_display(
+        [
+            ("CalculatorResults", "Display is 84"),
+            ("CalculatorExpression", f"Expression is 12 {MULTIPLY} 7="),
+        ]
+    )
+    assert passed(_task("calc1"), "done", computed)
+    typed = calc_display([("CalculatorResults", "Display is 84")])
+    assert not passed(_task("calc1"), "done", typed)
+    wrong = calc_display(
+        [("CalculatorResults", "Display is 84"), ("CalculatorExpression", "Expression is 84=")]
+    )
+    assert not passed(_task("calc1"), "done", wrong)
+
+
+def test_goals_state_outcomes_not_steps() -> None:
+    """m1 and l1 never name the control to click (#154 review item 3)."""
+    assert "click" not in _task("m1").goal.casefold()
+    assert "click" not in _task("l1").goal.casefold()
+    assert "menu" not in _task("m1").goal.casefold()
+
+
+def test_a_malformed_log_is_a_failed_row_not_a_crash() -> None:
+    assert h2_event("not json") == "bad_log"
+    assert h2_event("{}") == "bad_log"
 
 
 def test_the_saved_file_must_hold_exactly_the_text(tmp_path: Path) -> None:
@@ -81,3 +104,4 @@ def test_the_saved_file_must_hold_exactly_the_text(tmp_path: Path) -> None:
     assert passed(save1, "done", "steer h2 saved")
     assert not passed(save1, "done", "steer h2 saved and more")
     assert not passed(save1, "done", "file_missing")
+    assert not passed(save1, "done", "saved_to_documents")
