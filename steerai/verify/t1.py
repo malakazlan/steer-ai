@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import re
 import time
-from collections.abc import Callable, Hashable, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Hashable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
+from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
 from steerai.action.sanitize import field_text, normalise_newlines
@@ -50,6 +51,7 @@ from steerai.verify.predicates import (
 from steerai.verify.scope import Scope, container_of, resolve_scope
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot, normalise_name, resolve_in
+from steerai.world.twins import PinKey, pinned_twin
 
 DEADLINE_S = 3.0
 POLL_S = 0.25
@@ -120,6 +122,8 @@ class Context:
     windows: Sequence[WindowLike] | None = None
     windows_before: Sequence[WindowLike] | None = None
     own_pid: int | None = None
+    pinned: Mapping[PinKey, tuple[int, ...]] = field(default_factory=lambda: MappingProxyType({}))
+    """Which twin field a verified `type` wrote, per window, role and name (#150)."""
 
 
 def evaluate(  # noqa: PLR0913 - keyword-only live context, each part optional
@@ -131,9 +135,26 @@ def evaluate(  # noqa: PLR0913 - keyword-only live context, each part optional
     windows: Sequence[WindowLike] | None = None,
     windows_before: Sequence[WindowLike] | None = None,
     own_pid: int | None = None,
+    pinned: Mapping[PinKey, tuple[int, ...]] | None = None,
 ) -> Verdict:
-    ctx = Context(live=live, windows=windows, windows_before=windows_before, own_pid=own_pid)
+    ctx = _context(live, windows, windows_before, own_pid, pinned)
     return _evaluate(predicate, before, after, ctx)
+
+
+def _context(
+    live: LiveReads | None,
+    windows: Sequence[WindowLike] | None,
+    windows_before: Sequence[WindowLike] | None,
+    own_pid: int | None,
+    pinned: Mapping[PinKey, tuple[int, ...]] | None,
+) -> Context:
+    return Context(
+        live=live,
+        windows=windows,
+        windows_before=windows_before,
+        own_pid=own_pid,
+        pinned=MappingProxyType(dict(pinned or {})),
+    )
 
 
 def _evaluate(predicate: Predicate, before: Snapshot, after: Snapshot, ctx: Context) -> Verdict:
@@ -665,7 +686,11 @@ def _field_value(predicate: FieldValue, snapshot: Snapshot, ctx: Context) -> Ver
     if not found:
         return _plain("target_not_found", settles=True)
     if len(found) > 1:
-        return _plain("ambiguous_target", settles=True)
+        # twin fields: only the twin the verified `type` wrote (#150, D-150 v2 item 4)
+        twin = None if evidence else pinned_twin(found, snapshot, ctx.pinned)
+        if twin is None:
+            return _plain("ambiguous_target", settles=True)
+        found = [twin]
     if found[0].secure:
         return _plain("secure_target", settles=True)  # never read: no use in polling
     value = _read_value(found[0], snapshot, live)
@@ -849,6 +874,7 @@ def verify(  # noqa: PLR0913 - keyword-only context and timing knobs with measur
     windows: Sequence[WindowLike] | None = None,
     windows_before: Sequence[WindowLike] | None = None,
     own_pid: int | None = None,
+    pinned: Mapping[PinKey, tuple[int, ...]] | None = None,
     deadline_s: float = DEADLINE_S,
     poll_s: float = POLL_S,
     monotonic: Callable[[], float] | None = None,
@@ -861,7 +887,7 @@ def verify(  # noqa: PLR0913 - keyword-only context and timing knobs with measur
         raise ValueError("poll_s must be > 0")
     if deadline_s < 0:
         raise ValueError("deadline_s must be >= 0")
-    ctx = Context(live=live, windows=windows, windows_before=windows_before, own_pid=own_pid)
+    ctx = _context(live, windows, windows_before, own_pid, pinned)
     now = monotonic or time.monotonic
     pause = sleep or time.sleep
     start = now()
