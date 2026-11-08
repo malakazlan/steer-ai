@@ -393,6 +393,9 @@ class Session:
         """When the last `type` was dispatched: the next R2/R3 step waits for a quiet page."""
         self._proof: tuple[Predicate, Verdict] | None = None
         """The step's own verified postcondition, as bound by the gate (#124)."""
+        self._url_proof: tuple[Predicate, Verdict] | None = None
+        """The step's expect, counted by the address bar (#148): it ticks only the subgoal whose
+        condition is exactly that expect (5.10 [v2.48])."""
         self._windows_at_step: list[WindowLike] | None = None
         self._scrolled: str | None = None
         self._act_evidence: dict[str, Any] = {}
@@ -918,6 +921,7 @@ class Session:
                 if url_counted
                 else replace(verdict, evidence={**verdict.evidence, **url_evidence})
             )
+            self._url_proof = (expect, verdict) if url_counted else None
         label = (
             None
             if renamed_at_risk or url_counted
@@ -1273,6 +1277,7 @@ class Session:
     def _begin_step(self, windows_before: list[WindowLike] | None) -> None:
         self._windows_at_step = windows_before
         self._proof = None
+        self._url_proof = None
         self._scrolled = None
         self._secure_step = False
         self._sent_in_act = False
@@ -2224,7 +2229,12 @@ class Session:
                     ticked.add(subgoal.id)
                     alias = verdict.evidence.get("alias")
                     role = alias if isinstance(alias, str) else None
-                    self._trace_tick(subgoal.id, "condition", alias=role)
+                    by = (
+                        "url_query"
+                        if verdict.evidence.get("reason") == "url_query"
+                        else "condition"
+                    )
+                    self._trace_tick(subgoal.id, by, alias=role)
                     strikes = 0
                     continue
             if result.ok:
@@ -2350,6 +2360,8 @@ class Session:
         unbound one would count the clicked row's text, and any other step proves nothing
         about the selection (#124, hunter PS-02/03/20)."""
         if not presents(condition):
+            if self._url_proof is not None and self._url_proof[0] == condition:
+                return self._url_proof[1]  # the address bar proved exactly this (#148)
             return self._subgoal_verdict(condition, before, after)
         if self._proof is None:
             return None
