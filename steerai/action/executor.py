@@ -159,10 +159,14 @@ class Executor:
     def _toggle_to(self, action: Action, handle: Any, call: Call, wanted: int) -> ActionResult:
         pattern = self._uia.pattern(handle, UIA_TOGGLE_PATTERN, "TogglePattern")
 
-        def read() -> int:
-            return int(pattern.CurrentToggleState)
+        last: list[int] = []
 
-        if read() == wanted:
+        def read() -> int:
+            last.append(int(pattern.CurrentToggleState))
+            return last[-1]
+
+        initial = read()
+        if initial == wanted:
             return ActionResult.already_satisfied(action.verb)
         toggles = 0
         while True:
@@ -171,6 +175,16 @@ class Executor:
             readback = poll_state(read, wanted)
             if readback.verified or not readback.settled or toggles >= MAX_TOGGLES:
                 return _finish(call, readback, {"toggles": toggles})
+            if last[-1] == initial:
+                # a server-confirmed box keeps its old value until it answers (WV-03): a second
+                # Toggle would double-flip it, so T1 decides within its deadline (W2 verdict 2)
+                return ActionResult(
+                    verb=call.verb,
+                    delivery=Delivery.DELIVERED_UNVERIFIED,
+                    steps=call.steps,
+                    code=ErrorCode.VERIFY_TIMEOUT,
+                    evidence={"toggles": toggles, "detail": "unchanged"},
+                )
 
     def _check(self, action: Action, handle: Any, call: Call) -> ActionResult:
         return self._toggle_to(action, handle, call, _TOGGLE_ON)

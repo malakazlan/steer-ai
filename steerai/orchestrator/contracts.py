@@ -30,7 +30,9 @@ normalised name; `person` is the contact rule (name part equal or a whole-token 
 GateToken = GateOutcome | Literal["pending", "done_already", "unreached"]
 """`unreached`: the step failed before the gate ran; after the gate, the token is its outcome."""
 
-VERBS: frozenset[str] = frozenset({"click", "focus", "type", "send", "submit", "delete", "open"})
+VERBS: frozenset[str] = frozenset(
+    {"click", "focus", "type", "send", "submit", "delete", "open", "check", "uncheck"}
+)
 _EXECUTOR_VERBS: dict[str, tuple[Path, str]] = {
     "click": ("semantic", "click"),
     "focus": ("physical", "click"),
@@ -38,9 +40,22 @@ _EXECUTOR_VERBS: dict[str, tuple[Path, str]] = {
     "send": ("semantic", "click"),
     "submit": ("semantic", "click"),
     "delete": ("semantic", "click"),
+    "check": ("semantic", "check"),
+    "uncheck": ("semantic", "uncheck"),
 }
 _TEXT_VERBS = frozenset({"type"})
-_RISK_FLOOR: dict[str, Risk] = {"send": "R2", "submit": "R2", "delete": "R3", "open": "R1"}
+_RISK_FLOOR: dict[str, Risk] = {
+    "send": "R2",
+    "submit": "R2",
+    "delete": "R3",
+    "open": "R1",
+    "check": "R1",
+    "uncheck": "R1",
+}
+STATE_VERBS: frozenset[str] = frozenset({"check", "uncheck"})
+"""Verbs that set a CheckBox's own state through TogglePattern; their `State` template is
+code-owned (widget-verbs W2 v2): no plan `expect`, no physical path, never preapproved."""
+STATE_ROLE = "CheckBox"
 OPEN_TARGET_ROLE = "App"
 """An `open` step's target names a registry app (`steerai.action.launch.APPS`)."""
 _RISK_ORDER = {risk: index for index, risk in enumerate(RISKS)}
@@ -162,11 +177,28 @@ class Step:
         if self.verb == "focus" and self.path == "semantic":
             # a semantic focus would be an Invoke: plan_io refuses it, so does the contract (FC-09)
             raise ValueError("focus runs on the physical path")
+        _check_state_step(self)
         if self.preapproved_by_request and self.text_provenance != "verbatim":
             raise ValueError("only verbatim request text can be preapproved by the request")
         floor = _RISK_FLOOR.get(self.verb)
         if floor is not None and _RISK_ORDER[self.risk] < _RISK_ORDER[floor]:
             object.__setattr__(self, "risk", floor)
+
+
+def _check_state_step(step: Step) -> None:
+    """W2-1/W2-3: a CheckBox only (`role=switch` and ToggleButton are unmeasured, WV-22),
+    TogglePattern only, the template owns the postcondition, and the person is always asked
+    at R2/R3 (the verdict's W2-5 ruling)."""
+    if step.verb not in STATE_VERBS:
+        return
+    if step.target is None or step.target.role != STATE_ROLE:
+        raise ValueError(f"{step.verb} targets a {STATE_ROLE}")
+    if step.path == "physical":
+        raise ValueError(f"{step.verb} runs on the semantic path")
+    if step.expect is not None:
+        raise ValueError(f"{step.verb}: the verb template owns the postcondition")
+    if step.preapproved_by_request:
+        raise ValueError(f"{step.verb} is never preapproved by the request")
 
 
 @dataclass(frozen=True, slots=True)

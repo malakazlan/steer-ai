@@ -46,6 +46,7 @@ from steerai.goal_match import GoalMatcher
 from steerai.orchestrator.contracts import (
     RISKS,
     START_WINDOW,
+    STATE_VERBS,
     GateDecision,
     GateToken,
     Plan,
@@ -109,6 +110,7 @@ from steerai.world.elements import Element
 from steerai.world.fingerprint import similarity
 from steerai.world.model import Snapshot, normalise_name
 from steerai.world.people import MAX_CANDIDATES, lookalike_only, name_part
+from steerai.world.secure import SecureMemory
 from steerai.world.twins import PinKey, on_screen, pin_key, twin_set
 
 REUSE_FRESHNESS_S = 5.0
@@ -381,6 +383,8 @@ class Session:
         """Whether `_verbs` covers every plan of the task; a resumed continuation whose ledger
         cannot say is unknown, and no open ticks then (issue #51, gate Q2)."""
         self._observer = observer
+        self._secure_memory = SecureMemory()
+        """A field once seen secure stays secure for the task (WV-09)."""
         self._semantic = semantic
         self._physical = physical
         self._gate = gate
@@ -409,6 +413,11 @@ class Session:
         self._aliased: str | None = None
         """The text role the step resolved by alias, kept for its later re-resolves."""
 
+    def _observe(self, **kwargs: Any) -> Snapshot:
+        """Every observe of the task's window: a field once seen secure stays secure by its
+        RuntimeId (WV-09), so "Show password" never makes its value readable."""
+        return self._secure_memory.apply(self._observer.observe(self.hwnd, **kwargs))
+
     # ---- one step ----------------------------------------------------------------------------
 
     def run_step(self, step: Step) -> StepResult:
@@ -429,6 +438,8 @@ class Session:
             before, risk = self._before_at_ceiling(step, key, risk, stage, evidence)
             previous = self._admission(step, key, risk, before)
             if previous == "done":
+                if step.verb in STATE_VERBS:
+                    self._state_holds(step, before, stage, evidence)
                 return self._done_already(step, key, stage, evidence)
             before, element_id = self._resolve_settling(step, before, stage, evidence)
             before, element_id = self._scroll_first(step, before, element_id, stage, evidence)
@@ -876,7 +887,7 @@ class Session:
                 return bool(title) and title_matches(title, predicate.name_pattern)
             return bool(title) and title_holds(predicate.pattern, title)
         try:
-            snapshot = self._observer.observe(self.hwnd)
+            snapshot = self._observe()
         except SteerError:
             return False
         if not isinstance(predicate, _DIFF_PREDICATES):
@@ -1312,9 +1323,9 @@ class Session:
                 evidence["input_counts"] = delta
 
     def _observe_fresh(self, evidence: dict[str, Any]) -> Snapshot:
-        snapshot = self._observer.observe(self.hwnd)
+        snapshot = self._observe()
         if not snapshot.stable:
-            snapshot = self._observer.observe(self.hwnd)
+            snapshot = self._observe()
         if not snapshot.stable:
             raise _StepFailureError(ErrorCode.UNSTABLE_UI, "unstable")
         evidence["observe_reused"] = False
@@ -1391,7 +1402,7 @@ class Session:
             if self._monotonic() >= deadline:
                 break
             self._sleep(SETTLE_POLL_S)
-            observed = self._observer.observe(self.hwnd)
+            observed = self._observe()
             if not observed.stable:
                 quiet_from = self._monotonic()  # a tree changing during the walk is not quiet
                 continue
@@ -1924,12 +1935,12 @@ class Session:
                     Action(verb="scroll_into_view", element_id=element_id), before
                 )
                 self._scrolled = scroll_result.delivery.value
-                before = self._observer.observe(self.hwnd, stable_window=1)
+                before = self._observe(stable_window=1)
                 element_id = self._same_target(step, before, asked, ACT_MISMATCH)
                 continue
             if result.code is ErrorCode.ELEMENT_NOT_FOUND and retries == 0:
                 retries += 1
-                before = self._observer.observe(self.hwnd, stable_window=1)
+                before = self._observe(stable_window=1)
                 element_id = self._same_target(step, before, asked, ACT_MISMATCH)
                 continue
             return result, before, retries
@@ -2033,10 +2044,10 @@ class Session:
     def _verify(
         self, expect: Predicate, before: Snapshot, windows_before: Sequence[WindowLike] | None
     ) -> tuple[Any, Snapshot]:
-        decided: list[Snapshot] = [self._observer.observe(self.hwnd, stable_window=1)]
+        decided: list[Snapshot] = [self._observe(stable_window=1)]
 
         def observe(**kwargs: Any) -> Snapshot:
-            decided.append(self._observer.observe(self.hwnd, **kwargs))
+            decided.append(self._observe(**kwargs))
             return decided[-1]
 
         verdict = verify(
@@ -2078,6 +2089,23 @@ class Session:
             self._ledger.record_outcome(step, outcome)
 
     # ---- results ----------------------------------------------------------------------------
+
+    def _state_holds(
+        self, step: Step, before: Snapshot, stage: _Stage, evidence: dict[str, Any]
+    ) -> None:
+        """A state verb's done key proves the state was set, not that it holds now: the page or
+        the person may have changed it since (WV-12). Re-read it; a changed box stops, never a
+        second Toggle under a done key."""
+        before, element_id = self._resolve_settling(step, before, stage, evidence)
+        wanted = 1 if step.verb == "check" else 0
+        try:
+            observed = (
+                None if self._live is None else self._live.toggle_state(before.handle(element_id))
+            )
+        except SteerError as exc:
+            raise _StepFailureError(ErrorCode.VERIFY_FAILED, "state_unreadable") from exc
+        if observed != wanted:
+            raise _StepFailureError(ErrorCode.VERIFY_FAILED, "state_changed_since_done")
 
     def _done_already(
         self, step: Step, key: str, stage: _Stage, evidence: dict[str, Any]
@@ -2231,7 +2259,7 @@ class Session:
         except _StepFailureError as failure:
             return self._ended_at_start(failure.code, failure.detail)
         try:
-            start = self._observer.observe(self.hwnd)
+            start = self._observe()
         except SteerError as failure:
             # the window is not there to start on (RN-14): a result, not a traceback
             self._trace.write(
@@ -2318,7 +2346,7 @@ class Session:
             stop = (
                 self._after_open(plan, step, results, ticked)
                 if step.verb == "open"
-                else _stop_for(result)
+                else _stop_for(result) or _state_stop(step, result)
             )
             if stop is not None:
                 return stop
@@ -2671,6 +2699,16 @@ def _stop_for(
     if not result.ok and (result.action is None or result.code in STOP_CODES):
         return "stopped", result.code or ErrorCode.VERIFY_FAILED, detail
     return None
+
+
+def _state_stop(step: Step, result: StepResult) -> tuple[Literal["stopped"], ErrorCode, str] | None:
+    """A state verb dispatched at R2/R3 whose T1 missed ends the task: the person approved one
+    tick, so it is never sent again in this task, by retry or by replan (W2 verdict, W2-5)."""
+    if step.verb not in STATE_VERBS or result.ok or result.action is None:
+        return None
+    if result.evidence.get("risk") not in ("R2", "R3"):
+        return None
+    return "stopped", result.code or ErrorCode.VERIFY_FAILED, "state_unverified"
 
 
 def _verify_deadline(expect: Predicate, step_deadline_s: float) -> float:
