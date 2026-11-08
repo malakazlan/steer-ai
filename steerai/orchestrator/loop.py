@@ -1833,12 +1833,14 @@ class Session:
         elsewhere = {s.subgoal for s in plan.steps if self._step_refs[s.id] != link}
         # an open's subgoal is reached in the window it opens, and a subgoal acted on in
         # another window is never judged on this one (SW-02)
+        future = _future_subgoals(plan)
         ticked = {
             s.id
             for s in plan.subgoals
             if not continuation
             and s.id not in opening
             and s.id not in elsewhere
+            and s.id not in future
             and not field_values(s.condition)  # a value is a step's doing (FV-01/03)
             and self._holds_now(s.condition, start)
         }
@@ -2159,6 +2161,21 @@ def _unscoped_after_present(plan: Plan, index: int) -> bool:
         return False
     held = [s.condition for s in plan.subgoals] + [s.expect for s in plan.steps if s.expect]
     return any(presents(p) for p in held)
+
+
+def _future_subgoals(plan: Plan) -> set[str]:
+    """Step-less subgoals listed after a subgoal that has steps: a state the plan has not
+    reached yet, so never true at start (5.11 [v2.40]; live: `title "YouTube"` as "the video
+    is playing" ticked on the results page and the task ended `done`)."""
+    owned = {s.subgoal for s in plan.steps}
+    future: set[str] = set()
+    seen_steps = False
+    for subgoal in plan.subgoals:
+        if subgoal.id in owned:
+            seen_steps = True
+        elif seen_steps:
+            future.add(subgoal.id)
+    return future
 
 
 def _leaves(predicate: Predicate) -> list[Predicate]:
