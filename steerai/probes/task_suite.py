@@ -29,6 +29,7 @@ import sys
 import tempfile
 import time
 import urllib.parse
+import urllib.request
 from collections.abc import Sequence
 from ctypes import wintypes
 from dataclasses import dataclass, field
@@ -46,12 +47,26 @@ from steerai.probes.layer_b import (
     _recorded_opens,
     wait_until_idle,
 )
-from steerai.probes.layer_b_pages import OPEN_GOAL, REPLY_GOAL, InvalidRun, PageServer
+from steerai.probes.layer_b_pages import (
+    OPEN_GOAL,
+    REPLY_GOAL,
+    REPLY_TEXT,
+    InvalidRun,
+    PageServer,
+)
 from steerai.probes.present_switch import _plan_kinds, _steps, page_html
 from steerai.probes.windows import wait_window_for_pid
 
 NOTEPAD = Path(r"C:\Windows\System32\notepad.exe")
-Check = Literal["notepad_text", "url_path", "url_query", "inbox_send", "inbox_chat"]
+Check = Literal[
+    "notepad_text",
+    "google_search",
+    "youtube_search",
+    "youtube_watch",
+    "wiki_article",
+    "inbox_send",
+    "inbox_chat",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +77,15 @@ class Task:
     """`notepad`, `inbox`, or the https URL the throwaway Chrome opens on."""
     check: Check
     expected: str
-    """The Notepad text, the page path prefix, the search words, or the inbox chat id."""
+    """The Notepad text, the search words, the word a watch page's title holds, the article
+    path, or the inbox chat id."""
+    approve: frozenset[str] = frozenset()
+    """The exact texts the scripted person says yes to (casefolded equality, never a substring:
+    "ok" is not "ok thanks", #139 review item 2)."""
+
+
+def _search(task_id: str, site: str, start: str, words: str, check: Check) -> Task:
+    return Task(task_id, f"search {site} for {words}", start, check, words, frozenset({words}))
 
 
 TASKS: tuple[Task, ...] = (
@@ -74,68 +97,64 @@ TASKS: tuple[Task, ...] = (
         "notepad_text",
         "the quick brown fox",
     ),
-    Task(
+    _search(
         "g1",
-        "search Google for steer ai computer use agent",
+        "Google",
         "https://www.google.com/?hl=en",
-        "url_query",
         "steer ai computer use agent",
+        "google_search",
     ),
-    Task(
-        "g2",
-        "search Google for windows ui automation",
-        "https://www.google.com/?hl=en",
-        "url_query",
-        "windows ui automation",
+    _search(
+        "g2", "Google", "https://www.google.com/?hl=en", "windows ui automation", "google_search"
     ),
-    Task(
-        "yt1",
-        "search YouTube for lofi hip hop",
-        "https://www.youtube.com/",
-        "url_query",
-        "lofi hip hop",
-    ),
+    _search("yt1", "YouTube", "https://www.youtube.com/", "lofi hip hop", "youtube_search"),
     Task(
         "yt2",
         "search YouTube for drake latest video and play the first video",
         "https://www.youtube.com/",
-        "url_path",
-        "/watch",
+        "youtube_watch",
+        "drake",
+        frozenset({"drake latest video"}),
     ),
     Task(
         "wk1",
         "search Wikipedia for Alan Turing",
         "https://en.wikipedia.org/wiki/Main_Page",
-        "url_path",
+        "wiki_article",
         "/wiki/Alan_Turing",
+        frozenset({"Alan Turing"}),
     ),
     Task(
         "wk2",
         "search Wikipedia for Ada Lovelace",
         "https://en.wikipedia.org/wiki/Main_Page",
-        "url_path",
+        "wiki_article",
         "/wiki/Ada_Lovelace",
+        frozenset({"Ada Lovelace"}),
     ),
-    Task("ib1", REPLY_GOAL, "inbox", "inbox_send", "chat-amir-khan"),
+    Task("ib1", REPLY_GOAL, "inbox", "inbox_send", "chat-amir-khan", frozenset({REPLY_TEXT})),
     Task("ib2", OPEN_GOAL, "inbox", "inbox_chat", "chat-sara"),
 )
+"""Five task shapes, each twice: type in Notepad, search Google, search or play on YouTube,
+open a Wikipedia article, reply or open a chat in the probe inbox. These were the development
+set for #131/#133/#134/#137 (design 12 [v2.43]): a pass here is not a held-out result."""
 
 
 @dataclass
 class Person:
-    """`go` to every plan; `yes` only to an ask whose text is the goal's own words."""
+    """`go` to every plan; `yes` only to an ask whose text is one of the task's exact phrases."""
 
-    goal: str
+    approve: frozenset[str]
     log: list[dict[str, Any]] = field(default_factory=list)
 
     def ask(self, ask: Any) -> str:  # Any: steerai.orchestrator.gate.Ask (no import cycle)
         decision = str(ask.decision_id)
         text = ask.params.get("text") if hasattr(ask, "params") else None
+        wanted = {" ".join(a.split()).casefold() for a in self.approve}
         approved = (
             getattr(ask, "kind", "yes") != "which"
             and isinstance(text, str)
-            and bool(text.strip())
-            and text.strip().casefold() in self.goal.casefold()
+            and " ".join(text.split()).casefold() in wanted
         )
         self.log.append({"verb": str(ask.verb), "risk": str(ask.risk), "approved": approved})
         return f"{'yes' if approved else 'no'}:{decision}"
@@ -153,17 +172,56 @@ def query_of(url: str) -> str:
     return ""
 
 
+_SEARCH_PATHS: dict[str, str] = {"google_search": "/search", "youtube_search": "/results"}
+
+
 def passed(task: Task, status: str | None, observed: str) -> bool:
-    """Steer said `done` and the independent read agrees."""
+    """Steer said `done` and the independent read agrees exactly (#139 review item 3)."""
     if status != "done":
         return False
     if task.check == "notepad_text":
         return observed.strip() == task.expected
-    if task.check == "url_query":
-        return query_of(observed).casefold() == task.expected.casefold()
-    if task.check == "url_path":
-        return urllib.parse.urlsplit(observed).path.startswith(task.expected)
-    return observed == task.expected
+    if task.check in ("inbox_send", "inbox_chat"):
+        return observed == task.expected
+    page = json.loads(observed or "{}")
+    href, title = str(page.get("href", "")), str(page.get("title", ""))
+    path = urllib.parse.urlsplit(href).path
+    if task.check in _SEARCH_PATHS:
+        return path == _SEARCH_PATHS[task.check] and (
+            query_of(href).casefold() == task.expected.casefold()
+        )
+    if task.check == "youtube_watch":
+        # "the first video" for the words: a watch page whose title names the artist
+        return path == "/watch" and task.expected.casefold() in title.casefold()
+    return path == task.expected
+
+
+def inbox_send(raw: str) -> str:
+    """The chat of the one send in the inbox log, or why not: a stray send before or after the
+    right one fails the run (#139 review item 1)."""
+    entries = json.loads(raw or "[]")
+    if not isinstance(entries, list):
+        raise ValueError("the send log is not a list")
+    if len(entries) != 1:
+        return f"sends:{len(entries)}"
+    entry = entries[0]
+    if not (entry.get("trusted") and entry.get("expected")):
+        return "bad_send"
+    return str(entry.get("chat"))
+
+
+def seconds_line(rows: Sequence[dict[str, Any]]) -> str:
+    """p50 / p95 wall seconds per task over its measured runs."""
+    parts = []
+    for task in TASKS:
+        times = sorted(
+            float(r["seconds"]) for r in rows if r.get("task") == task.task_id and "seconds" in r
+        )
+        if times:
+            p50 = times[len(times) // 2]
+            p95 = times[min(len(times) - 1, round(0.95 * (len(times) - 1)))]
+            parts.append(f"{task.task_id} {p50:.1f}/{p95:.1f}")
+    return "seconds p50/p95: " + ", ".join(parts)
 
 
 def verdict(rows: Sequence[dict[str, Any]]) -> tuple[list[str], bool]:
@@ -172,15 +230,16 @@ def verdict(rows: Sequence[dict[str, Any]]) -> tuple[list[str], bool]:
     lines: list[str] = []
     ok = bool(rows)
     for task in TASKS:
-        runs = [r for r in rows if r["task"] == task.task_id]
+        runs = [r for r in rows if r.get("task") == task.task_id]
         good = sum(bool(r["passed"]) for r in runs)
         invalid = sum("invalid" in r for r in runs)
         lines.append(
             f"{task.task_id}: {good}/{len(runs)}" + (f" ({invalid} invalid)" if invalid else "")
         )
         ok = ok and bool(runs) and good == len(runs)
-    total = sum(bool(r["passed"]) for r in rows)
-    lines.append(f"all: {total}/{len(rows)}")
+    measured = [r for r in rows if "task" in r]
+    total = sum(bool(r["passed"]) for r in measured)
+    lines.append(f"all: {total}/{len(measured)}")
     return lines, ok
 
 
@@ -237,7 +296,7 @@ def _options(tmp: Path, hwnd: int, task: Task, number: int) -> run_mod.Options:
 
 
 def _steer(task: Task, number: int, hwnd: int, tmp: Path, planner: _Planner) -> dict[str, Any]:
-    person = Person(task.goal)
+    person = Person(task.approve)
     deps = run_mod._real_deps().replace(
         make_confirmer=lambda *_: person,
         open_windows=lambda: [],
@@ -246,6 +305,7 @@ def _steer(task: Task, number: int, hwnd: int, tmp: Path, planner: _Planner) -> 
     )
     stdout = io.StringIO()
     started = time.monotonic()
+    calls_before = planner.calls
     with _recorded_opens() as opens:
         run_mod.run(
             _options(tmp, hwnd, task, number),
@@ -269,6 +329,7 @@ def _steer(task: Task, number: int, hwnd: int, tmp: Path, planner: _Planner) -> 
         "seconds": round(time.monotonic() - started, 1),
         "asks": "".join("y" if a["approved"] else "n" for a in person.log),
         "opens_recorded": opened,
+        "planner_calls": planner.calls - calls_before,
     }
 
 
@@ -288,10 +349,21 @@ def _run_notepad(task: Task, number: int, tmp: Path, planner: _Planner) -> dict[
         )
 
 
-def _href(port: int) -> str:
-    cdp = CdpSession(page_ws_url(port))
+def _page(port: int) -> CdpSession:
+    """The one page tab: with more than one, a read could be of a tab Steer never used, so the
+    run measured nothing (#139 review item 3)."""
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=5) as resp:
+        targets = json.loads(resp.read().decode("utf-8"))
+    pages = [t for t in targets if isinstance(t, dict) and t.get("type") == "page"]
+    if len(pages) != 1:
+        raise InvalidRun(f"page_targets:{len(pages)}")
+    return CdpSession(str(pages[0]["webSocketDebuggerUrl"]))
+
+
+def _read(port: int, expression: str, stage: str) -> str:
+    cdp = _page(port)
     try:
-        return _evaluate(cdp, "location.href", "href")
+        return _evaluate(cdp, expression, stage)
     finally:
         cdp.close()
 
@@ -301,24 +373,18 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
     proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, url, window_size=WINDOW)
     try:
         window = wait_window_for_pid(proc.pid, image="chrome.exe", process=proc)
-        _href(port)  # the page target exists before Steer looks
+        page_ws_url(port)  # the page target exists before Steer looks
         time.sleep(3.0)  # a real site settles its first layout (unmeasured; the warmup follows)
         _in_front(window.hwnd)
         row = _steer(task, number, window.hwnd, tmp, planner)
         if task.check == "inbox_send":
-            cdp = CdpSession(page_ws_url(port))
-            raw = _evaluate(cdp, 'localStorage.getItem("steer-present") || "[]"', "read")
-            cdp.close()
-            sends = [
-                e.get("chat") for e in json.loads(raw) if e.get("trusted") and e.get("expected")
-            ]
-            row["observed"] = sends[0] if len(sends) == 1 else f"sends:{len(sends)}"
+            raw = _read(port, 'localStorage.getItem("steer-present") || "[]"', "read")
+            row["observed"] = inbox_send(raw)
         elif task.check == "inbox_chat":
-            cdp = CdpSession(page_ws_url(port))
-            row["observed"] = _evaluate(cdp, "document.body.dataset.chat", "chat")
-            cdp.close()
+            row["observed"] = _read(port, "document.body.dataset.chat", "chat")
         else:
-            row["observed"] = _href(port)
+            expression = "JSON.stringify({href: location.href, title: document.title})"
+            row["observed"] = _read(port, expression, "page")
         return row
     finally:
         from steerai.probes.chrome_a11y import stop_chrome  # noqa: PLC0415 - with launch
@@ -327,7 +393,11 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
 
 
 def one_run(task: Task, number: int, planner: _Planner, keep: Path | None = None) -> dict[str, Any]:
-    wait_until_idle()
+    try:
+        wait_until_idle()
+    except TimeoutError:
+        # the person stayed active: this run measured nothing, the suite goes on
+        return {"task": task.task_id, "run": number, "passed": False, "invalid": "person_active"}
     tmp = Path(tempfile.mkdtemp(prefix="steer-suite-"))
     try:
         row = _started(task, number, tmp, planner)
@@ -344,13 +414,8 @@ def one_run(task: Task, number: int, planner: _Planner, keep: Path | None = None
     observed = str(row.pop("observed", ""))
     ok = passed(task, row["status"], observed) and row["opens_recorded"] == 0
     # the observed address is a public site's, the text a fixture's: tokens, never person data
-    return {
-        "task": task.task_id,
-        "run": number,
-        "passed": ok,
-        **row,
-        "planner_calls": planner.calls,
-    }
+    # a takeover is a fail, never invalid: conservative, labelled by its status token
+    return {"task": task.task_id, "run": number, "passed": ok, **row}
 
 
 def _started(task: Task, number: int, tmp: Path, planner: _Planner) -> dict[str, Any]:
@@ -364,6 +429,29 @@ def _started(task: Task, number: int, tmp: Path, planner: _Planner) -> dict[str,
     return _run_chrome(task, number, tmp, planner, task.start)
 
 
+def _header() -> dict[str, Any]:
+    """Which code and which Chrome produced the rows (#139 review item 4)."""
+    sha = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],  # noqa: S607 - git on PATH
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    # Chrome installs into a folder named by its version next to chrome.exe
+    versions = sorted(
+        d.name
+        for d in CHROME_DEFAULT.parent.iterdir()
+        if d.is_dir() and d.name[:1].isdigit() and d.name.count(".") == 3
+    )
+    version = versions[-1] if versions else "unknown"
+    return {
+        "kind": "header",
+        "git": sha,
+        "chrome": version,
+        "date": time.strftime("%Y-%m-%d %H:%M"),
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Phase 1 bar: ten single-app tasks, live.")
     parser.add_argument("--runs", type=int, default=3)
@@ -375,6 +463,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     planner = _Planner()
     rows: list[dict[str, Any]] = []
     with args.out.open("w", encoding="utf-8") as out:
+        out.write(json.dumps(_header()) + "\n")
         for number in range(1, args.runs + 1):
             for task in TASKS:
                 if wanted and task.task_id not in wanted:
@@ -384,6 +473,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 out.write(json.dumps(row) + "\n")
                 out.flush()
     lines, ok = verdict(rows)
+    lines.append(seconds_line(rows))
     sys.stdout.write("\n".join(lines) + f"\nbar {'met' if ok else 'missed'}\n")
     return 0 if ok else 1
 
