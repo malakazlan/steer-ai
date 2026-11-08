@@ -21,6 +21,10 @@ def test_one_final_mark_of_a_document_is_not_content() -> None:
     assert field_text("two" + cr + cr, "Document") == "two" + chr(10), "only one mark"
     assert field_text(cr, "Edit") == chr(10), "an Edit keeps it: not a rich text story"
     assert field_text("hello", "Document") == "hello"
+    lf = chr(10)
+    assert field_text(lf, "Document") == lf, "a final LF is content (a Chrome editor's newline)"
+    assert field_text("x" + lf, "Document") == "x" + lf
+    assert field_text("x" + cr + lf, "Document") == "x" + lf, "CRLF is a line, not the EOP"
 
 
 def test_typing_into_an_empty_rich_text_document_is_not_refused(fast_clock: Any) -> None:
