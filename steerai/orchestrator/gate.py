@@ -204,11 +204,23 @@ def rename_counts(
     step: Step, expect: Predicate | None, *, risk: Risk, deny: Risk, goal: str
 ) -> bool:
     """Whether an in-place page rename is a search submit's effect (5.10 [v2.39], amending
-    [v2.1]): a `submit` at exactly R2 from its floor alone (plan tier at most R2, no deny word or
-    automation id raising it), whose expect is the bare replacing form of a Document in a
-    code-owned frame naming exactly the typed text, which the goal holds verbatim. A page that
-    sets its own title after the approved Enter is the residual risk; sends, deletes and
-    anything raised keep `renamed_at_risk`."""
+    [v2.1]): an eligible search submit (`url_query_eligible`) whose expect is in a code-owned
+    frame. A page that sets its own title after the approved Enter is the residual risk; sends,
+    deletes and anything raised keep `renamed_at_risk`."""
+    return (
+        url_query_eligible(step, expect, risk=risk, deny=deny, goal=goal)
+        and isinstance(expect, Appeared)
+        and expect.decoration is not None
+    )
+
+
+def url_query_eligible(
+    step: Step, expect: Predicate | None, *, risk: Risk, deny: Risk, goal: str
+) -> bool:
+    """A search submit (5.10 [v2.39]; #148 design D item 3): a `submit` at exactly R2 from its
+    floor alone (plan tier at most R2, no deny word or automation id raising it), whose expect
+    is the bare replacing form of a Document naming exactly the typed text, which the goal
+    holds verbatim."""
     text = step.params.get("text")
     return (
         step.verb == "submit"
@@ -218,7 +230,6 @@ def rename_counts(
         and isinstance(expect, Appeared)
         and expect.replaces
         and expect.role == "Document"
-        and expect.decoration is not None
         and isinstance(text, str)
         and expect.name_pattern == text
         and verbatim_in(text, goal)

@@ -21,6 +21,7 @@ from steerai.orchestrator.ledger import (
 )
 from steerai.platform import dpapi
 from steerai.probes.windows import process_alive
+from steerai.verify.url_query import UrlBefore
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
 
@@ -335,6 +336,30 @@ def test_record_payload_is_json_with_a_version_before_encryption() -> None:
     assert payload["before"]["id"] == "before"
     assert payload["phase"] == "written"
     assert WriteAheadRecord.from_json(record.to_json()) == record
+
+
+def test_a_record_keeps_the_before_url_only_as_a_digest_and_one_bit() -> None:
+    """#148 design D item 5: the URL itself is never written."""
+    url_before = UrlBefore.of("example.org/?q=private+words", "private words")
+    record = WriteAheadRecord(
+        task_id="task-1",
+        step_id="s3",
+        action_key="k",
+        decision_id="d-1",
+        phase="written",
+        before=_snapshot(),
+        written_at=7.0,
+        url_before=url_before,
+    )
+    text = record.to_json()
+    assert "example.org" not in text
+    assert "private" not in text
+    assert WriteAheadRecord.from_json(text) == record
+    payload = json.loads(text)
+    for bad in ({"digest": "zz", "carried": False}, {"digest": url_before.digest, "carried": 1}):
+        payload["url_before"] = bad
+        with pytest.raises(ValueError, match="malformed"):
+            WriteAheadRecord.from_json(json.dumps(payload))
 
 
 # ---- the runner's needs: one runner per task, a plan and a window bound to the task ----------

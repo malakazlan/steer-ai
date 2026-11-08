@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -33,11 +34,13 @@ from steerai.errors import ErrorCode, SteerError
 from steerai.orchestrator.contracts import VERBS, GateDecision, Step, Target
 from steerai.platform import dpapi
 from steerai.probes.windows import process_alive, process_start_time
+from steerai.verify.url_query import UrlBefore
 from steerai.world.model import Snapshot, normalise_name, snapshot_from_json, snapshot_to_json
 
 Admission = Literal["fresh", "done", "confirm"]
 Phase = Literal["written", "acting", "verified"]
 RECORD_FORMAT = 1
+_SHA256 = re.compile("[0-9a-f]{64}")
 DEFAULT_MAX_RECORD_BYTES = 2_000_000
 """Cap on a serialised before snapshot (OR-38). Unmeasured: a 460-node Chrome tree is to be
 measured by a probe; a truncated snapshot is never written because it would break resume."""
@@ -101,6 +104,8 @@ class WriteAheadRecord:
     chosen: dict[str, Any] | None = field(default=None, repr=False)
     """The identity a person target was bound to (role, RuntimeId, name part, full name),
     so a resume never dispatches to another row (PT-05)."""
+    url_before: UrlBefore | None = field(default=None, repr=False)
+    """A Chrome search submit's before URL as a digest and one bit (#148 design D item 5)."""
 
     def to_json(self) -> str:
         return json.dumps(
@@ -114,6 +119,16 @@ class WriteAheadRecord:
                 "written_at": self.written_at,
                 "before": json.loads(snapshot_to_json(self.before)),
                 "chosen": self.chosen,
+                **(
+                    {}
+                    if self.url_before is None
+                    else {
+                        "url_before": {
+                            "digest": self.url_before.digest,
+                            "carried": self.url_before.carried,
+                        }
+                    }
+                ),
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -137,9 +152,21 @@ class WriteAheadRecord:
                 chosen=payload.get("chosen") if isinstance(payload.get("chosen"), dict) else None,
                 before=snapshot_from_json(json.dumps(payload["before"])),
                 written_at=float(payload["written_at"]),
+                url_before=_url_before(payload.get("url_before")),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"write-ahead record is malformed: {type(exc).__name__}") from exc
+
+
+def _url_before(raw: object) -> UrlBefore | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("url_before is not an object")
+    digest, carried = raw.get("digest"), raw.get("carried")
+    if not isinstance(digest, str) or not _SHA256.fullmatch(digest) or type(carried) is not bool:
+        raise ValueError("url_before is not a digest and a flag")
+    return UrlBefore(digest=digest, carried=carried)
 
 
 def _digest(text: str) -> str:
@@ -548,6 +575,7 @@ class Ledger:
         before: Snapshot,
         decision: GateDecision | None,
         chosen: dict[str, Any] | None = None,
+        url_before: UrlBefore | None = None,
     ) -> WriteAheadRecord:
         """Consume the key and persist the before snapshot, before any R2/R3 action; a failed
         write means no action and no consumed key."""
@@ -565,6 +593,7 @@ class Ledger:
             before=before,
             written_at=time.time(),
             chosen=chosen,
+            url_before=url_before,
         )
         text = record.to_json()
         if len(text.encode()) > self._max_record_bytes:
