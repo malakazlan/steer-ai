@@ -5,10 +5,12 @@ text landed (n=5), after the R2 snapshot was taken, so the step stopped
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from steerai.orchestrator.contracts import Step, Target
 from steerai.orchestrator.loop import QUIET_AFTER_TYPE_S
+from steerai.verify.predicates import TitleMatches
 from tests.orchestrator.fakes import COMPOSER
 from tests.orchestrator.test_edge_cases import FocusLive, _rebuild
 from tests.orchestrator.test_loop import HELLO, Harness, _send, _type
@@ -109,3 +111,50 @@ def test_a_step_not_right_after_a_type_does_not_wait() -> None:
     assert result.ok is True, result.to_dict()
     assert "settled_after_type" not in result.evidence
     assert h.clock["t"] - before < QUIET_AFTER_TYPE_S
+
+
+def test_a_page_unstable_on_every_poll_is_capped_never_quiet() -> None:
+    """An unstable poll restarts the quiet window (#141 review item 1)."""
+    h = _harness()
+    h.session.run_step(_type())
+    inner = h.world.observe
+    calls = {"n": 0}
+
+    class Shaky:
+        def observe(self, hwnd: int, **kwargs: Any) -> Any:
+            calls["n"] += 1
+            snap = inner(hwnd, **kwargs)
+            # the step's first fresh look is stable; every settle poll after it is not
+            return snap if calls["n"] == 1 else replace(snap, stable=False)
+
+    h.session._observer = Shaky()
+    h.world.composer_value = HELLO
+    result = h.session.run_step(_submit())
+    assert result.evidence["settle"] == "capped"
+
+
+def test_a_step_raised_to_r2_by_the_ceiling_settles_too(monkeypatch: Any) -> None:
+    """Settling runs on the tier after the ceiling (#141 review item 2)."""
+    h = _harness()
+    _rerendering_page(h)
+    h.session.run_step(_type())
+    monkeypatch.setattr(h.session, "_ceiling", lambda _s, _k, _b, _r: "R2")
+    click = Step(
+        id="c1",
+        subgoal="g1",
+        verb="click",
+        target=Target(role="Button", name="Send"),
+        risk="R1",
+        expect=TitleMatches(pattern="Amir Khan - Chat"),
+    )
+    result = h.session.run_step(click)
+    assert result.evidence.get("settled_after_type") is True, result.to_dict()
+
+
+def test_the_wait_is_timed_as_settle_not_observe() -> None:
+    h = _harness()
+    _rerendering_page(h)
+    h.session.run_step(_type())
+    result = h.session.run_step(_submit())
+    assert result.latency_ms["settle"] >= QUIET_AFTER_TYPE_S * 1000
+    assert result.latency_ms["observe"] < QUIET_AFTER_TYPE_S * 1000

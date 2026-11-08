@@ -402,16 +402,7 @@ class Session:
             self._enter_window(step, evidence)
             key = self._ledger.key_for(step)
             self._act_evidence = evidence
-            before = stage.measure("observe", lambda: self._before(risk, evidence))
-            # admission first, at the candidates' tier ceiling for a person target: a done
-            # or open record under this key is never bypassed by the row the person picks
-            risk = self._ceiling(step, key, before, risk)
-            if risk in ("R2", "R3") and evidence.get("observe_reused"):
-                # a reused R0/R1 snapshot is not a before for an R2/R3 step: observe fresh
-                before = stage.measure(
-                    "observe", lambda: self._settled(self._observe_fresh(evidence), evidence)
-                )
-                risk = self._ceiling(step, key, before, effective_risk(step))
+            before, risk = self._before_at_ceiling(step, key, risk, stage, evidence)
             previous = self._admission(step, key, risk, before)
             if previous == "done":
                 return self._done_already(step, key, stage, evidence)
@@ -1282,8 +1273,32 @@ class Session:
             elif same_window and snapshot.stable and fresh:
                 evidence["observe_reused"] = True
                 return snapshot
-        observed = self._observe_fresh(evidence)
-        return self._settled(observed, evidence) if risk in ("R2", "R3") else observed
+        return self._observe_fresh(evidence)
+
+    def _before_at_ceiling(
+        self, step: Step, key: str, risk: Risk, stage: _Stage, evidence: dict[str, Any]
+    ) -> tuple[Snapshot, Risk]:
+        """The before snapshot and the tier admission runs at: admission first, at the
+        candidates' tier ceiling for a person target (a done or open record under this key is
+        never bypassed by the row the person picks); a reused R0/R1 snapshot is no before for
+        an R2/R3 step; right after a `type`, an R2/R3 step settles (5.11 [v2.44])."""
+        before = stage.measure("observe", lambda: self._before(risk, evidence))
+        risk = self._ceiling(step, key, before, risk)
+        if risk in ("R2", "R3") and evidence.get("observe_reused"):
+            before = stage.measure("observe", lambda: self._observe_fresh(evidence))
+            risk = self._ceiling(step, key, before, effective_risk(step))
+        if risk in ("R2", "R3") and self._settle_due():
+            # after the ceiling, so a step raised to R2 settles too; policy time (OR-39)
+            before = stage.measure("settle", partial(self._settled, before, evidence))
+            risk = self._ceiling(step, key, before, effective_risk(step))
+        return before, risk
+
+    def _settle_due(self) -> bool:
+        typed = self._typed_at
+        if typed is not None and self._monotonic() - typed > SETTLE_AFTER_TYPE_CAP_S:
+            self._typed_at = None  # the page has had the whole window: nothing to wait for
+            return False
+        return typed is not None
 
     def _settled(self, snapshot: Snapshot, evidence: dict[str, Any]) -> Snapshot:
         """Right after a `type`, an R2/R3 step's before waits until the page has kept its
@@ -1291,11 +1306,16 @@ class Session:
         after the snapshot would otherwise change the screen during the ask or leave a stale
         composer handle. Once per typing, within SETTLE_AFTER_TYPE_CAP_S of it."""
         typed, self._typed_at = self._typed_at, None
-        if typed is None or self._monotonic() - typed > SETTLE_AFTER_TYPE_CAP_S:
+        if typed is None:
             return snapshot
         deadline = typed + SETTLE_AFTER_TYPE_CAP_S
         ids = {e.runtime_id for e in snapshot.elements}
         quiet_from = self._monotonic()
+        if self._last_after is not None:
+            last, stamp = self._last_after
+            if stamp >= typed and {e.runtime_id for e in last.elements} == ids:
+                # unchanged since the type's own after snapshot: quiet since then
+                quiet_from = stamp
         # bounded by polls too: a clock that never moves must not spin (a stuck host clock)
         for _ in range(int(SETTLE_AFTER_TYPE_CAP_S / SETTLE_POLL_S) + 1):
             if self._monotonic() - quiet_from >= QUIET_AFTER_TYPE_S:
@@ -1306,6 +1326,7 @@ class Session:
             self._sleep(SETTLE_POLL_S)
             observed = self._observer.observe(self.hwnd)
             if not observed.stable:
+                quiet_from = self._monotonic()  # a tree changing during the walk is not quiet
                 continue
             now = {e.runtime_id for e in observed.elements}
             if now != ids:
