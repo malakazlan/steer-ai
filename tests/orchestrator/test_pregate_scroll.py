@@ -18,6 +18,7 @@ from steerai.verify.predicates import Appeared
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
 from tests.orchestrator.fakes import FakeExecutor, not_delivered
+from tests.orchestrator.test_bind_asked import nothing, scripted_waits
 from tests.orchestrator.test_edge_cases import _rebuild
 from tests.orchestrator.test_loop import Harness
 
@@ -32,6 +33,8 @@ DOC = Element(
     parent_id=0,
 )
 BELOW = (60, 3600, 160, 3630)
+SCROLL_WAIT = 2
+"""The boundary before the pre-gate scroll: after entering the window (1), before the gate."""
 SHOWN = (60, 600, 160, 630)
 
 
@@ -44,12 +47,17 @@ class Page:
     deleted: bool = False
     scroll_lands: bool = True
     deletes: bool = False
+    churns: bool = False
+    """After the scroll, every look adds a new element (a feed that keeps loading)."""
+    remounts: bool = False
+    """After the scroll, the button is a new node: same role and name, new RuntimeId."""
     """The button removes itself when clicked: an R3 `delete` with its own template."""
     observed: int = 0
     log: list[str] = field(default_factory=list)
 
     def button(self) -> Element:
         on = self.scrolled and self.scroll_lands
+        runtime_id = (55,) if self.scrolled and self.remounts else (5,)
         return Element(
             id=5,
             depth=2,
@@ -57,13 +65,25 @@ class Page:
             name="Show more",
             box=SHOWN if on else BELOW,
             offscreen=not on,
-            runtime_id=(5,),
+            runtime_id=runtime_id,
             parent_id=1,
         )
 
     def observe(self, hwnd: int, **_kwargs: Any) -> Snapshot:
         self.observed += 1
         elements = [WINDOW, DOC] if self.deleted else [WINDOW, DOC, self.button()]
+        if self.churns and self.scrolled:
+            elements.append(
+                Element(
+                    id=100 + self.observed,
+                    depth=2,
+                    role="ListItem",
+                    name="loaded",
+                    box=(60, 10, 300, 30),
+                    runtime_id=(100 + self.observed,),
+                    parent_id=1,
+                )
+            )
         if self.clicked:
             elements.append(
                 Element(
@@ -209,3 +229,39 @@ def test_a_delivered_scroll_that_was_already_on_screen_counts_as_seen() -> None:
     result = h.session.run_step(_click())
     assert result.ok is True, result.to_dict()
     assert result.evidence["scrolled"] == Delivery.NOT_DELIVERED.value
+
+
+def test_a_page_that_never_goes_quiet_after_the_scroll_is_refused() -> None:
+    """#176 review 1: a capped quiet look is a before taken mid-load: unclear means fail."""
+    page = Page(churns=True)
+    h = _harness(page)
+    result = h.session.run_step(_click())
+    assert result.ok is False
+    assert result.code is ErrorCode.UNSTABLE_UI
+    assert result.evidence["detail"] == "scroll_not_quiet"
+    assert page.log == ["scroll_into_view"]
+
+
+def test_a_target_remounted_by_the_scroll_is_a_changed_screen() -> None:
+    """#176 review 2: the same role and name on a new node is not the element asked about."""
+    page = Page(deletes=True, remounts=True)
+    h = _harness(page)
+    result = h.session.run_step(_delete())
+    assert result.ok is False
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.evidence["detail"] == "screen_changed_during_scroll"
+    assert h.confirmer.asked == []
+    assert page.log == ["scroll_into_view"]
+
+
+def test_a_wait_before_the_scroll_scrolls_the_freshly_found_target() -> None:
+    """#176 review 2: the boundary wait re-observes; the scroll then acts on that look."""
+    page = Page()
+    h = _harness(page)
+    scripted_waits(h, {SCROLL_WAIT: nothing})
+    looks_before = page.observed
+    result = h.session.run_step(_click())
+    assert result.ok is True, result.to_dict()
+    assert result.evidence["restarted"] is True
+    assert page.log == ["scroll_into_view", "click"]
+    assert page.observed > looks_before
