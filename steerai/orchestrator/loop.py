@@ -953,7 +953,8 @@ class Session:
             )
         evidence.update({k: v for k, v in verdict.evidence.items() if k != "level"})
         evidence["level"] = verdict.level
-        ok = verdict.holds and action.delivery is not Delivery.NOT_DELIVERED
+        # already in the wanted state is nothing sent and counts as success (5.9 [v0.7])
+        ok = verdict.holds and (action.delivery is not Delivery.NOT_DELIVERED or action.skipped)
         if ok and step.verb == "type" and step.target is not None:
             self._pin(step.target, verdict.level)
         return self._finish(
@@ -1906,8 +1907,10 @@ class Session:
                 self._counts_at_step = self._monitor.counts()
             action = self._build(path, verb, element_id, step.text, chord)
             result, before, element_id = self._dispatch(step, executor, action, before)
-            if result.delivery is not Delivery.NOT_DELIVERED or result.steps:
-                self._sent_in_act = True  # something may have reached the app
+            if result.delivery is not Delivery.NOT_DELIVERED or (
+                result.steps and not result.skipped
+            ):
+                self._sent_in_act = True  # something may have reached the app (a skip never)
             if result.code in (ErrorCode.GATE_BLOCKED, ErrorCode.GATE_PENDING_USER):
                 return result, before, retries
             if result.delivery is not Delivery.NOT_DELIVERED:
