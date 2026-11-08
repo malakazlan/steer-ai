@@ -23,7 +23,12 @@ from steerai.orchestrator.contracts import (
     Target,
 )
 from steerai.orchestrator.gate import Ask, Gate, effective_risk, params_for
-from steerai.orchestrator.loop import REUSE_FRESHNESS_S, Session, _structural_part
+from steerai.orchestrator.loop import (
+    REUSE_FRESHNESS_S,
+    SETTLE_AFTER_TYPE_CAP_S,
+    Session,
+    _structural_part,
+)
 from steerai.orchestrator.trace import JsonLinesTrace, NullTrace
 from steerai.verify.predicates import (
     All,
@@ -449,6 +454,7 @@ def test_resume_resolves_the_composer_in_the_persisted_before_not_the_fresh_one(
 def test_an_offscreen_target_is_scrolled_into_view_once_then_the_click_is_retried() -> None:
     h = Harness()
     h.session.run_step(_type())
+    h.clock["t"] += SETTLE_AFTER_TYPE_CAP_S + 1  # the page has settled: no wait counted here
     clicks = {"n": 0}
 
     def offscreen_first(executor: FakeExecutor, action: Any) -> None:
@@ -721,6 +727,7 @@ def test_one_unstable_observe_followed_by_a_stable_one_proceeds(
 def test_after_a_confirm_the_loop_observes_fresh_and_re_resolves_the_target() -> None:
     h = Harness()
     h.session.run_step(_type())
+    h.clock["t"] += SETTLE_AFTER_TYPE_CAP_S + 1  # the page has settled: no wait counted here
     send_before = _row_id(h, "Send")
     h.confirmer.on_ask = lambda _ask: h.world.add_bubble("incoming while you decide")
     observed = len(h.world.observed)
