@@ -55,11 +55,13 @@ _FORM = (
 )
 PAGE = (
     "<!doctype html><title>Fixture documentation</title>"
-    f'<nav aria-label="Related">{_FORM.format(where="top")}</nav>'
+    f'<nav aria-label="Related"><ul><li>{_FORM.format(where="top")}</li></ul></nav>'
     "<main><h1>Fixture documentation</h1><p>Text.</p>"
     '<div style="height:3000px"></div></main>'
-    f'<nav aria-label="Related">{_FORM.format(where="bottom")}</nav>'
+    f'<nav aria-label="Related"><ul><li>{_FORM.format(where="bottom")}</li></ul></nav>'
 )
+"""Sphinx's Related bar holds its search form in a list item, which Chrome names from its
+content: "Go" before typing and "<text>Go" after (docs.python.org, 2026-11-08)."""
 RESULTS = f"<!doctype html><title>{QUERY} - Search results</title><h1>Search results</h1>"
 PLAN = {
     "goal": f"search the fixture docs for {QUERY}",
