@@ -10,6 +10,11 @@ Sections (`--section`):
   Enter-to-omnibox-change time, the before and after values, exact query decoding.
 - `omnibox`: Ctrl+L, the words typed by tagged unicode input, Enter, on the profile's default
   engine: keyboard focus and value while typing, then the after value and the focus.
+- `commit` (review item 2): Enter on a URL carrying the words, typed in the omnibox after
+  Ctrl+L and typed in a local GET form's box, to a local server that answers after `SLOW_S`
+  and to a refused port: a 10 ms timeline of the omnibox value and focus against the server's
+  request and answer times; whether the URL shows before the page answers, whether it stays
+  after a failed load, and the window title then.
 Every section times the full locate (FindAll by ClassName plus the walk above each element)
 and the value read, and records whether "www" shows and whether an accent shows decoded.
 
@@ -19,15 +24,18 @@ Usage (Windows, the person away):
     uv run python -m steerai.probes.omnibox_read --section spoof --runs 10
     uv run python -m steerai.probes.omnibox_read --section enter --runs 10
     uv run python -m steerai.probes.omnibox_read --section omnibox --runs 10
+    uv run python -m steerai.probes.omnibox_read --section commit --runs 10
 """
 
 from __future__ import annotations
 
 import argparse
+import http.server
 import json
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
 import urllib.parse
@@ -64,6 +72,8 @@ SPOOF = (
     'aria-label="Address and search bar" value="evil.example/search?q=ui+automation+tree">'
 )
 VK_RETURN, VK_CONTROL, VK_L = 0x0D, 0x11, 0x4C
+SLOW_S = 2.0
+TIMELINE_S = 6.0
 
 
 def query_words(omnibox_value: str, param: str) -> str:
@@ -73,6 +83,18 @@ def query_words(omnibox_value: str, param: str) -> str:
     params = urllib.parse.parse_qs(urllib.parse.urlsplit(value).query)
     raw = params.get(param, [""])[0]
     return " ".join(unicodedata.normalize("NFKC", raw).split())
+
+
+def shown_at(timeline: Sequence[tuple[int, str, bool]], param: str, words: str) -> int | None:
+    """The first time (ms) the omnibox, out of focus, carries the words in the parameter."""
+    return next(
+        (
+            ms
+            for ms, value, focused in timeline
+            if not focused and query_words(value, param) == words
+        ),
+        None,
+    )
 
 
 def _uia() -> tuple[Any, Any]:  # Any: comtypes UIA objects have no stubs
@@ -298,6 +320,129 @@ def omnibox_run(words: str, number: int) -> dict[str, Any]:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+class _SlowServer:
+    """127.0.0.1 only, GET only: `/page.html` is a GET form posting to `action` at once;
+    `/results` answers after `SLOW_S`. Records when each results request arrived and when its
+    answer was sent, on the probe's own perf_counter clock."""
+
+    def __init__(self) -> None:
+        self.times: list[tuple[float, float]] = []
+        self.action = "/results"
+        times, server = self.times, self
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                arrived = time.perf_counter()
+                path = self.path.split("?", 1)[0]
+                if path == "/page.html":
+                    self._send(FORM.replace('"/results"', json.dumps(server.action)).encode())
+                elif path == "/results":
+                    time.sleep(SLOW_S)
+                    self._send(b"<!doctype html><title>Results</title><p>results")
+                    times.append((arrived, time.perf_counter()))
+                else:
+                    self.send_error(404)
+
+            def _send(self, data: bytes) -> None:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args: Any) -> None:  # noqa: ARG002 - Any: stdlib format args
+                return
+
+        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    @property
+    def port(self) -> int:
+        return int(self._server.server_address[1])
+
+    def __enter__(self) -> _SlowServer:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+COMMIT_TARGETS = ("bar-slow", "bar-refused", "page-slow", "page-refused")
+
+
+def commit_run(target: str, words: str, number: int) -> dict[str, Any]:
+    """Enter on a URL carrying the words: `bar-*` typed in the omnibox after Ctrl+L, `page-*`
+    typed in a local GET form's box; `*-slow` answers after SLOW_S, `*-refused` has nothing
+    listening. Then a 10 ms timeline of the omnibox value and focus, and the window title."""
+    from steerai.probes import win_input  # noqa: PLC0415 - Windows only
+    from steerai.probes.task_suite import _page  # noqa: PLC0415 - the one-tab reader
+
+    with _SlowServer() as server:
+        port = server.port if target.endswith("slow") else _free_port()
+        server.action = f"http://127.0.0.1:{port}/results"
+        typed = f"{server.action}?q={urllib.parse.quote_plus(words)}"
+        on_page = target.startswith("page")
+        wait_until_idle()
+        start_url = f"http://127.0.0.1:{server.port}/page.html" if on_page else "about:blank"
+        proc, tmp, hwnd, cdp_port = _chrome(start_url)
+        try:
+            time.sleep(2.0)
+            _in_front(hwnd)
+            found, info = locate(hwnd)
+            row: dict[str, Any] = {"section": "commit", "target": target, "run": number, **info}
+            if not found:
+                return {**row, "error": "no_omnibox"}
+            pattern, element = found
+            if on_page:
+                cdp = _page(cdp_port)
+                try:
+                    _evaluate(cdp, "document.querySelector('input[name=q]').focus(); 'ok'", "focus")
+                finally:
+                    cdp.close()
+                time.sleep(0.3)
+                _type_unicode(words)
+            else:
+                win_input.send_inputs(
+                    [
+                        win_input.build_keyboard_input(vk=VK_CONTROL, keyup=False),
+                        win_input.build_keyboard_input(vk=VK_L, keyup=False),
+                        win_input.build_keyboard_input(vk=VK_L, keyup=True),
+                        win_input.build_keyboard_input(vk=VK_CONTROL, keyup=True),
+                    ]
+                )
+                time.sleep(0.3)
+                _type_unicode(typed)
+            time.sleep(0.5)
+            started = time.perf_counter()
+            win_input.key_tap(VK_RETURN)
+            timeline: list[tuple[int, str, bool]] = []
+            while time.perf_counter() - started < TIMELINE_S:
+                ms = round((time.perf_counter() - started) * 1000)
+                timeline.append(
+                    (ms, str(pattern.CurrentValue), bool(element.CurrentHasKeyboardFocus))
+                )
+                time.sleep(0.01)
+            arrived, answered = server.times[0] if server.times else (None, None)
+            final_value, final_focus = timeline[-1][1], timeline[-1][2]
+            uia, _mod = _uia()
+            return {
+                **row,
+                "focus_left_ms": next((ms for ms, _v, f in timeline if not f), None),
+                "shown_ms": shown_at(timeline, "q", words),
+                "request_ms": None if arrived is None else round((arrived - started) * 1000),
+                "answer_ms": None if answered is None else round((answered - started) * 1000),
+                "final_carries": query_words(final_value, "q") == words and not final_focus,
+                "values": sorted({value for _ms, value, _f in timeline}),
+                "title": str(uia.ElementFromHandle(hwnd).CurrentName),
+            }
+        finally:
+            stop_chrome(proc, tmp / "profile")
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _pct(values: list[float], q: float) -> float:
     ordered = sorted(values)
     return ordered[min(len(ordered) - 1, round(q * (len(ordered) - 1)))]
@@ -305,7 +450,7 @@ def _pct(values: list[float], q: float) -> float:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="#148: Chrome's omnibox through UIA.")
-    parser.add_argument("--section", choices=("spoof", "enter", "omnibox"), required=True)
+    parser.add_argument("--section", choices=("spoof", "enter", "omnibox", "commit"), required=True)
     parser.add_argument("--runs", type=int, default=10)
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     rows: list[dict[str, Any]] = []
@@ -316,8 +461,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.section == "enter":
             batch = [enter_local(words, number)]
             batch += [enter_run(spec, words, number) for spec in SITES]
-        else:
+        elif args.section == "omnibox":
             batch = [omnibox_run(words, number)]
+        else:
+            batch = [commit_run(target, words, number) for target in COMMIT_TARGETS]
         for row in batch:
             rows.append(row)
             sys.stdout.write(json.dumps(row) + "\n")
@@ -327,6 +474,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     changes = [r["change_ms"] for r in rows if r.get("change_ms") is not None]
     if changes:
         sys.stdout.write(f"change ms p50 {_pct(changes, 0.5)} p95 {_pct(changes, 0.95)}\n")
+    for target in COMMIT_TARGETS:
+        runs = [r for r in rows if r.get("target") == target]
+        if runs:
+            early = sum(
+                1
+                for r in runs
+                if r["shown_ms"] is not None
+                and (r["answer_ms"] is None or r["shown_ms"] < r["answer_ms"])
+            )
+            stays = sum(1 for r in runs if r["final_carries"])
+            sys.stdout.write(
+                f"{target}: shown before an answer {early}/{len(runs)}, "
+                f"carries at {TIMELINE_S:.0f} s {stays}/{len(runs)}\n"
+            )
     return 0
 
 
