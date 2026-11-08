@@ -15,7 +15,14 @@ import pytest
 from steerai.errors import ErrorCode
 from steerai.orchestrator.contracts import Step, Target
 from steerai.verify.predicates import Appeared
-from tests.orchestrator.fakes import CHAT_AMIR, CONVERSATION, SEND, FakeExecutor, not_delivered
+from tests.orchestrator.fakes import (
+    CHAT_AMIR,
+    COMPOSER,
+    CONVERSATION,
+    SEND,
+    FakeExecutor,
+    not_delivered,
+)
 from tests.orchestrator.test_bind_asked import FOCUS_FALLBACK, scripted_waits, swap
 from tests.orchestrator.test_loop import HELLO, Harness
 
@@ -199,4 +206,47 @@ def test_a_composer_rewritten_during_the_fallback_wait_never_sends() -> None:
     result = h.session.run_step(step)
     assert result.ok is False
     assert result.evidence["detail"] == "composer_differs"
+    assert h.physical.calls == []
+
+
+def test_a_control_that_gains_an_acting_child_during_the_wait_stays_refused() -> None:
+    """#169 review 1: the target rule is read again on the snapshot the click is sent against."""
+    h = _harness()
+    _no_invoke(h)
+
+    def nests() -> None:
+        h.world.rows.append((62, "Hyperlink", "Remove", (42, 62), OPTIONS_ID))
+
+    scripted_waits(h, {FALLBACK_WAIT: nests})
+    result = h.session.run_step(_click())
+    assert result.ok is False
+    assert result.evidence["detail"] == "no_InvokePattern"
+    assert h.physical.calls == []
+
+
+def test_a_composer_gone_during_the_fallback_wait_never_sends() -> None:
+    """#169 review 2: the fallback proves the composer by the first dispatch's own rule."""
+    h = _harness()
+    h.world.composer_value = HELLO
+    _no_invoke(h, SEND[0])
+
+    def removes() -> None:
+        h.world.rows = [r for r in h.world.rows if r[0] != COMPOSER[0]]
+
+    scripted_waits(h, {FALLBACK_WAIT: removes})
+    step = Step(
+        id="s1",
+        subgoal="g1",
+        verb="send",
+        target=Target(role="Button", name="Send"),
+        risk="R2",
+        params={
+            "text": HELLO,
+            "composer_role": "Edit",
+            "composer_name": "Message",
+            "scope": "Conversation",
+        },
+    )
+    result = h.session.run_step(step)
+    assert result.ok is False
     assert h.physical.calls == []

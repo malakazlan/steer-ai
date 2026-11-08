@@ -1868,13 +1868,7 @@ class Session:
         if getattr(action, "chord", None) == "enter":
             self._check_composer(step, before, element_id)
         elif step.verb in ("send", "submit"):
-            composer = self._composer(step, before)
-            if composer is not None:
-                self._check_composer(step, before, composer)
-            elif step.verb == "send" or step.params.get("text") or step.text:
-                # text that cannot be checked is never sent; a plain form button (no text,
-                # no composer) has nothing to check (principal review of #112)
-                raise _StepFailureError(ErrorCode.GATE_BLOCKED, "composer_unknown")
+            self._prove_composer(step, before)
         result = executor.execute(action, before)
         if action.verb == "type" and result.delivery is not Delivery.NOT_DELIVERED:
             self._typed_at = self._monotonic()
@@ -1889,6 +1883,8 @@ class Session:
         ):
             # no Invoke on a plain control: the hit-tested physical click, once (5.9 [v2.50])
             before, element_id = self._fallback_look(step, before, element_id)
+            if not physical_click_target(before, before.element(element_id)):
+                return result, before, element_id  # an acting child appeared in the wait
             self._act_evidence["click_fallback"] = "physical"
             self._act_evidence["semantic_detail"] = "no_InvokePattern"
             physical = PhysicalAction(verb="click", element_id=element_id)
@@ -1916,11 +1912,19 @@ class Session:
             if self._monitor is not None:
                 self._counts_at_step = self._monitor.counts()
             if step.verb in ("send", "submit"):
-                composer = self._composer(step, before)
-                if composer is not None:
-                    self._check_composer(step, before, composer)
+                self._prove_composer(step, before)
         self._still_the_window()
         return before, element_id
+
+    def _prove_composer(self, step: Step, before: Snapshot) -> None:
+        """A send or submit through a button proves its composer shows the approved text;
+        text that cannot be checked is never sent, and a plain form button (no text, no
+        composer) has nothing to check (principal review of #112)."""
+        composer = self._composer(step, before)
+        if composer is not None:
+            self._check_composer(step, before, composer)
+        elif step.verb == "send" or step.params.get("text") or step.text:
+            raise _StepFailureError(ErrorCode.GATE_BLOCKED, "composer_unknown")
 
     def _check_composer(self, step: Step, before: Snapshot, element_id: int) -> None:
         """Enter submits whatever the field shows: it must be the text the person approved
