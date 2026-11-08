@@ -13,9 +13,14 @@ Section `tree` (principal review, D-WV REVISE items 5 and 8): where the select's
 exist and Select works while collapsed, the Expand-to-options wait (10 ms polls), the Collapse
 readback; and a mixed checkbox (`indeterminate`): its ToggleState and what one Toggle does.
 
+Section `secure` (W2 verdict item 3, WV-09): a password field and a "Show password" checkbox that
+turns it into a text field. Whether the field keeps its RuntimeId across the switch, and whether
+the snapshot still flags it `secure`: the sticky-secure rule keys on the RuntimeId.
+
 Usage (Windows):
     uv run python -m steerai.probes.widget_patterns --runs 5
     uv run python -m steerai.probes.widget_patterns --section tree --runs 5
+    uv run python -m steerai.probes.widget_patterns --section secure --runs 5
 """
 
 from __future__ import annotations
@@ -344,14 +349,67 @@ def tree(number: int) -> dict[str, Any]:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+SECURE_PAGE = """<!doctype html><title>Sign in fixture</title>
+<label>Password <input type="password" id="pw" value="fixture-only"></label>
+<label><input type="checkbox" id="show"> Show password</label>
+<script>
+document.getElementById("show").addEventListener("change", (e) => {
+  document.getElementById("pw").type = e.target.checked ? "text" : "password";
+});
+</script>"""
+
+
+def _fields(snapshot: Any) -> list[dict[str, Any]]:  # Any: a world-model Snapshot
+    """Every Edit named Password: its RuntimeId and secure flag, never its value."""
+    return [
+        {"runtime_id": list(e.runtime_id), "secure": e.secure}
+        for e in snapshot.elements
+        if e.role == "Edit" and e.name == "Password"
+    ]
+
+
+def secure(number: int) -> dict[str, Any]:
+    """The password field before and after one Toggle of "Show password"."""
+    from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415 - Windows only
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
+    from steerai.run import warm_up  # noqa: PLC0415
+    from steerai.world.model import WorldModel  # noqa: PLC0415
+
+    wait_until_idle()
+    tmp = Path(tempfile.mkdtemp(prefix="steer-secure-"))
+    with PageServer({"/page.html": SECURE_PAGE}) as server:
+        port = _free_port()
+        url = f"http://127.0.0.1:{server.port}/page.html"
+        proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, url, window_size=WINDOW)
+        try:
+            window = wait_window_for_pid(proc.pid, image="chrome.exe", process=proc)
+            page_ws_url(port)
+            _in_front(window.hwnd)
+            client = UiaClient()
+            world = WorldModel(client)
+            warm_up(lambda: world.observe(window.hwnd), cap_s=15.0)
+            before = _fields(world.observe(window.hwnd))
+            uia, mod = client._uia, client._uia_module
+            show = _find(uia, mod, window.hwnd, mod.UIA_CheckBoxControlTypeId, "Show password")
+            _toggle(uia, mod, show, window.hwnd)
+            time.sleep(OPEN_S)
+            after = _fields(world.observe(window.hwnd))
+            same = bool(before) and any(a["runtime_id"] == before[0]["runtime_id"] for a in after)
+            return {"run": number, "before": before, "after": after, "same_runtime_id": same}
+        finally:
+            stop_chrome(proc, tmp / "profile")
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Widget patterns in Chrome through UIA.")
     parser.add_argument("--runs", type=int, default=5)
-    parser.add_argument("--section", choices=("actions", "tree"), default="actions")
+    parser.add_argument("--section", choices=("actions", "tree", "secure"), default="actions")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     for number in range(1, args.runs + 1):
-        if args.section == "tree":
-            sys.stdout.write(json.dumps(tree(number)) + "\n")
+        if args.section in ("tree", "secure"):
+            row = tree(number) if args.section == "tree" else secure(number)
+            sys.stdout.write(json.dumps(row) + "\n")
             sys.stdout.flush()
             continue
         for row in run(number):
