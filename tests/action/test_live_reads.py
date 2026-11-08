@@ -44,12 +44,6 @@ def test_value_reads_the_value_pattern_of_the_live_handle() -> None:
     ]
 
 
-def test_toggle_and_selection_are_not_read_in_this_slice() -> None:
-    live = UiaLiveReads(_Client(), _Bindings({}))
-    assert live.toggle_state(1) is None
-    assert live.is_selected(1) is None
-
-
 def test_focus_comes_from_the_client() -> None:
     live = UiaLiveReads(_Client(focused=(42, 9)), _Bindings({}))
     assert live.focused_runtime_id() == (42, 9)
