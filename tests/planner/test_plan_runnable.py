@@ -58,7 +58,7 @@ def test_the_click_refusal_tells_the_model_a_best_guess_is_fine() -> None:
     ClaudePlanner(parse=parse).plan(_request())
     note = parse.calls[1]["messages"][2]["content"]
     assert "best guess" in note
-    assert "replans" in note
+    assert "the next steps still run" in note
 
 
 def test_the_prompt_says_a_revealing_click_still_names_its_best_guess() -> None:
@@ -68,3 +68,4 @@ def test_the_prompt_says_a_revealing_click_still_names_its_best_guess() -> None:
     prose = " ".join(system.split())
     assert "A click always has an expect" in prose
     assert "best guess" in prose
+    assert "replans only if it reaches the end of the plan" in prose

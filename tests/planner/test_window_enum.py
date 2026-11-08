@@ -62,6 +62,18 @@ def test_the_file_form_is_the_reference() -> None:
     assert "opened_step" not in _doc(window="opened", opened_step="s1").to_file_form()["steps"][0]
 
 
+def test_start_with_an_open_step_is_refused_at_its_path() -> None:
+    import json  # noqa: PLC0415
+
+    from steerai.orchestrator.plan_io import PlanError, plan_from_json  # noqa: PLC0415
+
+    body = _doc(window="start", opened_step="s1").to_file_form()
+    assert body["steps"][0]["opened_step"] == "s1"
+    with pytest.raises(PlanError) as caught:
+        plan_from_json(json.dumps(body))
+    assert caught.value.path.startswith("$.steps[0]")
+
+
 def test_a_malformed_window_cannot_be_written() -> None:
     with pytest.raises(ValidationError):
         _doc(window="start','expect_placeholder")

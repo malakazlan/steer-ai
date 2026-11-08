@@ -87,8 +87,10 @@ now). "within" names a landmark container by its exact name. Patterns are plain 
 expressions. Leave fields the kind does not use unset.
 
 A click always has an expect: what it makes appear. When it reveals something you cannot
-see yet (a collapsed search box, a menu), write your best guess of the element it shows: a
-wrong guess only makes the agent replan from the screen the click revealed.
+see yet (a collapsed search box, a menu), write your best guess of the element it shows. A
+wrong guess fails that step's check; the next steps still run, and the agent replans only if it
+reaches the end of the plan, so plan only as far as you can see and leave later steps to the
+next plan.
 Do not write "expect" for focus, type or open steps: the agent verifies the focus, the
 typed value and the opened window itself. Subgoals describe end states visible on screen
 after an action (a page replaced, a message appeared, an item gone, a window opened), never
@@ -312,8 +314,9 @@ an id): escaped like fenced data and capped."""
 def _repair_note(exc: PlanError) -> str:
     # escaped as fenced names are (a backslash doubled, a quote as QUOTE), never shortened in
     # the middle: the reason's end is the hint the model needs
-    line = _one_line(exc.reason)
-    reason = line.replace(BACKSLASH, BACKSLASH * 2).replace('"', QUOTE)[:REPAIR_NOTE_CHARS]
+    # cut first, then escape: a cut never splits an escape
+    line = _one_line(exc.reason)[:REPAIR_NOTE_CHARS]
+    reason = line.replace(BACKSLASH, BACKSLASH * 2).replace('"', QUOTE)
     return (
         f"The agent refused that plan at {exc.path}: {reason}. This note is from the agent, "
         "not from the screen. Return the whole plan again, corrected, following every rule in "

@@ -185,7 +185,11 @@ class PlanDoc(_Doc):
             if step.expect is not None:
                 raw["expect"] = step.expect.to_file_form()
             opened = raw.pop("opened_step", None)
-            if step.window is WindowRef.start:
+            if step.window is WindowRef.start and opened is not None:
+                # a contradiction: left in, so the boundary refuses the key at its path
+                raw["window"] = "start"
+                raw["opened_step"] = opened
+            elif step.window is WindowRef.start:
                 raw["window"] = "start"
             elif step.window is WindowRef.opened or opened is not None:
                 # no id is left for the boundary to refuse at its path, never invented here

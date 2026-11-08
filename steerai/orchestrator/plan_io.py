@@ -142,7 +142,8 @@ def check_runnable(plan: Plan) -> None:
             raise PlanError(
                 f"{path}.expect",
                 "a click names its effect in expect: what it makes appear (the field, panel or "
-                "page it opens); a best guess is fine, a wrong one replans from the new screen",
+                "page it opens); a best guess is fine: a wrong one fails that step's check, the "
+                "next steps still run, and a replan comes only at the end of the plan",
             )
         scope, text = step.params.get("scope"), step.params.get("text")
         if (
