@@ -215,11 +215,10 @@ def fixture_run(number: int) -> dict[str, Any]:
                 )
                 payload = stdout.getvalue().strip()
                 result = json.loads(payload) if payload.startswith("{") else {}
-                steps = [
-                    json.loads(x)
-                    for x in (tmp / "trace.jsonl").read_text("utf-8").splitlines()
-                    if '"kind": "step"' in x or '"kind":"step"' in x
+                records = [
+                    json.loads(x) for x in (tmp / "trace.jsonl").read_text("utf-8").splitlines()
                 ]
+                steps = [r for r in records if r.get("kind") == "step"]
                 return {
                     "run": number,
                     "status": result.get("status"),
@@ -230,6 +229,11 @@ def fixture_run(number: int) -> dict[str, Any]:
                         f"{s.get('evidence', {}).get('twin', '')}:"
                         f"{s.get('evidence', {}).get('reason', '')}"
                         for s in steps
+                    ],
+                    "ticks": [
+                        f"{r.get('subgoal')}:{r.get('by')}"
+                        for r in records
+                        if r.get("kind") == "tick"
                     ],
                     "asks": person.log,
                 }
