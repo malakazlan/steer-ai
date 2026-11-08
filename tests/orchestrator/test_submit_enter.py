@@ -482,3 +482,42 @@ def test_a_send_that_names_no_composer_is_refused_before_the_click() -> None:
     result = h.session.run_step(step)
     assert h.world.sent == []
     assert result.evidence.get("detail") == "composer_unknown", result.to_dict()
+
+
+def _document_composer(h: Harness, shown: str, role: str = "Document") -> Step:
+    """A composer of this role whose live text reads `shown`; Enter in it is the submit."""
+    h.world.rows = [
+        (r[0], role, r[2], r[3], r[4]) if r[0] == COMPOSER[0] else r for r in h.world.rows
+    ]
+    h.world.composer_value = shown
+    _rebuild(h, live=FocusLive(h.world, focused=COMPOSER[3]))
+    params = {**PARAMS, "composer_role": role}
+    return Step(
+        id="s3",
+        subgoal="g1",
+        verb="submit",
+        target=Target(role=role, name="Message"),
+        risk="R2",
+        params=params,
+    )
+
+
+def test_a_rich_text_composer_s_final_mark_is_not_a_difference() -> None:
+    """The RichEdit final EOP (a lone CR) is structure: the approved text is what Enter sends
+    (#156 review item 2)."""
+    h = Harness()
+    step = _document_composer(h, HELLO + chr(13))
+    result = h.session.run_step(step)
+    assert result.evidence.get("detail") != "composer_differs", result.to_dict()
+
+
+@pytest.mark.parametrize(
+    ("role", "shown"),
+    [("Document", HELLO + chr(10)), ("Edit", HELLO + chr(13))],
+)
+def test_any_other_trailing_newline_is_a_difference(role: str, shown: str) -> None:
+    h = Harness()
+    step = _document_composer(h, shown, role=role)
+    result = h.session.run_step(step)
+    assert result.code is ErrorCode.GATE_BLOCKED
+    assert result.evidence["detail"] == "composer_differs"

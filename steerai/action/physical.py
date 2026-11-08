@@ -46,7 +46,12 @@ from steerai.action.execution import (
 )
 from steerai.action.keyboard import GateApproval, InjectionError
 from steerai.action.readback import Readback, poll_state, poll_until
-from steerai.action.sanitize import NewlineBinding, normalise_newlines, sanitize_text
+from steerai.action.sanitize import (
+    NewlineBinding,
+    field_text,
+    normalise_newlines,
+    sanitize_text,
+)
 from steerai.errors import ErrorCode, SteerError
 from steerai.probes import win_input, windows
 from steerai.probes.uia_snapshot import UiaClient
@@ -485,9 +490,11 @@ class PhysicalExecutor:
             raise RefusalError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "unreadable_value")
         pattern = self._uia.pattern(target.handle, UIA_VALUE_PATTERN, "ValuePattern")
 
+        role = target.element.role
+
         def read() -> str:
             value = pattern.CurrentValue
-            return "" if value is None else normalise_newlines(str(value))
+            return "" if value is None else field_text(str(value), role)
 
         return _TypePlan(
             pattern=pattern, read=read, wanted=wanted, units=units, bursts=_bursts(parts)

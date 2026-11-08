@@ -67,6 +67,17 @@ def normalise_newlines(text: str) -> str:
     return text
 
 
+def field_text(value: str, role: str) -> str:
+    """A field's text as typed: newlines normalised, and for a `Document` the RichEdit final
+    paragraph mark dropped: a lone CR ending the raw value. Every RichEdit rich text story ends
+    with that undeletable final EOP (Microsoft: "Paragraphs and Paragraph Formatting", TOM
+    overview); measured 2026-11-08, an empty WordPad document reads a lone CR (#147). A final
+    LF, CRLF or paragraph separator stays content (a Chrome editor's newline can be real)."""
+    if role == "Document" and value.endswith(_CR) and not value.endswith(_CR + _LF):
+        value = value[: -len(_CR)]
+    return normalise_newlines(value)
+
+
 def _check_characters(normalised: str, max_units: int) -> None:
     bad = [ch for ch in normalised if _rejected(ch)]
     if bad:

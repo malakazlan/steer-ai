@@ -39,7 +39,7 @@ from steerai.action.launch import (
 )
 from steerai.action.launcher import OpenAction
 from steerai.action.physical import TEXT_ROLES, PhysicalAction
-from steerai.action.sanitize import normalise_newlines
+from steerai.action.sanitize import field_text, normalise_newlines
 from steerai.errors import ErrorCode, SteerError
 from steerai.goal_match import GoalMatcher
 from steerai.orchestrator.contracts import (
@@ -1685,7 +1685,8 @@ class Session:
             value = self._live.value(before.handle(element_id))
         except SteerError as exc:
             raise _StepFailureError(ErrorCode.GATE_BLOCKED, "composer_unreadable") from exc
-        if value is None or normalise_newlines(value) != normalise_newlines(text):
+        role = before.element(element_id).role
+        if value is None or field_text(value, role) != normalise_newlines(text):
             raise _StepFailureError(ErrorCode.GATE_BLOCKED, "composer_differs")
 
     @staticmethod
