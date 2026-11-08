@@ -32,7 +32,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Sequence
 from ctypes import wintypes
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -63,6 +63,9 @@ Check = Literal[
     "notepad_text",
     "app_text",
     "url_search",
+    "h2_event",
+    "calc_display",
+    "file_text",
     "google_search",
     "youtube_search",
     "youtube_watch",
@@ -89,6 +92,9 @@ class Task:
     """For `url_search`: the results page's exact path."""
     param: str = ""
     """For `url_search`: the query parameter that holds the words."""
+    approve_targets: frozenset[str] = frozenset()
+    """Exact button names the person says yes to on an ask that carries no text (a form's
+    submit, a delete, a dialog's Save)."""
 
 
 def _search(task_id: str, site: str, start: str, words: str, check: Check) -> Task:
@@ -245,7 +251,220 @@ def controls(tasks: Sequence[Task]) -> list[str]:
     return lines
 
 
+MULTIPLY = chr(0xD7)
+"""The multiplication sign Calculator writes in its expression."""
+SAVED_TEXT = "steer h2 saved"
+SAVED_NAME = "steer-h2.txt"
+
+
+def _h2(task_id: str, goal: str, event: dict[str, Any], **kw: Any) -> Task:
+    return Task(task_id, goal, "h2", "h2_event", json.dumps(event, sort_keys=True), **kw)
+
+
+H2: tuple[Task, ...] = (
+    _h2(
+        "f1",
+        "fill the contact form with name Amir Khan and email amir@example.com and send it",
+        {"kind": "contact", "name": "Amir Khan", "email": "amir@example.com"},
+        approve_targets=frozenset({"Send message"}),
+    ),
+    _h2("s1", "turn on dark mode in the settings", {"kind": "dark", "on": True}),
+    _h2("c1", "choose Pakistan as the country", {"kind": "country", "value": "Pakistan"}),
+    _h2(
+        "t1",
+        "add buy milk to the todo list",
+        {"kind": "todo_add", "text": "buy milk"},
+        approve=frozenset({"buy milk"}),
+    ),
+    _h2(
+        "d1",
+        "delete the task call mom",
+        {"kind": "todo_delete", "text": "call mom"},
+        approve_targets=frozenset({"Delete call mom"}),
+    ),
+    _h2("m1", "show the workspace's About information", {"kind": "about"}),
+    _h2("b1", "open the Billing tab", {"kind": "tab", "name": "Billing"}),
+    _h2("l1", "load more items in the feed", {"kind": "load_more"}),
+    Task(
+        "calc1",
+        "calculate 12 times 7 in calculator",
+        "calculator",
+        "calc_display",
+        json.dumps({"result": "84", "expression": f"12{MULTIPLY}7="}),
+    ),
+    Task(
+        "save1",
+        f"type {SAVED_TEXT} in notepad and save it as {SAVED_NAME} in the folder TMPDIR",
+        "notepad_save",
+        "file_text",
+        SAVED_TEXT,
+        frozenset({SAVED_TEXT, SAVED_NAME}),
+        approve_targets=frozenset({"Save"}),
+    ),
+)
+"""H2, the fresh held-out set (design 12 [v2.45]): committed before the #147-#151 fixes and run
+only after them; eight widget shapes on one local page (a form, a checkbox, a select, a todo
+add and an R3 delete, a menu, a tab, a button below the fold), a UWP app and a Save dialog.
+`TMPDIR` in save1's goal is the run's own folder, filled in at run time."""
+
+
+def h2_event(raw: str) -> str:
+    """The one trusted event the page logged, as sorted JSON, or why not: a stray second
+    event (a delete during an add) fails the run."""
+    try:
+        entries = json.loads(raw or "[]")
+    except json.JSONDecodeError:
+        return "bad_log"
+    if not isinstance(entries, list):
+        return "bad_log"
+    if len(entries) != 1:
+        return f"events:{len(entries)}"
+    entry = entries[0]
+    if entry.get("untrusted"):
+        return "untrusted"
+    return json.dumps(entry, sort_keys=True)
+
+
+CALC_IDS = ("CalculatorResults", "CalculatorExpression")
+"""Calculator's own AutomationIds for the result and the expression (English names: "Display is
+84", "Expression is 12 x 7="): the run must have computed 12 x 7, not typed 84."""
+
+
+def calc_display(named: Sequence[tuple[str, str]]) -> str:
+    """The result and the expression from (automation id, name) pairs, as sorted JSON."""
+    found = dict(named)
+    result = found.get("CalculatorResults", "").removeprefix("Display is ").strip()
+    expression = found.get("CalculatorExpression", "").removeprefix("Expression is ")
+    return json.dumps({"result": result, "expression": "".join(expression.split())}, sort_keys=True)
+
+
+H2_DRIVES: dict[str, tuple[tuple[str, str], ...]] = {
+    "f1": (
+        ("type", "#f-name|Amir Khan"),
+        ("type", "#f-email|amir@example.com"),
+        ("click", "#f-send"),
+    ),
+    "s1": (("click", "#s-dark"),),
+    "c1": (("focus", "#s-country"), ("char", "P")),
+    "t1": (("type", "#t-new|buy milk"), ("key", "Enter")),
+    "d1": (("click", 'button[data-del="call mom"]'),),
+    "m1": (("click", "#menu-help"), ("click", "#help-about")),
+    "b1": (("click", "#tab-billing"),),
+    "l1": (("click", "#more"),),
+}
+"""What a person would do for each H2 page task, driven over CDP Input (trusted events) by the
+positive control only."""
+
+
+def _drive(cdp: CdpSession, drive: tuple[tuple[str, str], ...]) -> None:
+    for kind, arg in drive:
+        if kind == "click":
+            target = f"document.querySelector({json.dumps(arg)})"
+            script = (
+                f"(function(){{var e={target}; e.scrollIntoView();"
+                "var r=e.getBoundingClientRect();"
+                "return JSON.stringify([r.x+r.width/2, r.y+r.height/2]);})()"
+            )
+            point = _evaluate(cdp, script, "point")
+            x, y = json.loads(point)
+            for event in ("mousePressed", "mouseReleased"):
+                cdp.call(
+                    "Input.dispatchMouseEvent",
+                    {"type": event, "x": x, "y": y, "button": "left", "clickCount": 1},
+                )
+        elif kind == "focus":
+            _evaluate(cdp, f"document.querySelector({json.dumps(arg)}).focus(); 'ok'", "focus")
+        elif kind == "char":
+            # rawKeyDown carries no text: a keyDown with text types it, and a char types it again
+            for event in ("rawKeyDown", "char", "keyUp"):
+                params = {"type": event, "key": arg, "code": f"Key{arg}"}
+                if event == "char":
+                    params["text"] = arg
+                cdp.call("Input.dispatchKeyEvent", params)
+        elif kind == "type":
+            selector, text = arg.split("|", 1)
+            _evaluate(cdp, f"document.querySelector({json.dumps(selector)}).focus(); 'ok'", "focus")
+            cdp.call("Input.insertText", {"text": text})
+        else:
+            for event in ("keyDown", "keyUp"):
+                cdp.call(
+                    "Input.dispatchKeyEvent",
+                    {"type": event, "key": arg, "code": arg, "windowsVirtualKeyCode": 13},
+                )
+        time.sleep(0.3)
+
+
+def h2_controls() -> list[str]:
+    """Each H2 page task done by scripted trusted input, read the way a run is read and judged
+    by `passed`; then Calculator computed by UIA Invoke on its own buttons (no OS input) and
+    read the way calc1 is read."""
+    from steerai.probes.h2_page import LOG_KEY  # noqa: PLC0415 - H2 only
+    from steerai.probes.h2_page import page_html as h2_html  # noqa: PLC0415
+
+    lines = []
+    for task in H2:
+        drive = H2_DRIVES.get(task.task_id)
+        if drive is None:
+            continue
+        tmp = Path(tempfile.mkdtemp(prefix="steer-ctl-"))
+        with PageServer({"/page.html": h2_html()}) as server:
+            port = _free_port()
+            url = f"http://127.0.0.1:{server.port}/page.html"
+            proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, url, window_size=WINDOW)
+            try:
+                page_ws_url(port)
+                time.sleep(2.0)
+                cdp = _page(port)
+                try:
+                    _drive(cdp, drive)
+                finally:
+                    cdp.close()
+                raw = _read(port, f'localStorage.getItem("{LOG_KEY}") || "[]"', "read")
+                ok = passed(task, "done", h2_event(raw))
+                lines.append(f"{task.task_id}: control {'passes' if ok else 'FAILS'}")
+            finally:
+                from steerai.probes.chrome_a11y import stop_chrome  # noqa: PLC0415
+
+                stop_chrome(proc, tmp / "profile")
+                shutil.rmtree(tmp, ignore_errors=True)
+    lines.append(_calc_control())
+    return lines
+
+
+def _calc_control() -> str:
+    """12 x 7 = through Calculator's own buttons by InvokePattern, then the calc1 read."""
+    from steerai.action.execution import UIA_INVOKE_PATTERN, UiaBindings  # noqa: PLC0415
+    from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415
+    from steerai.probes.windows import list_top_windows  # noqa: PLC0415
+
+    if any(w.title == "Calculator" for w in list_top_windows()):
+        return "calc1: control invalid (calculator_already_open)"
+    subprocess.Popen([str(CALC)])  # noqa: S603 - a fixed system path
+    deadline = time.monotonic() + 20.0
+    window = None
+    while window is None and time.monotonic() < deadline:
+        window = next((w for w in list_top_windows() if w.title == "Calculator"), None)
+        time.sleep(0.5)
+    if window is None:
+        return "calc1: control invalid (calculator_not_shown)"
+    try:
+        time.sleep(2.0)
+        bindings = UiaBindings.load()
+        tree = UiaClient().cached_tree(window.hwnd)
+        by_id = {n.automation_id: h for n, h in zip(tree.nodes, tree.handles, strict=True)}
+        for button in ("num1Button", "num2Button", "multiplyButton", "num7Button", "equalButton"):
+            bindings.pattern(by_id[button], UIA_INVOKE_PATTERN, "InvokePattern").Invoke()
+            time.sleep(0.2)
+        calc1 = next(task for task in H2 if task.task_id == "calc1")
+        ok = passed(calc1, "done", calc_display(_calc_names(window.hwnd)))
+        return f"calc1: control {'passes' if ok else 'FAILS'}"
+    finally:
+        _close(window.hwnd)
+
+
 def task_set(name: str) -> tuple[Task, ...]:
+    if name == "h2":
+        return H2
     return HELD_OUT if name == "held_out" else TASKS
 
 
@@ -254,16 +473,17 @@ class Person:
     """`go` to every plan; `yes` only to an ask whose text is one of the task's exact phrases."""
 
     approve: frozenset[str]
+    approve_targets: frozenset[str] = frozenset()
     log: list[dict[str, Any]] = field(default_factory=list)
 
     def ask(self, ask: Any) -> str:  # Any: steerai.orchestrator.gate.Ask (no import cycle)
         decision = str(ask.decision_id)
         text = ask.params.get("text") if hasattr(ask, "params") else None
         wanted = {" ".join(a.split()).casefold() for a in self.approve}
-        approved = (
-            getattr(ask, "kind", "yes") != "which"
-            and isinstance(text, str)
-            and " ".join(text.split()).casefold() in wanted
+        target = str(getattr(ask, "target_name", ""))
+        approved = getattr(ask, "kind", "yes") != "which" and (
+            (isinstance(text, str) and " ".join(text.split()).casefold() in wanted)
+            or (text is None and target in self.approve_targets)
         )
         self.log.append({"verb": str(ask.verb), "risk": str(ask.risk), "approved": approved})
         return f"{'yes' if approved else 'no'}:{decision}"
@@ -288,8 +508,12 @@ def passed(task: Task, status: str | None, observed: str) -> bool:  # noqa: PLR0
     """Steer said `done` and the independent read agrees exactly (#139 review item 3)."""
     if status != "done":
         return False
-    if task.check in ("notepad_text", "app_text"):
+    if task.check == "calc_display":
+        return bool(json.loads(observed or "{}") == json.loads(task.expected))
+    if task.check in ("notepad_text", "app_text", "h2_event"):
         return observed.strip() == task.expected
+    if task.check == "file_text":
+        return observed == task.expected
     if task.check in ("inbox_send", "inbox_chat"):
         return observed == task.expected
     page = json.loads(observed or "{}")
@@ -413,7 +637,7 @@ def _options(tmp: Path, hwnd: int, task: Task, number: int) -> run_mod.Options:
 
 
 def _steer(task: Task, number: int, hwnd: int, tmp: Path, planner: _Planner) -> dict[str, Any]:
-    person = Person(task.approve)
+    person = Person(task.approve, task.approve_targets)
     deps = run_mod._real_deps().replace(
         make_confirmer=lambda *_: person,
         open_windows=lambda: [],
@@ -499,6 +723,11 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
         if task.check == "inbox_send":
             raw = _read(port, 'localStorage.getItem("steer-present") || "[]"', "read")
             row["observed"] = inbox_send(raw)
+        elif task.check == "h2_event":
+            from steerai.probes.h2_page import LOG_KEY  # noqa: PLC0415 - H2 only
+
+            raw = _read(port, f'localStorage.getItem("{LOG_KEY}") || "[]"', "read")
+            row["observed"] = h2_event(raw)
         elif task.check == "inbox_chat":
             row["observed"] = _read(port, "document.body.dataset.chat", "chat")
         else:
@@ -537,13 +766,107 @@ def one_run(task: Task, number: int, planner: _Planner, keep: Path | None = None
     return {"task": task.task_id, "run": number, "passed": ok, **row}
 
 
-def _started(task: Task, number: int, tmp: Path, planner: _Planner) -> dict[str, Any]:
+def _close(hwnd: int) -> None:
+    """WM_CLOSE to the one window this run opened; never a kill by image name, which could
+    reach a Calculator the person had open."""
+    user32: Any = ctypes.WinDLL("user32")  # Any: a ctypes library handle
+    user32.PostMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+    user32.PostMessageW(hwnd, 0x0010, 0, 0)
+
+
+CALC = Path(r"C:\Windows\System32\calc.exe")
+
+
+def _calc_names(hwnd: int) -> list[tuple[str, str]]:
+    """Raw UIA (the probe client's cached tree, not Steer's world model): the names of the
+    result and expression elements by AutomationId."""
+    from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415 - Windows only
+
+    tree = UiaClient().cached_tree(hwnd)
+    return [(n.automation_id, n.name) for n in tree.nodes if n.automation_id in CALC_IDS]
+
+
+def _run_calculator(task: Task, number: int, tmp: Path, planner: _Planner) -> dict[str, Any]:
+    """Calculator is a UWP app behind ApplicationFrameHost: found as the new window titled
+    exactly "Calculator"; a Calculator already open makes the run invalid (never the person's)."""
+    from steerai.probes.windows import list_top_windows  # noqa: PLC0415 - Windows only
+
+    if any(w.title == "Calculator" for w in list_top_windows()):
+        raise InvalidRun("calculator_already_open")
+    subprocess.Popen([str(CALC)])  # noqa: S603 - a fixed system path
+    deadline = time.monotonic() + 20.0
+    window = None
+    while window is None and time.monotonic() < deadline:
+        window = next((w for w in list_top_windows() if w.title == "Calculator"), None)
+        time.sleep(0.5)
+    if window is None:
+        raise InvalidRun("calculator_not_shown")
+    try:
+        time.sleep(2.0)  # the UWP frame fills its content (unmeasured)
+        _in_front(window.hwnd)
+        row = _steer(task, number, window.hwnd, tmp, planner)
+        row["observed"] = calc_display(_calc_names(window.hwnd))
+        return row
+    finally:
+        _close(window.hwnd)
+
+
+SAVE_ROOT = Path(Path(__file__).anchor) / "steer-probe"
+"""Save into a folder on the repository's drive with no user name in its path: the goal goes to
+the planner and any kept trace (#154 review item 4)."""
+STRAY = Path.home() / "Documents" / SAVED_NAME
+"""Where a Save that ignored the folder lands by default: a file there fails the run."""
+
+
+def _run_notepad_save(task: Task, number: int, tmp: Path, planner: _Planner) -> dict[str, Any]:
+    """Notepad, then its Save dialog: the saved file in the run's own folder is the read."""
+    if STRAY.exists():
+        raise InvalidRun("stray_file_exists")  # never the person's file: measure nothing
+    folder = SAVE_ROOT / tmp.name
+    folder.mkdir(parents=True)
+    goal = task.goal.replace("TMPDIR", str(folder))
+    proc = subprocess.Popen([str(NOTEPAD)])  # noqa: S603 - a fixed system path
+    try:
+        window = wait_window_for_pid(proc.pid, image="notepad.exe", process=proc)
+        _in_front(window.hwnd)
+        row = _steer(replace(task, goal=goal), number, window.hwnd, tmp, planner)
+        saved = folder / SAVED_NAME
+        if STRAY.exists():
+            row["observed"] = "saved_to_documents"
+        elif saved.is_file():
+            row["observed"] = saved.read_text(encoding="utf-8-sig").strip()
+        else:
+            row["observed"] = "file_missing"
+        return row
+    finally:
+        subprocess.run(  # noqa: S603 - fixed argv
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],  # noqa: S607 - taskkill on PATH
+            check=False,
+            capture_output=True,
+        )
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def _started(  # noqa: PLR0911 - one per start kind
+    task: Task, number: int, tmp: Path, planner: _Planner
+) -> dict[str, Any]:
     if task.start == "notepad":
         return _run_app(task, number, tmp, planner, exe=NOTEPAD, edit_class="Edit")
     if task.start == "wordpad":
         if not WORDPAD.is_file():
             raise InvalidRun("wordpad_absent")  # removed from newer Windows builds
         return _run_app(task, number, tmp, planner, exe=WORDPAD, edit_class="RICHEDIT50W")
+    if task.start == "h2":
+        from steerai.probes.h2_page import page_html as h2_html  # noqa: PLC0415 - H2 only
+
+        with PageServer({"/page.html": h2_html()}) as server:
+            return _run_chrome(
+                task, number, tmp, planner, f"http://127.0.0.1:{server.port}/page.html"
+            )
+    if task.start == "calculator":
+        return _run_calculator(task, number, tmp, planner)
+    if task.start == "notepad_save":
+        return _run_notepad_save(task, number, tmp, planner)
     if task.start == "inbox":
         reply = next(iter(task.approve)) if task.check == "inbox_send" else REPLY_TEXT
         with PageServer({"/page.html": page_html(reply)}) as server:
@@ -579,7 +902,7 @@ def _header() -> dict[str, Any]:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Phase 1 bar: ten single-app tasks, live.")
     parser.add_argument("--runs", type=int, default=3)
-    parser.add_argument("--set", choices=("dev", "held_out"), default="dev")
+    parser.add_argument("--set", choices=("dev", "held_out", "h2"), default="dev")
     parser.add_argument(
         "--controls", action="store_true", help="open each search task's results URL instead"
     )
@@ -590,7 +913,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     wanted = set(filter(None, args.tasks.split(",")))
     tasks = task_set(args.set)
     if args.controls:
-        lines = controls(tasks)
+        lines = h2_controls() if args.set == "h2" else controls(tasks)
         sys.stdout.write("\n".join(lines) + "\n")
         return 0 if all(line.endswith("passes") for line in lines) else 1
     planner = _Planner()
