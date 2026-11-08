@@ -5,7 +5,7 @@ allowed (the omnibox hides it, probe #157)."""
 
 from __future__ import annotations
 
-from steerai.verify.url_query import url_query_counts
+from steerai.verify.url_query import UrlBefore, url_query_counts
 
 BEFORE = "www.example.org/"
 TEXT = "ui automation tree"
@@ -45,3 +45,21 @@ def test_the_words_must_fill_a_whole_parameter_value() -> None:
     assert not url_query_counts(BEFORE, "x.org/s?ui+automation+tree", TEXT), "a bare key"
     assert not url_query_counts(BEFORE, "", TEXT)
     assert not url_query_counts(BEFORE, "x.org/s?q=", "")
+
+
+def test_om08_the_before_url_is_kept_as_a_digest_and_one_bit() -> None:
+    url = "x.org/s?q=ui+automation+tree"
+    before = UrlBefore.of(url, TEXT)
+    assert before.carried is True
+    assert len(before.digest) == 64
+    assert "x.org" not in before.digest
+    assert before == UrlBefore.of(url, TEXT)
+    assert UrlBefore.of(BEFORE, TEXT).carried is False
+
+
+def test_om08_a_digest_judges_as_the_url_does() -> None:
+    url = "x.org/s?q=ui+automation+tree"
+    cases = [(BEFORE, url), (url, url), (url, url + "&page=2"), (BEFORE, BEFORE), (BEFORE, "")]
+    for before, after in cases:
+        expected = url_query_counts(before, after, TEXT)
+        assert UrlBefore.of(before, TEXT).counts(after, TEXT) is expected, (before, after)
