@@ -204,7 +204,7 @@ def test_the_prompt_says_focus_targets_a_field_role() -> None:
     system, _ = build_prompt(_request(), tag="t")
     prose = " ".join(system.split())
     assert "focus (put keyboard focus in a field: an Edit, ComboBox or Document)" in prose
-    assert PROMPT_VERSION == "planner-14"
+    assert PROMPT_VERSION == "planner-15"
 
 
 def test_the_prompt_says_a_selection_click_is_proven_by_present() -> None:
@@ -710,3 +710,13 @@ def test_the_prompt_teaches_the_value_condition() -> None:
     assert "value: role, name, text" in flat
     assert "only as a subgoal condition" in flat
     assert "the same subgoal" in flat
+
+
+def test_the_prompt_says_an_offscreen_line_may_be_a_target() -> None:
+    """D-OS v2 item 3: the listing now holds elements scrolled out of view, flagged; a step may
+    target them (the loop scrolls first, [v2.55]), and the old "on-screen element" rule is gone."""
+    system, _ = build_prompt(_request(), tag="t")
+    prose = " ".join(system.split())
+    assert "on-screen element" not in prose
+    assert "marked offscreen is on the page but scrolled out of view" in prose
+    assert "the agent scrolls it into view before acting" in prose
