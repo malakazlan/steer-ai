@@ -1461,6 +1461,9 @@ class Session:
         if not twin_set(matches, snapshot):
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
         if asked is not None:
+            if self._twin_pick is None:
+                # a unique target that gained a copy during the ask or a wait (review of #164)
+                raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
             return self._picked([e for e in matches if e.runtime_id == asked], "asked")
         risk = effective_risk(step, element_ids=(matches[0].automation_id,))
         if step.verb in ("focus", "type") and risk in ("R0", "R1"):
@@ -1598,7 +1601,7 @@ class Session:
         detail = str(which.evidence.get("detail", which.outcome))
         raise _StepFailureError(which.code or ErrorCode.GATE_PENDING_USER, detail)
 
-    def _composer(self, step: Step, snapshot: Snapshot) -> int | None:
+    def _composer(self, step: Step, snapshot: Snapshot, *, own_twin: bool = True) -> int | None:
         """The composer a send template reads, resolved by role and name in this snapshot:
         element ids are positional and a plan must never carry one across steps (OR-06)."""
         role = step.params.get("composer_role")
@@ -1622,7 +1625,12 @@ class Session:
                 and step.target.role in TEXT_ROLES
                 and normalise_name(step.target.name).casefold() == normalise_name(name).casefold()
             )
-            if failure.detail != "ambiguous_target" or not own or self._twin_rid is None:
+            if (
+                failure.detail != "ambiguous_target"
+                or not own
+                or not own_twin
+                or self._twin_rid is None
+            ):
                 raise
             # an Enter submit's composer is its own target: the twin it resolved (TW-06/07)
             twins = [e for e in snapshot.elements if e.role == role and _same_name(e, name)]
@@ -1653,7 +1661,8 @@ class Session:
         if record.chosen is not None:
             self._binding = Binding.from_record(record.chosen)  # the row the attempt chose
         try:
-            composer_id = self._composer(step, record.before)
+            # a persisted snapshot never takes the step's live twin identity (review of #164)
+            composer_id = self._composer(step, record.before, own_twin=False)
         except _StepFailureError:
             return record.phase
         expect = self._gate.predicate_for(step, composer_id=composer_id, bound=self._binding)

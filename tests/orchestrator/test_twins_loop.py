@@ -33,13 +33,14 @@ class Page:
     """The twin page; `extra` elements appear after an action (a result line)."""
 
     top: Element = TOP
-    bottom: Element = BOTTOM
+    bottom: Element | None = BOTTOM
     extra: list[Element] = field(default_factory=list)
     observed: int = 0
 
     def observe(self, hwnd: int, **_kwargs: Any) -> Snapshot:
         self.observed += 1
-        snap = _page(self.top, self.bottom, extra=tuple(self.extra))
+        edits = [e for e in (self.top, self.bottom) if e is not None]
+        snap = _page(*edits, extra=tuple(self.extra))
         return replace(
             snap,
             id=f"twins-{self.observed}",
@@ -305,3 +306,55 @@ def test_a_value_condition_reads_the_twin_the_type_wrote() -> None:
     h.session._pins.clear()
     assert h.session._holds_now(condition, page.observe(0x10)) is False
     assert live.values == {TOP.runtime_id: QUERY}
+
+
+# ---- principal review of #164 ------------------------------------------------------------------
+
+
+def test_a_twin_that_appears_during_the_ask_of_a_unique_target_stops_the_step() -> None:
+    """Blocking 1: (A) only re-finds a step whose first pick was a twin pick."""
+    page = Page(bottom=None)
+    live = Live(values={TOP.runtime_id: QUERY}, focused=TOP.runtime_id)
+    h, _, _live = _harness(page, live)
+
+    def copy_appears(_ask: Any) -> None:
+        page.bottom = BOTTOM
+
+    h.confirmer.on_ask = copy_appears
+    result = h.session.run_step(_submit())
+    assert result.ok is False
+    assert result.evidence.get("detail") == "screen_changed_during_ask"
+    assert h.physical.calls == []
+
+
+def test_a_resume_never_uses_the_live_twin_identity() -> None:
+    """Blocking 2: on the raised-tier path the admission runs after the resolve, with the
+    step's twin RuntimeId set; the persisted snapshot must still give the phase."""
+    live = Live(values={TOP.runtime_id: ""}, focused=TOP.runtime_id)
+    h, page, _live = _harness(live=live)
+    step = _submit()
+    key = h.ledger.key_for(step)
+    record = WriteAheadRecord(
+        task_id="task-1",
+        step_id=step.id,
+        action_key=key,
+        decision_id="d-x",
+        phase="acting",
+        before=replace(Page().observe(0x10), handles=[]),
+        written_at=1.0,
+    )
+    page.extra.append(
+        Element(
+            id=90,
+            depth=2,
+            role="Text",
+            name=QUERY,
+            box=(0, 300, 99, 320),
+            runtime_id=(90,),
+            parent_id=1,
+        )
+    )
+    h.ledger.records[step.id] = record
+    h.ledger.executions[key] = {"step_id": step.id, "phase": "acting", "outcome": None}
+    h.session._twin_rid = TOP.runtime_id  # the step already resolved its twin
+    assert h.session._resume(step, record, page.observe(0x10)) == "acting"
