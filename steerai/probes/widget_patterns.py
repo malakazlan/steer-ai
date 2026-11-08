@@ -8,8 +8,14 @@ Widgets: a native checkbox (Toggle), an ARIA tablist (`role=tab` with aria-selec
 SelectionItem.Select), native radio buttons (SelectionItem.Select), a native select
 (ExpandCollapse, then SelectionItem.Select on the option, then Collapse).
 
+Section `tree` (principal review, D-WV REVISE items 5 and 8): where the select's options sit
+(in the ComboBox's own subtree, behind ControllerFor, or only from the window root), whether they
+exist and Select works while collapsed, the Expand-to-options wait (10 ms polls), the Collapse
+readback; and a mixed checkbox (`indeterminate`): its ToggleState and what one Toggle does.
+
 Usage (Windows):
     uv run python -m steerai.probes.widget_patterns --runs 5
+    uv run python -m steerai.probes.widget_patterns --section tree --runs 5
 """
 
 from __future__ import annotations
@@ -39,6 +45,8 @@ PAGE = """<!doctype html><title>Widget fixture</title>
   <button role="tab" id="tab-b" aria-selected="false">Details</button>
 </div>
 <div id="panel" role="tabpanel">Overview text</div>
+<label><input type="checkbox" id="mixed"> Select all</label>
+<label>Colour <select id="sel2"><option>Red</option><option>Blue</option></select></label>
 <fieldset><legend>Plan</legend>
   <label><input type="radio" name="plan" id="r1" checked> Basic</label>
   <label><input type="radio" name="plan" id="r2"> Pro</label>
@@ -46,7 +54,8 @@ PAGE = """<!doctype html><title>Widget fixture</title>
 <script>
 window.LOG = [];
 function log(id, type, e) { window.LOG.push(id + ":" + type + (e.isTrusted ? "" : ":untrusted")); }
-for (const id of ["cb", "sel", "r1", "r2"]) {
+document.getElementById("mixed").indeterminate = true;
+for (const id of ["cb", "sel", "sel2", "mixed", "r1", "r2"]) {
   const el = document.getElementById(id);
   for (const t of ["click", "input", "change"]) el.addEventListener(t, (e) => log(id, t, e));
 }
@@ -213,11 +222,138 @@ def run(number: int) -> list[dict[str, Any]]:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+TREE_STATE = (
+    "JSON.stringify({sel2: document.getElementById('sel2').value,"
+    " mixed: document.getElementById('mixed').checked,"
+    " indeterminate: document.getElementById('mixed').indeterminate, log: window.LOG})"
+)
+POLL_S, OPTIONS_LIMIT_S = 0.01, 3.0
+
+
+def _subtree_option(uia: Any, mod: Any, combo: Any, name: str) -> Any:  # Any: comtypes
+    cond = uia.CreateAndCondition(
+        uia.CreatePropertyCondition(mod.UIA_ControlTypePropertyId, mod.UIA_ListItemControlTypeId),
+        uia.CreatePropertyCondition(mod.UIA_NamePropertyId, name),
+    )
+    return combo.FindFirst(mod.TreeScope_Descendants, cond)
+
+
+def _controller_for(combo: Any, mod: Any) -> int:  # Any: comtypes
+    targets = combo.GetCurrentPropertyValue(mod.UIA_ControllerForPropertyId)
+    return 0 if targets is None else int(getattr(targets, "Length", 0) or 0)
+
+
+def _options_row(
+    uia: Any, mod: Any, hwnd: int, state: Callable[[], Any]
+) -> dict[str, Any]:  # Any: comtypes
+    """Where the select's options sit, collapsed and expanded, and the Collapse readback."""
+    row: dict[str, Any] = {}
+    combo = _find(uia, mod, hwnd, mod.UIA_ComboBoxControlTypeId, "Colour")
+    expand = _pattern(combo, mod, EXPAND_COLLAPSE, "IUIAutomationExpandCollapsePattern")
+    row["controller_for"] = _controller_for(combo, mod)
+    row["collapsed_state"] = int(expand.CurrentExpandCollapseState)
+    collapsed = _subtree_option(uia, mod, combo, "Blue")
+    row["option_in_subtree_collapsed"] = bool(collapsed)
+    if collapsed:
+        before = state()
+        _select(uia, mod, collapsed, hwnd)
+        time.sleep(OPEN_S)
+        after = state()
+        row["select_while_collapsed"] = {
+            "value": after["sel2"],
+            "events": after["log"][len(before["log"]) :],
+            "expand_state": int(expand.CurrentExpandCollapseState),
+        }
+    started = time.perf_counter()
+    expand.Expand()
+    seen_ms = None
+    while time.perf_counter() - started < OPTIONS_LIMIT_S:
+        if _subtree_option(uia, mod, combo, "Red"):
+            seen_ms = round((time.perf_counter() - started) * 1000, 1)
+            break
+        time.sleep(POLL_S)
+    row["expand_to_option_in_subtree_ms"] = seen_ms
+    row["option_from_root_expanded"] = bool(
+        _find(uia, mod, hwnd, mod.UIA_ListItemControlTypeId, "Red")
+    )
+    row["expanded_state"] = int(expand.CurrentExpandCollapseState)
+    expand.Collapse()
+    time.sleep(OPEN_S)
+    row["collapse_read_back"] = int(expand.CurrentExpandCollapseState)
+    return row
+
+
+def _mixed_row(
+    uia: Any, mod: Any, hwnd: int, state: Callable[[], Any]
+) -> dict[str, Any]:  # Any: comtypes
+    """A mixed checkbox's ToggleState, then what one Toggle does to it."""
+    mixed = _find(uia, mod, hwnd, mod.UIA_CheckBoxControlTypeId, "Select all")
+    toggle = _pattern(mixed, mod, TOGGLE, "IUIAutomationTogglePattern")
+    first = int(toggle.CurrentToggleState)
+    before = state()
+    toggle.Toggle()
+    time.sleep(OPEN_S)
+    after = state()
+    return {
+        "mixed_toggle_state": first,
+        "mixed_after_one_toggle": {
+            "toggle_state": int(toggle.CurrentToggleState),
+            "checked": after["mixed"],
+            "indeterminate": after["indeterminate"],
+            "events": after["log"][len(before["log"]) :],
+        },
+    }
+
+
+def tree(number: int) -> dict[str, Any]:
+    """The select's options in the tree, collapsed and expanded; a mixed checkbox's Toggle."""
+    from steerai.probes.task_suite import _page  # noqa: PLC0415 - the one-tab reader
+    from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415 - Windows only
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
+    from steerai.run import warm_up  # noqa: PLC0415
+    from steerai.world.model import WorldModel  # noqa: PLC0415
+
+    wait_until_idle()
+    tmp = Path(tempfile.mkdtemp(prefix="steer-widgets-"))
+    with PageServer({"/page.html": PAGE}) as server:
+        port = _free_port()
+        url = f"http://127.0.0.1:{server.port}/page.html"
+        proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, url, window_size=WINDOW)
+        try:
+            window = wait_window_for_pid(proc.pid, image="chrome.exe", process=proc)
+            page_ws_url(port)
+            _in_front(window.hwnd)
+            client = UiaClient()
+            warm_up(lambda: WorldModel(client).observe(window.hwnd), cap_s=15.0)
+            uia, mod = client._uia, client._uia_module
+            hwnd = window.hwnd
+
+            def state() -> Any:  # Any: the page's JSON state
+                cdp = _page(port)
+                try:
+                    return json.loads(_evaluate(cdp, TREE_STATE, "state"))
+                finally:
+                    cdp.close()
+
+            row: dict[str, Any] = {"run": number}
+            row.update(_options_row(uia, mod, hwnd, state))
+            row.update(_mixed_row(uia, mod, hwnd, state))
+            return row
+        finally:
+            stop_chrome(proc, tmp / "profile")
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Widget patterns in Chrome through UIA.")
     parser.add_argument("--runs", type=int, default=5)
+    parser.add_argument("--section", choices=("actions", "tree"), default="actions")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     for number in range(1, args.runs + 1):
+        if args.section == "tree":
+            sys.stdout.write(json.dumps(tree(number)) + "\n")
+            sys.stdout.flush()
+            continue
         for row in run(number):
             sys.stdout.write(json.dumps(row) + "\n")
             sys.stdout.flush()
