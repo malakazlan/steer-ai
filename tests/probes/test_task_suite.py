@@ -120,3 +120,17 @@ def test_the_bar_needs_every_task_and_every_run() -> None:
 def test_the_seconds_line_reports_each_task() -> None:
     rows = [{"task": "np1", "seconds": s} for s in (7.0, 8.0, 12.0)]
     assert seconds_line(rows) == "seconds p50/p95: np1 8.0/12.0"
+
+
+def test_a_person_who_stays_active_gives_an_invalid_row_and_the_suite_goes_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import steerai.probes.task_suite as suite  # noqa: PLC0415 - this test only
+    from steerai.probes.layer_b_pages import InvalidRun  # noqa: PLC0415
+
+    def active() -> None:
+        raise InvalidRun("person_active")
+
+    monkeypatch.setattr(suite, "wait_until_idle", active)
+    row = suite.one_run(TASKS[0], 1, suite._Planner())
+    assert row == {"task": "np1", "run": 1, "passed": False, "invalid": "person_active"}

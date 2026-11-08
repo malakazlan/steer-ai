@@ -221,6 +221,7 @@ def seconds_line(rows: Sequence[dict[str, Any]]) -> str:
             p50 = times[len(times) // 2]
             p95 = times[min(len(times) - 1, round(0.95 * (len(times) - 1)))]
             parts.append(f"{task.task_id} {p50:.1f}/{p95:.1f}")
+    # with three runs a task's p95 is its slowest run
     return "seconds p50/p95: " + ", ".join(parts)
 
 
@@ -395,9 +396,9 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
 def one_run(task: Task, number: int, planner: _Planner, keep: Path | None = None) -> dict[str, Any]:
     try:
         wait_until_idle()
-    except TimeoutError:
+    except InvalidRun as exc:
         # the person stayed active: this run measured nothing, the suite goes on
-        return {"task": task.task_id, "run": number, "passed": False, "invalid": "person_active"}
+        return {"task": task.task_id, "run": number, "passed": False, "invalid": str(exc)}
     tmp = Path(tempfile.mkdtemp(prefix="steer-suite-"))
     try:
         row = _started(task, number, tmp, planner)
@@ -432,7 +433,7 @@ def _started(task: Task, number: int, tmp: Path, planner: _Planner) -> dict[str,
 def _header() -> dict[str, Any]:
     """Which code and which Chrome produced the rows (#139 review item 4)."""
     sha = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"],  # noqa: S607 - git on PATH
+        ["git", "describe", "--always", "--dirty"],  # noqa: S607 - git on PATH
         capture_output=True,
         text=True,
         check=False,
