@@ -202,8 +202,47 @@ HELD_OUT: tuple[Task, ...] = (
         frozenset({"see you tomorrow"}),
     ),
 )
-"""Ten other single-app tasks, never used to fix Steer (design 12 [v2.43]): Phase 1 is met only
-when these pass the same bar. Run once, without tuning on them."""
+"""Ten other single-app tasks, never used to fix Steer when first run (design 12 [v2.43]). Spent
+since: their traces were read to file #147-#151, so a rerun after those fixes is a development
+result; Phase 1 is met only on a fresh held-out set (H2, [v2.45])."""
+
+
+def results_url(task: Task) -> str:
+    """The results page a `url_search` task should end on, built from its own check: the
+    positive control opens it directly (#152 review item 1)."""
+    origin = urllib.parse.urlsplit(task.start)
+    query = urllib.parse.urlencode({task.param: task.expected})
+    return urllib.parse.urlunsplit((origin.scheme, origin.netloc, task.path, query, ""))
+
+
+def controls(tasks: Sequence[Task]) -> list[str]:
+    """Each `url_search` task's own results URL opened directly in a throwaway Chrome, read
+    the way a run is read, and judged by `passed`: a check that never returns true on real
+    pages would fail every run silently."""
+    lines = []
+    for task in tasks:
+        if task.check != "url_search":
+            continue
+        tmp = Path(tempfile.mkdtemp(prefix="steer-ctl-"))
+        port = _free_port()
+        proc = launch_chrome(
+            CHROME_DEFAULT, tmp / "profile", port, results_url(task), window_size=WINDOW
+        )
+        try:
+            page_ws_url(port)
+            time.sleep(4.0)  # the site settles its first layout and any redirect
+            expression = "JSON.stringify({href: location.href, title: document.title})"
+            observed = _read(port, expression, "control")
+            ok = passed(task, "done", observed)
+            lines.append(f"{task.task_id}: control {'passes' if ok else 'FAILS'}")
+        except InvalidRun as exc:
+            lines.append(f"{task.task_id}: control invalid ({exc})")
+        finally:
+            from steerai.probes.chrome_a11y import stop_chrome  # noqa: PLC0415 - with launch
+
+            stop_chrome(proc, tmp / "profile")
+            shutil.rmtree(tmp, ignore_errors=True)
+    return lines
 
 
 def task_set(name: str) -> tuple[Task, ...]:
@@ -502,6 +541,8 @@ def _started(task: Task, number: int, tmp: Path, planner: _Planner) -> dict[str,
     if task.start == "notepad":
         return _run_app(task, number, tmp, planner, exe=NOTEPAD, edit_class="Edit")
     if task.start == "wordpad":
+        if not WORDPAD.is_file():
+            raise InvalidRun("wordpad_absent")  # removed from newer Windows builds
         return _run_app(task, number, tmp, planner, exe=WORDPAD, edit_class="RICHEDIT50W")
     if task.start == "inbox":
         reply = next(iter(task.approve)) if task.check == "inbox_send" else REPLY_TEXT
@@ -539,12 +580,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Phase 1 bar: ten single-app tasks, live.")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--set", choices=("dev", "held_out"), default="dev")
+    parser.add_argument(
+        "--controls", action="store_true", help="open each search task's results URL instead"
+    )
     parser.add_argument("--tasks", default="", help="comma-separated task ids (default: all)")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--keep", type=Path, default=None, help="copy plans and traces here")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     wanted = set(filter(None, args.tasks.split(",")))
     tasks = task_set(args.set)
+    if args.controls:
+        lines = controls(tasks)
+        sys.stdout.write("\n".join(lines) + "\n")
+        return 0 if all(line.endswith("passes") for line in lines) else 1
     planner = _Planner()
     rows: list[dict[str, Any]] = []
     with args.out.open("w", encoding="utf-8") as out:

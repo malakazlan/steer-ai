@@ -57,3 +57,12 @@ def test_the_bar_is_judged_over_the_chosen_set() -> None:
     rows = [{"task": t.task_id, "passed": True} for t in HELD_OUT]
     assert verdict(rows, HELD_OUT)[1]
     assert not verdict(rows, TASKS)[1], "dev tasks are absent from a held-out run"
+
+
+def test_a_results_url_is_built_from_the_task_s_own_check() -> None:
+    from steerai.probes.task_suite import results_url  # noqa: PLC0415 - this test only
+
+    assert results_url(_task("py1")) == "https://docs.python.org/3/search.html?q=pathlib"
+    assert results_url(_task("ddg1")) == "https://duckduckgo.com/?q=ui+automation+tree"
+    url = results_url(_task("bing1"))
+    assert passed(_task("bing1"), "done", _page(url)), "a control must pass its own check"
