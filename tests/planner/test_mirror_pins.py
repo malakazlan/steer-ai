@@ -22,6 +22,7 @@ from steerai.orchestrator.plan_io import (
     plan_to_json,
 )
 from steerai.planner.mirror import (
+    MIRROR_ONLY_STEP_KEYS,
     MODEL_OWNED_STEP_KEYS,
     ParamsDoc,
     PlanDoc,
@@ -62,7 +63,7 @@ def test_every_object_allows_a_subset_of_the_boundarys_keys() -> None:
     schema = _schema()
     assert _properties(schema) == frozenset({"goal", "subgoals", "steps"})
     assert _properties(_definition(schema, "SubgoalDoc")) == frozenset({"id", "desc", "condition"})
-    assert _properties(_definition(schema, "StepDoc")) <= STEP_KEYS
+    assert _properties(_definition(schema, "StepDoc")) - MIRROR_ONLY_STEP_KEYS <= STEP_KEYS
     assert _properties(_definition(schema, "TargetDoc")) <= TARGET_KEYS
     assert _properties(_definition(schema, "ParamsDoc")) <= PARAM_KEYS
     predicate = _definition(schema, "PredicateDoc")["properties"]
@@ -128,7 +129,7 @@ def _doc_with(condition: PredicateDoc) -> PlanDoc:
 
 def test_the_absent_step_keys_are_exactly_the_gates_inputs() -> None:
     schema = _schema()
-    absent = STEP_KEYS - _properties(_definition(schema, "StepDoc"))
+    absent = STEP_KEYS - (_properties(_definition(schema, "StepDoc")) - MIRROR_ONLY_STEP_KEYS)
     assert absent == EXPECTED_ABSENT
     assert MODEL_OWNED_STEP_KEYS == STEP_KEYS - EXPECTED_ABSENT
 
