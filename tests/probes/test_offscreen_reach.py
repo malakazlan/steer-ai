@@ -9,4 +9,11 @@ def test_the_fixture_holds_each_case() -> None:
     assert 'style="height:2500px"' in PAGE
     assert PAGE.count('role="option"') == OPTIONS
     assert "<div hidden>" in PAGE
-    assert {case for case, _role, _name in TARGETS} == {"below_fold", "in_list", "hidden"}
+    assert {case for case, _role, _name in TARGETS} == {
+        "below_fold",
+        "in_list",
+        "hidden",
+        "drawer",
+        "sr_only",
+        "inert",
+    }

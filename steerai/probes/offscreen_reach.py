@@ -35,11 +35,18 @@ PAGE = (
     '<div style="height:2500px"></div>'
     '<button id="more">Load more</button>'
     '<div hidden><button id="ghost">Hidden action</button></div>'
+    '<nav style="position:fixed;top:0;right:0;width:300px;transform:translateX(100%)">'
+    '<button id="drawer">Drawer action</button></nav>'
+    '<span style="position:absolute;left:-9999px">Screen reader note</span>'
+    '<div inert><button id="inert">Inert action</button></div>'
 )
 TARGETS = (
     ("below_fold", "Button", "Load more"),
     ("in_list", "ListItem", f"Choice {OPTIONS}"),
     ("hidden", "Button", "Hidden action"),
+    ("drawer", "Button", "Drawer action"),
+    ("sr_only", "Text", "Screen reader note"),
+    ("inert", "Button", "Inert action"),
 )
 SCROLL_ITEM = 10017
 
@@ -83,6 +90,10 @@ def _measure(number: int) -> list[dict[str, Any]]:
                     handle = snap.handle(element.id)
                     row["offscreen"] = element.offscreen
                     row["box"] = element.box
+                    root = snap.elements[0].box
+                    row["overlaps_horizontally"] = (
+                        element.box[2] > root[0] and element.box[0] < root[2]
+                    )
                     pattern = handle.GetCurrentPattern(SCROLL_ITEM)
                     row["scroll_item"] = bool(pattern)
                     if pattern:
