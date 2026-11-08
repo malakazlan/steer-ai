@@ -431,6 +431,7 @@ class Session:
             if previous == "done":
                 return self._done_already(step, key, stage, evidence)
             before, element_id = self._resolve_settling(step, before, stage, evidence)
+            before, element_id = self._scroll_first(step, before, element_id, stage, evidence)
             self._secure_step = before.element(element_id).secure
             risk, previous = self._readmitted(
                 step,
@@ -1363,7 +1364,6 @@ class Session:
         typed, self._typed_at = self._typed_at, None
         if typed is None:
             return snapshot
-        deadline = typed + SETTLE_AFTER_TYPE_CAP_S
         ids = {e.runtime_id for e in snapshot.elements}
         quiet_from = self._monotonic()
         if self._last_after is not None:
@@ -1371,12 +1371,23 @@ class Session:
             if stamp >= typed and {e.runtime_id for e in last.elements} == ids:
                 # unchanged since the type's own after snapshot: quiet since then
                 quiet_from = stamp
+        snapshot, _capped = self._quiet(
+            snapshot, evidence, quiet_from, typed + SETTLE_AFTER_TYPE_CAP_S
+        )
+        evidence["settled_after_type"] = True
+        return snapshot
+
+    def _quiet(
+        self, snapshot: Snapshot, evidence: dict[str, Any], quiet_from: float, deadline: float
+    ) -> tuple[Snapshot, bool]:
+        """The latest snapshot once the page has kept its elements for QUIET_AFTER_TYPE_S, and
+        whether the deadline came first (`settle: capped`)."""
+        ids = {e.runtime_id for e in snapshot.elements}
         # bounded by polls too: a clock that never moves must not spin (a stuck host clock)
         for _ in range(int(SETTLE_AFTER_TYPE_CAP_S / SETTLE_POLL_S) + 1):
             if self._monotonic() - quiet_from >= QUIET_AFTER_TYPE_S:
-                break
+                return snapshot, False
             if self._monotonic() >= deadline:
-                evidence["settle"] = "capped"
                 break
             self._sleep(SETTLE_POLL_S)
             observed = self._observer.observe(self.hwnd)
@@ -1387,8 +1398,46 @@ class Session:
             if now != ids:
                 ids, quiet_from = now, self._monotonic()
             snapshot = observed
-        evidence["settled_after_type"] = True
-        return snapshot
+        # the deadline, or the poll bound under a clock that never moves: never quiet
+        evidence["settle"] = "capped"
+        return snapshot, True
+
+    def _scroll_first(
+        self, step: Step, before: Snapshot, element_id: int, stage: _Stage, evidence: dict[str, Any]
+    ) -> tuple[Snapshot, int]:
+        """An offscreen target comes into view before the gate, the ask and the write-ahead
+        (offscreen-lines packet, principal item 1, hunter OS-01/02/05/06/07): ScrollIntoView, a
+        quiet look, the same element by RuntimeId; the before of record and the ask are that
+        screen. No ScrollItemPattern, or still offscreen after the scroll, is refused with
+        nothing sent (`offscreen_unreachable`)."""
+        asked = before.element(element_id)
+        if not asked.offscreen:
+            return before, element_id
+        if self._boundary(evidence):
+            before, element_id = self._reobserve(
+                step, before, evidence, asked=element_id, mismatch="screen_changed_during_wait"
+            )
+            evidence["restarted"] = True
+            asked = before.element(element_id)
+        result = self._semantic.execute(
+            Action(verb="scroll_into_view", element_id=element_id), before
+        )
+        evidence["scrolled"] = result.delivery.value
+        if result.delivery is Delivery.NOT_DELIVERED and not result.skipped:
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "offscreen_unreachable")
+        started = self._monotonic()
+        fresh = stage.measure("observe", lambda: self._observe_fresh(evidence))
+        fresh, capped = stage.measure(
+            "settle",
+            partial(self._quiet, fresh, evidence, started, started + SETTLE_AFTER_TYPE_CAP_S),
+        )
+        if capped:
+            # a before taken mid-load would count the scroll's content as the step's effect
+            raise _StepFailureError(ErrorCode.UNSTABLE_UI, "scroll_not_quiet")
+        element_id = self._same_target(step, fresh, asked, "screen_changed_during_scroll")
+        if fresh.element(element_id).offscreen:
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "offscreen_unreachable")
+        return fresh, element_id
 
     def _resolve_settling(
         self, step: Step, before: Snapshot, stage: _Stage, evidence: dict[str, Any]
