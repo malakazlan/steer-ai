@@ -45,14 +45,14 @@ PAGE = """<!doctype html><title>Widget fixture</title>
 </fieldset>
 <script>
 window.LOG = [];
-function log(id, type) { window.LOG.push(id + ":" + type); }
+function log(id, type, e) { window.LOG.push(id + ":" + type + (e.isTrusted ? "" : ":untrusted")); }
 for (const id of ["cb", "sel", "r1", "r2"]) {
   const el = document.getElementById(id);
-  for (const t of ["click", "input", "change"]) el.addEventListener(t, () => log(id, t));
+  for (const t of ["click", "input", "change"]) el.addEventListener(t, (e) => log(id, t, e));
 }
 for (const tab of document.querySelectorAll("[role=tab]")) {
-  tab.addEventListener("click", () => {
-    log(tab.id, "click");
+  tab.addEventListener("click", (e) => {
+    log(tab.id, "click", e);
     for (const t of document.querySelectorAll("[role=tab]")) {
       t.setAttribute("aria-selected", t === tab);
     }
