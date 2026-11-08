@@ -67,6 +67,16 @@ def normalise_newlines(text: str) -> str:
     return text
 
 
+def field_text(value: str, role: str) -> str:
+    """A field's text as typed: newlines normalised, and for a rich text `Document` one final
+    paragraph mark dropped. A rich text story always ends with one (measured 2026-11-08: an
+    empty WordPad document reads a lone CR, #147); it is structure, never content."""
+    text = normalise_newlines(value)
+    if role == "Document" and text.endswith(_LF):
+        return text[: -len(_LF)]
+    return text
+
+
 def _check_characters(normalised: str, max_units: int) -> None:
     bad = [ch for ch in normalised if _rejected(ch)]
     if bad:

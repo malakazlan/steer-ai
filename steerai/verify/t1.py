@@ -26,7 +26,7 @@ from collections.abc import Callable, Hashable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
 
-from steerai.action.sanitize import normalise_newlines
+from steerai.action.sanitize import field_text, normalise_newlines
 from steerai.errors import ErrorCode, SteerError
 from steerai.verify.predicates import (
     FIELD_ROLES,
@@ -623,7 +623,7 @@ def _read_value(element: Element, snapshot: Snapshot, live: LiveReads) -> str:
     if element.role in _TEXT_ROLES:
         return normalise_newlines(element.name)
     raw = live.value(snapshot.handle(element.id))
-    return normalise_newlines("" if raw is None else str(raw))
+    return field_text("" if raw is None else str(raw), element.role)
 
 
 def _value_equals(
