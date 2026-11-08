@@ -27,6 +27,7 @@ from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
+from steerai.action.live_reads import twin_value_of
 from steerai.action.sanitize import field_text, normalise_newlines
 from steerai.errors import ErrorCode, SteerError
 from steerai.verify.predicates import (
@@ -690,7 +691,7 @@ def _field_value(predicate: FieldValue, snapshot: Snapshot, ctx: Context) -> Ver
         twin = (
             None
             if evidence
-            else pinned_twin(found, snapshot, ctx.pinned, _value_of(snapshot, live))
+            else pinned_twin(found, snapshot, ctx.pinned, twin_value_of(snapshot, live))
         )
         if twin is None:
             return _plain("ambiguous_target", settles=True)
@@ -701,18 +702,6 @@ def _field_value(predicate: FieldValue, snapshot: Snapshot, ctx: Context) -> Ver
     if value == normalise_newlines(predicate.text):
         return Verdict(holds=True, code=None, level=3, polls=0, evidence=evidence)
     return _plain("value_empty" if value == "" else "value_differs", settles=True)
-
-
-def _value_of(snapshot: Snapshot, live: LiveReads) -> Callable[[Element], str | None]:
-    """A twin's live value for `twin_set`; a failed read is None (never a twin set)."""
-
-    def read(element: Element) -> str | None:
-        try:
-            return _read_value(element, snapshot, live)
-        except SteerError:
-            return None
-
-    return read
 
 
 def _focused(predicate: Focused, before: Snapshot, after: Snapshot, ctx: Context) -> Verdict:

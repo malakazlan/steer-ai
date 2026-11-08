@@ -86,9 +86,11 @@ Chain = tuple[tuple[str, str, str], ...]
 def _typed_match(
     first: tuple[Element, Chain], second: tuple[Element, Chain], value_of: ValueOf
 ) -> bool:
-    """Exactly one twin holds a non-empty live value; with one occurrence of it set aside in
+    """Exactly one twin holds a non-empty live value; with its first occurrence set aside in
     each ancestor name of that twin's own chain, the chains match after `normalise_name`. Two
-    values, an unreadable value or a second occurrence never match (review of #172)."""
+    values or an unreadable value never match. Only one occurrence is set aside: a name holding
+    the value twice still differs, and a label before the field holding the value fails closed
+    (review of #172 and #174)."""
     values = [value_of(first[0]), value_of(second[0])]
     if values[0] is None or values[1] is None or bool(values[0]) == bool(values[1]):
         return False

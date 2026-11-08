@@ -38,6 +38,7 @@ from steerai.action.launch import (
     title_matches,
 )
 from steerai.action.launcher import OpenAction
+from steerai.action.live_reads import twin_value_of
 from steerai.action.physical import TEXT_ROLES, PhysicalAction
 from steerai.action.sanitize import field_text, normalise_newlines
 from steerai.errors import ErrorCode, SteerError
@@ -1503,19 +1504,9 @@ class Session:
             raise _StepFailureError(ErrorCode.FOCUS_LOST, ACT_MISMATCH)
 
     def _twin_value(self, snapshot: Snapshot) -> Callable[[Element], str | None]:
-        """A twin's live value for `twin_set` (read only when the chains differ); unreadable,
-        or a persisted snapshot with no handles, is None, never a twin set."""
-
-        def read(element: Element) -> str | None:
-            if self._live is None:
-                return None
-            try:
-                raw = self._live.value(snapshot.handle(element.id))
-            except SteerError:
-                return None
-            return None if raw is None else field_text(raw, element.role)
-
-        return read
+        """The shared twin-value reader over this session's live reads (read only when the
+        chains differ)."""
+        return twin_value_of(snapshot, self._live)
 
     def _read_focus(self) -> tuple[int, ...]:
         """The focused RuntimeId for an Enter submit's twin pick; unreadable is none."""

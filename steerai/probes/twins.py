@@ -10,11 +10,16 @@ Sections (`--section`):
   who approves only the query: the run must end `done` with exactly one search, from the header
   field (the one on screen), carrying the query. No model is called; the page has no egress.
 
-`fixture` injects input: the idle gate waits before every run.
+- `reads` (review of #174): the fixture, the header field typed into by tagged input, then
+  `twin_set` with Steer's live value reader timed n times on one snapshot: the cost of the two
+  value reads branch (b) adds.
+
+`fixture` and `reads` inject input: the idle gate waits before every run.
 
 Usage (Windows, the person away):
     uv run python -m steerai.probes.twins --section scout
     uv run python -m steerai.probes.twins --section fixture --runs 5
+    uv run python -m steerai.probes.twins --section reads --runs 25
 """
 
 from __future__ import annotations
@@ -245,13 +250,86 @@ def fixture_run(number: int) -> dict[str, Any]:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def reads(samples: int) -> list[str]:
+    """The fixture's header field typed into, then `twin_set` with the live reader timed."""
+    from steerai.action.execution import UiaBindings  # noqa: PLC0415 - Windows only
+    from steerai.action.live_reads import UiaLiveReads, twin_value_of  # noqa: PLC0415
+    from steerai.probes import win_input  # noqa: PLC0415
+    from steerai.probes.omnibox_read import _type_unicode  # noqa: PLC0415
+    from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
+    from steerai.run import warm_up  # noqa: PLC0415
+    from steerai.world.model import WorldModel, normalise_name  # noqa: PLC0415
+    from steerai.world.twins import twin_set  # noqa: PLC0415
+
+    wait_until_idle()
+    tmp = Path(tempfile.mkdtemp(prefix="steer-twins-"))
+    try:
+        with PageServer({"/page.html": PAGE, "/search": RESULTS}) as server:
+            cdp_port = _free_port()
+            url = f"http://127.0.0.1:{server.port}/page.html"
+            proc = launch_chrome(
+                CHROME_DEFAULT,
+                tmp / "profile",
+                cdp_port,
+                url,
+                window_size=WINDOW,
+                extra_args=EGRESS_FLAGS,
+            )
+            try:
+                window = wait_window_for_pid(proc.pid, image="chrome.exe", process=proc)
+                page_ws_url(cdp_port)
+                _in_front(window.hwnd)
+                client = UiaClient()
+                model = WorldModel(client)
+                snap = warm_up(lambda: model.observe(window.hwnd), cap_s=15.0)
+                fields = [
+                    e
+                    for e in snap.elements
+                    if e.role == "Edit" and normalise_name(e.name) == "Quick search"
+                ]
+                top = min(fields, key=lambda e: e.box[1])
+                win_input.click_at((top.box[0] + top.box[2]) // 2, (top.box[1] + top.box[3]) // 2)
+                time.sleep(0.5)
+                _type_unicode(QUERY)
+                time.sleep(1.0)
+                snap = model.observe(window.hwnd)
+                fields = [
+                    e
+                    for e in snap.elements
+                    if e.role == "Edit" and normalise_name(e.name) == "Quick search"
+                ]
+                value_of = twin_value_of(snap, UiaLiveReads(client, UiaBindings.load()))
+                plain = twin_set(fields, snap)
+                timings, results = [], []
+                for _ in range(samples):
+                    started = time.perf_counter()
+                    results.append(twin_set(fields, snap, value_of))
+                    timings.append((time.perf_counter() - started) * 1000)
+                timings.sort()
+                p50 = timings[len(timings) // 2]
+                p95 = timings[min(len(timings) - 1, round(0.95 * (len(timings) - 1)))]
+                return [
+                    f"typed chains identical as read: {plain}",
+                    f"twin_set with the live reader: {sum(results)}/{samples}",
+                    f"twin_set with reads ms p50 {p50:.2f} p95 {p95:.2f} (n={samples})",
+                ]
+            finally:
+                stop_chrome(proc, tmp / "profile")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="#150: identical twin fields.")
-    parser.add_argument("--section", choices=("scout", "fixture"), required=True)
+    parser.add_argument("--section", choices=("scout", "fixture", "reads"), required=True)
     parser.add_argument("--runs", type=int, default=5)
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     if args.section == "scout":
         sys.stdout.write("\n".join(scout()) + "\n")
+        return 0
+    if args.section == "reads":
+        sys.stdout.write("\n".join(reads(args.runs)) + "\n")
         return 0
     rows = []
     for number in range(1, args.runs + 1):

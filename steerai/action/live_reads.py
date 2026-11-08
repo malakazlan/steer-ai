@@ -6,10 +6,14 @@ not read yet (they return None, which the verifier treats as unreadable, never a
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Protocol
 
 from steerai.action.execution import UIA_VALUE_PATTERN, code_for
+from steerai.action.sanitize import field_text
 from steerai.errors import SteerError
+from steerai.world.elements import Element
+from steerai.world.model import Snapshot
 
 
 class _FocusSource(Protocol):
@@ -46,3 +50,24 @@ class UiaLiveReads:
 
     def focused_runtime_id(self) -> tuple[int, ...]:
         return self._client.focused_runtime_id()
+
+
+class _ValueSource(Protocol):
+    def value(self, handle: Any) -> str | None: ...  # Any: a comtypes element
+
+
+def twin_value_of(snapshot: Snapshot, live: _ValueSource | None) -> Callable[[Element], str | None]:
+    """A twin field's live value for `world.twins.twin_set`, the one reader for the resolver and
+    the conditions (5.8 [v2.52]): a failed read, a snapshot with no handles or a raw None is
+    None (unreadable, never a twin set); anything else is the field's text."""
+
+    def read(element: Element) -> str | None:
+        if live is None:
+            return None
+        try:
+            raw = live.value(snapshot.handle(element.id))
+        except SteerError:
+            return None
+        return None if raw is None else field_text(str(raw), element.role)
+
+    return read
