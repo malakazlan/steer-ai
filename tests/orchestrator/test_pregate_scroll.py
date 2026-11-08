@@ -265,3 +265,17 @@ def test_a_wait_before_the_scroll_scrolls_the_freshly_found_target() -> None:
     assert result.evidence["restarted"] is True
     assert page.log == ["scroll_into_view", "click"]
     assert page.observed > looks_before
+
+
+def test_running_out_of_polls_counts_as_never_quiet() -> None:
+    """#176 re-review: a stuck clock ends the poll bound before the deadline; that is capped."""
+    page = Page(churns=True)
+    h = _harness(page)
+    h.session._monotonic = lambda: 5.0  # a clock that never moves
+    h.session._sleep = lambda _s: None  # no time passes
+    result = h.session.run_step(_click())
+    assert result.ok is False
+    assert result.code is ErrorCode.UNSTABLE_UI
+    assert result.evidence["detail"] == "scroll_not_quiet"
+    assert page.log == ["scroll_into_view"]
+    assert h.confirmer.asked == []

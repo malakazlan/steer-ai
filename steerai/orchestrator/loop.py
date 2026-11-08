@@ -1386,10 +1386,9 @@ class Session:
         # bounded by polls too: a clock that never moves must not spin (a stuck host clock)
         for _ in range(int(SETTLE_AFTER_TYPE_CAP_S / SETTLE_POLL_S) + 1):
             if self._monotonic() - quiet_from >= QUIET_AFTER_TYPE_S:
-                break
+                return snapshot, False
             if self._monotonic() >= deadline:
-                evidence["settle"] = "capped"
-                return snapshot, True
+                break
             self._sleep(SETTLE_POLL_S)
             observed = self._observer.observe(self.hwnd)
             if not observed.stable:
@@ -1399,7 +1398,9 @@ class Session:
             if now != ids:
                 ids, quiet_from = now, self._monotonic()
             snapshot = observed
-        return snapshot, False
+        # the deadline, or the poll bound under a clock that never moves: never quiet
+        evidence["settle"] = "capped"
+        return snapshot, True
 
     def _scroll_first(
         self, step: Step, before: Snapshot, element_id: int, stage: _Stage, evidence: dict[str, Any]
