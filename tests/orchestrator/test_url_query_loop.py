@@ -9,6 +9,7 @@ must be there too. Live: Bing and DuckDuckGo stopped `verify_timeout` (`no_match
 
 from __future__ import annotations
 
+import json
 import urllib.parse
 from dataclasses import replace
 from typing import Any
@@ -16,7 +17,7 @@ from typing import Any
 import pytest
 
 from steerai.errors import ErrorCode
-from steerai.orchestrator.contracts import Step, Target
+from steerai.orchestrator.contracts import Plan, Step, Subgoal, Target
 from steerai.orchestrator.gate import url_query_eligible
 from steerai.verify.predicates import Appeared, Within
 from steerai.verify.url_query import UrlBefore
@@ -268,3 +269,48 @@ def test_om08_a_record_with_no_digest_is_not_present() -> None:
     _crash_after_enter(h)
     h.ledger.records["s3"] = replace(h.ledger.records["s3"], url_before=None)
     assert h.session.run_step(_submit()).gate != "done_already"
+
+
+# ---- the subgoal: the step's own proof ticks it -----------------------------------------------
+
+
+def _ticks(h: Harness) -> list[dict[str, Any]]:
+    records = [json.loads(line) for line in h.trace.lines]
+    return [r for r in records if r.get("kind") == "tick"]
+
+
+def test_the_url_proof_ticks_its_own_subgoal_and_the_task_is_done() -> None:
+    """The fixture of #150 (probe `twins`, 2026-11-08) and every H1 Bing/DDG plan: the
+    subgoal's condition is the submit's own expect, which the title never meets exactly."""
+    h = _harness(Bar(HOME, RESULTS))
+    plan = Plan(
+        goal=GOAL,
+        subgoals=(Subgoal(id="g1", desc="results", condition=REPLACING),),
+        steps=(_submit(),),
+    )
+    result = h.session.run_task(plan)
+    assert result.status == "done", result
+    assert [t["by"] for t in _ticks(h)] == ["url_query"]
+
+
+@pytest.mark.parametrize(
+    ("label", "condition", "loaded"),
+    [
+        (
+            "another condition",
+            Appeared(role="Document", name_pattern="other", replaces=True),
+            LOADED,
+        ),
+        ("no load", REPLACING, "Bing"),
+    ],
+)
+def test_the_url_proof_ticks_nothing_else(label: str, condition: Any, loaded: str) -> None:
+    h = _harness(Bar(HOME, RESULTS), loaded=loaded)
+    plan = Plan(
+        goal=GOAL,
+        subgoals=(Subgoal(id="g1", desc="results", condition=condition),),
+        steps=(_submit(),),
+    )
+    result = h.session.run_task(plan)
+    assert result.status != "done", label
+    assert all(t["by"] != "url_query" for t in _ticks(h)), label
