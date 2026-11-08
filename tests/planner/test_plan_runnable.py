@@ -77,3 +77,19 @@ def test_a_valid_reference_is_kept() -> None:
     doc.steps[0].window = "start"
     outcome = ClaudePlanner(parse=Sequence(_Response(parsed_output=doc))).plan(_request())
     assert outcome.plan.steps[0].window == "start"
+
+
+def test_in_a_continuation_the_start_title_is_never_dropped() -> None:
+    """A step without `window` takes the previous step's window, which in a continuation can be
+    an opened one: the title stays and is repaired (#137 review item 1)."""
+    from dataclasses import replace  # noqa: PLC0415 - this test only
+
+    doc = _doc()
+    doc.steps[0].window = "Google - Google Chrome"
+    from steerai.planner.contracts import OpenSubgoal  # noqa: PLC0415
+
+    request = replace(_request(), continuation=1, remaining=(OpenSubgoal("g1", "results"),))
+    parse = Sequence(_Response(parsed_output=doc), _Response(parsed_output=_doc()))
+    outcome = ClaudePlanner(parse=parse).plan(request)
+    assert outcome.repaired is True
+    assert ".window" in parse.calls[1]["messages"][2]["content"]

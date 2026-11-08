@@ -343,11 +343,13 @@ def _document_bytes(doc: PlanDoc, request: PlanRequest) -> bytes:
     prefix = f"p{request.continuation + 1}." if request.continuation > 0 else ""
     own = {s.get("id") for s in body.get("steps", [])}
     opens = any(step.get("verb") == "open" for step in body.get("steps", []))
+    first = request.continuation == 0
     for step in body.get("steps", []):
         window = step.get("window")
-        if not opens and not is_window_ref(window) and _names_start(window, request):
-            # a plan that opens nothing acts in the start window: its own title written as a
-            # window means it (5.3 [v2.41]); another window's title stays and is refused
+        if first and not opens and not is_window_ref(window) and _names_start(window, request):
+            # a first plan that opens nothing has one window, the start one: its title written
+            # as a window means it (5.3 [v2.41]). In a continuation a step without `window`
+            # takes the previous step's window, so there the value stays and is repaired
             del step["window"]
         window = step.get("window")
         if prefix and isinstance(window, str) and window.removeprefix("opened:") in own:
