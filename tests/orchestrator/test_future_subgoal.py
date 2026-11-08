@@ -1,6 +1,6 @@
 """A subgoal with no steps of its own, listed after a subgoal that has steps, describes a state
 the plan has not reached yet: it never ticks at task start (5.11 [v2.40]). Live 2026-11-08 (task
-suite, YouTube "search ... and play the first video", 2 of 5 runs): the planner wrote g2 "the
+suite, YouTube "search ... and play the first video", 3 of 5 runs): the planner wrote g2 "the
 first video is playing" as `title "YouTube"` with no steps; it held at start, so the task ended
 `done` on the results page with no video opened. A step-less precondition listed first still
 ticks; a later step-less subgoal is left to a continuation, which plans its steps."""
@@ -72,3 +72,27 @@ def test_a_plan_whose_only_subgoal_holds_needs_no_step() -> None:
         ),
     )
     assert h.session.run_task(plan).status == "done"
+
+
+def test_a_step_less_subgoal_between_two_stepped_ones_is_future() -> None:
+    from steerai.orchestrator.loop import _future_subgoals  # noqa: PLC0415 - this test only
+
+    second = Step(
+        id="s2",
+        subgoal="g3",
+        verb="click",
+        target=Target(role="Button", name="Chat options"),
+        risk="R0",
+        expect=TitleMatches(pattern="Other"),
+    )
+    plan = Plan(
+        goal="g",
+        subgoals=(
+            Subgoal(id="g0", desc="pre", condition=CHAT),
+            Subgoal(id="g1", desc="a", condition=TitleMatches(pattern="Options open")),
+            Subgoal(id="g2", desc="between", condition=CHAT),
+            Subgoal(id="g3", desc="b", condition=TitleMatches(pattern="Other")),
+        ),
+        steps=(_click(), second),
+    )
+    assert _future_subgoals(plan) == {"g2"}
