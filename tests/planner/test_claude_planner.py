@@ -37,6 +37,7 @@ from steerai.planner.mirror import (
     StepDoc,
     SubgoalDoc,
     TargetDoc,
+    WindowRef,
 )
 
 GOAL = "search Google for steer ai computer use agent"
@@ -203,7 +204,7 @@ def test_the_prompt_says_focus_targets_a_field_role() -> None:
     system, _ = build_prompt(_request(), tag="t")
     prose = " ".join(system.split())
     assert "focus (put keyboard focus in a field: an Edit, ComboBox or Document)" in prose
-    assert PROMPT_VERSION == "planner-13"
+    assert PROMPT_VERSION == "planner-14"
 
 
 def test_the_prompt_says_a_selection_click_is_proven_by_present() -> None:
@@ -639,13 +640,13 @@ def test_the_prompt_teaches_window_references() -> None:
     system, _ = build_prompt(_request(), tag="t")
     flat = " ".join(system.split())
     assert '"window"' in flat
-    assert '"opened:' in flat
-    assert "never a title" in flat
+    assert '"opened_step"' in flat
+    assert "never by a title" in flat
 
 
 def test_a_bad_window_reference_from_the_model_is_invalid_plan() -> None:
     doc = _doc()
-    doc.steps[0].window = "WhatsApp"
+    doc.steps[0].window = WindowRef.opened  # no open step named: `opened:` is refused
     planner, _ = _planner(_Response(parsed_output=doc))
     with pytest.raises(PlannerError) as caught:
         planner.plan(_request())
@@ -669,7 +670,8 @@ def test_a_continuations_in_plan_reference_follows_the_renamed_id() -> None:
             params=ParamsDoc(),
         ),
     )
-    doc.steps[1].window = "opened:o1"
+    doc.steps[1].window = WindowRef.opened
+    doc.steps[1].opened_step = "o1"
     planner, _ = _planner(_Response(parsed_output=doc))
     plan = planner.plan(_continuation()).plan
     assert plan.steps[1].window == "opened:p2.o1"
@@ -681,7 +683,8 @@ def test_a_reused_raw_id_that_names_a_step_of_this_plan_is_refused() -> None:
     open, so the plan is refused instead of acting in a window nobody meant."""
     doc = _doc()
     doc.steps[0].id = "s1"
-    doc.steps[1].window = "opened:s1"
+    doc.steps[1].window = WindowRef.opened
+    doc.steps[1].opened_step = "s1"
     planner, _ = _planner(_Response(parsed_output=doc))
     with pytest.raises(PlannerError) as caught:
         planner.plan(_continuation())

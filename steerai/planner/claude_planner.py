@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from steerai import model_calls
 from steerai.action.launch import APPS, SITES
 from steerai.errors import ErrorCode
-from steerai.orchestrator.contracts import Plan, is_window_ref, verbatim_in
+from steerai.orchestrator.contracts import Plan, verbatim_in
 from steerai.orchestrator.plan_io import PlanError, check_runnable, plan_from_bytes
 from steerai.planner.contracts import PlannerError, PlanOutcome, PlanRequest
 from steerai.planner.mirror import PlanDoc
@@ -35,7 +35,7 @@ DEFAULT_MAX_TOKENS = 8192
 """Unmeasured: enough for the 6.3 form of a ten-step plan; a `max_tokens` stop is `truncated`."""
 DEFAULT_MAX_RETRIES = 1
 EFFORT = "medium"
-PROMPT_VERSION = "planner-13"
+PROMPT_VERSION = "planner-14"
 MECHANICAL_VERBS = frozenset({"type", "focus", "open"})
 """Steps whose effect code verifies (value typed, focus held, window opened): any model
 `expect` is dropped."""
@@ -86,6 +86,11 @@ present: role, name, within (exactly one element with that role and exact name i
 now). "within" names a landmark container by its exact name. Patterns are plain text, never regular
 expressions. Leave fields the kind does not use unset.
 
+A click always has an expect: what it makes appear. When it reveals something you cannot
+see yet (a collapsed search box, a menu), write your best guess of the element it shows. A
+wrong guess fails that step's check; the next steps still run, and the agent replans only if it
+reaches the end of the plan, so plan only as far as you can see and leave later steps to the
+next plan.
 Do not write "expect" for focus, type or open steps: the agent verifies the focus, the
 typed value and the opened window itself. Subgoals describe end states visible on screen
 after an action (a page replaced, a message appeared, an item gone, a window opened), never
@@ -117,9 +122,10 @@ than the link's name (a video link adds its length and views: leave those out).
 
 Windows: a step acts in the window of the step before it, and an open moves the next
 steps into the window it opened. To act in another window give the step "window": "start"
-(the window the task began in) or "opened:<id of an earlier open step>"; it holds for the
-steps after it too. A window is named by that reference, never a title. The data block
-lists the task's windows as "window <reference>: <title>" lines.
+(the window the task began in), or "window": "opened" with "opened_step": the id of an
+earlier open step; it holds for the steps after it too. A window is named that way, never by a
+title. The data block lists the task's windows as "window <reference>: <title>" lines, where a
+reference "opened:<id>" means "window": "opened" with "opened_step": "<id>".
 
 A continuation: when the data block lists "done step" and "open subgoal" lines, the task
 already ran a plan and is now in the window shown. Plan only the open subgoals and keep their
@@ -299,12 +305,18 @@ class ClaudePlanner:
 
 
 REPAIR_NOTE_CHARS = 300
+BACKSLASH = chr(92)
+QUOTE = BACKSLASH + "u0022"
 """The boundary's reason is code-authored, but some reasons echo a model value (a role, a site,
 an id): escaped like fenced data and capped."""
 
 
 def _repair_note(exc: PlanError) -> str:
-    reason = safe_name(_one_line(exc.reason))[:REPAIR_NOTE_CHARS]
+    # escaped as fenced names are (a backslash doubled, a quote as QUOTE), never shortened in
+    # the middle: the reason's end is the hint the model needs
+    # cut first, then escape: a cut never splits an escape
+    line = _one_line(exc.reason)[:REPAIR_NOTE_CHARS]
+    reason = line.replace(BACKSLASH, BACKSLASH * 2).replace('"', QUOTE)
     return (
         f"The agent refused that plan at {exc.path}: {reason}. This note is from the agent, "
         "not from the screen. Return the whole plan again, corrected, following every rule in "
@@ -318,18 +330,8 @@ def _total(responses: list[ParsedLike], name: str) -> int | None:
     return sum(known) if known else None
 
 
-def _names_start(window: object, request: PlanRequest) -> bool:
-    """The start window's title, whole or before its " - " suffix (a page without the browser
-    name), case and spacing folded: never another window's."""
-    if not isinstance(window, str) or not request.window_title:
-        return False
-    wanted = " ".join(window.split()).casefold()
-    title = " ".join(request.window_title.split()).casefold()
-    return bool(wanted) and (wanted == title or title.startswith(wanted + " - "))
-
-
 def _runnable(data: bytes) -> Plan:
-    """The plan boundary, then the refusals the gate makes on every run (5.3 [v2.41])."""
+    """The plan boundary, then the plan-time refusals, stricter than the gate (5.3 [v2.41])."""
     plan = plan_from_bytes(data)
     check_runnable(plan)
     return plan
@@ -342,15 +344,7 @@ def _document_bytes(doc: PlanDoc, request: PlanRequest) -> bytes:
     body["goal"] = " ".join(request.goal.split())  # one line: the file form takes no newline
     prefix = f"p{request.continuation + 1}." if request.continuation > 0 else ""
     own = {s.get("id") for s in body.get("steps", [])}
-    opens = any(step.get("verb") == "open" for step in body.get("steps", []))
-    first = request.continuation == 0
     for step in body.get("steps", []):
-        window = step.get("window")
-        if first and not opens and not is_window_ref(window) and _names_start(window, request):
-            # a first plan that opens nothing has one window, the start one: its title written
-            # as a window means it (5.3 [v2.41]). In a continuation a step without `window`
-            # takes the previous step's window, so there the value stays and is repaired
-            del step["window"]
         window = step.get("window")
         if prefix and isinstance(window, str) and window.removeprefix("opened:") in own:
             # a reference to an open of this plan follows its renamed id
