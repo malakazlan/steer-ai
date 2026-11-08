@@ -30,26 +30,6 @@ def carries(value: str, text: str) -> bool:
     return bool(wanted) and any(_folded(v) == wanted for _k, v in _params(value))
 
 
-def names_the_words(
-    document_names: Iterable[str], text: str, *, before: Iterable[str], url: str
-) -> bool:
-    """The load signal beside the URL: a Document whose name holds the typed words, case
-    folded, that was not among the before Documents' names and is not only the URL's host.
-    Chrome keeps the URL on its error page (titled by the host) and shows an address-bar
-    navigation's URL before the server answers, under the old page's title (probe #157
-    `commit`; #159 review item 1)."""
-    wanted = _folded(text).casefold()
-    host = (_split(url).hostname or "").casefold()
-    hosts = {host, host.removeprefix("www.")}
-    old = set(before)
-    return bool(wanted) and any(
-        name not in old
-        and _folded(name).casefold() not in hosts
-        and wanted in _folded(name).casefold()
-        for name in document_names
-    )
-
-
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -79,3 +59,35 @@ class UrlBefore:
 def url_query_counts(before: str, after: str, text: str) -> bool:
     """The live form of `UrlBefore.counts`, over the before URL itself."""
     return UrlBefore.of(before, text).counts(after, text)
+
+
+def page_loaded(  # noqa: PLR0913 - the page's parts and the before of record, by keyword
+    document_names: Iterable[str],
+    text: str,
+    *,
+    before: Iterable[str],
+    url: str,
+    document_url: str | None,
+    url_before: UrlBefore,
+) -> bool:
+    """The load signal beside the address bar (5.10 [v2.51], amending [v2.48]): a Document name
+    that was not among the before Documents' names and is not only the URL's host (an omnibox
+    refinement shows the pending URL under the old title; a refused load is titled by the host),
+    which either holds the typed words, case folded, or comes with a top Document URL that
+    carries them by `UrlBefore.counts`. Chrome's error and certificate pages read
+    `chrome-error://chromewebdata/` there, and a pending navigation keeps the old URL (probe
+    `document_url`, n=5 each). An unreadable Document URL leaves the words rule alone."""
+    wanted = _folded(text).casefold()
+    host = (_split(url).hostname or "").casefold()
+    hosts = {host, host.removeprefix("www.")}
+    old = set(before)
+    new = [
+        _folded(name).casefold()
+        for name in document_names
+        if name not in old and _folded(name).casefold() not in hosts
+    ]
+    if not wanted or not new:
+        return False
+    if any(wanted in name for name in new):
+        return True
+    return document_url is not None and url_before.counts(document_url, text)

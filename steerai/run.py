@@ -1449,6 +1449,7 @@ def _build_session(bound: Bound) -> SessionLike:
         locked=session_locked,
         goal_matcher=goal_matcher(model_planned=bound.options.goal is not None),
         address_bar=client.address_bar,
+        document_url=client.document_url,
     )
 
 

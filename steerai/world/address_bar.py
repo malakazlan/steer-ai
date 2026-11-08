@@ -40,6 +40,30 @@ def read_address_bar(uia: Any, mod: Any, hwnd: int) -> str | None:  # Any: comty
     return str(value) if value else None
 
 
+def read_document_url(uia: Any, mod: Any, hwnd: int) -> str | None:  # Any: comtypes
+    """The URL of the window's one top-level Document (no Document above it), which Chromium
+    exposes as the Document's value (probe `document_url`: results pages read their full URL,
+    error and certificate pages `chrome-error://chromewebdata/`, a pending navigation the old
+    URL); None when there is no such Document, more than one, or no value."""
+    root = uia.ElementFromHandle(hwnd)
+    found = root.FindAll(
+        mod.TreeScope_Descendants,
+        uia.CreatePropertyCondition(mod.UIA_ControlTypePropertyId, mod.UIA_DocumentControlTypeId),
+    )
+    tops = [
+        element
+        for element in (found.GetElement(i) for i in range(found.Length))
+        if _browser_owned(uia, mod, element)
+    ]
+    if len(tops) != 1:
+        return None
+    pattern = tops[0].GetCurrentPattern(mod.UIA_ValuePatternId)
+    if not pattern:
+        return None
+    value = pattern.QueryInterface(mod.IUIAutomationValuePattern).CurrentValue
+    return str(value) if value else None
+
+
 def _browser_owned(uia: Any, mod: Any, element: Any) -> bool:  # Any: comtypes, no stubs
     """No Document between the element and the root, within MAX_DEPTH ancestors."""
     node = element
