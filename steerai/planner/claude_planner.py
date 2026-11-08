@@ -21,8 +21,8 @@ from pydantic import ValidationError
 from steerai import model_calls
 from steerai.action.launch import APPS, SITES
 from steerai.errors import ErrorCode
-from steerai.orchestrator.contracts import verbatim_in
-from steerai.orchestrator.plan_io import PlanError, plan_from_bytes
+from steerai.orchestrator.contracts import Plan, is_window_ref, verbatim_in
+from steerai.orchestrator.plan_io import PlanError, check_runnable, plan_from_bytes
 from steerai.planner.contracts import PlannerError, PlanOutcome, PlanRequest
 from steerai.planner.mirror import PlanDoc
 from steerai.verify.decorations import DECORATIONS
@@ -214,7 +214,7 @@ class ClaudePlanner:
         data = _document_bytes(doc, request)
         responses = [response]
         try:
-            plan = plan_from_bytes(data)
+            plan = _runnable(data)
         except PlanError as exc:
             if exc.path.startswith("$.goal"):
                 # code sets the goal: the model cannot repair it
@@ -227,7 +227,7 @@ class ClaudePlanner:
             responses.append(response)
             data = _document_bytes(self._document(response, attempt=2), request)
             try:
-                plan = plan_from_bytes(data)
+                plan = _runnable(data)
             except PlanError as again:
                 raise self._error(
                     "invalid_plan", path=again.path, model=str(response.model), attempt=2
@@ -318,6 +318,23 @@ def _total(responses: list[ParsedLike], name: str) -> int | None:
     return sum(known) if known else None
 
 
+def _names_start(window: object, request: PlanRequest) -> bool:
+    """The start window's title, whole or before its " - " suffix (a page without the browser
+    name), case and spacing folded: never another window's."""
+    if not isinstance(window, str) or not request.window_title:
+        return False
+    wanted = " ".join(window.split()).casefold()
+    title = " ".join(request.window_title.split()).casefold()
+    return bool(wanted) and (wanted == title or title.startswith(wanted + " - "))
+
+
+def _runnable(data: bytes) -> Plan:
+    """The plan boundary, then the refusals the gate makes on every run (5.3 [v2.41])."""
+    plan = plan_from_bytes(data)
+    check_runnable(plan)
+    return plan
+
+
 def _document_bytes(doc: PlanDoc, request: PlanRequest) -> bytes:
     """The file form of the model's document with the gate's inputs set by code: the goal is
     the request's (PL-02), provenance follows 5.13 [v0.4], preapproval is never set."""
@@ -325,7 +342,15 @@ def _document_bytes(doc: PlanDoc, request: PlanRequest) -> bytes:
     body["goal"] = " ".join(request.goal.split())  # one line: the file form takes no newline
     prefix = f"p{request.continuation + 1}." if request.continuation > 0 else ""
     own = {s.get("id") for s in body.get("steps", [])}
+    opens = any(step.get("verb") == "open" for step in body.get("steps", []))
+    first = request.continuation == 0
     for step in body.get("steps", []):
+        window = step.get("window")
+        if first and not opens and not is_window_ref(window) and _names_start(window, request):
+            # a first plan that opens nothing has one window, the start one: its title written
+            # as a window means it (5.3 [v2.41]). In a continuation a step without `window`
+            # takes the previous step's window, so there the value stays and is repaired
+            del step["window"]
         window = step.get("window")
         if prefix and isinstance(window, str) and window.removeprefix("opened:") in own:
             # a reference to an open of this plan follows its renamed id

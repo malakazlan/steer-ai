@@ -130,6 +130,26 @@ class PlanError(ValueError):
 # ---- decoding --------------------------------------------------------------------------------
 
 
+def check_runnable(plan: Plan) -> None:
+    """Plan-time refusals for the planner's one repair turn (5.3 [v2.41]): a click has no
+    template, so it needs an expect (the gate's `no_predicate`); a send's or submit's scope is
+    where the content lands, never the content (stricter than the gate's `pattern_is_the_scope`,
+    which a strong structural expect never reaches: failing safe costs one repair). Hand-written
+    plan files are not checked here; the gate still blocks them at run time."""
+    for index, step in enumerate(plan.steps):
+        path = f"$.steps[{index}]"
+        if step.verb == "click" and step.expect is None:
+            raise PlanError(f"{path}.expect", "a click names its effect in expect")
+        scope, text = step.params.get("scope"), step.params.get("text")
+        if (
+            step.verb in ("send", "submit")
+            and isinstance(scope, str)
+            and isinstance(text, str)
+            and normalise_name(scope).casefold() == normalise_name(text).casefold()
+        ):
+            raise PlanError(f"{path}.params.scope", "the scope is where the content lands, not it")
+
+
 def plan_from_bytes(data: bytes) -> Plan:
     if len(data) > MAX_PLAN_BYTES:
         raise PlanError("$", f"plan is over {MAX_PLAN_BYTES} bytes")
