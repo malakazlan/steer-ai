@@ -1,0 +1,47 @@
+"""A search submit on Chrome counts when the address bar shows its words (#148, design D): the
+URL changed, the before URL did not already carry the text, and one query parameter equals the
+typed text exactly after decoding, NFKC and whitespace folding, case kept; a missing scheme is
+allowed (the omnibox hides it, probe #157)."""
+
+from __future__ import annotations
+
+from steerai.verify.url_query import url_query_counts
+
+BEFORE = "www.example.org/"
+TEXT = "ui automation tree"
+
+
+def test_om01_a_get_query_with_the_words_counts() -> None:
+    assert url_query_counts(BEFORE, "www.example.org/search?q=ui+automation+tree", TEXT)
+
+
+def test_om02_an_autocompleted_query_never_counts() -> None:
+    assert not url_query_counts(BEFORE, "www.example.org/search?q=ui+automation+tree+radio", TEXT)
+
+
+def test_om03_the_same_query_twice_is_not_an_effect() -> None:
+    url = "www.example.org/search?q=ui+automation+tree"
+    assert not url_query_counts(url, url, TEXT), "unchanged URL"
+    assert not url_query_counts(url, url + "&page=2", TEXT), "before already carried the text"
+
+
+def test_om06_encodings_unicode_and_a_missing_scheme_count() -> None:
+    assert url_query_counts(BEFORE, "https://x.org/s?q=ui%20automation%20tree", TEXT)
+    assert url_query_counts(BEFORE, "x.org/s?p=caf%C3%A9+cr%C3%A8me", "café crème")
+    assert url_query_counts(BEFORE, "x.org/s?q=ui++automation%09tree", TEXT), "spacing folded"
+    assert not url_query_counts(BEFORE, "x.org/s?q=UI+Automation+Tree", TEXT), "case kept"
+
+
+def test_om11_a_post_form_leaves_the_url_unchanged() -> None:
+    assert not url_query_counts(BEFORE, BEFORE, TEXT)
+
+
+def test_om12_a_redirect_without_the_query_never_counts() -> None:
+    assert not url_query_counts(BEFORE, "en.wikipedia.org/wiki/UI_Automation", TEXT)
+
+
+def test_the_words_must_fill_a_whole_parameter_value() -> None:
+    assert not url_query_counts(BEFORE, "x.org/s?q=tree&r=ui+automation", TEXT)
+    assert not url_query_counts(BEFORE, "x.org/s?ui+automation+tree", TEXT), "a bare key"
+    assert not url_query_counts(BEFORE, "", TEXT)
+    assert not url_query_counts(BEFORE, "x.org/s?q=", "")
