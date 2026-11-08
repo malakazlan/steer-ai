@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from steerai.probes.win_input import ensure_per_monitor_v2
-from steerai.world.address_bar import read_address_bar
+from steerai.world.address_bar import read_address_bar, read_document_url
 
 _COINIT_MULTITHREADED = 0x0
 _CACHED_PROPERTIES = (
@@ -180,6 +180,13 @@ class UiaClient:
             return read_address_bar(self._uia, self._uia_module, hwnd)
         except Exception as exc:  # COMError exists only once comtypes is loaded
             raise OSError(f"address bar unreadable: {exc}") from exc
+
+    def document_url(self, hwnd: int) -> str | None:
+        """The URL of the window's one top-level Document (`steerai.world.address_bar`)."""
+        try:
+            return read_document_url(self._uia, self._uia_module, hwnd)
+        except Exception as exc:  # COMError exists only once comtypes is loaded (see #160)
+            raise OSError(f"document url unreadable: {exc}") from exc
 
     def focused_runtime_id(self) -> tuple[int, ...]:
         """RuntimeId of the element with keyboard focus (`GetFocusedElement`), empty when none."""

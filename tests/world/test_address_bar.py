@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from steerai.world.address_bar import OMNIBOX_CLASS, read_address_bar
+from steerai.world.address_bar import OMNIBOX_CLASS, read_address_bar, read_document_url
 
 DOCUMENT, PANE, EDIT = 50030, 50033, 50004
 
@@ -130,3 +130,29 @@ def test_an_unending_ancestor_chain_is_not_trusted() -> None:
     node.parent = node  # a provider that never reaches the root
     root = Root([node])
     assert read_address_bar(Uia(root), Mod, 0x10) is None
+
+
+class DocMod(Mod):
+    UIA_ControlTypePropertyId = 30003
+
+
+def _doc_url(*found: Node) -> str | None:
+    root = Root(list(found))
+    for node in found:
+        if node.parent is None:
+            node.parent = root
+    return read_document_url(Uia(root), DocMod, 0x10)
+
+
+def test_the_top_document_url_is_read() -> None:
+    """Probe document_url (Chrome 156): Chromium fills the top Document's value with its URL;
+    error and certificate pages read chrome-error://chromewebdata/."""
+    top = Node(DOCUMENT, value="https://developer.mozilla.org/en-US/search?q=flexbox")
+    frame = Node(DOCUMENT, parent=top, value="https://ads.example/frame")
+    assert _doc_url(top, frame) == "https://developer.mozilla.org/en-US/search?q=flexbox"
+
+
+def test_no_or_two_top_documents_or_an_empty_value_is_none() -> None:
+    assert _doc_url() is None
+    assert _doc_url(Node(DOCUMENT, value="a"), Node(DOCUMENT, value="b")) is None
+    assert _doc_url(Node(DOCUMENT, value="")) is None
