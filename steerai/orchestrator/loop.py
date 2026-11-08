@@ -357,9 +357,9 @@ class Session:
         `onscreen` pick never scrolls (principal blocking 1)."""
         self._twin_rid: tuple[int, ...] | None = None
         self._address_bar = address_bar
+        """Chrome's omnibox value for a window, None when missing, focused or empty (#148)."""
         self._document_url = document_url
         """The URL of the window's one top-level Document, the load signal's second rule."""
-        """Chrome's omnibox value for a window, None when missing, focused or empty (#148)."""
         self._url_step = False
         """The step in flight is a Chrome search submit the address bar may prove (#148)."""
         self._url_before: UrlBefore | None = None
