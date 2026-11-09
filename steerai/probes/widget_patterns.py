@@ -17,10 +17,16 @@ Section `secure` (W2 verdict item 3, WV-09): a password field and a "Show passwo
 turns it into a text field. Whether the field keeps its RuntimeId across the switch, and whether
 the snapshot still flags it `secure`: the sticky-secure rule keys on the RuntimeId.
 
+Section `groups` (W3 verdict, blocking item 1): consent questions answered "Yes"/"No" carry
+their words in the group label. For radios in a `<fieldset><legend>`, in a `role=radiogroup`
+with `aria-label`, and in a plain `<div>` after a `<p>` question, the radio's ancestors as the
+world model sees them (role and name, nearest first): does any ancestor carry the question?
+
 Usage (Windows):
     uv run python -m steerai.probes.widget_patterns --runs 5
     uv run python -m steerai.probes.widget_patterns --section tree --runs 5
     uv run python -m steerai.probes.widget_patterns --section secure --runs 5
+    uv run python -m steerai.probes.widget_patterns --section groups --runs 3
 """
 
 from __future__ import annotations
@@ -401,14 +407,77 @@ def secure(number: int) -> dict[str, Any]:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+GROUPS_PAGE = """<!doctype html><title>Consent fixture</title>
+<fieldset><legend>I agree to pay the monthly fee</legend>
+  <label><input type="radio" name="pay"> Yes</label>
+  <label><input type="radio" name="pay"> No</label>
+</fieldset>
+<div role="radiogroup" aria-label="I consent to data sharing">
+  <label><input type="radio" name="share"> Allow</label>
+  <label><input type="radio" name="share"> Deny</label>
+</div>
+<p>Do you accept the terms?</p>
+<div>
+  <label><input type="radio" name="terms"> Sure</label>
+  <label><input type="radio" name="terms"> Never</label>
+</div>"""
+GROUP_RADIOS = (("fieldset_legend", "Yes"), ("radiogroup_label", "Allow"), ("plain_div", "Sure"))
+MAX_ANCESTORS = 3
+
+
+def _ancestors(snapshot: Any, name: str) -> list[list[str]]:  # Any: a world-model Snapshot
+    """The radio's nearest ancestors as (role, name), up to MAX_ANCESTORS."""
+    by_id = {e.id: e for e in snapshot.elements}
+    radios = [e for e in snapshot.elements if e.role == "RadioButton" and e.name == name]
+    if len(radios) != 1:
+        return [["radios", str(len(radios))]]
+    chain: list[list[str]] = []
+    parent = radios[0].parent_id
+    while parent is not None and parent in by_id and len(chain) < MAX_ANCESTORS:
+        element = by_id[parent]
+        chain.append([element.role, element.name])
+        parent = element.parent_id
+    return chain
+
+
+def groups(number: int) -> dict[str, Any]:
+    """Each radio's ancestor chain on the consent fixture."""
+    from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415 - Windows only
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
+    from steerai.run import warm_up  # noqa: PLC0415
+    from steerai.world.model import WorldModel  # noqa: PLC0415
+
+    wait_until_idle()
+    tmp = Path(tempfile.mkdtemp(prefix="steer-groups-"))
+    with PageServer({"/page.html": GROUPS_PAGE}) as server:
+        port = _free_port()
+        url = f"http://127.0.0.1:{server.port}/page.html"
+        proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, url, window_size=WINDOW)
+        try:
+            window = wait_window_for_pid(proc.pid, image="chrome.exe", process=proc)
+            page_ws_url(port)
+            _in_front(window.hwnd)
+            world = WorldModel(UiaClient())
+            snapshot = warm_up(lambda: world.observe(window.hwnd), cap_s=15.0)
+            row: dict[str, Any] = {"run": number}
+            for case, name in GROUP_RADIOS:
+                row[case] = _ancestors(snapshot, name)
+            return row
+        finally:
+            stop_chrome(proc, tmp / "profile")
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Widget patterns in Chrome through UIA.")
     parser.add_argument("--runs", type=int, default=5)
-    parser.add_argument("--section", choices=("actions", "tree", "secure"), default="actions")
+    choices = ("actions", "tree", "secure", "groups")
+    parser.add_argument("--section", choices=choices, default="actions")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     for number in range(1, args.runs + 1):
-        if args.section in ("tree", "secure"):
-            row = tree(number) if args.section == "tree" else secure(number)
+        if args.section in ("tree", "secure", "groups"):
+            sections = {"tree": tree, "secure": secure, "groups": groups}
+            row = sections[args.section](number)
             sys.stdout.write(json.dumps(row) + "\n")
             sys.stdout.flush()
             continue
