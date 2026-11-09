@@ -295,3 +295,10 @@ def test_check_and_uncheck_are_in_the_models_verbs() -> None:
 def test_select_is_in_the_models_verbs() -> None:
     step = _definition(_schema(), "StepDoc")["properties"]
     assert "select" in set(step["verb"]["enum"])
+
+
+def test_choose_and_its_option_are_in_the_models_vocabulary() -> None:
+    schema = _schema()
+    step = _definition(schema, "StepDoc")["properties"]
+    assert "choose" in set(step["verb"]["enum"])
+    assert "option" in _properties(_definition(schema, "ParamsDoc"))

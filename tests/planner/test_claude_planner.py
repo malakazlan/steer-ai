@@ -205,7 +205,7 @@ def test_the_prompt_says_focus_targets_a_field_role() -> None:
     system, _ = build_prompt(_request(), tag="t")
     prose = " ".join(system.split())
     assert "focus (put keyboard focus in a field: an Edit, ComboBox or Document)" in prose
-    assert PROMPT_VERSION == "planner-17"
+    assert PROMPT_VERSION == "planner-18"
 
 
 def test_the_prompt_says_a_selection_click_is_proven_by_present() -> None:
@@ -782,7 +782,7 @@ def test_the_prompt_teaches_select_and_the_selected_state() -> None:
     assert "a tab's item" not in prose
     assert "A tab is a select and a state selected" in prose
     assert "opening a chat, a conversation, a mail or a list row" in prose
-    assert 'Do not write "expect" for focus, type, open, check, uncheck or select' in prose
+    assert 'Do not write "expect" for focus, type, open, check, uncheck, select' in prose
 
 
 def test_a_select_step_keeps_no_model_expect() -> None:
@@ -809,3 +809,42 @@ def test_a_select_step_keeps_no_model_expect() -> None:
         "state": {"role": "TabItem", "name": "Details", "wanted": "selected"}
     }
     assert "select" in MECHANICAL_VERBS
+
+
+def test_the_prompt_teaches_choose_and_its_value() -> None:
+    """W4-8 (planner-18): choose picks a ComboBox option named in the goal, never a click on a
+    ComboBox or its options; a ComboBox typed into stays focus and type; a `value` on that
+    ComboBox is proven by the choose; no model expect on a choose."""
+    system, _ = build_prompt(_request(), tag="t")
+    prose = " ".join(system.split())
+    assert (
+        "choose (pick an option of a ComboBox: params.option is the option's exact text from "
+        "the goal; never click a ComboBox or its options)" in prose
+    )
+    assert "A ComboBox you type into, such as a search box, stays focus and type." in prose
+    assert "or a choose step of the same subgoal whose option is that exact text" in prose
+    assert 'Do not write "expect" for focus, type, open, check, uncheck, select or choose' in prose
+
+
+def test_a_choose_step_keeps_its_option_and_no_model_expect() -> None:
+    condition = PredicateDoc(kind="value", role="ComboBox", name="Size", text="Large")
+    doc = PlanDoc(
+        goal="set the size to Large",
+        subgoals=[SubgoalDoc(id="g1", desc="size", condition=condition)],
+        steps=[
+            StepDoc(
+                id="s1",
+                subgoal="g1",
+                verb="choose",
+                target=TargetDoc(role="ComboBox", name="Size"),
+                risk="R1",
+                params=ParamsDoc(option="Large"),
+                expect=PredicateDoc(kind="title", pattern="Large"),
+            )
+        ],
+    )
+    planner, _ = _planner(_Response(parsed_output=doc))
+    outcome = planner.plan(_request(goal="set the size to Large"))
+    step = outcome.plan.steps[0]
+    assert (step.verb, step.params["option"], step.expect) == ("choose", "Large", None)
+    assert "choose" in MECHANICAL_VERBS

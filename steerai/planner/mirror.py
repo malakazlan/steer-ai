@@ -20,7 +20,17 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 Verb = Literal[
-    "click", "focus", "type", "send", "submit", "delete", "open", "check", "uncheck", "select"
+    "click",
+    "focus",
+    "type",
+    "send",
+    "submit",
+    "delete",
+    "open",
+    "check",
+    "uncheck",
+    "select",
+    "choose",
 ]
 Risk = Literal["R0", "R1", "R2", "R3"]
 ConditionKind = Literal[
@@ -147,6 +157,9 @@ class ParamsDoc(_Doc):
     # the site existed (measured, see the pinning test)
     site: SiteKey | None = Field(default=None, description="for open with chrome: the site")
     text: str | None = Field(default=None, description="the content; for open: the search words")
+    option: str | None = Field(
+        default=None, description="for choose: the option's exact text, as the goal names it"
+    )
     composer_role: str | None = None
     composer_name: str | None = None
     scope: str | None = None
