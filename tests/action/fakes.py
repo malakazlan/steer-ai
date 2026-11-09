@@ -23,6 +23,7 @@ UIA_INVOKE, UIA_VALUE, UIA_TOGGLE, UIA_EXPAND, UIA_SELECTION_ITEM, UIA_SCROLL_IT
 TYPE_IDS = {
     "Button": 50000,
     "CheckBox": 50002,
+    "ComboBox": 50003,
     "Edit": 50004,
     "Hyperlink": 50005,
     "ListItem": 50007,

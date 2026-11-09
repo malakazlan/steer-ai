@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -198,6 +199,23 @@ class UiaClient:
             return ()
         runtime_id = element.GetRuntimeId()
         return tuple(int(v) for v in runtime_id) if runtime_id else ()
+
+    def cached_list_items(self, element: Any, properties: Sequence[int]) -> list[Any]:
+        """The ListItems among `element`'s descendants with `properties` cached, in one
+        FindAllBuildCache (a ComboBox's options, W4-13). `element` is a COM element (Any); a COM
+        failure propagates unchanged so the executor's `classify` reads its HRESULT."""
+        cache_request = self._uia.CreateCacheRequest()
+        for property_id in properties:
+            cache_request.AddProperty(property_id)
+        condition = self._uia.CreatePropertyCondition(
+            self._uia_module.UIA_ControlTypePropertyId, self._uia_module.UIA_ListItemControlTypeId
+        )
+        found = element.FindAllBuildCache(
+            self._uia_module.TreeScope_Descendants, condition, cache_request
+        )
+        if not found:
+            return []
+        return [found.GetElement(index) for index in range(int(found.Length))]
 
     def _snapshot(self, element: Any, scope: int, scope_name: str) -> Snapshot:
         # `element` is a COM interface pointer; comtypes has no type stubs, hence Any.

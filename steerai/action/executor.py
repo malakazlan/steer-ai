@@ -6,14 +6,17 @@ Every verb reads its own state back (`poll_state`): equal before the call means 
 and nothing is sent; settled on a different state is `verify_failed`; never settled is
 `verify_timeout`. `set_value` replaces the value, never appends; newlines are literal content.
 `check`/`uncheck` toggle at most `MAX_TOGGLES` times because three-state controls cycle; a
-toggle or a `select` that settles back where it began is `unchanged` (T1 decides). Physical
-input (click at a point, keystrokes, chords) lives in the physical executor, not here.
+toggle or a `select` that settles back where it began is `unchanged` (T1 decides). `choose`
+expands a ComboBox, selects the one option of that name in its own subtree and collapses it again
+on every path after Expand (widget-verbs W4). Physical input (click at a point, keystrokes,
+chords) lives in the physical executor, not here.
 """
 
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+import unicodedata
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -34,7 +37,8 @@ from steerai.action.execution import (
     classify,
 )
 from steerai.action.keyboard import GateApproval
-from steerai.action.readback import Readback, poll_state, poll_until
+from steerai.action.options import OptionItem, OptionSource
+from steerai.action.readback import Readback, poll_found, poll_state, poll_until
 from steerai.action.sanitize import normalise_newlines, sanitize_value
 from steerai.errors import ErrorCode, SteerError
 from steerai.world.elements import Element
@@ -50,14 +54,44 @@ VERBS: frozenset[str] = frozenset(
         "expand",
         "collapse",
         "select",
+        "choose",
         "scroll_into_view",
     }
 )
 _TEXT_VERBS = frozenset({"set_value"})
+_OPTION_VERBS = frozenset({"choose"})
 _POSTCONDITION_VERBS = frozenset({"click", "scroll_into_view"})
 MAX_TOGGLES = 2
 _TOGGLE_OFF, _TOGGLE_ON = 0, 1
 _COLLAPSED, _EXPANDED, _LEAF_NODE = 0, 1, 3
+MAX_OPTION_UNITS = 500
+"""An option is a ComboBox value: the `value` condition's cap (UTF-16 units) holds for it too."""
+OPTION_POLL_S = 0.01
+OPTION_DEADLINE_S = 1.0
+OPTION_MAX_READS = 100
+"""The option poll after Expand (W4-3, WV-36): every 10 ms, capped at 1 s and at 100 reads.
+Measured (probe `widget_patterns --section choose`, Chrome 156, n=10): the option appears in
+the ComboBox's subtree 16.8-34.1 ms after Expand."""
+COLLAPSE_POLL_S = 0.01
+COLLAPSE_DEADLINE_S = 1.0
+COLLAPSE_MAX_READS = 100
+"""The Collapse readback (W4 v1 verdict ruling (b)): measured, it still reads Expanded at once
+10/10 and Collapsed within 10.6-25.0 ms, so it is polled, capped at 1 s and 100 reads."""
+_REJECTED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn"})
+
+
+def clean_option(option: str) -> str:
+    """The option as `choose` compares it (W4-05): NFKC (a no-break space folds to a space),
+    whitespace folded, case kept. Empty, over `MAX_OPTION_UNITS`, or holding a control, format,
+    surrogate, private-use or unassigned character (a hidden word, RN-04) is refused."""
+    folded = normalise_name(option)
+    if not folded:
+        raise ValueError("choose needs a non-empty option")
+    if len(folded.encode("utf-16-le", "surrogatepass")) // 2 > MAX_OPTION_UNITS:
+        raise ValueError(f"the option is over {MAX_OPTION_UNITS} UTF-16 units")
+    if any(unicodedata.category(ch) in _REJECTED_CATEGORIES for ch in folded):
+        raise ValueError("the option holds a control or invisible character")
+    return folded
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +103,9 @@ class Action:
     """The gate's typed approval for credential entry into a secure field (5.13)."""
     postcondition: Callable[[], bool] | None = None
     """Caller-supplied readback for `click` and `scroll_into_view`."""
+    option: str | None = field(default=None, repr=False)
+    """The option a `choose` picks, folded by `clean_option`: screen text, never in a repr or
+    in the result's evidence."""
 
     def __post_init__(self) -> None:
         if self.verb not in VERBS:
@@ -77,6 +114,12 @@ class Action:
             raise ValueError(f"{self.verb} needs text")
         if self.verb not in _TEXT_VERBS and self.text is not None:
             raise ValueError(f"{self.verb} takes no text")
+        if self.verb in _OPTION_VERBS:
+            if not isinstance(self.option, str):
+                raise ValueError(f"{self.verb} needs an option")
+            object.__setattr__(self, "option", clean_option(self.option))
+        elif self.option is not None:
+            raise ValueError(f"{self.verb} takes no option")
         if self.approval is not None and not isinstance(self.approval, GateApproval):
             raise TypeError("approval must be a GateApproval from the gate, not a flag")
         if self.postcondition is not None and self.verb not in _POSTCONDITION_VERBS:
@@ -91,9 +134,12 @@ class Executor:
         windows: WindowState | None = None,
         clock: Callable[[], float] = time.time,
         blocker: Callable[[], str | None] | None = None,
+        options: OptionSource | None = None,
     ) -> None:
         self._uia = UiaBindings.load() if uia is None else uia
         self._blocker = blocker
+        self._options = options
+        """Reads a ComboBox's options for `choose`; without one, `choose` is refused."""
         self._admission = Admission(
             windows=LiveWindows() if windows is None else windows, bindings=self._uia, clock=clock
         )
@@ -238,6 +284,61 @@ class Executor:
             evidence={"detail": "unchanged"},
         )
 
+    def _choose(self, action: Action, handle: Any, call: Call) -> ActionResult:
+        """W4: refusals before Expand send nothing; after Expand the ComboBox is collapsed again
+        on every path, except when it does not read Expanded (the ARIA shape) or the blocker
+        fired; a refusal is `not_delivered` only once the polled Collapse read back Collapsed
+        (W4 v2 verdict). Every pattern call goes through `call.send`; a COM error is classified
+        by the phase the call log is in."""
+        option = action.option
+        if option is None:  # enforced by Action.__post_init__; kept for the type checker
+            raise SteerError(ErrorCode.INVALID_TEXT, "choose needs an option")
+        expander = self._uia.pattern(handle, UIA_EXPAND_COLLAPSE_PATTERN, "ExpandCollapsePattern")
+        state = int(expander.CurrentExpandCollapseState)
+        if state == _LEAF_NODE:
+            # a datalist input reads LeafNode; IsReadOnly and an Edit child do not tell (W4 v2)
+            raise RefusalError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "editable_combobox")
+        value = self._uia.pattern(handle, UIA_VALUE_PATTERN, "ValuePattern")
+
+        def read_value() -> str:
+            raw = value.CurrentValue
+            return normalise_name("" if raw is None else str(raw))
+
+        if read_value() == option:
+            return ActionResult.already_satisfied(action.verb)
+        options = self._options
+        if options is None:
+            raise RefusalError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "no_option_source")
+        try:
+            if state != _EXPANDED:
+                call.send("ExpandCollapsePattern.Expand", expander.Expand)
+            found = poll_found(
+                lambda: _named(options.list_items(handle), option),
+                step_s=OPTION_POLL_S,
+                deadline_s=OPTION_DEADLINE_S,
+                max_reads=OPTION_MAX_READS,
+            )
+            refusal = _option_refusal(found)
+            if refusal is None and found is not None:
+                item = self._uia.pattern(
+                    found[0].handle, UIA_SELECTION_ITEM_PATTERN, "SelectionItemPattern"
+                )
+                call.send("SelectionItemPattern.Select", item.Select)
+            elif int(expander.CurrentExpandCollapseState) != _EXPANDED:
+                # the box does not read Expanded: no Collapse, it throws there (W4 v2)
+                detail = "no_options" if found is None else str(refusal)
+                return _choose_result(call, detail, code=ErrorCode.ELEMENT_NOT_ACTIONABLE)
+            if not _collapsed(expander, call):
+                return _choose_result(call, "left_expanded", cause=refusal)
+        except RefusalError as exc:
+            if exc.code is not ErrorCode.GATE_BLOCKED or call.sent is None:
+                raise
+            # the person took over after Expand: no Select, no Collapse (W4 v1 verdict item 3)
+            return _choose_result(
+                call, "left_expanded", code=ErrorCode.GATE_BLOCKED, blocker=exc.detail
+            )
+        return _chosen(call, refusal, read_value, option)
+
     def _scroll_into_view(self, action: Action, handle: Any, call: Call) -> ActionResult:
         pattern = self._uia.pattern(handle, UIA_SCROLL_ITEM_PATTERN, "ScrollItemPattern")
 
@@ -318,8 +419,98 @@ _DISPATCH: dict[str, Callable[[Executor, Action, Any, Call], ActionResult]] = {
     "expand": Executor._expand,
     "collapse": Executor._collapse,
     "select": Executor._select,
+    "choose": Executor._choose,
     "scroll_into_view": Executor._scroll_into_view,
 }
+
+
+def _named(items: Sequence[OptionItem], option: str) -> list[OptionItem] | None:
+    """The ListItems whose folded name is the option (W4-05); None while there are none."""
+    found = [item for item in items if normalise_name(item.name) == option]
+    return found or None
+
+
+def _option_refusal(found: list[OptionItem] | None) -> str | None:
+    """Why the options found cannot be chosen, or None for exactly one enabled, selectable
+    ListItem (WV-39, WV-40)."""
+    if found is None:
+        return "no_match"
+    if len(found) > 1:
+        return "ambiguous_option"
+    if not found[0].enabled:
+        return "option_disabled"
+    if not found[0].selectable:
+        return "option_unselectable"
+    return None
+
+
+def _collapsed(expander: Any, call: Call) -> bool:
+    """Collapse unless the box already reads Collapsed, then poll the readback: measured, it
+    reads Expanded at once and Collapsed within 25 ms (W4 v1). `expander` is the COM pattern."""
+
+    def state() -> int:
+        return int(expander.CurrentExpandCollapseState)
+
+    if state() != _COLLAPSED:
+        call.send("ExpandCollapsePattern.Collapse", expander.Collapse)
+    return poll_state(
+        state,
+        _COLLAPSED,
+        step_s=COLLAPSE_POLL_S,
+        deadline_s=COLLAPSE_DEADLINE_S,
+        max_steps=COLLAPSE_MAX_READS,
+    ).verified
+
+
+def _chosen(
+    call: Call, refusal: str | None, read_value: Callable[[], str], option: str
+) -> ActionResult:
+    """After a confirmed Collapse: a refusal is `not_delivered` (the box read Collapsed again,
+    W4 v2 verdict); a Select is read back through the Value, and a miss is `unchanged` for T1
+    to decide, never a second Select (W4-3)."""
+    if refusal is not None:
+        return ActionResult(
+            verb=call.verb,
+            delivery=Delivery.NOT_DELIVERED,
+            steps=call.steps,
+            code=(
+                ErrorCode.ELEMENT_NOT_FOUND
+                if refusal == "no_match"
+                else ErrorCode.ELEMENT_NOT_ACTIONABLE
+            ),
+            evidence={"detail": refusal, "expanded": True},
+        )
+    readback = poll_state(read_value, option)
+    if readback.verified:
+        return _finish(call, readback)
+    return ActionResult(
+        verb=call.verb,
+        delivery=Delivery.DELIVERED_UNVERIFIED,
+        steps=call.steps,
+        code=ErrorCode.VERIFY_TIMEOUT,
+        evidence={"detail": "unchanged"},
+    )
+
+
+def _choose_result(
+    call: Call,
+    detail: str,
+    *,
+    code: ErrorCode = ErrorCode.VERIFY_FAILED,
+    cause: str | None = None,
+    blocker: str | None = None,
+) -> ActionResult:
+    """A choose that may have changed the page and is unverified: never retry-safe once
+    anything was sent (W4 v2 verdict). Evidence holds closed tokens only."""
+    evidence: dict[str, Any] = {"detail": detail}
+    if cause is not None:
+        evidence["cause"] = cause
+    if blocker is not None:
+        evidence["blocker"] = blocker
+    delivery = Delivery.DELIVERY_UNCERTAIN if call.sent is not None else Delivery.NOT_DELIVERED
+    return ActionResult(
+        verb=call.verb, delivery=delivery, steps=call.steps, code=code, evidence=evidence
+    )
 
 
 def _poll_postcondition(postcondition: Callable[[], bool]) -> Readback:

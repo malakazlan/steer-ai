@@ -79,6 +79,29 @@ def poll_state[T](
     return Readback(verified=False, settled=previous is not _UNSET and previous == sample)
 
 
+def poll_found[T](
+    read: Callable[[], T | None], *, step_s: float, deadline_s: float, max_reads: int
+) -> T | None:
+    """The first `read()` that is not None; None once the deadline or `max_reads` is reached.
+
+    The deadline is checked before every read, so no read starts after it ([v1.1]); each sleep
+    is clipped to the time left."""
+    if step_s <= 0 or deadline_s < 0 or max_reads < 1:
+        raise ValueError("step_s must be > 0, deadline_s >= 0 and max_reads >= 1")
+    start = time.monotonic()
+    for _ in range(max_reads):
+        if time.monotonic() - start > deadline_s:
+            return None
+        found = read()
+        if found is not None:
+            return found
+        remaining = deadline_s - (time.monotonic() - start)
+        if remaining <= _EPSILON_S:
+            return None
+        time.sleep(min(step_s, remaining))
+    return None
+
+
 def poll_until(
     condition: Callable[[], bool],
     *,
