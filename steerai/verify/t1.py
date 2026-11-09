@@ -661,13 +661,22 @@ def _value_equals(
     if element is None:
         return _plain("target_not_found", settles=True)
     value = _read_value(element, after, live)
-    if value == normalise_newlines(predicate.text):
+    if _same_value(value, predicate.text, folded=predicate.folded):
         return Verdict(holds=True, code=None, level=3, polls=0, evidence={})
     if value == "":
         return _plain("value_empty", settles=True)
     # The before value is not in the snapshot (`Current*` reads the provider now, VF-30 B1):
     # a stable non-empty mismatch stays uncertain until the value is cached at before time.
     return _plain("value_differs")
+
+
+def _same_value(value: str, wanted: str, *, folded: bool) -> bool:
+    """A field's value against the wanted text: a choose's ComboBox value by `normalise_name`
+    (W4-05: NFKC folds a no-break space, whitespace folded, case kept), anything typed exactly
+    (newlines normalised only, so "a b" never passes for "a", LF, "b")."""
+    if folded:
+        return normalise_name(value) == normalise_name(wanted)
+    return value == normalise_newlines(wanted)
 
 
 def _field_value(predicate: FieldValue, snapshot: Snapshot, ctx: Context) -> Verdict:
@@ -679,9 +688,10 @@ def _field_value(predicate: FieldValue, snapshot: Snapshot, ctx: Context) -> Ver
     named = [e for e in snapshot.elements if normalise_name(e.name).casefold() == wanted]
     found = [e for e in named if e.role == predicate.role]
     evidence: dict[str, Any] = {}
-    if not found:
+    if not found and not predicate.folded:
         # the step's text-role alias, one rule for steps and conditions (alias gate option A):
-        # the one same-named field of another field role, only when the exact role is absent
+        # the one same-named field of another field role, only when the exact role is absent;
+        # a choose's value names its ComboBox itself, never an alias (W4-10)
         found = [
             e for e in named if e.role in FIELD_ROLES and e.role != predicate.role and not e.secure
         ]  # secure fields are never alias candidates, as for the step (#77)
@@ -702,7 +712,7 @@ def _field_value(predicate: FieldValue, snapshot: Snapshot, ctx: Context) -> Ver
     if found[0].secure:
         return _plain("secure_target", settles=True)  # never read: no use in polling
     value = _read_value(found[0], snapshot, live)
-    if value == normalise_newlines(predicate.text):
+    if _same_value(value, predicate.text, folded=predicate.folded):
         return Verdict(holds=True, code=None, level=3, polls=0, evidence=evidence)
     return _plain("value_empty" if value == "" else "value_differs", settles=True)
 

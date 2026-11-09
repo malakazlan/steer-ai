@@ -15,7 +15,6 @@ chords) lives in the physical executor, not here.
 from __future__ import annotations
 
 import time
-import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -37,7 +36,7 @@ from steerai.action.execution import (
     classify,
 )
 from steerai.action.keyboard import GateApproval
-from steerai.action.options import OptionItem, OptionSource
+from steerai.action.options import OptionItem, OptionSource, clean_option
 from steerai.action.readback import Readback, poll_found, poll_state, poll_until
 from steerai.action.sanitize import normalise_newlines, sanitize_value
 from steerai.errors import ErrorCode, SteerError
@@ -64,8 +63,6 @@ _POSTCONDITION_VERBS = frozenset({"click", "scroll_into_view"})
 MAX_TOGGLES = 2
 _TOGGLE_OFF, _TOGGLE_ON = 0, 1
 _COLLAPSED, _EXPANDED, _LEAF_NODE = 0, 1, 3
-MAX_OPTION_UNITS = 500
-"""An option is a ComboBox value: the `value` condition's cap (UTF-16 units) holds for it too."""
 OPTION_POLL_S = 0.01
 OPTION_DEADLINE_S = 1.0
 OPTION_MAX_READS = 100
@@ -77,21 +74,6 @@ COLLAPSE_DEADLINE_S = 1.0
 COLLAPSE_MAX_READS = 100
 """The Collapse readback (W4 v1 verdict ruling (b)): measured, it still reads Expanded at once
 10/10 and Collapsed within 10.6-25.0 ms, so it is polled, capped at 1 s and 100 reads."""
-_REJECTED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn"})
-
-
-def clean_option(option: str) -> str:
-    """The option as `choose` compares it (W4-05): NFKC (a no-break space folds to a space),
-    whitespace folded, case kept. Empty, over `MAX_OPTION_UNITS`, or holding a control, format,
-    surrogate, private-use or unassigned character (a hidden word, RN-04) is refused."""
-    folded = normalise_name(option)
-    if not folded:
-        raise ValueError("choose needs a non-empty option")
-    if len(folded.encode("utf-16-le", "surrogatepass")) // 2 > MAX_OPTION_UNITS:
-        raise ValueError(f"the option is over {MAX_OPTION_UNITS} UTF-16 units")
-    if any(unicodedata.category(ch) in _REJECTED_CATEGORIES for ch in folded):
-        raise ValueError("the option holds a control or invisible character")
-    return folded
 
 
 @dataclass(frozen=True, slots=True)

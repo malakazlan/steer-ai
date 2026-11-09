@@ -28,7 +28,7 @@ _WORSE: dict[str, int] = {"serves": 0, "unknown": 1, "unrelated": 2, "contrary":
 """Verdicts that make a step ask (gate ruling Q3: `contrary` asks until the evaluation shows 0
 `contrary` among steps that serve)."""
 DEFAULT_MODEL = "claude-opus-5"
-GOAL_MATCH_PROMPT_VERSION = "goal-match-1"
+GOAL_MATCH_PROMPT_VERSION = "goal-match-2"
 """Bump with any change to the system prompt or the row format: cached verdicts judged by an
 older prompt never stand for a newer one (plan cache key, 5.12 [v2.33])."""
 MAX_STEPS = 64
@@ -118,6 +118,9 @@ def _row(step: Step) -> dict[str, str]:
     if step.text is not None:
         row["text"] = _cap(step.text, _TEXT_CAP)
         row["text_from"] = "request" if step.text_provenance == "verbatim" else "agent"
+    option = step.params.get("option")
+    if step.verb == "choose" and option is not None:
+        row["option"] = _cap(option, _NAME_CAP)  # the option chosen (W4 v1 verdict item 5)
     return row
 
 

@@ -24,6 +24,8 @@ from steerai.action.launch import SITES, LaunchError, expected_title, site_url
 from steerai.errors import ErrorCode, SteerError
 from steerai.goal_match import ASKING
 from steerai.orchestrator.contracts import (
+    CHOOSE_ROLE,
+    OPTION_PARAM,
     RISKS,
     GateDecision,
     Risk,
@@ -224,10 +226,13 @@ def deny_tier(
     """The tier the deny, control, consent and billing patterns alone raise the step to,
     without the plan's tier or the verb floor: R0 when nothing reads. `group_name` is the name
     of the resolved element's nearest ancestor when that is a Group: read for a RadioButton
-    through every class (W3-03), for a CheckBox through billing only (W3-02)."""
+    through every class (W3-03), for a CheckBox through billing only (W3-02). A choose reads
+    every class on its option, its ComboBox's name and that group's name (W4-03)."""
     risk: Risk = "R0"
     if step.target is None:
         return risk
+    if step.verb == "choose" and step.target.role == CHOOSE_ROLE:
+        return _chosen_tier(step, bound_name, element_ids, group_name)
     role = step.target.role
     group = [group_name] if group_name and role in BILLING_ROLES else []
     grouped = group if role == GROUPED_ROLE else []
@@ -249,6 +254,37 @@ def deny_tier(
             if _RISK_ORDER[tier] <= _RISK_ORDER[risk]:
                 continue
             if any(_reads(name, pattern) for name in scope) or any(
+                _reads_id(automation_id, pattern) for automation_id in scope_ids
+            ):
+                risk = tier
+    return risk
+
+
+def _chosen_tier(
+    step: Step, bound_name: str | None, element_ids: Sequence[str], group: str | None
+) -> Risk:
+    """W4-03: a choose is the option it picks. Deny, control, consent and billing read the
+    option, the ComboBox's name and its group's name ("Premium ($20/mo)" is R2, "Delete
+    selected" R3, "Yes" under a consent group R2); the automation ids through every class
+    but billing. An option's own automation id is invisible before Expand (a 5.13 gap)."""
+    target = step.target
+    if target is None:  # the caller checked it; kept for the type checker
+        return "R0"
+    option = step.params.get(OPTION_PARAM)
+    names = [target.name, *(n for n in (option, bound_name, group) if n)]
+    ids = [i for i in (target.automation_id, *element_ids) if i]
+    risk: Risk = "R2" if any(_BILLED.search(comparable(name)) for name in names) else "R0"
+    classes: tuple[tuple[Mapping[str, Risk], list[str]], ...] = (
+        (DENY_PATTERNS, ids),
+        (CONTROL_PATTERNS, ids),
+        (CONSENT_PATTERNS, ids),
+        (BILLING_PATTERNS, []),
+    )
+    for patterns, scope_ids in classes:
+        for pattern, tier in patterns.items():
+            if _RISK_ORDER[tier] <= _RISK_ORDER[risk]:
+                continue
+            if any(_reads(name, pattern) for name in names) or any(
                 _reads_id(automation_id, pattern) for automation_id in scope_ids
             ):
                 risk = tier
@@ -424,6 +460,7 @@ def params_for(
         open_title=_open_title(step),
         file_name=raw.get("file_name"),
         recipient=raw.get("recipient"),
+        option=raw.get(OPTION_PARAM) if step.verb == "choose" else None,
     )
 
 

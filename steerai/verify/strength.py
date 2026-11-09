@@ -89,6 +89,8 @@ class Params:
     open_title: str | None = field(default=None, repr=False)
     """The window title an `open` must show, filled by code from the registries, never
     from a model field (schema gate P2)."""
+    option: str | None = field(default=None, repr=False)
+    """A choose's option (`params.option`), the ComboBox value its template reads (W4-5)."""
 
     def content_values(self, *, with_target: bool) -> frozenset[str]:
         """Parameters a pattern may equal: the text or file name always; the target's own
@@ -164,6 +166,12 @@ def template_for(verb: str, params: Params) -> Predicate:  # noqa: PLR0911 - one
         return State(
             target_id=_need_int(params.target_id, "target_id", verb), wanted=STATE_WANTED[verb]
         )
+    if verb == "choose":
+        return ValueEquals(
+            target_id=_need_int(params.target_id, "target_id", verb),
+            text=_need_str(params.option, "option", verb),
+            folded=True,
+        )
     if verb == "click":
         raise ValueError(
             "click has no template: the planner supplies the effect (appeared, disappeared, "
@@ -197,9 +205,17 @@ def strength(
 
 
 def _own_state(predicate: Predicate, params: Params, verb: str | None) -> bool:
-    """A state verb's own template, bound to the resolved element: top level only, never a
-    click's expect, never inside all/any_of, never another verb's (W2-5 ruling)."""
-    if verb is None or verb not in STATE_WANTED or params.target_id is None:
+    """A widget verb's own template, bound to the resolved element: top level only, never a
+    click's expect, never inside all/any_of, never another verb's (W2-5 ruling). A choose's is
+    its folded value of the option on the resolved ComboBox; a type's value stays weak (W4 v1
+    verdict ruling (c))."""
+    if verb is None or params.target_id is None:
+        return False
+    if verb == "choose":
+        return params.option is not None and predicate == ValueEquals(
+            target_id=params.target_id, text=params.option, folded=True
+        )
+    if verb not in STATE_WANTED:
         return False
     return predicate == State(target_id=params.target_id, wanted=STATE_WANTED[verb])
 

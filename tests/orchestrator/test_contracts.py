@@ -52,6 +52,7 @@ def test_verb_table_is_closed_and_maps_to_executors_and_templates() -> None:
                 "check",
                 "uncheck",
                 "select",
+                "choose",
             }
         )
         == VERBS
@@ -65,6 +66,7 @@ def test_verb_table_is_closed_and_maps_to_executors_and_templates() -> None:
     assert executor_verb("check") == ("semantic", "check")
     assert executor_verb("uncheck") == ("semantic", "uncheck")
     assert executor_verb("select") == ("semantic", "select")
+    assert executor_verb("choose") == ("semantic", "choose")
     assert template_verb("send") == "send"
     assert template_verb("click") == "click"
     with pytest.raises(ValueError, match="unknown verb"):

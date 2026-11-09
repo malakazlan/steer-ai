@@ -141,6 +141,9 @@ class Disappeared:
 class ValueEquals:
     target_id: int
     text: str = field(repr=False)
+    folded: bool = False
+    """A choose's template (W4-05): compared by `normalise_name` (NFKC folds a no-break space,
+    whitespace folded, case kept). A type's stays exact: newlines normalised, nothing else."""
 
 
 FIELD_ROLES: frozenset[str] = frozenset({"Edit", "ComboBox", "Document"})
@@ -160,6 +163,10 @@ class FieldValue:
     role: str
     name_pattern: str = field(repr=False)
     text: str = field(repr=False)
+    folded: bool = False
+    """Set by the plan boundary, never by the model, when a `choose` of the subgoal proves this
+    value (W4-7): the choose's comparator (`normalise_name`) and no alias to another field role
+    (W4-05, W4-10). A value a `type` proves keeps the exact rule."""
 
     def __post_init__(self) -> None:
         if self.role not in FIELD_ROLES:
