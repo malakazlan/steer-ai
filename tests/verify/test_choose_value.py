@@ -58,3 +58,10 @@ def test_a_folded_value_never_aliases_to_another_field_role() -> None:
     # a choose names the ComboBox itself: an Edit of the name never proves it (W4-10)
     chosen = FieldValue(role="ComboBox", name_pattern="Message", text="hello", folded=True)
     assert _evaluate(chosen, "hello", BASE_ROWS) is False
+
+
+def test_a_typed_value_never_aliases_to_a_combobox() -> None:
+    # W4-10, the condition side of the step's alias rule: a ComboBox's value is a choose's
+    typed = FieldValue(role="Edit", name_pattern="Message", text="hello")
+    assert _evaluate(typed, "hello") is False
+    assert _evaluate(typed, "hello", BASE_ROWS) is True

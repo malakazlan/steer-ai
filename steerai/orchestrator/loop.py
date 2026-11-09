@@ -44,9 +44,10 @@ from steerai.action.sanitize import field_text, normalise_newlines
 from steerai.errors import ErrorCode, SteerError
 from steerai.goal_match import GoalMatcher
 from steerai.orchestrator.contracts import (
+    OPTION_PARAM,
     RISKS,
     START_WINDOW,
-    STATE_VERBS,
+    WIDGET_VERBS,
     GateDecision,
     GateToken,
     Plan,
@@ -139,10 +140,11 @@ SETTLE_S = 0.5
 re-observe before calling it absent (first real-site run 2026-11-04; unmeasured)."""
 SETTLE_RETRIES = 2
 _RISK_RANK = {risk: rank for rank, risk in enumerate(RISKS)}
-ALIAS_ROLES: frozenset[str] = FIELD_ROLES
+ALIAS_ROLES: frozenset[str] = FIELD_ROLES - {"ComboBox"}
 """Text roles one app shows for another's field: a `focus` or `type` whose exact role is not
 on screen resolves by its exact name among these (chooser-wiring gate; live run osg-4 named
-`Edit` where Notepad shows `Document`)."""
+`Edit` where Notepad shows `Document`). Never a ComboBox, either way: its value is a choose's
+(W4-10), and the condition side keeps the same rule (`t1.ALIAS_FIELD_ROLES`)."""
 _ALIAS_VERBS: frozenset[str] = frozenset({"focus", "type"})
 MAX_SCROLLS = 2
 """Pre-gate scrolls per step: one, and one more when a lazy load pushed the target back
@@ -449,7 +451,7 @@ class Session:
             _measured_provider(step, before)
             previous = self._admission(step, key, risk, before)
             if previous == "done":
-                if step.verb in STATE_VERBS:
+                if step.verb in WIDGET_VERBS:
                     self._state_holds(step, before, stage, evidence)
                 return self._done_already(step, key, stage, evidence)
             before, element_id = self._resolve_settling(step, before, stage, evidence)
@@ -978,11 +980,12 @@ class Session:
             )
         evidence.update({k: v for k, v in verdict.evidence.items() if k != "level"})
         evidence["level"] = verdict.level
-        if step.verb in STATE_VERBS and before_of_record.title != after.title:
-            evidence["retitled"] = True  # a token, never the titles (W3-01)
+        if step.verb in WIDGET_VERBS and before_of_record.title != after.title:
+            evidence["retitled"] = True  # a token, never the titles (W3-01, W4-01)
         # already in the wanted state is nothing sent and counts as success (5.9 [v0.7])
         ok = verdict.holds and (action.delivery is not Delivery.NOT_DELIVERED or action.skipped)
-        if ok and step.verb == "type" and step.target is not None:
+        if ok and step.verb in ("type", "choose") and step.target is not None:
+            # a choose pins its twin like a type, so its value condition reads it (W4-11)
             self._pin(step.target, verdict.level)
         return self._finish(
             step,
@@ -1044,6 +1047,13 @@ class Session:
             if isinstance(detail, str):
                 evidence.setdefault("detail", detail)  # a refusal names its cause (#149)
             self._close(step, risk, "not_delivered")
+        elif step.verb == "choose" and _unchosen(action):
+            # no Select went out, or the box was left expanded: a refusal with its detail, no
+            # T1; only a not_delivered (the Collapse read back Collapsed) releases it (W4-06)
+            detail = action.evidence.get("detail")
+            if isinstance(detail, str):
+                evidence["detail"] = detail
+            self._close(step, risk, action.delivery.value)
         else:
             return None
         return self._finish(
@@ -1591,7 +1601,8 @@ class Session:
                 raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
             return self._picked([e for e in matches if e.runtime_id == asked], "asked")
         risk = effective_risk(step, element_ids=(matches[0].automation_id,))
-        if step.verb in ("focus", "type") and risk in ("R0", "R1"):
+        if step.verb in ("focus", "type", "choose") and risk in ("R0", "R1"):
+            # a choose picks and pins its twin like a type (W4-11)
             return self._picked([e for e in matches if on_screen(e, snapshot)], "onscreen")
         if step.verb == "submit" and matches[0].role in TEXT_ROLES and focused is not None:
             current = focused()
@@ -1964,7 +1975,8 @@ class Session:
             if self._monitor is not None:
                 # input during the step is what lands after this point (D7)
                 self._counts_at_step = self._monitor.counts()
-            action = self._build(path, verb, element_id, step.text, chord)
+            option = step.params.get(OPTION_PARAM) if verb == "choose" else None
+            action = self._build(path, verb, element_id, step.text, chord, option=option)
             result, before, element_id = self._dispatch(step, executor, action, before)
             if result.delivery is not Delivery.NOT_DELIVERED or (
                 result.steps and not result.skipped
@@ -1980,7 +1992,7 @@ class Session:
                 scrolled = True
                 before, element_id = self._scrolled_in_act(step, before, element_id, asked)
                 continue
-            if result.code is ErrorCode.ELEMENT_NOT_FOUND and retries == 0:
+            if result.code is ErrorCode.ELEMENT_NOT_FOUND and retries == 0 and not result.steps:
                 retries += 1
                 before = self._observe(stable_window=1)
                 element_id = self._same_target(step, before, asked, ACT_MISMATCH)
@@ -2135,12 +2147,18 @@ class Session:
             raise _StepFailureError(ErrorCode.GATE_BLOCKED, "composer_differs")
 
     @staticmethod
-    def _build(
-        path: str, verb: str, element_id: int, text: str | None, chord: str | None = None
+    def _build(  # noqa: PLR0913 - the executor action's fields, each from the step
+        path: str,
+        verb: str,
+        element_id: int,
+        text: str | None,
+        chord: str | None = None,
+        *,
+        option: str | None = None,
     ) -> Any:
         if path == "physical":
             return PhysicalAction(verb=verb, element_id=element_id, text=text, chord=chord)
-        return Action(verb=verb, element_id=element_id)
+        return Action(verb=verb, element_id=element_id, option=option)
 
     def _verify(
         self, expect: Predicate, before: Snapshot, windows_before: Sequence[WindowLike] | None
@@ -2194,21 +2212,29 @@ class Session:
     def _state_holds(
         self, step: Step, before: Snapshot, stage: _Stage, evidence: dict[str, Any]
     ) -> None:
-        """A state verb's done key proves the state was set, not that it holds now: the page or
-        the person may have changed it since (WV-12). Re-read it (a selection through
-        IsSelected, a box through its ToggleState, W3-05); a changed state stops, never a
-        second Toggle or Select under a done key."""
+        """A widget verb's done key proves the state was set, not that it holds now: the page
+        or the person may have changed it since (WV-12). Re-read it (a selection through
+        IsSelected, a box through its ToggleState, W3-05, a choose's ComboBox through its Value
+        by the choose's comparator, W4-07); a changed state stops, never a second Toggle, Select
+        or choose under a done key."""
         before, element_id = self._resolve_settling(step, before, stage, evidence)
         try:
-            holds = (
-                None
-                if self._live is None
-                else reads_wanted(self._live, before.handle(element_id), STATE_WANTED[step.verb])
-            )
+            holds = None if self._live is None else self._holds_live(step, before, element_id)
         except SteerError as exc:
             raise _StepFailureError(ErrorCode.VERIFY_FAILED, "state_unreadable") from exc
         if holds is not True:
             raise _StepFailureError(ErrorCode.VERIFY_FAILED, "state_changed_since_done")
+
+    def _holds_live(self, step: Step, before: Snapshot, element_id: int) -> bool | None:
+        """The widget verb's own state read live: None when it cannot be read."""
+        if self._live is None:
+            return None
+        handle = before.handle(element_id)
+        if step.verb != "choose":
+            return reads_wanted(self._live, handle, STATE_WANTED[step.verb])
+        raw = self._live.value(handle)
+        option = step.params.get(OPTION_PARAM, "")
+        return None if raw is None else normalise_name(str(raw)) == normalise_name(option)
 
     def _done_already(
         self, step: Step, key: str, stage: _Stage, evidence: dict[str, Any]
@@ -2685,8 +2711,9 @@ def _needs_front(step: Step) -> bool:
 
 def _value_ready(plan: Plan, step: Step, result: StepResult, results: list[StepResult]) -> bool:
     """A `value` or `state` subgoal is judged only after its last step, with no input from the
-    person during any of its steps (rulings FV-01, FV-20, W2-4); a `value` only after a step
-    below R2, while a consent box's check is R2 by design."""
+    person during any of its steps (rulings FV-01, FV-20, W2-4); a typed `value` only after a
+    step below R2, while a consent box's check is R2 by design, and so may a choose's value be
+    (W4 v1 verdict item 4: only when that last step is a choose and every value is its)."""
     subgoal = next(s for s in plan.subgoals if s.id == step.subgoal)
     values = field_values(subgoal.condition)
     if not values and not check_states(subgoal.condition):
@@ -2694,7 +2721,8 @@ def _value_ready(plan: Plan, step: Step, result: StepResult, results: list[StepR
     own = [s.id for s in plan.steps if s.subgoal == subgoal.id]
     if own[-1] != step.id:
         return False
-    if values and result.evidence.get("risk") in ("R2", "R3"):
+    chosen = step.verb == "choose" and all(v.folded for v in values)
+    if values and not chosen and result.evidence.get("risk") in ("R2", "R3"):
         return False
     return not any(r.evidence.get("user_input_during_step") for r in results if r.step_id in own)
 
@@ -2830,12 +2858,17 @@ def _stop_for(
 
 
 def _state_stop(step: Step, result: StepResult) -> tuple[Literal["stopped"], ErrorCode, str] | None:
-    """A state verb dispatched at R2/R3 whose T1 missed ends the task: the person approved one
+    """A widget verb dispatched at R2/R3 whose T1 missed ends the task: the person approved one
     tick, so it is never sent again in this task, by retry or by replan (W2 verdict, W2-5). At
     any tier, a miss whose target is gone or whose window was retitled means the verb navigated
-    (W3-01): it stops `navigated`. A verified state never stops, whatever the title does."""
-    if step.verb not in STATE_VERBS or result.ok or result.action is None:
+    (W3-01, W4-01): it stops `navigated`. A verified state never stops, whatever the title does.
+    A choose that left its box expanded stops: no further input in the window (W4-02, W4-08)."""
+    if step.verb not in WIDGET_VERBS or result.ok or result.action is None:
         return None
+    if result.evidence.get("detail") == "left_expanded":
+        return "stopped", result.code or ErrorCode.VERIFY_FAILED, "left_expanded"
+    if step.verb == "choose" and _unchosen(result.action):
+        return None  # a refusal sent no option: nothing to verify or to stop on (W4-06)
     if result.evidence.get("reason") == "target_not_found" or result.evidence.get("retitled"):
         return "stopped", ErrorCode.VERIFY_FAILED, "navigated"
     if result.evidence.get("risk") not in ("R2", "R3"):
@@ -2848,10 +2881,20 @@ MEASURED_PROVIDER = "chrome.exe"
 
 
 def _measured_provider(step: Step, snapshot: Snapshot) -> None:
-    """A state verb runs only in the measured provider (W3-04): anything else is refused before
-    the gate, nothing sent and no ask."""
-    if step.verb in STATE_VERBS and snapshot.process.casefold() != MEASURED_PROVIDER:
+    """A widget verb runs only in the measured provider (W3-04, W4-01): anything else is refused
+    before the gate, nothing sent and no ask."""
+    if step.verb in WIDGET_VERBS and snapshot.process.casefold() != MEASURED_PROVIDER:
         raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "unmeasured_provider")
+
+
+def _unchosen(action: ActionResult) -> bool:
+    """A choose that sent no Select, or that left its box expanded (W4-06, W4-02); an option
+    already chosen (nothing sent) is verified like any skip."""
+    if action.skipped:
+        return False
+    if action.evidence.get("detail") == "left_expanded":
+        return True
+    return not any(s.label == "SelectionItemPattern.Select" for s in action.steps)
 
 
 def _verify_deadline(expect: Predicate, step_deadline_s: float) -> float:

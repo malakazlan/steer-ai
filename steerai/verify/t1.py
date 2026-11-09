@@ -670,6 +670,11 @@ def _value_equals(
     return _plain("value_differs")
 
 
+ALIAS_FIELD_ROLES: frozenset[str] = FIELD_ROLES - {"ComboBox"}
+"""The field roles a `value` may alias between, the step's rule (`loop.ALIAS_ROLES`): never a
+ComboBox, either way (W4-10)."""
+
+
 def _same_value(value: str, wanted: str, *, folded: bool) -> bool:
     """A field's value against the wanted text: a choose's ComboBox value by `normalise_name`
     (W4-05: NFKC folds a no-break space, whitespace folded, case kept), anything typed exactly
@@ -688,12 +693,14 @@ def _field_value(predicate: FieldValue, snapshot: Snapshot, ctx: Context) -> Ver
     named = [e for e in snapshot.elements if normalise_name(e.name).casefold() == wanted]
     found = [e for e in named if e.role == predicate.role]
     evidence: dict[str, Any] = {}
-    if not found and not predicate.folded:
+    if not found and not predicate.folded and predicate.role in ALIAS_FIELD_ROLES:
         # the step's text-role alias, one rule for steps and conditions (alias gate option A):
         # the one same-named field of another field role, only when the exact role is absent;
         # a choose's value names its ComboBox itself, never an alias (W4-10)
         found = [
-            e for e in named if e.role in FIELD_ROLES and e.role != predicate.role and not e.secure
+            e
+            for e in named
+            if e.role in ALIAS_FIELD_ROLES and e.role != predicate.role and not e.secure
         ]  # secure fields are never alias candidates, as for the step (#77)
         if found:
             evidence = {"alias": found[0].role}

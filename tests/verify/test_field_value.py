@@ -716,7 +716,7 @@ def test_the_exact_role_is_judged_before_an_alias() -> None:
 
 
 def test_two_alias_fields_never_hold() -> None:
-    twin = (21, "ComboBox", "Message", (42, 61), COMPOSER_AREA[0])
+    twin = (21, "Document", "Message", (42, 61), COMPOSER_AREA[0])
     verdict, live = _judge(MESSAGE, "hello there", [*_as_role("Document"), twin])
     assert verdict.holds is False
     assert verdict.evidence == {"reason": "ambiguous_target"}
@@ -825,9 +825,9 @@ def test_an_all_whose_parts_alias_to_two_roles_records_no_alias() -> None:
     """[v2.21]: several distinct alias roles give no alias (never a set-order pick)."""
     from steerai.verify.predicates import All  # noqa: PLC0415
 
-    combo = (22, "ComboBox", "Subject", (42, 62), COMPOSER_AREA[0])
-    rows = [*_as_role("Document"), combo]
-    subject = FieldValue(role="Edit", name_pattern="Subject", text="hello there")
+    edit = (22, "Edit", "Subject", (42, 62), COMPOSER_AREA[0])
+    rows = [*_as_role("Document"), edit]
+    subject = FieldValue(role="Document", name_pattern="Subject", text="hello there")
     live = _CountingLive(
         states={
             COMPOSER[3]: FakeHandle(value="hello there"),

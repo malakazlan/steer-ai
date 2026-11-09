@@ -58,7 +58,7 @@ def test_an_r2_step_never_takes_an_alias() -> None:
 def test_two_text_fields_with_the_name_are_ambiguous() -> None:
     h = Harness()
     _as_document(h)
-    twin = (99, "ComboBox", "Message", (42, 99), 7)
+    twin = (99, "Document", "Message", (42, 99), 7)
     h.world.rows = [*h.world.rows, twin]
     result = h.session.run_step(_type())
     assert result.evidence["detail"] == "ambiguous_target"
