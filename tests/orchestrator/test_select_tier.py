@@ -10,9 +10,9 @@ from typing import Any
 
 import pytest
 
-from steerai.orchestrator.contracts import Step, Target
+from steerai.orchestrator.contracts import Plan, Step, Subgoal, Target
 from steerai.orchestrator.gate import Gate, deny_tier, effective_risk
-from steerai.verify.predicates import State
+from steerai.verify.predicates import State, TitleMatches
 from tests.orchestrator.fakes import BASE_ROWS, Row
 from tests.orchestrator.test_loop import Harness
 from tests.orchestrator.test_state_verbs_loop import Boxes
@@ -208,3 +208,31 @@ def test_the_loop_reads_a_group_parent_only() -> None:
     assert result.ok is True, result.to_dict()
     assert result.evidence["risk"] == "R1"
     assert h.confirmer.asked == []
+
+
+def test_a_group_raised_step_never_starts_on_an_unmet_earlier_subgoal() -> None:
+    """#190 review item 1: the [v2.36] precondition rule judged the plan's tier, so "Yes"
+    under "I agree to pay" (R3 only through its group) started while an earlier subgoal was
+    unticked. The settled tier now runs the same rule: stop, nothing sent, no ask."""
+    h, boxes = _harness(FORM, YES, NO)
+    first = Step(
+        id="s0",
+        subgoal="g0",
+        verb="click",
+        target=Target(role="Button", name="Chat options"),
+        expect=TitleMatches(pattern="never shown"),
+    )
+    plan = Plan(
+        goal="open the options, then agree to pay",
+        subgoals=(
+            Subgoal(id="g0", desc="options open", condition=TitleMatches(pattern="never shown")),
+            Subgoal(id="g1", desc="agreed", condition=TitleMatches(pattern="Done")),
+        ),
+        steps=(first, _select("Yes")),
+    )
+    task = h.session.run_task(plan)
+    assert task.status == "stopped", task
+    assert task.evidence["detail"] == "precondition_unmet"
+    assert h.confirmer.asked == []
+    assert ("select", YES[0], None) not in h.semantic.calls
+    assert boxes.selected[YES[3]] is False

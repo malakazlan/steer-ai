@@ -391,6 +391,9 @@ class Session:
         cannot say is unknown, and no open ticks then (issue #51, gate Q2)."""
         self._observer = observer
         self._secure_memory = SecureMemory()
+        self._earlier_unmet = False
+        """Whether an earlier subgoal whose steps ran is unticked, set by the plan loop for the
+        step it runs: a step the element raises to R2/R3 then never starts (#190 review)."""
         """A field once seen secure stays secure for the task (WV-09)."""
         self._semantic = semantic
         self._physical = physical
@@ -1128,6 +1131,11 @@ class Session:
         group = group_name(before, element)
         settled = self._settled_tier(step, risk, element.automation_id, group)
         evidence["risk"] = settled
+        if settled in ("R2", "R3") and self._earlier_unmet:
+            # the [v2.36] precondition rule at the tier the element raised the step to (a
+            # group name, a resolved automation id): nothing dispatched, no ask
+            self._trace_tick(step.subgoal, "none", detail="precondition_unmet")
+            raise _StepFailureError(ErrorCode.VERIFY_FAILED, "precondition_unmet")
         if _RISK_ORDER[settled] > _RISK_ORDER[risk] and settled in ("R2", "R3"):
             previous = self._admission(step, key, settled, before)
             if previous == "done":
@@ -2437,7 +2445,7 @@ class Session:
             if refused is not None:
                 return refused
             self._steps_run += 1
-            result = self.run_step(step)
+            result = self._run_planned(plan, index, ticked)
             results.append(result)
             self._note_done(step, result)
             stop = (
@@ -2486,6 +2494,14 @@ class Session:
             if strikes >= SCREEN_GUARD_STRIKES:
                 return "stopped", ErrorCode.BUDGET_EXCEEDED, "loop"
         return None
+
+    def _run_planned(self, plan: Plan, index: int, ticked: set[str]) -> StepResult:
+        """One plan step, knowing whether an earlier subgoal is unmet (#190 review item 1)."""
+        self._earlier_unmet = _earlier_unticked(plan, index, ticked)
+        try:
+            return self.run_step(plan.steps[index])
+        finally:
+            self._earlier_unmet = False
 
     def _refused_start(
         self, plan: Plan, index: int, ticked: set[str]
@@ -2708,6 +2724,12 @@ def _unmet_before(plan: Plan, index: int, ticked: set[str]) -> bool:
     step = plan.steps[index]
     if effective_risk(step) not in ("R2", "R3"):
         return False
+    return _earlier_unticked(plan, index, ticked)
+
+
+def _earlier_unticked(plan: Plan, index: int, ticked: set[str]) -> bool:
+    """An earlier subgoal, other than this step's own, whose steps ran and is not ticked."""
+    step = plan.steps[index]
     earlier = {s.subgoal for s in plan.steps[:index]} - {step.subgoal}
     return bool(earlier - ticked)
 
