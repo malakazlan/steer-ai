@@ -87,8 +87,10 @@ from steerai.verify.predicates import (
     All,
     AnyOf,
     Appeared,
+    CheckState,
     CountDelta,
     Disappeared,
+    FieldValue,
     Predicate,
     Present,
     TitleMatches,
@@ -397,6 +399,11 @@ class Session:
         self._earlier_unmet = False
         """Whether an earlier subgoal whose steps ran is unticked, set by the plan loop for the
         step it runs: a step the element raises to R2/R3 then never starts (#190 review)."""
+        self._ticks: tuple[Plan, set[str]] | None = None
+        """The plan and its ticked subgoals, set by the plan loop for the step it runs, so an
+        R2/R3 step reads the ticked values and states again first (W4-04)."""
+        self._reset: set[str] = set()
+        """The ticked subgoals the step's re-read found contradicted (W4-04)."""
         self._semantic = semantic
         self._physical = physical
         self._gate = gate
@@ -1150,6 +1157,8 @@ class Session:
             # group name, a resolved automation id): nothing dispatched, no ask
             self._trace_tick(step.subgoal, "none", detail="precondition_unmet")
             raise _StepFailureError(ErrorCode.VERIFY_FAILED, "precondition_unmet")
+        if settled in ("R2", "R3"):
+            self._reread_ticks(before)
         if _RISK_ORDER[settled] > _RISK_ORDER[risk] and settled in ("R2", "R3"):
             previous = self._admission(step, key, settled, before)
             if previous == "done":
@@ -2432,6 +2441,8 @@ class Session:
         for subgoal_id in sorted(ticked):
             self._trace_tick(subgoal_id, "start")
         outcome = self._run_steps(plan, ticked, results)
+        if outcome is None and ticked >= {s.id for s in plan.subgoals}:
+            outcome = self._reset_before_done(plan, ticked)
         if outcome is not None:
             stopped, code, detail = outcome
             evidence = {"detail": detail}
@@ -2478,6 +2489,7 @@ class Session:
             result = self._run_planned(plan, index, ticked)
             results.append(result)
             self._note_done(step, result)
+            self._untick(ticked, self._reset)
             stop = (
                 self._after_open(plan, step, results, ticked)
                 if step.verb == "open"
@@ -2528,10 +2540,68 @@ class Session:
     def _run_planned(self, plan: Plan, index: int, ticked: set[str]) -> StepResult:
         """One plan step, knowing whether an earlier subgoal is unmet (#190 review item 1)."""
         self._earlier_unmet = _earlier_unticked(plan, index, ticked)
+        self._ticks, self._reset = (plan, ticked), set()
         try:
             return self.run_step(plan.steps[index])
         finally:
             self._earlier_unmet = False
+            self._ticks = None
+
+    # ---- the ticked values and states, read again (W4-04) ----------------------------------------
+
+    def _reread_ticks(self, before: Snapshot) -> None:
+        """Before an R2/R3 step: the ticked values and states of this window, read again on the
+        step's own before (live reads, no observe). A contradiction stops the step before the
+        gate: nothing dispatched, nothing asked (the principal's W4 v3 correction 2)."""
+        if self._ticks is None:
+            return
+        plan, ticked = self._ticks
+        self._reset = self._contradicted(plan, ticked, before)
+        if self._reset:
+            raise _StepFailureError(ErrorCode.VERIFY_FAILED, "reset")
+
+    def _reset_before_done(
+        self, plan: Plan, ticked: set[str]
+    ) -> tuple[Literal["stopped"], ErrorCode, str] | None:
+        """Before `done`: the same re-read on the last pair's after, never a new observe; none
+        taken (every step done already) reads nothing."""
+        if self._last_pair is None:
+            return None
+        reset = self._contradicted(plan, ticked, self._last_pair[1])
+        if not reset:
+            return None
+        self._untick(ticked, reset)
+        return "stopped", ErrorCode.VERIFY_FAILED, "reset"
+
+    def _contradicted(self, plan: Plan, ticked: set[str], snapshot: Snapshot) -> set[str]:
+        """The ticked subgoals of the current window that hold a value or a state the snapshot
+        positively contradicts (correction 1): a dependent select reset an earlier choice."""
+        window = self._ledger.window_ref
+        found: set[str] = set()
+        for subgoal in plan.subgoals:
+            own = [s for s in plan.steps if s.subgoal == subgoal.id]
+            here = bool(own) and all(self._step_refs.get(s.id) == window for s in own)
+            leaves = _firm(subgoal.condition) if subgoal.id in ticked and here else []
+            if any(self._reads_otherwise(leaf, snapshot) for leaf in leaves):
+                found.add(subgoal.id)
+        return found
+
+    def _reads_otherwise(self, leaf: FieldValue | CheckState, snapshot: Snapshot) -> bool:
+        """Exactly one element, readable, not secure, and reading another value or state. Gone,
+        twinned, patternless, unreadable (a value read empty included: T1 reads an unreadable
+        value as empty) or secure keeps the tick."""
+        try:
+            verdict = evaluate(leaf, snapshot, snapshot, live=self._live, pinned=self._pins)
+        except (SteerError, ValueError):
+            return False
+        return not verdict.holds and verdict.evidence.get("reason") in _CONTRADICTIONS
+
+    def _untick(self, ticked: set[str], reset: set[str]) -> None:
+        """Withdraw the ticks a re-read contradicted: a token record per subgoal (W4-04)."""
+        for subgoal_id in sorted(reset & ticked):
+            ticked.discard(subgoal_id)
+            record = {"kind": "untick", "task_id": self.task_id, "subgoal": subgoal_id}
+            self._trace.write({**record, "detail": "reset"})
 
     def _refused_start(
         self, plan: Plan, index: int, ticked: set[str]
@@ -2889,6 +2959,20 @@ def _measured_provider(step: Step, snapshot: Snapshot) -> None:
     before the gate, nothing sent and no ask."""
     if step.verb in WIDGET_VERBS and snapshot.process.casefold() != MEASURED_PROVIDER:
         raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "unmeasured_provider")
+
+
+_CONTRADICTIONS = frozenset({"value_differs", "state_differs"})
+"""The T1 reasons that read an element positively otherwise (W4-04 correction 1)."""
+
+
+def _firm(condition: Predicate) -> list[FieldValue | CheckState]:
+    """The values and states a condition needs whatever else holds: top level or under `all`,
+    never under `any_of`, where another branch may still hold."""
+    if isinstance(condition, FieldValue | CheckState):
+        return [condition]
+    if isinstance(condition, All):
+        return [leaf for part in condition.parts for leaf in _firm(part)]
+    return []
 
 
 def _unchosen(action: ActionResult) -> bool:
