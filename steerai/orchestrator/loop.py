@@ -64,6 +64,7 @@ from steerai.orchestrator.gate import (
     ask_reasons,
     deny_tier,
     effective_risk,
+    group_name,
     open_tier,
     params_for,
     rename_counts,
@@ -1065,9 +1066,15 @@ class Session:
         if target is None:
             return risk
         if target.match != "person":
-            # the ids of every element the exact target could resolve to (#84)
+            # the ids and the group names of every element the exact target could resolve to
+            # (#84, W3-03), so a raised step never runs on a reused R0/R1 before
             ids = self._resolvable_ids(target, before)
-            return effective_risk(step, element_ids=ids) if ids else risk
+            exact: list[Risk] = [effective_risk(step, element_ids=ids) if ids else risk]
+            exact += [
+                effective_risk(step, group_name=group)
+                for group in _group_names(before, self._resolvable(target, before))
+            ]
+            return max(exact, key=_RISK_ORDER.__getitem__)
         found = pick(before, target)
         self._candidates = (before.id, found)
         tiers: list[Risk] = [risk]
@@ -1087,14 +1094,16 @@ class Session:
         except LedgerError:
             return True  # unreadable means unknown: admission decides
 
-    def _settled_tier(self, step: Step, ceiling: Risk, automation_id: str = "") -> Risk:
+    def _settled_tier(
+        self, step: Step, ceiling: Risk, automation_id: str = "", group: str | None = None
+    ) -> Risk:
         """The bound row's own tier, never below the plan's (PT-31); for any target, raised by
-        the resolved element's own automation id (#84)."""
+        the resolved element's own automation id (#84) and its group's name (W3-03)."""
         ids = (automation_id,) if automation_id else ()
         if self._binding is None:
-            raised = effective_risk(step, element_ids=ids)
+            raised = effective_risk(step, element_ids=ids, group_name=group)
             return max(ceiling, raised, key=_RISK_ORDER.__getitem__)
-        return effective_risk(step, self._binding.shown_name_part, ids)
+        return effective_risk(step, self._binding.shown_name_part, ids, group_name=group)
 
     def _readmitted(  # noqa: PLR0913 - the step's admission state, passed once by keyword
         self,
@@ -1110,7 +1119,9 @@ class Session:
         """The settled tier, recorded; when the element that resolved (after the settle)
         raises the step into R2/R3 past the tier admission ran at, admission runs again (#84).
         Returns the tier and the admission answer that stands (the first, unless re-run)."""
-        settled = self._settled_tier(step, risk, before.element(element_id).automation_id)
+        element = before.element(element_id)
+        group = group_name(before, element)
+        settled = self._settled_tier(step, risk, element.automation_id, group)
         evidence["risk"] = settled
         if _RISK_ORDER[settled] > _RISK_ORDER[risk] and settled in ("R2", "R3"):
             previous = self._admission(step, key, settled, before)
@@ -1127,14 +1138,24 @@ class Session:
                 return (snapshot.element(target.element_id).automation_id,)
             except SteerError:
                 return ()
-        wanted = normalise_name(target.name).casefold()
         return tuple(
-            e.automation_id
-            for e in snapshot.elements
-            if e.automation_id
-            and e.role == target.role
-            and normalise_name(e.name).casefold() == wanted
+            e.automation_id for e in Session._resolvable(target, snapshot) if e.automation_id
         )
+
+    @staticmethod
+    def _resolvable(target: Target, snapshot: Snapshot) -> list[Element]:
+        """The elements an exact target could resolve to: its fixed id, else role and name."""
+        if target.element_id is not None:
+            try:
+                return [snapshot.element(target.element_id)]
+            except SteerError:
+                return []
+        wanted = normalise_name(target.name).casefold()
+        return [
+            e
+            for e in snapshot.elements
+            if e.role == target.role and normalise_name(e.name).casefold() == wanted
+        ]
 
     def _decide(  # noqa: PLR0913 - the step's state at the gate
         self,
@@ -1169,6 +1190,11 @@ class Session:
                 verdict=verdict,
                 element_automation_id=(
                     before.element(element_id).automation_id if element_id is not None else ""
+                ),
+                group_name=(
+                    group_name(before, before.element(element_id))
+                    if element_id is not None
+                    else None
                 ),
             )
         finally:
@@ -2742,6 +2768,10 @@ def _structural_part(predicate: Predicate) -> Predicate | None:
                 return candidate
         return found[0] if found else None
     return None
+
+
+def _group_names(snapshot: Snapshot, elements: Sequence[Element]) -> list[str]:
+    return [name for name in (group_name(snapshot, e) for e in elements) if name]
 
 
 def _same_screen(before: Snapshot, after: Snapshot) -> bool:
