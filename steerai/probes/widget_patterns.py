@@ -34,6 +34,12 @@ combo box (W4 verdict item 1: which signal tells an editable one) its children's
 (Microsoft: an Edit child marks an editable combo box), AriaRole, ClassName, the
 LegacyIAccessible state bits, and the ListItems in its own subtree after Expand (then Collapse).
 
+Section `names` (W4 hunter rows W4-09/15/05/19): how Chrome names a select and its options:
+an unlabeled select (is it named after its selected option, so a choose renames it?), an option
+with a `label` attribute (ListItem name vs Value), an option text with a no-break space, and
+an `<optgroup>` (is its label a ListItem?). Each select is chosen once with the zero-wait
+sequence and its name, Value and option names are read before and after.
+
 Usage (Windows):
     uv run python -m steerai.probes.widget_patterns --runs 5
     uv run python -m steerai.probes.widget_patterns --section tree --runs 5
@@ -41,6 +47,7 @@ Usage (Windows):
     uv run python -m steerai.probes.widget_patterns --section groups --runs 3
     uv run python -m steerai.probes.widget_patterns --section choose --runs 5
     uv run python -m steerai.probes.widget_patterns --section shapes --runs 3
+    uv run python -m steerai.probes.widget_patterns --section names --runs 3
 """
 
 from __future__ import annotations
@@ -679,20 +686,127 @@ def shapes(number: int) -> dict[str, Any]:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+NBSP = chr(0xA0)
+NAMES_PAGE = (
+    "<!doctype html><title>Names fixture</title>"
+    '<select id="bare"><option>Small</option><option>Large</option></select>'
+    '<label>Country <select id="labelled"><option label="USA">United States</option>'
+    "<option>Canada</option></select></label>"
+    f"<label>Seat <select><option>Aisle</option><option>Window{NBSP}seat</option></select></label>"
+    "<label>Pet <select><optgroup label=Mammals><option>Cat</option></optgroup>"
+    "<optgroup label=Birds><option>Owl</option></optgroup></select></label>"
+)
+NAMED_CHOICES = (("bare", "Large"), ("Country", "Canada"), ("Seat", None), ("Pet", "Owl"))
+"""(how the select is found: its id for the bare one, else its label; the option to choose,
+None to choose the second option whatever its name)."""
+
+
+def _combo_named(uia: Any, mod: Any, hwnd: int, key: str) -> Any:  # Any: comtypes
+    if key == "bare":
+        cond = uia.CreatePropertyCondition(mod.UIA_AutomationIdPropertyId, "bare")
+        return uia.ElementFromHandle(hwnd).FindFirst(mod.TreeScope_Descendants, cond)
+    return _find(uia, mod, hwnd, mod.UIA_ComboBoxControlTypeId, key)
+
+
+def _items(uia: Any, mod: Any, combo: Any) -> list[dict[str, Any]]:  # Any: comtypes
+    cond = uia.CreatePropertyCondition(mod.UIA_ControlTypePropertyId, mod.UIA_ListItemControlTypeId)
+    found = combo.FindAll(mod.TreeScope_Descendants, cond)
+    rows = []
+    for index in range(found.Length):
+        item = found.GetElement(index)
+        rows.append(
+            {
+                "name": [ord(c) for c in str(item.CurrentName)]
+                if NBSP in str(item.CurrentName)
+                else str(item.CurrentName),
+                "selection_item": bool(item.GetCurrentPattern(SELECTION_ITEM)),
+                "enabled": bool(item.CurrentIsEnabled),
+            }
+        )
+    return rows
+
+
+def _named_row(uia: Any, mod: Any, hwnd: int, key: str, option: str | None) -> dict[str, Any]:
+    combo = _combo_named(uia, mod, hwnd, key)  # Any: comtypes throughout
+    if not combo:
+        return {"found": False}
+    expand = _pattern(combo, mod, EXPAND_COLLAPSE, "IUIAutomationExpandCollapsePattern")
+    value = _pattern(combo, mod, VALUE, "IUIAutomationValuePattern")
+    row: dict[str, Any] = {
+        "name_before": str(combo.CurrentName),
+        "value_before": str(value.CurrentValue),
+    }
+    expand.Expand()
+    _poll(lambda: bool(_items(uia, mod, combo)), OPTIONS_LIMIT_S)
+    items = _items(uia, mod, combo)
+    row["items"] = items
+    choosable = [i for i in items if i["selection_item"]]
+    target_name = (
+        option if option is not None else (choosable[1]["name"] if len(choosable) > 1 else None)
+    )
+    cond = uia.CreateAndCondition(
+        uia.CreatePropertyCondition(mod.UIA_ControlTypePropertyId, mod.UIA_ListItemControlTypeId),
+        uia.CreatePropertyCondition(
+            mod.UIA_NamePropertyId,
+            "".join(chr(c) for c in target_name) if isinstance(target_name, list) else target_name,
+        ),
+    )
+    target = combo.FindFirst(mod.TreeScope_Descendants, cond) if target_name is not None else None
+    if target:
+        _pattern(target, mod, SELECTION_ITEM, "IUIAutomationSelectionItemPattern").Select()
+    expand.Collapse()
+    _poll(lambda: int(expand.CurrentExpandCollapseState) == 0, 1.0)
+    time.sleep(0.2)
+    after = str(value.CurrentValue)
+    row["value_after"] = [ord(c) for c in after] if NBSP in after else after
+    row["name_after"] = str(combo.CurrentName)
+    return row
+
+
+def names(number: int) -> dict[str, Any]:
+    """Names and values of the four selects, before and after one choose each."""
+    from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415 - Windows only
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
+    from steerai.run import warm_up  # noqa: PLC0415
+    from steerai.world.model import WorldModel  # noqa: PLC0415
+
+    wait_until_idle()
+    tmp = Path(tempfile.mkdtemp(prefix="steer-names-"))
+    with PageServer({"/page.html": NAMES_PAGE}) as server:
+        port = _free_port()
+        url = f"http://127.0.0.1:{server.port}/page.html"
+        proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, url, window_size=WINDOW)
+        try:
+            window = wait_window_for_pid(proc.pid, image="chrome.exe", process=proc)
+            page_ws_url(port)
+            _in_front(window.hwnd)
+            client = UiaClient()
+            warm_up(lambda: WorldModel(client).observe(window.hwnd), cap_s=15.0)
+            uia, mod = client._uia, client._uia_module
+            row: dict[str, Any] = {"run": number}
+            for key, option in NAMED_CHOICES:
+                row[key] = _named_row(uia, mod, window.hwnd, key, option)
+            return row
+        finally:
+            stop_chrome(proc, tmp / "profile")
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Widget patterns in Chrome through UIA.")
     parser.add_argument("--runs", type=int, default=5)
-    choices = ("actions", "tree", "secure", "groups", "choose", "shapes")
+    choices = ("actions", "tree", "secure", "groups", "choose", "shapes", "names")
     parser.add_argument("--section", choices=choices, default="actions")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     for number in range(1, args.runs + 1):
-        if args.section in ("tree", "secure", "groups", "choose", "shapes"):
+        if args.section in ("tree", "secure", "groups", "choose", "shapes", "names"):
             sections = {
                 "tree": tree,
                 "secure": secure,
                 "groups": groups,
                 "choose": choose,
                 "shapes": shapes,
+                "names": names,
             }
             row = sections[args.section](number)
             sys.stdout.write(json.dumps(row) + "\n")
