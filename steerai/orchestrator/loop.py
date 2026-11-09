@@ -140,6 +140,9 @@ ALIAS_ROLES: frozenset[str] = FIELD_ROLES
 on screen resolves by its exact name among these (chooser-wiring gate; live run osg-4 named
 `Edit` where Notepad shows `Document`)."""
 _ALIAS_VERBS: frozenset[str] = frozenset({"focus", "type"})
+MAX_SCROLLS = 2
+"""Pre-gate scrolls per step: one, and one more when a lazy load pushed the target back
+(measured on a real-Chrome lazy feed, #184 re-review); an endless feed then fails closed."""
 OPEN_POLL_S = 0.1
 NAVIGATION_VERIFY_S = 10.0
 """Verify deadline for a replacing `appeared` (a page replacing itself; 5.10 [v1.9]): a heavy
@@ -1423,8 +1426,10 @@ class Session:
         """An offscreen target comes into view before the gate, the ask and the write-ahead
         (offscreen-lines packet, principal item 1, hunter OS-01/02/05/06/07): ScrollIntoView, a
         quiet look, the same element by RuntimeId; the before of record and the ask are that
-        screen. No ScrollItemPattern, or still offscreen after the scroll, is refused with
-        nothing sent (`offscreen_unreachable`)."""
+        screen. Rows a lazy feed loads in the quiet look can push the target back below the
+        fold (live, #184 re-review): it is scrolled once more, at most MAX_SCROLLS times. No
+        ScrollItemPattern, or still offscreen after them, is refused with nothing sent
+        (`offscreen_unreachable`)."""
         asked = before.element(element_id)
         if not asked.offscreen:
             return before, element_id
@@ -1434,25 +1439,28 @@ class Session:
             )
             evidence["restarted"] = True
             asked = before.element(element_id)
-        result = self._semantic.execute(
-            Action(verb="scroll_into_view", element_id=element_id), before
-        )
-        evidence["scrolled"] = result.delivery.value
-        if result.delivery is Delivery.NOT_DELIVERED and not result.skipped:
-            raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "offscreen_unreachable")
-        started = self._monotonic()
-        fresh = stage.measure("observe", lambda: self._observe_fresh(evidence))
-        fresh, capped = stage.measure(
-            "settle",
-            partial(self._quiet, fresh, evidence, started, started + SETTLE_AFTER_TYPE_CAP_S),
-        )
-        if capped:
-            # a before taken mid-load would count the scroll's content as the step's effect
-            raise _StepFailureError(ErrorCode.UNSTABLE_UI, "scroll_not_quiet")
-        element_id = self._same_target(step, fresh, asked, "screen_changed_during_scroll")
-        if fresh.element(element_id).offscreen:
-            raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "offscreen_unreachable")
-        return fresh, element_id
+        for scrolls in range(1, MAX_SCROLLS + 1):
+            result = self._semantic.execute(
+                Action(verb="scroll_into_view", element_id=element_id), before
+            )
+            evidence["scrolled"] = result.delivery.value
+            evidence["scrolls"] = scrolls
+            if result.delivery is Delivery.NOT_DELIVERED and not result.skipped:
+                raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "offscreen_unreachable")
+            started = self._monotonic()
+            fresh = stage.measure("observe", lambda: self._observe_fresh(evidence))
+            fresh, capped = stage.measure(
+                "settle",
+                partial(self._quiet, fresh, evidence, started, started + SETTLE_AFTER_TYPE_CAP_S),
+            )
+            if capped:
+                # a before taken mid-load would count the scroll's content as the step's effect
+                raise _StepFailureError(ErrorCode.UNSTABLE_UI, "scroll_not_quiet")
+            element_id = self._same_target(step, fresh, asked, "screen_changed_during_scroll")
+            before = fresh
+            if not fresh.element(element_id).offscreen:
+                return fresh, element_id
+        raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "offscreen_unreachable")
 
     def _resolve_settling(
         self, step: Step, before: Snapshot, stage: _Stage, evidence: dict[str, Any]

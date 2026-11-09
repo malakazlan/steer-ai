@@ -52,11 +52,15 @@ class Page:
     remounts: bool = False
     """After the scroll, the button is a new node: same role and name, new RuntimeId."""
     """The button removes itself when clicked: an R3 `delete` with its own template."""
+    pushed_back: int = 0
+    """Scrolls whose landing the page's lazy load then pushes back below the fold."""
+    scrolls: int = 0
     observed: int = 0
     log: list[str] = field(default_factory=list)
 
     def button(self) -> Element:
-        on = self.scrolled and self.scroll_lands
+        landed = self.scrolls == 0 or self.scrolls > self.pushed_back
+        on = self.scrolled and self.scroll_lands and landed
         runtime_id = (55,) if self.scrolled and self.remounts else (5,)
         return Element(
             id=5,
@@ -117,6 +121,7 @@ def _harness(page: Page, *, scroll_result: ActionResult | None = None) -> Harnes
         page.log.append(action.verb)
         if action.verb == "scroll_into_view":
             page.scrolled = True
+            page.scrolls += 1
         if action.verb == "click":
             page.clicked = True
             page.deleted = page.deletes
@@ -195,7 +200,7 @@ def test_a_scroll_that_does_not_land_is_refused_with_nothing_sent() -> None:
     result = h.session.run_step(_click())
     assert result.ok is False
     assert result.evidence["detail"] == "offscreen_unreachable"
-    assert page.log == ["scroll_into_view"]
+    assert page.log == ["scroll_into_view", "scroll_into_view"], "one more try, then refused"
 
 
 def test_an_on_screen_target_is_never_scrolled() -> None:
@@ -360,3 +365,25 @@ def test_a_physical_offscreen_refusal_at_r1_scrolls_once_then_clicks() -> None:
     assert page.log == ["scroll_into_view"]
     assert len(h.physical.calls) == 2
     assert result.evidence["scrolled"] == "delivered_verified"
+
+
+def test_a_target_a_lazy_load_pushes_back_is_scrolled_once_more() -> None:
+    """Principal re-review of #184 (live, a lazy feed): the rows the scroll loads push the
+    button back below the fold; one more scroll and quiet look reach it (Playwright's
+    actionability retries scrolling into view the same way)."""
+    page = Page(pushed_back=1)
+    h = _harness(page)
+    result = h.session.run_step(_click())
+    assert result.ok is True, result.to_dict()
+    assert page.log == ["scroll_into_view", "scroll_into_view", "click"]
+    assert result.evidence["scrolls"] == 2
+
+
+def test_a_target_pushed_back_twice_is_refused_with_nothing_sent() -> None:
+    """An endless feed keeps loading below: two scrolls, then the refusal stands."""
+    page = Page(pushed_back=2)
+    h = _harness(page)
+    result = h.session.run_step(_click())
+    assert result.ok is False
+    assert result.evidence["detail"] == "offscreen_unreachable"
+    assert page.log == ["scroll_into_view", "scroll_into_view"]
