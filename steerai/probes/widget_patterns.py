@@ -27,12 +27,17 @@ fixed waits: Expand, poll the ComboBox subtree for the option every 10 ms, Selec
 Collapse at once, then poll ValuePattern for the option. Timings, the Collapse readback, the
 option's IsSelected, and the page's trusted events.
 
+Section `shapes` (W4-2/W4-4): how Chrome exposes choosers by label: a `<select multiple>`, a
+`<select size=5>`, a plain `<select>`, an `<input list>` with a datalist, and an ARIA combobox
+input. Each element's control type, patterns, Value IsReadOnly, and CanSelectMultiple.
+
 Usage (Windows):
     uv run python -m steerai.probes.widget_patterns --runs 5
     uv run python -m steerai.probes.widget_patterns --section tree --runs 5
     uv run python -m steerai.probes.widget_patterns --section secure --runs 5
     uv run python -m steerai.probes.widget_patterns --section groups --runs 3
     uv run python -m steerai.probes.widget_patterns --section choose --runs 5
+    uv run python -m steerai.probes.widget_patterns --section shapes --runs 3
 """
 
 from __future__ import annotations
@@ -562,15 +567,81 @@ def choose(number: int) -> dict[str, Any]:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+SHAPES_PAGE = """<!doctype html><title>Chooser fixture</title>
+<label>Toppings <select multiple><option>Ham</option><option>Olives</option></select></label>
+<label>Sizes <select size="5"><option>S</option><option>M</option><option>L</option>
+</select></label>
+<label>Colour <select><option>Red</option><option>Blue</option></select></label>
+<label>City <input list="cities"></label>
+<datalist id="cities"><option value="Lahore"><option value="Karachi"></datalist>
+<label for="aria">Fruit</label>
+<input id="aria" role="combobox" aria-expanded="false" aria-controls="fruits">
+<ul id="fruits" role="listbox" hidden><li role="option">Apple</li></ul>"""
+SHAPES = ("Toppings", "Sizes", "Colour", "City", "Fruit")
+SELECTION = 10001
+
+
+def _shape(uia: Any, mod: Any, hwnd: int, name: str) -> dict[str, Any]:  # Any: comtypes
+    cond = uia.CreatePropertyCondition(mod.UIA_NamePropertyId, name)
+    found = uia.ElementFromHandle(hwnd).FindAll(mod.TreeScope_Descendants, cond)
+    rows: list[dict[str, Any]] = []
+    for index in range(found.Length):
+        element = found.GetElement(index)
+        row: dict[str, Any] = {
+            "type": str(element.CurrentLocalizedControlType),
+            "patterns": [k for k, pid in PATTERNS.items() if element.GetCurrentPattern(pid)],
+        }
+        if element.GetCurrentPattern(VALUE):
+            value = _pattern(element, mod, VALUE, "IUIAutomationValuePattern")
+            row["read_only"] = bool(value.CurrentIsReadOnly)
+        if element.GetCurrentPattern(SELECTION):
+            selection = _pattern(element, mod, SELECTION, "IUIAutomationSelectionPattern")
+            row["multiple"] = bool(selection.CurrentCanSelectMultiple)
+        rows.append(row)
+    return {"name": name, "elements": rows}
+
+
+def shapes(number: int) -> dict[str, Any]:
+    """The chooser shapes on one fixture page."""
+    from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415 - Windows only
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
+    from steerai.run import warm_up  # noqa: PLC0415
+    from steerai.world.model import WorldModel  # noqa: PLC0415
+
+    wait_until_idle()
+    tmp = Path(tempfile.mkdtemp(prefix="steer-shapes-"))
+    with PageServer({"/page.html": SHAPES_PAGE}) as server:
+        port = _free_port()
+        url = f"http://127.0.0.1:{server.port}/page.html"
+        proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, url, window_size=WINDOW)
+        try:
+            window = wait_window_for_pid(proc.pid, image="chrome.exe", process=proc)
+            page_ws_url(port)
+            _in_front(window.hwnd)
+            client = UiaClient()
+            warm_up(lambda: WorldModel(client).observe(window.hwnd), cap_s=15.0)
+            uia, mod = client._uia, client._uia_module
+            return {"run": number, "shapes": [_shape(uia, mod, window.hwnd, n) for n in SHAPES]}
+        finally:
+            stop_chrome(proc, tmp / "profile")
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Widget patterns in Chrome through UIA.")
     parser.add_argument("--runs", type=int, default=5)
-    choices = ("actions", "tree", "secure", "groups", "choose")
+    choices = ("actions", "tree", "secure", "groups", "choose", "shapes")
     parser.add_argument("--section", choices=choices, default="actions")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     for number in range(1, args.runs + 1):
-        if args.section in ("tree", "secure", "groups", "choose"):
-            sections = {"tree": tree, "secure": secure, "groups": groups, "choose": choose}
+        if args.section in ("tree", "secure", "groups", "choose", "shapes"):
+            sections = {
+                "tree": tree,
+                "secure": secure,
+                "groups": groups,
+                "choose": choose,
+                "shapes": shapes,
+            }
             row = sections[args.section](number)
             sys.stdout.write(json.dumps(row) + "\n")
             sys.stdout.flush()
