@@ -97,6 +97,7 @@ from steerai.verify.predicates import (
     field_values,
     presents,
 )
+from steerai.verify.strength import STATE_WANTED
 from steerai.verify.t1 import (
     NO_LABEL_REASONS,
     LiveReads,
@@ -104,6 +105,7 @@ from steerai.verify.t1 import (
     WindowLike,
     evaluate,
     label_of_record,
+    reads_wanted,
     title_holds,
     verify,
 )
@@ -441,6 +443,7 @@ class Session:
             key = self._ledger.key_for(step)
             self._act_evidence = evidence
             before, risk = self._before_at_ceiling(step, key, risk, stage, evidence)
+            _measured_provider(step, before)
             previous = self._admission(step, key, risk, before)
             if previous == "done":
                 if step.verb in STATE_VERBS:
@@ -972,6 +975,8 @@ class Session:
             )
         evidence.update({k: v for k, v in verdict.evidence.items() if k != "level"})
         evidence["level"] = verdict.level
+        if step.verb in STATE_VERBS and before_of_record.title != after.title:
+            evidence["retitled"] = True  # a token, never the titles (W3-01)
         # already in the wanted state is nothing sent and counts as success (5.9 [v0.7])
         ok = verdict.holds and (action.delivery is not Delivery.NOT_DELIVERED or action.skipped)
         if ok and step.verb == "type" and step.target is not None:
@@ -2182,17 +2187,19 @@ class Session:
         self, step: Step, before: Snapshot, stage: _Stage, evidence: dict[str, Any]
     ) -> None:
         """A state verb's done key proves the state was set, not that it holds now: the page or
-        the person may have changed it since (WV-12). Re-read it; a changed box stops, never a
-        second Toggle under a done key."""
+        the person may have changed it since (WV-12). Re-read it (a selection through
+        IsSelected, a box through its ToggleState, W3-05); a changed state stops, never a
+        second Toggle or Select under a done key."""
         before, element_id = self._resolve_settling(step, before, stage, evidence)
-        wanted = 1 if step.verb == "check" else 0
         try:
-            observed = (
-                None if self._live is None else self._live.toggle_state(before.handle(element_id))
+            holds = (
+                None
+                if self._live is None
+                else reads_wanted(self._live, before.handle(element_id), STATE_WANTED[step.verb])
             )
         except SteerError as exc:
             raise _StepFailureError(ErrorCode.VERIFY_FAILED, "state_unreadable") from exc
-        if observed != wanted:
+        if holds is not True:
             raise _StepFailureError(ErrorCode.VERIFY_FAILED, "state_changed_since_done")
 
     def _done_already(
@@ -2802,12 +2809,27 @@ def _stop_for(
 
 def _state_stop(step: Step, result: StepResult) -> tuple[Literal["stopped"], ErrorCode, str] | None:
     """A state verb dispatched at R2/R3 whose T1 missed ends the task: the person approved one
-    tick, so it is never sent again in this task, by retry or by replan (W2 verdict, W2-5)."""
+    tick, so it is never sent again in this task, by retry or by replan (W2 verdict, W2-5). At
+    any tier, a miss whose target is gone or whose window was retitled means the verb navigated
+    (W3-01): it stops `navigated`. A verified state never stops, whatever the title does."""
     if step.verb not in STATE_VERBS or result.ok or result.action is None:
         return None
+    if result.evidence.get("reason") == "target_not_found" or result.evidence.get("retitled"):
+        return "stopped", ErrorCode.VERIFY_FAILED, "navigated"
     if result.evidence.get("risk") not in ("R2", "R3"):
         return None
     return "stopped", result.code or ErrorCode.VERIFY_FAILED, "state_unverified"
+
+
+MEASURED_PROVIDER = "chrome.exe"
+"""The one provider whose state patterns are measured (probe `widget_patterns`, Chrome 156)."""
+
+
+def _measured_provider(step: Step, snapshot: Snapshot) -> None:
+    """A state verb runs only in the measured provider (W3-04): anything else is refused before
+    the gate, nothing sent and no ask."""
+    if step.verb in STATE_VERBS and snapshot.process.casefold() != MEASURED_PROVIDER:
+        raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "unmeasured_provider")
 
 
 def _verify_deadline(expect: Predicate, step_deadline_s: float) -> float:
