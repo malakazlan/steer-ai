@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-Verb = Literal["click", "focus", "type", "send", "submit", "delete", "open"]
+Verb = Literal["click", "focus", "type", "send", "submit", "delete", "open", "check", "uncheck"]
 Risk = Literal["R0", "R1", "R2", "R3"]
 ConditionKind = Literal[
     "appeared",
@@ -29,6 +29,7 @@ ConditionKind = Literal[
     "window_gone",
     "count_delta",
     "value",
+    "state",
     "present",
 ]
 """One kind set for conditions and expects: a second predicate schema made the compiled grammar
@@ -79,7 +80,8 @@ class PredicateDoc(_Doc):
     """One predicate: `kind` says which fields matter. appeared: role, name, within?,
     expected?, order?, decoration?, replaces?; disappeared: role, name, within?; title:
     pattern; window_exists / window_gone: name; count_delta: role, delta, within?; present:
-    role, name, within (a selection click's expect and its one-step subgoal's condition)."""
+    role, name, within (a selection click's expect and its one-step subgoal's condition);
+    state: role, name, wanted (a subgoal condition only)."""
 
     kind: ConditionKind
     role: str | None = None
@@ -98,6 +100,9 @@ class PredicateDoc(_Doc):
     text: str | None = Field(
         default=None, description="value (a subgoal condition only): the exact text the field holds"
     )
+    wanted: Literal["on", "off"] | None = Field(
+        default=None, description="state (a subgoal condition only): the CheckBox is on or off"
+    )
 
     def to_file_form(self) -> dict[str, Any]:  # Any: a JSON body for the plan boundary
         """The 6.3 one-key object; a missing required field is left out so the plan boundary
@@ -114,6 +119,7 @@ class PredicateDoc(_Doc):
 
 _KIND_FIELDS: dict[str, frozenset[str]] = {
     "value": frozenset({"role", "name", "text"}),
+    "state": frozenset({"role", "name", "wanted"}),
     "appeared": frozenset({"role", "name", "expected", "order", "decoration", "replaces"}),
     "disappeared": frozenset({"role", "name"}),
     "count_delta": frozenset({"role", "delta"}),

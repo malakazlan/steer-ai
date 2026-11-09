@@ -204,7 +204,7 @@ def test_the_prompt_says_focus_targets_a_field_role() -> None:
     system, _ = build_prompt(_request(), tag="t")
     prose = " ".join(system.split())
     assert "focus (put keyboard focus in a field: an Edit, ComboBox or Document)" in prose
-    assert PROMPT_VERSION == "planner-15"
+    assert PROMPT_VERSION == "planner-16"
 
 
 def test_the_prompt_says_a_selection_click_is_proven_by_present() -> None:
@@ -720,3 +720,46 @@ def test_the_prompt_says_an_offscreen_line_may_be_a_target() -> None:
     assert "on-screen element" not in prose
     assert "marked offscreen is on the page but scrolled out of view" in prose
     assert "the agent scrolls it into view before acting" in prose
+
+
+def test_the_prompt_teaches_check_uncheck_and_the_state_condition() -> None:
+    """W2-4: the verbs set a CheckBox, never a click on one; `state` is a subgoal condition
+    proven by a check or uncheck step of the same subgoal."""
+    system, _ = build_prompt(_request(), tag="t")
+    prose = " ".join(system.split())
+    assert "check / uncheck (set a CheckBox on or off; never click a CheckBox)" in prose
+    assert "state: role CheckBox, name, wanted (on or off)" in prose
+    assert (
+        "a subgoal condition only, proven by a check or uncheck step of the same subgoal" in prose
+    )
+
+
+def test_a_check_step_keeps_no_model_expect() -> None:
+    """The verb template owns the postcondition: a model expect would be refused at the
+    boundary, so it is dropped like a type step's."""
+    doc = PlanDoc(
+        goal="turn on email alerts",
+        subgoals=[
+            SubgoalDoc(
+                id="g1",
+                desc="alerts on",
+                condition=PredicateDoc(
+                    kind="state", role="CheckBox", name="Email alerts", wanted="on"
+                ),
+            )
+        ],
+        steps=[
+            StepDoc(
+                id="s1",
+                subgoal="g1",
+                verb="check",
+                target=TargetDoc(role="CheckBox", name="Email alerts"),
+                risk="R1",
+                expect=PredicateDoc(kind="title", pattern="Settings"),
+            )
+        ],
+    )
+    planner, _ = _planner(_Response(parsed_output=doc))
+    outcome = planner.plan(_request(goal="turn on email alerts"))
+    assert outcome.plan.steps[0].verb == "check"
+    assert outcome.plan.steps[0].expect is None

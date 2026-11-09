@@ -488,3 +488,49 @@ def test_a_continuation_keeps_a_value_subgoals_text(name: str, text: str, refuse
         )
     )
     assert continuation_refusal(plan, progress) == ("subgoals" if refused else None)
+
+
+# ---- a state subgoal's wanted state is fixed across plans (W2-4, as FV-04) ---------------------
+
+
+def _state_first_plan() -> Plan:
+    from steerai.verify.predicates import CheckState  # noqa: PLC0415
+
+    return Plan(
+        goal=GOAL,
+        subgoals=(
+            Subgoal(id="g1", desc="results", condition=WindowExists(name_pattern=YT)),
+            Subgoal(
+                id="g2",
+                desc="alerts on",
+                condition=CheckState(role="CheckBox", name_pattern="Email alerts", wanted="on"),
+            ),
+        ),
+        steps=(_open(),),
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "wanted", "refused"),
+    [("email alerts", "on", False), ("Email alerts", "off", True)],
+)
+def test_a_continuation_keeps_a_state_subgoals_wanted(
+    name: str, wanted: str, refused: bool
+) -> None:
+    from steerai.verify.predicates import CheckState  # noqa: PLC0415
+
+    progress = _progress(_state_first_plan())
+    plan = _second_plan(
+        subgoals=(
+            Subgoal(
+                id="g2",
+                desc="alerts on",
+                condition=CheckState(
+                    role="CheckBox",
+                    name_pattern=name,
+                    wanted="on" if wanted == "on" else "off",
+                ),
+            ),
+        )
+    )
+    assert continuation_refusal(plan, progress) == ("subgoals" if refused else None)

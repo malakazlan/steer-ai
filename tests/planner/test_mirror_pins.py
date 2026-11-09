@@ -85,6 +85,7 @@ def test_every_flat_predicate_translates_to_a_subset_of_the_boundarys_keys() -> 
         "decoration": "google_search",
         "replaces": True,
         "text": "hello",
+        "wanted": "on",
     }
     assert set(PREDICATE_KEYS) == KINDS - {"all", "any_of"}
     for kind, keys in PREDICATE_KEYS.items():
@@ -251,3 +252,41 @@ def test_a_value_condition_round_trips_through_the_boundary() -> None:
     )
     plan = plan_from_json(json.dumps(doc.to_file_form()))
     assert json.loads(plan_to_json(plan))["subgoals"][0]["condition"] == condition.to_file_form()
+
+
+def test_the_state_kind_is_in_the_models_vocabulary() -> None:
+    """W2-4: the model writes the `state` condition; `wanted` is an enum the API constrains,
+    not prose."""
+    schema = _schema()
+    predicate = _definition(schema, "PredicateDoc")["properties"]
+    assert "state" in predicate["kind"]["enum"]
+    wanted = predicate["wanted"]
+    options = [_resolved(schema, o) for o in wanted.get("anyOf", [wanted])]
+    assert {v for o in options for v in o.get("enum", [])} == {"on", "off"}
+
+
+def test_a_state_condition_round_trips_through_the_boundary() -> None:
+    condition = PredicateDoc(kind="state", role="CheckBox", name="Email alerts", wanted="on")
+    doc = PlanDoc(
+        goal="turn on email alerts",
+        subgoals=[SubgoalDoc(id="g1", desc="alerts on", condition=condition)],
+        steps=[
+            StepDoc(
+                id="s1",
+                subgoal="g1",
+                verb="check",
+                target=TargetDoc(role="CheckBox", name="Email alerts"),
+                risk="R1",
+            )
+        ],
+    )
+    assert condition.to_file_form() == {
+        "state": {"role": "CheckBox", "name": "Email alerts", "wanted": "on"}
+    }
+    plan = plan_from_json(json.dumps(doc.to_file_form()))
+    assert json.loads(plan_to_json(plan))["subgoals"][0]["condition"] == condition.to_file_form()
+
+
+def test_check_and_uncheck_are_in_the_models_verbs() -> None:
+    step = _definition(_schema(), "StepDoc")["properties"]
+    assert {"check", "uncheck"} <= set(step["verb"]["enum"])

@@ -4,8 +4,8 @@ A plan file is a process boundary (CLAUDE.md): every key is known, every string 
 control, format, surrogate and private-use characters (they hide deny words and rewrite a
 console, RN-04/05), integers are strict, the document is capped in bytes and in nesting, and
 nothing snapshot-scoped (element ids, anchors) can be written in a file. Predicates are JSON
-objects with exactly one kind; the live kinds (`value_equals`, `focused`, `state`) need a
-snapshot id and are left to the verb templates. Errors carry the field path (`$.steps[2].risk`).
+objects with exactly one kind; the live kinds (`value_equals`, `focused`) need a snapshot id and
+are left to the verb templates. Errors carry the field path (`$.steps[2].risk`).
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from steerai.action.launch import APPS, LaunchError, site_url
 from steerai.orchestrator.contracts import (
     OPENED_PREFIX,
     RISKS,
+    STATE_ROLE,
     STATE_VERBS,
     VERBS,
     Plan,
@@ -35,6 +36,7 @@ from steerai.verify.predicates import (
     All,
     AnyOf,
     Appeared,
+    CheckState,
     CountDelta,
     Disappeared,
     FieldValue,
@@ -44,6 +46,7 @@ from steerai.verify.predicates import (
     WindowExists,
     WindowGone,
     Within,
+    check_states,
     field_values,
     presents,
 )
@@ -76,7 +79,7 @@ _STEP_KEYS = frozenset(
         "window",
     }
 )
-_LIVE_KINDS = frozenset({"value_equals", "focused", "state"})
+_LIVE_KINDS = frozenset({"value_equals", "focused"})
 _KINDS = frozenset(
     {
         "appeared",
@@ -86,6 +89,7 @@ _KINDS = frozenset(
         "window_gone",
         "count_delta",
         "value",
+        "state",
         "present",
         "all",
         "any_of",
@@ -95,6 +99,7 @@ _KINDS = frozenset(
 
 TARGET_KEYS = frozenset({"role", "name", "automation_id", "match"})
 VALUE_KEYS = frozenset({"role", "name", "text"})
+STATE_KEYS = frozenset({"role", "name", "wanted"})
 APPEARED_KEYS = frozenset({"role", "name", "within", "expected", "order", "decoration", "replaces"})
 DISAPPEARED_KEYS = frozenset({"role", "name", "within"})
 COUNT_DELTA_KEYS = frozenset({"role", "delta", "within"})
@@ -109,6 +114,7 @@ PREDICATE_KEYS: Mapping[str, frozenset[str]] = {
     "window_exists": WINDOW_KEYS,
     "window_gone": WINDOW_KEYS,
     "value": VALUE_KEYS,
+    "state": STATE_KEYS,
     "present": PRESENT_KEYS,
 }
 FILE_VERBS = _FILE_VERBS
@@ -284,6 +290,23 @@ def _field_value(fields: Mapping[str, Any], inner: str, *, condition: bool) -> F
         raise PlanError(inner, str(exc)) from exc
 
 
+def _check_state(fields: Mapping[str, Any], inner: str, *, condition: bool) -> CheckState:
+    if not condition:
+        raise PlanError(
+            inner, "state is a subgoal condition; check and uncheck own their postcondition"
+        )
+    _keys(fields, STATE_KEYS, inner)
+    role = _text(fields.get("role"), f"{inner}.role", max_chars=64)
+    name = _text(fields.get("name"), f"{inner}.name")
+    wanted = fields.get("wanted")
+    if wanted not in ("on", "off"):
+        raise PlanError(f"{inner}.wanted", "must be on or off")
+    try:
+        return CheckState(role=role, name_pattern=name, wanted=cast("Literal['on', 'off']", wanted))
+    except ValueError as exc:
+        raise PlanError(inner, str(exc)) from exc
+
+
 def _appeared(fields: Mapping[str, Any], inner: str) -> Appeared:
     _keys(fields, APPEARED_KEYS, inner)
     replaces = _bool(fields.get("replaces", False), f"{inner}.replaces")
@@ -337,8 +360,10 @@ def _predicate_body(value: object, path: str, depth: int, *, condition: bool) ->
             name_pattern=_text(fields.get("name"), f"{inner}.name"),
             within=_within(fields.get("within"), f"{inner}.within"),
         )
-    if kind == "value":
-        return _field_value(fields, inner, condition=condition)
+    if kind in ("value", "state"):
+        # condition-only kinds: refused under a step's expect at their own path
+        made = _field_value if kind == "value" else _check_state
+        return made(fields, inner, condition=condition)
     if kind == "present":
         return _present(fields, inner, depth)
     return _leaf(kind, fields, inner)
@@ -536,6 +561,7 @@ def _plan(value: object, path: str) -> Plan:
     )
     _check_window_order(steps, path)
     _check_values(subgoals, steps, path)
+    _check_states(subgoals, steps, path)
     _check_presents(subgoals, steps, path)
     try:
         return Plan(goal=goal, subgoals=subgoals, steps=steps)
@@ -565,6 +591,41 @@ def _check_values(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: 
         for value in wanted:
             if not any(_typed_into(s, value) for s in typed):
                 raise PlanError(where, "value names the field and text a type step of it typed")
+
+
+def _check_states(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: str) -> None:
+    """A `state` subgoal with steps names, for each state, a check (on) or uncheck (off) of its
+    own on that CheckBox (the target rule: exact, by name alone); it owns no send / submit /
+    delete; its steps act in one window (W2-4). Unlike `value`, an R2/R3 step is allowed: a
+    consent box is R2 by design. A subgoal without steps cannot tick and is allowed."""
+    windows = _window_of_each(steps)
+    for index, subgoal in enumerate(subgoals):
+        wanted = check_states(subgoal.condition)
+        own = [s for s in steps if s.subgoal == subgoal.id]
+        if not wanted or not own:
+            continue
+        where = f"{path}.subgoals[{index}].condition"
+        if any(s.verb in _NO_VALUE_VERBS for s in own):
+            raise PlanError(where, "a state subgoal holds no send, submit or delete step")
+        if len({windows[s.id] for s in own if s.verb != "open"}) > 1:
+            raise PlanError(where, "a state subgoal acts in one window")
+        for state in wanted:
+            if not any(_sets(s, state) for s in own):
+                raise PlanError(
+                    where, "state names the box and state a check or uncheck of it sets"
+                )
+
+
+def _sets(step: Step, state: CheckState) -> bool:
+    target = step.target
+    return (
+        step.verb == ("check" if state.wanted == "on" else "uncheck")
+        and target is not None
+        and target.role == STATE_ROLE
+        and target.match == "exact"
+        and not target.automation_id  # resolved by the exact name only, as the state is
+        and normalise_name(target.name).casefold() == normalise_name(state.name_pattern).casefold()
+    )
 
 
 def _check_presents(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: str) -> None:
@@ -748,6 +809,9 @@ def _encode(predicate: Predicate) -> dict[str, Any]:  # noqa: PLR0911 - one kind
                 "text": predicate.text,
             }
         }
+    if isinstance(predicate, CheckState):
+        body = {"role": predicate.role, "name": predicate.name_pattern, "wanted": predicate.wanted}
+        return {"state": body}
     if isinstance(predicate, Present):
         if predicate.target_id is not None or predicate.excluding:
             raise PlanError("$", "a bound present is snapshot-scoped and has no file form")

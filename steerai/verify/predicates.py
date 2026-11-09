@@ -164,6 +164,29 @@ class FieldValue:
             raise ValueError(f"value text is over {MAX_FIELD_TEXT_UNITS} UTF-16 units")
 
 
+CHECK_ROLE = "CheckBox"
+"""The one role a `state` condition names (= `steerai.orchestrator.contracts.STATE_ROLE`)."""
+
+
+@dataclass(frozen=True, slots=True)
+class CheckState:
+    """A subgoal condition only (W2-4): the one CheckBox of this name (role, NFKC,
+    whitespace-folded, case-folded, exactly one) in the judged snapshot reads on or off. Never a
+    step `expect`: a check / uncheck verb owns its own postcondition (its `State` template)."""
+
+    role: str
+    name_pattern: str = field(repr=False)
+    wanted: Literal["on", "off"]
+
+    def __post_init__(self) -> None:
+        if self.role != CHECK_ROLE:
+            raise ValueError(f"state role must be {CHECK_ROLE}")
+        if not normalise_name(self.name_pattern):
+            raise ValueError("state name must not be empty")
+        if self.wanted not in ("on", "off"):
+            raise ValueError("state wanted must be on or off")
+
+
 @dataclass(frozen=True, slots=True)
 class Present:
     """A state (#124, 5.10 [v2.36]): exactly one visible element of this role and full name in
@@ -270,6 +293,7 @@ Predicate = (
     | Disappeared
     | ValueEquals
     | FieldValue
+    | CheckState
     | Present
     | Focused
     | State
@@ -302,4 +326,13 @@ def field_values(predicate: Predicate) -> list[FieldValue]:
         return [predicate]
     if isinstance(predicate, All | AnyOf):
         return [found for part in predicate.parts for found in field_values(part)]
+    return []
+
+
+def check_states(predicate: Predicate) -> list[CheckState]:
+    """Every `state` part of a condition, at any depth."""
+    if isinstance(predicate, CheckState):
+        return [predicate]
+    if isinstance(predicate, All | AnyOf):
+        return [found for part in predicate.parts for found in check_states(part)]
     return []

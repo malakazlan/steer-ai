@@ -92,6 +92,7 @@ from steerai.verify.predicates import (
     TitleMatches,
     WindowExists,
     WindowGone,
+    check_states,
     field_values,
     presents,
 )
@@ -2352,7 +2353,9 @@ class Session:
             and s.id not in opening
             and s.id not in elsewhere
             and s.id not in future
-            and not field_values(s.condition)  # a value is a step's doing (FV-01/03)
+            # a value or a box's state is a step's doing (FV-01/03, W2-4)
+            and not field_values(s.condition)
+            and not check_states(s.condition)
             and self._holds_now(s.condition, start)
         }
         for subgoal_id in sorted(ticked):
@@ -2505,9 +2508,10 @@ class Session:
     def _open_judges(self, subgoal: Subgoal, own: list[Step], results: list[StepResult]) -> bool:
         """Whether an open may judge its subgoal: only opens, in this plan and every earlier one
         (an open that ticked a subgoal with other steps skipped them, a false done: hunter
-        OS-02/03); no value (the type step's doing, FV-01/03); every open of it verified, so
-        only its last one judges (OS-06)."""
-        if self._verbs.get(subgoal.id, set()) - {"open"} or field_values(subgoal.condition):
+        OS-02/03); no value or box state (a type or check step's doing, FV-01/03, W2-4); every
+        open of it verified, so only its last one judges (OS-06)."""
+        made = field_values(subgoal.condition) or check_states(subgoal.condition)
+        if self._verbs.get(subgoal.id, set()) - {"open"} or made:
             return False
         if not self._verbs_complete:
             self._trace_tick(subgoal.id, "none", detail="verbs_unknown")
@@ -2631,13 +2635,17 @@ def _needs_front(step: Step) -> bool:
 
 
 def _value_ready(plan: Plan, step: Step, result: StepResult, results: list[StepResult]) -> bool:
-    """A `value` subgoal is judged only after its last step, which ran below R2, with no
-    input from the person during any of its steps (rulings FV-01, FV-20)."""
+    """A `value` or `state` subgoal is judged only after its last step, with no input from the
+    person during any of its steps (rulings FV-01, FV-20, W2-4); a `value` only after a step
+    below R2, while a consent box's check is R2 by design."""
     subgoal = next(s for s in plan.subgoals if s.id == step.subgoal)
-    if not field_values(subgoal.condition):
+    values = field_values(subgoal.condition)
+    if not values and not check_states(subgoal.condition):
         return True
     own = [s.id for s in plan.steps if s.subgoal == subgoal.id]
-    if own[-1] != step.id or result.evidence.get("risk") in ("R2", "R3"):
+    if own[-1] != step.id:
+        return False
+    if values and result.evidence.get("risk") in ("R2", "R3"):
         return False
     return not any(r.evidence.get("user_input_during_step") for r in results if r.step_id in own)
 
