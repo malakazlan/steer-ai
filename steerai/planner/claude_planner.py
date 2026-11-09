@@ -35,10 +35,10 @@ DEFAULT_MAX_TOKENS = 8192
 """Unmeasured: enough for the 6.3 form of a ten-step plan; a `max_tokens` stop is `truncated`."""
 DEFAULT_MAX_RETRIES = 1
 EFFORT = "medium"
-PROMPT_VERSION = "planner-15"
-MECHANICAL_VERBS = frozenset({"type", "focus", "open"})
-"""Steps whose effect code verifies (value typed, focus held, window opened): any model
-`expect` is dropped."""
+PROMPT_VERSION = "planner-16"
+MECHANICAL_VERBS = frozenset({"type", "focus", "open", "check", "uncheck"})
+"""Steps whose effect code verifies (value typed, focus held, window opened, box set): any
+model `expect` is dropped."""
 
 _SYSTEM = f"""You write a plan for a Windows computer-use agent that acts on one window at a time.
 Output a JSON plan document in the exact schema you are given. Nothing else.
@@ -54,7 +54,8 @@ Verbs (closed set): click (a button or link), focus (put keyboard focus in a fie
 ComboBox or Document), type (type single-line text into the focused field; needs "text"), send
 (press the send button of a message composer), submit (submit a form; on a text field this
 presses Enter), delete (remove something), open (launch an app; every later step acts in the
-window it opened). There is no other verb.
+window it opened), check / uncheck (set a CheckBox on or off; never click a CheckBox). There is
+no other verb.
 
 An open step: {{"verb": "open", "target": {{"role": "App", "name": <one of {sorted(APPS)}>}},
 "params": {{"site": <one of {sorted(SITES)}>, "text": <the words to search>}}}}. A site opens in
@@ -93,13 +94,17 @@ see yet (a collapsed search box, a menu), write your best guess of the element i
 wrong guess fails that step's check; the next steps still run, and the agent replans only if it
 reaches the end of the plan, so plan only as far as you can see and leave later steps to the
 next plan.
-Do not write "expect" for focus, type or open steps: the agent verifies the focus, the
-typed value and the opened window itself. Subgoals describe end states visible on screen
-after an action (a page replaced, a message appeared, an item gone, a window opened), never
-"the text is typed". When the goal wants text left in a field or a document (a note, a form to
-review), the end state is the field's content: use value: role, name, text, only as a subgoal
-condition, never as an expect; the field (Edit, ComboBox or Document) and the exact text must be
-those of a type step of the same subgoal, and that subgoal holds no send, submit or delete.
+Do not write "expect" for focus, type, open, check or uncheck steps: the agent verifies the
+focus, the typed value, the opened window and the box itself. Subgoals describe end states
+visible on screen after an action (a page replaced, a message appeared, an item gone, a window
+opened), never "the text is typed". When the goal wants text left in a field or a document (a
+note, a form to review), the end state is the field's content: use value: role, name, text, only
+as a subgoal condition, never as an expect; the field (Edit, ComboBox or Document) and the exact
+text must be those of a type step of the same subgoal, and that subgoal holds no send, submit or
+delete.
+When the goal wants a box ticked or cleared, the end state is the box: use state: role CheckBox,
+name, wanted (on or off), a subgoal condition only, proven by a check or uncheck step of the
+same subgoal on that exact box name; that subgoal holds no send, submit or delete.
 
 Selecting what may already be selected (opening a chat, a conversation, a mail, a tab's item
 that can already be the open one): give it its own subgoal of exactly one click on the item,
