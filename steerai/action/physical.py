@@ -61,6 +61,12 @@ from steerai.world.model import Snapshot
 VERBS: frozenset[str] = frozenset({"click", "type", "press"})
 TEXT_ROLES: frozenset[str] = frozenset({"Edit", "ComboBox", "Document"})
 """Roles a chord may land on: the target itself, or such a descendant of it (5.9 [v1.7])."""
+POPUP_OPTION_ROLES: frozenset[str] = frozenset({"ListItem", "TreeItem", "MenuItem", "DataItem"})
+"""The UIA roles of a popup's options, per Core-AAM: option maps to ListItem, menuitem to
+MenuItem, gridcell and row to DataItem, treeitem to TreeItem. A combobox that moves its
+`aria-activedescendant` keeps DOM focus in the field, but Chrome reports the active option as
+the UIA focus, and Enter would accept that option (D-151). Hyperlink is not here: a focused link
+is the page-stole-focus case (SE-01)."""
 CURSOR_TOLERANCE_PX = 1
 MAX_UNITS_PER_STEP = 500
 """A ceiling, not a budget: typing time is additive to the step. Measured 2026-11-04 (probe
@@ -435,8 +441,9 @@ class PhysicalExecutor:
         self._refuse_menu_mode(snapshot.hwnd)
         if action.approval is not None:
             evidence["decision_id"] = action.approval.decision_id
-        if not _focus_on_field(snapshot, target, self._inputs.focused_runtime_id()):
-            raise RefusalError(ErrorCode.FOCUS_LOST, "target_not_focused")
+        focused = self._inputs.focused_runtime_id()
+        if not _focus_on_field(snapshot, target, focused):
+            raise RefusalError(ErrorCode.FOCUS_LOST, _unfocused_detail(snapshot, focused))
         self._check_hands_off()
         try:
             call.send("keyboard.chord", lambda: self._inputs.press(chord, action.approval))
@@ -632,6 +639,17 @@ def _focus_on_field(snapshot: Snapshot, target: _Target, focused: tuple[int, ...
     if focused not in target.subtree:
         return False
     return any(tuple(e.runtime_id) == focused and e.role in TEXT_ROLES for e in snapshot.elements)
+
+
+def _unfocused_detail(snapshot: Snapshot, focused: tuple[int, ...]) -> str:
+    """Why a keyboard verb's field is not focused, as a fixed token: `active_option` when the
+    UIA focus, by RuntimeId in the step's snapshot, is a popup option (D-151), else
+    `target_not_focused`."""
+    if focused and any(
+        tuple(e.runtime_id) == focused and e.role in POPUP_OPTION_ROLES for e in snapshot.elements
+    ):
+        return "active_option"
+    return "target_not_focused"
 
 
 def _subtree_ids(snapshot: Snapshot, element: Element) -> frozenset[tuple[int, ...]]:
