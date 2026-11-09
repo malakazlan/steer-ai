@@ -29,7 +29,10 @@ option's IsSelected, and the page's trusted events.
 
 Section `shapes` (W4-2/W4-4): how Chrome exposes choosers by label: a `<select multiple>`, a
 `<select size=5>`, a plain `<select>`, an `<input list>` with a datalist, and an ARIA combobox
-input. Each element's control type, patterns, Value IsReadOnly, and CanSelectMultiple.
+input. Each element's control type, patterns, Value IsReadOnly, and CanSelectMultiple; for a
+combo box (W4 verdict item 1: which signal tells an editable one) its children's control types
+(Microsoft: an Edit child marks an editable combo box), AriaRole, ClassName, the
+LegacyIAccessible state bits, and the ListItems in its own subtree after Expand (then Collapse).
 
 Usage (Windows):
     uv run python -m steerai.probes.widget_patterns --runs 5
@@ -579,6 +582,52 @@ SHAPES_PAGE = """<!doctype html><title>Chooser fixture</title>
 <ul id="fruits" role="listbox" hidden><li role="option">Apple</li></ul>"""
 SHAPES = ("Toppings", "Sizes", "Colour", "City", "Fruit")
 SELECTION = 10001
+LEGACY = 10018
+ARIA_ROLE = 30101
+CLASS_NAME = 30012
+
+
+def _combo_signals(uia: Any, mod: Any, element: Any) -> dict[str, Any]:  # Any: comtypes
+    """What may tell a select from an editable combo box."""
+    walker = uia.RawViewWalker
+    children: list[str] = []
+    child = walker.GetFirstChildElement(element)
+    while child:
+        children.append(str(child.CurrentLocalizedControlType))
+        child = walker.GetNextSiblingElement(child)
+    legacy = _pattern(element, mod, LEGACY, "IUIAutomationLegacyIAccessiblePattern")
+    row: dict[str, Any] = {
+        "children": children,
+        "aria_role": str(element.GetCurrentPropertyValue(ARIA_ROLE)),
+        "class_name": str(element.GetCurrentPropertyValue(CLASS_NAME)),
+        "legacy_state": int(legacy.CurrentState),
+    }
+    expand = _pattern(element, mod, EXPAND_COLLAPSE, "IUIAutomationExpandCollapsePattern")
+    row["expand_error"] = _com_error(expand.Expand)
+    items_cond = uia.CreatePropertyCondition(
+        mod.UIA_ControlTypePropertyId, mod.UIA_ListItemControlTypeId
+    )
+    seen = 0
+    started = time.perf_counter()
+    while time.perf_counter() - started < 1.0 and not seen:
+        seen = element.FindAll(mod.TreeScope_Descendants, items_cond).Length
+        time.sleep(POLL_S)
+    row["items_in_subtree_after_expand"] = seen
+    row["expanded_state"] = int(expand.CurrentExpandCollapseState)
+    row["collapse_error"] = _com_error(expand.Collapse)
+    row["after_collapse_state"] = int(expand.CurrentExpandCollapseState)
+    return row
+
+
+def _com_error(call: Callable[[], object]) -> str | None:
+    """None, or the HRESULT of a failed COM call, so one shape's refusal is measured too."""
+    from comtypes import COMError  # noqa: PLC0415 - Windows only
+
+    try:
+        call()
+    except COMError as exc:
+        return hex(exc.hresult & 0xFFFFFFFF)
+    return None
 
 
 def _shape(uia: Any, mod: Any, hwnd: int, name: str) -> dict[str, Any]:  # Any: comtypes
@@ -597,6 +646,9 @@ def _shape(uia: Any, mod: Any, hwnd: int, name: str) -> dict[str, Any]:  # Any: 
         if element.GetCurrentPattern(SELECTION):
             selection = _pattern(element, mod, SELECTION, "IUIAutomationSelectionPattern")
             row["multiple"] = bool(selection.CurrentCanSelectMultiple)
+        if int(element.CurrentControlType) == mod.UIA_ComboBoxControlTypeId:
+            row.update(_combo_signals(uia, mod, element))
+            time.sleep(0.3)  # the popup closes before the next shape is read
         rows.append(row)
     return {"name": name, "elements": rows}
 
