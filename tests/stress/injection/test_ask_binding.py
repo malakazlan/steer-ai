@@ -139,7 +139,14 @@ def test_labels_swapped_on_the_first_dispatch_never_move_the_retry(refusal: str)
     result = h.session.run_step(_send())
     assert result.gate == "confirm", "the person did say yes"
     assert [d.runtime_id for d in log if d.runtime_id != SEND_ROW[3]] == [], "another element"
-    assert (result.code, result.evidence.get("detail")) == (attack.code, attack.detail)
+    # an R2 offscreen refusal is never scrolled after the record (hunter OS-01r on #184): it
+    # stands, so the swap is never reached; identity_changed still re-resolves and catches it
+    wanted = (
+        (attack.code, attack.detail)
+        if refusal == "identity_changed"
+        else (ErrorCode.ELEMENT_NOT_ACTIONABLE, "offscreen")
+    )
+    assert (result.code, result.evidence.get("detail")) == wanted
     assert h.world.sent == []
 
 

@@ -279,3 +279,84 @@ def test_running_out_of_polls_counts_as_never_quiet() -> None:
     assert result.evidence["detail"] == "scroll_not_quiet"
     assert page.log == ["scroll_into_view"]
     assert h.confirmer.asked == []
+
+
+def test_a_target_scrolled_away_during_the_ask_is_never_acted_on() -> None:
+    """Hunter OS-01r (#184): the person scrolls while reading the ask; the fresh look after the
+    yes finds the target offscreen. The person approved it on screen, so nothing is sent and
+    the write-ahead is released."""
+    page = Page(scrolled=True, deletes=True)
+    h = _harness(page)
+
+    def scroll_away(_ask: Any) -> None:
+        page.scrolled = False
+
+    h.confirmer.on_ask = scroll_away
+    result = h.session.run_step(_delete())
+    assert result.ok is False
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.evidence["detail"] == "offscreen_after_ask"
+    assert "click" not in page.log
+    assert "scroll_into_view" not in page.log
+
+
+def _physical(risk: str, verb: str = "click") -> Step:
+    return Step(
+        id="p1",
+        subgoal="g1",
+        verb=verb,
+        target=Target(role="Button", name="Show more"),
+        risk=risk,  # type: ignore[arg-type]  # a Risk literal from the parameter
+        expect=None if verb == "delete" else Appeared(role="Text", name_pattern="More items"),
+        path="physical",
+    )
+
+
+def _refuse_once(h: Harness, detail: str) -> None:
+    """The physical executor refuses the first click (`offscreen` live), then clicks."""
+    refusal = not_delivered(ErrorCode.ELEMENT_NOT_ACTIONABLE, detail)
+    h.physical.outcomes[5] = refusal
+
+    def before_lookup(executor: FakeExecutor, _action: Any) -> None:
+        # runs before the outcome lookup: keep the refusal for the first call only
+        if len(executor.calls) > 1:
+            executor.outcomes.pop(5, None)
+
+    h.physical.on_execute = before_lookup
+
+
+def test_a_physical_offscreen_refusal_at_r3_is_never_scrolled_after_the_record() -> None:
+    """Hunter OS-01r: at R2/R3 the scroll inside `_act` came after the write-ahead and the
+    before of record; now the refusal stands and nothing is sent."""
+    page = Page(scrolled=True, deletes=True)
+    h = _harness(page)
+    _refuse_once(h, "offscreen")
+    result = h.session.run_step(_physical("R3", verb="delete"))
+    assert result.ok is False
+    assert "scroll_into_view" not in page.log
+    assert result.action is not None
+    assert result.action.delivery is Delivery.NOT_DELIVERED
+    assert len(h.physical.calls) == 1
+
+
+def test_a_physical_offscreen_refusal_at_r1_scrolls_then_waits_for_a_quiet_page() -> None:
+    """Hunter OS-01r: at R0/R1 the scroll stays, with the pre-gate scroll's quiet look, so a
+    before taken mid-load never judges the step."""
+    page = Page(scrolled=True, churns=True)
+    h = _harness(page)
+    _refuse_once(h, "offscreen")
+    result = h.session.run_step(_physical("R1"))
+    assert result.ok is False
+    assert result.code is ErrorCode.UNSTABLE_UI
+    assert result.evidence["detail"] == "scroll_not_quiet"
+    assert page.log == ["scroll_into_view"]
+
+
+def test_a_physical_offscreen_refusal_at_r1_scrolls_once_then_clicks() -> None:
+    page = Page(scrolled=True)
+    h = _harness(page)
+    _refuse_once(h, "offscreen")
+    result = h.session.run_step(_physical("R1"))
+    assert page.log == ["scroll_into_view"]
+    assert len(h.physical.calls) == 2
+    assert result.evidence["scrolled"] == "delivered_verified"

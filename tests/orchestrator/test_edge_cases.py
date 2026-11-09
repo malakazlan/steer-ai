@@ -451,32 +451,29 @@ def test_resume_resolves_the_composer_in_the_persisted_before_not_the_fresh_one(
 # ---- act: scroll, retries, twins (OR-07/33/35) ---------------------------------------------------
 
 
-def test_an_offscreen_target_is_scrolled_into_view_once_then_the_click_is_retried() -> None:
+def test_an_offscreen_refusal_at_r2_is_never_scrolled_after_the_record() -> None:
+    """Hunter OS-01r on #184: the scroll rung inside `_act` came after the write-ahead and the
+    before of record; at R2/R3 the refusal now stands, nothing is sent, the key is released.
+    (An offscreen target is scrolled before the gate since #176.)"""
     h = Harness()
     h.session.run_step(_type())
     h.clock["t"] += SETTLE_AFTER_TYPE_CAP_S + 1  # the page has settled: no wait counted here
-    clicks = {"n": 0}
 
-    def offscreen_first(executor: FakeExecutor, action: Any) -> None:
-        if action.verb == "scroll_into_view":
-            executor.outcomes.pop(action.element_id, None)  # the scroll brings it on screen
-            return
-        clicks["n"] += 1
-        if clicks["n"] == 1:
-            executor.outcomes[action.element_id] = not_delivered(
-                ErrorCode.ELEMENT_NOT_ACTIONABLE, "offscreen"
-            )
+    def offscreen(executor: FakeExecutor, action: Any) -> None:
+        executor.outcomes[action.element_id] = not_delivered(
+            ErrorCode.ELEMENT_NOT_ACTIONABLE, "offscreen"
+        )
 
-    h.semantic.on_execute = offscreen_first
-    observed = len(h.world.observed)
+    h.semantic.on_execute = offscreen
     result = h.session.run_step(_send())
-    assert result.ok is True, result.to_dict()
-    assert [c[0] for c in h.semantic.calls] == ["click", "scroll_into_view", "click"]
-    assert result.evidence["retries"] == 0, "a scroll is not the local retry"
-    assert result.evidence["scrolled"] == "delivered_verified"
+    assert result.ok is False
+    assert [c[0] for c in h.semantic.calls] == ["click"], "no scroll after the record"
+    assert result.code is ErrorCode.ELEMENT_NOT_ACTIONABLE
+    assert "scrolled" not in result.evidence
     assert len(h.confirmer.asked) == 1
-    assert h.world.sent == [HELLO]
-    assert len(h.world.observed) == observed + 4, "before, post-ask, post-scroll, after"
+    assert h.world.sent == []
+    key = h.ledger.key_for(_send())
+    assert h.ledger.admit(key) == "fresh"
 
 
 def test_nothing_delivered_after_the_scroll_releases_the_key_for_a_fresh_attempt() -> None:
@@ -486,11 +483,11 @@ def test_nothing_delivered_after_the_scroll_releases_the_key_for_a_fresh_attempt
         ErrorCode.ELEMENT_NOT_ACTIONABLE, "clipped"
     )
     result = h.session.run_step(_send())
-    assert [c[0] for c in h.semantic.calls] == ["click", "scroll_into_view", "click"], "one scroll"
+    assert [c[0] for c in h.semantic.calls] == ["click"], "at R2 no scroll after the record"
     assert result.ok is False
     assert result.code is ErrorCode.ELEMENT_NOT_ACTIONABLE
     assert result.evidence["delivery"] == "not_delivered"
-    assert "scrolled" in result.evidence
+    assert "scrolled" not in result.evidence
     key = h.ledger.key_for(_send())
     assert h.ledger.executions[key]["outcome"] == "not_delivered"
     assert h.ledger.admit(key) == "fresh"
