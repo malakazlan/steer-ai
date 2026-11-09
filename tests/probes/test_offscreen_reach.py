@@ -16,4 +16,8 @@ def test_the_fixture_holds_each_case() -> None:
         "drawer",
         "sr_only",
         "inert",
+        "closed_select",
+        "closed_details",
     }
+    assert "<select" in PAGE
+    assert "<details>" in PAGE

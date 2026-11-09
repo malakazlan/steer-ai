@@ -2,6 +2,8 @@
 below the fold, in a scrolled list and in a hidden panel, what Steer's world model reports
 (offscreen flag, box), whether the element exposes ScrollItemPattern, whether ScrollIntoView
 brings it on screen, and how many planner lines the page has with and without offscreen elements.
+Principal re-review of #184 item 2: a closed `<select>`'s options and a closed `<details>`' content
+("collapsed" in UIA's IsOffscreen), and per case whether `prune(offscreen=True)` lists it.
 A local fixture page, throwaway profile, semantic UIA only (no OS input; the window is brought in
 front behind the idle gate).
 
@@ -29,6 +31,9 @@ OPTIONS = 30
 PAGE = (
     "<!doctype html><title>Offscreen fixture</title>"
     "<h1>Feed</h1><p>Top of the page.</p>"
+    '<label>Size <select id="size"><option>Small</option><option>Medium</option>'
+    "<option>Large</option></select></label>"
+    "<details><summary>More info</summary><button>Details action</button></details>"
     '<ul role="listbox" aria-label="Choices" style="height:120px;overflow:auto">'
     + "".join(f'<li role="option" tabindex="-1">Choice {i}</li>' for i in range(1, OPTIONS + 1))
     + "</ul>"
@@ -47,6 +52,8 @@ TARGETS = (
     ("drawer", "Button", "Drawer action"),
     ("sr_only", "Text", "Screen reader note"),
     ("inert", "Button", "Inert action"),
+    ("closed_select", "ListItem", "Large"),
+    ("closed_details", "Button", "Details action"),
 )
 SCROLL_ITEM = 10017
 
@@ -82,6 +89,7 @@ def _measure(number: int) -> list[dict[str, Any]]:
                     "offscreen": sum(1 for e in snap.elements if e.offscreen),
                 }
             )
+            listed = {e.id for e in prune(snap.elements, cap=150, offscreen=True)}
             for case, role, name in TARGETS:
                 found = [e for e in snap.elements if e.role == role and e.name == name]
                 row: dict[str, Any] = {"run": number, "case": case, "in_tree": len(found)}
@@ -89,6 +97,7 @@ def _measure(number: int) -> list[dict[str, Any]]:
                     element = found[0]
                     handle = snap.handle(element.id)
                     row["offscreen"] = element.offscreen
+                    row["listed"] = element.id in listed
                     row["box"] = element.box
                     root = snap.elements[0].box
                     row["overlaps_horizontally"] = (
