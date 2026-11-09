@@ -5,7 +5,8 @@ handles. Admission and failure classification are shared with the physical execu
 Every verb reads its own state back (`poll_state`): equal before the call means already in state
 and nothing is sent; settled on a different state is `verify_failed`; never settled is
 `verify_timeout`. `set_value` replaces the value, never appends; newlines are literal content.
-`check`/`uncheck` toggle at most `MAX_TOGGLES` times because three-state controls cycle. Physical
+`check`/`uncheck` toggle at most `MAX_TOGGLES` times because three-state controls cycle; a
+toggle or a `select` that settles back where it began is `unchanged` (T1 decides). Physical
 input (click at a point, keystrokes, chords) lives in the physical executor, not here.
 """
 
@@ -224,7 +225,18 @@ class Executor:
         if read():
             return ActionResult.already_satisfied(action.verb)
         call.send("SelectionItemPattern.Select", pattern.Select)
-        return _finish(call, poll_state(read, True))
+        readback = poll_state(read, True)
+        if readback.verified or not readback.settled:
+            return _finish(call, readback)
+        # aria-selected may be set asynchronously: never a second Select, T1 decides within its
+        # deadline (W3 verdict ruling (b), as a toggle settling on its initial value)
+        return ActionResult(
+            verb=call.verb,
+            delivery=Delivery.DELIVERED_UNVERIFIED,
+            steps=call.steps,
+            code=ErrorCode.VERIFY_TIMEOUT,
+            evidence={"detail": "unchanged"},
+        )
 
     def _scroll_into_view(self, action: Action, handle: Any, call: Call) -> ActionResult:
         pattern = self._uia.pattern(handle, UIA_SCROLL_ITEM_PATTERN, "ScrollItemPattern")

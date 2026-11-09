@@ -41,7 +41,18 @@ def _step(**overrides: object) -> Step:
 def test_verb_table_is_closed_and_maps_to_executors_and_templates() -> None:
     assert (
         frozenset(
-            {"click", "focus", "type", "send", "submit", "delete", "open", "check", "uncheck"}
+            {
+                "click",
+                "focus",
+                "type",
+                "send",
+                "submit",
+                "delete",
+                "open",
+                "check",
+                "uncheck",
+                "select",
+            }
         )
         == VERBS
     )
@@ -53,6 +64,7 @@ def test_verb_table_is_closed_and_maps_to_executors_and_templates() -> None:
     assert executor_verb("delete") == ("semantic", "click")
     assert executor_verb("check") == ("semantic", "check")
     assert executor_verb("uncheck") == ("semantic", "uncheck")
+    assert executor_verb("select") == ("semantic", "select")
     assert template_verb("send") == "send"
     assert template_verb("click") == "click"
     with pytest.raises(ValueError, match="unknown verb"):

@@ -16,7 +16,8 @@ from typing import Any, Literal
 
 from steerai.action.dispositions import ActionResult
 from steerai.errors import ErrorCode
-from steerai.verify.predicates import FIELD_ROLES, Predicate
+from steerai.verify.predicates import FIELD_ROLES, STATE_ROLES, Predicate
+from steerai.verify.strength import STATE_WANTED
 from steerai.world.model import normalise_name
 
 Risk = Literal["R0", "R1", "R2", "R3"]
@@ -31,7 +32,7 @@ GateToken = GateOutcome | Literal["pending", "done_already", "unreached"]
 """`unreached`: the step failed before the gate ran; after the gate, the token is its outcome."""
 
 VERBS: frozenset[str] = frozenset(
-    {"click", "focus", "type", "send", "submit", "delete", "open", "check", "uncheck"}
+    {"click", "focus", "type", "send", "submit", "delete", "open", "check", "uncheck", "select"}
 )
 _EXECUTOR_VERBS: dict[str, tuple[Path, str]] = {
     "click": ("semantic", "click"),
@@ -42,6 +43,7 @@ _EXECUTOR_VERBS: dict[str, tuple[Path, str]] = {
     "delete": ("semantic", "click"),
     "check": ("semantic", "check"),
     "uncheck": ("semantic", "uncheck"),
+    "select": ("semantic", "select"),
 }
 _TEXT_VERBS = frozenset({"type"})
 _RISK_FLOOR: dict[str, Risk] = {
@@ -51,11 +53,12 @@ _RISK_FLOOR: dict[str, Risk] = {
     "open": "R1",
     "check": "R1",
     "uncheck": "R1",
+    "select": "R1",
 }
-STATE_VERBS: frozenset[str] = frozenset({"check", "uncheck"})
-"""Verbs that set a CheckBox's own state through TogglePattern; their `State` template is
-code-owned (widget-verbs W2 v2): no plan `expect`, no physical path, never preapproved."""
-STATE_ROLE = "CheckBox"
+STATE_VERBS: frozenset[str] = frozenset(STATE_WANTED)
+"""Verbs that set an element's own state: check / uncheck a CheckBox through TogglePattern,
+select a TabItem or a RadioButton through SelectionItemPattern. Their `State` template is
+code-owned (widget-verbs W2 v2, W3 v1): no plan `expect`, no physical path, never preapproved."""
 OPEN_TARGET_ROLE = "App"
 """An `open` step's target names a registry app (`steerai.action.launch.APPS`)."""
 _RISK_ORDER = {risk: index for index, risk in enumerate(RISKS)}
@@ -75,6 +78,11 @@ def executor_verb(verb: str) -> tuple[Path, str]:
     if verb not in _EXECUTOR_VERBS:
         raise ValueError(f"{verb} has no executor in this slice (system actions are later)")
     return _EXECUTOR_VERBS[verb]
+
+
+def state_roles(verb: str) -> frozenset[str]:
+    """The roles a state verb targets: those its wanted value is read on (W3-1, W3-05)."""
+    return STATE_ROLES[STATE_WANTED[verb]]
 
 
 def template_verb(verb: str) -> str:
@@ -186,13 +194,15 @@ class Step:
 
 
 def _check_state_step(step: Step) -> None:
-    """W2-1/W2-3: a CheckBox only (`role=switch` and ToggleButton are unmeasured, WV-22),
-    TogglePattern only, the template owns the postcondition, and the person is always asked
-    at R2/R3 (the verdict's W2-5 ruling)."""
+    """W2-1/W2-3, W3-1: check / uncheck a CheckBox only (`role=switch` and ToggleButton are
+    unmeasured, WV-22), select a TabItem or a RadioButton only (no ListItem, round 1 item 7);
+    the semantic pattern only, the template owns the postcondition, and the person is always
+    asked at R2/R3 (the verdict's W2-5 ruling)."""
     if step.verb not in STATE_VERBS:
         return
-    if step.target is None or step.target.role != STATE_ROLE:
-        raise ValueError(f"{step.verb} targets a {STATE_ROLE}")
+    roles = state_roles(step.verb)
+    if step.target is None or step.target.role not in roles:
+        raise ValueError(f"{step.verb} targets a {' or '.join(sorted(roles))}")
     if step.path == "physical":
         raise ValueError(f"{step.verb} runs on the semantic path")
     if step.expect is not None:

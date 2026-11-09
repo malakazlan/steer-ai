@@ -60,10 +60,10 @@ def test_wanted_is_on_or_off(wanted: Any) -> None:
 
 def test_the_role_is_the_state_verbs_role() -> None:
     """Pinned: the predicates module cannot import the contracts (they import it)."""
-    from steerai.orchestrator.contracts import STATE_ROLE  # noqa: PLC0415
+    from steerai.orchestrator.contracts import state_roles  # noqa: PLC0415
     from steerai.verify.predicates import CHECK_ROLE  # noqa: PLC0415
 
-    assert CHECK_ROLE == STATE_ROLE
+    assert state_roles("check") == state_roles("uncheck") == frozenset({CHECK_ROLE})
 
 
 def test_the_name_stays_out_of_repr() -> None:

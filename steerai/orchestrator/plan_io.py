@@ -20,7 +20,6 @@ from steerai.action.launch import APPS, LaunchError, site_url
 from steerai.orchestrator.contracts import (
     OPENED_PREFIX,
     RISKS,
-    STATE_ROLE,
     STATE_VERBS,
     VERBS,
     Plan,
@@ -30,6 +29,7 @@ from steerai.orchestrator.contracts import (
     Target,
     executor_verb,
     is_window_ref,
+    state_roles,
 )
 from steerai.verify.decorations import DECORATIONS
 from steerai.verify.predicates import (
@@ -466,8 +466,8 @@ def _step(value: object, path: str) -> Step:
     if provenance not in ("verbatim", "generated"):
         raise PlanError(f"{path}.text_provenance", "must be verbatim or generated")
     text = obj.get("text")
-    if verb in STATE_VERBS and "expect" in obj:
-        raise PlanError(f"{path}.expect", "the verb template owns the postcondition")
+    if verb in STATE_VERBS:
+        _check_state_fields(obj, verb, path)
     try:
         step = Step(
             id=_ident(obj.get("id"), f"{path}.id"),
@@ -490,6 +490,20 @@ def _step(value: object, path: str) -> Step:
             raise
         raise PlanError(path, str(exc)) from exc
     return _checked_present(_checked_open(step, path), path)
+
+
+def _check_state_fields(obj: Mapping[str, Any], verb: str, path: str) -> None:
+    """A state verb's refusals at their own field paths (W3-21): the template owns the
+    postcondition, the verb's roles only, never preapproved by the request."""
+    if "expect" in obj:
+        raise PlanError(f"{path}.expect", "the verb template owns the postcondition")
+    target = obj.get("target")
+    role = target.get("role") if isinstance(target, dict) else None
+    roles = state_roles(verb)
+    if isinstance(role, str) and role not in roles:
+        raise PlanError(f"{path}.target.role", f"{verb} targets a {' or '.join(sorted(roles))}")
+    if obj.get("preapproved_by_request") is True:
+        raise PlanError(f"{path}.preapproved_by_request", f"{verb} is never preapproved")
 
 
 def _checked_present(step: Step, path: str) -> Step:
@@ -621,7 +635,7 @@ def _sets(step: Step, state: CheckState) -> bool:
     return (
         step.verb == ("check" if state.wanted == "on" else "uncheck")
         and target is not None
-        and target.role == STATE_ROLE
+        and target.role == state.role
         and target.match == "exact"
         and not target.automation_id  # resolved by the exact name only, as the state is
         and normalise_name(target.name).casefold() == normalise_name(state.name_pattern).casefold()

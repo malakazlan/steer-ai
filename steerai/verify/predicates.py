@@ -10,6 +10,7 @@ Patterns and values are kept out of `repr` because labels and traces carry predi
 from __future__ import annotations
 
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -18,6 +19,13 @@ from steerai.world.model import normalise_name
 
 StateName = Literal["on", "off", "selected"]
 _STATES: frozenset[str] = frozenset({"on", "off", "selected"})
+STATE_ROLES: Mapping[StateName, frozenset[str]] = {
+    "on": frozenset({"CheckBox"}),
+    "off": frozenset({"CheckBox"}),
+    "selected": frozenset({"TabItem", "RadioButton"}),
+}
+"""The roles each wanted state is read on (W3 verdict ruling (c)): a CheckBox's ToggleState is
+on or off; a TabItem's or a RadioButton's SelectionItem is selected. Role and state agree."""
 
 
 def _clean_pattern(text: str, what: str) -> str:
