@@ -524,7 +524,8 @@ def _counting(fail_at: int | None) -> tuple[Any, _CountingBoxes]:
 def test_a_failed_live_read_of_the_condition_never_ticks_and_never_escapes() -> None:
     h, boxes = _counting(None)
     assert h.session.run_task(_state_plan(_check())).ticked == {"g1"}
-    last = boxes.reads  # the subgoal's own read is the run's last
+    # the subgoal's own read; the re-read before done (W4-04) is the run's last
+    last = boxes.reads - 1
     h, _ = _counting(last)
     result = h.session.run_task(_state_plan(_check()))
     assert result.results[0].ok is True, "the step's own check read before the failure"

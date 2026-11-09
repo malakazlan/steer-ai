@@ -33,7 +33,7 @@ MAX_REPLANS = 2
 """Every replan counts, a continuation after `unfinished` too (design 5.3 [v2.1]: stricter than
 "two failed replans")."""
 
-Trigger = Literal["unfinished", "element_not_found", "unverified_effect"]
+Trigger = Literal["unfinished", "element_not_found", "reset", "unverified_effect"]
 _REPLAN_DETAILS = frozenset({"no_match"})
 """Missing-target details that replan. `candidate_gone` only comes from a person target, which
 never replans (hunter RP-05)."""
@@ -149,6 +149,10 @@ def replan_trigger(result: TaskResult, steps: Mapping[str, Step]) -> Trigger | N
     trigger: Trigger
     if detail == "unfinished":
         trigger = "unfinished"
+    elif detail == "reset":
+        # a ticked value or state read otherwise before done or an R2/R3 step (W4-04): the
+        # page undid an earlier subgoal; a replan counts toward MAX_REPLANS like any other
+        trigger = "reset"
     elif _missing_target(result, steps):
         trigger = "element_not_found"
     else:

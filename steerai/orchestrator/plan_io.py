@@ -14,14 +14,18 @@ import json
 import re
 import unicodedata
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from typing import Any, Literal, cast
 
 from steerai.action.launch import APPS, LaunchError, site_url
+from steerai.action.options import clean_option, option_key
 from steerai.orchestrator.contracts import (
+    CHOOSE_ROLE,
     OPENED_PREFIX,
+    OPTION_PARAM,
     RISKS,
-    STATE_VERBS,
     VERBS,
+    WIDGET_VERBS,
     Plan,
     Risk,
     Step,
@@ -29,7 +33,7 @@ from steerai.orchestrator.contracts import (
     Target,
     executor_verb,
     is_window_ref,
-    state_roles,
+    widget_roles,
 )
 from steerai.verify.decorations import DECORATIONS
 from steerai.verify.predicates import (
@@ -64,7 +68,9 @@ MAX_TEXT_CHARS = 2000
 MAX_PARTS = 32
 MAX_COUNT = 10_000
 _ID = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
-_PARAM_KEYS = frozenset({"text", "composer_role", "composer_name", "scope", "content_role", "site"})
+_PARAM_KEYS = frozenset(
+    {"text", "composer_role", "composer_name", "scope", "content_role", "site", OPTION_PARAM}
+)
 _FILE_VERBS = frozenset(VERBS)
 _STEP_KEYS = frozenset(
     {
@@ -471,8 +477,9 @@ def _step(value: object, path: str) -> Step:
     if provenance not in ("verbatim", "generated"):
         raise PlanError(f"{path}.text_provenance", "must be verbatim or generated")
     text = obj.get("text")
-    if verb in STATE_VERBS:
-        _check_state_fields(obj, verb, path)
+    _check_option_field(obj, verb, path)
+    if verb in WIDGET_VERBS:
+        _check_widget_fields(obj, verb, path)
     try:
         step = Step(
             id=_ident(obj.get("id"), f"{path}.id"),
@@ -497,14 +504,32 @@ def _step(value: object, path: str) -> Step:
     return _checked_present(_checked_open(step, path), path)
 
 
-def _check_state_fields(obj: Mapping[str, Any], verb: str, path: str) -> None:
-    """A state verb's refusals at their own field paths (W3-21): the template owns the
+def _check_option_field(obj: Mapping[str, Any], verb: str, path: str) -> None:
+    """`params.option` at its own field path (W4-1): a choose needs a clean option, and no other
+    verb takes one."""
+    params = obj.get("params")
+    option = params.get(OPTION_PARAM) if isinstance(params, dict) else None
+    where = f"{path}.params.{OPTION_PARAM}"
+    if verb != "choose":
+        if option is not None:
+            raise PlanError(where, f"{verb} takes no option: only choose does")
+        return
+    if not isinstance(option, str):
+        raise PlanError(where, "choose needs params.option, the option's exact name from the goal")
+    try:
+        clean_option(option)
+    except ValueError as exc:
+        raise PlanError(where, str(exc)) from exc
+
+
+def _check_widget_fields(obj: Mapping[str, Any], verb: str, path: str) -> None:
+    """A widget verb's refusals at their own field paths (W3-21, W4-1): the template owns the
     postcondition, the verb's roles only, never preapproved by the request."""
     if "expect" in obj:
         raise PlanError(f"{path}.expect", "the verb template owns the postcondition")
     target = obj.get("target")
     role = target.get("role") if isinstance(target, dict) else None
-    roles = state_roles(verb)
+    roles = widget_roles(verb)
     if isinstance(role, str) and role not in roles:
         raise PlanError(f"{path}.target.role", f"{verb} targets a {' or '.join(sorted(roles))}")
     if obj.get("preapproved_by_request") is True:
@@ -579,9 +604,11 @@ def _plan(value: object, path: str) -> Plan:
         for i, item in enumerate(_list(obj.get("steps", []), f"{path}.steps", max_items=256))
     )
     _check_window_order(steps, path)
+    _check_options(goal, steps, path)
     _check_values(subgoals, steps, path)
     _check_states(subgoals, steps, path)
     _check_presents(subgoals, steps, path)
+    subgoals = _folded_values(subgoals, steps)
     try:
         return Plan(goal=goal, subgoals=subgoals, steps=steps)
     except ValueError as exc:
@@ -591,10 +618,30 @@ def _plan(value: object, path: str) -> Plan:
 _NO_VALUE_VERBS = frozenset({"send", "submit", "delete"})
 
 
+def _check_options(goal: str, steps: tuple[Step, ...], path: str) -> None:
+    """A choose's option is the person's own words (WV-13): an option whose `option_key` is
+    not in the goal's (NFKC, whitespace and case folded: "set the size to large" chooses
+    "Large", PR #192 review) was read off the screen, `screen_content`."""
+    for index, step in enumerate(steps):
+        option = step.params.get(OPTION_PARAM)
+        if step.verb == "choose" and option is not None and not _in_goal(option, goal):
+            raise PlanError(
+                f"{path}.steps[{index}].params.{OPTION_PARAM}",
+                "screen_content: the option is the goal's own words, never read off the screen",
+            )
+
+
+def _in_goal(option: str, goal: str) -> bool:
+    key = option_key(option)
+    return bool(key) and key in option_key(goal)
+
+
 def _check_values(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: str) -> None:
     """A `value` subgoal with steps names a `type` of its own with the same role, name (the
-    target rule) and exact text; it owns no send / submit / delete or R2/R3 step; its steps act
-    in one window (FV-01/03/23/25/42). A subgoal without steps cannot tick and is allowed."""
+    target rule) and exact text, or a `choose` of its own on that ComboBox whose option is the
+    text by the choose's comparator (W4-7); it owns no send / submit / delete step, and no R2/R3
+    step unless every value is a choose's (W4 v1 verdict item 4); its steps act in one window
+    (FV-01/03/23/25/42). A subgoal without steps cannot tick and is allowed."""
     windows = _window_of_each(steps)
     for index, subgoal in enumerate(subgoals):
         wanted = field_values(subgoal.condition)
@@ -602,14 +649,58 @@ def _check_values(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: 
         if not wanted or not own:
             continue
         where = f"{path}.subgoals[{index}].condition"
-        if any(s.verb in _NO_VALUE_VERBS or s.risk in ("R2", "R3") for s in own):
+        chosen = all(any(_chose(s, value) for s in own) for value in wanted)
+        risky = not chosen and any(s.risk in ("R2", "R3") for s in own)
+        if risky or any(s.verb in _NO_VALUE_VERBS for s in own):
             raise PlanError(where, "a value subgoal holds no send, submit, delete or R2/R3 step")
         if len({windows[s.id] for s in own if s.verb != "open"}) > 1:
             raise PlanError(where, "a value subgoal acts in one window")
-        typed = [s for s in own if s.verb == "type"]
         for value in wanted:
-            if not any(_typed_into(s, value) for s in typed):
-                raise PlanError(where, "value names the field and text a type step of it typed")
+            if not any(_typed_into(s, value) or _chose(s, value) for s in own):
+                raise PlanError(
+                    where, "value names the field and text a type or choose step of it set"
+                )
+
+
+def _folded_values(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...]) -> tuple[Subgoal, ...]:
+    """Each `value` a choose of its subgoal proves takes the choose's comparator (W4-05,
+    `FieldValue.folded`): set by code here, never by the model or the file form."""
+    out: list[Subgoal] = []
+    for subgoal in subgoals:
+        chooses = [s for s in steps if s.subgoal == subgoal.id and s.verb == "choose"]
+        folded = chooses and field_values(subgoal.condition)
+        out.append(
+            replace(subgoal, condition=_fold(subgoal.condition, chooses)) if folded else subgoal
+        )
+    return tuple(out)
+
+
+def _fold(predicate: Predicate, chooses: list[Step]) -> Predicate:
+    if isinstance(predicate, FieldValue):
+        proven = any(_chose(s, predicate) for s in chooses)
+        return replace(predicate, folded=True) if proven else predicate
+    if isinstance(predicate, All):
+        return All(tuple(_fold(part, chooses) for part in predicate.parts))
+    if isinstance(predicate, AnyOf):
+        return AnyOf(tuple(_fold(part, chooses) for part in predicate.parts))
+    return predicate
+
+
+def _chose(step: Step, value: FieldValue) -> bool:
+    """A choose of that exact ComboBox (the target rule: exact, by name alone) whose option is
+    the value's text by the choose's comparator (`option_key`: NFKC, whitespace and case)."""
+    target = step.target
+    option = step.params.get(OPTION_PARAM)
+    return (
+        step.verb == "choose"
+        and option is not None
+        and target is not None
+        and target.match == "exact"
+        and not target.automation_id
+        and target.role == value.role == CHOOSE_ROLE
+        and normalise_name(target.name).casefold() == normalise_name(value.name_pattern).casefold()
+        and option_key(option) == option_key(value.text)
+    )
 
 
 def _check_states(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: str) -> None:

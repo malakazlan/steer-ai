@@ -1398,6 +1398,7 @@ def _build_session(bound: Bound) -> SessionLike:
     from steerai.action.executor import Executor  # noqa: PLC0415
     from steerai.action.launcher import Launcher  # noqa: PLC0415
     from steerai.action.live_reads import UiaLiveReads  # noqa: PLC0415
+    from steerai.action.options import UiaOptions  # noqa: PLC0415
     from steerai.action.physical import LiveInput, PhysicalExecutor, tap_refusal  # noqa: PLC0415
     from steerai.orchestrator.gate import Gate  # noqa: PLC0415
     from steerai.orchestrator.loop import Session  # noqa: PLC0415
@@ -1429,7 +1430,7 @@ def _build_session(bound: Bound) -> SessionLike:
         task_id=bound.task_id,
         hwnd=bound.hwnd,
         observer=model,
-        semantic=Executor(blocker=blocker),
+        semantic=Executor(blocker=blocker, options=UiaOptions(client)),
         physical=PhysicalExecutor(blocker=blocker),
         gate=Gate(confirmer=bound.confirmer, own_pid=os.getpid(), task_id=bound.task_id),
         ledger=bound.ledger,

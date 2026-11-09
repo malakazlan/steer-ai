@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from steerai.action.dispositions import ActionResult
+from steerai.action.options import clean_option
 from steerai.errors import ErrorCode
 from steerai.verify.predicates import FIELD_ROLES, STATE_ROLES, Predicate
 from steerai.verify.strength import STATE_WANTED
@@ -32,7 +33,19 @@ GateToken = GateOutcome | Literal["pending", "done_already", "unreached"]
 """`unreached`: the step failed before the gate ran; after the gate, the token is its outcome."""
 
 VERBS: frozenset[str] = frozenset(
-    {"click", "focus", "type", "send", "submit", "delete", "open", "check", "uncheck", "select"}
+    {
+        "click",
+        "focus",
+        "type",
+        "send",
+        "submit",
+        "delete",
+        "open",
+        "check",
+        "uncheck",
+        "select",
+        "choose",
+    }
 )
 _EXECUTOR_VERBS: dict[str, tuple[Path, str]] = {
     "click": ("semantic", "click"),
@@ -44,6 +57,7 @@ _EXECUTOR_VERBS: dict[str, tuple[Path, str]] = {
     "check": ("semantic", "check"),
     "uncheck": ("semantic", "uncheck"),
     "select": ("semantic", "select"),
+    "choose": ("semantic", "choose"),
 }
 _TEXT_VERBS = frozenset({"type"})
 _RISK_FLOOR: dict[str, Risk] = {
@@ -54,11 +68,18 @@ _RISK_FLOOR: dict[str, Risk] = {
     "check": "R1",
     "uncheck": "R1",
     "select": "R1",
+    "choose": "R1",
 }
 STATE_VERBS: frozenset[str] = frozenset(STATE_WANTED)
 """Verbs that set an element's own state: check / uncheck a CheckBox through TogglePattern,
 select a TabItem or a RadioButton through SelectionItemPattern. Their `State` template is
 code-owned (widget-verbs W2 v2, W3 v1): no plan `expect`, no physical path, never preapproved."""
+CHOOSE_ROLE = "ComboBox"
+WIDGET_VERBS: frozenset[str] = STATE_VERBS | {"choose"}
+"""The state verbs and `choose` (W4-01): one set for the provider gate, the navigation stop, the
+R2/R3 miss stop, the contract rules (no expect, no physical path, never preapproved, R1 floor)
+and the done re-read. `choose` sets a ComboBox's value through its option (`params.option`)."""
+OPTION_PARAM = "option"
 OPEN_TARGET_ROLE = "App"
 """An `open` step's target names a registry app (`steerai.action.launch.APPS`)."""
 _RISK_ORDER = {risk: index for index, risk in enumerate(RISKS)}
@@ -83,6 +104,13 @@ def executor_verb(verb: str) -> tuple[Path, str]:
 def state_roles(verb: str) -> frozenset[str]:
     """The roles a state verb targets: those its wanted value is read on (W3-1, W3-05)."""
     return STATE_ROLES[STATE_WANTED[verb]]
+
+
+def widget_roles(verb: str) -> frozenset[str]:
+    """The roles a widget verb targets: a state verb's, or a ComboBox for `choose` (W4-1)."""
+    if verb == "choose":
+        return frozenset({CHOOSE_ROLE})
+    return state_roles(verb)
 
 
 def template_verb(verb: str) -> str:
@@ -185,7 +213,7 @@ class Step:
         if self.verb == "focus" and self.path == "semantic":
             # a semantic focus would be an Invoke: plan_io refuses it, so does the contract (FC-09)
             raise ValueError("focus runs on the physical path")
-        _check_state_step(self)
+        _check_widget_step(self)
         if self.preapproved_by_request and self.text_provenance != "verbatim":
             raise ValueError("only verbatim request text can be preapproved by the request")
         floor = _RISK_FLOOR.get(self.verb)
@@ -193,14 +221,25 @@ class Step:
             object.__setattr__(self, "risk", floor)
 
 
-def _check_state_step(step: Step) -> None:
-    """W2-1/W2-3, W3-1: check / uncheck a CheckBox only (`role=switch` and ToggleButton are
-    unmeasured, WV-22), select a TabItem or a RadioButton only (no ListItem, round 1 item 7);
-    the semantic pattern only, the template owns the postcondition, and the person is always
-    asked at R2/R3 (the verdict's W2-5 ruling)."""
-    if step.verb not in STATE_VERBS:
+def _check_widget_step(step: Step) -> None:
+    """W2-1/W2-3, W3-1, W4-1: check / uncheck a CheckBox only (`role=switch` and ToggleButton
+    are unmeasured, WV-22), select a TabItem or a RadioButton only (no ListItem, round 1 item 7),
+    choose a ComboBox's option only; the semantic pattern only, the template owns the
+    postcondition, and the person is always asked at R2/R3 (the verdict's W2-5 ruling). Only a
+    choose takes an option, and its option is a clean, non-empty name (`clean_option`).
+    Approved gap (PR #192 review): `type` on a ComboBox is not refused at plan time; it is the
+    Google search box's path, and on a native select the Value is never empty, so the typing
+    path's `field_not_empty` refuses before any keystroke."""
+    option = step.params.get(OPTION_PARAM)
+    if step.verb == "choose":
+        if option is None:
+            raise ValueError("choose needs params.option, the option's exact name")
+        clean_option(option)
+    elif option is not None:
+        raise ValueError(f"{step.verb} takes no option: only choose does")
+    if step.verb not in WIDGET_VERBS:
         return
-    roles = state_roles(step.verb)
+    roles = widget_roles(step.verb)
     if step.target is None or step.target.role not in roles:
         raise ValueError(f"{step.verb} targets a {' or '.join(sorted(roles))}")
     if step.path == "physical":
