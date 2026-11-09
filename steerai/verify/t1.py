@@ -44,6 +44,7 @@ from steerai.verify.predicates import (
     Predicate,
     Present,
     State,
+    StateName,
     TitleMatches,
     ValueEquals,
     WindowExists,
@@ -707,8 +708,8 @@ def _field_value(predicate: FieldValue, snapshot: Snapshot, ctx: Context) -> Ver
 
 
 def _check_state(predicate: CheckState, snapshot: Snapshot, ctx: Context) -> Verdict:
-    """Presence in one snapshot (W2-4): the one CheckBox of this role and name (NFKC,
-    whitespace-folded, case-folded; no twin pin, no alias) and its ToggleState read through that
+    """Presence in one snapshot (W2-4, W3-5): the one element of this role and name (NFKC,
+    whitespace-folded, case-folded; no twin pin, no alias) and its wanted state read through that
     snapshot's handle. Unlike the step's `State`, a differing read settles: a condition is judged
     after its step's own check passed, so nothing is still in flight."""
     live = _live(ctx, "CheckState")
@@ -722,12 +723,23 @@ def _check_state(predicate: CheckState, snapshot: Snapshot, ctx: Context) -> Ver
         return _plain("target_not_found", settles=True)
     if len(found) > 1:
         return _plain("ambiguous_target", settles=True)
-    observed = live.toggle_state(snapshot.handle(found[0].id))
-    if observed is None:
+    holds = reads_wanted(live, snapshot.handle(found[0].id), predicate.wanted)
+    if holds is None:
         return _plain("no_pattern", settles=True)
-    if observed == (1 if predicate.wanted == "on" else 0):
+    if holds:
         return Verdict(holds=True, code=None, level=3, polls=0, evidence={})
     return _plain("state_differs", settles=True)
+
+
+def reads_wanted(live: LiveReads, handle: Any, wanted: StateName) -> bool | None:
+    """Whether the element's live state is the wanted one (W3-05): `selected` reads the
+    SelectionItem's IsSelected, on / off read the ToggleState; None when it has no such pattern.
+    `handle` is the snapshot's COM element (Any: comtypes has no stubs)."""
+    if wanted == "selected":
+        selected = live.is_selected(handle)
+        return None if selected is None else selected is True
+    toggle = live.toggle_state(handle)
+    return None if toggle is None else toggle == (1 if wanted == "on" else 0)
 
 
 def _focused(predicate: Focused, before: Snapshot, after: Snapshot, ctx: Context) -> Verdict:
@@ -746,15 +758,8 @@ def _state(predicate: State, before: Snapshot, after: Snapshot, ctx: Context) ->
     element = _target(before, after, predicate.target_id)
     if element is None:
         return _plain("target_not_found", settles=True)
-    handle = after.handle(element.id)
-    observed: int | bool | None
-    if predicate.wanted == "selected":
-        observed = live.is_selected(handle)
-        holds = observed is True
-    else:
-        observed = live.toggle_state(handle)
-        holds = observed == (1 if predicate.wanted == "on" else 0)
-    if observed is None:
+    holds = reads_wanted(live, after.handle(element.id), predicate.wanted)
+    if holds is None:
         return _plain("no_pattern", settles=True)
     if holds:
         return Verdict(holds=True, code=None, level=3, polls=0, evidence={})

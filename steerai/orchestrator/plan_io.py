@@ -42,6 +42,7 @@ from steerai.verify.predicates import (
     FieldValue,
     Predicate,
     Present,
+    StateName,
     TitleMatches,
     WindowExists,
     WindowGone,
@@ -49,7 +50,9 @@ from steerai.verify.predicates import (
     check_states,
     field_values,
     presents,
+    state_problem,
 )
+from steerai.verify.strength import STATE_WANTED
 from steerai.world.model import normalise_name
 from steerai.world.people import name_part
 
@@ -293,16 +296,18 @@ def _field_value(fields: Mapping[str, Any], inner: str, *, condition: bool) -> F
 def _check_state(fields: Mapping[str, Any], inner: str, *, condition: bool) -> CheckState:
     if not condition:
         raise PlanError(
-            inner, "state is a subgoal condition; check and uncheck own their postcondition"
+            inner, "state is a subgoal condition; check, uncheck and select own their postcondition"
         )
     _keys(fields, STATE_KEYS, inner)
     role = _text(fields.get("role"), f"{inner}.role", max_chars=64)
     name = _text(fields.get("name"), f"{inner}.name")
     wanted = fields.get("wanted")
-    if wanted not in ("on", "off"):
-        raise PlanError(f"{inner}.wanted", "must be on or off")
+    problem = state_problem(role, wanted)
+    if problem is not None:
+        # the role and the wanted value agree, named at the field that breaks it (W3-21)
+        raise PlanError(f"{inner}.{problem[0]}", problem[1])
     try:
-        return CheckState(role=role, name_pattern=name, wanted=cast("Literal['on', 'off']", wanted))
+        return CheckState(role=role, name_pattern=name, wanted=cast("StateName", wanted))
     except ValueError as exc:
         raise PlanError(inner, str(exc)) from exc
 
@@ -608,10 +613,11 @@ def _check_values(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: 
 
 
 def _check_states(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: str) -> None:
-    """A `state` subgoal with steps names, for each state, a check (on) or uncheck (off) of its
-    own on that CheckBox (the target rule: exact, by name alone); it owns no send / submit /
-    delete; its steps act in one window (W2-4). Unlike `value`, an R2/R3 step is allowed: a
-    consent box is R2 by design. A subgoal without steps cannot tick and is allowed."""
+    """A `state` subgoal with steps names, for each state, a check (on), uncheck (off) or select
+    (selected) of its own on that element (the target rule: same role, exact, by name alone); it
+    owns no send / submit / delete; its steps act in one window (W2-4, W3-5). Unlike `value`, an
+    R2/R3 step is allowed: a consent box is R2 by design. A subgoal without steps cannot tick
+    and is allowed."""
     windows = _window_of_each(steps)
     for index, subgoal in enumerate(subgoals):
         wanted = check_states(subgoal.condition)
@@ -626,14 +632,18 @@ def _check_states(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: 
         for state in wanted:
             if not any(_sets(s, state) for s in own):
                 raise PlanError(
-                    where, "state names the box and state a check or uncheck of it sets"
+                    where, "state names the element and state a check, uncheck or select sets"
                 )
+
+
+_SETTING_VERB: Mapping[str, str] = {wanted: verb for verb, wanted in STATE_WANTED.items()}
+"""The verb that sets each wanted state: on is a check, off an uncheck, selected a select."""
 
 
 def _sets(step: Step, state: CheckState) -> bool:
     target = step.target
     return (
-        step.verb == ("check" if state.wanted == "on" else "uncheck")
+        step.verb == _SETTING_VERB[state.wanted]
         and target is not None
         and target.role == state.role
         and target.match == "exact"

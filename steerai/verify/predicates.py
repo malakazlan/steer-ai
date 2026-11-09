@@ -12,7 +12,7 @@ from __future__ import annotations
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, cast
 
 from steerai.verify.decorations import decorate
 from steerai.world.model import normalise_name
@@ -172,27 +172,37 @@ class FieldValue:
             raise ValueError(f"value text is over {MAX_FIELD_TEXT_UNITS} UTF-16 units")
 
 
-CHECK_ROLE = "CheckBox"
-"""The one role a `state` condition names (= `steerai.orchestrator.contracts.STATE_ROLE`)."""
+def state_problem(role: str, wanted: object) -> tuple[str, str] | None:
+    """(field, reason) when a `state` role and wanted value do not agree (W3 verdict ruling
+    (c)), else None: shared by `CheckState` and the plan boundary, which names the field."""
+    if wanted not in _STATES:
+        return "wanted", "state wanted must be on, off or selected"
+    if not any(role in roles for roles in STATE_ROLES.values()):
+        known = sorted({r for roles in STATE_ROLES.values() for r in roles})
+        return "role", f"state role must be one of {known}"
+    if role not in STATE_ROLES[cast("StateName", wanted)]:
+        allowed = " or ".join(w for w in ("on", "off", "selected") if role in STATE_ROLES[w])
+        return "wanted", f"state wanted for a {role} must be {allowed}"
+    return None
 
 
 @dataclass(frozen=True, slots=True)
 class CheckState:
-    """A subgoal condition only (W2-4): the one CheckBox of this name (role, NFKC,
-    whitespace-folded, case-folded, exactly one) in the judged snapshot reads on or off. Never a
-    step `expect`: a check / uncheck verb owns its own postcondition (its `State` template)."""
+    """A subgoal condition only (W2-4, W3-5): the one element of this role and name (NFKC,
+    whitespace-folded, case-folded, exactly one) in the judged snapshot reads the wanted state:
+    a CheckBox on or off, a TabItem or a RadioButton selected. Never a step `expect`: a check,
+    uncheck or select verb owns its own postcondition (its `State` template)."""
 
     role: str
     name_pattern: str = field(repr=False)
-    wanted: Literal["on", "off"]
+    wanted: StateName
 
     def __post_init__(self) -> None:
-        if self.role != CHECK_ROLE:
-            raise ValueError(f"state role must be {CHECK_ROLE}")
+        problem = state_problem(self.role, self.wanted)
+        if problem is not None:
+            raise ValueError(problem[1])
         if not normalise_name(self.name_pattern):
             raise ValueError("state name must not be empty")
-        if self.wanted not in ("on", "off"):
-            raise ValueError("state wanted must be on or off")
 
 
 @dataclass(frozen=True, slots=True)
