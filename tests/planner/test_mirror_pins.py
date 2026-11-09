@@ -262,7 +262,7 @@ def test_the_state_kind_is_in_the_models_vocabulary() -> None:
     assert "state" in predicate["kind"]["enum"]
     wanted = predicate["wanted"]
     options = [_resolved(schema, o) for o in wanted.get("anyOf", [wanted])]
-    assert {v for o in options for v in o.get("enum", [])} == {"on", "off"}
+    assert {v for o in options for v in o.get("enum", [])} == {"on", "off", "selected"}
 
 
 def test_a_state_condition_round_trips_through_the_boundary() -> None:
@@ -290,3 +290,8 @@ def test_a_state_condition_round_trips_through_the_boundary() -> None:
 def test_check_and_uncheck_are_in_the_models_verbs() -> None:
     step = _definition(_schema(), "StepDoc")["properties"]
     assert {"check", "uncheck"} <= set(step["verb"]["enum"])
+
+
+def test_select_is_in_the_models_verbs() -> None:
+    step = _definition(_schema(), "StepDoc")["properties"]
+    assert "select" in set(step["verb"]["enum"])

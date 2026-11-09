@@ -771,7 +771,12 @@ def test_collapse_is_verified_and_idempotent(fast_clock: None) -> None:
     assert again.ok is True
 
 
-def test_select_that_the_app_rejects_is_verify_failed(fast_clock: None) -> None:
+def test_select_that_settles_not_selected_is_unchanged_and_never_sent_twice(
+    fast_clock: None,
+) -> None:
+    """aria-selected may be set asynchronously: one Select, unverified, and T1 decides within
+    its deadline (W3 verdict ruling (b), W3-06), as a toggle that settles on its initial value."""
+
     class _Rejecting(FakeHandle):
         def GetCurrentPattern(self, pattern_id: int) -> Any:  # noqa: N802
             pattern = super().GetCurrentPattern(pattern_id)
@@ -788,7 +793,9 @@ def test_select_that_the_app_rejects_is_verify_failed(fast_clock: None) -> None:
         Action(verb="select", element_id=1), _snapshot(handle, role="ListItem")
     )
     assert handle.calls == ["select"]
-    assert result.code is ErrorCode.VERIFY_FAILED
+    assert result.delivery is Delivery.DELIVERED_UNVERIFIED
+    assert result.code is ErrorCode.VERIFY_TIMEOUT
+    assert result.evidence == {"detail": "unchanged"}
 
 
 def test_scroll_into_view_reads_back_on_screen_without_a_postcondition(fast_clock: None) -> None:

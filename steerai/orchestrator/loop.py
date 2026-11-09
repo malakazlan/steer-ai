@@ -64,6 +64,7 @@ from steerai.orchestrator.gate import (
     ask_reasons,
     deny_tier,
     effective_risk,
+    group_name,
     open_tier,
     params_for,
     rename_counts,
@@ -96,6 +97,7 @@ from steerai.verify.predicates import (
     field_values,
     presents,
 )
+from steerai.verify.strength import STATE_WANTED
 from steerai.verify.t1 import (
     NO_LABEL_REASONS,
     LiveReads,
@@ -103,6 +105,7 @@ from steerai.verify.t1 import (
     WindowLike,
     evaluate,
     label_of_record,
+    reads_wanted,
     title_holds,
     verify,
 )
@@ -389,6 +392,9 @@ class Session:
         self._observer = observer
         self._secure_memory = SecureMemory()
         """A field once seen secure stays secure for the task (WV-09)."""
+        self._earlier_unmet = False
+        """Whether an earlier subgoal whose steps ran is unticked, set by the plan loop for the
+        step it runs: a step the element raises to R2/R3 then never starts (#190 review)."""
         self._semantic = semantic
         self._physical = physical
         self._gate = gate
@@ -440,6 +446,7 @@ class Session:
             key = self._ledger.key_for(step)
             self._act_evidence = evidence
             before, risk = self._before_at_ceiling(step, key, risk, stage, evidence)
+            _measured_provider(step, before)
             previous = self._admission(step, key, risk, before)
             if previous == "done":
                 if step.verb in STATE_VERBS:
@@ -971,6 +978,8 @@ class Session:
             )
         evidence.update({k: v for k, v in verdict.evidence.items() if k != "level"})
         evidence["level"] = verdict.level
+        if step.verb in STATE_VERBS and before_of_record.title != after.title:
+            evidence["retitled"] = True  # a token, never the titles (W3-01)
         # already in the wanted state is nothing sent and counts as success (5.9 [v0.7])
         ok = verdict.holds and (action.delivery is not Delivery.NOT_DELIVERED or action.skipped)
         if ok and step.verb == "type" and step.target is not None:
@@ -1065,9 +1074,15 @@ class Session:
         if target is None:
             return risk
         if target.match != "person":
-            # the ids of every element the exact target could resolve to (#84)
+            # the ids and the group names of every element the exact target could resolve to
+            # (#84, W3-03), so a raised step never runs on a reused R0/R1 before
             ids = self._resolvable_ids(target, before)
-            return effective_risk(step, element_ids=ids) if ids else risk
+            exact: list[Risk] = [effective_risk(step, element_ids=ids) if ids else risk]
+            exact += [
+                effective_risk(step, group_name=group)
+                for group in _group_names(before, self._resolvable(target, before))
+            ]
+            return max(exact, key=_RISK_ORDER.__getitem__)
         found = pick(before, target)
         self._candidates = (before.id, found)
         tiers: list[Risk] = [risk]
@@ -1087,14 +1102,16 @@ class Session:
         except LedgerError:
             return True  # unreadable means unknown: admission decides
 
-    def _settled_tier(self, step: Step, ceiling: Risk, automation_id: str = "") -> Risk:
+    def _settled_tier(
+        self, step: Step, ceiling: Risk, automation_id: str = "", group: str | None = None
+    ) -> Risk:
         """The bound row's own tier, never below the plan's (PT-31); for any target, raised by
-        the resolved element's own automation id (#84)."""
+        the resolved element's own automation id (#84) and its group's name (W3-03)."""
         ids = (automation_id,) if automation_id else ()
         if self._binding is None:
-            raised = effective_risk(step, element_ids=ids)
+            raised = effective_risk(step, element_ids=ids, group_name=group)
             return max(ceiling, raised, key=_RISK_ORDER.__getitem__)
-        return effective_risk(step, self._binding.shown_name_part, ids)
+        return effective_risk(step, self._binding.shown_name_part, ids, group_name=group)
 
     def _readmitted(  # noqa: PLR0913 - the step's admission state, passed once by keyword
         self,
@@ -1110,8 +1127,15 @@ class Session:
         """The settled tier, recorded; when the element that resolved (after the settle)
         raises the step into R2/R3 past the tier admission ran at, admission runs again (#84).
         Returns the tier and the admission answer that stands (the first, unless re-run)."""
-        settled = self._settled_tier(step, risk, before.element(element_id).automation_id)
+        element = before.element(element_id)
+        group = group_name(before, element)
+        settled = self._settled_tier(step, risk, element.automation_id, group)
         evidence["risk"] = settled
+        if settled in ("R2", "R3") and self._earlier_unmet:
+            # the [v2.36] precondition rule at the tier the element raised the step to (a
+            # group name, a resolved automation id): nothing dispatched, no ask
+            self._trace_tick(step.subgoal, "none", detail="precondition_unmet")
+            raise _StepFailureError(ErrorCode.VERIFY_FAILED, "precondition_unmet")
         if _RISK_ORDER[settled] > _RISK_ORDER[risk] and settled in ("R2", "R3"):
             previous = self._admission(step, key, settled, before)
             if previous == "done":
@@ -1127,14 +1151,24 @@ class Session:
                 return (snapshot.element(target.element_id).automation_id,)
             except SteerError:
                 return ()
-        wanted = normalise_name(target.name).casefold()
         return tuple(
-            e.automation_id
-            for e in snapshot.elements
-            if e.automation_id
-            and e.role == target.role
-            and normalise_name(e.name).casefold() == wanted
+            e.automation_id for e in Session._resolvable(target, snapshot) if e.automation_id
         )
+
+    @staticmethod
+    def _resolvable(target: Target, snapshot: Snapshot) -> list[Element]:
+        """The elements an exact target could resolve to: its fixed id, else role and name."""
+        if target.element_id is not None:
+            try:
+                return [snapshot.element(target.element_id)]
+            except SteerError:
+                return []
+        wanted = normalise_name(target.name).casefold()
+        return [
+            e
+            for e in snapshot.elements
+            if e.role == target.role and normalise_name(e.name).casefold() == wanted
+        ]
 
     def _decide(  # noqa: PLR0913 - the step's state at the gate
         self,
@@ -1169,6 +1203,11 @@ class Session:
                 verdict=verdict,
                 element_automation_id=(
                     before.element(element_id).automation_id if element_id is not None else ""
+                ),
+                group_name=(
+                    group_name(before, before.element(element_id))
+                    if element_id is not None
+                    else None
                 ),
             )
         finally:
@@ -2156,17 +2195,19 @@ class Session:
         self, step: Step, before: Snapshot, stage: _Stage, evidence: dict[str, Any]
     ) -> None:
         """A state verb's done key proves the state was set, not that it holds now: the page or
-        the person may have changed it since (WV-12). Re-read it; a changed box stops, never a
-        second Toggle under a done key."""
+        the person may have changed it since (WV-12). Re-read it (a selection through
+        IsSelected, a box through its ToggleState, W3-05); a changed state stops, never a
+        second Toggle or Select under a done key."""
         before, element_id = self._resolve_settling(step, before, stage, evidence)
-        wanted = 1 if step.verb == "check" else 0
         try:
-            observed = (
-                None if self._live is None else self._live.toggle_state(before.handle(element_id))
+            holds = (
+                None
+                if self._live is None
+                else reads_wanted(self._live, before.handle(element_id), STATE_WANTED[step.verb])
             )
         except SteerError as exc:
             raise _StepFailureError(ErrorCode.VERIFY_FAILED, "state_unreadable") from exc
-        if observed != wanted:
+        if holds is not True:
             raise _StepFailureError(ErrorCode.VERIFY_FAILED, "state_changed_since_done")
 
     def _done_already(
@@ -2404,7 +2445,7 @@ class Session:
             if refused is not None:
                 return refused
             self._steps_run += 1
-            result = self.run_step(step)
+            result = self._run_planned(plan, index, ticked)
             results.append(result)
             self._note_done(step, result)
             stop = (
@@ -2453,6 +2494,14 @@ class Session:
             if strikes >= SCREEN_GUARD_STRIKES:
                 return "stopped", ErrorCode.BUDGET_EXCEEDED, "loop"
         return None
+
+    def _run_planned(self, plan: Plan, index: int, ticked: set[str]) -> StepResult:
+        """One plan step, knowing whether an earlier subgoal is unmet (#190 review item 1)."""
+        self._earlier_unmet = _earlier_unticked(plan, index, ticked)
+        try:
+            return self.run_step(plan.steps[index])
+        finally:
+            self._earlier_unmet = False
 
     def _refused_start(
         self, plan: Plan, index: int, ticked: set[str]
@@ -2675,6 +2724,12 @@ def _unmet_before(plan: Plan, index: int, ticked: set[str]) -> bool:
     step = plan.steps[index]
     if effective_risk(step) not in ("R2", "R3"):
         return False
+    return _earlier_unticked(plan, index, ticked)
+
+
+def _earlier_unticked(plan: Plan, index: int, ticked: set[str]) -> bool:
+    """An earlier subgoal, other than this step's own, whose steps ran and is not ticked."""
+    step = plan.steps[index]
     earlier = {s.subgoal for s in plan.steps[:index]} - {step.subgoal}
     return bool(earlier - ticked)
 
@@ -2744,6 +2799,10 @@ def _structural_part(predicate: Predicate) -> Predicate | None:
     return None
 
 
+def _group_names(snapshot: Snapshot, elements: Sequence[Element]) -> list[str]:
+    return [name for name in (group_name(snapshot, e) for e in elements) if name]
+
+
 def _same_screen(before: Snapshot, after: Snapshot) -> bool:
     if before.title != after.title:
         return False
@@ -2772,12 +2831,27 @@ def _stop_for(
 
 def _state_stop(step: Step, result: StepResult) -> tuple[Literal["stopped"], ErrorCode, str] | None:
     """A state verb dispatched at R2/R3 whose T1 missed ends the task: the person approved one
-    tick, so it is never sent again in this task, by retry or by replan (W2 verdict, W2-5)."""
+    tick, so it is never sent again in this task, by retry or by replan (W2 verdict, W2-5). At
+    any tier, a miss whose target is gone or whose window was retitled means the verb navigated
+    (W3-01): it stops `navigated`. A verified state never stops, whatever the title does."""
     if step.verb not in STATE_VERBS or result.ok or result.action is None:
         return None
+    if result.evidence.get("reason") == "target_not_found" or result.evidence.get("retitled"):
+        return "stopped", ErrorCode.VERIFY_FAILED, "navigated"
     if result.evidence.get("risk") not in ("R2", "R3"):
         return None
     return "stopped", result.code or ErrorCode.VERIFY_FAILED, "state_unverified"
+
+
+MEASURED_PROVIDER = "chrome.exe"
+"""The one provider whose state patterns are measured (probe `widget_patterns`, Chrome 156)."""
+
+
+def _measured_provider(step: Step, snapshot: Snapshot) -> None:
+    """A state verb runs only in the measured provider (W3-04): anything else is refused before
+    the gate, nothing sent and no ask."""
+    if step.verb in STATE_VERBS and snapshot.process.casefold() != MEASURED_PROVIDER:
+        raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "unmeasured_provider")
 
 
 def _verify_deadline(expect: Predicate, step_deadline_s: float) -> float:

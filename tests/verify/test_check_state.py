@@ -54,16 +54,19 @@ def test_an_empty_name_is_refused(name: str) -> None:
 
 @pytest.mark.parametrize("wanted", ["selected", "ON", "", "true"])
 def test_wanted_is_on_or_off(wanted: Any) -> None:
-    with pytest.raises(ValueError, match="on or off"):
+    with pytest.raises(ValueError, match="wanted"):
         CheckState(role="CheckBox", name_pattern="Email alerts", wanted=wanted)
 
 
 def test_the_role_is_the_state_verbs_role() -> None:
     """Pinned: the predicates module cannot import the contracts (they import it)."""
-    from steerai.orchestrator.contracts import STATE_ROLE  # noqa: PLC0415
-    from steerai.verify.predicates import CHECK_ROLE  # noqa: PLC0415
+    from steerai.orchestrator.contracts import STATE_VERBS, state_roles  # noqa: PLC0415
+    from steerai.verify.predicates import STATE_ROLES  # noqa: PLC0415
+    from steerai.verify.strength import STATE_WANTED  # noqa: PLC0415
 
-    assert CHECK_ROLE == STATE_ROLE
+    assert state_roles("check") == state_roles("uncheck") == STATE_ROLES["on"] == STATE_ROLES["off"]
+    assert {state_roles(verb) for verb in STATE_VERBS} == set(STATE_ROLES.values())
+    assert set(STATE_WANTED.values()) == set(STATE_ROLES)
 
 
 def test_the_name_stays_out_of_repr() -> None:
@@ -143,7 +146,7 @@ def test_state_is_never_a_step_expect_at_any_depth(expect: dict[str, Any]) -> No
         plan_from_json(_doc([click], {"title": {"pattern": "x"}}))
     assert caught.value.path.startswith("$.steps[0].expect")
     assert caught.value.path.endswith(".state")
-    assert "check and uncheck own their postcondition" in str(caught.value)
+    assert "check, uncheck and select own their postcondition" in str(caught.value)
 
 
 @pytest.mark.parametrize(

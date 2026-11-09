@@ -22,7 +22,8 @@ PASSWORD: Row = (13, "Edit", "Password", (42, 52), 3)
 
 @dataclass
 class Boxes:
-    """The live ToggleState of each box by RuntimeId (the fakes' handles are RuntimeIds)."""
+    """The live ToggleState of each box and the live IsSelected of each tab or radio, by
+    RuntimeId (the fakes' handles are RuntimeIds)."""
 
     world: FakeWorld
     state: dict[tuple[int, ...], int] = field(default_factory=dict)
@@ -30,6 +31,8 @@ class Boxes:
     """A server-confirmed box: its wanted state lands after this many live reads (WV-03)."""
     wanted: dict[tuple[int, ...], int] = field(default_factory=dict)
     reads: int = 0
+    selected: dict[tuple[int, ...], bool] = field(default_factory=dict)
+    selected_reads: int = 0
 
     def value(self, _handle: Any) -> str | None:
         return self.world.composer_value
@@ -41,8 +44,9 @@ class Boxes:
             self.state[handle] = self.wanted[handle]
         return self.state.get(handle)
 
-    def is_selected(self, _handle: Any) -> bool | None:
-        return None
+    def is_selected(self, handle: Any) -> bool | None:
+        self.selected_reads += 1
+        return self.selected.get(handle)
 
     def focused_runtime_id(self) -> tuple[int, ...]:
         return ()

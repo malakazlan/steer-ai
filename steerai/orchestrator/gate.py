@@ -21,7 +21,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol
 
 from steerai.action.launch import SITES, LaunchError, expected_title, site_url
-from steerai.errors import ErrorCode
+from steerai.errors import ErrorCode, SteerError
 from steerai.goal_match import ASKING
 from steerai.orchestrator.contracts import (
     RISKS,
@@ -37,6 +37,7 @@ from steerai.verify.predicates import Appeared, Predicate, Present, Within, comp
 from steerai.verify.strength import Params, strength, strengthen, template_for
 from steerai.verify.t1 import redact
 from steerai.world.elements import Element
+from steerai.world.model import Snapshot, normalise_name
 
 DENY_PATTERNS: Mapping[str, Risk] = {
     "delete": "R3",
@@ -100,9 +101,27 @@ CONSENT_PATTERNS: Mapping[str, Risk] = {
     "acknowledge": "R2",
     "certify": "R2",
 }
-"""5.13 [v2.58] the consent class (widget-verbs WV-08): words that make ticking a CheckBox a
-statement the person signs, read on a CheckBox's name and automation id only."""
-CONSENT_ROLE = "CheckBox"
+"""5.13 [v2.58] the consent class (widget-verbs WV-08): words that make ticking a CheckBox or
+choosing a radio option a statement the person signs, read on the name and automation id of a
+CheckBox or a RadioButton only (W3 verdict ruling (a): "I agree / I do not agree" radios)."""
+CONSENT_ROLES: frozenset[str] = frozenset({"CheckBox", "RadioButton"})
+BILLING_PATTERNS: Mapping[str, Risk] = {
+    "per month": "R2",
+    "per year": "R2",
+    "subscription": "R2",
+    "billing": "R2",
+}
+"""W3-02: whole words that make a CheckBox or a RadioButton a billing choice, read on its name
+and its group name. "plan" alone is not one ("Plan your trip"); prices are `_BILLED`."""
+_BILLED = re.compile(r"[$€£¥₹]\s?\d|\d\s?[$€£¥₹]|/\s?(?:mo|month|yr|year)\b")
+"""W3-02 on the comparable form (NFKC folds a full-width or small dollar sign to $): a currency
+symbol ($, euro, pound, yen, rupee) on either side of a digit, with or without a space, and a
+slash period ("/mo", "/yr", and their long forms)."""
+BILLING_ROLES: frozenset[str] = frozenset({"CheckBox", "RadioButton"})
+GROUP_ROLE = "Group"
+GROUPED_ROLE = "RadioButton"
+"""W3-03: the role whose nearest Group ancestor's name is read through the deny, control and
+consent patterns (Chrome 156 names it after a fieldset's legend or a radiogroup's aria-label)."""
 CONTROL_ROLES: frozenset[str] = frozenset(
     {"Button", "SplitButton", "MenuItem", "CheckBox", "RadioButton"}
 )
@@ -181,30 +200,49 @@ def ask_reasons(step: Step, goal: str, verdict: str | None = None) -> tuple[str,
 
 
 def effective_risk(
-    step: Step, bound_name: str | None = None, element_ids: Sequence[str] = ()
+    step: Step,
+    bound_name: str | None = None,
+    element_ids: Sequence[str] = (),
+    *,
+    group_name: str | None = None,
 ) -> Risk:
     """The plan's tier raised by the deny patterns on the target's name and automation id,
-    on the bound element's name part for a person target (PT-31), and on the automation ids
+    on the bound element's name part for a person target (PT-31), on the automation ids
     of the elements the step resolves to (#84: the page owns them, the plan may name none),
-    never lowered."""
-    raised = deny_tier(step, bound_name, element_ids)
+    and on a radio's group name (W3-03), never lowered."""
+    raised = deny_tier(step, bound_name, element_ids, group_name=group_name)
     return raised if _RISK_ORDER[raised] > _RISK_ORDER[step.risk] else step.risk
 
 
-def deny_tier(step: Step, bound_name: str | None = None, element_ids: Sequence[str] = ()) -> Risk:
-    """The tier the deny and control patterns alone raise the step to, without the plan's tier
-    or the verb floor: R0 when nothing reads."""
+def deny_tier(
+    step: Step,
+    bound_name: str | None = None,
+    element_ids: Sequence[str] = (),
+    *,
+    group_name: str | None = None,
+) -> Risk:
+    """The tier the deny, control, consent and billing patterns alone raise the step to,
+    without the plan's tier or the verb floor: R0 when nothing reads. `group_name` is the name
+    of the resolved element's nearest ancestor when that is a Group: read for a RadioButton
+    through every class (W3-03), for a CheckBox through billing only (W3-02)."""
     risk: Risk = "R0"
     if step.target is None:
         return risk
-    names = [step.target.name, *([bound_name] if bound_name else [])]
+    role = step.target.role
+    group = [group_name] if group_name and role in BILLING_ROLES else []
+    grouped = group if role == GROUPED_ROLE else []
+    names = [step.target.name, *([bound_name] if bound_name else []), *grouped]
     ids = [i for i in (step.target.automation_id, *element_ids) if i]
-    controlled = [step.target.name] if step.target.role in CONTROL_ROLES else []
-    consenting = step.target.role == CONSENT_ROLE
-    classes = (
+    controlled = [step.target.name, *grouped] if role in CONTROL_ROLES else []
+    consenting = role in CONSENT_ROLES
+    billed = [step.target.name, *group] if role in BILLING_ROLES else []
+    if any(_BILLED.search(comparable(name)) for name in billed):
+        risk = "R2"
+    classes: tuple[tuple[Mapping[str, Risk], list[str], list[str]], ...] = (
         (DENY_PATTERNS, names, ids),
         (CONTROL_PATTERNS, controlled, ids),
         (CONSENT_PATTERNS, names if consenting else [], ids if consenting else []),
+        (BILLING_PATTERNS, billed, []),
     )
     for patterns, scope, scope_ids in classes:
         for pattern, tier in patterns.items():
@@ -215,6 +253,22 @@ def deny_tier(step: Step, bound_name: str | None = None, element_ids: Sequence[s
             ):
                 risk = tier
     return risk
+
+
+def group_name(snapshot: Snapshot, element: Element) -> str | None:
+    """The name of the element's nearest ancestor when that ancestor is a named Group (W3-03):
+    Chrome 156 names it after a fieldset's legend or a radiogroup's aria-label (probe
+    `widget_patterns --section groups`, n=3). A question in a plain div names no ancestor (a
+    written gap); anything but a named Group parent is None."""
+    if element.parent_id is None:
+        return None
+    try:
+        parent = snapshot.element(element.parent_id)
+    except SteerError:
+        return None
+    if parent.role != GROUP_ROLE or not normalise_name(parent.name):
+        return None
+    return parent.name
 
 
 def rename_counts(
@@ -500,11 +554,13 @@ class Gate:
         goal: str = "",
         verdict: str | None = None,
         element_automation_id: str = "",
+        group_name: str | None = None,
     ) -> GateResult:
         risk = effective_risk(
             step,
             bound.shown_name_part if bound is not None else None,
             (element_automation_id,) if element_automation_id else (),
+            group_name=group_name,
         )
         if target_pid == self._own_pid:
             return _block("self_target", risk)

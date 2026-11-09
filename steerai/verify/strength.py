@@ -12,6 +12,7 @@ other rungs (replan once, ask) belong to the orchestrator.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -24,6 +25,7 @@ from steerai.verify.predicates import (
     Focused,
     Predicate,
     State,
+    StateName,
     ValueEquals,
     WindowExists,
     Within,
@@ -32,7 +34,9 @@ from steerai.verify.predicates import (
 from steerai.world.model import normalise_name
 
 Tier = Literal["R0", "R1", "R2", "R3"]
-_STATE_WANTED: dict[str, Literal["on", "off"]] = {"check": "on", "uncheck": "off"}
+STATE_WANTED: Mapping[str, StateName] = {"check": "on", "uncheck": "off", "select": "selected"}
+"""Each state verb's wanted value: its `State` template and its own-state strength rule
+(widget-verbs W2-3, W3-3)."""
 MIN_PATTERN_CHARS = 3
 _TIME_LIKE = re.compile(r"^\d{1,2}:\d{2}(:\d{2})?\s*(am|pm)?$", re.I)
 _DATE_WORDS = frozenset(
@@ -156,9 +160,9 @@ def template_for(verb: str, params: Params) -> Predicate:  # noqa: PLR0911 - one
     if verb == "open":
         title = params.open_title or params.window_name
         return WindowExists(name_pattern=_need_str(title, "window_name", verb))
-    if verb in _STATE_WANTED:
+    if verb in STATE_WANTED:
         return State(
-            target_id=_need_int(params.target_id, "target_id", verb), wanted=_STATE_WANTED[verb]
+            target_id=_need_int(params.target_id, "target_id", verb), wanted=STATE_WANTED[verb]
         )
     if verb == "click":
         raise ValueError(
@@ -195,9 +199,9 @@ def strength(
 def _own_state(predicate: Predicate, params: Params, verb: str | None) -> bool:
     """A state verb's own template, bound to the resolved element: top level only, never a
     click's expect, never inside all/any_of, never another verb's (W2-5 ruling)."""
-    if verb not in _STATE_WANTED or params.target_id is None:
+    if verb is None or verb not in STATE_WANTED or params.target_id is None:
         return False
-    return predicate == State(target_id=params.target_id, wanted=_STATE_WANTED[verb])
+    return predicate == State(target_id=params.target_id, wanted=STATE_WANTED[verb])
 
 
 def _content_strength(predicate: Predicate, params: Params) -> Strength:

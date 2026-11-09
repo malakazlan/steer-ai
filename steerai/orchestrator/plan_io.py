@@ -20,7 +20,6 @@ from steerai.action.launch import APPS, LaunchError, site_url
 from steerai.orchestrator.contracts import (
     OPENED_PREFIX,
     RISKS,
-    STATE_ROLE,
     STATE_VERBS,
     VERBS,
     Plan,
@@ -30,6 +29,7 @@ from steerai.orchestrator.contracts import (
     Target,
     executor_verb,
     is_window_ref,
+    state_roles,
 )
 from steerai.verify.decorations import DECORATIONS
 from steerai.verify.predicates import (
@@ -42,6 +42,7 @@ from steerai.verify.predicates import (
     FieldValue,
     Predicate,
     Present,
+    StateName,
     TitleMatches,
     WindowExists,
     WindowGone,
@@ -49,7 +50,9 @@ from steerai.verify.predicates import (
     check_states,
     field_values,
     presents,
+    state_problem,
 )
+from steerai.verify.strength import STATE_WANTED
 from steerai.world.model import normalise_name
 from steerai.world.people import name_part
 
@@ -293,16 +296,18 @@ def _field_value(fields: Mapping[str, Any], inner: str, *, condition: bool) -> F
 def _check_state(fields: Mapping[str, Any], inner: str, *, condition: bool) -> CheckState:
     if not condition:
         raise PlanError(
-            inner, "state is a subgoal condition; check and uncheck own their postcondition"
+            inner, "state is a subgoal condition; check, uncheck and select own their postcondition"
         )
     _keys(fields, STATE_KEYS, inner)
     role = _text(fields.get("role"), f"{inner}.role", max_chars=64)
     name = _text(fields.get("name"), f"{inner}.name")
     wanted = fields.get("wanted")
-    if wanted not in ("on", "off"):
-        raise PlanError(f"{inner}.wanted", "must be on or off")
+    problem = state_problem(role, wanted)
+    if problem is not None:
+        # the role and the wanted value agree, named at the field that breaks it (W3-21)
+        raise PlanError(f"{inner}.{problem[0]}", problem[1])
     try:
-        return CheckState(role=role, name_pattern=name, wanted=cast("Literal['on', 'off']", wanted))
+        return CheckState(role=role, name_pattern=name, wanted=cast("StateName", wanted))
     except ValueError as exc:
         raise PlanError(inner, str(exc)) from exc
 
@@ -466,8 +471,8 @@ def _step(value: object, path: str) -> Step:
     if provenance not in ("verbatim", "generated"):
         raise PlanError(f"{path}.text_provenance", "must be verbatim or generated")
     text = obj.get("text")
-    if verb in STATE_VERBS and "expect" in obj:
-        raise PlanError(f"{path}.expect", "the verb template owns the postcondition")
+    if verb in STATE_VERBS:
+        _check_state_fields(obj, verb, path)
     try:
         step = Step(
             id=_ident(obj.get("id"), f"{path}.id"),
@@ -490,6 +495,20 @@ def _step(value: object, path: str) -> Step:
             raise
         raise PlanError(path, str(exc)) from exc
     return _checked_present(_checked_open(step, path), path)
+
+
+def _check_state_fields(obj: Mapping[str, Any], verb: str, path: str) -> None:
+    """A state verb's refusals at their own field paths (W3-21): the template owns the
+    postcondition, the verb's roles only, never preapproved by the request."""
+    if "expect" in obj:
+        raise PlanError(f"{path}.expect", "the verb template owns the postcondition")
+    target = obj.get("target")
+    role = target.get("role") if isinstance(target, dict) else None
+    roles = state_roles(verb)
+    if isinstance(role, str) and role not in roles:
+        raise PlanError(f"{path}.target.role", f"{verb} targets a {' or '.join(sorted(roles))}")
+    if obj.get("preapproved_by_request") is True:
+        raise PlanError(f"{path}.preapproved_by_request", f"{verb} is never preapproved")
 
 
 def _checked_present(step: Step, path: str) -> Step:
@@ -594,10 +613,11 @@ def _check_values(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: 
 
 
 def _check_states(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: str) -> None:
-    """A `state` subgoal with steps names, for each state, a check (on) or uncheck (off) of its
-    own on that CheckBox (the target rule: exact, by name alone); it owns no send / submit /
-    delete; its steps act in one window (W2-4). Unlike `value`, an R2/R3 step is allowed: a
-    consent box is R2 by design. A subgoal without steps cannot tick and is allowed."""
+    """A `state` subgoal with steps names, for each state, a check (on), uncheck (off) or select
+    (selected) of its own on that element (the target rule: same role, exact, by name alone); it
+    owns no send / submit / delete; its steps act in one window (W2-4, W3-5). Unlike `value`, an
+    R2/R3 step is allowed: a consent box is R2 by design. A subgoal without steps cannot tick
+    and is allowed."""
     windows = _window_of_each(steps)
     for index, subgoal in enumerate(subgoals):
         wanted = check_states(subgoal.condition)
@@ -612,16 +632,20 @@ def _check_states(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: 
         for state in wanted:
             if not any(_sets(s, state) for s in own):
                 raise PlanError(
-                    where, "state names the box and state a check or uncheck of it sets"
+                    where, "state names the element and state a check, uncheck or select sets"
                 )
+
+
+_SETTING_VERB: Mapping[str, str] = {wanted: verb for verb, wanted in STATE_WANTED.items()}
+"""The verb that sets each wanted state: on is a check, off an uncheck, selected a select."""
 
 
 def _sets(step: Step, state: CheckState) -> bool:
     target = step.target
     return (
-        step.verb == ("check" if state.wanted == "on" else "uncheck")
+        step.verb == _SETTING_VERB[state.wanted]
         and target is not None
-        and target.role == STATE_ROLE
+        and target.role == state.role
         and target.match == "exact"
         and not target.automation_id  # resolved by the exact name only, as the state is
         and normalise_name(target.name).casefold() == normalise_name(state.name_pattern).casefold()
