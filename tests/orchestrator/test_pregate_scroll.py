@@ -14,6 +14,7 @@ from typing import Any
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.errors import ErrorCode
 from steerai.orchestrator.contracts import Step, Target
+from steerai.orchestrator.loop import _KilledError
 from steerai.verify.predicates import Appeared
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
@@ -387,3 +388,34 @@ def test_a_target_pushed_back_twice_is_refused_with_nothing_sent() -> None:
     assert result.ok is False
     assert result.evidence["detail"] == "offscreen_unreachable"
     assert page.log == ["scroll_into_view", "scroll_into_view"]
+
+
+SECOND_SCROLL_WAIT = 3
+"""The boundary before the second pre-gate scroll: window (1), first scroll (2), second (3)."""
+
+
+def test_the_second_scroll_passes_the_boundary_first() -> None:
+    """#184 re-review item 1: every scroll is a dispatch, so the kill, health and idle check
+    runs before the second one too, and a wait there re-observes before it scrolls."""
+    page = Page(pushed_back=1)
+    h = _harness(page)
+    seen: list[int] = []
+    scripted_waits(h, {SECOND_SCROLL_WAIT: lambda: seen.append(page.scrolls)})
+    result = h.session.run_step(_click())
+    assert result.ok is True, result.to_dict()
+    assert seen == [1], "the boundary ran after the first scroll, before the second"
+    assert result.evidence["restarted"] is True
+    assert page.log == ["scroll_into_view", "scroll_into_view", "click"]
+
+
+def test_a_kill_before_the_second_scroll_sends_nothing() -> None:
+    page = Page(pushed_back=1)
+    h = _harness(page)
+
+    def kill() -> None:
+        raise _KilledError
+
+    scripted_waits(h, {SECOND_SCROLL_WAIT: kill})
+    result = h.session.run_step(_click())
+    assert result.evidence["detail"] == "killed"
+    assert page.log == ["scroll_into_view"]

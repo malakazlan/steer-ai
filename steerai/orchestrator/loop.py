@@ -1440,6 +1440,12 @@ class Session:
             evidence["restarted"] = True
             asked = before.element(element_id)
         for scrolls in range(1, MAX_SCROLLS + 1):
+            if scrolls > 1 and self._boundary(evidence):
+                # every scroll is a dispatch: kill, health and idle first (5.1 [v1.4])
+                before, element_id = self._reobserve(
+                    step, before, evidence, asked=element_id, mismatch="screen_changed_during_wait"
+                )
+                evidence["restarted"] = True
             result = self._semantic.execute(
                 Action(verb="scroll_into_view", element_id=element_id), before
             )
