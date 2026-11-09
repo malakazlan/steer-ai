@@ -22,11 +22,17 @@ their words in the group label. For radios in a `<fieldset><legend>`, in a `role
 with `aria-label`, and in a plain `<div>` after a `<p>` question, the radio's ancestors as the
 world model sees them (role and name, nearest first): does any ancestor carry the question?
 
+Section `choose` (W4, hunter WV-07/36): the executor's own sequence on a native select with no
+fixed waits: Expand, poll the ComboBox subtree for the option every 10 ms, SelectionItem.Select,
+Collapse at once, then poll ValuePattern for the option. Timings, the Collapse readback, the
+option's IsSelected, and the page's trusted events.
+
 Usage (Windows):
     uv run python -m steerai.probes.widget_patterns --runs 5
     uv run python -m steerai.probes.widget_patterns --section tree --runs 5
     uv run python -m steerai.probes.widget_patterns --section secure --runs 5
     uv run python -m steerai.probes.widget_patterns --section groups --runs 3
+    uv run python -m steerai.probes.widget_patterns --section choose --runs 5
 """
 
 from __future__ import annotations
@@ -468,15 +474,103 @@ def groups(number: int) -> dict[str, Any]:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _poll(check: Callable[[], bool], limit_s: float) -> float | None:
+    """Milliseconds until `check()` holds, polled every POLL_S; None past `limit_s`."""
+    started = time.perf_counter()
+    while time.perf_counter() - started < limit_s:
+        if check():
+            return round((time.perf_counter() - started) * 1000, 1)
+        time.sleep(POLL_S)
+    return None
+
+
+def _choose_row(
+    uia: Any, mod: Any, hwnd: int, state: Callable[[], Any], wanted: str
+) -> dict[str, Any]:  # Any: comtypes
+    """One zero-wait choose of `wanted` on the Colour select."""
+    combo = _find(uia, mod, hwnd, mod.UIA_ComboBoxControlTypeId, "Colour")
+    expand = _pattern(combo, mod, EXPAND_COLLAPSE, "IUIAutomationExpandCollapsePattern")
+    value = _pattern(combo, mod, VALUE, "IUIAutomationValuePattern")
+    before = state()
+    row: dict[str, Any] = {"value_before": str(value.CurrentValue)}
+    started = time.perf_counter()
+    expand.Expand()
+    found: list[Any] = []
+
+    def option_seen() -> bool:
+        option = _subtree_option(uia, mod, combo, wanted)
+        if option:
+            found.append(option)
+        return bool(option)
+
+    row["option_ms"] = _poll(option_seen, OPTIONS_LIMIT_S)
+    if not found:
+        expand.Collapse()
+        row["collapse_read_back"] = int(expand.CurrentExpandCollapseState)
+        return row
+    item = _pattern(found[0], mod, SELECTION_ITEM, "IUIAutomationSelectionItemPattern")
+    item.Select()
+    row["select_ms"] = round((time.perf_counter() - started) * 1000, 1)
+    expand.Collapse()
+    row["collapse_now"] = int(expand.CurrentExpandCollapseState)
+    row["collapse_ms"] = _poll(lambda: int(expand.CurrentExpandCollapseState) == 0, 1.0)
+    row["value_ms"] = _poll(lambda: str(value.CurrentValue) == wanted, 1.0)
+    row["value_after"] = str(value.CurrentValue)
+    row["total_ms"] = round((time.perf_counter() - started) * 1000, 1)
+    after = state()
+    row["page_value"] = after["sel2"]
+    row["events"] = after["log"][len(before["log"]) :]
+    return row
+
+
+def choose(number: int) -> dict[str, Any]:
+    """Two zero-wait chooses (Blue, then Red back) on the fixture's Colour select."""
+    from steerai.probes.task_suite import _page  # noqa: PLC0415 - the one-tab reader
+    from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415 - Windows only
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
+    from steerai.run import warm_up  # noqa: PLC0415
+    from steerai.world.model import WorldModel  # noqa: PLC0415
+
+    wait_until_idle()
+    tmp = Path(tempfile.mkdtemp(prefix="steer-choose-"))
+    with PageServer({"/page.html": PAGE}) as server:
+        port = _free_port()
+        url = f"http://127.0.0.1:{server.port}/page.html"
+        proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, url, window_size=WINDOW)
+        try:
+            window = wait_window_for_pid(proc.pid, image="chrome.exe", process=proc)
+            page_ws_url(port)
+            _in_front(window.hwnd)
+            client = UiaClient()
+            warm_up(lambda: WorldModel(client).observe(window.hwnd), cap_s=15.0)
+            uia, mod = client._uia, client._uia_module
+
+            def state() -> Any:  # Any: the page's JSON state
+                cdp = _page(port)
+                try:
+                    return json.loads(_evaluate(cdp, TREE_STATE, "state"))
+                finally:
+                    cdp.close()
+
+            return {
+                "run": number,
+                "blue": _choose_row(uia, mod, window.hwnd, state, "Blue"),
+                "red": _choose_row(uia, mod, window.hwnd, state, "Red"),
+            }
+        finally:
+            stop_chrome(proc, tmp / "profile")
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Widget patterns in Chrome through UIA.")
     parser.add_argument("--runs", type=int, default=5)
-    choices = ("actions", "tree", "secure", "groups")
+    choices = ("actions", "tree", "secure", "groups", "choose")
     parser.add_argument("--section", choices=choices, default="actions")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     for number in range(1, args.runs + 1):
-        if args.section in ("tree", "secure", "groups"):
-            sections = {"tree": tree, "secure": secure, "groups": groups}
+        if args.section in ("tree", "secure", "groups", "choose"):
+            sections = {"tree": tree, "secure": secure, "groups": groups, "choose": choose}
             row = sections[args.section](number)
             sys.stdout.write(json.dumps(row) + "\n")
             sys.stdout.flush()
