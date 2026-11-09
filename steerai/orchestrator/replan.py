@@ -94,12 +94,16 @@ class Progress:
         return done
 
     def failure(self) -> FailedStep | None:
-        """The last step that failed in the last run, by id and taxonomy code: an earlier
-        plan's failure is never reported again."""
+        """The last step that failed in the last run, by id and taxonomy code, and its detail
+        only when it is `active_option` (D-151): an earlier plan's failure is never reported
+        again, and no other detail reaches the planner."""
         for result in reversed(self.last.results):
             code = result.code or result.verify_code
             if not result.ok and code is not None:
-                return FailedStep(step_id=result.step_id, code=code.value)
+                detail: Literal["active_option"] | None = None
+                if result.evidence.get("detail") == "active_option":
+                    detail = "active_option"
+                return FailedStep(step_id=result.step_id, code=code.value, detail=detail)
         return None
 
     def rewritten(self, plan: Plan) -> set[str]:

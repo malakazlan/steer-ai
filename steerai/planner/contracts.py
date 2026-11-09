@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from steerai.errors import ErrorCode, SteerError
 from steerai.orchestrator.contracts import Plan, is_window_ref
@@ -41,6 +41,12 @@ class FailedStep:
     step_id: str
     code: str
     """The taxonomy code (5.4), never a message."""
+    detail: Literal["active_option"] | None = None
+    """A closed refusal token the planner may act on (D-151); never screen text."""
+
+    def __post_init__(self) -> None:
+        if self.detail not in (None, "active_option"):
+            raise ValueError("failed step detail is not a known token")
 
 
 @dataclass(frozen=True, slots=True)
