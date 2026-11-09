@@ -391,10 +391,10 @@ class Session:
         cannot say is unknown, and no open ticks then (issue #51, gate Q2)."""
         self._observer = observer
         self._secure_memory = SecureMemory()
+        """A field once seen secure stays secure for the task (WV-09)."""
         self._earlier_unmet = False
         """Whether an earlier subgoal whose steps ran is unticked, set by the plan loop for the
         step it runs: a step the element raises to R2/R3 then never starts (#190 review)."""
-        """A field once seen secure stays secure for the task (WV-09)."""
         self._semantic = semantic
         self._physical = physical
         self._gate = gate
