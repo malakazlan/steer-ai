@@ -233,20 +233,54 @@ def test_no_options_after_expand_is_uncertain_and_keeps_the_attempt_open() -> No
 # ---- a box left expanded stops the task (W4-02, W4-08) -------------------------------------------
 
 
-def test_a_collapse_that_never_confirmed_stops_the_task_left_expanded() -> None:
-    h, _values = _harness()
-    left = _result(
+def _left_expanded(*labels: str) -> ActionResult:
+    return _result(
         Delivery.DELIVERY_UNCERTAIN,
-        [EXPAND, SELECT, COLLAPSE],
+        list(labels),
         ErrorCode.VERIFY_FAILED,
         {"detail": "left_expanded"},
     )
-    _scripted(h, SIZE[0], left)
+
+
+def test_a_collapse_that_never_confirmed_stops_the_task_even_when_the_value_landed() -> None:
+    h, values = _harness()
+    effect = _chooses(values)
+    h.semantic.on_execute = effect
+    h.semantic.outcomes[SIZE[0]] = _left_expanded(EXPAND, SELECT, COLLAPSE)
     task = h.session.run_task(_plan(_choose(), _choose("Free", "Plan", step_id="s2")))
     assert task.status == "stopped", task
     assert task.evidence["detail"] == "left_expanded"
     assert [r.step_id for r in task.results] == ["s1"], "no further input in the window"
+    first = task.results[0]
+    assert first.ok is False
+    assert first.code is ErrorCode.VERIFY_FAILED
+    assert "verify" in first.latency_ms, "a Select went out: T1 reads, sends nothing"
+
+
+def test_a_refusal_whose_collapse_never_confirmed_stops_with_no_t1() -> None:
+    h, _values = _harness()
+    _scripted(h, SIZE[0], _left_expanded(EXPAND, COLLAPSE))
+    task = h.session.run_task(_plan(_choose(), _choose("Free", "Plan", step_id="s2")))
+    assert task.evidence["detail"] == "left_expanded"
+    assert [r.step_id for r in task.results] == ["s1"]
     assert "verify" not in task.results[0].latency_ms
+
+
+def test_a_submitting_choose_left_expanded_on_a_gone_page_stops_navigated() -> None:
+    """Measured on Chrome 156 (test_choose_live): after a Select whose onchange submits, the
+    stale box may read Expanded to the Collapse cap; T1 then finds the target gone (W4-12)."""
+    h, values = _harness()
+    effect = _chooses(values)
+
+    def submits(executor: Any, action: Any) -> None:
+        effect(executor, action)
+        h.world.rows = [r for r in h.world.rows if r[1] != "ComboBox"]
+
+    h.semantic.on_execute = submits
+    h.semantic.outcomes[SIZE[0]] = _left_expanded(EXPAND, SELECT, COLLAPSE)
+    task = h.session.run_task(_plan(_choose(), _choose("Free", "Plan", step_id="s2")))
+    assert task.evidence["detail"] == "navigated"
+    assert [r.step_id for r in task.results] == ["s1"]
 
 
 def test_the_blocker_after_expand_stops_the_task_with_nothing_more_sent() -> None:

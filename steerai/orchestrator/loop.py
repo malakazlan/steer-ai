@@ -984,6 +984,10 @@ class Session:
             evidence["retitled"] = True  # a token, never the titles (W3-01, W4-01)
         # already in the wanted state is nothing sent and counts as success (5.9 [v0.7])
         ok = verdict.holds and (action.delivery is not Delivery.NOT_DELIVERED or action.skipped)
+        if action.evidence.get("detail") == "left_expanded":
+            # the box never read Collapsed: the task stops whatever the value reads (W4-02)
+            evidence["detail"] = "left_expanded"
+            ok = False
         if ok and step.verb in ("type", "choose") and step.target is not None:
             # a choose pins its twin like a type, so its value condition reads it (W4-11)
             self._pin(step.target, verdict.level)
@@ -2865,12 +2869,12 @@ def _state_stop(step: Step, result: StepResult) -> tuple[Literal["stopped"], Err
     A choose that left its box expanded stops: no further input in the window (W4-02, W4-08)."""
     if step.verb not in WIDGET_VERBS or result.ok or result.action is None:
         return None
+    if result.evidence.get("reason") == "target_not_found" or result.evidence.get("retitled"):
+        return "stopped", ErrorCode.VERIFY_FAILED, "navigated"
     if result.evidence.get("detail") == "left_expanded":
         return "stopped", result.code or ErrorCode.VERIFY_FAILED, "left_expanded"
     if step.verb == "choose" and _unchosen(result.action):
         return None  # a refusal sent no option: nothing to verify or to stop on (W4-06)
-    if result.evidence.get("reason") == "target_not_found" or result.evidence.get("retitled"):
-        return "stopped", ErrorCode.VERIFY_FAILED, "navigated"
     if result.evidence.get("risk") not in ("R2", "R3"):
         return None
     return "stopped", result.code or ErrorCode.VERIFY_FAILED, "state_unverified"
@@ -2888,12 +2892,13 @@ def _measured_provider(step: Step, snapshot: Snapshot) -> None:
 
 
 def _unchosen(action: ActionResult) -> bool:
-    """A choose that sent no Select, or that left its box expanded (W4-06, W4-02); an option
-    already chosen (nothing sent) is verified like any skip."""
+    """A choose that sent no Select (W4-06): it closes as a refusal, with no T1. An option
+    already chosen (nothing sent) is verified like any skip; a Select that went out is read by
+    T1 even when the box was left expanded, so a page the choose navigated away stops
+    `navigated` (W4-12; measured: the Collapse after a submitting Select either fails
+    0x80040201 or reads Expanded to the cap)."""
     if action.skipped:
         return False
-    if action.evidence.get("detail") == "left_expanded":
-        return True
     return not any(s.label == "SelectionItemPattern.Select" for s in action.steps)
 
 
