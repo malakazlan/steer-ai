@@ -292,6 +292,22 @@ def test_the_failure_is_the_last_failed_step() -> None:
     assert _progress().failure() is None
 
 
+def test_the_failure_keeps_the_active_option_detail() -> None:
+    """D-151 v2: the executor's popup-option refusal reaches the planner as its token."""
+    run = _unfinished(_result("c1", ok=False, code=ErrorCode.FOCUS_LOST, detail="active_option"))
+    assert _progress(_one_click_plan(), run).failure() == FailedStep(
+        step_id="c1", code="focus_lost", detail="active_option"
+    )
+
+
+@pytest.mark.parametrize("detail", ["target_not_focused", "no_match", SENTINEL])
+def test_the_failure_drops_every_other_detail(detail: str) -> None:
+    run = _unfinished(_result("c1", ok=False, code=ErrorCode.FOCUS_LOST, detail=detail))
+    assert _progress(_one_click_plan(), run).failure() == FailedStep(
+        step_id="c1", code="focus_lost"
+    )
+
+
 def test_ticked_is_the_union_and_done_needs_every_plans_subgoals() -> None:
     progress = _progress()
     progress.add(

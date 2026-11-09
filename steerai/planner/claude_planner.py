@@ -193,7 +193,8 @@ def _progress_lines(request: PlanRequest) -> list[str]:
     lines.extend(f"open subgoal: {_one_line(g.id)}: {_one_line(g.desc)}" for g in request.remaining)
     failure = request.failure
     if failure is not None:
-        lines.append(f"failed step: {_one_line(failure.step_id)} {_one_line(failure.code)}")
+        line = f"failed step: {_one_line(failure.step_id)} {_one_line(failure.code)}"
+        lines.append(line if failure.detail is None else f"{line} {failure.detail}")
     return lines
 
 

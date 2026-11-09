@@ -1507,6 +1507,60 @@ def test_press_with_no_focused_element_and_no_runtime_id_is_refused(fast_clock: 
     assert inputs.chords == []
 
 
+# ---- an active option holds the UIA focus (D-151 v2) -----------------------------------------
+
+OPTION_ID = (7, 3)
+
+
+def _combobox_with(focused_role: str) -> Snapshot:
+    """A search ComboBox and, beside it, the element UIA reports as focused: a popup's active
+    option (aria-activedescendant) or something else that took the focus."""
+    base = _snapshot(FakeHandle(), role="ComboBox", name="Search")
+    other = Element(
+        id=3,
+        depth=1,
+        role=focused_role,
+        name="Site search for fl",
+        box=(10, 60, 110, 80),
+        runtime_id=OPTION_ID,
+        parent_id=0,
+    )
+    return replace(
+        base,
+        elements=[*base.elements, other],
+        node_count=4,
+        handles=[*base.handles, FakeHandle(name="Site search for fl")],
+    )
+
+
+@pytest.mark.parametrize("role", ["ListItem", "TreeItem", "MenuItem", "DataItem"])
+def test_press_refuses_active_option_when_a_popup_option_holds_the_focus(
+    fast_clock: Any, role: str
+) -> None:
+    """Enter would accept the option, not submit the field: nothing is sent."""
+    inputs = FakeInput(focused=OPTION_ID)
+    action = PhysicalAction(verb="press", element_id=1, chord="enter")
+    result = _executor(inputs).execute(action, _combobox_with(role))
+    assert result.delivery is Delivery.NOT_DELIVERED
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.evidence["detail"] == "active_option"
+    assert inputs.chords == []
+    assert inputs.bursts == []
+
+
+@pytest.mark.parametrize("role", ["Button", "Hyperlink"])
+def test_press_refuses_target_not_focused_when_anything_else_holds_the_focus(
+    fast_clock: Any, role: str
+) -> None:
+    """A link is the page-stole-focus case (SE-01), never an active option."""
+    inputs = FakeInput(focused=OPTION_ID)
+    action = PhysicalAction(verb="press", element_id=1, chord="enter")
+    result = _executor(inputs).execute(action, _combobox_with(role))
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.evidence["detail"] == "target_not_focused"
+    assert inputs.chords == []
+
+
 # ---- the switch tap's guards and the menu-mode refusal (issue #38, hunter SF-01/03/05/06/20) ---
 
 
