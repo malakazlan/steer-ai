@@ -19,7 +19,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-Verb = Literal["click", "focus", "type", "send", "submit", "delete", "open", "check", "uncheck"]
+Verb = Literal[
+    "click", "focus", "type", "send", "submit", "delete", "open", "check", "uncheck", "select"
+]
 Risk = Literal["R0", "R1", "R2", "R3"]
 ConditionKind = Literal[
     "appeared",
@@ -100,8 +102,10 @@ class PredicateDoc(_Doc):
     text: str | None = Field(
         default=None, description="value (a subgoal condition only): the exact text the field holds"
     )
-    wanted: Literal["on", "off"] | None = Field(
-        default=None, description="state (a subgoal condition only): the CheckBox is on or off"
+    wanted: Literal["on", "off", "selected"] | None = Field(
+        default=None,
+        description="state (a subgoal condition only): a CheckBox is on or off; a TabItem or "
+        "RadioButton is selected",
     )
 
     def to_file_form(self) -> dict[str, Any]:  # Any: a JSON body for the plan boundary

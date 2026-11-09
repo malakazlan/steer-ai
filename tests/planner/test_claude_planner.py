@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from steerai.errors import ErrorCode
 from steerai.planner.claude_planner import (
     DEFAULT_MODEL,
+    MECHANICAL_VERBS,
     PROMPT_VERSION,
     ClaudePlanner,
     build_prompt,
@@ -204,7 +205,7 @@ def test_the_prompt_says_focus_targets_a_field_role() -> None:
     system, _ = build_prompt(_request(), tag="t")
     prose = " ".join(system.split())
     assert "focus (put keyboard focus in a field: an Edit, ComboBox or Document)" in prose
-    assert PROMPT_VERSION == "planner-16"
+    assert PROMPT_VERSION == "planner-17"
 
 
 def test_the_prompt_says_a_selection_click_is_proven_by_present() -> None:
@@ -763,3 +764,48 @@ def test_a_check_step_keeps_no_model_expect() -> None:
     outcome = planner.plan(_request(goal="turn on email alerts"))
     assert outcome.plan.steps[0].verb == "check"
     assert outcome.plan.steps[0].expect is None
+
+
+def test_the_prompt_teaches_select_and_the_selected_state() -> None:
+    """W3-6, W3-07 (planner-17): select only on a listed TabItem or RadioButton, never a click on
+    one; a visual tab that is a link or a button stays a click; `state` takes `selected`; the
+    present paragraph stops naming tabs, and `present` stays for chats, mails and list rows."""
+    system, _ = build_prompt(_request(), tag="t")
+    prose = " ".join(system.split())
+    assert (
+        "select (pick a tab or a radio option, only when the listing shows role TabItem or "
+        "RadioButton; never click those)" in prose
+    )
+    assert "A visual tab that is a Hyperlink or a Button stays a click." in prose
+    assert "state: role CheckBox, name, wanted (on or off)" in prose
+    assert "role TabItem or RadioButton with wanted selected, proven by a select step" in prose
+    assert "a tab's item" not in prose
+    assert "A tab is a select and a state selected" in prose
+    assert "opening a chat, a conversation, a mail or a list row" in prose
+    assert 'Do not write "expect" for focus, type, open, check, uncheck or select' in prose
+
+
+def test_a_select_step_keeps_no_model_expect() -> None:
+    condition = PredicateDoc(kind="state", role="TabItem", name="Details", wanted="selected")
+    doc = PlanDoc(
+        goal="switch to the details tab",
+        subgoals=[SubgoalDoc(id="g1", desc="details", condition=condition)],
+        steps=[
+            StepDoc(
+                id="s1",
+                subgoal="g1",
+                verb="select",
+                target=TargetDoc(role="TabItem", name="Details"),
+                risk="R1",
+                expect=PredicateDoc(kind="title", pattern="Details"),
+            )
+        ],
+    )
+    planner, _ = _planner(_Response(parsed_output=doc))
+    outcome = planner.plan(_request(goal="switch to the details tab"))
+    assert outcome.plan.steps[0].verb == "select"
+    assert outcome.plan.steps[0].expect is None
+    assert condition.to_file_form() == {
+        "state": {"role": "TabItem", "name": "Details", "wanted": "selected"}
+    }
+    assert "select" in MECHANICAL_VERBS
