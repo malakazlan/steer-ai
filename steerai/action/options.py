@@ -27,9 +27,17 @@ MAX_OPTION_UNITS = 500
 _REJECTED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn"})
 
 
+def option_key(text: str) -> str:
+    """The one comparator for a choose (W4-05, case folded by the PR #192 review): NFKC (a
+    no-break space folds to a space), whitespace folded, case folded. It serves option
+    resolution, already-equal, the readback, the choose template, a choose-proven `value` and
+    the option's verbatim check against the goal; `type` and its `value` stay exact."""
+    return normalise_name(text).casefold()
+
+
 def clean_option(option: str) -> str:
-    """The option as `choose` compares it (W4-05): NFKC (a no-break space folds to a space),
-    whitespace folded, case kept. Empty, over `MAX_OPTION_UNITS`, or holding a control, format,
+    """The option as the plan wrote it, NFKC and whitespace folded, case kept for the ask; it is
+    compared through `option_key`. Empty, over `MAX_OPTION_UNITS`, or holding a control, format,
     surrogate, private-use or unassigned character (a hidden word, RN-04) is refused."""
     folded = normalise_name(option)
     if not folded:

@@ -226,7 +226,10 @@ def _check_widget_step(step: Step) -> None:
     are unmeasured, WV-22), select a TabItem or a RadioButton only (no ListItem, round 1 item 7),
     choose a ComboBox's option only; the semantic pattern only, the template owns the
     postcondition, and the person is always asked at R2/R3 (the verdict's W2-5 ruling). Only a
-    choose takes an option, and its option is a clean, non-empty name (`clean_option`)."""
+    choose takes an option, and its option is a clean, non-empty name (`clean_option`).
+    Approved gap (PR #192 review): `type` on a ComboBox is not refused at plan time; it is the
+    Google search box's path, and on a native select the Value is never empty, so the typing
+    path's `field_not_empty` refuses before any keystroke."""
     option = step.params.get(OPTION_PARAM)
     if step.verb == "choose":
         if option is None:

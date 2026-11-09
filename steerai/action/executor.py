@@ -36,7 +36,7 @@ from steerai.action.execution import (
     classify,
 )
 from steerai.action.keyboard import GateApproval
-from steerai.action.options import OptionItem, OptionSource, clean_option
+from steerai.action.options import OptionItem, OptionSource, clean_option, option_key
 from steerai.action.readback import Readback, poll_found, poll_state, poll_until
 from steerai.action.sanitize import normalise_newlines, sanitize_value
 from steerai.errors import ErrorCode, SteerError
@@ -271,10 +271,13 @@ class Executor:
         on every path, except when it does not read Expanded (the ARIA shape) or the blocker
         fired; a refusal is `not_delivered` only once the polled Collapse read back Collapsed
         (W4 v2 verdict). Every pattern call goes through `call.send`; a COM error is classified
-        by the phase the call log is in."""
-        option = action.option
-        if option is None:  # enforced by Action.__post_init__; kept for the type checker
+        by the phase the call log is in. Every comparison is `option_key` (case folded): options
+        that differ only in case are `ambiguous_option`. Accepted residual (PR #192 review): when
+        two options differ only in case and the Value already equals one of them, the choose
+        reads already satisfied before Expand, so it never learns the pair is ambiguous."""
+        if action.option is None:  # enforced by Action.__post_init__; kept for the type checker
             raise SteerError(ErrorCode.INVALID_TEXT, "choose needs an option")
+        option = option_key(action.option)
         expander = self._uia.pattern(handle, UIA_EXPAND_COLLAPSE_PATTERN, "ExpandCollapsePattern")
         state = int(expander.CurrentExpandCollapseState)
         if state == _LEAF_NODE:
@@ -284,7 +287,7 @@ class Executor:
 
         def read_value() -> str:
             raw = value.CurrentValue
-            return normalise_name("" if raw is None else str(raw))
+            return option_key("" if raw is None else str(raw))
 
         if read_value() == option:
             return ActionResult.already_satisfied(action.verb)
@@ -407,8 +410,8 @@ _DISPATCH: dict[str, Callable[[Executor, Action, Any, Call], ActionResult]] = {
 
 
 def _named(items: Sequence[OptionItem], option: str) -> list[OptionItem] | None:
-    """The ListItems whose folded name is the option (W4-05); None while there are none."""
-    found = [item for item in items if normalise_name(item.name) == option]
+    """The ListItems whose `option_key` is the option's (W4-05); None while there are none."""
+    found = [item for item in items if option_key(item.name) == option]
     return found or None
 
 

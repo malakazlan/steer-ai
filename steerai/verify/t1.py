@@ -29,6 +29,7 @@ from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
 from steerai.action.live_reads import twin_value_of
+from steerai.action.options import option_key
 from steerai.action.sanitize import field_text, normalise_newlines
 from steerai.errors import ErrorCode, SteerError
 from steerai.verify.predicates import (
@@ -676,11 +677,11 @@ ComboBox, either way (W4-10)."""
 
 
 def _same_value(value: str, wanted: str, *, folded: bool) -> bool:
-    """A field's value against the wanted text: a choose's ComboBox value by `normalise_name`
-    (W4-05: NFKC folds a no-break space, whitespace folded, case kept), anything typed exactly
-    (newlines normalised only, so "a b" never passes for "a", LF, "b")."""
+    """A field's value against the wanted text: a choose's ComboBox value by `option_key`
+    (W4-05: NFKC folds a no-break space, whitespace and case folded), anything typed exactly
+    (newlines normalised only: "a b" never passes for "a", LF, "b", nor "large" for "Large")."""
     if folded:
-        return normalise_name(value) == normalise_name(wanted)
+        return option_key(value) == option_key(wanted)
     return value == normalise_newlines(wanted)
 
 

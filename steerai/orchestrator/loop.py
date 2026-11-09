@@ -39,6 +39,7 @@ from steerai.action.launch import (
 )
 from steerai.action.launcher import OpenAction
 from steerai.action.live_reads import twin_value_of
+from steerai.action.options import option_key
 from steerai.action.physical import TEXT_ROLES, PhysicalAction
 from steerai.action.sanitize import field_text, normalise_newlines
 from steerai.errors import ErrorCode, SteerError
@@ -2247,7 +2248,7 @@ class Session:
             return reads_wanted(self._live, handle, STATE_WANTED[step.verb])
         raw = self._live.value(handle)
         option = step.params.get(OPTION_PARAM, "")
-        return None if raw is None else normalise_name(str(raw)) == normalise_name(option)
+        return None if raw is None else option_key(str(raw)) == option_key(option)
 
     def _done_already(
         self, step: Step, key: str, stage: _Stage, evidence: dict[str, Any]

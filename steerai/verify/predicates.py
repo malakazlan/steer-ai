@@ -142,8 +142,8 @@ class ValueEquals:
     target_id: int
     text: str = field(repr=False)
     folded: bool = False
-    """A choose's template (W4-05): compared by `normalise_name` (NFKC folds a no-break space,
-    whitespace folded, case kept). A type's stays exact: newlines normalised, nothing else."""
+    """A choose's template (W4-05): compared by `option_key` (NFKC folds a no-break space,
+    whitespace and case folded). A type's stays exact: newlines normalised, nothing else."""
 
 
 FIELD_ROLES: frozenset[str] = frozenset({"Edit", "ComboBox", "Document"})
@@ -165,7 +165,7 @@ class FieldValue:
     text: str = field(repr=False)
     folded: bool = False
     """Set by the plan boundary, never by the model, when a `choose` of the subgoal proves this
-    value (W4-7): the choose's comparator (`normalise_name`) and no alias to another field role
+    value (W4-7): the choose's comparator (`option_key`) and no alias to another field role
     (W4-05, W4-10). A value a `type` proves keeps the exact rule."""
 
     def __post_init__(self) -> None:

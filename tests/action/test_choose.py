@@ -249,12 +249,32 @@ def test_the_option_name_is_matched_by_the_folding_comparator(fast_clock: Any) -
     assert result.delivery is Delivery.DELIVERED_VERIFIED, result.to_dict()
 
 
-def test_case_is_not_folded(fast_clock: Any) -> None:
+def test_large_chooses_large_and_verifies(fast_clock: Any) -> None:
+    # PR #192 review: a choose matches case-insensitively, under the W4-05 comparator
     combo = Combo()
-    result = _executor(_source(combo, *_items(combo, "large"))).execute(
+    result = _executor(_source(combo, *_items(combo, "Small", "Large"))).execute(
+        _choose("large"), _snapshot(combo)
+    )
+    assert result.delivery is Delivery.DELIVERED_VERIFIED, result.to_dict()
+    assert combo.calls == ["expand", "select:Large", "collapse"]
+    assert combo.value == "Large"
+
+
+def test_options_differing_only_in_case_are_ambiguous(fast_clock: Any) -> None:
+    combo = Combo()
+    result = _executor(_source(combo, *_items(combo, "Large", "large"))).execute(
         _choose("Large"), _snapshot(combo)
     )
-    assert result.evidence["detail"] == "no_match"
+    assert result.delivery is Delivery.NOT_DELIVERED
+    assert result.evidence["detail"] == "ambiguous_option"
+    assert combo.calls == ["expand", "collapse"]
+
+
+def test_a_value_differing_only_in_case_is_already_satisfied(fast_clock: Any) -> None:
+    combo = Combo(value="LARGE")
+    result = _executor(_source(combo)).execute(_choose("large"), _snapshot(combo))
+    assert result.skipped is True
+    assert combo.calls == []
 
 
 # ---- refusals before Expand: nothing sent --------------------------------------------------------

@@ -341,6 +341,21 @@ def test_a_done_key_whose_value_changed_since_stops_without_a_choose() -> None:
     assert len(h.semantic.calls) == 1
 
 
+def test_a_done_key_whose_value_differs_only_in_case_is_done_already() -> None:
+    h, values = _harness()
+    step = _choose(PREMIUM, "Plan")
+    assert h.session.run_step(step).ok is True
+    values.values[PLAN[3]] = PREMIUM.upper()
+    again = h.session.run_step(replace(step, id="s9"))
+    assert again.gate == "done_already", again.to_dict()
+
+
+def test_a_value_landing_in_another_case_is_verified() -> None:
+    h, values = _harness()
+    h.semantic.on_execute = _chooses(values, landed="LARGE")
+    assert h.session.run_step(_choose("large")).ok is True
+
+
 def test_a_done_key_whose_value_still_holds_is_done_already() -> None:
     h, values = _harness()
     step = _choose(PREMIUM, "Plan")

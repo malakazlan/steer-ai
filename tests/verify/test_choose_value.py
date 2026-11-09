@@ -38,9 +38,17 @@ def test_the_choose_template_folds_a_no_break_space() -> None:
     assert _evaluate(template, f"New{NBSP}York") is True
 
 
-def test_the_folding_comparator_keeps_case() -> None:
+def test_the_choose_comparator_folds_case() -> None:
     chosen = FieldValue(role="ComboBox", name_pattern="Message", text="Large", folded=True)
-    assert _evaluate(chosen, "large") is False
+    assert _evaluate(chosen, "large") is True
+    template = ValueEquals(target_id=COMPOSER[0], text="Large", folded=True)
+    assert _evaluate(template, "LARGE") is True
+
+
+def test_a_typed_value_still_differs_on_case() -> None:
+    typed = FieldValue(role="Edit", name_pattern="Message", text="Large")
+    assert _evaluate(typed, "large", BASE_ROWS) is False
+    assert _evaluate(ValueEquals(target_id=COMPOSER[0], text="Large"), "large", BASE_ROWS) is False
 
 
 def test_a_typed_value_reading_a_newline_never_passes_for_a_space() -> None:

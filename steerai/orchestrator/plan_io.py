@@ -18,7 +18,7 @@ from dataclasses import replace
 from typing import Any, Literal, cast
 
 from steerai.action.launch import APPS, LaunchError, site_url
-from steerai.action.options import clean_option
+from steerai.action.options import clean_option, option_key
 from steerai.orchestrator.contracts import (
     CHOOSE_ROLE,
     OPENED_PREFIX,
@@ -33,7 +33,6 @@ from steerai.orchestrator.contracts import (
     Target,
     executor_verb,
     is_window_ref,
-    verbatim_in,
     widget_roles,
 )
 from steerai.verify.decorations import DECORATIONS
@@ -620,15 +619,21 @@ _NO_VALUE_VERBS = frozenset({"send", "submit", "delete"})
 
 
 def _check_options(goal: str, steps: tuple[Step, ...], path: str) -> None:
-    """A choose's option is the person's own words (WV-13): an option that is not verbatim in
-    the goal (NFKC, whitespace folded, case kept) was read off the screen, `screen_content`."""
+    """A choose's option is the person's own words (WV-13): an option whose `option_key` is
+    not in the goal's (NFKC, whitespace and case folded: "set the size to large" chooses
+    "Large", PR #192 review) was read off the screen, `screen_content`."""
     for index, step in enumerate(steps):
         option = step.params.get(OPTION_PARAM)
-        if step.verb == "choose" and option is not None and not verbatim_in(option, goal):
+        if step.verb == "choose" and option is not None and not _in_goal(option, goal):
             raise PlanError(
                 f"{path}.steps[{index}].params.{OPTION_PARAM}",
                 "screen_content: the option is the goal's own words, never read off the screen",
             )
+
+
+def _in_goal(option: str, goal: str) -> bool:
+    key = option_key(option)
+    return bool(key) and key in option_key(goal)
 
 
 def _check_values(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: str) -> None:
@@ -683,7 +688,7 @@ def _fold(predicate: Predicate, chooses: list[Step]) -> Predicate:
 
 def _chose(step: Step, value: FieldValue) -> bool:
     """A choose of that exact ComboBox (the target rule: exact, by name alone) whose option is
-    the value's text by the choose's comparator (W4-05: NFKC, whitespace folded, case kept)."""
+    the value's text by the choose's comparator (`option_key`: NFKC, whitespace and case)."""
     target = step.target
     option = step.params.get(OPTION_PARAM)
     return (
@@ -694,7 +699,7 @@ def _chose(step: Step, value: FieldValue) -> bool:
         and not target.automation_id
         and target.role == value.role == CHOOSE_ROLE
         and normalise_name(target.name).casefold() == normalise_name(value.name_pattern).casefold()
-        and normalise_name(option) == normalise_name(value.text)
+        and option_key(option) == option_key(value.text)
     )
 
 

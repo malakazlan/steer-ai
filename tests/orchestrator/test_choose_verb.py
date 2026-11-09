@@ -231,9 +231,23 @@ def test_a_value_whose_text_is_not_the_option_is_refused() -> None:
     assert caught.value.path == "$.subgoals[0].condition"
 
 
-def test_a_value_on_the_combobox_differing_in_case_is_refused() -> None:
-    with pytest.raises(PlanError):
-        plan_from_json(_plan(condition=_value("large")))
+def test_a_value_on_the_combobox_differing_in_case_is_the_chooses() -> None:
+    value = plan_from_json(_plan(condition=_value("large"))).subgoals[0].condition
+    assert isinstance(value, FieldValue)
+    assert value.folded is True
+
+
+def test_an_option_in_another_case_than_the_goal_is_verbatim() -> None:
+    # PR #192 review: "set the size to large" chooses the option "Large"
+    plan = plan_from_json(_plan(goal="set the size to large", condition=_value()))
+    assert plan.steps[0].params["option"] == "Large"
+
+
+def test_an_option_absent_from_the_goal_in_any_case_is_screen_content() -> None:
+    with pytest.raises(PlanError) as caught:
+        plan_from_json(_plan(goal="SET THE SIZE TO MEDIUM"))
+    assert caught.value.path == "$.steps[0].params.option"
+    assert "screen_content" in caught.value.reason
 
 
 def test_a_typed_value_keeps_the_exact_comparator() -> None:
