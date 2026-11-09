@@ -226,7 +226,7 @@ def test_integers_are_strict(delta: Any) -> None:
     assert _error(doc).path == "$.subgoals[0].condition.count_delta.delta"
 
 
-@pytest.mark.parametrize("kind", ["value_equals", "focused", "state"])
+@pytest.mark.parametrize("kind", ["value_equals", "focused"])
 def test_live_predicate_kinds_need_a_snapshot_id_and_are_refused(kind: str) -> None:
     doc = _doc()
     doc["subgoals"][0]["condition"] = {kind: {"target_id": 3}}

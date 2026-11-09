@@ -10,9 +10,10 @@ full-string. `Disappeared` needs the target's siblings and container to survive 
 filter is not a delete). An unstable snapshot on either side yields no verdict.
 
 `evaluate` is pure over two snapshots except for the live predicates (`ValueEquals`, `Focused`,
-`State`), which read the resolved target through an injected `LiveReads`. `verify` evaluates the
-orchestrator's after snapshot first and re-observes only on a miss, one stability fetch per poll,
-never past the deadline (an observe is not started with less time left than the last one took).
+`State`, and the conditions `FieldValue` and `CheckState`), which read the resolved target
+through an injected `LiveReads`. `verify` evaluates the orchestrator's after snapshot first and
+re-observes only on a miss, one stability fetch per poll, never past the deadline (an observe is
+not started with less time left than the last one took).
 `verify_failed` needs positive contradiction evidence (a duplicate effect, a failure status, a
 value that is empty or unchanged, a definite toggle or focus); "not there yet" only times out.
 Outcomes are three-valued: pass, fail, or no label (`label_of_record` returns None).
@@ -35,6 +36,7 @@ from steerai.verify.predicates import (
     All,
     AnyOf,
     Appeared,
+    CheckState,
     CountDelta,
     Disappeared,
     FieldValue,
@@ -704,6 +706,30 @@ def _field_value(predicate: FieldValue, snapshot: Snapshot, ctx: Context) -> Ver
     return _plain("value_empty" if value == "" else "value_differs", settles=True)
 
 
+def _check_state(predicate: CheckState, snapshot: Snapshot, ctx: Context) -> Verdict:
+    """Presence in one snapshot (W2-4): the one CheckBox of this role and name (NFKC,
+    whitespace-folded, case-folded; no twin pin, no alias) and its ToggleState read through that
+    snapshot's handle. Unlike the step's `State`, a differing read settles: a condition is judged
+    after its step's own check passed, so nothing is still in flight."""
+    live = _live(ctx, "CheckState")
+    wanted = normalise_name(predicate.name_pattern).casefold()
+    found = [
+        e
+        for e in snapshot.elements
+        if e.role == predicate.role and normalise_name(e.name).casefold() == wanted
+    ]
+    if not found:
+        return _plain("target_not_found", settles=True)
+    if len(found) > 1:
+        return _plain("ambiguous_target", settles=True)
+    observed = live.toggle_state(snapshot.handle(found[0].id))
+    if observed is None:
+        return _plain("no_pattern", settles=True)
+    if observed == (1 if predicate.wanted == "on" else 0):
+        return Verdict(holds=True, code=None, level=3, polls=0, evidence={})
+    return _plain("state_differs", settles=True)
+
+
 def _focused(predicate: Focused, before: Snapshot, after: Snapshot, ctx: Context) -> Verdict:
     live = _live(ctx, "Focused")
     element = _target(before, after, predicate.target_id)
@@ -858,6 +884,7 @@ _EVALUATORS: dict[type, Callable[[Any, Snapshot, Snapshot, Context], Verdict]] =
     Present: lambda p, b, a, _c: _present(p, b, a),
     ValueEquals: _value_equals,
     FieldValue: lambda p, _b, a, c: _field_value(p, a, c),
+    CheckState: lambda p, _b, a, c: _check_state(p, a, c),
     Focused: _focused,
     State: _state,
     TitleMatches: lambda p, b, a, _c: _title_matches(p, b, a),
@@ -1011,6 +1038,9 @@ def redact(predicate: Predicate) -> dict[str, Any]:
                 spec.update(_appeared_spec(predicate))
         case FieldValue():
             spec["role"] = predicate.role  # never the name, the text or a value read
+        case CheckState():
+            spec["role"] = predicate.role  # never the name: a box's label can be personal
+            spec["wanted"] = predicate.wanted
         case Present():
             spec["role"] = predicate.role  # never the name: it is a contact's (PS-35)
             spec["within"] = _within_spec(predicate.within)

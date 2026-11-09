@@ -27,7 +27,7 @@ from steerai.orchestrator.gate import effective_risk
 from steerai.orchestrator.loop import TaskResult
 from steerai.orchestrator.plan_io import encode_predicate
 from steerai.planner.contracts import DoneStep, FailedStep, OpenSubgoal
-from steerai.verify.predicates import All, AnyOf, Predicate, field_values
+from steerai.verify.predicates import All, AnyOf, Predicate, check_states, field_values
 
 MAX_REPLANS = 2
 """Every replan counts, a continuation after `unfinished` too (design 5.3 [v2.1]: stricter than
@@ -192,8 +192,8 @@ def continuation_refusal(plan: Plan, progress: Progress, *, desktop: bool = Fals
 
 
 def _subgoals_refused(plan: Plan, progress: Progress) -> bool:
-    """Q3: every remaining id kept, no ticked id reused; a value's text is the goal's, so a
-    continuation never rewrites it to screen text (FV-04)."""
+    """Q3: every remaining id kept, no ticked id reused; a value's text and a box's wanted state
+    are the goal's, so a continuation never rewrites them from the screen (FV-04, W2-4)."""
     ids = {s.id for s in plan.subgoals}
     ticked = progress.ticked
     remaining = set(progress.subgoals()) - ticked
@@ -203,15 +203,18 @@ def _subgoals_refused(plan: Plan, progress: Progress) -> bool:
     return any(
         s.id in before
         and (
-            _texts(before[s.id].condition) != _texts(s.condition)
+            _goal_owned(before[s.id].condition) != _goal_owned(s.condition)
             or _weakened(before[s.id].condition, s.condition)
         )
         for s in plan.subgoals
     )
 
 
-def _texts(condition: Predicate) -> list[str]:
-    return sorted(value.text for value in field_values(condition))
+def _goal_owned(condition: Predicate) -> list[tuple[str, str]]:
+    """Each value's text and each box's wanted state in a condition."""
+    found = [("value", value.text) for value in field_values(condition)]
+    found += [("state", state.wanted) for state in check_states(condition)]
+    return sorted(found)
 
 
 _WINDOW_KINDS = frozenset({"WindowExists", "TitleMatches"})
