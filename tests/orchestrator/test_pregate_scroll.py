@@ -14,6 +14,7 @@ from typing import Any
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.errors import ErrorCode
 from steerai.orchestrator.contracts import Step, Target
+from steerai.orchestrator.loop import _KilledError
 from steerai.verify.predicates import Appeared
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
@@ -52,11 +53,15 @@ class Page:
     remounts: bool = False
     """After the scroll, the button is a new node: same role and name, new RuntimeId."""
     """The button removes itself when clicked: an R3 `delete` with its own template."""
+    pushed_back: int = 0
+    """Scrolls whose landing the page's lazy load then pushes back below the fold."""
+    scrolls: int = 0
     observed: int = 0
     log: list[str] = field(default_factory=list)
 
     def button(self) -> Element:
-        on = self.scrolled and self.scroll_lands
+        landed = self.scrolls == 0 or self.scrolls > self.pushed_back
+        on = self.scrolled and self.scroll_lands and landed
         runtime_id = (55,) if self.scrolled and self.remounts else (5,)
         return Element(
             id=5,
@@ -117,6 +122,7 @@ def _harness(page: Page, *, scroll_result: ActionResult | None = None) -> Harnes
         page.log.append(action.verb)
         if action.verb == "scroll_into_view":
             page.scrolled = True
+            page.scrolls += 1
         if action.verb == "click":
             page.clicked = True
             page.deleted = page.deletes
@@ -195,7 +201,7 @@ def test_a_scroll_that_does_not_land_is_refused_with_nothing_sent() -> None:
     result = h.session.run_step(_click())
     assert result.ok is False
     assert result.evidence["detail"] == "offscreen_unreachable"
-    assert page.log == ["scroll_into_view"]
+    assert page.log == ["scroll_into_view", "scroll_into_view"], "one more try, then refused"
 
 
 def test_an_on_screen_target_is_never_scrolled() -> None:
@@ -279,3 +285,137 @@ def test_running_out_of_polls_counts_as_never_quiet() -> None:
     assert result.evidence["detail"] == "scroll_not_quiet"
     assert page.log == ["scroll_into_view"]
     assert h.confirmer.asked == []
+
+
+def test_a_target_scrolled_away_during_the_ask_is_never_acted_on() -> None:
+    """Hunter OS-01r (#184): the person scrolls while reading the ask; the fresh look after the
+    yes finds the target offscreen. The person approved it on screen, so nothing is sent and
+    the write-ahead is released."""
+    page = Page(scrolled=True, deletes=True)
+    h = _harness(page)
+
+    def scroll_away(_ask: Any) -> None:
+        page.scrolled = False
+
+    h.confirmer.on_ask = scroll_away
+    result = h.session.run_step(_delete())
+    assert result.ok is False
+    assert result.code is ErrorCode.FOCUS_LOST
+    assert result.evidence["detail"] == "offscreen_after_ask"
+    assert "click" not in page.log
+    assert "scroll_into_view" not in page.log
+
+
+def _physical(risk: str, verb: str = "click") -> Step:
+    return Step(
+        id="p1",
+        subgoal="g1",
+        verb=verb,
+        target=Target(role="Button", name="Show more"),
+        risk=risk,  # type: ignore[arg-type]  # a Risk literal from the parameter
+        expect=None if verb == "delete" else Appeared(role="Text", name_pattern="More items"),
+        path="physical",
+    )
+
+
+def _refuse_once(h: Harness, detail: str) -> None:
+    """The physical executor refuses the first click (`offscreen` live), then clicks."""
+    refusal = not_delivered(ErrorCode.ELEMENT_NOT_ACTIONABLE, detail)
+    h.physical.outcomes[5] = refusal
+
+    def before_lookup(executor: FakeExecutor, _action: Any) -> None:
+        # runs before the outcome lookup: keep the refusal for the first call only
+        if len(executor.calls) > 1:
+            executor.outcomes.pop(5, None)
+
+    h.physical.on_execute = before_lookup
+
+
+def test_a_physical_offscreen_refusal_at_r3_is_never_scrolled_after_the_record() -> None:
+    """Hunter OS-01r: at R2/R3 the scroll inside `_act` came after the write-ahead and the
+    before of record; now the refusal stands and nothing is sent."""
+    page = Page(scrolled=True, deletes=True)
+    h = _harness(page)
+    _refuse_once(h, "offscreen")
+    result = h.session.run_step(_physical("R3", verb="delete"))
+    assert result.ok is False
+    assert "scroll_into_view" not in page.log
+    assert result.action is not None
+    assert result.action.delivery is Delivery.NOT_DELIVERED
+    assert len(h.physical.calls) == 1
+
+
+def test_a_physical_offscreen_refusal_at_r1_scrolls_then_waits_for_a_quiet_page() -> None:
+    """Hunter OS-01r: at R0/R1 the scroll stays, with the pre-gate scroll's quiet look, so a
+    before taken mid-load never judges the step."""
+    page = Page(scrolled=True, churns=True)
+    h = _harness(page)
+    _refuse_once(h, "offscreen")
+    result = h.session.run_step(_physical("R1"))
+    assert result.ok is False
+    assert result.code is ErrorCode.UNSTABLE_UI
+    assert result.evidence["detail"] == "scroll_not_quiet"
+    assert page.log == ["scroll_into_view"]
+
+
+def test_a_physical_offscreen_refusal_at_r1_scrolls_once_then_clicks() -> None:
+    page = Page(scrolled=True)
+    h = _harness(page)
+    _refuse_once(h, "offscreen")
+    result = h.session.run_step(_physical("R1"))
+    assert page.log == ["scroll_into_view"]
+    assert len(h.physical.calls) == 2
+    assert result.evidence["scrolled"] == "delivered_verified"
+
+
+def test_a_target_a_lazy_load_pushes_back_is_scrolled_once_more() -> None:
+    """Principal re-review of #184 (live, a lazy feed): the rows the scroll loads push the
+    button back below the fold; one more scroll and quiet look reach it (Playwright's
+    actionability retries scrolling into view the same way)."""
+    page = Page(pushed_back=1)
+    h = _harness(page)
+    result = h.session.run_step(_click())
+    assert result.ok is True, result.to_dict()
+    assert page.log == ["scroll_into_view", "scroll_into_view", "click"]
+    assert result.evidence["scrolls"] == 2
+
+
+def test_a_target_pushed_back_twice_is_refused_with_nothing_sent() -> None:
+    """An endless feed keeps loading below: two scrolls, then the refusal stands."""
+    page = Page(pushed_back=2)
+    h = _harness(page)
+    result = h.session.run_step(_click())
+    assert result.ok is False
+    assert result.evidence["detail"] == "offscreen_unreachable"
+    assert page.log == ["scroll_into_view", "scroll_into_view"]
+
+
+SECOND_SCROLL_WAIT = 3
+"""The boundary before the second pre-gate scroll: window (1), first scroll (2), second (3)."""
+
+
+def test_the_second_scroll_passes_the_boundary_first() -> None:
+    """#184 re-review item 1: every scroll is a dispatch, so the kill, health and idle check
+    runs before the second one too, and a wait there re-observes before it scrolls."""
+    page = Page(pushed_back=1)
+    h = _harness(page)
+    seen: list[int] = []
+    scripted_waits(h, {SECOND_SCROLL_WAIT: lambda: seen.append(page.scrolls)})
+    result = h.session.run_step(_click())
+    assert result.ok is True, result.to_dict()
+    assert seen == [1], "the boundary ran after the first scroll, before the second"
+    assert result.evidence["restarted"] is True
+    assert page.log == ["scroll_into_view", "scroll_into_view", "click"]
+
+
+def test_a_kill_before_the_second_scroll_sends_nothing() -> None:
+    page = Page(pushed_back=1)
+    h = _harness(page)
+
+    def kill() -> None:
+        raise _KilledError
+
+    scripted_waits(h, {SECOND_SCROLL_WAIT: kill})
+    result = h.session.run_step(_click())
+    assert result.evidence["detail"] == "killed"
+    assert page.log == ["scroll_into_view"]

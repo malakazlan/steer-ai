@@ -140,6 +140,9 @@ ALIAS_ROLES: frozenset[str] = FIELD_ROLES
 on screen resolves by its exact name among these (chooser-wiring gate; live run osg-4 named
 `Edit` where Notepad shows `Document`)."""
 _ALIAS_VERBS: frozenset[str] = frozenset({"focus", "type"})
+MAX_SCROLLS = 2
+"""Pre-gate scrolls per step: one, and one more when a lazy load pushed the target back
+(measured on a real-Chrome lazy feed, #184 re-review); an endless feed then fails closed."""
 OPEN_POLL_S = 0.1
 NAVIGATION_VERIFY_S = 10.0
 """Verify deadline for a replacing `appeared` (a page replacing itself; 5.10 [v1.9]): a heavy
@@ -475,6 +478,9 @@ class Session:
                 before, element_id = stage.measure(
                     "observe",
                     lambda: self._reobserve(step, before, evidence, asked=asked, mismatch=token),
+                )
+                before, element_id = self._still_shown(
+                    step, before, element_id, stage, evidence, asked=gate_result.outcome, risk=risk
                 )
                 if self._binding is not None:
                     # the bound row's text may have moved on: the postcondition follows it,
@@ -1420,8 +1426,10 @@ class Session:
         """An offscreen target comes into view before the gate, the ask and the write-ahead
         (offscreen-lines packet, principal item 1, hunter OS-01/02/05/06/07): ScrollIntoView, a
         quiet look, the same element by RuntimeId; the before of record and the ask are that
-        screen. No ScrollItemPattern, or still offscreen after the scroll, is refused with
-        nothing sent (`offscreen_unreachable`)."""
+        screen. Rows a lazy feed loads in the quiet look can push the target back below the
+        fold (live, #184 re-review): it is scrolled once more, at most MAX_SCROLLS times. No
+        ScrollItemPattern, or still offscreen after them, is refused with nothing sent
+        (`offscreen_unreachable`)."""
         asked = before.element(element_id)
         if not asked.offscreen:
             return before, element_id
@@ -1431,25 +1439,34 @@ class Session:
             )
             evidence["restarted"] = True
             asked = before.element(element_id)
-        result = self._semantic.execute(
-            Action(verb="scroll_into_view", element_id=element_id), before
-        )
-        evidence["scrolled"] = result.delivery.value
-        if result.delivery is Delivery.NOT_DELIVERED and not result.skipped:
-            raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "offscreen_unreachable")
-        started = self._monotonic()
-        fresh = stage.measure("observe", lambda: self._observe_fresh(evidence))
-        fresh, capped = stage.measure(
-            "settle",
-            partial(self._quiet, fresh, evidence, started, started + SETTLE_AFTER_TYPE_CAP_S),
-        )
-        if capped:
-            # a before taken mid-load would count the scroll's content as the step's effect
-            raise _StepFailureError(ErrorCode.UNSTABLE_UI, "scroll_not_quiet")
-        element_id = self._same_target(step, fresh, asked, "screen_changed_during_scroll")
-        if fresh.element(element_id).offscreen:
-            raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "offscreen_unreachable")
-        return fresh, element_id
+        for scrolls in range(1, MAX_SCROLLS + 1):
+            if scrolls > 1 and self._boundary(evidence):
+                # every scroll is a dispatch: kill, health and idle first (5.1 [v1.4])
+                before, element_id = self._reobserve(
+                    step, before, evidence, asked=element_id, mismatch="screen_changed_during_wait"
+                )
+                evidence["restarted"] = True
+            result = self._semantic.execute(
+                Action(verb="scroll_into_view", element_id=element_id), before
+            )
+            evidence["scrolled"] = result.delivery.value
+            evidence["scrolls"] = scrolls
+            if result.delivery is Delivery.NOT_DELIVERED and not result.skipped:
+                raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "offscreen_unreachable")
+            started = self._monotonic()
+            fresh = stage.measure("observe", lambda: self._observe_fresh(evidence))
+            fresh, capped = stage.measure(
+                "settle",
+                partial(self._quiet, fresh, evidence, started, started + SETTLE_AFTER_TYPE_CAP_S),
+            )
+            if capped:
+                # a before taken mid-load would count the scroll's content as the step's effect
+                raise _StepFailureError(ErrorCode.UNSTABLE_UI, "scroll_not_quiet")
+            element_id = self._same_target(step, fresh, asked, "screen_changed_during_scroll")
+            before = fresh
+            if not fresh.element(element_id).offscreen:
+                return fresh, element_id
+        raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "offscreen_unreachable")
 
     def _resolve_settling(
         self, step: Step, before: Snapshot, stage: _Stage, evidence: dict[str, Any]
@@ -1902,16 +1919,7 @@ class Session:
                     self._ledger.mark(step, "acting")
                 except LedgerError as exc:
                     raise _StepFailureError(ErrorCode.GATE_BLOCKED, _wal_detail(exc)) from exc
-            if self._boundary(self._act_evidence):
-                # a wait here ended after the observe too: same screen, fresh target (TK-03)
-                before, element_id = self._reobserve(
-                    step,
-                    before,
-                    self._act_evidence,
-                    asked=element_id,
-                    mismatch="screen_changed_during_wait",
-                )
-                self._act_evidence["restarted"] = True
+            before, element_id = self._waited_in_act(step, before, element_id)
             self._still_the_window()
             if self._monitor is not None:
                 # input during the step is what lands after this point (D7)
@@ -1927,16 +1935,10 @@ class Session:
             if result.delivery is not Delivery.NOT_DELIVERED:
                 return result, before, retries
             detail = result.evidence.get("detail")
-            if detail in ("offscreen", "clipped") and not scrolled:
-                self._may_scroll()
+            if detail in ("offscreen", "clipped") and not scrolled and risk in ("R0", "R1"):
+                # at R2/R3 never a scroll after the write-ahead and the before of record (OS-01r)
                 scrolled = True
-                self._boundary(self._act_evidence)  # the scroll is a dispatch too
-                scroll_result = self._semantic.execute(
-                    Action(verb="scroll_into_view", element_id=element_id), before
-                )
-                self._scrolled = scroll_result.delivery.value
-                before = self._observe(stable_window=1)
-                element_id = self._same_target(step, before, asked, ACT_MISMATCH)
+                before, element_id = self._scrolled_in_act(step, before, element_id, asked)
                 continue
             if result.code is ErrorCode.ELEMENT_NOT_FOUND and retries == 0:
                 retries += 1
@@ -1944,6 +1946,65 @@ class Session:
                 element_id = self._same_target(step, before, asked, ACT_MISMATCH)
                 continue
             return result, before, retries
+
+    def _still_shown(  # noqa: PLR0913 - the step's state after the ask, passed once
+        self,
+        step: Step,
+        before: Snapshot,
+        element_id: int,
+        stage: _Stage,
+        evidence: dict[str, Any],
+        *,
+        asked: str,
+        risk: Risk,
+    ) -> tuple[Snapshot, int]:
+        """After an ask or a wait, the target the fresh look found: approved on screen and
+        scrolled away since is never acted on (hunter OS-01r on #184); after a wait at R0/R1
+        it comes into view again through the pre-gate scroll."""
+        if not before.element(element_id).offscreen:
+            return before, element_id
+        if asked == "confirm" or risk in ("R2", "R3"):
+            raise _StepFailureError(ErrorCode.FOCUS_LOST, "offscreen_after_ask")
+        return self._scroll_first(step, before, element_id, stage, evidence)
+
+    def _waited_in_act(self, step: Step, before: Snapshot, element_id: int) -> tuple[Snapshot, int]:
+        """A wait inside `_act` ended after the observe too: same screen, fresh target (TK-03);
+        a target offscreen now would need a scroll after the before of record, so it stops."""
+        if not self._boundary(self._act_evidence):
+            return before, element_id
+        before, element_id = self._reobserve(
+            step,
+            before,
+            self._act_evidence,
+            asked=element_id,
+            mismatch="screen_changed_during_wait",
+        )
+        self._act_evidence["restarted"] = True
+        if before.element(element_id).offscreen:
+            raise _StepFailureError(ErrorCode.FOCUS_LOST, "offscreen_after_wait")
+        return before, element_id
+
+    def _scrolled_in_act(
+        self, step: Step, before: Snapshot, element_id: int, asked: Element
+    ) -> tuple[Snapshot, int]:
+        """An R0/R1 physical refusal for `offscreen` / `clipped`: one scroll, then the pre-gate
+        scroll's quiet look, so T1's before is never a look taken mid-load (OS-01r)."""
+        self._may_scroll()
+        self._boundary(self._act_evidence)  # the scroll is a dispatch too
+        scroll_result = self._semantic.execute(
+            Action(verb="scroll_into_view", element_id=element_id), before
+        )
+        self._scrolled = scroll_result.delivery.value
+        started = self._monotonic()
+        before, capped = self._quiet(
+            self._observe(stable_window=1),
+            self._act_evidence,
+            started,
+            started + SETTLE_AFTER_TYPE_CAP_S,
+        )
+        if capped:
+            raise _StepFailureError(ErrorCode.UNSTABLE_UI, "scroll_not_quiet")
+        return before, self._same_target(step, before, asked, ACT_MISMATCH)
 
     def _dispatch(
         self, step: Step, executor: ExecutorLike, action: Any, before: Snapshot

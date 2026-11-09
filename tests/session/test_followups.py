@@ -11,7 +11,7 @@ from steerai.errors import ErrorCode, SteerError
 from steerai.orchestrator.loop import IDLE_S, MAX_WAIT_S, wait_for_idle
 from steerai.session.monitor import HookMonitor, MonitorCore
 from tests.orchestrator.fakes import FakeExecutor, not_delivered
-from tests.orchestrator.test_loop import Harness, _send, _type
+from tests.orchestrator.test_loop import Harness, _click, _type
 from tests.orchestrator.test_takeover_loop import FakeMonitor, _wire
 
 
@@ -54,7 +54,7 @@ def test_a_kill_between_the_first_attempt_and_the_scroll_rung_stops_before_the_s
             monitor.kill = True
 
     h.semantic.on_execute = offscreen_then_kill
-    result = h.session.run_step(_send())
+    result = h.session.run_step(_click(risk="R1"))
     assert result.code is ErrorCode.GATE_BLOCKED
     assert result.evidence["detail"] == "killed"
     assert [c[0] for c in h.semantic.calls] == ["click"], "no scroll dispatch after the key"

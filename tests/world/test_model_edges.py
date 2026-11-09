@@ -156,14 +156,16 @@ def test_snapshot_line_ids_survive_pruning_so_they_map_back_to_elements() -> Non
     snapshot = _snap(
         _el(1, "Group", ""), _el(2, "Button", "b", offscreen=True), _el(3, "Button", "c")
     )
-    assert snapshot.lines == ['3 Button "c" [0,0,10,10]']
+    # a reachable offscreen element is listed after the on-screen lines, flagged (D-OS v2)
+    assert snapshot.lines == ['3 Button "c" [0,0,10,10]', '2 Button "b" [0,0,10,10] offscreen']
     assert snapshot.element(3).name == "c"
+    assert snapshot.element(2).name == "b"
 
 
 def test_snapshot_element_accepts_ids_the_chooser_never_saw() -> None:
     """Documents current behaviour: an offscreen or capped-out element still resolves by id."""
     snapshot = _snap(_el(1, "Button", "a"), _el(2, "Button", "b", offscreen=True), cap=1)
-    assert snapshot.lines == ['1 Button "a" [0,0,10,10]']
+    assert snapshot.lines == ['1 Button "a" [0,0,10,10]', "(... 1 more not shown)"]
     assert snapshot.element(2).offscreen is True
 
 

@@ -35,7 +35,7 @@ DEFAULT_MAX_TOKENS = 8192
 """Unmeasured: enough for the 6.3 form of a ten-step plan; a `max_tokens` stop is `truncated`."""
 DEFAULT_MAX_RETRIES = 1
 EFFORT = "medium"
-PROMPT_VERSION = "planner-14"
+PROMPT_VERSION = "planner-15"
 MECHANICAL_VERBS = frozenset({"type", "focus", "open"})
 """Steps whose effect code verifies (value typed, focus held, window opened): any model
 `expect` is dropped."""
@@ -44,9 +44,11 @@ _SYSTEM = f"""You write a plan for a Windows computer-use agent that acts on one
 Output a JSON plan document in the exact schema you are given. Nothing else.
 
 The plan has subgoals and steps. Each subgoal has a condition in the predicate language that
-proves it is done. Each step acts on one on-screen element from the screen listing and names its
-effect in the same language. List every subgoal the goal needs, also those on a screen you
-cannot see yet: a subgoal may have no steps, and the agent plans it from the screen it reaches.
+proves it is done. Each step acts on one element from the screen listing and names its effect
+in the same language. A line marked offscreen is on the page but scrolled out of view: a step may
+target it, and the agent scrolls it into view before acting. List every subgoal the goal needs,
+also those on a screen you cannot see yet: a subgoal may have no steps, and the agent plans it
+from the screen it reaches.
 
 Verbs (closed set): click (a button or link), focus (put keyboard focus in a field: an Edit,
 ComboBox or Document), type (type single-line text into the focused field; needs "text"), send

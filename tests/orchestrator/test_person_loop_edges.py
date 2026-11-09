@@ -193,34 +193,28 @@ def test_a_resumed_delete_is_not_done_when_only_the_other_candidate_disappeared(
 # ---- PT-06: one ask per step across the scroll and retry rungs -----------------------------------
 
 
-def test_the_scroll_rung_and_the_retry_re_resolve_the_bound_row_without_a_second_ask() -> None:
+def test_the_retry_re_resolves_the_bound_row_without_a_second_ask() -> None:
+    """The stale-handle retry re-resolves the row the person chose (the R2/R3 scroll rung is
+    gone since #184, hunter OS-01r: an offscreen target is scrolled before the gate)."""
     h = Harness()
     h.world.rows.append(AMIR_KHAN)
     seen = _answer_which(h, 2)
     clicks = {"n": 0}
 
-    def offscreen_then_stale(executor: FakeExecutor, action: Any) -> None:
-        if action.verb == "scroll_into_view":
-            executor.outcomes.pop(action.element_id, None)
-            return
+    def stale_first(executor: FakeExecutor, action: Any) -> None:
         clicks["n"] += 1
         if clicks["n"] == 1:
-            executor.outcomes[action.element_id] = not_delivered(
-                ErrorCode.ELEMENT_NOT_ACTIONABLE, "offscreen"
-            )
-        elif clicks["n"] == 2:
             executor.outcomes[action.element_id] = not_delivered(
                 ErrorCode.ELEMENT_NOT_FOUND, "stale"
             )
         else:
             executor.outcomes.pop(action.element_id, None)
 
-    h.semantic.on_execute = offscreen_then_stale
+    h.semantic.on_execute = stale_first
     result = h.session.run_step(_r2_click())
-    assert [c[0] for c in h.semantic.calls] == ["click", "scroll_into_view", "click", "click"]
-    assert [a.kind for a in seen] == ["which", "yes"], "four resolves, one identity ask"
+    assert [c[0] for c in h.semantic.calls] == ["click", "click"]
+    assert [a.kind for a in seen] == ["which", "yes"], "one identity ask"
     assert result.evidence["retries"] == 1
-    assert result.evidence["scrolled"] == "delivered_verified"
     assert result.action is not None
     assert result.action.delivery is Delivery.DELIVERED_VERIFIED
     assert set(_clicked_runtime_ids(h)) == {KHAN_RID}
@@ -228,24 +222,21 @@ def test_the_scroll_rung_and_the_retry_re_resolve_the_bound_row_without_a_second
     assert result.evidence["chosen_index"] == 2
 
 
-def test_the_bound_row_gone_at_the_scroll_rung_is_candidate_gone() -> None:
+def test_an_offscreen_refusal_on_the_bound_row_at_r2_is_never_scrolled() -> None:
+    """Hunter OS-01r on #184: no scroll after the write-ahead; the refusal stands."""
     h = Harness()
     h.world.rows.append(AMIR_KHAN)
     seen = _answer_which(h, 2)
 
-    def offscreen_then_gone(executor: FakeExecutor, action: Any) -> None:
-        if action.verb == "scroll_into_view":
-            h.world.rows = [r for r in h.world.rows if r[3] != KHAN_RID]
-            return
+    def offscreen(executor: FakeExecutor, action: Any) -> None:
         executor.outcomes[action.element_id] = not_delivered(
             ErrorCode.ELEMENT_NOT_ACTIONABLE, "offscreen"
         )
 
-    h.semantic.on_execute = offscreen_then_gone
+    h.semantic.on_execute = offscreen
     result = h.session.run_step(_r2_click())
-    assert result.code is ErrorCode.ELEMENT_NOT_FOUND
-    assert result.evidence["detail"] == "candidate_gone"
-    assert [c[0] for c in h.semantic.calls] == ["click", "scroll_into_view"]
+    assert result.code is ErrorCode.ELEMENT_NOT_ACTIONABLE
+    assert [c[0] for c in h.semantic.calls] == ["click"]
     assert [a.kind for a in seen] == ["which", "yes"]
     key = h.ledger.key_for(_r2_click())
     assert h.ledger.executions[key]["outcome"] == "not_delivered", "nothing sent: key released"
