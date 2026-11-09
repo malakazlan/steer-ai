@@ -92,6 +92,17 @@ CONTROL_PATTERNS: Mapping[str, Risk] = {
 this video") raise a target's name only on a control role, and its automation id on any role. A
 raised click has no strength template and blocks `weak_predicate` (DC-19/20), so a title hit
 would fail a navigation click outright."""
+CONSENT_PATTERNS: Mapping[str, Risk] = {
+    "agree": "R2",
+    "consent": "R2",
+    "authorize": "R2",
+    "authorise": "R2",
+    "acknowledge": "R2",
+    "certify": "R2",
+}
+"""5.13 [v2.58] the consent class (widget-verbs WV-08): words that make ticking a CheckBox a
+statement the person signs, read on a CheckBox's name and automation id only."""
+CONSENT_ROLE = "CheckBox"
 CONTROL_ROLES: frozenset[str] = frozenset(
     {"Button", "SplitButton", "MenuItem", "CheckBox", "RadioButton"}
 )
@@ -189,12 +200,18 @@ def deny_tier(step: Step, bound_name: str | None = None, element_ids: Sequence[s
     names = [step.target.name, *([bound_name] if bound_name else [])]
     ids = [i for i in (step.target.automation_id, *element_ids) if i]
     controlled = [step.target.name] if step.target.role in CONTROL_ROLES else []
-    for patterns, scope in ((DENY_PATTERNS, names), (CONTROL_PATTERNS, controlled)):
+    consenting = step.target.role == CONSENT_ROLE
+    classes = (
+        (DENY_PATTERNS, names, ids),
+        (CONTROL_PATTERNS, controlled, ids),
+        (CONSENT_PATTERNS, names if consenting else [], ids if consenting else []),
+    )
+    for patterns, scope, scope_ids in classes:
         for pattern, tier in patterns.items():
             if _RISK_ORDER[tier] <= _RISK_ORDER[risk]:
                 continue
             if any(_reads(name, pattern) for name in scope) or any(
-                _reads_id(automation_id, pattern) for automation_id in ids
+                _reads_id(automation_id, pattern) for automation_id in scope_ids
             ):
                 risk = tier
     return risk
@@ -573,7 +590,7 @@ class Gate:
                 candidate = template_for(template_verb(step.verb), params)
             except ValueError:
                 return _block("no_predicate", risk)
-        verdict = strength(candidate, risk, params)
+        verdict = strength(candidate, risk, params, verb=template_verb(step.verb))
         if verdict.ok:
             return _bound_present(candidate, step, params, risk)
         strengthened = strengthen(candidate, template_verb(step.verb), risk, params)
