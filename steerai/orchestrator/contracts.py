@@ -45,6 +45,8 @@ VERBS: frozenset[str] = frozenset(
         "uncheck",
         "select",
         "choose",
+        "expand",
+        "collapse",
     }
 )
 _EXECUTOR_VERBS: dict[str, tuple[Path, str]] = {
@@ -58,6 +60,8 @@ _EXECUTOR_VERBS: dict[str, tuple[Path, str]] = {
     "uncheck": ("semantic", "uncheck"),
     "select": ("semantic", "select"),
     "choose": ("semantic", "choose"),
+    "expand": ("semantic", "expand"),
+    "collapse": ("semantic", "collapse"),
 }
 _TEXT_VERBS = frozenset({"type"})
 _RISK_FLOOR: dict[str, Risk] = {
@@ -69,11 +73,14 @@ _RISK_FLOOR: dict[str, Risk] = {
     "uncheck": "R1",
     "select": "R1",
     "choose": "R1",
+    "expand": "R1",
+    "collapse": "R1",
 }
 STATE_VERBS: frozenset[str] = frozenset(STATE_WANTED)
 """Verbs that set an element's own state: check / uncheck a CheckBox through TogglePattern,
-select a TabItem, a RadioButton or a listbox option through SelectionItemPattern. Their `State`
-template is code-owned (widget-verbs W2 v2, W3 v1): no plan `expect`, no physical path, never
+select a TabItem, a RadioButton or a listbox option through SelectionItemPattern, expand /
+collapse a disclosure Button through ExpandCollapsePattern (W5). Their `State` template is
+code-owned (widget-verbs W2 v2, W3 v1, W5): no plan `expect`, no physical path, never
 preapproved."""
 CHOOSE_ROLE = "ComboBox"
 WIDGET_VERBS: frozenset[str] = STATE_VERBS | {"choose"}
@@ -223,9 +230,9 @@ class Step:
 
 
 def _check_widget_step(step: Step) -> None:
-    """W2-1/W2-3, W3-1, W4-1: check / uncheck a CheckBox only (`role=switch` and ToggleButton
-    are unmeasured, WV-22), select a TabItem, a RadioButton or a ListItem only (W3b: the loop
-    admits a ListItem only under a single-select List),
+    """W2-1/W2-3, W3-1, W4-1, W5: check / uncheck a CheckBox only (`role=switch` and
+    ToggleButton are unmeasured, WV-22), select a TabItem, a RadioButton or a ListItem only (W3b:
+    the loop admits a ListItem only under a single-select List), expand / collapse a Button only,
     choose a ComboBox's option only; the semantic pattern only, the template owns the
     postcondition, and the person is always asked at R2/R3 (the verdict's W2-5 ruling). Only a
     choose takes an option, and its option is a clean, non-empty name (`clean_option`).

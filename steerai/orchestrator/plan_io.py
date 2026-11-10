@@ -302,7 +302,9 @@ def _field_value(fields: Mapping[str, Any], inner: str, *, condition: bool) -> F
 def _check_state(fields: Mapping[str, Any], inner: str, *, condition: bool) -> CheckState:
     if not condition:
         raise PlanError(
-            inner, "state is a subgoal condition; check, uncheck and select own their postcondition"
+            inner,
+            "state is a subgoal condition; check, uncheck, select, expand and collapse own their "
+            "postcondition",
         )
     _keys(fields, STATE_KEYS, inner)
     role = _text(fields.get("role"), f"{inner}.role", max_chars=64)
@@ -704,9 +706,10 @@ def _chose(step: Step, value: FieldValue) -> bool:
 
 
 def _check_states(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: str) -> None:
-    """A `state` subgoal with steps names, for each state, a check (on), uncheck (off) or select
-    (selected) of its own on that element (the target rule: same role, exact, by name alone); it
-    owns no send / submit / delete; its steps act in one window (W2-4, W3-5). Unlike `value`, an
+    """A `state` subgoal with steps names, for each state, a check (on), uncheck (off), select
+    (selected), expand (expanded) or collapse (collapsed) of its own on that element (the target
+    rule: same role, exact, by name alone); it owns no send / submit / delete; its steps act in
+    one window (W2-4, W3-5, W5). Unlike `value`, an
     R2/R3 step is allowed: a consent box is R2 by design. A subgoal without steps cannot tick
     and is allowed."""
     windows = _window_of_each(steps)
@@ -722,13 +725,12 @@ def _check_states(subgoals: tuple[Subgoal, ...], steps: tuple[Step, ...], path: 
             raise PlanError(where, "a state subgoal acts in one window")
         for state in wanted:
             if not any(_sets(s, state) for s in own):
-                raise PlanError(
-                    where, "state names the element and state a check, uncheck or select sets"
-                )
+                raise PlanError(where, "state names the element and state its own widget verb sets")
 
 
 _SETTING_VERB: Mapping[str, str] = {wanted: verb for verb, wanted in STATE_WANTED.items()}
-"""The verb that sets each wanted state: on is a check, off an uncheck, selected a select."""
+"""The verb that sets each wanted state: on is a check, off an uncheck, selected a select,
+expanded an expand, collapsed a collapse."""
 
 
 def _sets(step: Step, state: CheckState) -> bool:

@@ -2238,9 +2238,10 @@ class Session:
     ) -> None:
         """A widget verb's done key proves the state was set, not that it holds now: the page
         or the person may have changed it since (WV-12). Re-read it (a selection through
-        IsSelected, a box through its ToggleState, W3-05, a choose's ComboBox through its Value
-        by the choose's comparator, W4-07); a changed state stops, never a second Toggle, Select
-        or choose under a done key."""
+        IsSelected, a box through its ToggleState, W3-05, a disclosure Button through its
+        ExpandCollapseState, W5, a choose's ComboBox through its Value by the choose's
+        comparator, W4-07); a changed state stops, never a second Toggle, Select, Expand,
+        Collapse or choose under a done key."""
         before, element_id = self._resolve_settling(step, before, stage, evidence)
         try:
             holds = None if self._live is None else self._holds_live(step, before, element_id)
