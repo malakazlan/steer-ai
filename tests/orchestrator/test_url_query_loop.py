@@ -19,7 +19,7 @@ import pytest
 from steerai.errors import ErrorCode
 from steerai.orchestrator.contracts import Plan, Step, Subgoal, Target
 from steerai.orchestrator.gate import url_query_eligible
-from steerai.verify.predicates import Appeared, Within
+from steerai.verify.predicates import Appeared, TitleMatches, Within
 from steerai.verify.url_query import UrlBefore
 from tests.orchestrator.fakes import COMPOSER
 from tests.orchestrator.test_edge_cases import FocusLive, _rebuild
@@ -358,3 +358,50 @@ def test_a_resume_loads_by_the_document_url_too() -> None:
     result = h.session.run_step(_submit())
     assert result.gate == "done_already", result.to_dict()
     assert len(presses) == 1
+
+
+# ---- a title condition naming the typed words (H3 pypi1, #198) --------------------------------
+
+
+def _title_plan(condition: Any, *extra: Any) -> Plan:
+    subgoals = (Subgoal(id="g1", desc="results", condition=condition), *extra)
+    return Plan(goal=GOAL, subgoals=subgoals, steps=(_submit(),))
+
+
+def test_the_url_proof_ticks_a_title_condition_naming_the_typed_words() -> None:
+    """H3 pypi1: the submit was proven by the address bar, but the subgoal's condition was
+    `title <words>` on a results page titled without them, so the run ended unfinished."""
+    bar = Bar(HOME, RESULTS)
+    h = _with_document_url(bar, "https://" + RESULTS)
+    result = h.session.run_task(_title_plan(TitleMatches(pattern=HELLO)))
+    assert result.status == "done", result
+    assert [t["by"] for t in _ticks(h)] == ["url_query_title"]
+
+
+def test_a_title_condition_with_other_words_never_ticks_by_the_url_proof() -> None:
+    bar = Bar(HOME, RESULTS)
+    h = _with_document_url(bar, "https://" + RESULTS)
+    result = h.session.run_task(_title_plan(TitleMatches(pattern="something else")))
+    assert result.status != "done", result
+    assert _ticks(h) == []
+
+
+def test_the_url_proof_never_ticks_another_subgoals_title() -> None:
+    """Only the submit's own subgoal: a later subgoal's `title <words>` is not proven by it."""
+    bar = Bar(HOME, RESULTS)
+    h = _with_document_url(bar, "https://" + RESULTS)
+    later = Subgoal(id="g2", desc="still open", condition=TitleMatches(pattern=HELLO))
+    other = Step(
+        id="s4",
+        subgoal="g2",
+        verb="click",
+        target=Target(role="Button", name="Chat options"),
+        risk="R0",
+        expect=Appeared(role="Text", name_pattern="never shown"),
+    )
+    plan = Plan(
+        goal=GOAL, subgoals=(_title_plan(REPLACING).subgoals[0], later), steps=(_submit(), other)
+    )
+    result = h.session.run_task(plan)
+    assert result.status != "done", result
+    assert [t["by"] for t in _ticks(h)] == ["url_query"]
