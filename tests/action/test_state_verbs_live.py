@@ -94,13 +94,15 @@ def test_check_and_uncheck_set_real_checkboxes(tmp_path: Path) -> None:
         checked = session.run_step(_step("check", "Email alerts", "c1"))
         assert checked.ok is True, checked.to_dict()
         assert checked.action is not None
-        assert checked.action.evidence == {"toggles": 1}
+        # one Toggle, never two: on a slow runner the 400 ms readback can settle before the page
+        # flips (`unchanged`, W2-2) and T1 verifies after it; the step still passed above
+        assert checked.action.evidence["toggles"] == 1
         assert _status(model, window.hwnd) == "alerts true, all false"
         # a mixed box reads ToggleState 2; one Toggle gives 1, so `uncheck` needs a second
         unchecked = session.run_step(_step("uncheck", "Select all", "c2"))
         assert unchecked.ok is True, unchecked.to_dict()
         assert unchecked.action is not None
-        assert unchecked.action.evidence == {"toggles": 2}
+        assert unchecked.action.evidence["toggles"] == 2
         assert _status(model, window.hwnd) == "alerts true, all false"
         again = session.run_step(_step("check", "Email alerts", "c3"))
         assert again.ok is True, again.to_dict()
