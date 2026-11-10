@@ -178,10 +178,12 @@ _MISSES = frozenset({"no_match", "not_new", "not_replaced"})
 """The verify's deadline misses after which the no-effect facts are read (NE-05)."""
 _DELIVERED = frozenset({Delivery.DELIVERED_UNVERIFIED, Delivery.DELIVERED_VERIFIED})
 """An Enter that reached the app: never uncertain, never a refusal (NE-05)."""
-FORM_ROLES = frozenset({"Group"})
-"""The roles a form container shows as: a Button submit must sit under the same nearest one as
-its composer (NE-10). Unmeasured whether Chrome exposes `<form>` as a Group; the measured role
-replaces this set."""
+FORM_ROLES = frozenset({"Group", "Document"})
+"""The roles a form container shows as: a Button submit and its composer must have the same
+nearest ancestor of one of these roles (NE-10). Measured (Chrome 156, 2026-11-10): Chrome exposes
+no element for an unnamed `<form>`, so on a local fixture the field and the form's own button
+hang directly off the Document; on npm (n=2) the "Search packages" field and the "Search" button
+share the same nearest Group (unnamed, two up); a header button sits under its own Group."""
 _RISK_ORDER = {risk: index for index, risk in enumerate(RISKS)}
 DEFAULT_MAX_STEPS = 20
 _DIFF_PREDICATES = (Appeared, Disappeared, CountDelta, WindowGone)
@@ -2034,7 +2036,8 @@ class Session:
 
     def _facts_hold(self, facts: _NoEffectFacts, now: Snapshot, url_now: str | None) -> bool:
         """The five facts, each required: (1) the address bar equals the before URL of record
-        (its digest), both readable; (2) the top Document keeps its RuntimeId and name; (3)
+        (its digest), both readable; (2) the top Document keeps its RuntimeId and name (a
+        same-URL reload changes the RuntimeId, NE-13); (3)
         the composer, resolved in `now` by role and exact name (exactly one: twins are a
         missing fact), still holds exactly the approved text, read through `now`'s handle,
         never the before-of-record's (NE-04: a re-rendered input raises on the stale handle,
@@ -3266,7 +3269,8 @@ def _top_document(snapshot: Snapshot) -> Element | None:
 
 def _same_top_document(before: Snapshot, after: Snapshot) -> bool:
     """The top Document kept its RuntimeId and its name; one without a RuntimeId cannot be
-    proven the same."""
+    proven the same. A same-URL reload gives the top Document a new RuntimeId under the old
+    name (NE-13; measured Chrome 156, 3/3), so this fact catches a reload too."""
     was, now = _top_document(before), _top_document(after)
     if was is None or now is None or not was.runtime_id:
         return False
@@ -3285,8 +3289,9 @@ def _composer_target(step: Step) -> tuple[str, str] | None:
 
 
 def _shares_form(snapshot: Snapshot, button_id: int, composer_id: int) -> bool:
-    """The Button and the composer have the same nearest form container (`FORM_ROLES`) in
-    the snapshot's parent chain; either without one is not beside the other (fails closed)."""
+    """The Button and the composer have the same nearest form container (`FORM_ROLES`,
+    nearest semantics: each walks up to its first such ancestor, and those must be one
+    element); either without one is not beside the other (fails closed)."""
     button, composer = _nearest(snapshot, button_id), _nearest(snapshot, composer_id)
     return button is not None and button == composer
 

@@ -483,6 +483,39 @@ def test_npm1_a_button_elsewhere_on_the_page_is_not_beside_the_field() -> None:
     assert h.ledger.executions[h.ledger.key_for(_button_submit())]["outcome"] == "not_delivered"
 
 
+def _reparented(h: Harness, element_id: int, parent_id: int) -> None:
+    h.world.rows[:] = [
+        (r[0], r[1], r[2], r[3], parent_id) if r[0] == element_id else r for r in h.world.rows
+    ]
+
+
+def test_npm1_a_field_and_a_button_straight_off_the_document_are_beside() -> None:
+    """Measured (Chrome 156, local fixture): an unnamed `<form>` exposes no element, so the
+    field and the form's own Button hang directly off the Document; their nearest container
+    is the same Document, and the click is delivered."""
+    log: list[str] = []
+    bar = LoggedBar(HOME, RESULTS, log)
+    h = _button_harness(bar, log)
+    _reparented(h, COMPOSER[0], 40)
+    _reparented(h, SEARCH_BUTTON[0], 40)
+    result = h.session.run_step(_button_submit())
+    assert result.ok is True, result.to_dict()
+    assert h.semantic.calls == [("click", SEARCH_BUTTON[0], None)]
+
+
+def test_npm1_a_button_off_the_document_beside_a_field_in_a_group_is_not_beside() -> None:
+    """The field's nearest container is its Group, the Button's the Document: not the same
+    element, so not beside (fails closed)."""
+    log: list[str] = []
+    bar = LoggedBar(HOME, RESULTS, log)
+    h = _button_harness(bar, log)
+    _reparented(h, SEARCH_BUTTON[0], 40)
+    result = h.session.run_step(_button_submit())
+    assert result.ok is False
+    assert result.evidence["detail"] == "button_not_beside"
+    assert h.semantic.calls == []
+
+
 def test_npm1_a_button_submit_whose_composer_differs_never_clicks() -> None:
     """OR-31 / SE-02 through a Button: the click submits whatever the field shows, so a field
     that does not hold the approved text blocks the step before anything goes out. The one
