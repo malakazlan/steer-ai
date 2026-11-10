@@ -1,9 +1,9 @@
 """The live reads the verifier needs (5.10 `LiveReads`), over the snapshot's COM handles.
 
-The Value pattern, the toggle and selection states, and the focused element. An element that
-does not expose the pattern reads None, which the verifier treats as unreadable (`no_pattern`),
-never as a value. The listbox admission (W3b) reads whether an item exposes SelectionItem and
-whether its List's Selection allows more than one selected item.
+The Value pattern, the toggle, selection and expand states, and the focused element. An element
+that does not expose the pattern reads None, which the verifier treats as unreadable
+(`no_pattern`), never as a value. The listbox admission (W3b) reads whether an item exposes
+SelectionItem and whether its List's Selection allows more than one selected item.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
 from steerai.action.execution import (
+    UIA_EXPAND_COLLAPSE_PATTERN,
     UIA_SELECTION_ITEM_PATTERN,
     UIA_SELECTION_PATTERN,
     UIA_TOGGLE_PATTERN,
@@ -70,6 +71,18 @@ class UiaLiveReads:
             handle, UIA_SELECTION_ITEM_PATTERN, "SelectionItemPattern", "CurrentIsSelected"
         )
         return None if raw is None else bool(raw)
+
+    def expand_state(self, handle: Any) -> int | None:
+        """A disclosure Button's ExpandCollapseState (0 collapsed, 1 expanded, 2 partially, 3
+        leaf); None without ExpandCollapsePattern (probe `widget_patterns --section disclosure`,
+        Chrome 156, n=3: an `aria-expanded` Button reads 0, then 1 within 11-22 ms of Expand)."""
+        raw = self._state(
+            handle,
+            UIA_EXPAND_COLLAPSE_PATTERN,
+            "ExpandCollapsePattern",
+            "CurrentExpandCollapseState",
+        )
+        return None if raw is None else int(raw)
 
     def has_selection_item(self, handle: Any) -> bool:
         """Whether the element exposes SelectionItemPattern (W3b admission: probe

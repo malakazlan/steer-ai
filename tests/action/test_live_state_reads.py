@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from steerai.action.execution import (
+    UIA_EXPAND_COLLAPSE_PATTERN,
     UIA_SELECTION_ITEM_PATTERN,
     UIA_SELECTION_PATTERN,
     UIA_TOGGLE_PATTERN,
@@ -21,9 +22,10 @@ from steerai.errors import ErrorCode, SteerError
 
 
 class _Pattern:
-    def __init__(self, toggle: int = 0, selected: bool = False) -> None:
+    def __init__(self, toggle: int = 0, selected: bool = False, expanded: int = 0) -> None:
         self.CurrentToggleState = toggle
         self.CurrentIsSelected = selected
+        self.CurrentExpandCollapseState = expanded
 
 
 class _Bindings:
@@ -65,16 +67,27 @@ def test_the_selection_is_read_through_the_selection_item_pattern(selected: bool
     assert UiaLiveReads(_Client(), bindings).is_selected(object()) is selected
 
 
+@pytest.mark.parametrize("state", [0, 1, 2, 3])
+def test_the_expand_state_is_read_through_the_expand_collapse_pattern(state: int) -> None:
+    """W5: a Button's ExpandCollapseState (0 collapsed, 1 expanded, 2 partially, 3 leaf),
+    read as the raw integer; the verifier decides what holds (probe `widget_patterns
+    --section disclosure`, n=3: an `aria-expanded` Button reads 0, then 1 after Expand)."""
+    bindings = _Bindings({UIA_EXPAND_COLLAPSE_PATTERN: _Pattern(expanded=state)})
+    assert UiaLiveReads(_Client(), bindings).expand_state(object()) == state
+    assert bindings.asked == [UIA_EXPAND_COLLAPSE_PATTERN]
+
+
 def test_an_element_without_the_pattern_reads_none() -> None:
-    """The verifier reads None as `no_pattern`, never as off or unselected."""
+    """The verifier reads None as `no_pattern`, never as off, unselected or collapsed."""
     reads = UiaLiveReads(_Client(), _Bindings({}))
     assert reads.toggle_state(object()) is None
     assert reads.is_selected(object()) is None
+    assert reads.expand_state(object()) is None
 
 
 def test_a_com_failure_in_a_state_read_is_a_steer_error() -> None:
     reads = UiaLiveReads(_Client(), _Bindings({}, error=_ComError(-2147220991)))
-    for read in (reads.toggle_state, reads.is_selected):
+    for read in (reads.toggle_state, reads.is_selected, reads.expand_state):
         with pytest.raises(SteerError) as caught:
             read(object())
         assert caught.value.message == "live_read_failed"

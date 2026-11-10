@@ -58,6 +58,9 @@ class Values:
     def is_selected(self, _handle: Any) -> bool | None:
         return None
 
+    def expand_state(self, _handle: Any) -> int | None:
+        return None
+
     def focused_runtime_id(self) -> tuple[int, ...]:
         return ()
 

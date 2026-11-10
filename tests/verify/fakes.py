@@ -16,11 +16,12 @@ Row = tuple[int, str, str, tuple[int, ...], int | None]
 
 @dataclass
 class FakeHandle:
-    """What the live reads see for one element: value, toggle state, selection."""
+    """What the live reads see for one element: value, toggle state, selection, expand state."""
 
     value: str | None = None
     toggle: int | None = None
     selected: bool | None = None
+    expanded: int | None = None
     calls: list[str] = field(default_factory=list)
 
 
@@ -39,6 +40,9 @@ class FakeLive:
 
     def is_selected(self, handle: Any) -> bool | None:
         return self._state(handle).selected
+
+    def expand_state(self, handle: Any) -> int | None:
+        return self._state(handle).expanded
 
     def focused_runtime_id(self) -> tuple[int, ...]:
         return self.focused

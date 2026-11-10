@@ -62,7 +62,13 @@ def test_each_state_verb_maps_to_its_roles_and_its_wanted_value() -> None:
     assert state_roles("check") == frozenset({"CheckBox"})
     assert state_roles("uncheck") == frozenset({"CheckBox"})
     assert state_roles("select") == frozenset({"TabItem", "RadioButton", "ListItem"})
-    assert dict(STATE_WANTED) == {"check": "on", "uncheck": "off", "select": "selected"}
+    assert dict(STATE_WANTED) == {
+        "check": "on",
+        "uncheck": "off",
+        "select": "selected",
+        "expand": "expanded",
+        "collapse": "collapsed",
+    }
 
 
 @pytest.mark.parametrize("role", ["TabItem", "RadioButton", "ListItem"])

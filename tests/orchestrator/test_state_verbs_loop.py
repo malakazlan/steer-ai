@@ -22,8 +22,9 @@ PASSWORD: Row = (13, "Edit", "Password", (42, 52), 3)
 
 @dataclass
 class Boxes:
-    """The live ToggleState of each box and the live IsSelected of each tab or radio, by
-    RuntimeId (the fakes' handles are RuntimeIds)."""
+    """The live ToggleState of each box, the live IsSelected of each tab or radio and the live
+    ExpandCollapseState of each disclosure Button, by RuntimeId (the fakes' handles are
+    RuntimeIds)."""
 
     world: FakeWorld
     state: dict[tuple[int, ...], int] = field(default_factory=dict)
@@ -33,6 +34,9 @@ class Boxes:
     reads: int = 0
     selected: dict[tuple[int, ...], bool] = field(default_factory=dict)
     selected_reads: int = 0
+    expanded: dict[tuple[int, ...], int] = field(default_factory=dict)
+    """Each disclosure Button's live ExpandCollapseState (W5); a Button not here has no pattern."""
+    expand_reads: int = 0
     containers: dict[tuple[int, ...], bool] = field(default_factory=dict)
     """Each List's CanSelectMultiple (W3b); a List not here exposes no SelectionPattern."""
     without_selection_item: set[tuple[int, ...]] = field(default_factory=set)
@@ -54,6 +58,10 @@ class Boxes:
     def is_selected(self, handle: Any) -> bool | None:
         self.selected_reads += 1
         return self.selected.get(handle)
+
+    def expand_state(self, handle: Any) -> int | None:
+        self.expand_reads += 1
+        return self.expanded.get(handle)
 
     def focused_runtime_id(self) -> tuple[int, ...]:
         return ()
