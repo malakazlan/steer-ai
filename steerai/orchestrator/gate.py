@@ -127,6 +127,9 @@ consent patterns (Chrome 156 names it after a fieldset's legend or a radiogroup'
 CONTROL_ROLES: frozenset[str] = frozenset(
     {"Button", "SplitButton", "MenuItem", "CheckBox", "RadioButton"}
 )
+SELECTED_CONTROL_ROLE = "ListItem"
+"""W3b: a listbox option is a control only under `select`, so CONTROL_PATTERNS read its name then
+("Subscribe" as an option asks at R2); a clicked ListItem (a chat row) keeps ruling (a)."""
 _RISK_ORDER = {risk: index for index, risk in enumerate(RISKS)}
 _WHICH = re.compile(r"([1-9][0-9]{0,2}):(w-[0-9a-f]{12})")
 _WORD = re.compile(r"[^\W\d_]+")
@@ -227,7 +230,8 @@ def deny_tier(
     without the plan's tier or the verb floor: R0 when nothing reads. `group_name` is the name
     of the resolved element's nearest ancestor when that is a Group: read for a RadioButton
     through every class (W3-03), for a CheckBox through billing only (W3-02). A choose reads
-    every class on its option, its ComboBox's name and that group's name (W4-03)."""
+    every class on its option, its ComboBox's name and that group's name (W4-03). A select on a
+    listbox option reads the control class on the option's name (W3b)."""
     risk: Risk = "R0"
     if step.target is None:
         return risk
@@ -238,7 +242,8 @@ def deny_tier(
     grouped = group if role == GROUPED_ROLE else []
     names = [step.target.name, *([bound_name] if bound_name else []), *grouped]
     ids = [i for i in (step.target.automation_id, *element_ids) if i]
-    controlled = [step.target.name, *grouped] if role in CONTROL_ROLES else []
+    control = role in CONTROL_ROLES or (step.verb == "select" and role == SELECTED_CONTROL_ROLE)
+    controlled = [step.target.name, *grouped] if control else []
     consenting = role in CONSENT_ROLES
     billed = [step.target.name, *group] if role in BILLING_ROLES else []
     if any(_BILLED.search(comparable(name)) for name in billed):

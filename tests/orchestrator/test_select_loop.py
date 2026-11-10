@@ -52,6 +52,7 @@ ORDER: Row = (44, "ListItem", "Order 7", (42, 93), 43)
 LOOSE: Row = (45, "ListItem", "Loose", (42, 94), None)
 BARE: Row = (46, "List", "Bare", (42, 95), None)
 BARE_ITEM: Row = (47, "ListItem", "Bare item", (42, 96), 46)
+SUBSCRIBE: Row = (48, "ListItem", "Subscribe", (42, 97), 31)
 LIST_ROWS = [
     LISTBOX,
     ACCRA,
@@ -382,6 +383,19 @@ def test_an_offscreen_listbox_option_is_scrolled_into_view_then_selected() -> No
     assert h.semantic.calls == [("scroll_into_view", KYOTO[0], None), ("select", KYOTO[0], None)]
     assert result.evidence["scrolled"] == "delivered_verified"
     assert boxes.selected[KYOTO[3]] is True
+
+
+def test_a_subscribe_listbox_option_asks_at_r2_then_selects() -> None:
+    """W3b: CONTROL_PATTERNS read a listbox option's name under `select` (raise only)."""
+    h, boxes = _listbox_harness()
+    h.world.rows = [*h.world.rows, SUBSCRIBE]
+    boxes.selected[SUBSCRIBE[3]] = False
+    result = h.session.run_step(_select("Subscribe", "ListItem"))
+    assert result.ok is True, result.to_dict()
+    assert [a.risk for a in h.confirmer.asked] == ["R2"]
+    assert h.confirmer.asked[0].verb == "select"
+    assert h.semantic.calls == [("select", SUBSCRIBE[0], None)]
+    assert boxes.selected[SUBSCRIBE[3]] is True
 
 
 def test_an_offscreen_item_outside_a_listbox_is_refused_before_any_scroll() -> None:
