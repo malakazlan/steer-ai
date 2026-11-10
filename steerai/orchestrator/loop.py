@@ -178,6 +178,10 @@ _MISSES = frozenset({"no_match", "not_new", "not_replaced"})
 """The verify's deadline misses after which the no-effect facts are read (NE-05)."""
 _DELIVERED = frozenset({Delivery.DELIVERED_UNVERIFIED, Delivery.DELIVERED_VERIFIED})
 """An Enter that reached the app: never uncertain, never a refusal (NE-05)."""
+FORM_ROLES = frozenset({"Group"})
+"""The roles a form container shows as: a Button submit must sit under the same nearest one as
+its composer (NE-10). Unmeasured whether Chrome exposes `<form>` as a Group; the measured role
+replaces this set."""
 _RISK_ORDER = {risk: index for index, risk in enumerate(RISKS)}
 DEFAULT_MAX_STEPS = 20
 _DIFF_PREDICATES = (Appeared, Disappeared, CountDelta, WindowGone)
@@ -2234,7 +2238,14 @@ class Session:
         if getattr(action, "chord", None) == "enter":
             self._check_composer(step, before, element_id)
         elif step.verb in ("send", "submit"):
-            self._prove_composer(step, before)
+            composer = self._prove_composer(step, before)
+            if (
+                step.verb == "submit"
+                and composer is not None
+                and not _shares_form(before, element_id, composer)
+            ):
+                # the one Button beside the field, never a Search button elsewhere (NE-10)
+                raise _StepFailureError(ErrorCode.GATE_BLOCKED, "button_not_beside")
         result = executor.execute(action, before)
         if action.verb == "type" and result.delivery is not Delivery.NOT_DELIVERED:
             self._typed_at = self._monotonic()
@@ -2282,15 +2293,17 @@ class Session:
         self._still_the_window()
         return before, element_id
 
-    def _prove_composer(self, step: Step, before: Snapshot) -> None:
+    def _prove_composer(self, step: Step, before: Snapshot) -> int | None:
         """A send or submit through a button proves its composer shows the approved text;
         text that cannot be checked is never sent, and a plain form button (no text, no
-        composer) has nothing to check (principal review of #112)."""
+        composer) has nothing to check (principal review of #112). The composer's id, or
+        None for a plain form button."""
         composer = self._composer(step, before)
         if composer is not None:
             self._check_composer(step, before, composer)
         elif step.verb == "send" or step.params.get("text") or step.text:
             raise _StepFailureError(ErrorCode.GATE_BLOCKED, "composer_unknown")
+        return composer
 
     def _check_composer(self, step: Step, before: Snapshot, element_id: int) -> None:
         """Enter submits whatever the field shows: it must be the text the person approved
@@ -3268,6 +3281,25 @@ def _composer_target(step: Step) -> tuple[str, str] | None:
         return role, name
     if step.target is not None and step.target.role in TEXT_ROLES:
         return step.target.role, step.target.name
+    return None
+
+
+def _shares_form(snapshot: Snapshot, button_id: int, composer_id: int) -> bool:
+    """The Button and the composer have the same nearest form container (`FORM_ROLES`) in
+    the snapshot's parent chain; either without one is not beside the other (fails closed)."""
+    button, composer = _nearest(snapshot, button_id), _nearest(snapshot, composer_id)
+    return button is not None and button == composer
+
+
+def _nearest(snapshot: Snapshot, element_id: int) -> int | None:
+    """The id of the nearest ancestor whose role is a form container's, or None."""
+    by_id = {e.id: e for e in snapshot.elements}
+    parent_id = by_id[element_id].parent_id
+    while parent_id is not None:
+        parent = by_id[parent_id]
+        if parent.role in FORM_ROLES:
+            return parent.id
+        parent_id = parent.parent_id
     return None
 
 

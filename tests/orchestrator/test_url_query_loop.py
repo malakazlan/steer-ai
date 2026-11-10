@@ -21,7 +21,7 @@ from steerai.orchestrator.contracts import Plan, Step, Subgoal, Target
 from steerai.orchestrator.gate import url_query_eligible
 from steerai.verify.predicates import Appeared, TitleMatches, Within
 from steerai.verify.url_query import UrlBefore
-from tests.orchestrator.fakes import COMPOSER
+from tests.orchestrator.fakes import COMPOSER, HEADER
 from tests.orchestrator.test_edge_cases import FocusLive, _rebuild
 from tests.orchestrator.test_loop import HELLO, Harness
 
@@ -463,6 +463,24 @@ def test_npm1_a_submit_on_the_search_button_is_verified_by_the_url() -> None:
     assert h.physical.calls == [], "a Button submit presses nothing"
     assert log == ["read", "click", "read"], "the before URL is read before the click"
     assert h.ledger.records["s3"].url_before == UrlBefore.of(HOME, HELLO)
+
+
+def test_npm1_a_button_elsewhere_on_the_page_is_not_beside_the_field() -> None:
+    """NE-10: the Button a continuation submits through must sit in the composer's own form
+    container (its nearest Group), else a decorative Search button elsewhere on the page
+    would get the click: refused `button_not_beside`, nothing dispatched, the record released."""
+    log: list[str] = []
+    bar = LoggedBar(HOME, RESULTS, log)
+    h = _button_harness(bar, log)
+    elsewhere = (SEARCH_BUTTON[0], "Button", "Search", SEARCH_BUTTON[3], HEADER[0])
+    h.world.rows[:] = [elsewhere if r[0] == SEARCH_BUTTON[0] else r for r in h.world.rows]
+    result = h.session.run_step(_button_submit())
+    assert result.ok is False
+    assert result.code is ErrorCode.GATE_BLOCKED
+    assert result.evidence["detail"] == "button_not_beside"
+    assert h.semantic.calls == []
+    assert h.physical.calls == []
+    assert h.ledger.executions[h.ledger.key_for(_button_submit())]["outcome"] == "not_delivered"
 
 
 def test_npm1_a_button_submit_whose_composer_differs_never_clicks() -> None:
