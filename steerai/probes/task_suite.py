@@ -4,8 +4,9 @@ Ten tasks on real apps and sites: Notepad, Google, YouTube, Wikipedia, and the p
 (served from memory). Each run starts on its app: a fresh Notepad, or a throwaway Chrome profile
 at the site, never the person's own profile. Then it runs `steerai.run` in process with the
 task's goal. The person is played by code: `go` to every plan, `yes` only to an ask whose text
-is the goal's own words, `no` to anything else. An `open` is recorded, never launched, because
-the launcher would start the person's own Chrome.
+is the goal's own words or whose named target (a text-less ask: a button, a box) is written
+verbatim in the goal (casefolded, whitespace folded; #200, H4 packet), `no` to anything else.
+An `open` is recorded, never launched, because the launcher would start the person's own Chrome.
 
 Each result is checked independently of Steer's own report: Notepad's text through
 WM_GETTEXT, the page address over CDP, the inbox page's own log. Code checks the bar
@@ -66,6 +67,8 @@ Check = Literal[
     "h2_event",
     "h3_event",
     "h3_final",
+    "h4_event",
+    "h4_final",
     "calc_display",
     "file_text",
     "google_search",
@@ -100,6 +103,10 @@ class Task:
     title: str = ""
     """For `url_search`: the results page's exact title, measured (H3 review item 1); empty
     means the title is not checked."""
+
+
+PAGE_SETS = ("h2", "h3", "h4")
+"""The `start` values that mean a held-out page served from memory."""
 
 
 def _search(task_id: str, site: str, start: str, words: str, check: Check) -> Task:
@@ -240,32 +247,52 @@ result; Phase 1 is met only on a fresh held-out set (H2, [v2.45])."""
 
 
 def results_url(task: Task) -> str:
-    """The results page a `url_search` task should end on, built from its own check: the
-    positive control opens it directly (#152 review item 1)."""
+    """The page a `url_search` task should end on, built from its own check (the positive
+    control opens it directly, #152 review item 1), or a `wiki_article` task's article."""
     origin = urllib.parse.urlsplit(task.start)
+    if task.check == "wiki_article":
+        return urllib.parse.urlunsplit((origin.scheme, origin.netloc, task.expected, "", ""))
     query = urllib.parse.urlencode({task.param: task.expected})
     return urllib.parse.urlunsplit((origin.scheme, origin.netloc, task.path, query, ""))
 
 
+CONTROL_ARGS = ("--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding")
+"""A control's Chrome opens behind the person's windows and never takes the foreground (it
+injects no OS input), and Chrome backgrounds a renderer whose window is occluded: measured on
+the H4 page controls (2026-11-10, two diagnostic runs), `document.visibilityState` was `hidden`
+and trusted CDP clicks and keys produced no events (`events:0`). Chrome's own switches keep the
+renderer foregrounded while occluded (Chromium `content_switches.cc`)."""
+
+
 def controls(tasks: Sequence[Task]) -> list[str]:
-    """Each `url_search` task's own results URL opened directly in a throwaway Chrome, read
-    the way a run is read, and judged by `passed`: a check that never returns true on real
-    pages would fail every run silently."""
+    """Each `url_search` task's own results URL (or a `wiki_article` task's article) opened
+    directly in a throwaway Chrome, read the way a run is read, and judged by `passed`: a check
+    that never returns true on real pages would fail every run silently. The read's title is
+    printed too: five control runs are the n=5 title measurement."""
     lines = []
     for task in tasks:
-        if task.check != "url_search":
+        if task.check not in ("url_search", "wiki_article"):
             continue
         tmp = Path(tempfile.mkdtemp(prefix="steer-ctl-"))
         port = _free_port()
         proc = launch_chrome(
-            CHROME_DEFAULT, tmp / "profile", port, results_url(task), window_size=WINDOW
+            CHROME_DEFAULT,
+            tmp / "profile",
+            port,
+            results_url(task),
+            window_size=WINDOW,
+            extra_args=CONTROL_ARGS,
         )
         try:
             page_ws_url(port)
+            _settled(port, SETTLE_LIMIT_S)
             time.sleep(4.0)  # the site settles its first layout and any redirect
             observed = _read_page(port, "control")
             ok = passed(task, "done", observed)
-            lines.append(f"{task.task_id}: control {'passes' if ok else 'FAILS'}")
+            page = json.loads(observed or "{}")
+            # a public site's address and title: tokens, never person data
+            read = json.dumps(page if not ok else str(page.get("title", "")))
+            lines.append(f"{task.task_id}: control {'passes' if ok else 'FAILS'} title={read}")
         except InvalidRun as exc:
             lines.append(f"{task.task_id}: control invalid ({exc})")
         finally:
@@ -274,6 +301,24 @@ def controls(tasks: Sequence[Task]) -> list[str]:
             stop_chrome(proc, tmp / "profile")
             shutil.rmtree(tmp, ignore_errors=True)
     return lines
+
+
+SETTLE_LIMIT_S = 20.0
+
+
+def _settled(port: int, limit_s: float) -> None:
+    """The site's own document is loaded: an http page in readyState complete. The first read
+    can land on the initial blank document, and a slow site (Gutenberg, H4 control run 4: an
+    empty title) past a fixed sleep; a site that never loads is an invalid control, not a FAIL."""
+    deadline = time.monotonic() + limit_s
+    expression = "JSON.stringify({href: location.href, ready: document.readyState})"
+    while True:
+        page = json.loads(_read(port, expression, "settle") or "{}")
+        if str(page.get("href", "")).startswith("http") and page.get("ready") == "complete":
+            return
+        if time.monotonic() >= deadline:
+            raise InvalidRun("page_not_loaded")
+        time.sleep(0.5)
 
 
 MULTIPLY = chr(0xD7)
@@ -391,6 +436,86 @@ value until the 600 ms confirm, n2 is judged on the final state, n5 is an accord
 in a scrolling box, n7 a listbox below the fold; the near-copies (a tab, Calculator) are out."""
 
 
+def _h4(task_id: str, goal: str, event: dict[str, Any], **kw: Any) -> Task:
+    return Task(task_id, goal, "h4", "h4_event", json.dumps(event, sort_keys=True), **kw)
+
+
+H4: tuple[Task, ...] = (
+    _h4("q1", "expand the returns policy", {"kind": "policy", "open": True}),
+    _h4("q2", "choose Swahili in the languages list", {"kind": "language", "value": "Swahili"}),
+    Task(
+        "q3",
+        "set the country to Japan and the city to Osaka",
+        "h4",
+        "h4_final",
+        json.dumps(
+            {
+                "kinds": ["city"],
+                "state": {"city": "Osaka", "country": "Japan"},
+                "untrusted": False,
+            },
+            sort_keys=True,
+        ),
+    ),
+    _h4("q4", "open the Security tab", {"kind": "tab", "name": "Security"}),
+    _h4(
+        "q5",
+        "tick the I agree to the terms box on the sign-up form",
+        {"kind": "consent", "on": True},
+    ),
+    _url_search(
+        "dr1",
+        "docs.rs",
+        "https://docs.rs/",
+        "serde",
+        path="/releases/search",
+        param="query",
+        title="Releases - Docs.rs",
+    ),
+    _url_search(
+        "deb1",
+        "Debian packages",
+        "https://packages.debian.org/",
+        "curl",
+        path="/search",
+        param="keywords",
+        title="Debian -- Package Search Results -- curl",
+    ),
+    _url_search(
+        "gut1",
+        "Project Gutenberg",
+        "https://www.gutenberg.org/",
+        "dickens",
+        path="/ebooks/search/",
+        param="query",
+        title="Books: dickens - Project Gutenberg",
+    ),
+    _url_search(
+        "rg1",
+        "RubyGems",
+        "https://rubygems.org/",
+        "rails",
+        path="/search",
+        param="query",
+        title="RubyGems.org | your community gem host",
+    ),
+    Task(
+        "aw1",
+        "search the Arch Wiki for pacman",
+        "https://wiki.archlinux.org/",
+        "wiki_article",
+        "/title/Pacman",
+        frozenset({"pacman"}),
+    ),
+)
+"""H4, the fourth held-out set (packet h4-2026-11-10): written and committed before the post-H3
+fixes, run only after them. Five widget shapes on one new local page (`h4_page`: a native
+disclosure, a list select scrolled inside its box, dependent selects judged on the final state,
+anchor tabs, a consent box the gate asks about and the goal rule approves), four real search
+sites no earlier set used, each judged on its measured results title too, and an ArchWiki
+article reached by a MediaWiki "go", judged on its path."""
+
+
 def h2_event(raw: str) -> str:
     """The one trusted event the page logged, as sorted JSON, or why not: a stray second
     event (a delete during an add) fails the run."""
@@ -497,6 +622,25 @@ def h3_controls() -> list[str]:
     )
 
 
+H4_DRIVES: dict[str, tuple[tuple[str, str], ...]] = {
+    "q1": (("click", "#policy-summary"),),
+    "q2": (("click", "#l-swahili"),),
+    "q3": (("focus", "#country"), ("char", "J"), ("focus", "#city"), ("char", "O")),
+    "q4": (("click", "#t-security"),),
+    "q5": (("click", "#consent"),),
+}
+"""What a person would do for each H4 page task, as trusted CDP input (positive control only):
+q3 types the first letter of the country, then of the city it revealed."""
+
+
+def h4_controls() -> list[str]:
+    """Each H4 page task done by scripted trusted input and judged by `passed`; the four search
+    tasks by opening their results URL and the ArchWiki task by opening its article."""
+    return _page_controls(H4, H4_DRIVES) + controls(
+        [task for task in H4 if task.check in ("url_search", "wiki_article")]
+    )
+
+
 def _page_controls(
     tasks: Sequence[Task], drives: dict[str, tuple[tuple[str, str], ...]]
 ) -> list[str]:
@@ -509,17 +653,36 @@ def _page_controls(
         with PageServer({"/page.html": _page_for(task)}) as server:
             port = _free_port()
             url = f"http://127.0.0.1:{server.port}/page.html"
-            proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, url, window_size=WINDOW)
+            proc = launch_chrome(
+                CHROME_DEFAULT,
+                tmp / "profile",
+                port,
+                url,
+                window_size=WINDOW,
+                extra_args=CONTROL_ARGS,
+            )
             try:
                 page_ws_url(port)
+                _settled(port, SETTLE_LIMIT_S)
                 time.sleep(2.0)
                 cdp = _page(port)
                 try:
                     _drive(cdp, drive)
                 finally:
                     cdp.close()
-                ok = passed(task, "done", _page_observed(task, port))
-                lines.append(f"{task.task_id}: control {'passes' if ok else 'FAILS'}")
+                observed = _page_observed(task, port)
+                ok = passed(task, "done", observed)
+                # on a fail, the fixture's own token (events:0, untrusted, the page state) and
+                # whether Chrome had the window as occluded (visibilityState hidden)
+                seen = (
+                    ""
+                    if ok
+                    else (
+                        f" observed={observed} visibility="
+                        f"{_read(port, 'document.visibilityState', 'visibility')}"
+                    )
+                )
+                lines.append(f"{task.task_id}: control {'passes' if ok else 'FAILS'}{seen}")
             finally:
                 from steerai.probes.chrome_a11y import stop_chrome  # noqa: PLC0415
 
@@ -573,7 +736,11 @@ def _calc_control(task: Task, buttons: Sequence[str]) -> str:
 
 
 def _page_for(task: Task) -> str:
-    """The held-out page a page task runs on (H2 or H3)."""
+    """The held-out page a page task runs on (H2, H3 or H4)."""
+    if task.start == "h4":
+        from steerai.probes.h4_page import page_html as h4_html  # noqa: PLC0415 - H4 only
+
+        return h4_html()
     if task.start == "h3":
         from steerai.probes.h3_page import page_html as h3_html  # noqa: PLC0415 - H3 only
 
@@ -594,13 +761,17 @@ def _page_observed(task: Task, port: int) -> str:
         if _read(port, "String(window.PENDING || 0)", "pending") == "0":
             break
         time.sleep(0.1)
-    if task.check == "h3_final":
+    if task.check in ("h3_final", "h4_final"):
         return _read(port, "JSON.stringify(window.finalState())", "final")
     key = _page_log_key(task)
     return h2_event(_read(port, f'localStorage.getItem("{key}") || "[]"', "read"))
 
 
 def _page_log_key(task: Task) -> str:
+    if task.start == "h4":
+        from steerai.probes.h4_page import LOG_KEY as H4_KEY  # noqa: PLC0415 - H4 only
+
+        return H4_KEY
     if task.start == "h3":
         from steerai.probes.h3_page import LOG_KEY as H3_KEY  # noqa: PLC0415 - H3 only
 
@@ -611,6 +782,8 @@ def _page_log_key(task: Task) -> str:
 
 
 def task_set(name: str) -> tuple[Task, ...]:
+    if name == "h4":
+        return H4
     if name == "h3":
         return H3
     if name == "h2":
@@ -618,22 +791,47 @@ def task_set(name: str) -> tuple[Task, ...]:
     return HELD_OUT if name == "held_out" else TASKS
 
 
+def _folded(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
+MIN_TARGET_CHARS = 3
+"""A target shorter than this never matches the goal: "Go" is inside "Google" (#204 review)."""
+
+
+def _named_in_goal(target: str, goal: str) -> bool:
+    """The goal rule (#200, #204 review): the target's folded tokens appear as a contiguous
+    token sequence in the folded goal, never as a substring of a token, and the target holds
+    at least MIN_TARGET_CHARS. "Annual" and "I agree to the terms" pass; "Go" and "Post" as
+    a prefix do not."""
+    wanted = _folded(target).split()
+    if not wanted or len("".join(wanted)) < MIN_TARGET_CHARS:
+        return False
+    words = _folded(goal).split()
+    size = len(wanted)
+    return any(words[i : i + size] == wanted for i in range(len(words) - size + 1))
+
+
 @dataclass
 class Person:
-    """`go` to every plan; `yes` only to an ask whose text is one of the task's exact phrases."""
+    """`go` to every plan; `yes` only to an ask whose text is one of the task's exact phrases,
+    or to a text-less ask whose target is a listed name or is written verbatim in the goal
+    (#200: the goal "tick I agree to the terms" names the box the gate asks about)."""
 
     approve: frozenset[str]
     approve_targets: frozenset[str] = frozenset()
+    goal: str = ""
     log: list[dict[str, Any]] = field(default_factory=list)
 
     def ask(self, ask: Any) -> str:  # Any: steerai.orchestrator.gate.Ask (no import cycle)
         decision = str(ask.decision_id)
         text = ask.params.get("text") if hasattr(ask, "params") else None
-        wanted = {" ".join(a.split()).casefold() for a in self.approve}
+        wanted = {_folded(a) for a in self.approve}
         target = str(getattr(ask, "target_name", ""))
+        in_goal = _named_in_goal(target, self.goal)
         approved = getattr(ask, "kind", "yes") != "which" and (
-            (isinstance(text, str) and " ".join(text.split()).casefold() in wanted)
-            or (text is None and target in self.approve_targets)
+            (isinstance(text, str) and _folded(text) in wanted)
+            or (text is None and (target in self.approve_targets or in_goal))
         )
         self.log.append({"verb": str(ask.verb), "risk": str(ask.risk), "approved": approved})
         return f"{'yes' if approved else 'no'}:{decision}"
@@ -660,9 +858,9 @@ def passed(task: Task, status: str | None, observed: str) -> bool:  # noqa: PLR0
         return False
     if task.check == "calc_display":
         return bool(json.loads(observed or "{}") == json.loads(task.expected))
-    if task.check == "h3_final":
+    if task.check in ("h3_final", "h4_final"):
         return bool(json.loads(observed or "{}") == json.loads(task.expected))
-    if task.check in ("notepad_text", "app_text", "h2_event", "h3_event"):
+    if task.check in ("notepad_text", "app_text", "h2_event", "h3_event", "h4_event"):
         return observed.strip() == task.expected
     if task.check == "file_text":
         return observed == task.expected
@@ -790,7 +988,7 @@ def _options(tmp: Path, hwnd: int, task: Task, number: int) -> run_mod.Options:
 
 
 def _steer(task: Task, number: int, hwnd: int, tmp: Path, planner: _Planner) -> dict[str, Any]:
-    person = Person(task.approve, task.approve_targets)
+    person = Person(task.approve, task.approve_targets, goal=task.goal)
     deps = run_mod._real_deps().replace(
         make_confirmer=lambda *_: person,
         open_windows=lambda: [],
@@ -876,7 +1074,7 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
         if task.check == "inbox_send":
             raw = _read(port, 'localStorage.getItem("steer-present") || "[]"', "read")
             row["observed"] = inbox_send(raw)
-        elif task.check in ("h2_event", "h3_event", "h3_final"):
+        elif task.check in ("h2_event", "h3_event", "h3_final", "h4_event", "h4_final"):
             row["observed"] = _page_observed(task, port)
         elif task.check == "inbox_chat":
             row["observed"] = _read(port, "document.body.dataset.chat", "chat")
@@ -1005,7 +1203,7 @@ def _started(  # noqa: PLR0911 - one per start kind
         if not WORDPAD.is_file():
             raise InvalidRun("wordpad_absent")  # removed from newer Windows builds
         return _run_app(task, number, tmp, planner, exe=WORDPAD, edit_class="RICHEDIT50W")
-    if task.start in ("h2", "h3"):
+    if task.start in PAGE_SETS:
         with PageServer({"/page.html": _page_for(task)}) as server:
             return _run_chrome(
                 task, number, tmp, planner, f"http://127.0.0.1:{server.port}/page.html"
@@ -1049,7 +1247,7 @@ def _header() -> dict[str, Any]:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Phase 1 bar: ten single-app tasks, live.")
     parser.add_argument("--runs", type=int, default=3)
-    parser.add_argument("--set", choices=("dev", "held_out", "h2", "h3"), default="dev")
+    parser.add_argument("--set", choices=("dev", "held_out", "h2", "h3", "h4"), default="dev")
     parser.add_argument(
         "--controls", action="store_true", help="open each search task's results URL instead"
     )
@@ -1064,10 +1262,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             lines = h2_controls()
         elif args.set == "h3":
             lines = h3_controls()
+        elif args.set == "h4":
+            lines = h4_controls()
         else:
             lines = controls(tasks)
         sys.stdout.write("\n".join(lines) + "\n")
-        return 0 if all(line.endswith("passes") for line in lines) else 1
+        return 0 if all(" control passes" in line for line in lines) else 1
     planner = _Planner()
     rows: list[dict[str, Any]] = []
     with args.out.open("w", encoding="utf-8") as out:
