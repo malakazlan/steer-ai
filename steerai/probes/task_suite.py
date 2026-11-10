@@ -4,8 +4,9 @@ Ten tasks on real apps and sites: Notepad, Google, YouTube, Wikipedia, and the p
 (served from memory). Each run starts on its app: a fresh Notepad, or a throwaway Chrome profile
 at the site, never the person's own profile. Then it runs `steerai.run` in process with the
 task's goal. The person is played by code: `go` to every plan, `yes` only to an ask whose text
-is the goal's own words, `no` to anything else. An `open` is recorded, never launched, because
-the launcher would start the person's own Chrome.
+is the goal's own words or whose named target (a text-less ask: a button, a box) is written
+verbatim in the goal (casefolded, whitespace folded; #200, H4 packet), `no` to anything else.
+An `open` is recorded, never launched, because the launcher would start the person's own Chrome.
 
 Each result is checked independently of Steer's own report: Notepad's text through
 WM_GETTEXT, the page address over CDP, the inbox page's own log. Code checks the bar
@@ -618,22 +619,30 @@ def task_set(name: str) -> tuple[Task, ...]:
     return HELD_OUT if name == "held_out" else TASKS
 
 
+def _folded(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
 @dataclass
 class Person:
-    """`go` to every plan; `yes` only to an ask whose text is one of the task's exact phrases."""
+    """`go` to every plan; `yes` only to an ask whose text is one of the task's exact phrases,
+    or to a text-less ask whose target is a listed name or is written verbatim in the goal
+    (#200: the goal "tick I agree to the terms" names the box the gate asks about)."""
 
     approve: frozenset[str]
     approve_targets: frozenset[str] = frozenset()
+    goal: str = ""
     log: list[dict[str, Any]] = field(default_factory=list)
 
     def ask(self, ask: Any) -> str:  # Any: steerai.orchestrator.gate.Ask (no import cycle)
         decision = str(ask.decision_id)
         text = ask.params.get("text") if hasattr(ask, "params") else None
-        wanted = {" ".join(a.split()).casefold() for a in self.approve}
+        wanted = {_folded(a) for a in self.approve}
         target = str(getattr(ask, "target_name", ""))
+        in_goal = bool(target.strip()) and _folded(target) in _folded(self.goal)
         approved = getattr(ask, "kind", "yes") != "which" and (
-            (isinstance(text, str) and " ".join(text.split()).casefold() in wanted)
-            or (text is None and target in self.approve_targets)
+            (isinstance(text, str) and _folded(text) in wanted)
+            or (text is None and (target in self.approve_targets or in_goal))
         )
         self.log.append({"verb": str(ask.verb), "risk": str(ask.risk), "approved": approved})
         return f"{'yes' if approved else 'no'}:{decision}"
@@ -790,7 +799,7 @@ def _options(tmp: Path, hwnd: int, task: Task, number: int) -> run_mod.Options:
 
 
 def _steer(task: Task, number: int, hwnd: int, tmp: Path, planner: _Planner) -> dict[str, Any]:
-    person = Person(task.approve, task.approve_targets)
+    person = Person(task.approve, task.approve_targets, goal=task.goal)
     deps = run_mod._real_deps().replace(
         make_confirmer=lambda *_: person,
         open_windows=lambda: [],

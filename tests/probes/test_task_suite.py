@@ -54,6 +54,34 @@ def test_the_person_approves_only_the_exact_phrases() -> None:
     assert search.ask_go("go:1") == "go"
 
 
+def _named_ask(name: str, text: str | None = None) -> Any:
+    return SimpleNamespace(
+        decision_id="d1",
+        params={"text": text},
+        verb="click",
+        risk="R2",
+        kind="yes",
+        target_name=name,
+    )
+
+
+def test_a_text_less_ask_is_approved_when_its_name_is_in_the_goal() -> None:
+    """The scripted person's goal rule (#200): a button or box named verbatim in the goal is
+    what the goal asked for; a text ask still needs the task's exact phrase."""
+    person = Person(frozenset(), goal="switch to the annual billing period")
+    assert person.ask(_named_ask("Annual")) == "yes:d1"
+    assert person.ask(_named_ask("annual  billing")) == "yes:d1", "case and spacing folded"
+    assert person.ask(_named_ask("Delete")) == "no:d1"
+    assert person.ask(_named_ask("")) == "no:d1", "an unnamed target is never in the goal"
+    assert person.ask(_named_ask("Annual", text="annual")) == "no:d1", "text asks need text"
+    assert person.ask(_named_ask("Annual", text="billing")) == "no:d1"
+    assert person.log[-1]["approved"] is False
+    listed = Person(frozenset(), frozenset({"Delete"}), goal="switch to the annual billing period")
+    assert listed.ask(_named_ask("Delete")) == "yes:d1", "approve_targets still apply"
+    unknown = Person(frozenset())
+    assert unknown.ask(_named_ask("Annual")) == "no:d1", "no goal, no goal rule"
+
+
 def test_query_of_reads_google_and_youtube() -> None:
     assert query_of("https://www.google.com/search?q=windows+ui+automation&hl=en") == (
         "windows ui automation"
