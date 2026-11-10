@@ -795,6 +795,23 @@ def _folded(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
+MIN_TARGET_CHARS = 3
+"""A target shorter than this never matches the goal: "Go" is inside "Google" (#204 review)."""
+
+
+def _named_in_goal(target: str, goal: str) -> bool:
+    """The goal rule (#200, #204 review): the target's folded tokens appear as a contiguous
+    token sequence in the folded goal, never as a substring of a token, and the target holds
+    at least MIN_TARGET_CHARS. "Annual" and "I agree to the terms" pass; "Go" and "Post" as
+    a prefix do not."""
+    wanted = _folded(target).split()
+    if not wanted or len("".join(wanted)) < MIN_TARGET_CHARS:
+        return False
+    words = _folded(goal).split()
+    size = len(wanted)
+    return any(words[i : i + size] == wanted for i in range(len(words) - size + 1))
+
+
 @dataclass
 class Person:
     """`go` to every plan; `yes` only to an ask whose text is one of the task's exact phrases,
@@ -811,7 +828,7 @@ class Person:
         text = ask.params.get("text") if hasattr(ask, "params") else None
         wanted = {_folded(a) for a in self.approve}
         target = str(getattr(ask, "target_name", ""))
-        in_goal = bool(target.strip()) and _folded(target) in _folded(self.goal)
+        in_goal = _named_in_goal(target, self.goal)
         approved = getattr(ask, "kind", "yes") != "which" and (
             (isinstance(text, str) and _folded(text) in wanted)
             or (text is None and (target in self.approve_targets or in_goal))

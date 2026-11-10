@@ -162,3 +162,21 @@ def test_a_person_who_stays_active_gives_an_invalid_row_and_the_suite_goes_on(
     monkeypatch.setattr(suite, "wait_until_idle", active)
     row = suite.one_run(TASKS[0], 1, suite._Planner())
     assert row == {"task": "np1", "run": 1, "passed": False, "invalid": "person_active"}
+
+
+def test_the_goal_rule_matches_whole_tokens_of_at_least_three_characters() -> None:
+    """H4 review (#204): a plain substring approved Button "Go" under any Google goal and
+    "Post" under a Post Malone goal. The target's folded tokens must appear as a contiguous
+    token sequence in the goal, and the target must be at least three characters."""
+    google = Person(frozenset(), goal="search Google for steer ai computer use agent")
+    assert google.ask(_named_ask("Go")) == "no:d1", "a substring of 'Google', not a token"
+    assert google.ask(_named_ask("ai")) == "no:d1", "a token, but under three characters"
+    assert google.ask(_named_ask("Google")) == "yes:d1"
+    assert google.ask(_named_ask("computer use")) == "yes:d1", "a contiguous token run"
+    assert google.ask(_named_ask("use computer")) == "no:d1", "the tokens out of order"
+    malone = Person(frozenset(), goal="play the latest Post Malone video")
+    assert malone.ask(_named_ask("Post")) == "yes:d1", "a whole token of the goal"
+    assert malone.ask(_named_ask("Pos")) == "no:d1", "a prefix of a token"
+    signup = Person(frozenset(), goal="tick the I agree to the terms box on the sign-up form")
+    assert signup.ask(_named_ask("I agree to the terms")) == "yes:d1"
+    assert signup.ask(_named_ask("sign-up")) == "yes:d1", "punctuation inside a token is kept"
