@@ -6,7 +6,8 @@ Every verb reads its own state back (`poll_state`): equal before the call means 
 and nothing is sent; settled on a different state is `verify_failed`; never settled is
 `verify_timeout`. `set_value` replaces the value, never appends; newlines are literal content.
 `check`/`uncheck` toggle at most `MAX_TOGGLES` times because three-state controls cycle; a
-toggle or a `select` that settles back where it began is `unchanged` (T1 decides). `choose`
+toggle, a `select` or an `expand` / `collapse` that settles back where it began is `unchanged`
+(T1 decides), never sent twice. `choose`
 expands a ComboBox, selects the one option of that name in its own subtree and collapses it again
 on every path after Expand (widget-verbs W4). Physical input (click at a point, keystrokes,
 chords) lives in the physical executor, not here.
@@ -224,8 +225,11 @@ class Executor:
     def _expand_to(self, action: Action, handle: Any, call: Call, wanted: int) -> ActionResult:
         pattern = self._uia.pattern(handle, UIA_EXPAND_COLLAPSE_PATTERN, "ExpandCollapsePattern")
 
+        last: list[int] = []
+
         def read() -> int:
-            return int(pattern.CurrentExpandCollapseState)
+            last.append(int(pattern.CurrentExpandCollapseState))
+            return last[-1]
 
         state = read()
         if state == wanted:
@@ -236,7 +240,19 @@ class Executor:
             call.send("ExpandCollapsePattern.Expand", pattern.Expand)
         else:
             call.send("ExpandCollapsePattern.Collapse", pattern.Collapse)
-        return _finish(call, poll_state(read, wanted))
+        readback = poll_state(read, wanted)
+        if readback.verified or not readback.settled or last[-1] != state:
+            # a settled third value (PartiallyExpanded) is a wrong state: verify_failed
+            return _finish(call, readback)
+        # settled on the initial value: one Expand / Collapse, never a second; the page may
+        # still set aria-expanded, so T1 decides within its deadline (W5, as W2-2 and W3-06)
+        return ActionResult(
+            verb=call.verb,
+            delivery=Delivery.DELIVERED_UNVERIFIED,
+            steps=call.steps,
+            code=ErrorCode.VERIFY_TIMEOUT,
+            evidence={"detail": "unchanged"},
+        )
 
     def _expand(self, action: Action, handle: Any, call: Call) -> ActionResult:
         return self._expand_to(action, handle, call, _EXPANDED)
