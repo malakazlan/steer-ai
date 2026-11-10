@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Protocol
 
 from pydantic import ValidationError
@@ -244,7 +245,7 @@ class ClaudePlanner:
         data = _document_bytes(doc, request)
         responses = [response]
         try:
-            plan = _runnable(data)
+            plan = _runnable(data, request)
         except PlanError as exc:
             if exc.path.startswith("$.goal"):
                 # code sets the goal: the model cannot repair it
@@ -257,7 +258,7 @@ class ClaudePlanner:
             responses.append(response)
             data = _document_bytes(self._document(response, attempt=2), request)
             try:
-                plan = _runnable(data)
+                plan = _runnable(data, request)
             except PlanError as again:
                 raise self._error(
                     "invalid_plan", path=again.path, model=str(response.model), attempt=2
@@ -354,11 +355,41 @@ def _total(responses: list[ParsedLike], name: str) -> int | None:
     return sum(known) if known else None
 
 
-def _runnable(data: bytes) -> Plan:
-    """The plan boundary, then the plan-time refusals, stricter than the gate (5.3 [v2.41])."""
+def _runnable(data: bytes, request: PlanRequest) -> Plan:
+    """The plan boundary, then the plan-time refusals, stricter than the gate (5.3 [v2.41]),
+    then the one refusal that needs the listing the model saw (NE-06)."""
     plan = plan_from_bytes(data)
     check_runnable(plan)
+    if request.continuation:
+        _refuse_twin_button_submit(plan, request.screen_lines)
     return plan
+
+
+_LISTED = re.compile(r'^\d+ +(\S+) "([^"]*)"')
+"""A listing row as `format_lines` writes it: id, indentation, role, the escaped name."""
+
+
+def _refuse_twin_button_submit(plan: Plan, screen_lines: Sequence[str]) -> None:
+    """A continuation's submit through a Button must name the one Button beside the field
+    (packet no-effect-submit-2026-11-10 item 4): two listed Buttons with that exact name
+    (RubyGems' shape) would stop `ambiguous_target` at resolve, so the repair turn names the
+    target instead. The plan boundary (`check_runnable`) never sees the screen; this does.
+    Twins that appear only after the listing still stop at resolve."""
+    listed: dict[str, int] = {}
+    for line in screen_lines:
+        found = _LISTED.match(line)
+        if found is not None and found.group(1) == "Button":
+            listed[found.group(2)] = listed.get(found.group(2), 0) + 1
+    for index, step in enumerate(plan.steps):
+        target = step.target
+        if step.verb != "submit" or target is None or target.role != "Button":
+            continue
+        if listed.get(safe_name(target.name), 0) > 1:
+            raise PlanError(
+                f"$.steps[{index}].target",
+                "two listed Buttons have this exact name; a submit goes through the one Button "
+                "beside the field, else submit on the field itself",
+            )
 
 
 def _document_bytes(doc: PlanDoc, request: PlanRequest) -> bytes:

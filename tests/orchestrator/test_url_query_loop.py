@@ -406,6 +406,7 @@ def test_the_url_proof_never_ticks_another_subgoals_title() -> None:
     assert result.status != "done", result
     assert [t["by"] for t in _ticks(h)] == ["url_query"]
 
+
 # ---- a submit on the form's one submit Button (#199; 5.10 [v2.64] npm1) ----------------------
 
 SEARCH_BUTTON = (41, "Button", "Search", (42, 91), 7)
