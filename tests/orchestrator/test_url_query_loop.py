@@ -405,3 +405,79 @@ def test_the_url_proof_never_ticks_another_subgoals_title() -> None:
     result = h.session.run_task(plan)
     assert result.status != "done", result
     assert [t["by"] for t in _ticks(h)] == ["url_query"]
+
+# ---- a submit on the form's one submit Button (#199; 5.10 [v2.64] npm1) ----------------------
+
+SEARCH_BUTTON = (41, "Button", "Search", (42, 91), 7)
+"""npmjs.com: while the suggestion dropdown is open the form's first submit button is an
+invisible backdrop, so Enter only closes the dropdown; Invoke on this Button submits (3/3)."""
+
+
+class LoggedBar(Bar):
+    """The address bar, with each read in a log the click shares: the before URL must be
+    read before the click goes out, as it is before an Enter."""
+
+    def __init__(self, before: str | None, after: str | None, log: list[str]) -> None:
+        super().__init__(before, after)
+        self.log = log
+
+    def __call__(self, hwnd: int) -> str | None:
+        self.log.append("read")
+        return super().__call__(hwnd)
+
+
+def _button_submit() -> Step:
+    return _submit(target=Target(role="Button", name="Search"))
+
+
+def _button_harness(bar: Bar, log: list[str]) -> Harness:
+    """The Button's click, never an Enter, loads the results page."""
+    h = _harness(bar)
+    h.world.rows.append(SEARCH_BUTTON)
+
+    def click(_executor: Any, action: Any) -> None:
+        if action.verb == "click":
+            log.append("click")
+            bar.pressed = True
+            h.world.rows[:] = [r for r in h.world.rows if r[0] != 40]
+            h.world.rows.append((40, "Document", LOADED, (42, 90), 0))
+
+    h.semantic.on_execute = click
+    return h
+
+
+def test_npm1_a_submit_on_the_search_button_is_verified_by_the_url() -> None:
+    """The same proof as an Enter submit, from the same params: the composer holds the text,
+    the before URL is read ahead of the click, the Button is invoked, and the address bar's
+    query verifies the step with no label."""
+    log: list[str] = []
+    bar = LoggedBar(HOME, RESULTS, log)
+    h = _button_harness(bar, log)
+    result = h.session.run_step(_button_submit())
+    assert result.ok is True, result.to_dict()
+    assert result.evidence["reason"] == "url_query"
+    assert result.label_kind is None, "never a label: the planner's name was not seen"
+    assert result.evidence.get("submit") != "enter"
+    assert h.semantic.calls == [("click", SEARCH_BUTTON[0], None)]
+    assert h.physical.calls == [], "a Button submit presses nothing"
+    assert log == ["read", "click", "read"], "the before URL is read before the click"
+    assert h.ledger.records["s3"].url_before == UrlBefore.of(HOME, HELLO)
+
+
+def test_npm1_a_button_submit_whose_composer_differs_never_clicks() -> None:
+    """OR-31 / SE-02 through a Button: the click submits whatever the field shows, so a field
+    that does not hold the approved text blocks the step before anything goes out. The one
+    address-bar read is the write-ahead record's (`_record` runs before the act, as for an
+    Enter); the proof itself is the last check before the dispatch."""
+    log: list[str] = []
+    bar = LoggedBar(HOME, RESULTS, log)
+    h = _button_harness(bar, log)
+    h.world.composer_value = "something else entirely"
+    result = h.session.run_step(_button_submit())
+    assert result.ok is False
+    assert result.code is ErrorCode.GATE_BLOCKED
+    assert result.evidence["detail"] == "composer_differs"
+    assert h.semantic.calls == []
+    assert h.physical.calls == []
+    assert bar.reads == [h.session.hwnd], "the record's read only, never a second one"
+    assert "something else" not in json.dumps(result.to_dict())
