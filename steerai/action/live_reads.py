@@ -2,16 +2,18 @@
 
 The Value pattern, the toggle and selection states, and the focused element. An element that
 does not expose the pattern reads None, which the verifier treats as unreadable (`no_pattern`),
-never as a value.
+never as a value. The listbox admission (W3b) reads whether an item exposes SelectionItem and
+whether its List's Selection allows more than one selected item.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from steerai.action.execution import (
     UIA_SELECTION_ITEM_PATTERN,
+    UIA_SELECTION_PATTERN,
     UIA_TOGGLE_PATTERN,
     UIA_VALUE_PATTERN,
     RefusalError,
@@ -29,6 +31,15 @@ class _FocusSource(Protocol):
 
 class _PatternSource(Protocol):
     def pattern(self, handle: Any, pattern_id: int, name: str) -> Any: ...
+
+
+@runtime_checkable
+class ListboxReads(Protocol):
+    """The loop's listbox admission reads (W3b), apart from the verifier's `LiveReads`: a live
+    reader without them cannot admit a listbox option, and the admission refuses."""
+
+    def has_selection_item(self, handle: Any) -> bool: ...
+    def selection_container(self, handle: Any) -> bool | None: ...
 
 
 class UiaLiveReads:
@@ -57,6 +68,27 @@ class UiaLiveReads:
         `role=tab` and a radio read selected after Select, 8/8 each)."""
         raw = self._state(
             handle, UIA_SELECTION_ITEM_PATTERN, "SelectionItemPattern", "CurrentIsSelected"
+        )
+        return None if raw is None else bool(raw)
+
+    def has_selection_item(self, handle: Any) -> bool:
+        """Whether the element exposes SelectionItemPattern (W3b admission: probe
+        `widget_patterns --section disclosure`, n=3, an ARIA option and a `<select size>` option
+        both do). A COM failure is a taxonomy failure, never False."""
+        try:
+            self._bindings.pattern(handle, UIA_SELECTION_ITEM_PATTERN, "SelectionItemPattern")
+        except RefusalError:
+            return False
+        except Exception as exc:  # COMError has no stubs: mapped by code_for, or re-raised
+            raise _failed(exc) from exc
+        return True
+
+    def selection_container(self, handle: Any) -> bool | None:
+        """A List's CanSelectMultiple through SelectionPattern; None without the pattern (W3b:
+        an ARIA `role=listbox` and a `<select size>` both read Selection with CanSelectMultiple
+        false, n=3)."""
+        raw = self._state(
+            handle, UIA_SELECTION_PATTERN, "SelectionPattern", "CurrentCanSelectMultiple"
         )
         return None if raw is None else bool(raw)
 

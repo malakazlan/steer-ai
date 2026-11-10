@@ -48,6 +48,7 @@ Usage (Windows):
     uv run python -m steerai.probes.widget_patterns --section choose --runs 5
     uv run python -m steerai.probes.widget_patterns --section shapes --runs 3
     uv run python -m steerai.probes.widget_patterns --section names --runs 3
+    uv run python -m steerai.probes.widget_patterns --section disclosure --runs 3
 """
 
 from __future__ import annotations
@@ -60,6 +61,7 @@ import tempfile
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -792,14 +794,159 @@ def names(number: int) -> dict[str, Any]:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+DISCLOSURE_PAGE = """<!doctype html><title>Disclosure fixture</title>
+<button id="acc" aria-expanded="false" aria-controls="panel">Shipping questions</button>
+<div id="panel" hidden><p>Orders ship within two days.</p></div>
+<p id="lb-label">Destinations</p>
+<ul id="lb" role="listbox" aria-labelledby="lb-label" style="height:120px;overflow:auto">
+<li role="option" aria-selected="false">Accra</li><li role="option" aria-selected="false">Agra</li>
+<li role="option" aria-selected="false">Baku</li><li role="option" aria-selected="false">Cairo</li>
+<li role="option" aria-selected="false">Delhi</li><li role="option" aria-selected="false">Hanoi</li>
+<li role="option" aria-selected="false">Kyoto</li><li role="option" aria-selected="false">Lima</li>
+</ul>
+<label>Size <select id="sz" size="4"><option>S</option><option>M</option><option>L</option>
+<option>XL</option></select></label>
+<script>
+window.LOG = [];
+function log(id, type, e) { window.LOG.push(id + ":" + type + (e.isTrusted ? "" : ":untrusted")); }
+const acc = document.getElementById("acc");
+acc.addEventListener("click", (e) => {
+  const open = acc.getAttribute("aria-expanded") !== "true";
+  acc.setAttribute("aria-expanded", open ? "true" : "false");
+  document.getElementById("panel").hidden = !open;
+  log("acc", "click", e);
+});
+for (const li of document.querySelectorAll("#lb li")) {
+  li.addEventListener("click", (e) => {
+    for (const o of document.querySelectorAll("#lb li")) o.setAttribute("aria-selected", o === li);
+    log("lb:" + li.textContent, "click", e);
+  });
+}
+for (const t of ["click", "input", "change"]) {
+  document.getElementById("sz").addEventListener(t, (e) => log("sz", t, e));
+}
+</script>"""
+DISCLOSURE_STATE = (
+    "JSON.stringify({expanded: document.getElementById('acc').getAttribute('aria-expanded'),"
+    " panel_hidden: document.getElementById('panel').hidden,"
+    " kyoto: document.querySelector('#lb li:nth-child(7)').getAttribute('aria-selected'),"
+    " sz: document.getElementById('sz').value, log: window.LOG})"
+)
+
+
+def _patterns_of(element: Any) -> list[str]:  # Any: comtypes
+    return [k for k, pid in PATTERNS.items() if element.GetCurrentPattern(pid)]
+
+
+def _disclosure_row(uia: Any, mod: Any, hwnd: int, state: Callable[[], Any]) -> dict[str, Any]:
+    """W5: the accordion button's patterns and ExpandCollapseState after Expand and Collapse."""
+    button = _find(uia, mod, hwnd, mod.UIA_ButtonControlTypeId, "Shipping questions")
+    row: dict[str, Any] = {"button_patterns": _patterns_of(button)}
+    if "ExpandCollapse" not in row["button_patterns"]:
+        return row
+    expand = _pattern(button, mod, EXPAND_COLLAPSE, "IUIAutomationExpandCollapsePattern")
+    row["state_before"] = int(expand.CurrentExpandCollapseState)
+    before = state()
+    expand.Expand()
+    row["expand_ms"] = _poll(lambda: int(expand.CurrentExpandCollapseState) == 1, 1.0)
+    row["state_after_expand"] = int(expand.CurrentExpandCollapseState)
+    after = state()
+    row["page_after_expand"] = {
+        "expanded": after["expanded"],
+        "panel_hidden": after["panel_hidden"],
+    }
+    row["events_expand"] = after["log"][len(before["log"]) :]
+    text = _find(uia, mod, hwnd, mod.UIA_TextControlTypeId, "Orders ship within two days.")
+    row["panel_text_in_tree"] = bool(text)
+    expand.Collapse()
+    row["collapse_ms"] = _poll(lambda: int(expand.CurrentExpandCollapseState) == 0, 1.0)
+    row["state_after_collapse"] = int(expand.CurrentExpandCollapseState)
+    final = state()
+    row["events_collapse"] = final["log"][len(after["log"]) :]
+    return row
+
+
+def _is_selected_now(item_pattern: Any) -> bool:  # Any: comtypes
+    return bool(item_pattern.CurrentIsSelected)
+
+
+def _listbox_row(uia: Any, mod: Any, hwnd: int, state: Callable[[], Any]) -> dict[str, Any]:
+    """W3b: the ARIA listbox and a `<select size>`: List Selection / CanSelectMultiple, the
+    items' SelectionItem, and what Select does to the page."""
+    row: dict[str, Any] = {}
+    for label, item_name, key in (("Destinations", "Kyoto", "kyoto"), ("Size", "L", "sz")):
+        lst = _find(uia, mod, hwnd, mod.UIA_ListControlTypeId, label)
+        part: dict[str, Any] = {"list_found": bool(lst)}
+        if lst:
+            part["list_patterns"] = _patterns_of(lst)
+            if lst.GetCurrentPattern(SELECTION):
+                sel = _pattern(lst, mod, SELECTION, "IUIAutomationSelectionPattern")
+                part["multiple"] = bool(sel.CurrentCanSelectMultiple)
+            item = _subtree_option(uia, mod, lst, item_name)
+            part["item_found"] = bool(item)
+            if item:
+                part["item_patterns"] = _patterns_of(item)
+                part["item_offscreen"] = bool(item.CurrentIsOffscreen)
+                if item.GetCurrentPattern(SELECTION_ITEM):
+                    before = state()
+                    si = _pattern(item, mod, SELECTION_ITEM, "IUIAutomationSelectionItemPattern")
+                    si.Select()
+                    part["selected_ms"] = _poll(partial(_is_selected_now, si), 1.0)
+                    after = state()
+                    part["page"] = after[key]
+                    part["events"] = after["log"][len(before["log"]) :]
+                    part["item_offscreen_after"] = bool(item.CurrentIsOffscreen)
+        row[label] = part
+    return row
+
+
+def disclosure(number: int) -> dict[str, Any]:
+    """One run of the W5 and W3b rows on the disclosure fixture."""
+    from steerai.probes.task_suite import _page  # noqa: PLC0415 - the one-tab reader
+    from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415 - Windows only
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
+    from steerai.run import warm_up  # noqa: PLC0415
+    from steerai.world.model import WorldModel  # noqa: PLC0415
+
+    wait_until_idle()
+    tmp = Path(tempfile.mkdtemp(prefix="steer-disclosure-"))
+    with PageServer({"/page.html": DISCLOSURE_PAGE}) as server:
+        port = _free_port()
+        url = f"http://127.0.0.1:{server.port}/page.html"
+        proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, url, window_size=WINDOW)
+        try:
+            window = wait_window_for_pid(proc.pid, image="chrome.exe", process=proc)
+            page_ws_url(port)
+            _in_front(window.hwnd)
+            client = UiaClient()
+            warm_up(lambda: WorldModel(client).observe(window.hwnd), cap_s=15.0)
+            uia, mod = client._uia, client._uia_module
+
+            def state() -> Any:  # Any: the page's JSON state
+                cdp = _page(port)
+                try:
+                    return json.loads(_evaluate(cdp, DISCLOSURE_STATE, "state"))
+                finally:
+                    cdp.close()
+
+            return {
+                "run": number,
+                "disclosure": _disclosure_row(uia, mod, window.hwnd, state),
+                "listbox": _listbox_row(uia, mod, window.hwnd, state),
+            }
+        finally:
+            stop_chrome(proc, tmp / "profile")
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Widget patterns in Chrome through UIA.")
     parser.add_argument("--runs", type=int, default=5)
-    choices = ("actions", "tree", "secure", "groups", "choose", "shapes", "names")
+    choices = ("actions", "tree", "secure", "groups", "choose", "shapes", "names", "disclosure")
     parser.add_argument("--section", choices=choices, default="actions")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     for number in range(1, args.runs + 1):
-        if args.section in ("tree", "secure", "groups", "choose", "shapes", "names"):
+        if args.section != "actions":
             sections = {
                 "tree": tree,
                 "secure": secure,
@@ -807,6 +954,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "choose": choose,
                 "shapes": shapes,
                 "names": names,
+                "disclosure": disclosure,
             }
             row = sections[args.section](number)
             sys.stdout.write(json.dumps(row) + "\n")

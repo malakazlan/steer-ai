@@ -114,8 +114,8 @@ class PredicateDoc(_Doc):
     )
     wanted: Literal["on", "off", "selected"] | None = Field(
         default=None,
-        description="state (a subgoal condition only): a CheckBox is on or off; a TabItem or "
-        "RadioButton is selected",
+        description="state (a subgoal condition only): a CheckBox is on or off; a TabItem, "
+        "RadioButton or ListItem is selected",
     )
 
     def to_file_form(self) -> dict[str, Any]:  # Any: a JSON body for the plan boundary

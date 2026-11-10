@@ -22,10 +22,12 @@ _STATES: frozenset[str] = frozenset({"on", "off", "selected"})
 STATE_ROLES: Mapping[StateName, frozenset[str]] = {
     "on": frozenset({"CheckBox"}),
     "off": frozenset({"CheckBox"}),
-    "selected": frozenset({"TabItem", "RadioButton"}),
+    "selected": frozenset({"TabItem", "RadioButton", "ListItem"}),
 }
 """The roles each wanted state is read on (W3 verdict ruling (c)): a CheckBox's ToggleState is
-on or off; a TabItem's or a RadioButton's SelectionItem is selected. Role and state agree."""
+on or off; a TabItem's, a RadioButton's or a listbox option's (ListItem, W3b) SelectionItem is
+selected. Role and state agree. A ListItem is admitted only under a single-select List, read
+live before the gate (`loop._listbox_admission`)."""
 
 
 def _clean_pattern(text: str, what: str) -> str:
@@ -197,8 +199,8 @@ def state_problem(role: str, wanted: object) -> tuple[str, str] | None:
 class CheckState:
     """A subgoal condition only (W2-4, W3-5): the one element of this role and name (NFKC,
     whitespace-folded, case-folded, exactly one) in the judged snapshot reads the wanted state:
-    a CheckBox on or off, a TabItem or a RadioButton selected. Never a step `expect`: a check,
-    uncheck or select verb owns its own postcondition (its `State` template)."""
+    a CheckBox on or off, a TabItem, a RadioButton or a ListItem selected. Never a step `expect`:
+    a check, uncheck or select verb owns its own postcondition (its `State` template)."""
 
     role: str
     name_pattern: str = field(repr=False)

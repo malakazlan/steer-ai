@@ -61,12 +61,14 @@ def test_select_runs_on_the_semantic_selection_item_path() -> None:
 def test_each_state_verb_maps_to_its_roles_and_its_wanted_value() -> None:
     assert state_roles("check") == frozenset({"CheckBox"})
     assert state_roles("uncheck") == frozenset({"CheckBox"})
-    assert state_roles("select") == frozenset({"TabItem", "RadioButton"})
+    assert state_roles("select") == frozenset({"TabItem", "RadioButton", "ListItem"})
     assert dict(STATE_WANTED) == {"check": "on", "uncheck": "off", "select": "selected"}
 
 
-@pytest.mark.parametrize("role", ["TabItem", "RadioButton"])
-def test_select_targets_a_tab_or_a_radio_option(role: str) -> None:
+@pytest.mark.parametrize("role", ["TabItem", "RadioButton", "ListItem"])
+def test_select_targets_a_tab_a_radio_or_a_listbox_option(role: str) -> None:
+    """W3b: a listbox option (ListItem) joins the tab and the radio; the loop admits it only
+    under a single-select List (`_listbox_admission`)."""
     assert _step(role=role).target == Target(role=role, name="Details")
 
 
@@ -74,9 +76,9 @@ def test_select_is_raised_to_the_r1_floor() -> None:
     assert _step(risk="R0").risk == "R1"
 
 
-@pytest.mark.parametrize("role", ["CheckBox", "ListItem", "TreeItem", "Button", "Hyperlink"])
+@pytest.mark.parametrize("role", ["CheckBox", "TreeItem", "DataItem", "Button", "Hyperlink"])
 def test_select_on_another_role_is_refused(role: str) -> None:
-    with pytest.raises(ValueError, match="RadioButton or TabItem"):
+    with pytest.raises(ValueError, match="ListItem or RadioButton or TabItem"):
         _step(role=role)
 
 
@@ -111,6 +113,11 @@ def test_a_plan_file_select_step_decodes_at_the_r1_floor() -> None:
     assert plan.steps[0].risk == "R1"
 
 
+def test_a_plan_file_select_on_a_listbox_option_decodes() -> None:
+    plan = plan_from_json(_plan(target={"role": "ListItem", "name": "Kyoto"}))
+    assert plan.steps[0].target == Target(role="ListItem", name="Kyoto")
+
+
 @pytest.mark.parametrize(
     ("step", "path"),
     [
@@ -118,7 +125,7 @@ def test_a_plan_file_select_step_decodes_at_the_r1_floor() -> None:
         ({"path": "physical"}, "$.steps[0].path"),
         ({"preapproved_by_request": True}, "$.steps[0].preapproved_by_request"),
         ({"target": {"role": "CheckBox", "name": "Details"}}, "$.steps[0].target.role"),
-        ({"target": {"role": "ListItem", "name": "Details"}}, "$.steps[0].target.role"),
+        ({"target": {"role": "DataItem", "name": "Details"}}, "$.steps[0].target.role"),
         ({"target": {"role": "TreeItem", "name": "Details"}}, "$.steps[0].target.role"),
         (
             {"verb": "uncheck", "target": {"role": "RadioButton", "name": "Annual"}},

@@ -139,6 +139,83 @@ def test_billing_never_raises_a_tab_or_a_button() -> None:
     assert deny_tier(button) == "R0"
 
 
+# ---- a listbox option (W3b) ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["Subscribe", "Join", "Follow", "Accept", "Check out"])
+def test_a_control_word_raises_a_listbox_option_under_select_to_r2(name: str) -> None:
+    """W3b (the post-H3 ruling): CONTROL_PATTERNS read a ListItem's name for `select` only."""
+    assert deny_tier(_select(name, "ListItem")) == "R2"
+    assert effective_risk(_select(name, "ListItem")) == "R2"
+
+
+def test_a_listbox_option_without_a_pattern_keeps_the_r1_floor() -> None:
+    assert deny_tier(_select("Kyoto", "ListItem")) == "R0"
+    assert effective_risk(_select("Kyoto", "ListItem")) == "R1"
+
+
+def test_a_deny_word_still_raises_a_listbox_option_to_r3() -> None:
+    assert effective_risk(_select("Delete all", "ListItem")) == "R3"
+
+
+def test_a_control_word_on_a_clicked_list_item_is_unchanged() -> None:
+    """A chat row named "Subscribe" is still a navigation click (ruling (a) of [v2.17])."""
+    click = Step(
+        id="k1",
+        subgoal="g1",
+        verb="click",
+        target=Target(role="ListItem", name="Subscribe"),
+        risk="R0",
+    )
+    assert deny_tier(click) == "R0"
+    assert effective_risk(click) == "R0"
+
+
+def test_the_consent_and_billing_classes_read_a_listbox_option_under_select() -> None:
+    """#206 review: a `<select size>` is the same control as a `<select>`, so an option's tier
+    must not depend on the verb the planner picked. "Premium $20/mo" is R2 under `choose`
+    (W4-03) and so under `select`; "I agree" too. A clicked ListItem is unchanged."""
+    assert deny_tier(_select("I agree", "ListItem")) == "R2"
+    assert deny_tier(_select("Premium $20/mo", "ListItem")) == "R2"
+    assert deny_tier(_select("Monthly", "ListItem")) == "R0"
+    clicked = Step(
+        id="k1",
+        subgoal="g1",
+        verb="click",
+        target=Target(role="ListItem", name="I agree"),
+        risk="R0",
+    )
+    assert deny_tier(clicked) == "R0"
+
+
+def test_the_container_lists_name_raises_a_listbox_option_through_every_class() -> None:
+    """As a choose reads its ComboBox's name: a List "Billing period" raises its options to R2,
+    and "Yes" under a List "I agree to pay the monthly fee" reaches R3; a List named like a
+    destination raises nothing."""
+    assert deny_tier(_select("Annual", "ListItem"), group_name="Billing period") == "R2"
+    assert (
+        deny_tier(_select("Yes", "ListItem"), group_name="I agree to pay the monthly fee") == "R3"
+    )
+    assert deny_tier(_select("Yes", "ListItem"), group_name="Do you consent?") == "R2"
+    assert deny_tier(_select("Follow", "ListItem"), group_name="Destinations") == "R2"
+    assert deny_tier(_select("Kyoto", "ListItem"), group_name="Destinations") == "R0"
+
+
+def test_a_list_items_group_is_its_named_list() -> None:
+    """`group_name` reads a ListItem's parent when that parent is a named List, as it reads a
+    radio's named Group; an unnamed List names nothing."""
+    from steerai.orchestrator.gate import group_name  # noqa: PLC0415
+    from tests.orchestrator.fakes import build  # noqa: PLC0415
+
+    billing: Row = (30, "List", "Billing period", (42, 70), None)
+    annual: Row = (31, "ListItem", "Annual", (42, 71), 30)
+    bare: Row = (32, "List", "", (42, 72), None)
+    kyoto: Row = (33, "ListItem", "Kyoto", (42, 73), 32)
+    snapshot = build([billing, annual, bare, kyoto], snapshot_id="s", taken_at=0.0)
+    assert group_name(snapshot, snapshot.element(31)) == "Billing period"
+    assert group_name(snapshot, snapshot.element(33)) is None
+
+
 # ---- the gate decides at the element-aware tier --------------------------------------------------
 
 

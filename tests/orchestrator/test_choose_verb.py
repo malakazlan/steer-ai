@@ -91,7 +91,7 @@ def test_choose_is_a_widget_verb_on_the_semantic_choose_path() -> None:
     assert executor_verb("choose") == ("semantic", "choose")
     assert STATE_VERBS | {"choose"} == WIDGET_VERBS
     assert widget_roles("choose") == frozenset({"ComboBox"})
-    assert widget_roles("select") == frozenset({"TabItem", "RadioButton"})
+    assert widget_roles("select") == frozenset({"TabItem", "RadioButton", "ListItem"})
 
 
 def test_choose_is_raised_to_the_r1_floor() -> None:
