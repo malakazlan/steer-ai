@@ -771,6 +771,23 @@ def test_collapse_is_verified_and_idempotent(fast_clock: None) -> None:
     assert again.ok is True
 
 
+def test_a_listbox_option_is_selected_through_its_selection_item(fast_clock: None) -> None:
+    """W3b: `_select` is role-blind; a ListItem goes through one SelectionItemPattern.Select and
+    the IsSelected readback, as a tab or a radio does (the loop admits the role, not here)."""
+    handle = FakeHandle(patterns={UIA_SELECTION_ITEM, UIA_INVOKE})
+    result = _executor().execute(
+        Action(verb="select", element_id=1), _snapshot(handle, role="ListItem")
+    )
+    assert handle.calls == ["select"], "never an Invoke, never a second Select"
+    assert [s.label for s in result.steps] == ["SelectionItemPattern.Select"]
+    assert result.delivery is Delivery.DELIVERED_VERIFIED
+    again = _executor().execute(
+        Action(verb="select", element_id=1), _snapshot(handle, role="ListItem")
+    )
+    assert again.skipped is True
+    assert handle.calls == ["select"]
+
+
 def test_select_that_settles_not_selected_is_unchanged_and_never_sent_twice(
     fast_clock: None,
 ) -> None:
