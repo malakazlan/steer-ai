@@ -7,8 +7,9 @@ RuntimeId, which does not survive a reload) and the normalised parameters: stabl
 re-observe, not recoverable from a trace. A key is consumed when its write-ahead record is
 written, before dispatch; the record then moves through the phases written → acting → verified.
 A verified delivery closes the key; `not_delivered` (nothing sent) releases it for the loop's one
-local retry; anything else, including a record with no outcome after a crash, is unknown and only
-a fresh single-use `confirm` decision admits it. A retry after an uncertain outcome verifies
+local retry, and `no_effect` (an Enter proven to have changed nothing) releases it for the
+replan's Button; anything else, including a record with no outcome after a crash, is unknown and
+only a fresh single-use `confirm` decision admits it. A retry after an uncertain outcome verifies
 against the original persisted before. Unreadable state or records are unknown, never "never
 ran". Everything on disk is DPAPI-encrypted: no DPAPI, no ledger, no action.
 """
@@ -46,7 +47,10 @@ DEFAULT_MAX_RECORD_BYTES = 2_000_000
 measured by a probe; a truncated snapshot is never written because it would break resume."""
 _ENTROPY = b"steer-ledger-v1"
 _DONE_OUTCOMES = frozenset({"delivered_verified", "done_already"})
-_RETRY_OUTCOMES = frozenset({"not_delivered"})
+_RETRY_OUTCOMES = frozenset({"not_delivered", "no_effect"})
+"""Outcomes that release the key: nothing was sent, or the Enter was proven to have changed
+nothing (packet no-effect-submit-2026-11-10 item 3): a resume asks again, never counts it done,
+and the task is settled, so a replan may run."""
 
 
 class LedgerError(SteerError):

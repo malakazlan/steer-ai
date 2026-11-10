@@ -679,6 +679,24 @@ def test_closed_by_names_the_step_that_closed_a_key(tmp_path: Path) -> None:
         assert ledger.closed_by(key) == "o1"
 
 
+def test_a_no_effect_close_is_retry_safe_and_never_done_on_a_resume(tmp_path: Path) -> None:
+    """Packet no-effect-submit-2026-11-10 item 3: an Enter proven to have done nothing closes
+    its R2 record `no_effect`; a crash-resume asks again (fresh), never counts it done, and
+    the task's ledger is settled, so the replan may run."""
+    step = _send()
+    with Ledger(tmp_path, task_id="task-1", started_at=5.0) as ledger:
+        key = ledger.key_for(step)
+        ledger.write_ahead(step, _snapshot(), _decision(key, "approve"))
+        ledger.mark(step, "acting")
+        ledger.record_outcome(step, "no_effect")
+        assert ledger.admit(key) == "fresh"
+        assert ledger.unsettled() is False
+    with Ledger(tmp_path, task_id="task-1", started_at=5.0) as resumed:
+        assert resumed.admit(key) == "fresh"
+        assert resumed.outcome_of(key) == "no_effect"
+        assert resumed.unsettled() is False
+
+
 def test_unsettled_is_any_attempt_not_known_done_or_not_sent(tmp_path: Path) -> None:
     """Hunter RP-06: an uncertain attempt of an earlier run stops a replan too."""
     with Ledger(tmp_path, task_id="t-unsettled", started_at=1.0) as ledger:
