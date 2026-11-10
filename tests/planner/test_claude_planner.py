@@ -205,7 +205,19 @@ def test_the_prompt_says_focus_targets_a_field_role() -> None:
     system, _ = build_prompt(_request(), tag="t")
     prose = " ".join(system.split())
     assert "focus (put keyboard focus in a field: an Edit, ComboBox or Document)" in prose
-    assert PROMPT_VERSION == "planner-19"
+
+
+def test_the_prompt_says_a_submit_goes_through_the_one_submit_button_beside_the_field() -> None:
+    """#199 ([v2.64] npm1): on npmjs.com, while the suggestion dropdown is open, the form's
+    first submit button is an invisible full-screen backdrop, so Enter only closes the dropdown;
+    UIA Invoke on the Button "Search" beside the field submits (3/3). rubygems.org has two submit
+    buttons for its field, so Enter stays the submit there."""
+    system, _ = build_prompt(_request(), tag="t")
+    prose = " ".join(system.split())
+    assert "use submit on the field (Enter), unless the listing shows exactly one Button" in prose
+    assert "whose name says it submits (Search, Go, Submit): then submit on that Button" in prose
+    assert "Two such Buttons, or none: submit on the field." in prose
+    assert PROMPT_VERSION == "planner-20"
 
 
 def test_the_prompt_says_a_selection_click_is_proven_by_present() -> None:
