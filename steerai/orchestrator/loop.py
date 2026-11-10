@@ -2591,7 +2591,8 @@ class Session:
             own = [s for s in plan.steps if s.subgoal == subgoal.id]
             here = bool(own) and all(self._step_refs.get(s.id) == window for s in own)
             leaves = _firm(subgoal.condition) if subgoal.id in ticked and here else []
-            if any(self._reads_otherwise(leaf, snapshot) for leaf in leaves):
+            standing = [leaf for leaf in leaves if not _superseded(plan, subgoal, leaf, ticked)]
+            if any(self._reads_otherwise(leaf, snapshot) for leaf in standing):
                 found.add(subgoal.id)
         return found
 
@@ -3029,6 +3030,25 @@ def _listbox_admission(step: Step, snapshot: Snapshot, element_id: int, live: ob
 
 _CONTRADICTIONS = frozenset({"value_differs", "state_differs"})
 """The T1 reasons that read an element positively otherwise (W4-04 correction 1)."""
+
+
+def _superseded(
+    plan: Plan, subgoal: Subgoal, leaf: FieldValue | CheckState, ticked: set[str]
+) -> bool:
+    """A later widget verb in plan order, whose subgoal ticked, set the same control (same role
+    and exact name) again: its own verified state supersedes this leaf, so "open it, read it,
+    close it" ends `done` (#210 review). A different control never supersedes: an exclusive
+    accordion that collapses the first panel still withdraws that tick."""
+    own = [index for index, step in enumerate(plan.steps) if step.subgoal == subgoal.id]
+    last = max(own) if own else -1
+    wanted = (leaf.role, normalise_name(leaf.name_pattern).casefold())
+    return any(
+        step.subgoal in ticked
+        and step.verb in WIDGET_VERBS
+        and step.target is not None
+        and (step.target.role, normalise_name(step.target.name).casefold()) == wanted
+        for step in plan.steps[last + 1 :]
+    )
 
 
 def _firm(condition: Predicate) -> list[FieldValue | CheckState]:

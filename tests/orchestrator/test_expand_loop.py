@@ -382,3 +382,78 @@ def test_twin_buttons_named_alike_are_ambiguous() -> None:
     assert result.ok is False
     assert result.evidence["detail"] == "ambiguous_target"
     assert h.semantic.calls == []
+
+
+# ---- open it, read it, close it (#210 review) ---------------------------------------------------
+
+
+def _untick_records(h: Harness) -> list[dict[str, Any]]:
+    import json  # noqa: PLC0415 - the trace lines
+
+    return [r for r in (json.loads(line) for line in h.trace.lines) if r.get("kind") == "untick"]
+
+
+def test_an_expand_then_a_collapse_of_the_same_button_ends_done() -> None:
+    """#210 review: the W4-04 re-read before `done` found the Help section collapsed, withdrew
+    the expand's tick with `reset` and replanned until MAX_REPLANS. A later widget verb on the
+    same Button, whose subgoal ticked, supersedes the earlier state: the task ends `done`."""
+    h, boxes = _harness()
+    boxes.expanded[HELP[3]] = _COLLAPSED
+    plan = Plan(
+        goal="open the help section, read it, then close it",
+        subgoals=(
+            Subgoal(
+                id="g1", desc="opened", condition=CheckState("Button", "Help section", "expanded")
+            ),
+            Subgoal(
+                id="g2", desc="closed", condition=CheckState("Button", "Help section", "collapsed")
+            ),
+        ),
+        steps=(
+            _expand("Help section", "s1"),
+            replace(_collapse("Help section", "s2"), subgoal="g2"),
+        ),
+    )
+    result = h.session.run_task(plan)
+    assert result.status == "done", result
+    assert result.ticked == {"g1", "g2"}
+    assert _untick_records(h) == []
+
+
+def test_a_different_button_that_collapses_the_first_still_resets() -> None:
+    """An exclusive accordion: expanding Billing collapses Shipping. The supersede rule needs the
+    same exact name, so the earlier tick is withdrawn and the task cannot end `done`."""
+    h, boxes = _harness()
+    billing: Row = (16, "Button", "Billing questions", (42, 55), None)
+    h.world.rows.append(billing)
+    boxes.expanded[billing[3]] = _COLLAPSED
+    expands = _expands(boxes)
+
+    def exclusive(executor: Any, action: Any) -> None:
+        expands(executor, action)
+        if action.element_id == billing[0]:
+            boxes.expanded[SHIPPING[3]] = _COLLAPSED
+
+    h.semantic.on_execute = exclusive
+    plan = Plan(
+        goal="open the shipping questions and the billing questions",
+        subgoals=(
+            Subgoal(
+                id="g1",
+                desc="shipping",
+                condition=CheckState("Button", "Shipping questions", "expanded"),
+            ),
+            Subgoal(
+                id="g2",
+                desc="billing",
+                condition=CheckState("Button", "Billing questions", "expanded"),
+            ),
+        ),
+        steps=(
+            _expand("Shipping questions", "s1"),
+            replace(_expand("Billing questions", "s2"), subgoal="g2"),
+        ),
+    )
+    result = h.session.run_task(plan)
+    assert result.status != "done", result
+    assert [r["subgoal"] for r in _untick_records(h)] == ["g1"]
