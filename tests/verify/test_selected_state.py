@@ -50,7 +50,7 @@ def test_the_role_and_the_wanted_value_must_agree(role: str, wanted: Any) -> Non
         CheckState(role=role, name_pattern="Details", wanted=wanted)
 
 
-@pytest.mark.parametrize("role", ["TreeItem", "DataItem", "Button"])
+@pytest.mark.parametrize("role", ["TreeItem", "DataItem", "MenuItem"])
 def test_selected_on_another_role_is_refused(role: str) -> None:
     with pytest.raises(ValueError, match="role"):
         CheckState(role=role, name_pattern="Details", wanted="selected")
@@ -167,7 +167,9 @@ def test_selected_is_never_a_step_expect() -> None:
     with pytest.raises(PlanError) as caught:
         plan_from_json(_doc([click], {"title": {"pattern": "x"}}))
     assert caught.value.path == "$.steps[0].expect.state"
-    assert "check, uncheck and select own their postcondition" in caught.value.reason
+    assert (
+        "check, uncheck, select, expand and collapse own their postcondition" in caught.value.reason
+    )
 
 
 # ---- T1: one snapshot, the live SelectionItem read ----------------------------------------------

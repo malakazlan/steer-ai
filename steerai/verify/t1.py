@@ -92,6 +92,7 @@ class LiveReads(Protocol):
     def value(self, handle: Any) -> str | None: ...
     def toggle_state(self, handle: Any) -> int | None: ...
     def is_selected(self, handle: Any) -> bool | None: ...
+    def expand_state(self, handle: Any) -> int | None: ...
     def focused_runtime_id(self) -> tuple[int, ...]: ...
 
 
@@ -749,13 +750,22 @@ def _check_state(predicate: CheckState, snapshot: Snapshot, ctx: Context) -> Ver
     return _plain("state_differs", settles=True)
 
 
+_EXPAND_STATES: Mapping[str, int] = {"expanded": 1, "collapsed": 0}
+"""W5: `expanded` holds on ExpandCollapseState 1 only (2, PartiallyExpanded, does not) and
+`collapsed` on 0 only."""
+
+
 def reads_wanted(live: LiveReads, handle: Any, wanted: StateName) -> bool | None:
-    """Whether the element's live state is the wanted one (W3-05): `selected` reads the
-    SelectionItem's IsSelected, on / off read the ToggleState; None when it has no such pattern.
-    `handle` is the snapshot's COM element (Any: comtypes has no stubs)."""
+    """Whether the element's live state is the wanted one (W3-05, W5): `selected` reads the
+    SelectionItem's IsSelected, on / off read the ToggleState, expanded / collapsed read the
+    ExpandCollapseState; None when it has no such pattern. `handle` is the snapshot's COM
+    element (Any: comtypes has no stubs)."""
     if wanted == "selected":
         selected = live.is_selected(handle)
         return None if selected is None else selected is True
+    if wanted in _EXPAND_STATES:
+        expanded = live.expand_state(handle)
+        return None if expanded is None else expanded == _EXPAND_STATES[wanted]
     toggle = live.toggle_state(handle)
     return None if toggle is None else toggle == (1 if wanted == "on" else 0)
 

@@ -815,6 +815,96 @@ def test_select_that_settles_not_selected_is_unchanged_and_never_sent_twice(
     assert result.evidence == {"detail": "unchanged"}
 
 
+@pytest.mark.parametrize(
+    ("verb", "initial", "label"),
+    [
+        ("expand", 0, "ExpandCollapsePattern.Expand"),
+        ("collapse", 1, "ExpandCollapsePattern.Collapse"),
+    ],
+)
+def test_an_expand_or_collapse_that_settles_on_its_initial_state_is_unchanged(
+    fast_clock: None, verb: str, initial: int, label: str
+) -> None:
+    """W5, as W2-2: one Expand or Collapse, never a second; a readback that settles on the
+    initial value is `unchanged` / `verify_timeout`, and T1 decides within its deadline."""
+
+    class _Rejecting(FakeHandle):
+        def GetCurrentPattern(self, pattern_id: int) -> Any:  # noqa: N802
+            pattern = super().GetCurrentPattern(pattern_id)
+            handle = self
+
+            def ignore() -> None:
+                handle.calls.append(verb)
+
+            pattern.Expand = ignore
+            pattern.Collapse = ignore
+            return pattern
+
+    handle = _Rejecting(patterns={UIA_EXPAND}, expanded=initial)
+    result = _executor().execute(Action(verb=verb, element_id=1), _snapshot(handle, role="Button"))
+    assert handle.calls == [verb]
+    assert [s.label for s in result.steps] == [label]
+    assert result.delivery is Delivery.DELIVERED_UNVERIFIED
+    assert result.code is ErrorCode.VERIFY_TIMEOUT
+    assert result.evidence == {"detail": "unchanged"}
+
+
+def test_an_expand_that_settles_partially_expanded_is_verify_failed(fast_clock: None) -> None:
+    """A third value (2, PartiallyExpanded) is a settled wrong state, never a second Expand."""
+
+    class _Partial(FakeHandle):
+        def GetCurrentPattern(self, pattern_id: int) -> Any:  # noqa: N802
+            pattern = super().GetCurrentPattern(pattern_id)
+            handle = self
+
+            def partial() -> None:
+                handle.expanded = 2
+                handle.calls.append("expand")
+
+            pattern.Expand = partial
+            return pattern
+
+    handle = _Partial(patterns={UIA_EXPAND}, expanded=0)
+    result = _executor().execute(
+        Action(verb="expand", element_id=1), _snapshot(handle, role="Button")
+    )
+    assert handle.calls == ["expand"]
+    assert result.delivery is Delivery.DELIVERED_UNVERIFIED
+    assert result.code is ErrorCode.VERIFY_FAILED
+    assert "detail" not in result.evidence
+
+
+@pytest.mark.parametrize("verb", ["expand", "collapse"])
+def test_a_button_without_the_expand_collapse_pattern_is_refused_with_nothing_sent(
+    fast_clock: None, verb: str
+) -> None:
+    """W5: a plain Button (Invoke only) never gets a physical path: `no_ExpandCollapsePattern`."""
+    handle = FakeHandle(patterns={UIA_INVOKE})
+    result = _executor().execute(Action(verb=verb, element_id=1), _snapshot(handle, role="Button"))
+    assert result.delivery is Delivery.NOT_DELIVERED
+    assert result.code is ErrorCode.ELEMENT_NOT_ACTIONABLE
+    assert result.evidence["detail"] == "no_ExpandCollapsePattern"
+    assert result.steps == []
+    assert handle.calls == []
+    assert handle.invoked == 0
+
+
+def test_an_expanded_button_is_expanded_once_and_read_back(fast_clock: None) -> None:
+    """The measured disclosure shape: ExpandCollapse without Invoke, 0 before, 1 after Expand."""
+    handle = FakeHandle(patterns={UIA_EXPAND}, expanded=0)
+    result = _executor().execute(
+        Action(verb="expand", element_id=1), _snapshot(handle, role="Button")
+    )
+    assert handle.calls == ["expand"]
+    assert [s.label for s in result.steps] == ["ExpandCollapsePattern.Expand"]
+    assert result.delivery is Delivery.DELIVERED_VERIFIED
+    again = _executor().execute(
+        Action(verb="expand", element_id=1), _snapshot(handle, role="Button")
+    )
+    assert again.skipped is True
+    assert handle.calls == ["expand"]
+
+
 def test_scroll_into_view_reads_back_on_screen_without_a_postcondition(fast_clock: None) -> None:
     handle = FakeHandle(patterns={UIA_SCROLL_ITEM}, offscreen=True)
     result = _executor().execute(

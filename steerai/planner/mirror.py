@@ -31,6 +31,8 @@ Verb = Literal[
     "uncheck",
     "select",
     "choose",
+    "expand",
+    "collapse",
 ]
 Risk = Literal["R0", "R1", "R2", "R3"]
 ConditionKind = Literal[
@@ -112,10 +114,10 @@ class PredicateDoc(_Doc):
     text: str | None = Field(
         default=None, description="value (a subgoal condition only): the exact text the field holds"
     )
-    wanted: Literal["on", "off", "selected"] | None = Field(
+    wanted: Literal["on", "off", "selected", "expanded", "collapsed"] | None = Field(
         default=None,
         description="state (a subgoal condition only): a CheckBox is on or off; a TabItem, "
-        "RadioButton or ListItem is selected",
+        "RadioButton or ListItem is selected; a Button is expanded or collapsed",
     )
 
     def to_file_form(self) -> dict[str, Any]:  # Any: a JSON body for the plan boundary

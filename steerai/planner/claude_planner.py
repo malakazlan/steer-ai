@@ -35,10 +35,12 @@ DEFAULT_MAX_TOKENS = 8192
 """Unmeasured: enough for the 6.3 form of a ten-step plan; a `max_tokens` stop is `truncated`."""
 DEFAULT_MAX_RETRIES = 1
 EFFORT = "medium"
-PROMPT_VERSION = "planner-18"
-MECHANICAL_VERBS = frozenset({"type", "focus", "open", "check", "uncheck", "select", "choose"})
+PROMPT_VERSION = "planner-19"
+MECHANICAL_VERBS = frozenset(
+    {"type", "focus", "open", "check", "uncheck", "select", "choose", "expand", "collapse"}
+)
 """Steps whose effect code verifies (value typed, focus held, window opened, box set, option
-selected, option chosen): any model `expect` is dropped."""
+selected, option chosen, panel opened or closed): any model `expect` is dropped."""
 
 _SYSTEM = f"""You write a plan for a Windows computer-use agent that acts on one window at a time.
 Output a JSON plan document in the exact schema you are given. Nothing else.
@@ -57,9 +59,10 @@ presses Enter), delete (remove something), open (launch an app; every later step
 window it opened), check / uncheck (set a CheckBox on or off; never click a CheckBox), select
 (pick a tab or a radio option, only when the listing shows role TabItem or RadioButton; never
 click those), choose (pick an option of a ComboBox: params.option is the option's exact text
-from the goal; never click a ComboBox or its options). A visual tab that is a Hyperlink or a
-Button stays a click. A ComboBox you type into, such as a search box, stays focus and type.
-There is no other verb.
+from the goal; never click a ComboBox or its options), expand / collapse (open or close a Button
+that shows or hides a panel, a menu or a section; only when the listing shows role Button; never
+click it). A visual tab that is a Hyperlink or a Button stays a click. A ComboBox you type into,
+such as a search box, stays focus and type. There is no other verb.
 
 An open step: {{"verb": "open", "target": {{"role": "App", "name": <one of {sorted(APPS)}>}},
 "params": {{"site": <one of {sorted(SITES)}>, "text": <the words to search>}}}}. A site opens in
@@ -98,10 +101,11 @@ see yet (a collapsed search box, a menu), write your best guess of the element i
 wrong guess fails that step's check; the next steps still run, and the agent replans only if it
 reaches the end of the plan, so plan only as far as you can see and leave later steps to the
 next plan.
-Do not write "expect" for focus, type, open, check, uncheck, select or choose steps: the agent
-verifies the focus, the typed value, the opened window, the box, the selection and the chosen
-option itself. Subgoals describe end states visible on screen after an action (a page replaced,
-a message appeared, an item gone, a window opened), never "the text is typed". When the goal
+Do not write "expect" for focus, type, open, check, uncheck, select, choose, expand or collapse
+steps: the agent verifies the focus, the typed value, the opened window, the box, the selection,
+the chosen option and the opened or closed panel itself. Subgoals describe end states visible on
+screen after an action (a page replaced, a message appeared, an item gone, a window opened),
+never "the text is typed". When the goal
 wants text left in a field or a document (a note, a form to review), the end state is the
 field's content: use value: role, name, text, only as a subgoal condition, never as an expect;
 the field (Edit, ComboBox or Document) and the exact text must be those of a type step of the
@@ -111,7 +115,9 @@ When the goal wants a box ticked or cleared, the end state is the box: use state
 name, wanted (on or off), a subgoal condition only, proven by a check or uncheck step of the
 same subgoal on that exact box name; that subgoal holds no send, submit or delete. When the goal
 wants a tab or a radio option chosen, use state: role TabItem or RadioButton with wanted
-selected, proven by a select step of the same subgoal on that exact name.
+selected, proven by a select step of the same subgoal on that exact name. When the goal wants a
+panel, a menu or a section opened or closed, use state: role Button with wanted expanded or
+collapsed, proven by an expand or collapse step of the same subgoal on that exact name.
 
 Selecting what may already be selected (opening a chat, a conversation, a mail or a list row
 that can already be the open one): give it its own subgoal of exactly one click on the item,

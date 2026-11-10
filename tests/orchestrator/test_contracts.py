@@ -53,6 +53,8 @@ def test_verb_table_is_closed_and_maps_to_executors_and_templates() -> None:
                 "uncheck",
                 "select",
                 "choose",
+                "expand",
+                "collapse",
             }
         )
         == VERBS

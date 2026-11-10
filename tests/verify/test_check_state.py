@@ -40,10 +40,16 @@ def _on(name: str = "Email alerts", wanted: Any = "on") -> CheckState:
 # ---- the predicate -------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("role", ["Button", "ToggleButton", "Edit", ""])
-def test_a_non_checkbox_role_is_refused(role: str) -> None:
+@pytest.mark.parametrize("role", ["MenuItem", "ToggleButton", "Edit", ""])
+def test_a_non_state_role_is_refused(role: str) -> None:
     with pytest.raises(ValueError, match="role"):
         CheckState(role=role, name_pattern="Email alerts", wanted="on")
+
+
+def test_a_button_is_never_on_or_off() -> None:
+    """W5: a Button is a state role (expanded / collapsed), so the disagreement names wanted."""
+    with pytest.raises(ValueError, match="wanted for a Button must be expanded or collapsed"):
+        CheckState(role="Button", name_pattern="Email alerts", wanted="on")
 
 
 @pytest.mark.parametrize("name", ["", "   ", "\t"])
@@ -146,13 +152,16 @@ def test_state_is_never_a_step_expect_at_any_depth(expect: dict[str, Any]) -> No
         plan_from_json(_doc([click], {"title": {"pattern": "x"}}))
     assert caught.value.path.startswith("$.steps[0].expect")
     assert caught.value.path.endswith(".state")
-    assert "check, uncheck and select own their postcondition" in str(caught.value)
+    assert "check, uncheck, select, expand and collapse own their postcondition" in str(
+        caught.value
+    )
 
 
 @pytest.mark.parametrize(
     ("body", "field"),
     [
-        ({"role": "Button", "name": "Email alerts", "wanted": "on"}, "role"),
+        ({"role": "MenuItem", "name": "Email alerts", "wanted": "on"}, "role"),
+        ({"role": "Button", "name": "Email alerts", "wanted": "on"}, "wanted"),
         ({"role": "CheckBox", "name": "", "wanted": "on"}, "name"),
         ({"role": "CheckBox", "name": "Email alerts", "wanted": "selected"}, "wanted"),
         ({"role": "CheckBox", "name": "Email alerts"}, "wanted"),

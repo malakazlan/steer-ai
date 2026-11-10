@@ -262,7 +262,13 @@ def test_the_state_kind_is_in_the_models_vocabulary() -> None:
     assert "state" in predicate["kind"]["enum"]
     wanted = predicate["wanted"]
     options = [_resolved(schema, o) for o in wanted.get("anyOf", [wanted])]
-    assert {v for o in options for v in o.get("enum", [])} == {"on", "off", "selected"}
+    assert {v for o in options for v in o.get("enum", [])} == {
+        "on",
+        "off",
+        "selected",
+        "expanded",
+        "collapsed",
+    }
 
 
 def test_a_state_condition_round_trips_through_the_boundary() -> None:
@@ -295,6 +301,12 @@ def test_check_and_uncheck_are_in_the_models_verbs() -> None:
 def test_select_is_in_the_models_verbs() -> None:
     step = _definition(_schema(), "StepDoc")["properties"]
     assert "select" in set(step["verb"]["enum"])
+
+
+def test_expand_and_collapse_are_in_the_models_verbs() -> None:
+    """W5: the model writes expand and collapse; `wanted` carries expanded and collapsed."""
+    step = _definition(_schema(), "StepDoc")["properties"]
+    assert {"expand", "collapse"} <= set(step["verb"]["enum"])
 
 
 def test_choose_and_its_option_are_in_the_models_vocabulary() -> None:

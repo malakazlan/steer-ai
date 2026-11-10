@@ -34,9 +34,15 @@ from steerai.verify.predicates import (
 from steerai.world.model import normalise_name
 
 Tier = Literal["R0", "R1", "R2", "R3"]
-STATE_WANTED: Mapping[str, StateName] = {"check": "on", "uncheck": "off", "select": "selected"}
+STATE_WANTED: Mapping[str, StateName] = {
+    "check": "on",
+    "uncheck": "off",
+    "select": "selected",
+    "expand": "expanded",
+    "collapse": "collapsed",
+}
 """Each state verb's wanted value: its `State` template and its own-state strength rule
-(widget-verbs W2-3, W3-3)."""
+(widget-verbs W2-3, W3-3, W5)."""
 MIN_PATTERN_CHARS = 3
 _TIME_LIKE = re.compile(r"^\d{1,2}:\d{2}(:\d{2})?\s*(am|pm)?$", re.I)
 _DATE_WORDS = frozenset(

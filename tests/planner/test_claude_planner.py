@@ -205,7 +205,7 @@ def test_the_prompt_says_focus_targets_a_field_role() -> None:
     system, _ = build_prompt(_request(), tag="t")
     prose = " ".join(system.split())
     assert "focus (put keyboard focus in a field: an Edit, ComboBox or Document)" in prose
-    assert PROMPT_VERSION == "planner-18"
+    assert PROMPT_VERSION == "planner-19"
 
 
 def test_the_prompt_says_a_selection_click_is_proven_by_present() -> None:
@@ -839,7 +839,10 @@ def test_the_prompt_teaches_choose_and_its_value() -> None:
     )
     assert "A ComboBox you type into, such as a search box, stays focus and type." in prose
     assert "or a choose step of the same subgoal whose option is that exact text" in prose
-    assert 'Do not write "expect" for focus, type, open, check, uncheck, select or choose' in prose
+    assert (
+        'Do not write "expect" for focus, type, open, check, uncheck, select, choose, expand or '
+        "collapse" in prose
+    )
 
 
 def test_a_choose_step_keeps_its_option_and_no_model_expect() -> None:
@@ -864,3 +867,50 @@ def test_a_choose_step_keeps_its_option_and_no_model_expect() -> None:
     step = outcome.plan.steps[0]
     assert (step.verb, step.params["option"], step.expect) == ("choose", "Large", None)
     assert "choose" in MECHANICAL_VERBS
+
+
+def test_the_prompt_teaches_expand_collapse_and_their_state() -> None:
+    """W5 (planner-19): expand or collapse a disclosure Button, only when the listing shows
+    role Button, never a click on it; `state` takes expanded or collapsed on a Button; no model
+    expect on either verb."""
+    system, _ = build_prompt(_request(), tag="t")
+    prose = " ".join(system.split())
+    assert (
+        "expand / collapse (open or close a Button that shows or hides a panel, a menu or a "
+        "section; only when the listing shows role Button; never click it)" in prose
+    )
+    assert (
+        "use state: role Button with wanted expanded or collapsed, proven by an expand or "
+        "collapse step of the same subgoal on that exact name" in prose
+    )
+    assert (
+        'Do not write "expect" for focus, type, open, check, uncheck, select, choose, expand or '
+        "collapse" in prose
+    )
+    assert {"expand", "collapse"} <= MECHANICAL_VERBS
+
+
+@pytest.mark.parametrize(("verb", "wanted"), [("expand", "expanded"), ("collapse", "collapsed")])
+def test_an_expand_or_collapse_step_keeps_no_model_expect(verb: Any, wanted: Any) -> None:
+    condition = PredicateDoc(kind="state", role="Button", name="Shipping questions", wanted=wanted)
+    doc = PlanDoc(
+        goal="show the shipping questions",
+        subgoals=[SubgoalDoc(id="g1", desc="shown", condition=condition)],
+        steps=[
+            StepDoc(
+                id="s1",
+                subgoal="g1",
+                verb=verb,
+                target=TargetDoc(role="Button", name="Shipping questions"),
+                risk="R1",
+                expect=PredicateDoc(kind="appeared", role="Text", name="Orders ship soon"),
+            )
+        ],
+    )
+    planner, _ = _planner(_Response(parsed_output=doc))
+    outcome = planner.plan(_request(goal="show the shipping questions"))
+    assert outcome.plan.steps[0].verb == verb
+    assert outcome.plan.steps[0].expect is None
+    assert condition.to_file_form() == {
+        "state": {"role": "Button", "name": "Shipping questions", "wanted": wanted}
+    }

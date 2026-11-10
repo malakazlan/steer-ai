@@ -17,17 +17,21 @@ from typing import Literal, cast
 from steerai.verify.decorations import decorate
 from steerai.world.model import normalise_name
 
-StateName = Literal["on", "off", "selected"]
-_STATES: frozenset[str] = frozenset({"on", "off", "selected"})
+StateName = Literal["on", "off", "selected", "expanded", "collapsed"]
+STATE_NAMES: tuple[StateName, ...] = ("on", "off", "selected", "expanded", "collapsed")
+_STATES: frozenset[str] = frozenset(STATE_NAMES)
 STATE_ROLES: Mapping[StateName, frozenset[str]] = {
     "on": frozenset({"CheckBox"}),
     "off": frozenset({"CheckBox"}),
     "selected": frozenset({"TabItem", "RadioButton", "ListItem"}),
+    "expanded": frozenset({"Button"}),
+    "collapsed": frozenset({"Button"}),
 }
 """The roles each wanted state is read on (W3 verdict ruling (c)): a CheckBox's ToggleState is
 on or off; a TabItem's, a RadioButton's or a listbox option's (ListItem, W3b) SelectionItem is
-selected. Role and state agree. A ListItem is admitted only under a single-select List, read
-live before the gate (`loop._listbox_admission`)."""
+selected; a disclosure Button's ExpandCollapseState is expanded (1 only) or collapsed (0 only;
+W5). Role and state agree. A ListItem is admitted only under a single-select List, read live
+before the gate (`loop._listbox_admission`)."""
 
 
 def _clean_pattern(text: str, what: str) -> str:
@@ -185,22 +189,23 @@ def state_problem(role: str, wanted: object) -> tuple[str, str] | None:
     """(field, reason) when a `state` role and wanted value do not agree (W3 verdict ruling
     (c)), else None: shared by `CheckState` and the plan boundary, which names the field."""
     if wanted not in _STATES:
-        return "wanted", "state wanted must be on, off or selected"
+        return "wanted", f"state wanted must be one of {', '.join(STATE_NAMES)}"
     if not any(role in roles for roles in STATE_ROLES.values()):
         known = sorted({r for roles in STATE_ROLES.values() for r in roles})
         return "role", f"state role must be one of {known}"
     if role not in STATE_ROLES[cast("StateName", wanted)]:
-        allowed = " or ".join(w for w in ("on", "off", "selected") if role in STATE_ROLES[w])
+        allowed = " or ".join(w for w in STATE_NAMES if role in STATE_ROLES[w])
         return "wanted", f"state wanted for a {role} must be {allowed}"
     return None
 
 
 @dataclass(frozen=True, slots=True)
 class CheckState:
-    """A subgoal condition only (W2-4, W3-5): the one element of this role and name (NFKC,
+    """A subgoal condition only (W2-4, W3-5, W5): the one element of this role and name (NFKC,
     whitespace-folded, case-folded, exactly one) in the judged snapshot reads the wanted state:
-    a CheckBox on or off, a TabItem, a RadioButton or a ListItem selected. Never a step `expect`:
-    a check, uncheck or select verb owns its own postcondition (its `State` template)."""
+    a CheckBox on or off, a TabItem, a RadioButton or a ListItem selected, a Button expanded or
+    collapsed. Never a step `expect`: a check, uncheck, select, expand or collapse verb owns its
+    own postcondition (its `State` template)."""
 
     role: str
     name_pattern: str = field(repr=False)
@@ -256,7 +261,7 @@ class State:
 
     def __post_init__(self) -> None:
         if self.wanted not in _STATES:
-            raise ValueError(f"state must be one of {sorted(_STATES)}")
+            raise ValueError(f"state wanted must be one of {', '.join(STATE_NAMES)}")
 
 
 @dataclass(frozen=True, slots=True)
