@@ -533,7 +533,19 @@ def test_a_failed_step_line_carries_the_active_option_token() -> None:
     assert "failed step: s2 element_not_found" in plain.splitlines()
 
 
-@pytest.mark.parametrize("detail", ["target_not_focused", "", "Active_option", "active_option "])
+def test_a_failed_step_line_carries_the_no_effect_token() -> None:
+    """Packet no-effect-submit-2026-11-10 item 4: the second closed token, for the Enter the
+    loop proved to have changed nothing; the prompt's continuation line acts on it."""
+    failure = FailedStep(step_id="s3", code="verify_failed", detail="no_effect")
+    _system, user = build_prompt(_continuation(failure=failure), tag="abc123")
+    body = user.split("<<<screen abc123", 1)[1]
+    assert "failed step: s3 verify_failed no_effect" in body.splitlines()
+
+
+@pytest.mark.parametrize(
+    "detail",
+    ["target_not_focused", "", "Active_option", "active_option ", "No_effect", "no effect"],
+)
 def test_a_failed_step_detail_is_a_closed_token(detail: str) -> None:
     with pytest.raises(ValueError, match="detail"):
         FailedStep(step_id="s3", code="focus_lost", detail=detail)  # type: ignore[arg-type]  # the check under test

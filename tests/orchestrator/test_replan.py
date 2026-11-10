@@ -4,6 +4,7 @@ told, which continuation plans are refused, and the task's results merged over i
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -254,6 +255,65 @@ def test_an_r2_step_that_sent_nothing_is_no_uncertainty(delivery: Delivery | Non
 
 def test_the_replan_limit_is_two() -> None:
     assert MAX_REPLANS == 2
+
+
+# ---- an Enter proven to have had no effect (packet no-effect-submit-2026-11-10) --------------
+
+
+def _no_effect_step(step_id: str = "c1", *, outcome: str | None = "no_effect") -> StepResult:
+    """The loop's result for an R2 Enter whose four facts held: reason `no_effect`, and the
+    ledger outcome it closed with (NE-02: both, or the miss stays an uncertain effect)."""
+    failed = _result(step_id, ok=False, code=ErrorCode.VERIFY_FAILED, risk="R2", detail="no_effect")
+    evidence = {**failed.evidence, "reason": "no_effect"}
+    if outcome is not None:
+        evidence["outcome"] = outcome
+    return replace(failed, evidence=evidence)
+
+
+def _no_effect_run(*results: StepResult) -> TaskResult:
+    return TaskResult(
+        status="stopped",
+        results=list(results),
+        ticked=set(),
+        code=ErrorCode.VERIFY_FAILED,
+        evidence={"detail": "no_effect"},
+    )
+
+
+def test_a_run_ended_no_effect_replans_as_no_effect() -> None:
+    run = _no_effect_run(_no_effect_step())
+    assert _trigger(_progress(_one_click_plan(), run)) == "no_effect"
+
+
+@pytest.mark.parametrize(
+    ("label", "step"),
+    [
+        ("the ledger never closed it no_effect", _no_effect_step(outcome=None)),
+        ("the ledger closed it otherwise", _no_effect_step(outcome="delivery_uncertain")),
+        ("a plain R2 miss", _result("c1", ok=False, code=ErrorCode.VERIFY_TIMEOUT, risk="R2")),
+    ],
+)
+def test_a_no_effect_end_over_any_other_r2_miss_stays_unverified(
+    label: str, step: StepResult
+) -> None:
+    """NE-02: only a step whose evidence reason and ledger outcome are both `no_effect` is
+    known to have landed nothing; every other R2 miss keeps today's `unverified_effect`."""
+    trigger = _trigger(_progress(_one_click_plan(), _no_effect_run(step)))
+    assert trigger == "unverified_effect", label
+
+
+def test_an_earlier_r2_miss_in_a_no_effect_run_stays_unverified() -> None:
+    plan = _one_click_plan(_click("c1"), _click("c2"))
+    earlier = _result("c1", ok=False, code=ErrorCode.VERIFY_TIMEOUT, risk="R2")
+    run = _no_effect_run(earlier, _no_effect_step("c2"))
+    assert _trigger(_progress(plan, run)) == "unverified_effect"
+
+
+def test_the_failure_keeps_the_no_effect_detail() -> None:
+    run = _no_effect_run(_no_effect_step())
+    assert _progress(_one_click_plan(), run).failure() == FailedStep(
+        step_id="c1", code="verify_failed", detail="no_effect"
+    )
 
 
 # ---- what the planner is told (items 5, 6) ---------------------------------------------------

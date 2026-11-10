@@ -41,11 +41,12 @@ class FailedStep:
     step_id: str
     code: str
     """The taxonomy code (5.4), never a message."""
-    detail: Literal["active_option"] | None = None
-    """A closed refusal token the planner may act on (D-151); never screen text."""
+    detail: Literal["active_option", "no_effect"] | None = None
+    """A closed token the planner may act on, never screen text: the executor's popup-option
+    refusal (D-151) or an Enter the loop proved changed nothing (no-effect-submit)."""
 
     def __post_init__(self) -> None:
-        if self.detail not in (None, "active_option"):
+        if self.detail not in (None, "active_option", "no_effect"):
             raise ValueError("failed step detail is not a known token")
 
 
