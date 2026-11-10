@@ -34,6 +34,7 @@ SNAPSHOT_MAX_AGE_S = 10.0
 # UIA pattern ids (UIAutomationClient constants), kept as literals so executors are testable
 # without comtypes; the generated module exposes the same values.
 UIA_INVOKE_PATTERN = 10000
+UIA_SELECTION_PATTERN = 10001
 UIA_VALUE_PATTERN = 10002
 UIA_EXPAND_COLLAPSE_PATTERN = 10005
 UIA_SELECTION_ITEM_PATTERN = 10010
@@ -41,6 +42,7 @@ UIA_TOGGLE_PATTERN = 10015
 UIA_SCROLL_ITEM_PATTERN = 10017
 _PATTERN_INTERFACES = {
     UIA_INVOKE_PATTERN: "IUIAutomationInvokePattern",
+    UIA_SELECTION_PATTERN: "IUIAutomationSelectionPattern",
     UIA_VALUE_PATTERN: "IUIAutomationValuePattern",
     UIA_EXPAND_COLLAPSE_PATTERN: "IUIAutomationExpandCollapsePattern",
     UIA_SELECTION_ITEM_PATTERN: "IUIAutomationSelectionItemPattern",

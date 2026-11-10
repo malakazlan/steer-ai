@@ -10,7 +10,12 @@ from typing import Any
 
 import pytest
 
-from steerai.action.execution import UIA_SELECTION_ITEM_PATTERN, UIA_TOGGLE_PATTERN, RefusalError
+from steerai.action.execution import (
+    UIA_SELECTION_ITEM_PATTERN,
+    UIA_SELECTION_PATTERN,
+    UIA_TOGGLE_PATTERN,
+    RefusalError,
+)
 from steerai.action.live_reads import UiaLiveReads
 from steerai.errors import ErrorCode, SteerError
 
@@ -79,3 +84,39 @@ def test_a_programming_error_in_a_state_read_still_raises() -> None:
     reads = UiaLiveReads(_Client(), _Bindings({}, error=KeyError("bug")))
     with pytest.raises(KeyError):
         reads.toggle_state(object())
+
+
+# ---- the listbox admission reads (W3b) -----------------------------------------------------------
+
+
+class _Container:
+    def __init__(self, multiple: bool) -> None:
+        self.CurrentCanSelectMultiple = multiple
+
+
+def test_has_selection_item_reads_whether_the_item_exposes_the_pattern() -> None:
+    """W3b admission: a listbox option must expose SelectionItem (probe `widget_patterns
+    --section disclosure`, n=3: an ARIA option and a `<select size>` option both do)."""
+    assert UiaLiveReads(
+        _Client(), _Bindings({UIA_SELECTION_ITEM_PATTERN: _Pattern()})
+    ).has_selection_item(object())
+    assert not UiaLiveReads(_Client(), _Bindings({})).has_selection_item(object())
+
+
+@pytest.mark.parametrize("multiple", [True, False])
+def test_the_selection_container_reads_can_select_multiple(multiple: bool) -> None:
+    bindings = _Bindings({UIA_SELECTION_PATTERN: _Container(multiple)})
+    assert UiaLiveReads(_Client(), bindings).selection_container(object()) is multiple
+    assert bindings.asked == [UIA_SELECTION_PATTERN]
+
+
+def test_a_container_without_the_selection_pattern_reads_none() -> None:
+    assert UiaLiveReads(_Client(), _Bindings({})).selection_container(object()) is None
+
+
+def test_a_com_failure_in_an_admission_read_is_a_steer_error() -> None:
+    reads = UiaLiveReads(_Client(), _Bindings({}, error=_ComError(-2147220991)))
+    for read in (reads.has_selection_item, reads.selection_container):
+        with pytest.raises(SteerError) as caught:
+            read(object())
+        assert caught.value.message == "live_read_failed"
