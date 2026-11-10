@@ -256,6 +256,14 @@ def results_url(task: Task) -> str:
     return urllib.parse.urlunsplit((origin.scheme, origin.netloc, task.path, query, ""))
 
 
+CONTROL_ARGS = ("--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding")
+"""A control's Chrome opens behind the person's windows and never takes the foreground (it
+injects no OS input), and Chrome backgrounds a renderer whose window is occluded: measured on
+the H4 page controls (2026-11-10, two diagnostic runs), `document.visibilityState` was `hidden`
+and trusted CDP clicks and keys produced no events (`events:0`). Chrome's own switches keep the
+renderer foregrounded while occluded (Chromium `content_switches.cc`)."""
+
+
 def controls(tasks: Sequence[Task]) -> list[str]:
     """Each `url_search` task's own results URL (or a `wiki_article` task's article) opened
     directly in a throwaway Chrome, read the way a run is read, and judged by `passed`: a check
@@ -268,7 +276,12 @@ def controls(tasks: Sequence[Task]) -> list[str]:
         tmp = Path(tempfile.mkdtemp(prefix="steer-ctl-"))
         port = _free_port()
         proc = launch_chrome(
-            CHROME_DEFAULT, tmp / "profile", port, results_url(task), window_size=WINDOW
+            CHROME_DEFAULT,
+            tmp / "profile",
+            port,
+            results_url(task),
+            window_size=WINDOW,
+            extra_args=CONTROL_ARGS,
         )
         try:
             page_ws_url(port)
@@ -640,17 +653,36 @@ def _page_controls(
         with PageServer({"/page.html": _page_for(task)}) as server:
             port = _free_port()
             url = f"http://127.0.0.1:{server.port}/page.html"
-            proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, url, window_size=WINDOW)
+            proc = launch_chrome(
+                CHROME_DEFAULT,
+                tmp / "profile",
+                port,
+                url,
+                window_size=WINDOW,
+                extra_args=CONTROL_ARGS,
+            )
             try:
                 page_ws_url(port)
+                _settled(port, SETTLE_LIMIT_S)
                 time.sleep(2.0)
                 cdp = _page(port)
                 try:
                     _drive(cdp, drive)
                 finally:
                     cdp.close()
-                ok = passed(task, "done", _page_observed(task, port))
-                lines.append(f"{task.task_id}: control {'passes' if ok else 'FAILS'}")
+                observed = _page_observed(task, port)
+                ok = passed(task, "done", observed)
+                # on a fail, the fixture's own token (events:0, untrusted, the page state) and
+                # whether Chrome had the window as occluded (visibilityState hidden)
+                seen = (
+                    ""
+                    if ok
+                    else (
+                        f" observed={observed} visibility="
+                        f"{_read(port, 'document.visibilityState', 'visibility')}"
+                    )
+                )
+                lines.append(f"{task.task_id}: control {'passes' if ok else 'FAILS'}{seen}")
             finally:
                 from steerai.probes.chrome_a11y import stop_chrome  # noqa: PLC0415
 
