@@ -278,6 +278,9 @@ class FakeSession:
     def live_title(self, ref: str) -> str | None:  # noqa: ARG002 - the fake has no windows
         return None
 
+    def no_effect_holds(self) -> bool:
+        return False
+
     def run_task(self, plan: Plan, *, continuation: bool = False) -> TaskResult:
         self.ran.append(plan)
         self.continuations.append(continuation)

@@ -38,6 +38,9 @@ class JudgedSession:
     def live_title(self, ref: str) -> str | None:  # noqa: ARG002 - the protocol's shape
         return None
 
+    def no_effect_holds(self) -> bool:
+        return False
+
     def run_task(self, plan: Plan, *, continuation: bool = False) -> TaskResult:  # noqa: ARG002
         self.ran.append(plan)
         return self.result or _done(plan)

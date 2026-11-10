@@ -127,9 +127,16 @@ class ScriptedSession:
     hwnd: int = 0x10
     ran: list[tuple[Plan, bool]] = field(default_factory=list)
     titles: dict[str, str] = field(default_factory=dict)
+    holds: bool = True
+    """What the re-read of a `no_effect` end's facts answers (NE-08)."""
+    re_reads: int = 0
 
     def live_title(self, ref: str) -> str | None:
         return self.titles.get(ref)
+
+    def no_effect_holds(self) -> bool:
+        self.re_reads += 1
+        return self.holds
 
     def run_task(self, plan: Plan, *, continuation: bool = False) -> TaskResult:
         self.ran.append((plan, continuation))
@@ -320,6 +327,77 @@ def test_an_unverified_r2_effect_stops_without_a_planner_call(tmp_path: Path) ->
         "unverified_effect",
     )
     assert len(rig.planner.requests) == 1
+    assert "check" in err
+
+
+def _no_effect_plan() -> Plan:
+    submit = Step(
+        id="s2",
+        subgoal="g2",
+        verb="submit",
+        target=Target(role="Edit", name="Search"),
+        risk="R2",
+        params={"text": SENTINEL},
+        expect=TitleMatches(pattern="x"),
+    )
+    return replace(_first(), steps=(*_first().steps, submit))
+
+
+def _no_effect_run() -> TaskResult:
+    """The loop's result for an Enter whose facts held: the step carries the token as its
+    reason, detail and ledger outcome; the task ends `stopped`/`no_effect`."""
+    failed = _step("s2", ok=False, risk="R2")
+    tokens = {"reason": "no_effect", "detail": "no_effect", "outcome": "no_effect"}
+    failed = replace(
+        failed,
+        code=ErrorCode.VERIFY_FAILED,
+        verify_code=ErrorCode.VERIFY_FAILED,
+        evidence={**failed.evidence, **tokens},
+    )
+    return TaskResult(
+        status="stopped",
+        results=[_step("s1"), failed],
+        ticked={"g1"},
+        code=ErrorCode.VERIFY_FAILED,
+        evidence={"detail": "no_effect"},
+    )
+
+
+def test_a_no_effect_run_replans_with_the_token_after_the_facts_are_read_again(
+    tmp_path: Path,
+) -> None:
+    first, cont = _outcome(_no_effect_plan()), _outcome(_continuation())
+    session = ScriptedSession([_no_effect_run(), _done("p2.s1")])
+    rig = Rig(session, ScriptedPlanner([first, cont]), tmp_path)
+    code, _out, err = rig.run(f"{_go(first)}\n{_go(cont)}\n")
+    assert code == EXIT_DONE, err
+    assert session.re_reads == 1, "the facts are read once more, before the planner call"
+    failure = rig.planner.requests[1].failure
+    assert failure is not None
+    assert (failure.step_id, failure.code, failure.detail) == ("s2", "verify_failed", "no_effect")
+    lines = (tmp_path / "t.jsonl").read_text(encoding="utf-8").splitlines()
+    replans = [json.loads(line) for line in lines if json.loads(line).get("kind") == "replan"]
+    assert replans == [{"kind": "replan", "task_id": "rp-1", "number": 1, "trigger": "no_effect"}]
+
+
+def test_a_no_effect_end_whose_facts_moved_stops_unverified_before_the_planner(
+    tmp_path: Path,
+) -> None:
+    """NE-08: a page that changed between the verify deadline and the replan's observe is an
+    uncertain effect: the task ends, no plan is asked for, nothing acts on top of it."""
+    first = _outcome(_no_effect_plan())
+    session = ScriptedSession([_no_effect_run()], holds=False)
+    rig = Rig(session, ScriptedPlanner([first]), tmp_path)
+    code, out, err = rig.run(f"{_go(first)}\n")
+    assert code == EXIT_STOPPED
+    assert (out["status"], out["code"], out["detail"]) == (
+        "stopped",
+        "verify_failed",
+        "unverified_effect",
+    )
+    assert len(rig.planner.requests) == 1
+    assert session.re_reads == 1
+    assert len(rig.screens) == 2, "the replan's observe came first; the facts were read after it"
     assert "check" in err
 
 
