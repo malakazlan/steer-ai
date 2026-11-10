@@ -72,8 +72,9 @@ _RISK_FLOOR: dict[str, Risk] = {
 }
 STATE_VERBS: frozenset[str] = frozenset(STATE_WANTED)
 """Verbs that set an element's own state: check / uncheck a CheckBox through TogglePattern,
-select a TabItem or a RadioButton through SelectionItemPattern. Their `State` template is
-code-owned (widget-verbs W2 v2, W3 v1): no plan `expect`, no physical path, never preapproved."""
+select a TabItem, a RadioButton or a listbox option through SelectionItemPattern. Their `State`
+template is code-owned (widget-verbs W2 v2, W3 v1): no plan `expect`, no physical path, never
+preapproved."""
 CHOOSE_ROLE = "ComboBox"
 WIDGET_VERBS: frozenset[str] = STATE_VERBS | {"choose"}
 """The state verbs and `choose` (W4-01): one set for the provider gate, the navigation stop, the
@@ -223,7 +224,8 @@ class Step:
 
 def _check_widget_step(step: Step) -> None:
     """W2-1/W2-3, W3-1, W4-1: check / uncheck a CheckBox only (`role=switch` and ToggleButton
-    are unmeasured, WV-22), select a TabItem or a RadioButton only (no ListItem, round 1 item 7),
+    are unmeasured, WV-22), select a TabItem, a RadioButton or a ListItem only (W3b: the loop
+    admits a ListItem only under a single-select List),
     choose a ComboBox's option only; the semantic pattern only, the template owns the
     postcondition, and the person is always asked at R2/R3 (the verdict's W2-5 ruling). Only a
     choose takes an option, and its option is a clean, non-empty name (`clean_option`).

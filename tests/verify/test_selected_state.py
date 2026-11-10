@@ -28,8 +28,8 @@ def _selected(role: str = "TabItem", name: str = "Details") -> CheckState:
 # ---- the predicate -------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("role", ["TabItem", "RadioButton"])
-def test_a_tab_or_a_radio_reads_selected(role: str) -> None:
+@pytest.mark.parametrize("role", ["TabItem", "RadioButton", "ListItem"])
+def test_a_tab_a_radio_or_a_listbox_option_reads_selected(role: str) -> None:
     assert _selected(role).wanted == "selected"
 
 
@@ -41,6 +41,8 @@ def test_a_tab_or_a_radio_reads_selected(role: str) -> None:
         ("TabItem", "off"),
         ("RadioButton", "on"),
         ("RadioButton", "off"),
+        ("ListItem", "on"),
+        ("ListItem", "off"),
     ],
 )
 def test_the_role_and_the_wanted_value_must_agree(role: str, wanted: Any) -> None:
@@ -48,7 +50,7 @@ def test_the_role_and_the_wanted_value_must_agree(role: str, wanted: Any) -> Non
         CheckState(role=role, name_pattern="Details", wanted=wanted)
 
 
-@pytest.mark.parametrize("role", ["ListItem", "TreeItem", "Button"])
+@pytest.mark.parametrize("role", ["TreeItem", "DataItem", "Button"])
 def test_selected_on_another_role_is_refused(role: str) -> None:
     with pytest.raises(ValueError, match="role"):
         CheckState(role=role, name_pattern="Details", wanted="selected")
@@ -93,6 +95,13 @@ def test_a_radio_selected_state_is_proven_by_its_select() -> None:
     assert plan.subgoals[0].condition == _selected("RadioButton", "Annual")
 
 
+def test_a_listbox_option_selected_state_is_proven_by_its_select() -> None:
+    """W3b: a listbox option is a ListItem with wanted selected."""
+    option = {"state": {"role": "ListItem", "name": "Kyoto", "wanted": "selected"}}
+    plan = plan_from_json(_doc([_select_step("Kyoto", "ListItem")], option))
+    assert plan.subgoals[0].condition == _selected("ListItem", "Kyoto")
+
+
 @pytest.mark.parametrize(
     ("body", "path"),
     [
@@ -109,8 +118,12 @@ def test_a_radio_selected_state_is_proven_by_its_select() -> None:
             "$.subgoals[0].condition.state.wanted",
         ),
         (
-            {"role": "ListItem", "name": "Details", "wanted": "selected"},
+            {"role": "TreeItem", "name": "Details", "wanted": "selected"},
             "$.subgoals[0].condition.state.role",
+        ),
+        (
+            {"role": "ListItem", "name": "Kyoto", "wanted": "on"},
+            "$.subgoals[0].condition.state.wanted",
         ),
         (
             {"role": "TabItem", "name": "Details", "wanted": "chosen"},
