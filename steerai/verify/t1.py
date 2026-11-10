@@ -794,6 +794,12 @@ def _title_key(title: str) -> str:
     return _COUNTER.sub("", _COUNTER.sub("", title)).strip().casefold()
 
 
+def same_title(pattern: str, text: str) -> bool:
+    """Whether a `title` pattern names exactly this text under the title key (counters
+    stripped, casefolded): a search subgoal's `title <words>` is the submit's own claim."""
+    return _title_key(pattern) == _title_key(text)
+
+
 def title_holds(pattern: str, title: str) -> bool:
     """Presence only (no before): the counter-stripped, casefolded pattern is in the title."""
     return _title_key(pattern) in _title_key(title)
