@@ -3314,12 +3314,24 @@ def _one_field(snapshot: Snapshot, role: str, name: str) -> int | None:
     return found[0].id if len(found) == 1 else None
 
 
+_PAGE_ROLES: frozenset[str] = frozenset({"Document", "Pane", "Window"})
+"""Containers that are the page itself, never a form: a composer whose parent is one of them
+(Chrome exposes no element for an unnamed `<form>`, so a field hangs directly off the
+Document) exempts only its own subtree, else the fifth fact could never fail (NE-01b)."""
+
+
 def _new_outside(before: Snapshot, after: Snapshot, composer_id: int) -> bool:
     """An element of `after` whose RuntimeId is new since `before` (or missing), outside the
-    composer's nearest container (its parent and everything under it)."""
+    composer's nearest container (its parent and everything under it), or outside the
+    composer's own subtree when that parent is the page (`_PAGE_ROLES`) or missing."""
     known = {e.runtime_id for e in before.elements if e.runtime_id}
     container = after.element(composer_id).parent_id
-    exempt = {composer_id} if container is None else _under(after, container)
+    root = (
+        composer_id
+        if container is None or after.element(container).role in _PAGE_ROLES
+        else container
+    )
+    exempt = _under(after, root)
     return any(
         e.id not in exempt and (not e.runtime_id or e.runtime_id not in known)
         for e in after.elements

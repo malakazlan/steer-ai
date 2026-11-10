@@ -335,3 +335,85 @@ def test_the_facts_of_an_earlier_step_never_outlive_the_next_step() -> None:
     assert h.session.no_effect_holds() is True
     h.session.run_step(_send())
     assert h.session.no_effect_holds() is False
+
+
+# ---- the hunter's check of the build (NE-01b, NE-07, NE-05b) ------------------------------------
+
+
+def _off_the_document(h: Harness) -> None:
+    """The measured fixture shape: Chrome exposes no element for an unnamed `<form>`, so the
+    composer hangs directly off the Document."""
+    from tests.orchestrator.test_url_query_loop import _reparented  # noqa: PLC0415
+
+    _reparented(h, COMPOSER[0], PAGE[0])
+
+
+def test_a_composer_off_the_document_exempts_only_its_own_subtree() -> None:
+    """NE-01b: with the composer's parent the Document, exempting the parent's subtree exempted
+    the whole page and the fifth fact could never fail. A new element under the Document is an
+    effect; a removal there (npm's dropdown closing) still reads `no_effect`."""
+    added = (50, "Text", "Results for hello", (42, 150), PAGE[0])
+    h, _bar, _windows = _dead(on_press=lambda h, _w: h.world.rows.append(added))
+    _off_the_document(h)
+    result = h.session.run_task(_plan())
+    assert result.evidence == {"detail": "unfinished"}, result.results[-1].to_dict()
+    assert result.results[-1].evidence.get("reason") != "no_effect"
+
+    dropdown = (45, "ListItem", "hello there world", (42, 95), PAGE[0])
+    h, _bar, _windows = _dead(on_press=lambda h, _w: h.world.rows.remove(dropdown))
+    _off_the_document(h)
+    h.world.rows.append(dropdown)
+    result = h.session.run_task(_plan())
+    assert result.evidence == {"detail": "no_effect"}, result.results[-1].to_dict()
+
+
+def test_a_button_submit_that_changed_nothing_is_never_no_effect() -> None:
+    """NE-07: only an Enter on the composer qualifies. A Button submit whose Invoke was
+    delivered and changed nothing stays `unverified_effect`, so a decorative Search button
+    never loops the ask."""
+    from tests.orchestrator.test_url_query_loop import (  # noqa: PLC0415
+        SEARCH_BUTTON,
+        _button_submit,
+    )
+
+    h, _bar, _windows = _dead()
+    h.world.rows.append(SEARCH_BUTTON)
+    plan = _plan(_button_submit())
+    result = h.session.run_task(plan)
+    step = result.results[-1]
+    assert step.ok is False
+    assert step.action is not None
+    assert step.action.delivery is not Delivery.NOT_DELIVERED, "the click went out"
+    assert step.evidence.get("reason") != "no_effect"
+    assert "outcome" not in step.evidence
+    assert result.evidence == {"detail": "unfinished"}
+    assert replan_trigger(result, {s.id: s for s in plan.steps}) == "unverified_effect"
+
+
+def test_an_observe_that_fails_after_the_enter_is_never_no_effect() -> None:
+    """NE-05b: the facts are read only after a deadline-timeout verdict; a verify that ended
+    another way (the world model raising after the Enter) never reaches them."""
+    h, _bar, _windows = _dead()
+    world = h.world
+    pressed = {"yes": False}
+
+    def observe(hwnd: int, **kwargs: Any) -> Any:
+        if pressed["yes"]:
+            raise SteerError(ErrorCode.PERCEPTION_TIMEOUT, "the tree never settled")
+        return world.observe(hwnd, **kwargs)
+
+    h.session._observer = type("Observer", (), {"observe": staticmethod(observe)})()
+    original = h.physical.on_execute
+
+    def press(executor: Any, action: Any) -> None:
+        if original is not None:
+            original(executor, action)
+        pressed["yes"] = action.verb == "press"
+
+    h.physical.on_execute = press
+    result = h.session.run_task(_plan())
+    step = result.results[-1]
+    assert step.ok is False
+    assert step.evidence.get("reason") != "no_effect"
+    assert "outcome" not in step.evidence
+    assert result.evidence.get("detail") != "no_effect"
