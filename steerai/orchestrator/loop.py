@@ -111,6 +111,7 @@ from steerai.verify.t1 import (
     evaluate,
     label_of_record,
     reads_wanted,
+    same_title,
     title_holds,
     verify,
 )
@@ -422,7 +423,7 @@ class Session:
         """When the last `type` was dispatched: the next R2/R3 step waits for a quiet page."""
         self._proof: tuple[Predicate, Verdict] | None = None
         """The step's own verified postcondition, as bound by the gate (#124)."""
-        self._url_proof: tuple[Predicate, Verdict] | None = None
+        self._url_proof: tuple[Predicate, Verdict, str] | None = None
         """The step's expect, counted by the address bar (#148): it ticks only the subgoal whose
         condition is exactly that expect (5.10 [v2.48])."""
         self._windows_at_step: list[WindowLike] | None = None
@@ -961,7 +962,7 @@ class Session:
                 if url_counted
                 else replace(verdict, evidence={**verdict.evidence, **url_evidence})
             )
-            self._url_proof = (expect, verdict) if url_counted else None
+            self._url_proof = (expect, verdict, str(step.params["text"])) if url_counted else None
         label = (
             None
             if renamed_at_risk or url_counted
@@ -2531,11 +2532,8 @@ class Session:
                     ticked.add(subgoal.id)
                     alias = verdict.evidence.get("alias")
                     role = alias if isinstance(alias, str) else None
-                    by = (
-                        "url_query"
-                        if verdict.evidence.get("reason") == "url_query"
-                        else "condition"
-                    )
+                    reason = verdict.evidence.get("reason")
+                    by = reason if reason in ("url_query", "url_query_title") else "condition"
                     self._trace_tick(subgoal.id, by, alias=role)
                     strikes = 0
                     continue
@@ -2729,9 +2727,8 @@ class Session:
         unbound one would count the clicked row's text, and any other step proves nothing
         about the selection (#124, hunter PS-02/03/20)."""
         if not presents(condition):
-            if self._url_proof is not None and self._url_proof[0] == condition:
-                return self._url_proof[1]  # the address bar proved exactly this (#148)
-            return self._subgoal_verdict(condition, before, after)
+            proven = self._url_proven(condition)
+            return proven if proven is not None else self._subgoal_verdict(condition, before, after)
         if self._proof is None:
             return None
         proof, verdict = self._proof
@@ -2741,6 +2738,20 @@ class Session:
             and replace(proof, target_id=None, excluding=()) == condition
         )
         return verdict if same else None
+
+    def _url_proven(self, condition: Predicate) -> Verdict | None:
+        """The address bar's proof of this step's submit (#148), for the step's own subgoal
+        only: its exact expect, or a `title` naming the typed words under the title key (H3
+        pypi1, #198: results pages titled without the words, [v2.51]), evidence
+        `url_query_title`. Nothing else is proven by it."""
+        if self._url_proof is None:
+            return None
+        expect, verdict, text = self._url_proof
+        if expect == condition:
+            return verdict
+        if isinstance(condition, TitleMatches) and same_title(condition.pattern, text):
+            return replace(verdict, evidence={**verdict.evidence, "reason": "url_query_title"})
+        return None
 
     def _subgoal_holds(self, predicate: Predicate, before: Snapshot, after: Snapshot) -> bool:
         verdict = self._subgoal_verdict(predicate, before, after)

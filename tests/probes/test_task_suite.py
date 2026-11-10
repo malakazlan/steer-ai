@@ -54,6 +54,34 @@ def test_the_person_approves_only_the_exact_phrases() -> None:
     assert search.ask_go("go:1") == "go"
 
 
+def _named_ask(name: str, text: str | None = None) -> Any:
+    return SimpleNamespace(
+        decision_id="d1",
+        params={"text": text},
+        verb="click",
+        risk="R2",
+        kind="yes",
+        target_name=name,
+    )
+
+
+def test_a_text_less_ask_is_approved_when_its_name_is_in_the_goal() -> None:
+    """The scripted person's goal rule (#200): a button or box named verbatim in the goal is
+    what the goal asked for; a text ask still needs the task's exact phrase."""
+    person = Person(frozenset(), goal="switch to the annual billing period")
+    assert person.ask(_named_ask("Annual")) == "yes:d1"
+    assert person.ask(_named_ask("annual  billing")) == "yes:d1", "case and spacing folded"
+    assert person.ask(_named_ask("Delete")) == "no:d1"
+    assert person.ask(_named_ask("")) == "no:d1", "an unnamed target is never in the goal"
+    assert person.ask(_named_ask("Annual", text="annual")) == "no:d1", "text asks need text"
+    assert person.ask(_named_ask("Annual", text="billing")) == "no:d1"
+    assert person.log[-1]["approved"] is False
+    listed = Person(frozenset(), frozenset({"Delete"}), goal="switch to the annual billing period")
+    assert listed.ask(_named_ask("Delete")) == "yes:d1", "approve_targets still apply"
+    unknown = Person(frozenset())
+    assert unknown.ask(_named_ask("Annual")) == "no:d1", "no goal, no goal rule"
+
+
 def test_query_of_reads_google_and_youtube() -> None:
     assert query_of("https://www.google.com/search?q=windows+ui+automation&hl=en") == (
         "windows ui automation"
@@ -134,3 +162,21 @@ def test_a_person_who_stays_active_gives_an_invalid_row_and_the_suite_goes_on(
     monkeypatch.setattr(suite, "wait_until_idle", active)
     row = suite.one_run(TASKS[0], 1, suite._Planner())
     assert row == {"task": "np1", "run": 1, "passed": False, "invalid": "person_active"}
+
+
+def test_the_goal_rule_matches_whole_tokens_of_at_least_three_characters() -> None:
+    """H4 review (#204): a plain substring approved Button "Go" under any Google goal and
+    "Post" under a Post Malone goal. The target's folded tokens must appear as a contiguous
+    token sequence in the goal, and the target must be at least three characters."""
+    google = Person(frozenset(), goal="search Google for steer ai computer use agent")
+    assert google.ask(_named_ask("Go")) == "no:d1", "a substring of 'Google', not a token"
+    assert google.ask(_named_ask("ai")) == "no:d1", "a token, but under three characters"
+    assert google.ask(_named_ask("Google")) == "yes:d1"
+    assert google.ask(_named_ask("computer use")) == "yes:d1", "a contiguous token run"
+    assert google.ask(_named_ask("use computer")) == "no:d1", "the tokens out of order"
+    malone = Person(frozenset(), goal="play the latest Post Malone video")
+    assert malone.ask(_named_ask("Post")) == "yes:d1", "a whole token of the goal"
+    assert malone.ask(_named_ask("Pos")) == "no:d1", "a prefix of a token"
+    signup = Person(frozenset(), goal="tick the I agree to the terms box on the sign-up form")
+    assert signup.ask(_named_ask("I agree to the terms")) == "yes:d1"
+    assert signup.ask(_named_ask("sign-up")) == "yes:d1", "punctuation inside a token is kept"
