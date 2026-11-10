@@ -128,6 +128,8 @@ CONTROL_ROLES: frozenset[str] = frozenset(
     {"Button", "SplitButton", "MenuItem", "CheckBox", "RadioButton"}
 )
 SELECTED_CONTROL_ROLE = "ListItem"
+LISTBOX_PARENT_ROLE = "List"
+"""A listbox option's container, whose name raises its options (#206 review)."""
 """W3b: a listbox option is a control only under `select`, so CONTROL_PATTERNS read its name then
 ("Subscribe" as an option asks at R2); a clicked ListItem (a chat row) keeps ruling (a)."""
 _RISK_ORDER = {risk: index for index, risk in enumerate(RISKS)}
@@ -231,19 +233,22 @@ def deny_tier(
     of the resolved element's nearest ancestor when that is a Group: read for a RadioButton
     through every class (W3-03), for a CheckBox through billing only (W3-02). A choose reads
     every class on its option, its ComboBox's name and that group's name (W4-03). A select on a
-    listbox option reads the control class on the option's name (W3b)."""
+    listbox option reads every class on the option's name and its List's name too (W3b, #206
+    review: a `<select size>` is the same control as a `<select>`, so an option's tier never
+    depends on the verb the planner picked)."""
     risk: Risk = "R0"
     if step.target is None:
         return risk
     if step.verb == "choose" and step.target.role == CHOOSE_ROLE:
         return _chosen_tier(step, bound_name, element_ids, group_name)
+    if step.verb == "select" and step.target.role == SELECTED_CONTROL_ROLE:
+        return _listed_tier(step, bound_name, element_ids, group_name)
     role = step.target.role
     group = [group_name] if group_name and role in BILLING_ROLES else []
     grouped = group if role == GROUPED_ROLE else []
     names = [step.target.name, *([bound_name] if bound_name else []), *grouped]
     ids = [i for i in (step.target.automation_id, *element_ids) if i]
-    control = role in CONTROL_ROLES or (step.verb == "select" and role == SELECTED_CONTROL_ROLE)
-    controlled = [step.target.name, *grouped] if control else []
+    controlled = [step.target.name, *grouped] if role in CONTROL_ROLES else []
     consenting = role in CONSENT_ROLES
     billed = [step.target.name, *group] if role in BILLING_ROLES else []
     if any(_BILLED.search(comparable(name)) for name in billed):
@@ -265,19 +270,25 @@ def deny_tier(
     return risk
 
 
-def _chosen_tier(
+def _listed_tier(
     step: Step, bound_name: str | None, element_ids: Sequence[str], group: str | None
 ) -> Risk:
-    """W4-03: a choose is the option it picks. Deny, control, consent and billing read the
-    option, the ComboBox's name and its group's name ("Premium ($20/mo)" is R2, "Delete
-    selected" R3, "Yes" under a consent group R2); the automation ids through every class
-    but billing. An option's own automation id is invisible before Expand (a 5.13 gap)."""
+    """A select on a listbox option is the option it picks (#206 review, as W4-03 for a
+    choose): deny, control, consent and billing read the option's name, the bound name and the
+    container List's name ("Premium $20/mo" is R2, "Yes" under a List "I agree to pay" R3);
+    the automation ids through every class but billing. A clicked ListItem keeps the [v2.17]
+    ruling (a)."""
     target = step.target
     if target is None:  # the caller checked it; kept for the type checker
         return "R0"
-    option = step.params.get(OPTION_PARAM)
-    names = [target.name, *(n for n in (option, bound_name, group) if n)]
+    names = [target.name, *(n for n in (bound_name, group) if n)]
     ids = [i for i in (target.automation_id, *element_ids) if i]
+    return _every_class(names, ids)
+
+
+def _every_class(names: list[str], ids: list[str]) -> Risk:
+    """Every pattern class on `names`, the ids through every class but billing, the price
+    regex on the comparable names; raise-only from R0."""
     risk: Risk = "R2" if any(_BILLED.search(comparable(name)) for name in names) else "R0"
     classes: tuple[tuple[Mapping[str, Risk], list[str]], ...] = (
         (DENY_PATTERNS, ids),
@@ -296,18 +307,38 @@ def _chosen_tier(
     return risk
 
 
+def _chosen_tier(
+    step: Step, bound_name: str | None, element_ids: Sequence[str], group: str | None
+) -> Risk:
+    """W4-03: a choose is the option it picks. Deny, control, consent and billing read the
+    option, the ComboBox's name and its group's name ("Premium ($20/mo)" is R2, "Delete
+    selected" R3, "Yes" under a consent group R2); the automation ids through every class
+    but billing. An option's own automation id is invisible before Expand (a 5.13 gap)."""
+    target = step.target
+    if target is None:  # the caller checked it; kept for the type checker
+        return "R0"
+    option = step.params.get(OPTION_PARAM)
+    names = [target.name, *(n for n in (option, bound_name, group) if n)]
+    ids = [i for i in (target.automation_id, *element_ids) if i]
+    return _every_class(names, ids)
+
+
 def group_name(snapshot: Snapshot, element: Element) -> str | None:
     """The name of the element's nearest ancestor when that ancestor is a named Group (W3-03):
     Chrome 156 names it after a fieldset's legend or a radiogroup's aria-label (probe
-    `widget_patterns --section groups`, n=3). A question in a plain div names no ancestor (a
-    written gap); anything but a named Group parent is None."""
+    `widget_patterns --section groups`, n=3), and a ListItem's parent when that is a named
+    List (#206 review: the container names its options, as a ComboBox does). A question in a
+    plain div names no ancestor (a written gap); anything else is None."""
     if element.parent_id is None:
         return None
     try:
         parent = snapshot.element(element.parent_id)
     except SteerError:
         return None
-    if parent.role != GROUP_ROLE or not normalise_name(parent.name):
+    container = parent.role == GROUP_ROLE or (
+        element.role == SELECTED_CONTROL_ROLE and parent.role == LISTBOX_PARENT_ROLE
+    )
+    if not container or not normalise_name(parent.name):
         return None
     return parent.name
 
