@@ -207,17 +207,20 @@ def test_the_prompt_says_focus_targets_a_field_role() -> None:
     assert "focus (put keyboard focus in a field: an Edit, ComboBox or Document)" in prose
 
 
-def test_the_prompt_says_a_submit_goes_through_the_one_submit_button_beside_the_field() -> None:
-    """#199 ([v2.64] npm1): on npmjs.com, while the suggestion dropdown is open, the form's
-    first submit button is an invisible full-screen backdrop, so Enter only closes the dropdown;
-    UIA Invoke on the Button "Search" beside the field submits (3/3). rubygems.org has two submit
-    buttons for its field, so Enter stays the submit there."""
+def test_a_continuation_after_no_effect_submits_on_the_one_button_beside_the_field() -> None:
+    """#199 ([v2.64] npm1; packet no-effect-submit-2026-11-10, option B): Enter stays the
+    submit everywhere (dev 29/30); only a continuation after an Enter proven to have had no
+    effect goes through the one Button listed beside the field. The plan-time Button preference
+    (option A) is gone: a listing cannot judge a twin that appears after typing."""
     system, _ = build_prompt(_request(), tag="t")
     prose = " ".join(system.split())
-    assert "use submit on the field (Enter), unless the listing shows exactly one Button" in prose
-    assert "whose name says it submits (Search, Go, Submit): then submit on that Button" in prose
-    assert "Two such Buttons, or none: submit on the field." in prose
-    assert PROMPT_VERSION == "planner-20"
+    assert (
+        "If a submit on the field had no effect, submit on the one Button listed beside it, "
+        "with the same params." in prose
+    )
+    assert "unless the listing shows exactly one Button" not in prose
+    assert "whose name says it submits" not in prose
+    assert PROMPT_VERSION == "planner-21"
 
 
 def test_the_prompt_says_a_selection_click_is_proven_by_present() -> None:
