@@ -17,7 +17,7 @@ import pytest
 
 import steerai.action.readback as readback_mod
 from steerai.action.dispositions import Delivery
-from steerai.action.execution import SNAPSHOT_MAX_AGE_S, UiaBindings
+from steerai.action.execution import SNAPSHOT_MAX_AGE_S, UIA_SELECTION_PATTERN, UiaBindings
 from steerai.action.executor import Action, Executor
 from steerai.errors import ErrorCode, SteerError
 from steerai.probes.uia_snapshot import UiaClient
@@ -938,6 +938,7 @@ def test_bindings_from_a_module_missing_an_interface_fail_at_construction() -> N
     module = SimpleNamespace(
         UIA_ButtonControlTypeId=50000,
         IUIAutomationInvokePattern=object(),
+        IUIAutomationSelectionPattern=object(),
         IUIAutomationValuePattern=object(),
     )
     with pytest.raises(OSError, match="IUIAutomationExpandCollapsePattern"):
@@ -947,6 +948,7 @@ def test_bindings_from_a_module_missing_an_interface_fail_at_construction() -> N
 def test_bindings_from_a_module_map_control_types_and_interfaces() -> None:
     names = [
         "IUIAutomationInvokePattern",
+        "IUIAutomationSelectionPattern",
         "IUIAutomationValuePattern",
         "IUIAutomationExpandCollapsePattern",
         "IUIAutomationSelectionItemPattern",
@@ -958,6 +960,7 @@ def test_bindings_from_a_module_map_control_types_and_interfaces() -> None:
     assert bindings.control_types == {50000: "Button"}
     assert set(bindings.interfaces) == {
         UIA_INVOKE,
+        UIA_SELECTION_PATTERN,
         UIA_VALUE,
         UIA_EXPAND,
         UIA_SELECTION_ITEM,
