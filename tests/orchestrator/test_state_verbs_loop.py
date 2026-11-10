@@ -9,7 +9,7 @@ from typing import Any
 
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.action.dispositions import Step as ActionStep
-from steerai.errors import ErrorCode
+from steerai.errors import ErrorCode, SteerError
 from steerai.orchestrator.contracts import Plan, Step, Subgoal, Target
 from steerai.verify.predicates import TitleMatches
 from tests.orchestrator.fakes import BASE_ROWS, FakeWorld, Row
@@ -33,6 +33,13 @@ class Boxes:
     reads: int = 0
     selected: dict[tuple[int, ...], bool] = field(default_factory=dict)
     selected_reads: int = 0
+    containers: dict[tuple[int, ...], bool] = field(default_factory=dict)
+    """Each List's CanSelectMultiple (W3b); a List not here exposes no SelectionPattern."""
+    without_selection_item: set[tuple[int, ...]] = field(default_factory=set)
+    """Items that expose no SelectionItemPattern; every other item with a state does."""
+    admission_failure: SteerError | None = None
+    """A COM failure every admission read raises (W3b)."""
+    admission_reads: int = 0
 
     def value(self, _handle: Any) -> str | None:
         return self.world.composer_value
@@ -50,6 +57,19 @@ class Boxes:
 
     def focused_runtime_id(self) -> tuple[int, ...]:
         return ()
+
+    def has_selection_item(self, handle: Any) -> bool:
+        self._admission_read()
+        return handle in self.selected and handle not in self.without_selection_item
+
+    def selection_container(self, handle: Any) -> bool | None:
+        self._admission_read()
+        return self.containers.get(handle)
+
+    def _admission_read(self) -> None:
+        self.admission_reads += 1
+        if self.admission_failure is not None:
+            raise self.admission_failure
 
 
 def _harness(**kw: Any) -> tuple[Harness, Boxes]:

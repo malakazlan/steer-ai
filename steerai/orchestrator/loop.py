@@ -38,13 +38,14 @@ from steerai.action.launch import (
     title_matches,
 )
 from steerai.action.launcher import OpenAction
-from steerai.action.live_reads import twin_value_of
+from steerai.action.live_reads import ListboxReads, twin_value_of
 from steerai.action.options import option_key
 from steerai.action.physical import TEXT_ROLES, PhysicalAction
 from steerai.action.sanitize import field_text, normalise_newlines
 from steerai.errors import ErrorCode, SteerError
 from steerai.goal_match import GoalMatcher
 from steerai.orchestrator.contracts import (
+    CHOOSE_ROLE,
     OPTION_PARAM,
     RISKS,
     START_WINDOW,
@@ -462,8 +463,7 @@ class Session:
                 if step.verb in WIDGET_VERBS:
                     self._state_holds(step, before, stage, evidence)
                 return self._done_already(step, key, stage, evidence)
-            before, element_id = self._resolve_settling(step, before, stage, evidence)
-            before, element_id = self._scroll_first(step, before, element_id, stage, evidence)
+            before, element_id = self._resolved_target(step, before, stage, evidence)
             self._secure_step = before.element(element_id).secure
             risk, previous = self._readmitted(
                 step,
@@ -1483,6 +1483,15 @@ class Session:
         # the deadline, or the poll bound under a clock that never moves: never quiet
         evidence["settle"] = "capped"
         return snapshot, True
+
+    def _resolved_target(
+        self, step: Step, before: Snapshot, stage: _Stage, evidence: dict[str, Any]
+    ) -> tuple[Snapshot, int]:
+        """The target resolved and on screen: resolve (settling), the listbox admission on the
+        resolved element (W3b, before any scroll), then the pre-gate scroll ([v2.55])."""
+        before, element_id = self._resolve_settling(step, before, stage, evidence)
+        _listbox_admission(step, before, element_id, self._live)
+        return self._scroll_first(step, before, element_id, stage, evidence)
 
     def _scroll_first(
         self, step: Step, before: Snapshot, element_id: int, stage: _Stage, evidence: dict[str, Any]
@@ -2960,6 +2969,50 @@ def _measured_provider(step: Step, snapshot: Snapshot) -> None:
     before the gate, nothing sent and no ask."""
     if step.verb in WIDGET_VERBS and snapshot.process.casefold() != MEASURED_PROVIDER:
         raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "unmeasured_provider")
+
+
+LISTBOX_ITEM_ROLE = "ListItem"
+LISTBOX_ROLE = "List"
+_NOT_A_LISTBOX = frozenset({"Tree", "DataGrid"})
+
+
+def _listbox_admission(step: Step, snapshot: Snapshot, element_id: int, live: object) -> None:
+    """A `select` on a ListItem is admitted only as a listbox option (W3b, the principal's rule):
+    the item exposes SelectionItem, its nearest List ancestor exposes Selection with
+    CanSelectMultiple false, and no ComboBox (its options are `choose`'s, WV-11), Tree or
+    DataGrid ancestor. Anything else is refused before any scroll, the gate or an ask, with
+    nothing sent: `in_combobox`, `multi_select`, `not_a_listbox_item`, or `selection_unreadable`
+    when the live reader cannot read the patterns (unclear means fail). Measured (probe
+    `widget_patterns --section disclosure`, Chrome 156, n=3): an ARIA `role=listbox` and a
+    `<select size>` both read Selection with CanSelectMultiple false, and their items expose
+    SelectionItem. The ancestors are the snapshot's; the patterns are read live."""
+    element = snapshot.element(element_id)
+    if step.verb != "select" or element.role != LISTBOX_ITEM_ROLE:
+        return
+    container: Element | None = None
+    parent_id = element.parent_id
+    while parent_id is not None:
+        ancestor = snapshot.element(parent_id)
+        if ancestor.role == CHOOSE_ROLE:
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "in_combobox")
+        if ancestor.role in _NOT_A_LISTBOX:
+            raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "not_a_listbox_item")
+        if container is None and ancestor.role == LISTBOX_ROLE:
+            container = ancestor
+        parent_id = ancestor.parent_id
+    if container is None:
+        raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "not_a_listbox_item")
+    if not isinstance(live, ListboxReads):
+        raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "selection_unreadable")
+    try:
+        selectable = live.has_selection_item(snapshot.handle(element_id))
+        multiple = live.selection_container(snapshot.handle(container.id))
+    except SteerError as exc:
+        raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "selection_unreadable") from exc
+    if not selectable or multiple is None:
+        raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "not_a_listbox_item")
+    if multiple:
+        raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "multi_select")
 
 
 _CONTRADICTIONS = frozenset({"value_differs", "state_differs"})
