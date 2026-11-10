@@ -26,7 +26,7 @@ from steerai.orchestrator.contracts import (
     Subgoal,
 )
 from steerai.orchestrator.gate import effective_risk
-from steerai.orchestrator.loop import TaskResult
+from steerai.orchestrator.loop import NO_EFFECT, TaskResult
 from steerai.orchestrator.plan_io import encode_predicate
 from steerai.planner.contracts import DoneStep, FailedStep, OpenSubgoal
 from steerai.verify.predicates import All, AnyOf, Predicate, check_states, field_values
@@ -36,9 +36,6 @@ MAX_REPLANS = 2
 "two failed replans")."""
 
 Trigger = Literal["unfinished", "element_not_found", "reset", "no_effect", "unverified_effect"]
-NO_EFFECT = "no_effect"
-"""The closed token of an Enter whose four facts held at the verify deadline: the step's evidence
-reason, its ledger outcome, and the task's detail (packet no-effect-submit-2026-11-10)."""
 _REPLAN_DETAILS = frozenset({"no_match"})
 """Missing-target details that replan. `candidate_gone` only comes from a person target, which
 never replans (hunter RP-05)."""

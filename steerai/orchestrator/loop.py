@@ -171,6 +171,13 @@ STOP_CODES: frozenset[ErrorCode] = frozenset(
 """Codes that end the task even after a dispatch: the window or the desktop is not there to
 act on any more (RN-14); the ledger record stays open, so a resume confirms."""
 SCREEN_GUARD_STRIKES = 3
+NO_EFFECT = "no_effect"
+"""An Enter the loop proved changed nothing (packet no-effect-submit-2026-11-10): the step's
+evidence reason and detail, its ledger outcome, and the task's detail; the replan's trigger."""
+_MISSES = frozenset({"no_match", "not_new", "not_replaced"})
+"""The verify's deadline misses after which the no-effect facts are read (NE-05)."""
+_DELIVERED = frozenset({Delivery.DELIVERED_UNVERIFIED, Delivery.DELIVERED_VERIFIED})
+"""An Enter that reached the app: never uncertain, never a refusal (NE-05)."""
 _RISK_ORDER = {risk: index for index, risk in enumerate(RISKS)}
 DEFAULT_MAX_STEPS = 20
 _DIFF_PREDICATES = (Appeared, Disappeared, CountDelta, WindowGone)
@@ -297,6 +304,19 @@ class _Stage:
             return work()
         finally:
             self.totals[name] = self.totals.get(name, 0.0) + (self.monotonic() - started) * 1000
+
+
+@dataclass(frozen=True, slots=True)
+class _NoEffectFacts:
+    """What a `no_effect` verdict was read against, kept for the re-read before the replan's
+    planner call (NE-08): the step, its approved text, the before URL of record, the before
+    snapshot of record and the step's window list."""
+
+    step: Step
+    text: str
+    url_before: UrlBefore
+    before: Snapshot
+    windows: list[WindowLike] | None
 
 
 class Session:
@@ -427,6 +447,8 @@ class Session:
         """The step's expect, counted by the address bar (#148): it ticks only the subgoal whose
         condition is exactly that expect (5.10 [v2.48])."""
         self._windows_at_step: list[WindowLike] | None = None
+        self._no_effect_facts: _NoEffectFacts | None = None
+        """The last step's `no_effect` facts, until the next step begins."""
         self._scrolled: str | None = None
         self._act_evidence: dict[str, Any] = {}
         self._sent_in_act = False
@@ -952,20 +974,40 @@ class Session:
             # effect of an R2/R3 step (5.10 [v1.2]); unverified, and no label (review item 2)
             reason = {**verdict.evidence, "reason": "renamed_at_risk"}
             verdict = replace(verdict, holds=False, code=ErrorCode.VERIFY_TIMEOUT, evidence=reason)
-        url_counted = False
+        url_counted = no_effect = False
         if self._url_step and not verdict.holds:
             # a Chrome search submit whose title is in no frame: the address bar's query
-            # parameter is the proof, never a label (#148 design D)
-            url_counted, url_evidence = self._url_counts(step, before_of_record, after)
-            verdict = (
-                replace(verdict, holds=True, code=None, evidence=url_evidence)
-                if url_counted
-                else replace(verdict, evidence={**verdict.evidence, **url_evidence})
-            )
+            # parameter is the proof, never a label (#148 design D); read once, after the
+            # verify's deadline, and shared with the no-effect facts
+            url_now = self._read_url()
+            url_counted, url_evidence = self._url_counts(step, before_of_record, after, url_now)
+            if url_counted:
+                verdict = replace(verdict, holds=True, code=None, evidence=url_evidence)
+            else:
+                verdict = replace(verdict, evidence={**verdict.evidence, **url_evidence})
+                no_effect = self._no_effect(
+                    step,
+                    verdict,
+                    action,
+                    evidence=evidence,
+                    before=before_of_record,
+                    after=after,
+                    url_now=url_now,
+                    windows_before=windows_before,
+                )
+            if no_effect:
+                unchanged = _verify_deadline(expect, self._verify_deadline_s)
+                tokens = {"reason": NO_EFFECT, "detail": NO_EFFECT, "unchanged_s": unchanged}
+                verdict = replace(
+                    verdict,
+                    holds=False,
+                    code=ErrorCode.VERIFY_FAILED,
+                    evidence={**verdict.evidence, **tokens},
+                )
             self._url_proof = (expect, verdict, str(step.params["text"])) if url_counted else None
         label = (
             None
-            if renamed_at_risk or url_counted
+            if renamed_at_risk or url_counted or no_effect
             else label_of_record(
                 verdict, predicate=expect, action_key=key, before=before_of_record, after=after
             )
@@ -989,6 +1031,8 @@ class Session:
             )
         evidence.update({k: v for k, v in verdict.evidence.items() if k != "level"})
         evidence["level"] = verdict.level
+        if no_effect:
+            evidence["outcome"] = outcome  # the ledger closed it so: the replan's second token
         if step.verb in WIDGET_VERBS and before_of_record.title != after.title:
             evidence["retitled"] = True  # a token, never the titles (W3-01, W4-01)
         # already in the wanted state is nothing sent and counts as success (5.9 [v0.7])
@@ -1367,6 +1411,7 @@ class Session:
 
     def _begin_step(self, windows_before: list[WindowLike] | None) -> None:
         self._windows_at_step = windows_before
+        self._no_effect_facts = None
         self._proof = None
         self._url_proof = None
         self._scrolled = None
@@ -1922,11 +1967,12 @@ class Session:
         return None if value is None or not isinstance(text, str) else UrlBefore.of(value, text)
 
     def _url_counts(
-        self, step: Step, before: Snapshot, page: Snapshot
+        self, step: Step, before: Snapshot, page: Snapshot, after: str | None
     ) -> tuple[bool, dict[str, Any]]:
         """The address bar carries the words and a new page loaded for them (`page_loaded`;
-        `page` is the verify's last observation, `before` the before of record)."""
-        after, text = self._read_url(), step.params.get("text")
+        `page` is the verify's last observation, `before` the before of record, `after` the
+        address bar read after the verify's deadline)."""
+        text = step.params.get("text")
         if self._url_before is None or after is None or not isinstance(text, str):
             return False, {"detail": "no_url"}
         if not self._url_before.counts(after, text):
@@ -1941,6 +1987,98 @@ class Session:
         ):
             return False, {"detail": "no_load"}
         return True, {"reason": "url_query"}
+
+    def _no_effect(  # noqa: PLR0913 - the step's state at the verify deadline
+        self,
+        step: Step,
+        verdict: Verdict,
+        action: ActionResult,
+        *,
+        evidence: Mapping[str, Any],
+        before: Snapshot,
+        after: Snapshot,
+        url_now: str | None,
+        windows_before: list[WindowLike] | None,
+    ) -> bool:
+        """An Enter that provably changed nothing (packet no-effect-submit-2026-11-10; [v2.64]
+        npm1: a backdrop submit button swallows the Enter while the dropdown is open). Only an
+        Enter on a text-role composer (NE-07; a Button submit that misses stays uncertain),
+        delivered (NE-05: never uncertain), whose verify missed at its deadline (`no_match`,
+        `not_new`, `not_replaced`), and the five facts of `_facts_hold`, read now, after that
+        deadline and never earlier: a slow page that lands while the verify polls is the
+        verify's to catch. Any fact missing keeps `unverified_effect`. The facts are kept for
+        the re-read before the replan's planner call (`no_effect_holds`, NE-08). The evidence
+        says unchanged for the verify's deadline, never proven: a page can still act later."""
+        self._no_effect_facts = None
+        if evidence.get("submit") != "enter" or not self._sent_in_act:
+            return False
+        if action.delivery not in _DELIVERED:
+            return False
+        missed = verdict.code is ErrorCode.VERIFY_TIMEOUT
+        if not missed or verdict.evidence.get("reason") not in _MISSES:
+            return False
+        text = step.params.get("text")
+        if self._url_before is None or not isinstance(text, str):
+            return False
+        facts = _NoEffectFacts(
+            step=step, text=text, url_before=self._url_before, before=before, windows=windows_before
+        )
+        if not self._facts_hold(facts, after, url_now):
+            return False
+        self._no_effect_facts = facts
+        return True
+
+    def _facts_hold(self, facts: _NoEffectFacts, now: Snapshot, url_now: str | None) -> bool:
+        """The five facts, each required: (1) the address bar equals the before URL of record
+        (its digest), both readable; (2) the top Document keeps its RuntimeId and name; (3)
+        the composer, resolved in `now` by role and exact name (exactly one: twins are a
+        missing fact), still holds exactly the approved text, read through `now`'s handle,
+        never the before-of-record's (NE-04: a re-rendered input raises on the stale handle,
+        and the fact is the text, not the element); (4) no element with a new RuntimeId
+        outside the composer's nearest container (NE-01: an instant-search page or an
+        in-place re-render is an effect; a removal, npm's dropdown closing, is not); (5) the
+        top-level window list is the step's (a results tab elsewhere is an effect)."""
+        composer = self._held_composer(facts, now)
+        return (
+            url_now is not None
+            and UrlBefore.of(url_now, facts.text) == facts.url_before
+            and _same_top_document(facts.before, now)
+            and composer is not None
+            and not _new_outside(facts.before, now, composer)
+            and self._same_windows(facts.windows)
+        )
+
+    def _held_composer(self, facts: _NoEffectFacts, now: Snapshot) -> int | None:
+        """The one composer of `now` that still holds the approved text, read through `now`'s
+        handle (fact 3), else None."""
+        target = _composer_target(facts.step)
+        composer = None if target is None else _one_field(now, *target)
+        if composer is None:
+            return None
+        try:
+            self._check_composer(facts.step, now, composer)
+        except _StepFailureError:
+            return None
+        return composer
+
+    def _same_windows(self, windows_before: list[WindowLike] | None) -> bool:
+        """The top-level windows now are the step's (fact 5); no list is a missing fact."""
+        if self._windows is None or windows_before is None:
+            return False
+        return {w.hwnd for w in self._windows()} == {w.hwnd for w in windows_before}
+
+    def no_effect_holds(self) -> bool:
+        """The last step's `no_effect` facts read again, on a fresh look, before the replan's
+        planner call (NE-08); False when nothing was judged `no_effect` or anything moved
+        since, which the runner ends `unverified_effect`."""
+        facts = self._no_effect_facts
+        if facts is None:
+            return False
+        try:
+            now = self._observe()
+        except SteerError:
+            return False
+        return self._facts_hold(facts, now, self._read_url())
 
     def _pin(self, target: Target, level: int) -> None:
         """A verified type of a twin pins it for conditions; any other verified type of the
@@ -2951,6 +3089,9 @@ def _stop_for(
         return "paused", ErrorCode.GATE_PENDING_USER, detail
     if not result.ok and (result.action is None or result.code in STOP_CODES):
         return "stopped", result.code or ErrorCode.VERIFY_FAILED, detail
+    if not result.ok and detail == NO_EFFECT:
+        # the Enter changed nothing: the replan submits through the Button beside the field
+        return "stopped", ErrorCode.VERIFY_FAILED, NO_EFFECT
     return None
 
 
@@ -3093,6 +3234,74 @@ def _wal_detail(exc: LedgerError) -> str:
 
 def _document_names(snapshot: Snapshot) -> list[str]:
     return [element.name for element in snapshot.elements if element.role == "Document"]
+
+
+def _top_document(snapshot: Snapshot) -> Element | None:
+    """The one Document with no Document above it; none or several is unclear."""
+    by_id = {e.id: e for e in snapshot.elements}
+    tops = []
+    for element in snapshot.elements:
+        if element.role != "Document":
+            continue
+        parent = by_id.get(element.parent_id) if element.parent_id is not None else None
+        while parent is not None and parent.role != "Document":
+            parent = by_id.get(parent.parent_id) if parent.parent_id is not None else None
+        if parent is None:
+            tops.append(element)
+    return tops[0] if len(tops) == 1 else None
+
+
+def _same_top_document(before: Snapshot, after: Snapshot) -> bool:
+    """The top Document kept its RuntimeId and its name; one without a RuntimeId cannot be
+    proven the same."""
+    was, now = _top_document(before), _top_document(after)
+    if was is None or now is None or not was.runtime_id:
+        return False
+    return now.runtime_id == was.runtime_id and now.name == was.name
+
+
+def _composer_target(step: Step) -> tuple[str, str] | None:
+    """The field an Enter submit holds its text in: the composer its params name, else the
+    step's own text-role target."""
+    role, name = step.params.get("composer_role"), step.params.get("composer_name")
+    if role is not None and name is not None:
+        return role, name
+    if step.target is not None and step.target.role in TEXT_ROLES:
+        return step.target.role, step.target.name
+    return None
+
+
+def _one_field(snapshot: Snapshot, role: str, name: str) -> int | None:
+    """Exactly one element with that role and name, else None."""
+    found = [e for e in snapshot.elements if e.role == role and _same_name(e, name)]
+    return found[0].id if len(found) == 1 else None
+
+
+def _new_outside(before: Snapshot, after: Snapshot, composer_id: int) -> bool:
+    """An element of `after` whose RuntimeId is new since `before` (or missing), outside the
+    composer's nearest container (its parent and everything under it)."""
+    known = {e.runtime_id for e in before.elements if e.runtime_id}
+    container = after.element(composer_id).parent_id
+    exempt = {composer_id} if container is None else _under(after, container)
+    return any(
+        e.id not in exempt and (not e.runtime_id or e.runtime_id not in known)
+        for e in after.elements
+    )
+
+
+def _under(snapshot: Snapshot, root_id: int) -> set[int]:
+    """The ids of every element under `root_id`, the root included."""
+    children: dict[int | None, list[int]] = {}
+    for element in snapshot.elements:
+        children.setdefault(element.parent_id, []).append(element.id)
+    found: set[int] = set()
+    pending = [root_id]
+    while pending:
+        current = pending.pop()
+        if current not in found:
+            found.add(current)
+            pending.extend(children.get(current, []))
+    return found
 
 
 def _same_name(element: Element, name: str) -> bool:
