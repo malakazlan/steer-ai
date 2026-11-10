@@ -272,11 +272,14 @@ def controls(tasks: Sequence[Task]) -> list[str]:
         )
         try:
             page_ws_url(port)
+            _settled(port, SETTLE_LIMIT_S)
             time.sleep(4.0)  # the site settles its first layout and any redirect
             observed = _read_page(port, "control")
             ok = passed(task, "done", observed)
-            title = json.dumps(str(json.loads(observed or "{}").get("title", "")))
-            lines.append(f"{task.task_id}: control {'passes' if ok else 'FAILS'} title={title}")
+            page = json.loads(observed or "{}")
+            # a public site's address and title: tokens, never person data
+            read = json.dumps(page if not ok else str(page.get("title", "")))
+            lines.append(f"{task.task_id}: control {'passes' if ok else 'FAILS'} title={read}")
         except InvalidRun as exc:
             lines.append(f"{task.task_id}: control invalid ({exc})")
         finally:
@@ -285,6 +288,24 @@ def controls(tasks: Sequence[Task]) -> list[str]:
             stop_chrome(proc, tmp / "profile")
             shutil.rmtree(tmp, ignore_errors=True)
     return lines
+
+
+SETTLE_LIMIT_S = 20.0
+
+
+def _settled(port: int, limit_s: float) -> None:
+    """The site's own document is loaded: an http page in readyState complete. The first read
+    can land on the initial blank document, and a slow site (Gutenberg, H4 control run 4: an
+    empty title) past a fixed sleep; a site that never loads is an invalid control, not a FAIL."""
+    deadline = time.monotonic() + limit_s
+    expression = "JSON.stringify({href: location.href, ready: document.readyState})"
+    while True:
+        page = json.loads(_read(port, expression, "settle") or "{}")
+        if str(page.get("href", "")).startswith("http") and page.get("ready") == "complete":
+            return
+        if time.monotonic() >= deadline:
+            raise InvalidRun("page_not_loaded")
+        time.sleep(0.5)
 
 
 MULTIPLY = chr(0xD7)

@@ -7,7 +7,10 @@ import json
 import re
 from typing import Any
 
+import pytest
+
 from steerai.probes.h4_page import LANGUAGES, LOG_KEY, POLICY_TEXT, page_html
+from steerai.probes.layer_b_pages import InvalidRun
 from steerai.probes.task_suite import (
     H2,
     H3,
@@ -15,6 +18,7 @@ from steerai.probes.task_suite import (
     H4_DRIVES,
     HELD_OUT,
     TASKS,
+    _settled,
     passed,
     results_url,
     task_set,
@@ -150,3 +154,33 @@ def test_q5_names_the_consent_box_in_its_goal_for_the_harness_rule() -> None:
 def test_the_near_copies_are_out() -> None:
     assert not [task for task in H4 if task.start in ("calculator", "notepad", "inbox")]
     assert "aria-expanded" not in page_html()
+
+
+def test_a_site_control_waits_for_the_page_to_load(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run 4 of the first H4 controls read Gutenberg before it loaded (title empty): the control
+    waits for an http page in readyState complete, bounded, and a site that never loads is an
+    invalid control, never a FAIL."""
+    reads = iter(
+        [
+            {"href": "about:blank", "ready": "complete"},
+            {"href": "https://www.gutenberg.org/ebooks/search/?query=dickens", "ready": "loading"},
+            {"href": "https://www.gutenberg.org/ebooks/search/?query=dickens", "ready": "complete"},
+        ]
+    )
+    seen: list[str] = []
+
+    def read(port: int, expression: str, stage: str) -> str:
+        seen.append(stage)
+        return json.dumps(next(reads))
+
+    monkeypatch.setattr("steerai.probes.task_suite._read", read)
+    monkeypatch.setattr("steerai.probes.task_suite.time.sleep", lambda _s: None)
+    _settled(9222, 1.0)
+    assert seen == ["settle"] * 3
+
+    def never(port: int, expression: str, stage: str) -> str:
+        return json.dumps({"href": "about:blank", "ready": "complete"})
+
+    monkeypatch.setattr("steerai.probes.task_suite._read", never)
+    with pytest.raises(InvalidRun, match="page_not_loaded"):
+        _settled(9222, 0.0)
