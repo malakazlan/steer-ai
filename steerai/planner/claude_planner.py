@@ -9,6 +9,7 @@ taxonomy code with a fixed detail token and the attempt it came from.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -36,7 +37,7 @@ DEFAULT_MAX_TOKENS = 8192
 """Unmeasured: enough for the 6.3 form of a ten-step plan; a `max_tokens` stop is `truncated`."""
 DEFAULT_MAX_RETRIES = 1
 EFFORT = "medium"
-PROMPT_VERSION = "planner-21"
+PROMPT_VERSION = "planner-22"
 MECHANICAL_VERBS = frozenset(
     {"type", "focus", "open", "check", "uncheck", "select", "choose", "expand", "collapse"}
 )
@@ -98,7 +99,9 @@ now). "within" names a landmark container by its exact name. Patterns are plain 
 expressions. Leave fields the kind does not use unset.
 
 A click always has an expect: what it makes appear. When it reveals something you cannot
-see yet (a collapsed search box, a menu), write your best guess of the element it shows. A
+see yet (a collapsed search box, a menu), write your best guess of the element it shows; its
+name need not be in the listing. A click that is the only step of its subgoal takes that
+subgoal's condition as its expect when it writes none. A
 wrong guess fails that step's check; the next steps still run, and the agent replans only if it
 reaches the end of the plan, so plan only as far as you can see and leave later steps to the
 next plan.
@@ -415,7 +418,40 @@ def _document_bytes(doc: PlanDoc, request: PlanRequest) -> bytes:
             # the effect of typing is the value, of focusing the focus: the gate's templates
             # verify those; a model-written effect here cannot be right
             step.pop("expect", None)
+    _fill_lone_click_expects(body)
     return json.dumps(body, ensure_ascii=False).encode("utf-8")
+
+
+COPIED_CONDITION_KINDS = frozenset({"appeared", "disappeared", "count_delta", "present"})
+"""The condition kinds a step's expect may be; the condition-only kinds (value, state, title,
+window_exists, window_gone) are never copied, so the boundary refuses the click as before."""
+
+
+def _fill_lone_click_expects(body: dict[str, Any]) -> None:  # Any: the file-form body
+    """A click with no expect that is the only step of its subgoal takes the subgoal's
+    condition as its expect: that condition is, by the plan's own structure, the click's
+    effect. Nothing is invented: the model wrote it, in the one place the schema asks for it
+    twice. Dev wk2 (2026-11-11): the model named what Wikipedia's collapsed Search link reveals
+    in the subgoal's condition every time and left the click's expect out 4/13 (planner-19:
+    1/4), on the first call and unchanged after the repair note; the boundary refused each."""
+    steps = body.get("steps", [])
+    conditions = {
+        g.get("id"): g.get("condition")
+        for g in body.get("subgoals", [])
+        if isinstance(g, dict) and isinstance(g.get("condition"), dict)
+    }
+    members: dict[Any, int] = {}  # Any: a subgoal id as the model wrote it
+    for step in steps:
+        if isinstance(step, dict):
+            members[step.get("subgoal")] = members.get(step.get("subgoal"), 0) + 1
+    for step in steps:
+        if not isinstance(step, dict) or step.get("verb") != "click" or "expect" in step:
+            continue
+        condition = conditions.get(step.get("subgoal"))
+        if condition is None or members.get(step.get("subgoal")) != 1:
+            continue
+        if len(condition) == 1 and next(iter(condition)) in COPIED_CONDITION_KINDS:
+            step["expect"] = copy.deepcopy(condition)
 
 
 def _empty_detail(stop_reason: object) -> str:

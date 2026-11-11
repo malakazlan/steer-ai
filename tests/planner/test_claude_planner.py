@@ -220,7 +220,7 @@ def test_a_continuation_after_no_effect_submits_on_the_one_button_beside_the_fie
     )
     assert "unless the listing shows exactly one Button" not in prose
     assert "whose name says it submits" not in prose
-    assert PROMPT_VERSION == "planner-21"
+    assert PROMPT_VERSION == "planner-22"
 
 
 def test_the_prompt_says_a_selection_click_is_proven_by_present() -> None:
@@ -941,3 +941,95 @@ def test_an_expand_or_collapse_step_keeps_no_model_expect(verb: Any, wanted: Any
     assert condition.to_file_form() == {
         "state": {"role": "Button", "name": "Shipping questions", "wanted": wanted}
     }
+
+
+# ---- a one-step subgoal's click takes the subgoal's condition as its expect ------------------
+
+WIKI_SCREEN = (
+    '1  Document "Wikipedia, the free encyclopedia"   [0,0,1100,700]',
+    '2    Hyperlink "Search"                           [995,172,1051,228]',
+)
+
+
+def _wiki_doc(*, focus_subgoal: str = "g2", reveal_kind: str = "appeared") -> PlanDoc:
+    """Dev wk2 (2026-11-11, Wikipedia's narrow layout): the model names what the Search link
+    reveals in subgoal g1's condition every time, but sometimes leaves the click's own expect
+    out, on the first call and again after the repair note."""
+    reveal = (
+        PredicateDoc(kind="appeared", role="Edit", name="Search Wikipedia")
+        if reveal_kind == "appeared"
+        else PredicateDoc(kind="title", pattern="Search")
+    )
+    return PlanDoc(
+        goal="search Wikipedia for Ada Lovelace",
+        subgoals=[
+            SubgoalDoc(id="g1", desc="the search box is shown", condition=reveal),
+            SubgoalDoc(
+                id="g2",
+                desc="the article is open",
+                condition=PredicateDoc(
+                    kind="appeared",
+                    role="Document",
+                    name="Ada Lovelace",
+                    decoration=Decoration.wikipedia,
+                    replaces=True,
+                ),
+            ),
+        ],
+        steps=[
+            StepDoc(
+                id="s1",
+                subgoal="g1",
+                verb="click",
+                target=TargetDoc(role="Hyperlink", name="Search"),
+                risk="R0",
+            ),
+            StepDoc(
+                id="s2",
+                subgoal=focus_subgoal,
+                verb="focus",
+                target=TargetDoc(role="Edit", name="Search Wikipedia"),
+                risk="R0",
+            ),
+            StepDoc(
+                id="s3",
+                subgoal="g2",
+                verb="type",
+                target=TargetDoc(role="Edit", name="Search Wikipedia"),
+                risk="R1",
+                text="Ada Lovelace",
+            ),
+        ],
+    )
+
+
+def _wiki_request() -> PlanRequest:
+    return PlanRequest(
+        goal="search Wikipedia for Ada Lovelace",
+        screen_lines=WIKI_SCREEN,
+        window_title="Wikipedia, the free encyclopedia - Google Chrome",
+    )
+
+
+def test_a_click_that_is_its_subgoals_only_step_takes_the_condition_as_its_expect() -> None:
+    from steerai.verify.predicates import Appeared  # noqa: PLC0415
+
+    planner, parse = _planner(_Response(parsed_output=_wiki_doc()))
+    outcome = planner.plan(_wiki_request())
+    click = outcome.plan.steps[0]
+    assert isinstance(click.expect, Appeared)
+    assert (click.expect.role, click.expect.name_pattern) == ("Edit", "Search Wikipedia")
+    assert json.loads(outcome.data)["steps"][0]["expect"] == {
+        "appeared": {"role": "Edit", "name": "Search Wikipedia"}
+    }
+    assert len(parse.calls) == 1, "no repair turn: the document was runnable as written"
+
+
+def test_a_click_sharing_its_subgoal_still_needs_its_own_expect() -> None:
+    error = _failure(_Response(parsed_output=_wiki_doc(focus_subgoal="g1")))
+    assert (error.detail, error.path) == ("invalid_plan", "$.steps[0].expect")
+
+
+def test_a_condition_only_kind_is_never_copied_into_a_click() -> None:
+    error = _failure(_Response(parsed_output=_wiki_doc(reveal_kind="title")))
+    assert (error.detail, error.path) == ("invalid_plan", "$.steps[0].expect")
