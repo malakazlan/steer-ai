@@ -123,7 +123,7 @@ from steerai.world.fingerprint import similarity
 from steerai.world.model import Snapshot, normalise_name
 from steerai.world.people import MAX_CANDIDATES, lookalike_only, name_part
 from steerai.world.secure import SecureMemory
-from steerai.world.twins import PinKey, on_screen, pin_key, twin_set
+from steerai.world.twins import PinKey, named_pair, on_screen, pin_key, twin_set
 
 REUSE_FRESHNESS_S = 5.0
 QUIET_AFTER_TYPE_S = 2.0
@@ -402,6 +402,12 @@ class Session:
         self._window_title = window_title
         self._identify = identify
         self._pins: dict[PinKey, tuple[int, ...]] = {}
+        self._chosen: dict[PinKey, tuple[int, ...]] = {}
+        """Which field of a named pair the person chose, per (window, role, name): kept for the
+        task's later R0/R1 resolves on that name, replaced by a verified type's pin, cleared
+        with the pins, never in the record (packet h4-2026-11-11 round 2, item 3)."""
+        self._after_which: Snapshot | None = None
+        """The look taken after a which answer: the resolve runs again on it (item 4)."""
         """Which twin field each verified `type` wrote, per window, role and name (#150,
         D-150 v2 item 4): conditions read it; a step resolve may only refuse by it."""
         self._twin_pick: str | None = None
@@ -756,6 +762,7 @@ class Session:
         self._last_after = None
         self._last_pair = None
         self._pins.clear()
+        self._chosen.clear()
         self._ledger.set_window_ref(ref)
 
     def _rebind_opened(self, step: Step) -> None:
@@ -1643,7 +1650,13 @@ class Session:
         while True:
             try:
                 resolve = partial(self._resolve, step, before, focused=self._read_focus)
-                return before, stage.measure("decide", resolve)
+                element_id = stage.measure("decide", resolve)
+                if self._after_which is not None:
+                    # the which answer: the act runs on the look taken after it, resolved
+                    # again there through the choice (never a second ask)
+                    before, self._after_which = self._after_which, None
+                    element_id = stage.measure("decide", partial(self._resolve, step, before))
+                return before, element_id
             except _StepFailureError as failure:
                 if person or failure.detail != "no_match":
                     raise
@@ -1708,8 +1721,13 @@ class Session:
         """Twin fields (D-150 v2): (A) after an ask, a wait or a retry, the twin the step
         asked about, by RuntimeId; (B) focus/type at R0/R1, the one twin on screen; (C) an
         Enter submit's first resolve, the focused twin, refused when it is not the twin the
-        verified type pinned. Anything else, and anything that is no twin set, is ambiguous."""
-        if not twin_set(matches, snapshot, self._twin_value(snapshot)):
+        verified type pinned. A named pair (two same-named fields that are not copies, TW-45,
+        [v2.74]) takes the person's choice at R0/R1 instead of (B): the pin or the task's
+        earlier choice, else a which ask; (A) and (C) hold for both classes. Anything else,
+        and anything that is neither, is ambiguous."""
+        copies = twin_set(matches, snapshot, self._twin_value(snapshot))
+        pair = not copies and named_pair(matches, snapshot)
+        if not copies and not pair:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
         if asked is not None:
             if self._twin_pick is None:
@@ -1718,6 +1736,8 @@ class Session:
             return self._picked([e for e in matches if e.runtime_id == asked], "asked")
         risk = effective_risk(step, element_ids=(matches[0].automation_id,))
         if step.verb in ("focus", "type", "choose") and risk in ("R0", "R1"):
+            if pair:
+                return self._chosen_of_pair(step, snapshot, matches)
             # a choose picks and pins its twin like a type (W4-11)
             return self._picked([e for e in matches if on_screen(e, snapshot)], "onscreen")
         if step.verb == "submit" and matches[0].role in TEXT_ROLES and focused is not None:
@@ -1732,6 +1752,43 @@ class Session:
                 raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
             return self._picked(found, "focused")
         raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
+
+    def _chosen_of_pair(self, step: Step, snapshot: Snapshot, matches: list[Element]) -> int:
+        """The field of a named pair the person chose: a verified type's pin or the task's
+        earlier choice on this name (then no ask; a choice whose field is gone while the pair
+        stands is ambiguous, never a second ask), else the which ask, bracketed for the
+        monitor as the person ask is; the answer is checked on a look taken after it."""
+        key = pin_key(snapshot.hwnd, matches[0].role, matches[0].name)
+        kept = self._pins.get(key) or self._chosen.get(key)
+        if kept is not None:
+            return self._picked([e for e in matches if e.runtime_id == kept], "chosen")
+        containers = [_named_container(snapshot, e) for e in matches]
+        if self._monitor is not None:
+            self._monitor.mark_ask_open()
+        try:
+            which = self._gate.which(step, matches, containers=containers)
+        finally:
+            if self._monitor is not None:
+                self._monitor.mark_ask_closed()
+        self._act_evidence.update({k: v for k, v in which.evidence.items() if k != "detail"})
+        if which.outcome != "chosen" or which.index is None:
+            detail = str(which.evidence.get("detail", which.outcome))
+            raise _StepFailureError(which.code or ErrorCode.GATE_PENDING_USER, detail)
+        chosen = matches[which.index - 1]
+        fresh = self._observe_fresh(self._act_evidence)
+        now = [
+            e
+            for e in fresh.elements
+            if e.role == chosen.role
+            and normalise_name(e.name).casefold() == normalise_name(chosen.name).casefold()
+        ]
+        if not named_pair(now, fresh) or chosen.runtime_id not in {e.runtime_id for e in now}:
+            # the chosen field re-rendered or a third copy came while the person answered:
+            # the approved thing must be the executed thing (OR-31; hunter H4-06/08/09)
+            raise _StepFailureError(ErrorCode.FOCUS_LOST, "screen_changed_during_ask")
+        self._chosen[key] = chosen.runtime_id
+        self._after_which = fresh
+        return self._picked([chosen], "chosen")
 
     def _picked(self, found: list[Element], how: str) -> int:
         if len(found) != 1:
@@ -1904,7 +1961,10 @@ class Session:
             # an Enter submit's composer is its own target: the twin it resolved (TW-06/07)
             twins = [e for e in snapshot.elements if e.role == role and _same_name(e, name)]
             found = [e for e in twins if e.runtime_id == self._twin_rid]
-            if not twin_set(twins, snapshot, self._twin_value(snapshot)) or len(found) != 1:
+            pair = twin_set(twins, snapshot, self._twin_value(snapshot)) or named_pair(
+                twins, snapshot
+            )
+            if not pair or len(found) != 1:
                 raise
             return found[0].id
 
@@ -2607,6 +2667,7 @@ class Session:
         start: its conditions were written from the screen it starts on (hunter RP-01)."""
         self._goal = plan.goal
         self._pins.clear()  # a new plan pins afresh (D-150 v2 item 4)
+        self._chosen.clear()
         self._content_landmarks = _content_landmarks(plan)
         self._last_after = None  # nothing observed for another plan is reused (RP-35/47)
         self._last_pair = None
@@ -3008,6 +3069,22 @@ def _note_reasons(evidence: dict[str, Any], gate_result: GateResult) -> None:
     """Why a step below R2 asked, as closed tokens, on every answer (#81 part A review)."""
     if "ask_reasons" in gate_result.evidence:
         evidence["ask_reasons"] = gate_result.evidence["ask_reasons"]
+
+
+def _named_container(snapshot: Snapshot, element: Element) -> str:
+    """The nearest ancestor with a name, for a twin ask's line (H4-29); empty when none."""
+    by_id = {e.id: e for e in snapshot.elements}
+    parent = by_id.get(element.parent_id) if element.parent_id is not None else None
+    for _ in range(MAX_CONTAINER_DEPTH):
+        if parent is None:
+            return ""
+        if parent.name.strip():
+            return parent.name
+        parent = by_id.get(parent.parent_id) if parent.parent_id is not None else None
+    return ""
+
+
+MAX_CONTAINER_DEPTH = 64
 
 
 def _quiet_set(snapshot: Snapshot) -> set[tuple[tuple[int, ...], str]]:

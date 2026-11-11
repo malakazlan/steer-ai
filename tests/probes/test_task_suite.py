@@ -272,3 +272,28 @@ def test_an_anubis_bot_check_is_an_invalid_run(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(suite, "_read", challenge)
     with pytest.raises(InvalidRun, match="bot_check"):
         suite._read_page(9, "page")
+
+
+def test_the_scripted_person_answers_a_which_ask_by_the_tasks_automation_id() -> None:
+    """Packet h4-2026-11-11 round 2 item 5: the harness oracle picks the candidate line whose
+    `automation_id` the task names; without one, or with no such line, `no`."""
+    from steerai.orchestrator.identity import CandidateLine  # noqa: PLC0415 - this test only
+
+    lines = (
+        CandidateLine(1, "Edit", "Find crate by search query", "", automation_id="nav-search"),
+        CandidateLine(2, "Edit", "Find crate by search query", "", automation_id="search"),
+    )
+    ask = SimpleNamespace(
+        decision_id="w-1",
+        verb="focus",
+        risk="R0",
+        params={},
+        kind="which",
+        target_name="Find crate by search query",
+        candidates=lines,
+    )
+    person = Person(frozenset(), which={"Find crate by search query": "search"})
+    assert person.ask(ask) == "2:w-1"
+    assert person.log[-1]["approved"] is True
+    assert Person(frozenset()).ask(ask) == "no:w-1"
+    assert Person(frozenset(), which={"Find crate by search query": "footer"}).ask(ask) == "no:w-1"

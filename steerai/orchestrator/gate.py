@@ -566,14 +566,21 @@ class Gate:
             return None
 
     def which(
-        self, step: Step, elements: Sequence[Element], *, previous_attempt: str | None = None
+        self,
+        step: Step,
+        elements: Sequence[Element],
+        *,
+        previous_attempt: str | None = None,
+        containers: Sequence[str] = (),
     ) -> WhichResult:
-        """The identity ask (5.8 [v1.5]): several rows name the person, so the person chooses.
-        Only `<n>:<ask id>` with 1 <= n <= k counts; `no` is `none_chosen`; the kill switch
-        blocks; anything else pauses. No gate decision is consumed by this ask."""
+        """The identity ask (5.8 [v1.5]): several rows name the person, so the person chooses;
+        since [v2.74] also a named pair of fields (`containers`: each one's nearest named
+        container, for the lines). Only `<n>:<ask id>` with 1 <= n <= k counts; `no` is
+        `none_chosen`; the kill switch blocks; anything else pauses. No gate decision is
+        consumed by this ask."""
         risk = effective_risk(step)
         parameter = step.target.name if step.target is not None else ""
-        lines = lines_for(elements, parameter)
+        lines = lines_for(elements, parameter, containers)
         ask_id = f"w-{uuid.uuid4().hex[:12]}"
         counts = {
             "candidates": len(lines),
