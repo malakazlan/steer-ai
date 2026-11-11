@@ -25,7 +25,7 @@ from tests.world.test_twins import BOTTOM, TOP, _page
 QUERY = "pathlib"
 FIELD = Target(role="Edit", name="Quick search")
 KEY = pin_key(0x10, "Edit", "Quick search")
-TOKENS = {"onscreen", "asked", "focused", "none_focused", "moved"}
+TOKENS = {"onscreen", "asked", "focused", "none_focused", "moved", "chosen"}
 
 
 @dataclass
@@ -181,7 +181,6 @@ def test_focus_at_r0_takes_the_one_twin_on_screen() -> None:
             ),
         ),
         ("a type at R2", Page(), _type(risk="R2")),
-        ("another aid", Page(bottom=replace(BOTTOM, automation_id="q")), _type()),
         ("a secure twin", Page(bottom=replace(BOTTOM, secure=True)), _type()),
     ],
 )

@@ -81,6 +81,10 @@ class CandidateLine:
     name_part: str = field(repr=False)
     preview: str = field(repr=False)
     tags: tuple[str, ...] = ()
+    automation_id: str = field(default="", repr=False)
+    """The element's AutomationId as a typed field (packet h4-2026-11-11 item 5): the suite's
+    scripted person answers a twin ask by it; the product never chooses by it."""
+    offscreen: bool = False
 
 
 def pick(snapshot: Snapshot, target: Target) -> list[Element]:
@@ -111,14 +115,20 @@ def bind(element: Element, among: Sequence[Element] = ()) -> Binding:
     )
 
 
-def lines_for(elements: Sequence[Element], parameter: str) -> list[CandidateLine]:
+def lines_for(
+    elements: Sequence[Element], parameter: str, containers: Sequence[str] = ()
+) -> list[CandidateLine]:
     """Numbered 1..k in document order with the tags a person needs to tell them apart
     (PT-13/32): a lookalike-only match, a mixed-script name part, two name parts that agree
-    only after folding, an off-screen or disabled row."""
+    only after folding, an off-screen or disabled row; for a twin ask the nearest named
+    container of each (`containers`, by position; H4-29)."""
     parts = [comparable(name_part(e.name)) for e in elements]
     lines: list[CandidateLine] = []
     for index, element in enumerate(elements, start=1):
         tags: list[str] = []
+        container = containers[index - 1] if index - 1 < len(containers) else ""
+        if container:
+            tags.append(f"in {container}")
         if lookalike_only(parameter, element.name):
             tags.append("lookalike")
         if mixed_script(element.name):
@@ -142,6 +152,8 @@ def lines_for(elements: Sequence[Element], parameter: str) -> list[CandidateLine
                 index=index,
                 role=element.role,
                 name_part=name_part(element.name),
+                automation_id=element.automation_id,
+                offscreen=element.offscreen,
                 preview=preview(element.name),
                 tags=tuple(tags),
             )

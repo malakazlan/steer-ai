@@ -67,6 +67,33 @@ def twin_set(
     )
 
 
+def named_pair(matches: Sequence[Element], snapshot: Snapshot) -> bool:
+    """Two same-named fields that are not copies (TW-45; H4 dr1 and deb1, packet
+    h4-2026-11-11): exactly two, same role and normalised name, neither secure, distinct
+    non-empty RuntimeIds, automation ids distinct or both empty (one shared id is `twin_set`'s
+    copy), the same nearest Document; the ancestor chains may differ. Distinct ids mean
+    distinct forms (docs.rs `nav-search` / `search`; Debian `kw` names packages, `keyword`
+    file contents), so position never tells function: the class exists so the loop asks,
+    never picks."""
+    if len(matches) != TWIN_CAP:
+        return False
+    first, second = matches
+    if (
+        first.role != second.role
+        or normalise_name(first.name).casefold() != normalise_name(second.name).casefold()
+        or first.secure
+        or second.secure
+        or not first.runtime_id
+        or not second.runtime_id
+        or first.runtime_id == second.runtime_id
+        or (first.automation_id and first.automation_id == second.automation_id)
+    ):
+        return False
+    by_id = {element.id: element for element in snapshot.elements}
+    chains = [_chain(first, by_id), _chain(second, by_id)]
+    return chains[0] is not None and chains[1] is not None and chains[0][0] == chains[1][0]
+
+
 def _same_kind(first: Element, second: Element) -> bool:
     """One shared non-empty AutomationId, neither secure, distinct non-empty RuntimeIds."""
     return (
