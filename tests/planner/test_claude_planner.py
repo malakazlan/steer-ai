@@ -817,12 +817,15 @@ def test_the_prompt_teaches_select_and_the_selected_state() -> None:
     system, _ = build_prompt(_request(), tag="t")
     prose = " ".join(system.split())
     assert (
-        "select (pick a tab or a radio option, only when the listing shows role TabItem or "
-        "RadioButton; never click those)" in prose
+        "select (pick a tab, a radio option or an option of a list box, only when the listing "
+        "shows role TabItem, RadioButton or ListItem under a List; never click those)" in prose
     )
     assert "A visual tab that is a Hyperlink or a Button stays a click." in prose
     assert "state: role CheckBox, name, wanted (on or off)" in prose
-    assert "role TabItem or RadioButton with wanted selected, proven by a select step" in prose
+    assert (
+        "role TabItem, RadioButton or ListItem with wanted selected, proven by a select step"
+        in prose
+    )
     assert "a tab's item" not in prose
     assert "A tab is a select and a state selected" in prose
     assert "opening a chat, a conversation, a mail or a list row" in prose
@@ -1099,7 +1102,10 @@ def test_the_prompt_teaches_select_on_a_listbox_option() -> None:
     verify read `absent` each time (the option sits scrolled out of view inside the box). The
     loop selects a listbox option since W3b ([v2.67]); the prompt never said so."""
     system, _ = build_prompt(_request())
-    assert "ListItem" in system
-    assert "select (pick a tab, a radio option or an option of a list" in system
-    assert "state: role TabItem, RadioButton or ListItem with wanted selected" in system
+    prose = " ".join(system.split())
+    assert (
+        "an option of a list box, only when the listing shows role TabItem, RadioButton or "
+        "ListItem under a List" in prose
+    )
+    assert "state: role TabItem, RadioButton or ListItem with wanted selected" in prose
     assert PROMPT_VERSION == "planner-23"

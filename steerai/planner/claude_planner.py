@@ -59,9 +59,10 @@ ComboBox or Document), type (type single-line text into the focused field; needs
 (press the send button of a message composer), submit (submit a form; on a text field this
 presses Enter), delete (remove something), open (launch an app; every later step acts in the
 window it opened), check / uncheck (set a CheckBox on or off; never click a CheckBox), select
-(pick a tab, a radio option or an option of a list box, only when the listing shows role TabItem,
-RadioButton or ListItem under a List; never click those), choose (pick an option of a ComboBox: params.option is the option's exact text
-from the goal; never click a ComboBox or its options), expand / collapse (open or close a Button
+(pick a tab, a radio option or an option of a list box, only when the listing shows role
+TabItem, RadioButton or ListItem under a List; never click those), choose (pick an option of a
+ComboBox: params.option is the option's exact text from the goal; never click a ComboBox or its
+options), expand / collapse (open or close a Button
 that shows or hides a panel, a menu or a section; only when the listing shows role Button; never
 click it). A visual tab that is a Hyperlink or a Button stays a click. A ComboBox you type into,
 such as a search box, stays focus and type. There is no other verb.
@@ -118,8 +119,9 @@ When the goal wants a box ticked or cleared, the end state is the box: use state
 name, wanted (on or off), a subgoal condition only, proven by a check or uncheck step of the
 same subgoal on that exact box name; that subgoal holds no send, submit or delete. When the goal
 wants a tab, a radio option or a list option chosen, use state: role TabItem, RadioButton or
-ListItem with wanted selected, proven by a select step of the same subgoal on that exact name. When the goal wants a
-panel, a menu or a section opened or closed, use state: role Button with wanted expanded or
+ListItem with wanted selected, proven by a select step of the same subgoal on that exact name.
+When the goal wants a panel, a menu or a section opened or closed, use state: role Button with
+wanted expanded or
 collapsed, proven by an expand or collapse step of the same subgoal on that exact name.
 
 Selecting what may already be selected (opening a chat, a conversation, a mail or a list row
