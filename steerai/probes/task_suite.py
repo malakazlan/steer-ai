@@ -31,7 +31,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from ctypes import wintypes
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -70,6 +70,8 @@ Check = Literal[
     "h3_final",
     "h4_event",
     "h4_final",
+    "h5_event",
+    "h5_final",
     "calc_display",
     "file_text",
     "google_search",
@@ -104,9 +106,12 @@ class Task:
     title: str = ""
     """For `url_search`: the results page's exact title, measured (H3 review item 1); empty
     means the title is not checked."""
+    which: tuple[tuple[str, str], ...] = ()
+    """The scripted person's answer to a twin ask, per target name: the automation id of the
+    field the task means (packet h4-2026-11-11 round 2, item 5). A harness oracle."""
 
 
-PAGE_SETS = ("h2", "h3", "h4")
+PAGE_SETS = ("h2", "h3", "h4", "h5")
 """The `start` values that mean a held-out page served from memory."""
 
 
@@ -444,6 +449,90 @@ def _h4(task_id: str, goal: str, event: dict[str, Any], **kw: Any) -> Task:
     return Task(task_id, goal, "h4", "h4_event", json.dumps(event, sort_keys=True), **kw)
 
 
+def _h5(task_id: str, goal: str, event: dict[str, Any], **kw: Any) -> Task:
+    return Task(task_id, goal, "h5", "h5_event", json.dumps(event, sort_keys=True), **kw)
+
+
+H5: tuple[Task, ...] = (
+    _h5(
+        "r1", "choose Express in the shipping speed options", {"kind": "speed", "value": "Express"}
+    ),
+    _h5("r2", "turn on dark mode", {"kind": "dark", "on": True}),
+    Task(
+        "r3",
+        "pick Europe/Berlin as the time zone",
+        "h5",
+        "h5_final",
+        json.dumps(
+            {
+                "kinds": ["zone"],
+                "state": {"dark": False, "newsletter": True, "zone": "Europe/Berlin"},
+                "untrusted": False,
+            },
+            sort_keys=True,
+        ),
+    ),
+    _h5("r4", "export the report as PDF", {"format": "PDF", "kind": "export"}),
+    _h5("r5", "unsubscribe from the newsletter", {"kind": "newsletter", "on": False}),
+    _url_search(
+        "hx1",
+        "Hex",
+        "https://hex.pm/",
+        "ecto",
+        path="/packages",
+        param="search",
+        title="Hex",
+    ),
+    Task(
+        "ub1",
+        "search Ubuntu packages for vim",
+        "https://packages.ubuntu.com/",
+        "url_search",
+        "vim",
+        frozenset({"vim"}),
+        path="/search",
+        param="keywords",
+        title="Ubuntu \u2013 Package Search Results -- vim",
+        which=(("Keyword:", "kw"),),
+    ),
+    _url_search(
+        "mc1",
+        "MetaCPAN",
+        "https://metacpan.org/",
+        "mojolicious",
+        path="/search",
+        param="q",
+        title='Search for "mojolicious" - metacpan.org',
+    ),
+    _url_search(
+        "ng1",
+        "NuGet",
+        "https://www.nuget.org/",
+        "serilog",
+        path="/packages",
+        param="q",
+        title="NuGet Gallery | Packages matching serilog",
+    ),
+    _url_search(
+        "fh1",
+        "Flathub",
+        "https://flathub.org/",
+        "inkscape",
+        path="/en/apps/search",
+        param="q",
+        title="Search for \u201cinkscape\u201d | Flathub",
+    ),
+)
+"""H5 (packet h5-2026-11-11): committed before the fixes for H4's classes B and C, run only
+after them. Five widget shapes on one new local page (`h5_page`: radios in a fieldset, an ARIA
+switch, grouped select options, a menu button, an uncheck) and five sites no earlier set used
+(probe `h5_sites`, Chrome 156, 2026-11-11): hex.pm keeps its home title "Hex" on the results
+page (class B's shape, `ComboBox "Find packages"`); packages.ubuntu.com lists two
+`Edit "Keyword:"` (ids `kw` for names, on screen, and `keyword` for file contents, below the
+fold: class C's shape, the person answers `kw`); MetaCPAN, NuGet and Flathub title their
+results with the words."""
+
+
 H4: tuple[Task, ...] = (
     _h4("q1", "expand the returns policy", {"kind": "policy", "open": True}),
     _h4("q2", "choose Swahili in the languages list", {"kind": "language", "value": "Swahili"}),
@@ -637,6 +726,26 @@ H4_DRIVES: dict[str, tuple[tuple[str, str], ...]] = {
 q3 types the first letter of the country, then of the city it revealed."""
 
 
+H5_DRIVES: dict[str, tuple[tuple[str, str], ...]] = {
+    "r1": (("click", "#s-express"),),
+    "r2": (("click", "#dark"),),
+    "r3": (("focus", "#zone"), ("char", "E")),
+    "r4": (("click", "#export"), ("click", "#x-pdf")),
+    "r5": (("click", "#newsletter"),),
+}
+"""What a person would do for each H5 page task, as trusted CDP input (positive control only):
+r3 types the first letter of the wanted zone group's first option (Europe/Berlin is first in
+its group); r4 opens the menu, then picks PDF."""
+
+
+def h5_controls() -> list[str]:
+    """Each H5 page task done by scripted trusted input and judged by `passed`; the site tasks
+    by opening their results URL."""
+    return _page_controls(H5, H5_DRIVES) + controls(
+        [task for task in H5 if task.check in ("url_search", "wiki_article")]
+    )
+
+
 def h4_controls() -> list[str]:
     """Each H4 page task done by scripted trusted input and judged by `passed`; the four search
     tasks by opening their results URL and the ArchWiki task by opening its article."""
@@ -741,6 +850,10 @@ def _calc_control(task: Task, buttons: Sequence[str]) -> str:
 
 def _page_for(task: Task) -> str:
     """The held-out page a page task runs on (H2, H3 or H4)."""
+    if task.start == "h5":
+        from steerai.probes.h5_page import page_html as h5_html  # noqa: PLC0415 - H5 only
+
+        return h5_html()
     if task.start == "h4":
         from steerai.probes.h4_page import page_html as h4_html  # noqa: PLC0415 - H4 only
 
@@ -765,13 +878,17 @@ def _page_observed(task: Task, port: int) -> str:
         if _read(port, "String(window.PENDING || 0)", "pending") == "0":
             break
         time.sleep(0.1)
-    if task.check in ("h3_final", "h4_final"):
+    if task.check in ("h3_final", "h4_final", "h5_final"):
         return _read(port, "JSON.stringify(window.finalState())", "final")
     key = _page_log_key(task)
     return h2_event(_read(port, f'localStorage.getItem("{key}") || "[]"', "read"))
 
 
 def _page_log_key(task: Task) -> str:
+    if task.start == "h5":
+        from steerai.probes.h5_page import LOG_KEY as H5_KEY  # noqa: PLC0415 - H5 only
+
+        return H5_KEY
     if task.start == "h4":
         from steerai.probes.h4_page import LOG_KEY as H4_KEY  # noqa: PLC0415 - H4 only
 
@@ -786,6 +903,8 @@ def _page_log_key(task: Task) -> str:
 
 
 def task_set(name: str) -> tuple[Task, ...]:
+    if name == "h5":
+        return H5
     if name == "h4":
         return H4
     if name == "h3":
@@ -825,10 +944,24 @@ class Person:
     approve: frozenset[str]
     approve_targets: frozenset[str] = frozenset()
     goal: str = ""
+    which: Mapping[str, str] = field(default_factory=dict)
+    """A twin ask's answer per target name: the automation id of the field the task means
+    (packet h4-2026-11-11 round 2, item 5). A harness oracle; the product never chooses by it."""
     log: list[dict[str, Any]] = field(default_factory=list)
 
     def ask(self, ask: Any) -> str:  # Any: steerai.orchestrator.gate.Ask (no import cycle)
         decision = str(ask.decision_id)
+        if getattr(ask, "kind", "yes") == "which":
+            wanted_id = self.which.get(str(getattr(ask, "target_name", "")))
+            chosen = [
+                c.index
+                for c in getattr(ask, "candidates", ())
+                if wanted_id and getattr(c, "automation_id", "") == wanted_id
+            ]
+            self.log.append(
+                {"verb": str(ask.verb), "risk": str(ask.risk), "approved": bool(chosen)}
+            )
+            return f"{chosen[0]}:{decision}" if len(chosen) == 1 else f"no:{decision}"
         text = ask.params.get("text") if hasattr(ask, "params") else None
         wanted = {_folded(a) for a in self.approve}
         target = str(getattr(ask, "target_name", ""))
@@ -862,9 +995,9 @@ def passed(task: Task, status: str | None, observed: str) -> bool:  # noqa: PLR0
         return False
     if task.check == "calc_display":
         return bool(json.loads(observed or "{}") == json.loads(task.expected))
-    if task.check in ("h3_final", "h4_final"):
+    if task.check in ("h3_final", "h4_final", "h5_final"):
         return bool(json.loads(observed or "{}") == json.loads(task.expected))
-    if task.check in ("notepad_text", "app_text", "h2_event", "h3_event", "h4_event"):
+    if task.check in ("notepad_text", "app_text", "h2_event", "h3_event", "h4_event", "h5_event"):
         return observed.strip() == task.expected
     if task.check == "file_text":
         return observed == task.expected
@@ -1002,7 +1135,7 @@ def _options(tmp: Path, hwnd: int, task: Task, number: int) -> run_mod.Options:
 
 
 def _steer(task: Task, number: int, hwnd: int, tmp: Path, planner: _Planner) -> dict[str, Any]:
-    person = Person(task.approve, task.approve_targets, goal=task.goal)
+    person = Person(task.approve, task.approve_targets, goal=task.goal, which=dict(task.which))
     deps = run_mod._real_deps().replace(
         make_confirmer=lambda *_: person,
         open_windows=lambda: [],
@@ -1095,7 +1228,15 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
         if task.check == "inbox_send":
             raw = _read(port, 'localStorage.getItem("steer-present") || "[]"', "read")
             row["observed"] = inbox_send(raw)
-        elif task.check in ("h2_event", "h3_event", "h3_final", "h4_event", "h4_final"):
+        elif task.check in (
+            "h2_event",
+            "h3_event",
+            "h3_final",
+            "h4_event",
+            "h4_final",
+            "h5_event",
+            "h5_final",
+        ):
             row["observed"] = _page_observed(task, port)
         elif task.check == "inbox_chat":
             row["observed"] = _read(port, "document.body.dataset.chat", "chat")
@@ -1268,7 +1409,7 @@ def _header() -> dict[str, Any]:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Phase 1 bar: ten single-app tasks, live.")
     parser.add_argument("--runs", type=int, default=3)
-    parser.add_argument("--set", choices=("dev", "held_out", "h2", "h3", "h4"), default="dev")
+    parser.add_argument("--set", choices=("dev", "held_out", "h2", "h3", "h4", "h5"), default="dev")
     parser.add_argument(
         "--controls", action="store_true", help="open each search task's results URL instead"
     )
@@ -1283,6 +1424,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             lines = h2_controls()
         elif args.set == "h3":
             lines = h3_controls()
+        elif args.set == "h5":
+            lines = h5_controls()
         elif args.set == "h4":
             lines = h4_controls()
         else:
