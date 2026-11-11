@@ -116,7 +116,8 @@ from steerai.verify.t1 import (
     title_holds,
     verify,
 )
-from steerai.verify.url_query import UrlBefore, page_loaded
+from steerai.verify.url_query import LoadKind, UrlBefore, load_kind
+from steerai.world.address_bar import DocumentUrl
 from steerai.world.elements import Element
 from steerai.world.fingerprint import similarity
 from steerai.world.model import Snapshot, normalise_name
@@ -363,7 +364,7 @@ class Session:
         goal_matcher: GoalMatcher | None = None,
         max_risk: Risk = "R3",
         address_bar: Callable[[int], str | None] | None = None,
-        document_url: Callable[[int], str | None] | None = None,
+        document_url: Callable[[int], DocumentUrl | None] | None = None,
     ) -> None:
         self.max_risk: Risk = max_risk
         """The person's `--max-risk` for the whole run: a tier the screen raises past it stops
@@ -1959,14 +1960,7 @@ class Session:
                 after is not None
                 and isinstance(text, str)
                 and url_before.counts(after, text)
-                and page_loaded(
-                    _document_names(now),
-                    text,
-                    before=_document_names(persisted),
-                    url=after,
-                    document_url=self._read_document_url(),
-                    url_before=url_before,
-                )
+                and self._loaded(text, persisted, now, after, url_before) is not None
             ):
                 return True
         structural = _structural_part(predicate)
@@ -2006,14 +2000,41 @@ class Session:
         except (OSError, SteerError):
             return None
 
-    def _read_document_url(self) -> str | None:
-        """The top Document's URL; a failed read is none (the words rule alone decides)."""
+    def _read_document_url(self) -> DocumentUrl | None:
+        """The top Document's URL with its RuntimeId; a failed read is none (the words rule
+        alone decides)."""
         if self._document_url is None:
             return None
         try:
             return self._document_url(self.hwnd)
         except (OSError, SteerError):
             return None
+
+    def _loaded(
+        self, text: str, before: Snapshot, page: Snapshot, after: str, url_before: UrlBefore
+    ) -> LoadKind | None:
+        """One load judgement for the live verify and the resume guard (principal item 2): the
+        Document URL counts only when read off the page's one top Document, and the rid branch
+        only when that Document is new against the before's one top Document (H4-15/16/17)."""
+        read = self._read_document_url()
+        top_now, top_before = _top_document(page), _top_document(before)
+        bound = read is not None and top_now is not None and read.runtime_id == top_now.runtime_id
+        new_top = (
+            bound
+            and top_before is not None
+            and bool(top_before.runtime_id)
+            and top_now is not None
+            and top_now.runtime_id != top_before.runtime_id
+        )
+        return load_kind(
+            _document_names(page),
+            text,
+            before=_document_names(before),
+            url=after,
+            document_url=read.url if bound and read is not None else None,
+            url_before=url_before,
+            new_top=new_top,
+        )
 
     def _url_before_of(self, step: Step) -> UrlBefore | None:
         """The before URL of record: a retry keeps the first attempt's (as the before snapshot
@@ -2035,16 +2056,10 @@ class Session:
             return False, {"detail": "no_url"}
         if not self._url_before.counts(after, text):
             return False, {}
-        if not page_loaded(
-            _document_names(page),
-            text,
-            before=_document_names(before),
-            url=after,
-            document_url=self._read_document_url(),
-            url_before=self._url_before,
-        ):
+        kind = self._loaded(text, before, page, after, self._url_before)
+        if kind is None:
             return False, {"detail": "no_load"}
-        return True, {"reason": "url_query"}
+        return True, {"reason": "url_query", "load": kind}
 
     def _no_effect(  # noqa: PLR0913 - the step's state at the verify deadline
         self,

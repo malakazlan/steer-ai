@@ -10,6 +10,7 @@ import unicodedata
 import urllib.parse
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Literal
 
 
 def _split(value: str) -> urllib.parse.SplitResult:
@@ -61,7 +62,12 @@ def url_query_counts(before: str, after: str, text: str) -> bool:
     return UrlBefore.of(before, text).counts(after, text)
 
 
-def page_loaded(  # noqa: PLR0913 - the page's parts and the before of record, by keyword
+LoadKind = Literal["name", "name_url", "rid_url"]
+"""How a page proved its load: a new Document name holding the words; a new name whose Document
+URL carries them; or, the name unchanged, a new top Document whose URL carries them."""
+
+
+def load_kind(  # noqa: PLR0913 - the page's parts and the before of record, by keyword
     document_names: Iterable[str],
     text: str,
     *,
@@ -69,14 +75,20 @@ def page_loaded(  # noqa: PLR0913 - the page's parts and the before of record, b
     url: str,
     document_url: str | None,
     url_before: UrlBefore,
-) -> bool:
+    new_top: bool = False,
+) -> LoadKind | None:
     """The load signal beside the address bar (5.10 [v2.51], amending [v2.48]): a Document name
     that was not among the before Documents' names and is not only the URL's host (an omnibox
     refinement shows the pending URL under the old title; a refused load is titled by the host),
     which either holds the typed words, case folded, or comes with a top Document URL that
     carries them by `UrlBefore.counts`. Chrome's error and certificate pages read
     `chrome-error://chromewebdata/` there, and a pending navigation keeps the old URL (probe
-    `document_url`, n=5 each). An unreadable Document URL leaves the words rule alone."""
+    `document_url`, n=5 each). An unreadable Document URL leaves the words rule alone.
+    `new_top` (H4 rg1, packet h4-2026-11-11 R-B): the caller found one top Document on each
+    side with different RuntimeIds and read `document_url` off the new one; then a results page
+    that keeps the home title (RubyGems, measured n=2) still proves its load by that URL. A
+    page served at the submitted URL proves the submit, not the result: a bot-check interstitial
+    at that URL counts ([v2.51]'s written limit; the product keeps no challenge list)."""
     wanted = _folded(text).casefold()
     host = (_split(url).hostname or "").casefold()
     hosts = {host, host.removeprefix("www.")}
@@ -86,8 +98,36 @@ def page_loaded(  # noqa: PLR0913 - the page's parts and the before of record, b
         for name in document_names
         if name not in old and _folded(name).casefold() not in hosts
     ]
-    if not wanted or not new:
-        return False
-    if any(wanted in name for name in new):
-        return True
-    return document_url is not None and url_before.counts(document_url, text)
+    if not wanted:
+        return None
+    url_carries = document_url is not None and url_before.counts(document_url, text)
+    if new:
+        if any(wanted in name for name in new):
+            return "name"
+        return "name_url" if url_carries else None
+    return "rid_url" if new_top and url_carries else None
+
+
+def page_loaded(  # noqa: PLR0913 - the page's parts and the before of record, by keyword
+    document_names: Iterable[str],
+    text: str,
+    *,
+    before: Iterable[str],
+    url: str,
+    document_url: str | None,
+    url_before: UrlBefore,
+    new_top: bool = False,
+) -> bool:
+    """`load_kind` as a bool."""
+    return (
+        load_kind(
+            document_names,
+            text,
+            before=before,
+            url=url,
+            document_url=document_url,
+            url_before=url_before,
+            new_top=new_top,
+        )
+        is not None
+    )

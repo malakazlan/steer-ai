@@ -9,6 +9,7 @@ so a focused omnibox is no URL.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 OMNIBOX_CLASS = "OmniboxViewViews"
@@ -40,11 +41,22 @@ def read_address_bar(uia: Any, mod: Any, hwnd: int) -> str | None:  # Any: comty
     return str(value) if value else None
 
 
-def read_document_url(uia: Any, mod: Any, hwnd: int) -> str | None:  # Any: comtypes
+@dataclass(frozen=True, slots=True)
+class DocumentUrl:
+    """A top Document's URL with the RuntimeId it was read from, in one read (packet
+    h4-2026-11-11, principal item 1): the loop binds the URL to the Document its snapshot
+    judged new, never to whichever Document is live a moment later."""
+
+    runtime_id: tuple[int, ...]
+    url: str
+
+
+def read_document_url(uia: Any, mod: Any, hwnd: int) -> DocumentUrl | None:  # Any: comtypes
     """The URL of the window's one top-level Document (no Document above it), which Chromium
     exposes as the Document's value (probe `document_url`: results pages read their full URL,
     error and certificate pages `chrome-error://chromewebdata/`, a pending navigation the old
-    URL); None when there is no such Document, more than one, or no value."""
+    URL), with that Document's RuntimeId; None when there is no such Document, more than one,
+    no RuntimeId, or no value."""
     root = uia.ElementFromHandle(hwnd)
     found = root.FindAll(
         mod.TreeScope_Descendants,
@@ -61,7 +73,10 @@ def read_document_url(uia: Any, mod: Any, hwnd: int) -> str | None:  # Any: comt
     if not pattern:
         return None
     value = pattern.QueryInterface(mod.IUIAutomationValuePattern).CurrentValue
-    return str(value) if value else None
+    runtime_id = tuple(int(v) for v in (tops[0].GetRuntimeId() or ()))
+    if not value or not runtime_id:
+        return None
+    return DocumentUrl(runtime_id=runtime_id, url=str(value))
 
 
 def _browser_owned(uia: Any, mod: Any, element: Any) -> bool:  # Any: comtypes, no stubs
