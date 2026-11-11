@@ -7,7 +7,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from steerai.world.address_bar import OMNIBOX_CLASS, read_address_bar, read_document_url
+from steerai.world.address_bar import (
+    OMNIBOX_CLASS,
+    DocumentUrl,
+    read_address_bar,
+    read_document_url,
+)
 
 DOCUMENT, PANE, EDIT = 50030, 50033, 50004
 
@@ -19,6 +24,10 @@ class Node:
     value: str = ""
     focused: bool = False
     patterns: list[int] = field(default_factory=list)
+    runtime_id: tuple[int, ...] = (42, 7)
+
+    def GetRuntimeId(self) -> tuple[int, ...]:  # noqa: N802 - the COM method name
+        return self.runtime_id
 
     @property
     def CurrentControlType(self) -> int:  # noqa: N802 - the COM property name
@@ -136,7 +145,7 @@ class DocMod(Mod):
     UIA_ControlTypePropertyId = 30003
 
 
-def _doc_url(*found: Node) -> str | None:
+def _doc_url(*found: Node) -> DocumentUrl | None:
     root = Root(list(found))
     for node in found:
         if node.parent is None:
@@ -149,7 +158,20 @@ def test_the_top_document_url_is_read() -> None:
     error and certificate pages read chrome-error://chromewebdata/."""
     top = Node(DOCUMENT, value="https://developer.mozilla.org/en-US/search?q=flexbox")
     frame = Node(DOCUMENT, parent=top, value="https://ads.example/frame")
-    assert _doc_url(top, frame) == "https://developer.mozilla.org/en-US/search?q=flexbox"
+    assert _doc_url(top, frame) == DocumentUrl(
+        runtime_id=(42, 7), url="https://developer.mozilla.org/en-US/search?q=flexbox"
+    )
+
+
+def test_the_document_url_carries_the_runtime_id_it_was_read_from() -> None:
+    """Principal item 1 (H4 packet): the URL is bound to the Document whose RuntimeId the
+    snapshot judges new, read in one go (H4-17)."""
+    top = Node(DOCUMENT, value="https://rubygems.org/search?query=rails", runtime_id=(42, 91))
+    got = _doc_url(top)
+    assert got is not None
+    assert got.runtime_id == (42, 91)
+    assert got.url == "https://rubygems.org/search?query=rails"
+    assert _doc_url(Node(DOCUMENT, value="https://a.org/", runtime_id=())) is None, "no rid"
 
 
 def test_no_or_two_top_documents_or_an_empty_value_is_none() -> None:

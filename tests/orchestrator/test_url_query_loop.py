@@ -323,8 +323,15 @@ UNTITLED = "Search results | Bing"
 
 
 def _with_document_url(bar: Bar, after: str | None, **kw: Any) -> Harness:
+    from steerai.world.address_bar import DocumentUrl  # noqa: PLC0415 - the read's shape
+
     h = _harness(bar, loaded=UNTITLED, **kw)
-    h.session._document_url = lambda _hwnd: after if bar.pressed else "https://www.bing.com/"
+
+    def document_url(_hwnd: int) -> DocumentUrl | None:
+        url = after if bar.pressed else "https://www.bing.com/"
+        return None if url is None else DocumentUrl(runtime_id=(42, 90), url=url)
+
+    h.session._document_url = document_url
     return h
 
 
@@ -533,3 +540,114 @@ def test_npm1_a_button_submit_whose_composer_differs_never_clicks() -> None:
     assert h.physical.calls == []
     assert bar.reads == [h.session.hwnd], "the record's read only, never a second one"
     assert "something else" not in json.dumps(result.to_dict())
+
+
+# ---- a results page titled like the home page (H4 rg1; principal items 1-3, 6) ----------------
+
+RG_TITLE = "RubyGems.org | your community gem host"
+RG_HOME = "rubygems.org/"
+RG_RESULTS = "rubygems.org/search?query=" + urllib.parse.quote_plus(HELLO)
+
+
+def _same_title_harness(bar: Bar, *, bound_rid: tuple[int, ...] | None, tops: int = 1) -> Harness:
+    """The Enter replaces the top Document by one with the same name and a new RuntimeId; the
+    Document URL read returns (rid, url) with the rid given (None: unreadable)."""
+    from steerai.world.address_bar import DocumentUrl  # noqa: PLC0415 - the read's shape
+
+    h = Harness()
+    h.world.composer_value = HELLO
+    _rebuild(h, live=FocusLive(h.world, focused=COMPOSER[3]))
+    home = (40, "Document", RG_TITLE, (42, 90), 0)
+    h.world.rows.append(home)
+    h.session._goal = f"search RubyGems for {HELLO}"
+    h.session._identify = lambda hwnd: {"hwnd": hwnd, "image": "chrome.exe", "title": RG_TITLE}
+    h.session._address_bar = bar
+
+    def press(_executor: Any, action: Any) -> None:
+        if action.verb == "press":
+            bar.pressed = True
+            h.world.rows[:] = [r for r in h.world.rows if r[0] != home[0]]
+            h.world.rows.append((40, "Document", RG_TITLE, (42, 91), 0))
+            for extra in range(1, tops):
+                h.world.rows.append((40 + extra, "Document", RG_TITLE, (42, 91 + extra), 0))
+
+    h.physical.on_execute = press
+
+    def document_url(_hwnd: int) -> DocumentUrl | None:
+        if not bar.pressed:
+            return DocumentUrl(runtime_id=(42, 90), url="https://rubygems.org/")
+        if bound_rid is None:
+            return None
+        return DocumentUrl(runtime_id=bound_rid, url="https://" + RG_RESULTS)
+
+    h.session._document_url = document_url
+    return h
+
+
+def test_a_same_titled_results_page_loads_by_its_new_top_document_and_url() -> None:
+    h = _same_title_harness(Bar(RG_HOME, RG_RESULTS), bound_rid=(42, 91))
+    result = h.session.run_step(_submit())
+    assert result.ok is True, result.to_dict()
+    assert result.evidence["reason"] == "url_query"
+    assert result.evidence["load"] == "rid_url"
+
+
+def test_a_document_url_read_off_another_document_is_no_load() -> None:
+    """Principal item 1: the URL is bound to the RuntimeId the snapshot judged new."""
+    h = _same_title_harness(Bar(RG_HOME, RG_RESULTS), bound_rid=(42, 77))
+    result = h.session.run_step(_submit())
+    assert result.ok is False
+    assert result.evidence["detail"] == "no_load"
+
+
+def test_two_top_documents_after_the_enter_are_no_load() -> None:
+    """H4-15: exactly one top Document on each side, else the rid branch is off."""
+    h = _same_title_harness(Bar(RG_HOME, RG_RESULTS), bound_rid=(42, 91), tops=2)
+    result = h.session.run_step(_submit())
+    assert result.ok is False
+    assert result.evidence["detail"] == "no_load"
+
+
+def test_an_unreadable_document_url_leaves_the_words_rule_alone() -> None:
+    """H4-16: no rid branch without the URL; the same-titled page then stays no_load."""
+    h = _same_title_harness(Bar(RG_HOME, RG_RESULTS), bound_rid=None)
+    result = h.session.run_step(_submit())
+    assert result.ok is False
+    assert result.evidence["detail"] == "no_load"
+
+
+def test_a_named_load_reports_its_kind_too() -> None:
+    h = _with_document_url(Bar(HOME, RESULTS), "https://" + RESULTS)
+    result = h.session.run_step(_submit())
+    assert result.ok is True, result.to_dict()
+    assert result.evidence["load"] == "name_url", "the untitled fixture loads by its URL"
+    h = _harness(Bar(HOME, RESULTS))
+    result = h.session.run_step(_submit())
+    assert result.ok is True
+    assert result.evidence["load"] == "name"
+
+
+def test_a_same_titled_resume_loads_by_the_rid_and_url_too() -> None:
+    """Principal item 2: one `page_loaded` for the live verify and the resume guard."""
+    bar = Bar(RG_HOME, RG_RESULTS)
+    h = _same_title_harness(bar, bound_rid=(42, 91))
+    presses = _crash_after_enter(h)
+    result = h.session.run_step(_submit())
+    assert result.gate == "done_already", result.to_dict()
+    assert len(presses) == 1
+
+
+def test_the_title_tick_reads_the_typed_words_not_the_screen_a_written_limit() -> None:
+    """H4-02 (aw1): a `title` condition naming the words ticks by the URL proof even when the
+    page that loaded is a bot check titled otherwise. [v2.65] compares the typed words by
+    design (reading the screen title re-breaks pypi1); the limit is written under [v2.51]."""
+    from steerai.world.address_bar import DocumentUrl  # noqa: PLC0415 - the read's shape
+
+    bar = Bar(HOME, RESULTS)
+    h = _harness(bar, loaded="Making sure you're not a bot!")
+    h.session._document_url = lambda _hwnd: DocumentUrl(
+        runtime_id=(42, 90), url="https://" + (RESULTS if bar.pressed else HOME)
+    )
+    result = h.session.run_task(_title_plan(TitleMatches(pattern=HELLO)))
+    assert result.status == "done", result
+    assert [t["by"] for t in _ticks(h)] == ["url_query_title"]

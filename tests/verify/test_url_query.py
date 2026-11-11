@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from steerai.verify.url_query import UrlBefore, page_loaded, url_query_counts
+from steerai.verify.url_query import UrlBefore, load_kind, url_query_counts
 
 BEFORE = "www.example.org/"
 TEXT = "ui automation tree"
@@ -74,9 +74,10 @@ def test_om13_the_load_signal_is_a_new_document_named_by_the_words() -> None:
 
     def loaded(names: list[str], text: str, before: list[str], url: str) -> bool:
         url_before = UrlBefore.of("", text)
-        return page_loaded(
+        kind = load_kind(
             names, text, before=before, url=url, document_url=None, url_before=url_before
         )
+        return kind is not None
 
     url = "www.google.com/search?q=google.com"
     assert loaded(["google.com - Google Search"], "google.com", [], url)
@@ -170,7 +171,51 @@ def test_the_page_loaded_table(  # noqa: PLR0917 - one parametrize row, by name
     document_url: str | None,
     loaded: bool,
 ) -> None:
-    got = page_loaded(
+    got = load_kind(
         names, "flexbox", before=before, url=url, document_url=document_url, url_before=MDN_BEFORE
     )
-    assert got is loaded, case
+    assert (got is not None) is loaded, case
+
+
+# ---- a results page titled like the home page (H4 rg1, 2026-11-11) ---------------------------
+
+RG_BEFORE = UrlBefore.of("rubygems.org/", "rails")
+RG_TITLE = "RubyGems.org | your community gem host"
+RG_URL = "https://rubygems.org/search?query=rails"
+
+
+def _kind(
+    names: list[str], before: list[str], document_url: str | None, *, new_top: bool
+) -> str | None:
+    return load_kind(
+        names,
+        "rails",
+        before=before,
+        url="rubygems.org/search?query=rails",
+        document_url=document_url,
+        url_before=RG_BEFORE,
+        new_top=new_top,
+    )
+
+
+def test_a_same_titled_new_page_whose_document_url_carries_the_words_is_a_load() -> None:
+    """Measured (RubyGems, n=2): Enter navigates to /search?query=rails, the title stays the
+    home title, the top Document's RuntimeId changes."""
+    assert _kind([RG_TITLE], [RG_TITLE], RG_URL, new_top=True) == "rid_url"
+
+
+def test_the_name_rule_wins_and_names_its_load() -> None:
+    assert _kind(["rails - RubyGems"], [RG_TITLE], None, new_top=False) == "name"
+    assert _kind(["rails - RubyGems"], [RG_TITLE], RG_URL, new_top=True) == "name"
+
+
+def test_a_same_titled_page_that_is_not_a_new_top_document_is_no_load() -> None:
+    """A pushState SPA with a constant title (H4-20), an omnibox refinement (H4-22)."""
+    assert _kind([RG_TITLE], [RG_TITLE], RG_URL, new_top=False) is None
+
+
+def test_a_new_top_document_without_a_words_carrying_url_is_no_load() -> None:
+    """A reload (H4-18), an error page (H4-21), an unreadable Document URL (H4-16)."""
+    assert _kind([RG_TITLE], [RG_TITLE], "https://rubygems.org/", new_top=True) is None
+    assert _kind([RG_TITLE], [RG_TITLE], "chrome-error://chromewebdata/", new_top=True) is None
+    assert _kind([RG_TITLE], [RG_TITLE], None, new_top=True) is None
