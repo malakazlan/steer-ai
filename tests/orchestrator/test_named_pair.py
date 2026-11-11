@@ -268,3 +268,33 @@ def test_the_post_answer_look_never_outlives_its_step() -> None:
     result = h.session.run_step(_type())
     assert result.ok is False
     assert result.evidence["detail"] == "ambiguous_target", result.to_dict()
+
+
+def test_an_offscreen_chosen_field_is_scrolled_into_view_never_substituted() -> None:
+    """Round-1 item 6 / H4-38 (Debian: both fields below the fold): the chosen one goes through
+    the pre-gate scroll; the other is never taken instead."""
+    low_header = replace(HEADER, offscreen=True, box=(212, 2072, 508, 2099))
+    low_body = replace(BODY, offscreen=True, box=(212, 2583, 508, 2611))
+    page = Page(top=low_header, bottom=low_body)
+    h, page, live = _harness(page)
+    log: list[tuple[str, int]] = []
+    inner = h.semantic.on_execute
+
+    def act(executor: Any, action: Any) -> None:
+        log.append((action.verb, action.element_id))
+        if action.verb == "scroll_into_view" and action.element_id == low_body.id:
+            page.bottom = replace(low_body, offscreen=False, box=(212, 583, 508, 611))
+        if inner is not None:
+            inner(executor, action)
+
+    h.semantic.on_execute = act
+    h.confirmer.on_ask = lambda ask: (
+        h.confirmer.answers.append(f"2:{ask.decision_id}") if ask.kind == "which" else None
+    )
+    result = h.session.run_step(_focus())
+    assert result.ok is True, result.to_dict()
+    assert [v for v, _ in log if v == "scroll_into_view"] == ["scroll_into_view"]
+    assert [i for v, i in log if v == "scroll_into_view"] == [low_body.id]
+    assert result.evidence["twin"] == "chosen"
+    assert live.focused == BODY.runtime_id
+    assert len(_which_asks(h)) == 1

@@ -1775,20 +1775,14 @@ class Session:
             detail = str(which.evidence.get("detail", which.outcome))
             raise _StepFailureError(which.code or ErrorCode.GATE_PENDING_USER, detail)
         chosen = matches[which.index - 1]
-        fresh = self._observe_fresh(self._act_evidence)
-        now = [
-            e
-            for e in fresh.elements
-            if e.role == chosen.role
-            and normalise_name(e.name).casefold() == normalise_name(chosen.name).casefold()
-        ]
-        if not named_pair(now, fresh) or chosen.runtime_id not in {e.runtime_id for e in now}:
-            # the chosen field re-rendered or a third copy came while the person answered:
-            # the approved thing must be the executed thing (OR-31; hunter H4-06/08/09)
-            raise _StepFailureError(ErrorCode.FOCUS_LOST, "screen_changed_during_ask")
+        element_id = self._picked([chosen], "chosen")
+        # the approved thing must be the executed thing (OR-31, #89): the same window and the
+        # chosen field by RuntimeId on a look taken after the answer; a re-rendered field or a
+        # third copy is a changed screen (hunter H4-06/08/09), as after any ask
+        fresh, _ = self._reobserve(step, snapshot, self._act_evidence, asked=element_id)
         self._chosen[key] = chosen.runtime_id
         self._after_which = fresh
-        return self._picked([chosen], "chosen")
+        return element_id
 
     def _picked(self, found: list[Element], how: str) -> int:
         if len(found) != 1:
@@ -3071,6 +3065,9 @@ def _note_reasons(evidence: dict[str, Any], gate_result: GateResult) -> None:
         evidence["ask_reasons"] = gate_result.evidence["ask_reasons"]
 
 
+MAX_CONTAINER_DEPTH = 64
+
+
 def _named_container(snapshot: Snapshot, element: Element) -> str:
     """The nearest ancestor with a name, for a twin ask's line (H4-29); empty when none."""
     by_id = {e.id: e for e in snapshot.elements}
@@ -3082,9 +3079,6 @@ def _named_container(snapshot: Snapshot, element: Element) -> str:
             return parent.name
         parent = by_id.get(parent.parent_id) if parent.parent_id is not None else None
     return ""
-
-
-MAX_CONTAINER_DEPTH = 64
 
 
 def _quiet_set(snapshot: Snapshot) -> set[tuple[tuple[int, ...], str]]:
