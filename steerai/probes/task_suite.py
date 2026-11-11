@@ -1068,7 +1068,12 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
     try:
         window = wait_window_for_pid(proc.pid, image="chrome.exe", process=proc)
         page_ws_url(port)  # the page target exists before Steer looks
-        time.sleep(3.0)  # a real site settles its first layout (unmeasured; the warmup follows)
+        # the document is loaded before Steer's first observe: two YouTube dev runs planned on
+        # a listing ~700 input tokens short of the rendered page (2026-11-11), and the plan was
+        # an open instead of a search; the settled page then lays out (unmeasured; the warmup
+        # follows and demands three agreeing node counts)
+        _settled(port, SETTLE_LIMIT_S)
+        time.sleep(3.0)
         _in_front(window.hwnd)
         row = _steer(task, number, window.hwnd, tmp, planner)
         if task.check == "inbox_send":
