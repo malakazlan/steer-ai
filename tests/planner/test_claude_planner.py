@@ -221,7 +221,7 @@ def test_a_continuation_after_no_effect_submits_on_the_one_button_beside_the_fie
     )
     assert "unless the listing shows exactly one Button" not in prose
     assert "whose name says it submits" not in prose
-    assert PROMPT_VERSION == "planner-22"
+    assert PROMPT_VERSION == "planner-23"
 
 
 def test_the_prompt_says_a_selection_click_is_proven_by_present() -> None:
@@ -817,12 +817,15 @@ def test_the_prompt_teaches_select_and_the_selected_state() -> None:
     system, _ = build_prompt(_request(), tag="t")
     prose = " ".join(system.split())
     assert (
-        "select (pick a tab or a radio option, only when the listing shows role TabItem or "
-        "RadioButton; never click those)" in prose
+        "select (pick a tab, a radio option or an option of a list box, only when the listing "
+        "shows role TabItem, RadioButton or ListItem under a List; never click those)" in prose
     )
     assert "A visual tab that is a Hyperlink or a Button stays a click." in prose
     assert "state: role CheckBox, name, wanted (on or off)" in prose
-    assert "role TabItem or RadioButton with wanted selected, proven by a select step" in prose
+    assert (
+        "role TabItem, RadioButton or ListItem with wanted selected, proven by a select step"
+        in prose
+    )
     assert "a tab's item" not in prose
     assert "A tab is a select and a state selected" in prose
     assert "opening a chat, a conversation, a mail or a list row" in prose
@@ -1088,3 +1091,21 @@ def test_every_excluded_kind_leaves_the_lone_click_refused(kind: str, path: str)
     select or expand step of that subgoal); the rest reach the click, which still has no expect."""
     error = _failure(_Response(parsed_output=_lone_click_doc(_LONE_CLICK_CONDITIONS[kind])))
     assert (error.detail, error.path) == ("invalid_plan", path)
+
+
+# ---- H4 q2: a listbox option is a select, not a click -------------------------------------------
+
+
+def test_the_prompt_teaches_select_on_a_listbox_option() -> None:
+    """H4 q2 (2026-11-11, 0/3): "choose Swahili in the languages list" on a `<select size=8>`
+    planned `click ListItem "Swahili"` with a `present` expect three plans running, and the
+    verify read `absent` each time (the option sits scrolled out of view inside the box). The
+    loop selects a listbox option since W3b ([v2.67]); the prompt never said so."""
+    system, _ = build_prompt(_request())
+    prose = " ".join(system.split())
+    assert (
+        "an option of a list box, only when the listing shows role TabItem, RadioButton or "
+        "ListItem under a List" in prose
+    )
+    assert "state: role TabItem, RadioButton or ListItem with wanted selected" in prose
+    assert PROMPT_VERSION == "planner-23"

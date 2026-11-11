@@ -255,3 +255,20 @@ def test_the_planner_wrapper_records_a_refused_plan_s_boundary_reason(
         planner(PlanRequest(goal="g", screen_lines=()))
     assert planner.calls == 1
     assert planner.refusals == [(2, "$.steps[0].expect", "a click names its effect in expect")]
+
+
+def test_an_anubis_bot_check_is_an_invalid_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """H4 aw1 (2026-11-11): the Arch wiki's search path lands on Anubis's "Making sure you're
+    not a bot!"; a run that ends there measured nothing (as PyPI's and Cloudflare's)."""
+    import steerai.probes.task_suite as suite  # noqa: PLC0415 - this test only
+    from steerai.probes.layer_b_pages import InvalidRun  # noqa: PLC0415
+
+    def challenge(*_args: Any) -> str:
+        return (
+            '{"href": "https://wiki.archlinux.org/index.php?search=pacman", '
+            '"title": "Making sure you\'re not a bot!"}'
+        )
+
+    monkeypatch.setattr(suite, "_read", challenge)
+    with pytest.raises(InvalidRun, match="bot_check"):
+        suite._read_page(9, "page")

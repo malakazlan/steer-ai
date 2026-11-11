@@ -189,8 +189,11 @@ def _url_search(  # noqa: PLR0913 - one task's fields
     )
 
 
-CHALLENGE_TITLES = frozenset({"Client Challenge", "Just a moment..."})
-"""Bot-check interstitials at a results URL (PyPI, Cloudflare): the run measured nothing."""
+CHALLENGE_TITLES = frozenset(
+    {"Client Challenge", "Just a moment...", "Making sure you're not a bot!"}
+)
+"""Bot-check interstitials at a results URL (PyPI, Cloudflare, Anubis on the Arch wiki's search
+path, H4 aw1 2026-11-11): the run measured nothing."""
 
 
 def _read_page(port: int, stage: str) -> str:
