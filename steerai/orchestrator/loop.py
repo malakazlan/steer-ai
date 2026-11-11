@@ -1646,7 +1646,9 @@ class Session:
             except _StepFailureError as failure:
                 if person or failure.detail != "no_match":
                     raise
-                if settled >= SETTLE_RETRIES or evidence.get("settled_after_type"):
+                if settled >= SETTLE_RETRIES or (
+                    evidence.get("settled_after_type") and "settle" not in evidence
+                ):
                     # a before that settled after typing was just proven quiet: no timing gap
                     # to wait out (hunter FS-17; live wk2: 1.0 s of policy time saved)
                     # the final no_match: a text field shown under another text role (gate item 1)
@@ -1784,7 +1786,7 @@ class Session:
             or target.element_id is not None
             or step.verb not in _ALIAS_VERBS
             or target.role not in ALIAS_ROLES
-            or (step.verb != "submit" and effective_risk(step) not in ("R0", "R1"))
+            or effective_risk(step) not in (("R2",) if step.verb == "submit" else ("R0", "R1"))
         ):
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_match")
         wanted = normalise_name(target.name).casefold()

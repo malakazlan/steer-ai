@@ -295,3 +295,57 @@ def test_a_focus_whose_field_swapped_before_the_readback_is_verified_through_it(
     result = h.session.run_step(focus)
     assert result.ok is True, result.to_dict()
     assert result.evidence.get("alias") == "ComboBox"
+
+
+# ---- principal re-review items 3 and 4 ------------------------------------------------------
+
+
+def test_a_submit_above_r2_never_takes_the_alias() -> None:
+    """Item 3: the alias admits a submit at its R2 floor only; focus and type at R0/R1."""
+    from dataclasses import replace  # noqa: PLC0415
+
+    from steerai.orchestrator.loop import _StepFailureError  # noqa: PLC0415
+
+    h = _harness()
+    h.world.rows = [SWAPPED if r == COMPOSER else r for r in h.world.rows]
+    snapshot = h.world.observe(0x10)
+    assert h.session._resolve_alias(_submit(), snapshot, {}) == COMPOSER[0]
+    h.session._aliased = None
+    with pytest.raises(_StepFailureError) as refused:
+        h.session._resolve_alias(replace(_submit(), risk="R3"), snapshot, {})
+    assert refused.value.detail == "no_match"
+
+
+def test_a_capped_settle_still_takes_the_no_match_retries() -> None:
+    """Item 4: a page still changing at the cap was not proven quiet; the alias waits out
+    the two settle retries as before."""
+    h = _harness()
+    typed: dict[str, float] = {}
+    inner = h.world.observe
+    count = {"n": 0}
+
+    class Churning:
+        def observe(self, hwnd: int, **kwargs: Any) -> Any:
+            if "t" in typed:
+                if COMPOSER in h.world.rows:
+                    h.world.rows = [SWAPPED if r == COMPOSER else r for r in h.world.rows]
+                # a suggestion list that re-renders on every look: never quiet
+                count["n"] += 1
+                h.world.rows = [r for r in h.world.rows if r[1] != "ListItem"]
+                h.world.rows.append(
+                    (30, "ListItem", "suggestion", (42, 200 + count["n"]), COMPOSER[4])
+                )
+            return inner(hwnd, **kwargs)
+
+    h.session._observer = Churning()
+
+    def on_execute(_executor: Any, action: Any) -> None:
+        if action.verb == "type":
+            h.world.composer_value = action.text
+            typed["t"] = h.clock["t"]
+
+    h.physical.on_execute = on_execute
+    assert h.session.run_step(_type()).ok is True
+    result = h.session.run_step(_submit())
+    assert result.evidence.get("settle") == "capped", result.to_dict()
+    assert result.evidence.get("settled") == 2, result.to_dict()

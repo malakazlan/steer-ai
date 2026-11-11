@@ -541,10 +541,15 @@ def _disappeared(predicate: Disappeared, before: Snapshot, after: Snapshot) -> V
         if e.parent_id in {q.id for q in parents} and e.id not in matched_ids and e.runtime_id
     ]
     alias = _REVEAL_ALIAS.get(predicate.role)
-    swapped = alias is not None and any(
-        e.runtime_id not in {m.runtime_id for m in matched}
-        and _scoped(scope, e, alias, predicate.name_pattern)
-        for e in after.elements
+    scope_after = resolve_scope(after, predicate.within)
+    swapped = (
+        alias is not None
+        and scope_after.level != 0
+        and any(
+            e.runtime_id not in {m.runtime_id for m in matched}
+            and _scoped(scope_after, e, alias, predicate.name_pattern)
+            for e in after.elements
+        )
     )
     rules = (
         (
@@ -582,7 +587,10 @@ def _present(predicate: Present, before: Snapshot, after: Snapshot) -> Verdict:
     ]
     evidence: dict[str, Any] = {"level": scope.level, "matched": 1}
     alias = _REVEAL_ALIAS.get(predicate.role)
-    if not found and alias is not None:
+    exact_anywhere = any(
+        _scoped(scope, e, predicate.role, predicate.name_pattern) for e in after.elements
+    )
+    if not found and alias is not None and not exact_anywhere:
         # the field is shown under the other role of the pair (FS-12: this pair only)
         found = [
             e
@@ -713,7 +721,8 @@ def _swapped_field(
         for e in after.elements
         if e.role in roles
         and not e.secure
-        and e.runtime_id not in before_ids  # a new element, never one that was there too
+        and e.runtime_id  # provably new: a RuntimeId that was not there before
+        and e.runtime_id not in before_ids
         and normalise_name(e.name).casefold() == wanted
     ]
     if len(found) != 1:
@@ -747,6 +756,8 @@ def _value_equals(
 
 
 ALIAS_FIELD_ROLES: frozenset[str] = FIELD_ROLES
+"""The roles the condition side's field alias ranges over; the pairs are `alias_roles` (W4-10
+narrowed to the verb by [v2.71]: a choose's folded value never aliases)."""
 """The field roles a `value` may alias between, the step's rule (`loop.ALIAS_ROLES`): never a
 ComboBox, either way (W4-10)."""
 
