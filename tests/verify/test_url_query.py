@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from steerai.verify.url_query import UrlBefore, load_kind, page_loaded, url_query_counts
+from steerai.verify.url_query import UrlBefore, load_kind, url_query_counts
 
 BEFORE = "www.example.org/"
 TEXT = "ui automation tree"
@@ -74,9 +74,10 @@ def test_om13_the_load_signal_is_a_new_document_named_by_the_words() -> None:
 
     def loaded(names: list[str], text: str, before: list[str], url: str) -> bool:
         url_before = UrlBefore.of("", text)
-        return page_loaded(
+        kind = load_kind(
             names, text, before=before, url=url, document_url=None, url_before=url_before
         )
+        return kind is not None
 
     url = "www.google.com/search?q=google.com"
     assert loaded(["google.com - Google Search"], "google.com", [], url)
@@ -170,10 +171,10 @@ def test_the_page_loaded_table(  # noqa: PLR0917 - one parametrize row, by name
     document_url: str | None,
     loaded: bool,
 ) -> None:
-    got = page_loaded(
+    got = load_kind(
         names, "flexbox", before=before, url=url, document_url=document_url, url_before=MDN_BEFORE
     )
-    assert got is loaded, case
+    assert (got is not None) is loaded, case
 
 
 # ---- a results page titled like the home page (H4 rg1, 2026-11-11) ---------------------------
@@ -218,29 +219,3 @@ def test_a_new_top_document_without_a_words_carrying_url_is_no_load() -> None:
     assert _kind([RG_TITLE], [RG_TITLE], "https://rubygems.org/", new_top=True) is None
     assert _kind([RG_TITLE], [RG_TITLE], "chrome-error://chromewebdata/", new_top=True) is None
     assert _kind([RG_TITLE], [RG_TITLE], None, new_top=True) is None
-
-
-def test_page_loaded_is_load_kind_made_a_bool() -> None:
-    assert (
-        page_loaded(
-            [RG_TITLE],
-            "rails",
-            before=[RG_TITLE],
-            url=RG_URL,
-            document_url=RG_URL,
-            url_before=RG_BEFORE,
-            new_top=True,
-        )
-        is True
-    )
-    assert (
-        page_loaded(
-            [RG_TITLE],
-            "rails",
-            before=[RG_TITLE],
-            url=RG_URL,
-            document_url=RG_URL,
-            url_before=RG_BEFORE,
-        )
-        is False
-    ), "the keyword defaults to no new top Document"

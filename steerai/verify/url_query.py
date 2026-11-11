@@ -106,28 +106,3 @@ def load_kind(  # noqa: PLR0913 - the page's parts and the before of record, by 
             return "name"
         return "name_url" if url_carries else None
     return "rid_url" if new_top and url_carries else None
-
-
-def page_loaded(  # noqa: PLR0913 - the page's parts and the before of record, by keyword
-    document_names: Iterable[str],
-    text: str,
-    *,
-    before: Iterable[str],
-    url: str,
-    document_url: str | None,
-    url_before: UrlBefore,
-    new_top: bool = False,
-) -> bool:
-    """`load_kind` as a bool."""
-    return (
-        load_kind(
-            document_names,
-            text,
-            before=before,
-            url=url,
-            document_url=document_url,
-            url_before=url_before,
-            new_top=new_top,
-        )
-        is not None
-    )

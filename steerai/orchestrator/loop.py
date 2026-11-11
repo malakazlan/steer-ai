@@ -2048,7 +2048,7 @@ class Session:
     def _url_counts(
         self, step: Step, before: Snapshot, page: Snapshot, after: str | None
     ) -> tuple[bool, dict[str, Any]]:
-        """The address bar carries the words and a new page loaded for them (`page_loaded`;
+        """The address bar carries the words and a new page loaded for them (`load_kind`;
         `page` is the verify's last observation, `before` the before of record, `after` the
         address bar read after the verify's deadline)."""
         text = step.params.get("text")
