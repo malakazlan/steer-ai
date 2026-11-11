@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, get_args
 
 import anthropic
 import httpx2 as httpx
@@ -30,6 +30,7 @@ from steerai.planner.contracts import (
     PlanRequest,
 )
 from steerai.planner.mirror import (
+    ConditionKind,
     Decoration,
     ParamsDoc,
     PlanDoc,
@@ -220,7 +221,7 @@ def test_a_continuation_after_no_effect_submits_on_the_one_button_beside_the_fie
     )
     assert "unless the listing shows exactly one Button" not in prose
     assert "whose name says it submits" not in prose
-    assert PROMPT_VERSION == "planner-21"
+    assert PROMPT_VERSION == "planner-22"
 
 
 def test_the_prompt_says_a_selection_click_is_proven_by_present() -> None:
@@ -941,3 +942,149 @@ def test_an_expand_or_collapse_step_keeps_no_model_expect(verb: Any, wanted: Any
     assert condition.to_file_form() == {
         "state": {"role": "Button", "name": "Shipping questions", "wanted": wanted}
     }
+
+
+# ---- a one-step subgoal's click takes the subgoal's condition as its expect ------------------
+
+WIKI_SCREEN = (
+    '1  Document "Wikipedia, the free encyclopedia"   [0,0,1100,700]',
+    '2    Hyperlink "Search"                           [995,172,1051,228]',
+)
+
+
+def _wiki_doc(*, focus_subgoal: str = "g2", reveal_kind: str = "appeared") -> PlanDoc:
+    """Dev wk2 (2026-11-11, Wikipedia's narrow layout): the model names what the Search link
+    reveals in subgoal g1's condition every time, but sometimes leaves the click's own expect
+    out, on the first call and again after the repair note."""
+    reveal = (
+        PredicateDoc(kind="appeared", role="Edit", name="Search Wikipedia")
+        if reveal_kind == "appeared"
+        else PredicateDoc(kind="title", pattern="Search")
+    )
+    return PlanDoc(
+        goal="search Wikipedia for Ada Lovelace",
+        subgoals=[
+            SubgoalDoc(id="g1", desc="the search box is shown", condition=reveal),
+            SubgoalDoc(
+                id="g2",
+                desc="the article is open",
+                condition=PredicateDoc(
+                    kind="appeared",
+                    role="Document",
+                    name="Ada Lovelace",
+                    decoration=Decoration.wikipedia,
+                    replaces=True,
+                ),
+            ),
+        ],
+        steps=[
+            StepDoc(
+                id="s1",
+                subgoal="g1",
+                verb="click",
+                target=TargetDoc(role="Hyperlink", name="Search"),
+                risk="R0",
+            ),
+            StepDoc(
+                id="s2",
+                subgoal=focus_subgoal,
+                verb="focus",
+                target=TargetDoc(role="Edit", name="Search Wikipedia"),
+                risk="R0",
+            ),
+            StepDoc(
+                id="s3",
+                subgoal="g2",
+                verb="type",
+                target=TargetDoc(role="Edit", name="Search Wikipedia"),
+                risk="R1",
+                text="Ada Lovelace",
+            ),
+        ],
+    )
+
+
+def _wiki_request() -> PlanRequest:
+    return PlanRequest(
+        goal="search Wikipedia for Ada Lovelace",
+        screen_lines=WIKI_SCREEN,
+        window_title="Wikipedia, the free encyclopedia - Google Chrome",
+    )
+
+
+def test_a_click_that_is_its_subgoals_only_step_takes_the_condition_as_its_expect() -> None:
+    from steerai.verify.predicates import Appeared  # noqa: PLC0415
+
+    planner, parse = _planner(_Response(parsed_output=_wiki_doc()))
+    outcome = planner.plan(_wiki_request())
+    click = outcome.plan.steps[0]
+    assert isinstance(click.expect, Appeared)
+    assert (click.expect.role, click.expect.name_pattern) == ("Edit", "Search Wikipedia")
+    assert json.loads(outcome.data)["steps"][0]["expect"] == {
+        "appeared": {"role": "Edit", "name": "Search Wikipedia"}
+    }
+    assert len(parse.calls) == 1, "no repair turn: the document was runnable as written"
+
+
+def test_a_click_sharing_its_subgoal_still_needs_its_own_expect() -> None:
+    error = _failure(_Response(parsed_output=_wiki_doc(focus_subgoal="g1")))
+    assert (error.detail, error.path) == ("invalid_plan", "$.steps[0].expect")
+
+
+def test_a_condition_only_kind_is_never_copied_into_a_click() -> None:
+    error = _failure(_Response(parsed_output=_wiki_doc(reveal_kind="title")))
+    assert (error.detail, error.path) == ("invalid_plan", "$.steps[0].expect")
+
+
+_LONE_CLICK_CONDITIONS: dict[str, PredicateDoc] = {
+    "appeared": PredicateDoc(kind="appeared", role="Edit", name="Search Wikipedia"),
+    "disappeared": PredicateDoc(kind="disappeared", role="Hyperlink", name="Search"),
+    "count_delta": PredicateDoc(kind="count_delta", role="Edit", delta=1),
+    "present": PredicateDoc(kind="present", role="Hyperlink", name="Search", within="Wikipedia"),
+    "value": PredicateDoc(kind="value", role="Edit", name="Search Wikipedia", text="Ada"),
+    "state": PredicateDoc(kind="state", role="CheckBox", name="Search", wanted="on"),
+    "title": PredicateDoc(kind="title", pattern="Search"),
+    "window_exists": PredicateDoc(kind="window_exists", name="Search"),
+    "window_gone": PredicateDoc(kind="window_gone", name="Search"),
+}
+
+
+def _lone_click_doc(condition: PredicateDoc) -> PlanDoc:
+    doc = _wiki_doc()
+    doc.subgoals[0] = SubgoalDoc(id="g1", desc="the link's effect", condition=condition)
+    return doc
+
+
+def test_the_copied_kinds_are_every_kind_the_boundary_takes_as_a_click_expect() -> None:
+    from steerai.planner.claude_planner import COPIED_CONDITION_KINDS  # noqa: PLC0415
+
+    assert set(_LONE_CLICK_CONDITIONS) == set(get_args(ConditionKind)), "one row per kind"
+    assert {"appeared", "disappeared", "count_delta", "present"} == COPIED_CONDITION_KINDS
+
+
+@pytest.mark.parametrize("kind", sorted({"appeared", "disappeared", "count_delta", "present"}))
+def test_every_copied_kind_crosses_the_boundary_as_the_lone_clicks_expect(kind: str) -> None:
+    planner, parse = _planner(
+        _Response(parsed_output=_lone_click_doc(_LONE_CLICK_CONDITIONS[kind]))
+    )
+    outcome = planner.plan(_wiki_request())
+    assert outcome.plan.steps[0].expect is not None
+    assert list(json.loads(outcome.data)["steps"][0]["expect"]) == [kind]
+    assert len(parse.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("kind", "path"),
+    [
+        ("value", "$.subgoals[0].condition"),
+        ("state", "$.subgoals[0].condition"),
+        ("title", "$.steps[0].expect"),
+        ("window_exists", "$.steps[0].expect"),
+        ("window_gone", "$.steps[0].expect"),
+    ],
+)
+def test_every_excluded_kind_leaves_the_lone_click_refused(kind: str, path: str) -> None:
+    """A value or state condition is refused as the subgoal's own (it needs a type, check,
+    select or expand step of that subgoal); the rest reach the click, which still has no expect."""
+    error = _failure(_Response(parsed_output=_lone_click_doc(_LONE_CLICK_CONDITIONS[kind])))
+    assert (error.detail, error.path) == ("invalid_plan", path)
