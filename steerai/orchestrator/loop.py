@@ -98,6 +98,7 @@ from steerai.verify.predicates import (
     TitleMatches,
     WindowExists,
     WindowGone,
+    alias_roles,
     check_states,
     field_values,
     presents,
@@ -134,6 +135,9 @@ SETTLE_AFTER_TYPE_CAP_S = 5.0
 re-observe after it still guard the step). Raised with the window, so 3.0 s of reach past it
 stays (the 2026-11-08 n=10 settles ran 0.78-3.86 s, never capped)."""
 SETTLE_POLL_S = 0.1
+SCROLL_QUIET_S = 1.0
+"""The quiet look after a pre-gate scroll ([v2.55]): its own window, not the typing one
+(hunter FS-18), so the offscreen cost line of [v2.55] stands."""
 """How old a decided after snapshot may be to serve as the next R0/R1 before. Unmeasured; well
 inside the executors' 10 s admission cap."""
 SCREEN_GUARD_THRESHOLD = 0.9
@@ -1517,11 +1521,11 @@ class Session:
         typed, self._typed_at = self._typed_at, None
         if typed is None:
             return snapshot
-        ids = {e.runtime_id for e in snapshot.elements}
+        ids = _quiet_set(snapshot)
         quiet_from = self._monotonic()
         if self._last_after is not None:
             last, stamp = self._last_after
-            if stamp >= typed and {e.runtime_id for e in last.elements} == ids:
+            if stamp >= typed and _quiet_set(last) == ids:
                 # unchanged since the type's own after snapshot: quiet since then
                 quiet_from = stamp
         snapshot, _capped = self._quiet(
@@ -1531,14 +1535,20 @@ class Session:
         return snapshot
 
     def _quiet(
-        self, snapshot: Snapshot, evidence: dict[str, Any], quiet_from: float, deadline: float
+        self,
+        snapshot: Snapshot,
+        evidence: dict[str, Any],
+        quiet_from: float,
+        deadline: float,
+        window_s: float = QUIET_AFTER_TYPE_S,
     ) -> tuple[Snapshot, bool]:
-        """The latest snapshot once the page has kept its elements for QUIET_AFTER_TYPE_S, and
-        whether the deadline came first (`settle: capped`)."""
-        ids = {e.runtime_id for e in snapshot.elements}
+        """The latest snapshot once the page has kept its elements for `window_s`, and
+        whether the deadline came first (`settle: capped`). An element is its RuntimeId and
+        role: a role set on the same node restarts the window too (hunter FS-01)."""
+        ids = _quiet_set(snapshot)
         # bounded by polls too: a clock that never moves must not spin (a stuck host clock)
         for _ in range(int(SETTLE_AFTER_TYPE_CAP_S / SETTLE_POLL_S) + 1):
-            if self._monotonic() - quiet_from >= QUIET_AFTER_TYPE_S:
+            if self._monotonic() - quiet_from >= window_s:
                 return snapshot, False
             if self._monotonic() >= deadline:
                 break
@@ -1547,7 +1557,7 @@ class Session:
             if not observed.stable:
                 quiet_from = self._monotonic()  # a tree changing during the walk is not quiet
                 continue
-            now = {e.runtime_id for e in observed.elements}
+            now = _quiet_set(observed)
             if now != ids:
                 ids, quiet_from = now, self._monotonic()
             snapshot = observed
@@ -1601,7 +1611,14 @@ class Session:
             fresh = stage.measure("observe", lambda: self._observe_fresh(evidence))
             fresh, capped = stage.measure(
                 "settle",
-                partial(self._quiet, fresh, evidence, started, started + SETTLE_AFTER_TYPE_CAP_S),
+                partial(
+                    self._quiet,
+                    fresh,
+                    evidence,
+                    started,
+                    started + SETTLE_AFTER_TYPE_CAP_S,
+                    SCROLL_QUIET_S,
+                ),
             )
             if capped:
                 # a before taken mid-load would count the scroll's content as the step's effect
@@ -1629,7 +1646,9 @@ class Session:
             except _StepFailureError as failure:
                 if person or failure.detail != "no_match":
                     raise
-                if settled >= SETTLE_RETRIES:
+                if settled >= SETTLE_RETRIES or evidence.get("settled_after_type"):
+                    # a before that settled after typing was just proven quiet: no timing gap
+                    # to wait out (hunter FS-17; live wk2: 1.0 s of policy time saved)
                     # the final no_match: a text field shown under another text role (gate item 1)
                     resolved = partial(self._resolve_alias, step, before, evidence)
                     return before, stage.measure("decide", resolved)
@@ -1769,11 +1788,17 @@ class Session:
         ):
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_match")
         wanted = normalise_name(target.name).casefold()
+        if self._last_after is not None and any(
+            e.secure and normalise_name(e.name).casefold() == wanted
+            for e in self._last_after[0].elements
+        ):
+            # the task's last look showed a password field of that name: its text never goes
+            # into a plain field shown instead (hunter FS-10)
+            raise _StepFailureError(ErrorCode.GATE_BLOCKED, "alias_secure")
         matches = [
             e
             for e in snapshot.elements
-            if e.role in ALIAS_ROLES
-            and e.role != target.role
+            if e.role in alias_roles(target.role)
             and (self._aliased is None or e.role == self._aliased)  # the role first resolved
             and not e.secure  # never a password field (hunter CH-04)
             and normalise_name(e.name).casefold() == wanted
@@ -2247,6 +2272,7 @@ class Session:
             self._act_evidence,
             started,
             started + SETTLE_AFTER_TYPE_CAP_S,
+            SCROLL_QUIET_S,
         )
         if capped:
             raise _StepFailureError(ErrorCode.UNSTABLE_UI, "scroll_not_quiet")
@@ -2965,6 +2991,10 @@ def _note_reasons(evidence: dict[str, Any], gate_result: GateResult) -> None:
     """Why a step below R2 asked, as closed tokens, on every answer (#81 part A review)."""
     if "ask_reasons" in gate_result.evidence:
         evidence["ask_reasons"] = gate_result.evidence["ask_reasons"]
+
+
+def _quiet_set(snapshot: Snapshot) -> set[tuple[tuple[int, ...], str]]:
+    return {(e.runtime_id, e.role) for e in snapshot.elements}
 
 
 def _same_element(asked: Element, now: Element) -> bool:

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from steerai.orchestrator.contracts import Step, Target
 from steerai.orchestrator.loop import ALIAS_ROLES, QUIET_AFTER_TYPE_S, SETTLE_AFTER_TYPE_CAP_S
 from steerai.verify.predicates import FIELD_ROLES
@@ -145,3 +147,151 @@ def test_a_choose_never_takes_the_alias() -> None:
     result = h.session.run_step(step)
     assert result.ok is False
     assert result.evidence.get("alias") is None
+
+
+# ---- hunter rows FS-01, FS-04, FS-10, FS-17, FS-18, FS-29 and the focus readback ----------------
+
+
+def test_a_role_flip_on_the_same_runtime_id_restarts_the_quiet_window() -> None:
+    """FS-01: an ARIA widget that sets role=combobox on the same input keeps its RuntimeId;
+    the quiet set is (RuntimeId, role), so the flip counts as a change."""
+    h = _harness()
+    typed: dict[str, float] = {}
+    inner = h.world.observe
+    flipped = (COMPOSER[0], "ComboBox", COMPOSER[2], COMPOSER[3], COMPOSER[4])
+
+    class Page:
+        def observe(self, hwnd: int, **kwargs: Any) -> Any:
+            if "t" in typed and h.clock["t"] - typed["t"] >= 1.5 and COMPOSER in h.world.rows:
+                h.world.rows = [flipped if r == COMPOSER else r for r in h.world.rows]
+            return inner(hwnd, **kwargs)
+
+    h.session._observer = Page()
+
+    def on_execute(_executor: Any, action: Any) -> None:
+        if action.verb == "type":
+            h.world.composer_value = action.text
+            typed["t"] = h.clock["t"]
+        if action.verb == "press" and action.chord == "enter":
+            h.world.sent.append(h.world.composer_value)
+            h.world.add_bubble(h.world.composer_value)
+            h.world.composer_value = ""
+
+    h.physical.on_execute = on_execute
+    h.confirmer.on_ask = lambda _ask: h.clock.__setitem__("t", h.clock["t"] + 2.0)
+    assert h.session.run_step(_type()).ok is True
+    before = h.clock["t"]
+    result = h.session.run_step(_submit())
+    assert result.evidence.get("detail") != "screen_changed_during_ask", result.to_dict()
+    assert result.evidence.get("alias") == "ComboBox"
+    assert len(h.confirmer.asked) == 1
+    assert h.confirmer.asked[0].target_role == "ComboBox", "the ask came after the flip"
+    waited = h.clock["t"] - before - 2.0
+    assert waited >= 1.5 + QUIET_AFTER_TYPE_S - 0.5, "the window restarted at the flip"
+
+
+def test_two_late_changes_inside_the_cap_still_settle_never_capped() -> None:
+    """FS-04: changes 1.2 s and 2.3 s after typing; a full quiet window fits before the cap."""
+    h = _harness()
+    typed: dict[str, float] = {}
+    inner = h.world.observe
+    refreshed = (SUGGESTION[0], SUGGESTION[1], SUGGESTION[2], (42, 143), SUGGESTION[4])
+
+    class Page:
+        def observe(self, hwnd: int, **kwargs: Any) -> Any:
+            if "t" in typed:
+                since = h.clock["t"] - typed["t"]
+                if since >= 1.2 and COMPOSER in h.world.rows:
+                    h.world.rows = [SWAPPED if r == COMPOSER else r for r in h.world.rows]
+                    h.world.rows.append(SUGGESTION)
+                if since >= 2.3 and SUGGESTION in h.world.rows:
+                    # the suggestion list re-renders once more (a second fetch)
+                    h.world.rows = [refreshed if r == SUGGESTION else r for r in h.world.rows]
+            return inner(hwnd, **kwargs)
+
+    h.session._observer = Page()
+
+    def on_execute(_executor: Any, action: Any) -> None:
+        if action.verb == "type":
+            h.world.composer_value = action.text
+            typed["t"] = h.clock["t"]
+        if action.verb == "press" and action.chord == "enter":
+            h.world.sent.append(h.world.composer_value)
+            h.world.add_bubble(h.world.composer_value)
+            h.world.composer_value = ""
+
+    h.physical.on_execute = on_execute
+    h.confirmer.on_ask = lambda _ask: h.clock.__setitem__("t", h.clock["t"] + 2.0)
+    assert h.session.run_step(_type()).ok is True
+    result = h.session.run_step(_submit())
+    assert result.ok is True, result.to_dict()
+    assert "settle" not in result.evidence, "never capped"
+
+
+def test_a_field_that_was_secure_never_aliases_to_a_plain_one() -> None:
+    """FS-10: the task's last look showed a password field of that name; a same-named plain
+    ComboBox shown instead never receives the text."""
+    from dataclasses import replace  # noqa: PLC0415
+
+    from steerai.orchestrator.loop import _StepFailureError  # noqa: PLC0415
+
+    h = _harness()
+    shown = h.world.observe(0x10)
+    secure = [replace(e, secure=True) if e.id == COMPOSER[0] else e for e in shown.elements]
+    h.session._last_after = (replace(shown, elements=secure), h.clock["t"])
+    h.world.rows = [SWAPPED if r == COMPOSER else r for r in h.world.rows]
+    with pytest.raises(_StepFailureError) as refused:
+        h.session._resolve_alias(_type(), h.world.observe(0x10), {})
+    assert (refused.value.code.value, refused.value.detail) == ("gate_blocked", "alias_secure")
+
+
+def test_a_settled_page_skips_the_no_match_settle_before_the_alias() -> None:
+    """FS-17 (live wk2 n=3: `settled: 2`, 1.0 s of policy time after the page was proven
+    quiet): a before that settled after typing takes the alias at once."""
+    h = _harness()
+    _swapping_page(h, after_s=0.3)
+    assert h.session.run_step(_type()).ok is True
+    result = h.session.run_step(_submit())
+    assert result.ok is True, result.to_dict()
+    assert "settled" not in result.evidence
+
+
+def test_the_scroll_quiet_look_keeps_its_own_window() -> None:
+    """FS-18: the offscreen quiet look ([v2.55]) is not doubled by the typing window."""
+    from steerai.orchestrator.loop import SCROLL_QUIET_S  # noqa: PLC0415
+
+    assert SCROLL_QUIET_S == 1.0
+
+
+def test_a_document_never_aliases_a_combobox_and_back() -> None:
+    """FS-29: the pairs are explicit (Edit<->Document, Edit<->ComboBox); never by transitivity."""
+    from steerai.verify.predicates import alias_roles  # noqa: PLC0415
+
+    assert alias_roles("Edit") == frozenset({"Document", "ComboBox"})
+    assert alias_roles("Document") == frozenset({"Edit"})
+    assert alias_roles("ComboBox") == frozenset({"Edit"})
+    assert alias_roles("Button") == frozenset()
+
+
+def test_a_focus_whose_field_swapped_before_the_readback_is_verified_through_it() -> None:
+    """Probe 2026-11-11 (2 of 7 runs): the Edit became the ComboBox between the click's reveal
+    and the focus step's readback (`target_not_found`)."""
+    from tests.orchestrator.test_settle_after_type import FollowingFocus  # noqa: PLC0415
+
+    h = Harness()
+    from tests.orchestrator.test_edge_cases import _rebuild  # noqa: PLC0415
+
+    _rebuild(h, live=FollowingFocus(h.world))
+    focus = Step(
+        id="s1", subgoal="g1", verb="focus", target=Target(role="Edit", name="Message"), risk="R0"
+    )
+
+    def on_execute(_executor: Any, action: Any) -> None:
+        # the focus lands (SetFocus is a semantic click on the field) and the page swaps
+        h.world.rows = [SWAPPED if r == COMPOSER else r for r in h.world.rows]
+
+    h.semantic.on_execute = on_execute
+    h.physical.on_execute = on_execute
+    result = h.session.run_step(focus)
+    assert result.ok is True, result.to_dict()
+    assert result.evidence.get("alias") == "ComboBox"

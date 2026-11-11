@@ -153,6 +153,20 @@ class ValueEquals:
 
 
 FIELD_ROLES: frozenset[str] = frozenset({"Edit", "ComboBox", "Document"})
+_ALIAS_PAIRS: frozenset[frozenset[str]] = frozenset(
+    {frozenset({"Edit", "Document"}), frozenset({"Edit", "ComboBox"})}
+)
+"""The text roles one app shows for another's field, as measured pairs: Edit<->Document
+(Notepad, live run osg-4) and Edit<->ComboBox (Wikipedia's search once suggestions open, packet
+wiki-field-swap-2026-11-11); never Document<->ComboBox by transitivity (unmeasured)."""
+
+
+def alias_roles(role: str) -> frozenset[str]:
+    """The roles a field of `role` may be shown under instead (hunter FS-29): the measured
+    pairs only; any other role has none."""
+    return frozenset(r for pair in _ALIAS_PAIRS if role in pair for r in pair if r != role)
+
+
 """Roles whose value is what was typed (= `steerai.action.physical.TEXT_ROLES`, pinned by a
 test): on any other role the read is the element's own name (field-value gate item 3)."""
 MAX_FIELD_TEXT_UNITS = 500
