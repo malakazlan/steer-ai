@@ -110,18 +110,21 @@ class UiaClient:
             raise OSError(f"no UIA element for hwnd {hwnd:#x}: {exc}") from exc
         return self._snapshot(element, self._uia_module.TreeScope_Subtree, "subtree")
 
-    def cached_tree(self, hwnd: int) -> TreeSnapshot:
+    def cached_tree(
+        self, hwnd: int, properties: Sequence[str] = _CACHED_PROPERTIES
+    ) -> TreeSnapshot:
         """Whole subtree with structure in one cross-process call (BuildUpdatedCache, Subtree).
 
         Probe 4 spike: ~36 ms for 227 nodes versus ~500 ms for the flat FindAllBuildCache.
-        The walk over cached children is in-process and costs ~1 ms.
+        The walk over cached children is in-process and costs ~1 ms. `properties` is for the
+        cost probe only (`capabilities_probe --section cost`); the product caches the full set.
         """
         try:
             element = self._uia.ElementFromHandle(hwnd)
         except Exception as exc:  # COMError exists only once comtypes is loaded
             raise OSError(f"no UIA element for hwnd {hwnd:#x}: {exc}") from exc
         cache_request = self._uia.CreateCacheRequest()
-        for name in _CACHED_PROPERTIES:
+        for name in properties:
             cache_request.AddProperty(getattr(self._uia_module, name))
         cache_request.TreeScope = self._uia_module.TreeScope_Subtree
         started = time.perf_counter_ns()
