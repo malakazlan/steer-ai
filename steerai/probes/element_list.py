@@ -32,6 +32,7 @@ def elements_from_nodes(nodes: Sequence[RawNode]) -> list[Element]:
                 runtime_id=node.runtime_id,
                 parent_id=parent_id,
                 secure=node.secure,
+                caps=node.caps,
             )
         )
     return elements

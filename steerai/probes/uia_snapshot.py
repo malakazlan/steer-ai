@@ -15,6 +15,7 @@ from typing import Any
 
 from steerai.probes.win_input import ensure_per_monitor_v2
 from steerai.world.address_bar import DocumentUrl, read_address_bar, read_document_url
+from steerai.world.capabilities import Caps, tokens
 
 _COINIT_MULTITHREADED = 0x0
 _CACHED_PROPERTIES = (
@@ -26,6 +27,18 @@ _CACHED_PROPERTIES = (
     "UIA_IsOffscreenPropertyId",
     "UIA_RuntimeIdPropertyId",
     "UIA_IsPasswordPropertyId",
+    # what the element can do (packet interaction-model-2026-11-12 §1): pattern availability and
+    # pattern state, cached in the same fetch; never a value
+    "UIA_IsInvokePatternAvailablePropertyId",
+    "UIA_IsTogglePatternAvailablePropertyId",
+    "UIA_ToggleToggleStatePropertyId",
+    "UIA_IsSelectionItemPatternAvailablePropertyId",
+    "UIA_SelectionItemIsSelectedPropertyId",
+    "UIA_IsExpandCollapsePatternAvailablePropertyId",
+    "UIA_ExpandCollapseExpandCollapseStatePropertyId",
+    "UIA_IsValuePatternAvailablePropertyId",
+    "UIA_ValueIsReadOnlyPropertyId",
+    "UIA_IsRangeValuePatternAvailablePropertyId",
 )
 
 
@@ -49,6 +62,8 @@ class RawNode:
     runtime_id: tuple[int, ...] = ()
     secure: bool = False
     """Password field: its value is never read and the line is tagged `secure` (WM-23)."""
+    caps: tuple[str, ...] = ()
+    """What the element can do, as closed tokens (`steerai.world.capabilities`)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +155,7 @@ class UiaClient:
                 enabled=bool(element.CachedIsEnabled),
                 runtime_id=tuple(int(v) for v in runtime_id) if runtime_id else (),
                 secure=bool(element.CachedIsPassword),
+                caps=tokens(self._caps(element)),
             )
         )
         handles.append(element)
@@ -150,6 +166,51 @@ class UiaClient:
             return
         for index in range(count):
             self._walk_cached(children.GetElement(index), depth + 1, out, handles)
+
+    def _caps(self, element: Any) -> Caps:  # Any: a cached comtypes element
+        """The cached pattern facts; a state is read only when its pattern is available (an
+        absent pattern's state property is UIA's NotSupported value, never a state)."""
+        mod = self._uia_module
+
+        def cached(name: str) -> Any:  # Any: a VARIANT value from comtypes
+            return element.GetCachedPropertyValue(getattr(mod, name))
+
+        def flag(name: str) -> bool:
+            value = cached(name)
+            return isinstance(value, bool | int) and bool(value)
+
+        def number(name: str) -> int | None:
+            value = cached(name)
+            return int(value) if isinstance(value, int) and not isinstance(value, bool) else None
+
+        def boolean(name: str) -> bool | None:
+            value = cached(name)
+            return bool(value) if isinstance(value, bool | int) else None
+
+        return Caps(
+            toggle=(
+                number("UIA_ToggleToggleStatePropertyId")
+                if flag("UIA_IsTogglePatternAvailablePropertyId")
+                else None
+            ),
+            selected=(
+                boolean("UIA_SelectionItemIsSelectedPropertyId")
+                if flag("UIA_IsSelectionItemPatternAvailablePropertyId")
+                else None
+            ),
+            expanded=(
+                number("UIA_ExpandCollapseExpandCollapseStatePropertyId")
+                if flag("UIA_IsExpandCollapsePatternAvailablePropertyId")
+                else None
+            ),
+            read_only=(
+                boolean("UIA_ValueIsReadOnlyPropertyId")
+                if flag("UIA_IsValuePatternAvailablePropertyId")
+                else None
+            ),
+            invoke=flag("UIA_IsInvokePatternAvailablePropertyId"),
+            range_value=flag("UIA_IsRangeValuePatternAvailablePropertyId"),
+        )
 
     def bounding_rect(self, hwnd: int) -> tuple[int, int, int, int]:
         """UIA bounding rectangle of the window element, in physical screen pixels."""

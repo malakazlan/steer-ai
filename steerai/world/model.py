@@ -33,6 +33,7 @@ from steerai.probes.windows import (
     window_pid,
     window_title,
 )
+from steerai.world.capabilities import TOKENS
 from steerai.world.elements import Element, format_lines, prune
 from steerai.world.fingerprint import Fingerprint, landmarks, normalise_title
 
@@ -101,7 +102,9 @@ class Snapshot:
         raise SteerError(ErrorCode.ELEMENT_NOT_FOUND, f"no element {element_id} in {self.id}")
 
 
-SNAPSHOT_FORMAT = 1
+SNAPSHOT_FORMAT = 2
+"""2 adds each element's capability tokens; a format 1 record reads with none."""
+_READABLE_FORMATS = frozenset({1, 2})
 _ELEMENT_FIELDS = (
     "id",
     "depth",
@@ -114,6 +117,7 @@ _ELEMENT_FIELDS = (
     "runtime_id",
     "parent_id",
     "secure",
+    "caps",
 )
 
 
@@ -143,13 +147,21 @@ def snapshot_to_json(snapshot: Snapshot) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
+def _caps_of(raw: object) -> tuple[str, ...]:
+    """A record's tokens, kept only from the closed vocabulary (a record is data, never trusted
+    to add a token the listing does not know)."""
+    if not isinstance(raw, list):
+        raise TypeError("caps must be a list")
+    return tuple(str(token) for token in raw if str(token) in TOKENS)
+
+
 def snapshot_from_json(text: str) -> Snapshot:
     """The inverse of `snapshot_to_json`; a handle-less snapshot for diffing and resume."""
     try:
         payload = json.loads(text)
     except ValueError as exc:
         raise ValueError(f"snapshot JSON is not valid JSON: {exc}") from exc
-    if not isinstance(payload, dict) or payload.get("version") != SNAPSHOT_FORMAT:
+    if not isinstance(payload, dict) or payload.get("version") not in _READABLE_FORMATS:
         raise ValueError("snapshot JSON has an unknown version or shape")
     try:
         raw_elements = payload["elements"]
@@ -173,6 +185,7 @@ def snapshot_from_json(text: str) -> Snapshot:
                 runtime_id=tuple(int(v) for v in raw["runtime_id"]),
                 parent_id=None if raw["parent_id"] is None else int(raw["parent_id"]),
                 secure=bool(raw["secure"]),
+                caps=_caps_of(raw.get("caps", [])),
             )
             for raw in raw_elements
         ]

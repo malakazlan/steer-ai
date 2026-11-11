@@ -76,7 +76,7 @@ def test_round_trip_keeps_every_field_but_the_handles() -> None:
 
 def test_serialised_form_is_plain_json_with_a_version() -> None:
     payload = json.loads(snapshot_to_json(_snapshot()))
-    assert payload["version"] == 1
+    assert payload["version"] == 2, "format 2 carries the capability tokens"
     assert "handles" not in payload
     assert payload["elements"][0]["role"] == "Pane"
 
