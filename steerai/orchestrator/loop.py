@@ -124,13 +124,15 @@ from steerai.world.secure import SecureMemory
 from steerai.world.twins import PinKey, on_screen, pin_key, twin_set
 
 REUSE_FRESHNESS_S = 5.0
-QUIET_AFTER_TYPE_S = 1.0
+QUIET_AFTER_TYPE_S = 2.0
 """How long the page must stay unchanged before an R2/R3 step that follows a `type` (5.11
-[v2.44]): measured 2026-11-08, Wikipedia's suggestions re-render the search widget 0.39-0.89 s
-after the text lands (n=5); other pages unmeasured."""
-SETTLE_AFTER_TYPE_CAP_S = 4.0
+[v2.44]): measured 2026-11-11 with real keystrokes, Wikipedia's suggestions swap the search
+field 0.87-0.99 s after the `type` step returned (n=5; the 1.0 s window of 2026-11-08, from a
+CDP probe at 0.39-0.89 s, closed just before it); doubled; other pages unmeasured."""
+SETTLE_AFTER_TYPE_CAP_S = 5.0
 """The longest that wait lasts: a page still changing then is judged as it is (the ask and the
-re-observe after it still guard the step)."""
+re-observe after it still guard the step). Raised with the window, so 3.0 s of reach past it
+stays (the 2026-11-08 n=10 settles ran 0.78-3.86 s, never capped)."""
 SETTLE_POLL_S = 0.1
 """How old a decided after snapshot may be to serve as the next R0/R1 before. Unmeasured; well
 inside the executors' 10 s admission cap."""
@@ -145,12 +147,14 @@ SETTLE_S = 0.5
 re-observe before calling it absent (first real-site run 2026-11-04; unmeasured)."""
 SETTLE_RETRIES = 2
 _RISK_RANK = {risk: rank for rank, risk in enumerate(RISKS)}
-ALIAS_ROLES: frozenset[str] = FIELD_ROLES - {"ComboBox"}
-"""Text roles one app shows for another's field: a `focus` or `type` whose exact role is not
-on screen resolves by its exact name among these (chooser-wiring gate; live run osg-4 named
-`Edit` where Notepad shows `Document`). Never a ComboBox, either way: its value is a choose's
-(W4-10), and the condition side keeps the same rule (`t1.ALIAS_FIELD_ROLES`)."""
-_ALIAS_VERBS: frozenset[str] = frozenset({"focus", "type"})
+ALIAS_ROLES: frozenset[str] = FIELD_ROLES
+"""Text roles one app shows for another's field: a `focus`, `type` or `submit` whose exact
+role is not on screen resolves by its exact name among these (chooser-wiring gate; live run
+osg-4 named `Edit` where Notepad shows `Document`; Wikipedia's search `Edit` becomes a
+`ComboBox` once suggestions open, packet wiki-field-swap-2026-11-11). A `choose` never aliases
+(W4-10, narrowed to the verb: a choose's value names its ComboBox itself), and the condition
+side keeps the same set (`t1.ALIAS_FIELD_ROLES`)."""
+_ALIAS_VERBS: frozenset[str] = frozenset({"focus", "type", "submit"})
 MAX_SCROLLS = 2
 """Pre-gate scrolls per step: one, and one more when a lazy load pushed the target back
 (measured on a real-Chrome lazy feed, #184 re-review); an endless feed then fails closed."""
@@ -1265,7 +1269,7 @@ class Session:
             self._monitor.mark_ask_open()
         try:
             return self._gate.decide(
-                step,
+                self._as_resolved(step, before, element_id),
                 action_key=key,
                 expect=self._expect_of(step),
                 target_pid=before.pid,
@@ -1288,6 +1292,21 @@ class Session:
         finally:
             if asking and self._monitor is not None:
                 self._monitor.mark_ask_closed()
+
+    def _as_resolved(self, step: Step, before: Snapshot, element_id: int | None) -> Step:
+        """The step as the gate shows it: an aliased text target carries the resolved element's
+        role (the person approves the ComboBox they will see, OR-31; the alias never changes
+        the name, and `alias_risk` already refused a higher tier). The action key is the
+        caller's, never derived from this."""
+        if self._aliased is None or element_id is None or step.target is None:
+            return step
+        element = before.element(element_id)
+        if element.role == step.target.role:
+            return step
+        return replace(
+            step,
+            target=replace(step.target, role=element.role, automation_id=element.automation_id),
+        )
 
     def _boundary(self, evidence: dict[str, Any]) -> bool:
         """Before anything that acts: the kill switch, the monitor's health, and the person's
@@ -1737,15 +1756,16 @@ class Session:
 
     def _resolve_alias(self, step: Step, snapshot: Snapshot, evidence: dict[str, Any]) -> int:
         """An exact text target not on screen under its role: the one element of another text
-        role with the same name, for `focus` and `type` at R0/R1 only; the model never changes
-        the element (chooser-wiring gate items 1-3). The action key stays the plan's."""
+        role with the same name, for `focus` and `type` at R0/R1 and for a `submit` on its
+        composer (the ask then names the resolved role, OR-31); the model never changes the
+        element (chooser-wiring gate items 1-3). The action key stays the plan's."""
         target = step.target
         if (
             target is None
             or target.element_id is not None
             or step.verb not in _ALIAS_VERBS
             or target.role not in ALIAS_ROLES
-            or effective_risk(step) not in ("R0", "R1")
+            or (step.verb != "submit" and effective_risk(step) not in ("R0", "R1"))
         ):
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_match")
         wanted = normalise_name(target.name).casefold()
@@ -1832,6 +1852,11 @@ class Session:
             risk="R0",
         )
         try:
+            if self._aliased is not None:
+                # the step's field resolved under another text role: its composer is that
+                # element (packet wiki-field-swap-2026-11-11), read live by the composer check;
+                # a text-field verb for the alias only (a click probe never ties twins by focus)
+                return self._resolve_alias(replace(probe, verb="focus"), snapshot, {})
             return self._resolve(probe, snapshot)
         except _StepFailureError as failure:
             own = (

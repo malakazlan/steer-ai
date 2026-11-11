@@ -446,14 +446,15 @@ def test_a_verified_choose_of_a_twin_pins_it_for_its_value_condition() -> None:
     assert h.session._pins[pin_key(0x10, "ComboBox", "Size")] == SIZE[3]
 
 
-def test_type_and_focus_never_alias_to_a_combobox() -> None:
-    assert "ComboBox" not in ALIAS_ROLES
+def test_a_type_into_a_field_shown_as_a_combobox_takes_the_alias() -> None:
+    """W4-10 narrowed (packet wiki-field-swap-2026-11-11): a `choose` never aliases, but a
+    text step's exact-name alias reaches a ComboBox (Wikipedia's search Edit becomes one)."""
+    assert "ComboBox" in ALIAS_ROLES
     h, _values = _harness()
     h.world.rows = [(r[0], "ComboBox", *r[2:]) if r[0] == COMPOSER[0] else r for r in h.world.rows]
     result = h.session.run_step(_type())
-    assert result.ok is False
-    assert result.evidence["detail"] == "no_match"
-    assert h.physical.calls == []
+    assert result.ok is True, result.to_dict()
+    assert result.evidence["alias"] == "ComboBox"
 
 
 def test_the_executor_action_for_another_verb_carries_no_option() -> None:

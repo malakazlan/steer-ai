@@ -653,6 +653,23 @@ def _read_value(element: Element, snapshot: Snapshot, live: LiveReads) -> str:
     return field_text("" if raw is None else str(raw), element.role)
 
 
+def _swapped_field(was: Element, after: Snapshot) -> tuple[Element | None, dict[str, Any]]:
+    """The one non-secure field of the alias roles with the gone element's exact name; two
+    are an ambiguity (no pick), none is the plain miss. Evidence `alias` names the role when
+    it differs (a token, never content)."""
+    wanted = normalise_name(was.name).casefold()
+    found = [
+        e
+        for e in after.elements
+        if e.role in ALIAS_FIELD_ROLES
+        and not e.secure
+        and normalise_name(e.name).casefold() == wanted
+    ]
+    if len(found) != 1:
+        return None, {}
+    return found[0], {"alias": found[0].role} if found[0].role != was.role else {}
+
+
 def _value_equals(
     predicate: ValueEquals, before: Snapshot, after: Snapshot, ctx: Context
 ) -> Verdict:
@@ -660,11 +677,17 @@ def _value_equals(
     if before.element(predicate.target_id).secure:
         return _plain("secure_target")
     element = _target(before, after, predicate.target_id)
+    evidence: dict[str, Any] = {}
+    if element is None and not predicate.folded:
+        # the field re-rendered under the typing (Wikipedia's search Edit becomes a ComboBox
+        # of the same name, packet wiki-field-swap-2026-11-11): the one same-named, non-secure
+        # field now on screen; a choose's value (folded) names its ComboBox itself (W4-10)
+        element, evidence = _swapped_field(before.element(predicate.target_id), after)
     if element is None:
         return _plain("target_not_found", settles=True)
     value = _read_value(element, after, live)
     if _same_value(value, predicate.text, folded=predicate.folded):
-        return Verdict(holds=True, code=None, level=3, polls=0, evidence={})
+        return Verdict(holds=True, code=None, level=3, polls=0, evidence=evidence)
     if value == "":
         return _plain("value_empty", settles=True)
     # The before value is not in the snapshot (`Current*` reads the provider now, VF-30 B1):
@@ -672,7 +695,7 @@ def _value_equals(
     return _plain("value_differs")
 
 
-ALIAS_FIELD_ROLES: frozenset[str] = FIELD_ROLES - {"ComboBox"}
+ALIAS_FIELD_ROLES: frozenset[str] = FIELD_ROLES
 """The field roles a `value` may alias between, the step's rule (`loop.ALIAS_ROLES`): never a
 ComboBox, either way (W4-10)."""
 
