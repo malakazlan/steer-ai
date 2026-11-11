@@ -6,9 +6,12 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from steerai.planner.claude_planner import ClaudePlanner
+from steerai.planner.contracts import PlannerError, PlanRequest
 from steerai.planner.mirror import PredicateDoc, StepDoc, TargetDoc
-from tests.planner.test_claude_planner import _doc, _request, _Response
+from tests.planner.test_claude_planner import GOAL, _continuation, _doc, _request, _Response
 from tests.planner.test_plan_repair import Sequence
 
 
@@ -69,3 +72,53 @@ def test_the_prompt_says_a_revealing_click_still_names_its_best_guess() -> None:
     assert "A click always has an expect" in prose
     assert "best guess" in prose
     assert "replans only if it reaches the end of the plan" in prose
+
+
+# ---- a continuation's Button submit named twice in the listing (NE-06; rg1's shape) ----------
+
+TWO_SEARCH_BUTTONS = (
+    '1  Document "RubyGems"                    [0,0,1100,760]',
+    '2    Group "search"                       [84,399,1392,554]',
+    '3      ComboBox "Search"                  [84,399,1392,554]',
+    '4      Button "Search"                    [1300,399,1392,554]',
+    '5    Button "Search"                      [600,600,700,640]',
+)
+
+
+def _button_submit_doc() -> Any:
+    doc = _doc()
+    doc.steps[2].target = TargetDoc(role="Button", name="Search")
+    return doc
+
+
+def test_a_continuation_button_submit_named_twice_in_the_listing_is_refused() -> None:
+    """The plan boundary cannot see the screen, so the planner's own check does: two listed
+    Buttons with the submit's exact name would stop `ambiguous_target` at resolve; the repair
+    turn names the target instead, and a second refusal is `invalid_plan`."""
+    parse = Sequence(
+        _Response(parsed_output=_button_submit_doc()),
+        _Response(parsed_output=_button_submit_doc()),
+    )
+    with pytest.raises(PlannerError) as caught:
+        ClaudePlanner(parse=parse).plan(_continuation(screen_lines=TWO_SEARCH_BUTTONS))
+    assert caught.value.detail == "invalid_plan"
+    assert caught.value.path == "$.steps[2].target"
+    assert "$.steps[2].target" in parse.calls[1]["messages"][2]["content"]
+
+
+def test_a_continuation_button_submit_listed_once_is_accepted() -> None:
+    once = TWO_SEARCH_BUTTONS[:4]
+    parse = Sequence(_Response(parsed_output=_button_submit_doc()))
+    outcome = ClaudePlanner(parse=parse).plan(_continuation(screen_lines=once))
+    assert outcome.plan.steps[2].target is not None
+    assert outcome.plan.steps[2].target.role == "Button"
+    assert outcome.repaired is False
+
+
+def test_a_first_plan_is_not_held_to_the_listing_rule() -> None:
+    """Only a continuation goes through a Button; a first plan's Button submit meets the
+    resolver (`ambiguous_target`) as before, never the plan-time check."""
+    parse = Sequence(_Response(parsed_output=_button_submit_doc()))
+    request = PlanRequest(goal=GOAL, screen_lines=TWO_SEARCH_BUTTONS, window_title="RubyGems")
+    outcome = ClaudePlanner(parse=parse).plan(request)
+    assert outcome.repaired is False

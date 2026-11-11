@@ -41,7 +41,7 @@ from steerai.orchestrator.contracts import (
 )
 from steerai.orchestrator.gate import Confirmer, effective_risk, open_tier
 from steerai.orchestrator.ledger import LedgerError
-from steerai.orchestrator.loop import DEFAULT_MAX_STEPS, TaskResult, wait_for_idle
+from steerai.orchestrator.loop import DEFAULT_MAX_STEPS, NO_EFFECT, TaskResult, wait_for_idle
 from steerai.orchestrator.plan_io import PlanError, encode_predicate, plan_from_bytes
 from steerai.orchestrator.replan import (
     MAX_REPLANS,
@@ -177,6 +177,7 @@ class SessionLike(Protocol):
 
     def run_task(self, plan: Plan, *, continuation: bool = False) -> TaskResult: ...
     def live_title(self, ref: str) -> str | None: ...
+    def no_effect_holds(self) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -1270,6 +1271,14 @@ def _continuation_plan(r: Replan, progress: Progress, number: int) -> Plan | Tas
         title, lines = r.deps.screen(r.session.hwnd)
     except SteerError as exc:
         return progress.ended("stopped", exc.code, "observe_raised")
+    if progress.last.evidence.get("detail") == NO_EFFECT and not r.session.no_effect_holds():
+        # the facts read again after the replan's observe (NE-08): a page that moved since
+        # the verify deadline is an uncertain effect, and no plan acts on top of it
+        r.out.note(
+            "stopped: the page changed after the submit was judged to have had no effect; "
+            "check the screen before running the task again"
+        )
+        return progress.ended("stopped", ErrorCode.VERIFY_FAILED, "unverified_effect")
     path = r.options.plan.with_suffix(f".{number + 1}.json")
     if path.exists():  # before the model call: a refusal costs nothing (review note)
         r.out.note(f"plan: {path} already exists; nothing was written")

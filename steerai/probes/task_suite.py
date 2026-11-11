@@ -38,7 +38,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from steerai import run as run_mod
-from steerai.planner.contracts import PlanOutcome, PlanRequest
+from steerai.orchestrator.plan_io import PlanError
+from steerai.planner.contracts import PlannerError, PlanOutcome, PlanRequest
 from steerai.probes.chrome_a11y import CHROME_DEFAULT, CdpSession, launch_chrome, page_ws_url
 from steerai.probes.layer_b import (
     WINDOW,
@@ -934,13 +935,23 @@ def verdict(
     return lines, ok
 
 
-@dataclass
 class _Planner:
-    calls: int = 0
+    """The real planner, counted; a refused plan's boundary path and reason are kept from the
+    error's cause (Steer's trace keeps the path only: the reason may quote the model's text)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.refusals: list[tuple[int, str, str]] = []
 
     def __call__(self, request: PlanRequest) -> PlanOutcome:
         self.calls += 1
-        return run_mod._planner(request)
+        try:
+            return run_mod._planner(request)
+        except PlannerError as exc:
+            cause = exc.__cause__
+            if isinstance(cause, PlanError):
+                self.refusals.append((exc.attempt, cause.path, cause.reason))
+            raise
 
 
 _WM_GETTEXT = 0x000D
@@ -998,6 +1009,7 @@ def _steer(task: Task, number: int, hwnd: int, tmp: Path, planner: _Planner) -> 
     stdout = io.StringIO()
     started = time.monotonic()
     calls_before = planner.calls
+    refusals_before = len(planner.refusals)
     with _recorded_opens() as opens:
         run_mod.run(
             _options(tmp, hwnd, task, number),
@@ -1022,6 +1034,7 @@ def _steer(task: Task, number: int, hwnd: int, tmp: Path, planner: _Planner) -> 
         "asks": "".join("y" if a["approved"] else "n" for a in person.log),
         "opens_recorded": opened,
         "planner_calls": planner.calls - calls_before,
+        "refusals": [list(r) for r in planner.refusals[refusals_before:]],
     }
 
 
@@ -1068,7 +1081,12 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
     try:
         window = wait_window_for_pid(proc.pid, image="chrome.exe", process=proc)
         page_ws_url(port)  # the page target exists before Steer looks
-        time.sleep(3.0)  # a real site settles its first layout (unmeasured; the warmup follows)
+        # the document is loaded before Steer's first observe: two YouTube dev runs planned on
+        # a listing ~700 input tokens short of the rendered page (2026-11-11), and the plan was
+        # an open instead of a search; the settled page then lays out (unmeasured; the warmup
+        # follows and demands three agreeing node counts)
+        _settled(port, SETTLE_LIMIT_S)
+        time.sleep(3.0)
         _in_front(window.hwnd)
         row = _steer(task, number, window.hwnd, tmp, planner)
         if task.check == "inbox_send":

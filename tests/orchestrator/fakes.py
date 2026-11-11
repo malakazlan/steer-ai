@@ -259,7 +259,7 @@ class MemoryLedger:
 
     def admit(self, key: str, decision: GateDecision | None = None) -> str:
         record = self.executions.get(key)
-        if record is None or record.get("outcome") == "not_delivered":
+        if record is None or record.get("outcome") in ("not_delivered", "no_effect"):
             return "fresh"
         if record.get("outcome") in ("delivered_verified", "done_already"):
             return "done"

@@ -4,6 +4,7 @@ phrases, the exact independent checks, the inbox send rule and the bar (#139 rev
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -180,3 +181,77 @@ def test_the_goal_rule_matches_whole_tokens_of_at_least_three_characters() -> No
     signup = Person(frozenset(), goal="tick the I agree to the terms box on the sign-up form")
     assert signup.ask(_named_ask("I agree to the terms")) == "yes:d1"
     assert signup.ask(_named_ask("sign-up")) == "yes:d1", "punctuation inside a token is kept"
+
+
+def test_a_site_run_waits_for_the_loaded_document_before_steer_looks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dev set on feat/planner-submit-button (2026-11-11): two YouTube runs planned on a
+    listing ~700 input tokens short of a rendered page and opened chrome instead of typing.
+    A site run settles the document (readyState complete, as the controls and the H sets do)
+    before Steer's first observe; a site that never loads is an invalid run, not a FAIL."""
+    import time  # noqa: PLC0415 - this test only
+
+    import steerai.probes.chrome_a11y as chrome  # noqa: PLC0415
+    import steerai.probes.task_suite as suite  # noqa: PLC0415
+
+    order: list[str] = []
+
+    def noting(mark: str, result: Any = None) -> Any:  # Any: the stubs' own returns
+        def stub(*_args: Any, **_kwargs: Any) -> Any:  # Any: each stub's real signature
+            order.append(mark)
+            return result
+
+        return stub
+
+    monkeypatch.setattr(suite, "_free_port", lambda: 9)
+    monkeypatch.setattr(suite, "launch_chrome", noting("launch", SimpleNamespace(pid=1)))
+    monkeypatch.setattr(suite, "wait_window_for_pid", noting("window", SimpleNamespace(hwnd=7)))
+    monkeypatch.setattr(suite, "page_ws_url", noting("target"))
+    monkeypatch.setattr(suite, "_settled", noting("settled"))
+    monkeypatch.setattr(time, "sleep", noting("sleep"))
+    monkeypatch.setattr(suite, "_in_front", noting("front"))
+    monkeypatch.setattr(suite, "_steer", noting("steer", {"status": "done"}))
+    monkeypatch.setattr(suite, "_read_page", noting("read", "{}"))
+    monkeypatch.setattr(chrome, "stop_chrome", noting("stop"))
+    suite._run_chrome(TASKS[0], 1, Path("unused"), suite._Planner(), "https://example.test/")
+    assert order == [
+        "launch",
+        "window",
+        "target",
+        "settled",
+        "sleep",
+        "front",
+        "steer",
+        "read",
+        "stop",
+    ]
+
+
+def test_the_planner_wrapper_records_a_refused_plan_s_boundary_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dev wk2 (2026-11-11): `invalid_plan` at `$.steps[0].expect` twice, and the trace keeps
+    the path only (the reason may quote the model's text, so Steer never traces it). The suite
+    is the probe process: its wrapper keeps the boundary's path and reason from the error's
+    cause for the row, and the error still propagates."""
+    import steerai.probes.task_suite as suite  # noqa: PLC0415 - this test only
+    import steerai.run as run_mod  # noqa: PLC0415
+    from steerai.errors import ErrorCode  # noqa: PLC0415
+    from steerai.orchestrator.plan_io import PlanError  # noqa: PLC0415
+    from steerai.planner.contracts import PlannerError, PlanOutcome, PlanRequest  # noqa: PLC0415
+
+    def refusing(request: PlanRequest) -> PlanOutcome:
+        try:
+            raise PlanError("$.steps[0].expect", "a click names its effect in expect")
+        except PlanError as exc:
+            raise PlannerError(
+                ErrorCode.MODEL_ERROR, "invalid_plan", path=exc.path, attempt=2
+            ) from exc
+
+    monkeypatch.setattr(run_mod, "_planner", refusing)
+    planner = suite._Planner()
+    with pytest.raises(PlannerError):
+        planner(PlanRequest(goal="g", screen_lines=()))
+    assert planner.calls == 1
+    assert planner.refusals == [(2, "$.steps[0].expect", "a click names its effect in expect")]

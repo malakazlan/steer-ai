@@ -205,7 +205,22 @@ def test_the_prompt_says_focus_targets_a_field_role() -> None:
     system, _ = build_prompt(_request(), tag="t")
     prose = " ".join(system.split())
     assert "focus (put keyboard focus in a field: an Edit, ComboBox or Document)" in prose
-    assert PROMPT_VERSION == "planner-19"
+
+
+def test_a_continuation_after_no_effect_submits_on_the_one_button_beside_the_field() -> None:
+    """#199 ([v2.64] npm1; packet no-effect-submit-2026-11-10, option B): Enter stays the
+    submit everywhere (dev 29/30); only a continuation after an Enter proven to have had no
+    effect goes through the one Button listed beside the field. The plan-time Button preference
+    (option A) is gone: a listing cannot judge a twin that appears after typing."""
+    system, _ = build_prompt(_request(), tag="t")
+    prose = " ".join(system.split())
+    assert (
+        "If a submit on the field had no effect, submit on the one Button listed beside it, "
+        "with the same params." in prose
+    )
+    assert "unless the listing shows exactly one Button" not in prose
+    assert "whose name says it submits" not in prose
+    assert PROMPT_VERSION == "planner-21"
 
 
 def test_the_prompt_says_a_selection_click_is_proven_by_present() -> None:
@@ -518,7 +533,19 @@ def test_a_failed_step_line_carries_the_active_option_token() -> None:
     assert "failed step: s2 element_not_found" in plain.splitlines()
 
 
-@pytest.mark.parametrize("detail", ["target_not_focused", "", "Active_option", "active_option "])
+def test_a_failed_step_line_carries_the_no_effect_token() -> None:
+    """Packet no-effect-submit-2026-11-10 item 4: the second closed token, for the Enter the
+    loop proved to have changed nothing; the prompt's continuation line acts on it."""
+    failure = FailedStep(step_id="s3", code="verify_failed", detail="no_effect")
+    _system, user = build_prompt(_continuation(failure=failure), tag="abc123")
+    body = user.split("<<<screen abc123", 1)[1]
+    assert "failed step: s3 verify_failed no_effect" in body.splitlines()
+
+
+@pytest.mark.parametrize(
+    "detail",
+    ["target_not_focused", "", "Active_option", "active_option ", "No_effect", "no effect"],
+)
 def test_a_failed_step_detail_is_a_closed_token(detail: str) -> None:
     with pytest.raises(ValueError, match="detail"):
         FailedStep(step_id="s3", code="focus_lost", detail=detail)  # type: ignore[arg-type]  # the check under test

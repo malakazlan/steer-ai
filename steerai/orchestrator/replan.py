@@ -2,9 +2,11 @@
 runs may be planned again, what the planner is told about the task's progress, which
 continuation plans are refused, and the task's result merged over its plans.
 
-A replan is an allow-list: a run that ended `unfinished`, or that stopped on a target missing
-before the gate ran. Anything with an effect that may have happened unverified at R2/R3 stops
-`unverified_effect` instead, so a new plan never acts on top of an effect nobody checked.
+A replan is an allow-list: a run that ended `unfinished`, that stopped on a target missing
+before the gate ran, or that ended `no_effect` (an Enter the loop proved to have changed nothing,
+packet no-effect-submit-2026-11-10). Anything with an effect that may have happened unverified at
+R2/R3 stops `unverified_effect` instead, so a new plan never acts on top of an effect nobody
+checked.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from steerai.orchestrator.contracts import (
     Subgoal,
 )
 from steerai.orchestrator.gate import effective_risk
-from steerai.orchestrator.loop import TaskResult
+from steerai.orchestrator.loop import NO_EFFECT, TaskResult
 from steerai.orchestrator.plan_io import encode_predicate
 from steerai.planner.contracts import DoneStep, FailedStep, OpenSubgoal
 from steerai.verify.predicates import All, AnyOf, Predicate, check_states, field_values
@@ -33,7 +35,7 @@ MAX_REPLANS = 2
 """Every replan counts, a continuation after `unfinished` too (design 5.3 [v2.1]: stricter than
 "two failed replans")."""
 
-Trigger = Literal["unfinished", "element_not_found", "reset", "unverified_effect"]
+Trigger = Literal["unfinished", "element_not_found", "reset", "no_effect", "unverified_effect"]
 _REPLAN_DETAILS = frozenset({"no_match"})
 """Missing-target details that replan. `candidate_gone` only comes from a person target, which
 never replans (hunter RP-05)."""
@@ -95,14 +97,16 @@ class Progress:
 
     def failure(self) -> FailedStep | None:
         """The last step that failed in the last run, by id and taxonomy code, and its detail
-        only when it is `active_option` (D-151): an earlier plan's failure is never reported
-        again, and no other detail reaches the planner."""
+        only when it is a closed token (`active_option`, D-151; `no_effect`): an earlier plan's
+        failure is never reported again, and no other detail reaches the planner."""
         for result in reversed(self.last.results):
             code = result.code or result.verify_code
             if not result.ok and code is not None:
-                detail: Literal["active_option"] | None = None
+                detail: Literal["active_option", "no_effect"] | None = None
                 if result.evidence.get("detail") == "active_option":
                     detail = "active_option"
+                elif result.evidence.get("detail") == NO_EFFECT:
+                    detail = "no_effect"
                 return FailedStep(step_id=result.step_id, code=code.value, detail=detail)
         return None
 
@@ -157,6 +161,10 @@ def replan_trigger(result: TaskResult, steps: Mapping[str, Step]) -> Trigger | N
         # a ticked value or state read otherwise before done or an R2/R3 step (W4-04): the
         # page undid an earlier subgoal; a replan counts toward MAX_REPLANS like any other
         trigger = "reset"
+    elif detail == NO_EFFECT:
+        # the Enter's four facts held: the continuation submits through the Button beside
+        # the field; counts toward MAX_REPLANS like any other
+        trigger = "no_effect"
     elif _missing_target(result, steps):
         trigger = "element_not_found"
     else:
@@ -270,10 +278,14 @@ def _missing_target(result: TaskResult, steps: Mapping[str, Step]) -> bool:
 
 def _maybe_landed(result: StepResult, step: Step) -> bool:
     """Dispatched at R2/R3 (the tier the run used, raised by a row or a deny word) and not
-    verified; nothing delivered is not an effect (hunter RP-10, RP-31)."""
+    verified; nothing delivered is not an effect (hunter RP-10, RP-31), and neither is an
+    Enter the loop proved changed nothing and the ledger closed `no_effect` (NE-02: both
+    tokens, else the miss stays an uncertain effect)."""
     if result.gate == "done_already" or result.action is None:
         return False
     if result.action.delivery is Delivery.NOT_DELIVERED:
+        return False
+    if result.evidence.get("reason") == NO_EFFECT and result.evidence.get("outcome") == NO_EFFECT:
         return False
     risk = str(result.evidence.get("risk", effective_risk(step)))
     return risk in ("R2", "R3")
