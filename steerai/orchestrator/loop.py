@@ -1459,6 +1459,7 @@ class Session:
         self._aliased = None
         self._twin_pick = None
         self._twin_rid = None
+        self._after_which = None  # never a look from an earlier step
         self._counts_at_step = self._monitor.counts() if self._monitor is not None else {}
 
     def _input_evidence(self, evidence: dict[str, Any]) -> None:

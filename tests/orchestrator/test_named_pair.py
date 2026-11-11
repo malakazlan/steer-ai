@@ -247,3 +247,24 @@ def test_a_candidate_line_carries_the_automation_id_and_whether_it_is_on_screen(
     assert "nav-search" not in repr(lines[0]), "the id stays out of the repr like the name"
     assert isinstance(lines[0], type(lines[1]))
     assert Element is not None
+
+
+def test_the_post_answer_look_never_outlives_its_step() -> None:
+    """A step that stops after the answer (here: the act raises) leaves no look behind: the
+    next step resolves on its own fresh look and sees the chosen field gone."""
+    h, page, _live = _pair_harness(answer="2")
+
+    def refuse(_executor: Any, action: Any) -> None:
+        raise RuntimeError("the act fails after the ask")
+
+    h.semantic.on_execute = refuse
+    h.physical.on_execute = refuse
+    with pytest.raises(RuntimeError):
+        h.session.run_step(_focus())
+    page.bottom = replace(BODY, runtime_id=(42, 999))
+    h.clock["t"] += 6.0
+    h.semantic.on_execute = None
+    h.physical.on_execute = None
+    result = h.session.run_step(_type())
+    assert result.ok is False
+    assert result.evidence["detail"] == "ambiguous_target", result.to_dict()
