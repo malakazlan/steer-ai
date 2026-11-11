@@ -150,3 +150,12 @@ def test_the_scripted_person_takes_the_tasks_which_oracle() -> None:
     by_id = {t.task_id: t for t in H5}
     person = Person(by_id["ub1"].approve, goal=by_id["ub1"].goal, which=dict(by_id["ub1"].which))
     assert person.which == {"Keyword:": "kw"}
+
+
+def test_opening_the_export_menu_is_no_event_of_its_own() -> None:
+    """H5 control run 1 (2026-11-11): r4's drive clicks Export then PDF and the page logged two
+    events (`export_menu`, `export`), so the one-event rule failed the control. The menu's
+    opening is not logged; only the export is."""
+    html = page_html()
+    assert 'kind: "export_menu"' not in html
+    assert html.count('kind: "export"') == 1

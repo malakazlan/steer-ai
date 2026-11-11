@@ -103,7 +103,7 @@ EXPORTS_HERE
     var open = exportButton.getAttribute("aria-expanded") !== "true";
     exportButton.setAttribute("aria-expanded", open ? "true" : "false");
     menu.hidden = !open;
-    put(e, {kind: "export_menu", open: open});
+    // opening the menu is no event of its own: the export is (the control drive clicks both)
   });
   for (var item of document.querySelectorAll("[role=menuitem]")) {
     item.addEventListener("click", function (e) {
