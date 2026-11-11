@@ -221,7 +221,7 @@ def test_a_continuation_after_no_effect_submits_on_the_one_button_beside_the_fie
     )
     assert "unless the listing shows exactly one Button" not in prose
     assert "whose name says it submits" not in prose
-    assert PROMPT_VERSION == "planner-22"
+    assert PROMPT_VERSION == "planner-23"
 
 
 def test_the_prompt_says_a_selection_click_is_proven_by_present() -> None:
@@ -1088,3 +1088,18 @@ def test_every_excluded_kind_leaves_the_lone_click_refused(kind: str, path: str)
     select or expand step of that subgoal); the rest reach the click, which still has no expect."""
     error = _failure(_Response(parsed_output=_lone_click_doc(_LONE_CLICK_CONDITIONS[kind])))
     assert (error.detail, error.path) == ("invalid_plan", path)
+
+
+# ---- H4 q2: a listbox option is a select, not a click -------------------------------------------
+
+
+def test_the_prompt_teaches_select_on_a_listbox_option() -> None:
+    """H4 q2 (2026-11-11, 0/3): "choose Swahili in the languages list" on a `<select size=8>`
+    planned `click ListItem "Swahili"` with a `present` expect three plans running, and the
+    verify read `absent` each time (the option sits scrolled out of view inside the box). The
+    loop selects a listbox option since W3b ([v2.67]); the prompt never said so."""
+    system, _ = build_prompt(_request())
+    assert "ListItem" in system
+    assert "select (pick a tab, a radio option or an option of a list" in system
+    assert "state: role TabItem, RadioButton or ListItem with wanted selected" in system
+    assert PROMPT_VERSION == "planner-23"
