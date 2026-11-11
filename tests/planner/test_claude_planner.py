@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, get_args
 
 import anthropic
 import httpx2 as httpx
@@ -30,6 +30,7 @@ from steerai.planner.contracts import (
     PlanRequest,
 )
 from steerai.planner.mirror import (
+    ConditionKind,
     Decoration,
     ParamsDoc,
     PlanDoc,
@@ -1033,3 +1034,57 @@ def test_a_click_sharing_its_subgoal_still_needs_its_own_expect() -> None:
 def test_a_condition_only_kind_is_never_copied_into_a_click() -> None:
     error = _failure(_Response(parsed_output=_wiki_doc(reveal_kind="title")))
     assert (error.detail, error.path) == ("invalid_plan", "$.steps[0].expect")
+
+
+_LONE_CLICK_CONDITIONS: dict[str, PredicateDoc] = {
+    "appeared": PredicateDoc(kind="appeared", role="Edit", name="Search Wikipedia"),
+    "disappeared": PredicateDoc(kind="disappeared", role="Hyperlink", name="Search"),
+    "count_delta": PredicateDoc(kind="count_delta", role="Edit", delta=1),
+    "present": PredicateDoc(kind="present", role="Hyperlink", name="Search", within="Wikipedia"),
+    "value": PredicateDoc(kind="value", role="Edit", name="Search Wikipedia", text="Ada"),
+    "state": PredicateDoc(kind="state", role="CheckBox", name="Search", wanted="on"),
+    "title": PredicateDoc(kind="title", pattern="Search"),
+    "window_exists": PredicateDoc(kind="window_exists", name="Search"),
+    "window_gone": PredicateDoc(kind="window_gone", name="Search"),
+}
+
+
+def _lone_click_doc(condition: PredicateDoc) -> PlanDoc:
+    doc = _wiki_doc()
+    doc.subgoals[0] = SubgoalDoc(id="g1", desc="the link's effect", condition=condition)
+    return doc
+
+
+def test_the_copied_kinds_are_every_kind_the_boundary_takes_as_a_click_expect() -> None:
+    from steerai.planner.claude_planner import COPIED_CONDITION_KINDS  # noqa: PLC0415
+
+    assert set(_LONE_CLICK_CONDITIONS) == set(get_args(ConditionKind)), "one row per kind"
+    assert {"appeared", "disappeared", "count_delta", "present"} == COPIED_CONDITION_KINDS
+
+
+@pytest.mark.parametrize("kind", sorted({"appeared", "disappeared", "count_delta", "present"}))
+def test_every_copied_kind_crosses_the_boundary_as_the_lone_clicks_expect(kind: str) -> None:
+    planner, parse = _planner(
+        _Response(parsed_output=_lone_click_doc(_LONE_CLICK_CONDITIONS[kind]))
+    )
+    outcome = planner.plan(_wiki_request())
+    assert outcome.plan.steps[0].expect is not None
+    assert list(json.loads(outcome.data)["steps"][0]["expect"]) == [kind]
+    assert len(parse.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("kind", "path"),
+    [
+        ("value", "$.subgoals[0].condition"),
+        ("state", "$.subgoals[0].condition"),
+        ("title", "$.steps[0].expect"),
+        ("window_exists", "$.steps[0].expect"),
+        ("window_gone", "$.steps[0].expect"),
+    ],
+)
+def test_every_excluded_kind_leaves_the_lone_click_refused(kind: str, path: str) -> None:
+    """A value or state condition is refused as the subgoal's own (it needs a type, check,
+    select or expand step of that subgoal); the rest reach the click, which still has no expect."""
+    error = _failure(_Response(parsed_output=_lone_click_doc(_LONE_CLICK_CONDITIONS[kind])))
+    assert (error.detail, error.path) == ("invalid_plan", path)

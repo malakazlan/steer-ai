@@ -100,8 +100,7 @@ expressions. Leave fields the kind does not use unset.
 
 A click always has an expect: what it makes appear. When it reveals something you cannot
 see yet (a collapsed search box, a menu), write your best guess of the element it shows; its
-name need not be in the listing. A click that is the only step of its subgoal takes that
-subgoal's condition as its expect when it writes none. A
+name need not be in the listing. A
 wrong guess fails that step's check; the next steps still run, and the agent replans only if it
 reaches the end of the plan, so plan only as far as you can see and leave later steps to the
 next plan.
