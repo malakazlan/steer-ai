@@ -74,7 +74,7 @@ COST_PAGES = (
     "https://www.youtube.com/",
     "https://github.com/python/cpython",
 )
-OLD_PROPERTIES = uia_snapshot._CACHED_PROPERTIES[:8]
+OLD_PROPERTIES = uia_snapshot._BASE_PROPERTIES
 
 
 def _out(row: dict[str, object]) -> None:

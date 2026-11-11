@@ -30,7 +30,6 @@ TOKENS: tuple[str, ...] = (
     "collapsed",
     "editable",
     "readonly",
-    "invoke",
     "range",
 )
 """The closed vocabulary; a listing line never carries anything else after the flags."""
@@ -48,12 +47,12 @@ class Caps:
     """ExpandCollapseState when the ExpandCollapse pattern is available."""
     read_only: bool | None = None
     """Value.IsReadOnly when the Value pattern is available (never the value itself, WM-23)."""
-    invoke: bool = False
     range_value: bool = False
 
 
 def tokens(caps: Caps) -> tuple[str, ...]:
-    """The tokens in the fixed order: toggle, selection, expand, value, invoke, range."""
+    """The tokens in the fixed order: toggle, selection, expand, value, range. Invoke has no token:
+    it never changes the verb (principal, packet interaction-model-2026-11-12)."""
     out: list[str] = []
     if caps.toggle is not None and caps.toggle in TOGGLE_STATES:
         out.append(f"toggle:{TOGGLE_STATES[caps.toggle]}")
@@ -66,8 +65,6 @@ def tokens(caps: Caps) -> tuple[str, ...]:
             out.append("collapsed")
     if caps.read_only is not None:
         out.append("readonly" if caps.read_only else "editable")
-    if caps.invoke:
-        out.append("invoke")
     if caps.range_value:
         out.append("range")
     return tuple(out)

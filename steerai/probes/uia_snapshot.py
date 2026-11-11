@@ -18,7 +18,7 @@ from steerai.world.address_bar import DocumentUrl, read_address_bar, read_docume
 from steerai.world.capabilities import Caps, tokens
 
 _COINIT_MULTITHREADED = 0x0
-_CACHED_PROPERTIES = (
+_BASE_PROPERTIES: tuple[str, ...] = (
     "UIA_NamePropertyId",
     "UIA_ControlTypePropertyId",
     "UIA_AutomationIdPropertyId",
@@ -27,9 +27,12 @@ _CACHED_PROPERTIES = (
     "UIA_IsOffscreenPropertyId",
     "UIA_RuntimeIdPropertyId",
     "UIA_IsPasswordPropertyId",
+)
+"""Identity, geometry and state flags: the fetch before the capability tokens."""
+_CACHED_PROPERTIES: tuple[str, ...] = (
+    *_BASE_PROPERTIES,
     # what the element can do (packet interaction-model-2026-11-12 §1): pattern availability and
     # pattern state, cached in the same fetch; never a value
-    "UIA_IsInvokePatternAvailablePropertyId",
     "UIA_IsTogglePatternAvailablePropertyId",
     "UIA_ToggleToggleStatePropertyId",
     "UIA_IsSelectionItemPatternAvailablePropertyId",
@@ -74,6 +77,9 @@ class TreeSnapshot:
     handles: list[Any] = field(default_factory=list)
     """Live cached COM elements, one per node (comtypes has no stubs, hence Any). Act through
     these; they support Current* properties and patterns. Never let them cross a process."""
+    caps_read: bool = True
+    """False when the fetch with the capability properties raised and the base fetch served:
+    no token then means unread, never absent (the live check at resolve decides)."""
 
 
 class UiaClient:
@@ -110,9 +116,24 @@ class UiaClient:
             raise OSError(f"no UIA element for hwnd {hwnd:#x}: {exc}") from exc
         return self._snapshot(element, self._uia_module.TreeScope_Subtree, "subtree")
 
-    def cached_tree(
-        self, hwnd: int, properties: Sequence[str] = _CACHED_PROPERTIES
-    ) -> TreeSnapshot:
+    def cached_tree(self, hwnd: int, properties: Sequence[str] | None = None) -> TreeSnapshot:
+        """The full fetch; when a provider raises on the capability properties, the base fetch
+        once, marked `caps_read=False` (principal item 1). `properties` is for the cost probe."""
+        if properties is not None:
+            return self._cached_tree(hwnd, properties, caps=False)
+        try:
+            return self._cached_tree(hwnd, _CACHED_PROPERTIES, caps=True)
+        except OSError:
+            tree = self._cached_tree(hwnd, _BASE_PROPERTIES, caps=False)
+            return TreeSnapshot(
+                nodes=tree.nodes,
+                fetch_ms=tree.fetch_ms,
+                walk_ms=tree.walk_ms,
+                handles=tree.handles,
+                caps_read=False,
+            )
+
+    def _cached_tree(self, hwnd: int, properties: Sequence[str], *, caps: bool) -> TreeSnapshot:
         """Whole subtree with structure in one cross-process call (BuildUpdatedCache, Subtree).
 
         Probe 4 spike: ~36 ms for 227 nodes versus ~500 ms for the flat FindAllBuildCache.
@@ -136,12 +157,12 @@ class UiaClient:
         started = time.perf_counter_ns()
         nodes: list[RawNode] = []
         handles: list[Any] = []
-        self._walk_cached(root, 0, nodes, handles)
+        self._walk_cached(root, 0, nodes, handles, caps=caps)
         walk_ms = (time.perf_counter_ns() - started) / 1_000_000
         return TreeSnapshot(nodes=nodes, fetch_ms=fetch_ms, walk_ms=walk_ms, handles=handles)
 
     def _walk_cached(
-        self, element: Any, depth: int, out: list[RawNode], handles: list[Any]
+        self, element: Any, depth: int, out: list[RawNode], handles: list[Any], *, caps: bool
     ) -> None:
         # `element` is a cached COM element; comtypes has no stubs, hence Any.
         rect = element.CachedBoundingRectangle
@@ -158,7 +179,7 @@ class UiaClient:
                 enabled=bool(element.CachedIsEnabled),
                 runtime_id=tuple(int(v) for v in runtime_id) if runtime_id else (),
                 secure=bool(element.CachedIsPassword),
-                caps=tokens(self._caps(element)),
+                caps=tokens(self._caps(element)) if caps else (),
             )
         )
         handles.append(element)
@@ -168,11 +189,14 @@ class UiaClient:
         except ValueError:  # comtypes raises on a NULL pointer: leaf node
             return
         for index in range(count):
-            self._walk_cached(children.GetElement(index), depth + 1, out, handles)
+            self._walk_cached(children.GetElement(index), depth + 1, out, handles, caps=caps)
 
     def _caps(self, element: Any) -> Caps:  # Any: a cached comtypes element
-        """The cached pattern facts; a state is read only when its pattern is available (an
-        absent pattern's state property is UIA's NotSupported value, never a state)."""
+        """The cached pattern facts; a state is read only when its pattern is available: for an
+        element without the pattern, GetCachedPropertyValue returns the property's *default*
+        value (ToggleState Off, IsSelected false, ExpandCollapseState Collapsed), never an error,
+        so the state alone would invent a capability (Microsoft Learn,
+        IUIAutomationElement::GetCachedPropertyValueEx)."""
         mod = self._uia_module
 
         def cached(name: str) -> Any:  # Any: a VARIANT value from comtypes
@@ -211,7 +235,6 @@ class UiaClient:
                 if flag("UIA_IsValuePatternAvailablePropertyId")
                 else None
             ),
-            invoke=flag("UIA_IsInvokePatternAvailablePropertyId"),
             range_value=flag("UIA_IsRangeValuePatternAvailablePropertyId"),
         )
 

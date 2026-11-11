@@ -65,6 +65,9 @@ class Snapshot:
     handles: list[Any] = field(default_factory=list, repr=False)
     """Live cached COM elements aligned with `elements` (comtypes has no stubs, hence Any)."""
     cap: int = DEFAULT_CAP
+    caps_read: bool = True
+    """False: the capability tokens could not be read for this snapshot (a provider raised on
+    them); a missing token is then unread, never absent."""
 
     @property
     def lines(self) -> list[str]:
@@ -355,6 +358,7 @@ class WorldModel:
             minimized=is_minimized(hwnd),
             handles=tree.handles,
             cap=cap,
+            caps_read=tree.caps_read,
         )
 
     def _fetch(self, hwnd: int) -> TreeSnapshot:
