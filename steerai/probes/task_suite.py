@@ -31,7 +31,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from ctypes import wintypes
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -106,6 +106,9 @@ class Task:
     title: str = ""
     """For `url_search`: the results page's exact title, measured (H3 review item 1); empty
     means the title is not checked."""
+    which: tuple[tuple[str, str], ...] = ()
+    """The scripted person's answer to a twin ask, per target name: the automation id of the
+    field the task means (packet h4-2026-11-11 round 2, item 5). A harness oracle."""
 
 
 PAGE_SETS = ("h2", "h3", "h4", "h5")
@@ -471,11 +474,63 @@ H5: tuple[Task, ...] = (
     ),
     _h5("r4", "export the report as PDF", {"format": "PDF", "kind": "export"}),
     _h5("r5", "unsubscribe from the newsletter", {"kind": "newsletter", "on": False}),
+    _url_search(
+        "hx1",
+        "Hex",
+        "https://hex.pm/",
+        "ecto",
+        path="/packages",
+        param="search",
+        title="Hex",
+    ),
+    Task(
+        "ub1",
+        "search Ubuntu packages for vim",
+        "https://packages.ubuntu.com/",
+        "url_search",
+        "vim",
+        frozenset({"vim"}),
+        path="/search",
+        param="keywords",
+        title="Ubuntu \u2013 Package Search Results -- vim",
+        which=(("Keyword:", "kw"),),
+    ),
+    _url_search(
+        "mc1",
+        "MetaCPAN",
+        "https://metacpan.org/",
+        "mojolicious",
+        path="/search",
+        param="q",
+        title='Search for "mojolicious" - metacpan.org',
+    ),
+    _url_search(
+        "ng1",
+        "NuGet",
+        "https://www.nuget.org/",
+        "serilog",
+        path="/packages",
+        param="q",
+        title="NuGet Gallery | Packages matching serilog",
+    ),
+    _url_search(
+        "fh1",
+        "Flathub",
+        "https://flathub.org/",
+        "inkscape",
+        path="/en/apps/search",
+        param="q",
+        title="Search for \u201cinkscape\u201d | Flathub",
+    ),
 )
 """H5 (packet h5-2026-11-11): committed before the fixes for H4's classes B and C, run only
 after them. Five widget shapes on one new local page (`h5_page`: radios in a fieldset, an ARIA
-switch, grouped select options, a menu button, an uncheck) and, once the site probe is in, five
-sites no earlier set used (one same-titled results page, one twin-field site)."""
+switch, grouped select options, a menu button, an uncheck) and five sites no earlier set used
+(probe `h5_sites`, Chrome 156, 2026-11-11): hex.pm keeps its home title "Hex" on the results
+page (class B's shape, `ComboBox "Find packages"`); packages.ubuntu.com lists two
+`Edit "Keyword:"` (ids `kw` for names, on screen, and `keyword` for file contents, below the
+fold: class C's shape, the person answers `kw`); MetaCPAN, NuGet and Flathub title their
+results with the words."""
 
 
 H4: tuple[Task, ...] = (
@@ -889,10 +944,24 @@ class Person:
     approve: frozenset[str]
     approve_targets: frozenset[str] = frozenset()
     goal: str = ""
+    which: Mapping[str, str] = field(default_factory=dict)
+    """A twin ask's answer per target name: the automation id of the field the task means
+    (packet h4-2026-11-11 round 2, item 5). A harness oracle; the product never chooses by it."""
     log: list[dict[str, Any]] = field(default_factory=list)
 
     def ask(self, ask: Any) -> str:  # Any: steerai.orchestrator.gate.Ask (no import cycle)
         decision = str(ask.decision_id)
+        if getattr(ask, "kind", "yes") == "which":
+            wanted_id = self.which.get(str(getattr(ask, "target_name", "")))
+            chosen = [
+                c.index
+                for c in getattr(ask, "candidates", ())
+                if wanted_id and getattr(c, "automation_id", "") == wanted_id
+            ]
+            self.log.append(
+                {"verb": str(ask.verb), "risk": str(ask.risk), "approved": bool(chosen)}
+            )
+            return f"{chosen[0]}:{decision}" if len(chosen) == 1 else f"no:{decision}"
         text = ask.params.get("text") if hasattr(ask, "params") else None
         wanted = {_folded(a) for a in self.approve}
         target = str(getattr(ask, "target_name", ""))
@@ -1066,7 +1135,7 @@ def _options(tmp: Path, hwnd: int, task: Task, number: int) -> run_mod.Options:
 
 
 def _steer(task: Task, number: int, hwnd: int, tmp: Path, planner: _Planner) -> dict[str, Any]:
-    person = Person(task.approve, task.approve_targets, goal=task.goal)
+    person = Person(task.approve, task.approve_targets, goal=task.goal, which=dict(task.which))
     deps = run_mod._real_deps().replace(
         make_confirmer=lambda *_: person,
         open_windows=lambda: [],

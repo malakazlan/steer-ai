@@ -104,3 +104,49 @@ def test_a_page_task_passes_only_on_its_own_event() -> None:
     assert judged([{"kind": "speed", "value": "Standard"}]) is False
     assert judged([{"kind": "dark", "on": True}]) is False
     assert judged([{"kind": "speed", "value": "Express", "untrusted": True}]) is False
+
+
+def test_the_sites_are_the_measured_five_with_their_shapes() -> None:
+    """Probe h5_sites (Chrome 156, 2026-11-11): hex.pm's results page keeps the home title
+    (class B); packages.ubuntu.com shows the Debian pair `kw` / `keyword` (class C); the three
+    others title their results with the words."""
+    by_id = {t.task_id: t for t in H5}
+    assert [t.task_id for t in H5 if t.check == "url_search"] == ["hx1", "ub1", "mc1", "ng1", "fh1"]
+    assert by_id["hx1"].title == "Hex", "the same-titled results page"
+    assert by_id["ub1"].which == (("Keyword:", "kw"),), "the named pair's oracle"
+    assert by_id["ub1"].param == "keywords"
+    for task_id in ("mc1", "ng1", "fh1"):
+        assert by_id[task_id].expected.casefold() in by_id[task_id].title.casefold(), task_id
+    for task in H5:
+        if task.check == "url_search":
+            assert task.task_id == "ub1" or task.which == (), task.task_id
+
+
+def test_the_search_tasks_are_judged_on_the_measured_results_pages() -> None:
+    by_id = {t.task_id: t for t in H5}
+    page = json.dumps({"href": "https://hex.pm/packages?search=ecto", "title": "Hex"})
+    assert passed(by_id["hx1"], "done", page) is True
+    other = json.dumps({"href": "https://hex.pm/packages?search=ecto", "title": "Hex - ecto"})
+    assert passed(by_id["hx1"], "done", other) is False, "the title is pinned"
+    ubuntu = json.dumps(
+        {
+            "href": "https://packages.ubuntu.com/search?keywords=vim&searchon=names",
+            "title": "Ubuntu \u2013 Package Search Results -- vim",
+        }
+    )
+    assert passed(by_id["ub1"], "done", ubuntu) is True
+    contents = json.dumps(
+        {
+            "href": "https://packages.ubuntu.com/search?keywords=vim&searchon=contents",
+            "title": "Ubuntu \u2013 Package Contents Search Results -- vim",
+        }
+    )
+    assert passed(by_id["ub1"], "done", contents) is False, "the file-contents form is wrong"
+
+
+def test_the_scripted_person_takes_the_tasks_which_oracle() -> None:
+    from steerai.probes.task_suite import Person  # noqa: PLC0415 - this test only
+
+    by_id = {t.task_id: t for t in H5}
+    person = Person(by_id["ub1"].approve, goal=by_id["ub1"].goal, which=dict(by_id["ub1"].which))
+    assert person.which == {"Keyword:": "kw"}
