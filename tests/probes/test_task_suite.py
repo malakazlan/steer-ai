@@ -226,3 +226,32 @@ def test_a_site_run_waits_for_the_loaded_document_before_steer_looks(
         "read",
         "stop",
     ]
+
+
+def test_the_planner_wrapper_records_a_refused_plan_s_boundary_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dev wk2 (2026-11-11): `invalid_plan` at `$.steps[0].expect` twice, and the trace keeps
+    the path only (the reason may quote the model's text, so Steer never traces it). The suite
+    is the probe process: its wrapper keeps the boundary's path and reason from the error's
+    cause for the row, and the error still propagates."""
+    import steerai.probes.task_suite as suite  # noqa: PLC0415 - this test only
+    import steerai.run as run_mod  # noqa: PLC0415
+    from steerai.errors import ErrorCode  # noqa: PLC0415
+    from steerai.orchestrator.plan_io import PlanError  # noqa: PLC0415
+    from steerai.planner.contracts import PlannerError, PlanOutcome, PlanRequest  # noqa: PLC0415
+
+    def refusing(request: PlanRequest) -> PlanOutcome:
+        try:
+            raise PlanError("$.steps[0].expect", "a click names its effect in expect")
+        except PlanError as exc:
+            raise PlannerError(
+                ErrorCode.MODEL_ERROR, "invalid_plan", path=exc.path, attempt=2
+            ) from exc
+
+    monkeypatch.setattr(run_mod, "_planner", refusing)
+    planner = suite._Planner()
+    with pytest.raises(PlannerError):
+        planner(PlanRequest(goal="g", screen_lines=()))
+    assert planner.calls == 1
+    assert planner.refusals == [(2, "$.steps[0].expect", "a click names its effect in expect")]
