@@ -68,8 +68,12 @@ def test_a_folded_value_never_aliases_to_another_field_role() -> None:
     assert _evaluate(chosen, "hello", BASE_ROWS) is False
 
 
-def test_a_typed_value_never_aliases_to_a_combobox() -> None:
-    # W4-10, the condition side of the step's alias rule: a ComboBox's value is a choose's
+def test_a_typed_value_reaches_a_same_named_combobox_but_a_choose_s_never_an_edit() -> None:
+    # W4-10 narrowed (packet wiki-field-swap-2026-11-11): the condition side of the step's
+    # alias rule reaches a ComboBox (Wikipedia's search Edit becomes one); a choose's value
+    # (folded) names its ComboBox itself and never aliases
     typed = FieldValue(role="Edit", name_pattern="Message", text="hello")
-    assert _evaluate(typed, "hello") is False
+    assert _evaluate(typed, "hello") is True
     assert _evaluate(typed, "hello", BASE_ROWS) is True
+    chosen = FieldValue(role="ComboBox", name_pattern="Message", text="hello", folded=True)
+    assert _evaluate(chosen, "hello", BASE_ROWS) is False

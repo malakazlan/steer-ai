@@ -51,6 +51,7 @@ from steerai.verify.predicates import (
     WindowExists,
     WindowGone,
     Within,
+    alias_roles,
     name_matches,
 )
 from steerai.verify.scope import Scope, container_of, resolve_scope
@@ -349,7 +350,41 @@ def _after_scope(predicate: Appeared, before: Snapshot, after: Snapshot) -> Scop
     return resolve_scope(after, within, excluding=excluding)
 
 
+_REVEAL_ALIAS: Mapping[str, str] = MappingProxyType({"Edit": "ComboBox", "ComboBox": "Edit"})
+"""A click's reveal or a presence of one field role satisfied by the other (packet
+wiki-field-swap-2026-11-11, hunter FS-12): this pair only, never Document, plain form only."""
+
+
 def _appeared(predicate: Appeared, before: Snapshot, after: Snapshot) -> Verdict:
+    """The exact role first; a plain, one-expected `appeared` of a field role then tries the
+    other role of the pair when nothing of the exact role is on screen. A same-named field of
+    either role already in the scope before is never an appearance (FS-03, FS-21: the click
+    swapped a field that was there), so the alias cannot prove a reveal by a role swap."""
+    verdict = _appeared_exact(predicate, before, after)
+    alias = _REVEAL_ALIAS.get(predicate.role)
+    if (
+        verdict.holds
+        or alias is None
+        or predicate.replaces
+        or predicate.expected != 1
+        or verdict.evidence.get("reason") != "no_match"
+    ):
+        return verdict
+    scope_before = resolve_scope(before, predicate.within)
+    was = any(
+        _scoped(scope_before, e, role, predicate.name_pattern)
+        for e in before.elements
+        for role in (predicate.role, alias)
+    )
+    if was:
+        return replace(verdict, evidence={**verdict.evidence, "reason": "not_new"})
+    aliased = _appeared_exact(replace(predicate, role=alias), before, after)
+    if not aliased.holds:
+        return verdict
+    return replace(aliased, evidence={**aliased.evidence, "alias": alias})
+
+
+def _appeared_exact(predicate: Appeared, before: Snapshot, after: Snapshot) -> Verdict:
     scope = _after_scope(predicate, before, after)
     if scope.level == 0:
         return _miss(scope, scope.reason or "no_scope")
@@ -505,6 +540,17 @@ def _disappeared(predicate: Disappeared, before: Snapshot, after: Snapshot) -> V
         for e in before.elements
         if e.parent_id in {q.id for q in parents} and e.id not in matched_ids and e.runtime_id
     ]
+    alias = _REVEAL_ALIAS.get(predicate.role)
+    scope_after = resolve_scope(after, predicate.within)
+    swapped = (
+        alias is not None
+        and scope_after.level != 0
+        and any(
+            e.runtime_id not in {m.runtime_id for m in matched}
+            and _scoped(scope_after, e, alias, predicate.name_pattern)
+            for e in after.elements
+        )
+    )
     rules = (
         (
             not _container_survived(scope, before, after)
@@ -513,6 +559,7 @@ def _disappeared(predicate: Disappeared, before: Snapshot, after: Snapshot) -> V
             "scope_churn",
         ),
         (any(not e.runtime_id or e.runtime_id in after_ids for e in matched), "still_present"),
+        (swapped, "swapped"),
         (any(e.runtime_id not in after_ids for e in siblings), "siblings_changed"),
     )
     for condition, reason in rules:
@@ -538,17 +585,24 @@ def _present(predicate: Present, before: Snapshot, after: Snapshot) -> Verdict:
         for e in after.elements
         if not e.offscreen and _scoped(scope, e, predicate.role, predicate.name_pattern)
     ]
+    evidence: dict[str, Any] = {"level": scope.level, "matched": 1}
+    alias = _REVEAL_ALIAS.get(predicate.role)
+    exact_anywhere = any(
+        _scoped(scope, e, predicate.role, predicate.name_pattern) for e in after.elements
+    )
+    if not found and alias is not None and not exact_anywhere:
+        # the field is shown under the other role of the pair (FS-12: this pair only)
+        found = [
+            e
+            for e in after.elements
+            if not e.offscreen and _scoped(scope, e, alias, predicate.name_pattern)
+        ]
+        evidence["alias"] = alias
     if len(found) > 1:
         return _contradiction(scope, "ambiguous_match")
     if not found:
         return _miss(scope, "absent")
-    return Verdict(
-        holds=True,
-        code=None,
-        level=scope.level,
-        polls=0,
-        evidence={"level": scope.level, "matched": 1},
-    )
+    return Verdict(holds=True, code=None, level=scope.level, polls=0, evidence=evidence)
 
 
 def _present_scope(predicate: Present, before: Snapshot, after: Snapshot) -> Scope | Verdict:
@@ -653,6 +707,29 @@ def _read_value(element: Element, snapshot: Snapshot, live: LiveReads) -> str:
     return field_text("" if raw is None else str(raw), element.role)
 
 
+def _swapped_field(
+    was: Element, before: Snapshot, after: Snapshot
+) -> tuple[Element | None, dict[str, Any]]:
+    """The one non-secure field of the alias roles with the gone element's exact name; two
+    are an ambiguity (no pick), none is the plain miss. Evidence `alias` names the role when
+    it differs (a token, never content)."""
+    wanted = normalise_name(was.name).casefold()
+    before_ids = {e.runtime_id for e in before.elements if e.runtime_id}
+    roles = alias_roles(was.role) | {was.role}
+    found = [
+        e
+        for e in after.elements
+        if e.role in roles
+        and not e.secure
+        and e.runtime_id  # provably new: a RuntimeId that was not there before
+        and e.runtime_id not in before_ids
+        and normalise_name(e.name).casefold() == wanted
+    ]
+    if len(found) != 1:
+        return None, {}
+    return found[0], {"alias": found[0].role} if found[0].role != was.role else {}
+
+
 def _value_equals(
     predicate: ValueEquals, before: Snapshot, after: Snapshot, ctx: Context
 ) -> Verdict:
@@ -660,11 +737,17 @@ def _value_equals(
     if before.element(predicate.target_id).secure:
         return _plain("secure_target")
     element = _target(before, after, predicate.target_id)
+    evidence: dict[str, Any] = {}
+    if element is None and not predicate.folded:
+        # the field re-rendered under the typing (Wikipedia's search Edit becomes a ComboBox
+        # of the same name, packet wiki-field-swap-2026-11-11): the one same-named, non-secure
+        # field now on screen; a choose's value (folded) names its ComboBox itself (W4-10)
+        element, evidence = _swapped_field(before.element(predicate.target_id), before, after)
     if element is None:
         return _plain("target_not_found", settles=True)
     value = _read_value(element, after, live)
     if _same_value(value, predicate.text, folded=predicate.folded):
-        return Verdict(holds=True, code=None, level=3, polls=0, evidence={})
+        return Verdict(holds=True, code=None, level=3, polls=0, evidence=evidence)
     if value == "":
         return _plain("value_empty", settles=True)
     # The before value is not in the snapshot (`Current*` reads the provider now, VF-30 B1):
@@ -672,7 +755,9 @@ def _value_equals(
     return _plain("value_differs")
 
 
-ALIAS_FIELD_ROLES: frozenset[str] = FIELD_ROLES - {"ComboBox"}
+ALIAS_FIELD_ROLES: frozenset[str] = FIELD_ROLES
+"""The roles the condition side's field alias ranges over; the pairs are `alias_roles` (W4-10
+narrowed to the verb by [v2.71]: a choose's folded value never aliases)."""
 """The field roles a `value` may alias between, the step's rule (`loop.ALIAS_ROLES`): never a
 ComboBox, either way (W4-10)."""
 
@@ -700,9 +785,7 @@ def _field_value(predicate: FieldValue, snapshot: Snapshot, ctx: Context) -> Ver
         # the one same-named field of another field role, only when the exact role is absent;
         # a choose's value names its ComboBox itself, never an alias (W4-10)
         found = [
-            e
-            for e in named
-            if e.role in ALIAS_FIELD_ROLES and e.role != predicate.role and not e.secure
+            e for e in named if e.role in alias_roles(predicate.role) and not e.secure
         ]  # secure fields are never alias candidates, as for the step (#77)
         if found:
             evidence = {"alias": found[0].role}
@@ -773,11 +856,16 @@ def reads_wanted(live: LiveReads, handle: Any, wanted: StateName) -> bool | None
 def _focused(predicate: Focused, before: Snapshot, after: Snapshot, ctx: Context) -> Verdict:
     live = _live(ctx, "Focused")
     element = _target(before, after, predicate.target_id)
+    evidence: dict[str, Any] = {}
+    if element is None:
+        # the field re-rendered between the focus and its readback (Wikipedia, 2 of 7 probe
+        # runs): the one same-named new field of an alias role
+        element, evidence = _swapped_field(before.element(predicate.target_id), before, after)
     if element is None:
         return _plain("target_not_found", settles=True)
     focused = live.focused_runtime_id()
     if focused and focused == element.runtime_id:
-        return Verdict(holds=True, code=None, level=3, polls=0, evidence={})
+        return Verdict(holds=True, code=None, level=3, polls=0, evidence=evidence)
     return replace(_plain("not_focused"), state=focused)
 
 
