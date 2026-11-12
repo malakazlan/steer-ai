@@ -42,3 +42,14 @@ def test_the_typed_row_logs_its_last_input_and_the_submit_row_approves_its_words
     assert "keep only the last" in html
     g23 = next(t for t in GALLERY if t.task_id == "g23")
     assert g23.approve == frozenset({"automation"})
+
+
+def test_the_link_row_opens_a_page_titled_like_the_link() -> None:
+    """Gallery g25 (0/3): the link cancelled its navigation and set a status line no planner can
+    predict; a "Terms of service" link opens a page with that title."""
+    from steerai.probes.gallery_page import pages  # noqa: PLC0415 - this test only
+
+    served = pages()
+    assert 'href="/terms.html"' in served["/page.html"]
+    assert "<title>Terms of service</title>" in served["/terms.html"]
+    assert 'preventDefault(); say("Terms opened")' not in served["/page.html"]

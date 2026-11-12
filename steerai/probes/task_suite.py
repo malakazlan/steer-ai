@@ -892,7 +892,7 @@ def _page_controls(
         if drive is None:
             continue
         tmp = Path(tempfile.mkdtemp(prefix="steer-ctl-"))
-        with PageServer({"/page.html": _page_for(task)}) as server:
+        with PageServer(_pages_for(task)) as server:
             port = _free_port()
             url = f"http://127.0.0.1:{server.port}/page.html"
             proc = launch_chrome(
@@ -975,6 +975,15 @@ def _calc_control(task: Task, buttons: Sequence[str]) -> str:
         return f"{task.task_id}: control {'passes' if ok else 'FAILS'}"
     finally:
         _close(window.hwnd)
+
+
+def _pages_for(task: Task) -> dict[str, str]:
+    """Every page a page task's server holds: the held-out page, and the gallery's own extras."""
+    if task.start == "gallery":
+        from steerai.probes.gallery_page import pages  # noqa: PLC0415 - the gallery only
+
+        return pages()
+    return {"/page.html": _page_for(task)}
 
 
 def _page_for(task: Task) -> str:
@@ -1524,7 +1533,7 @@ def _started(  # noqa: PLR0911 - one per start kind
             raise InvalidRun("wordpad_absent")  # removed from newer Windows builds
         return _run_app(task, number, tmp, planner, exe=WORDPAD, edit_class="RICHEDIT50W")
     if task.start in PAGE_SETS:
-        with PageServer({"/page.html": _page_for(task)}) as server:
+        with PageServer(_pages_for(task)) as server:
             return _run_chrome(
                 task, number, tmp, planner, f"http://127.0.0.1:{server.port}/page.html"
             )

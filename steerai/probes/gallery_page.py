@@ -131,7 +131,7 @@ PAGE = """<!doctype html>
   <label>Full name <input id="g22" type="text"></label>
   <label>Find articles <input id="g23" type="search"></label>
   <label>Comments <textarea id="g24" rows="2"></textarea></label>
-  <a id="g25" href="#terms">Terms of service</a>
+  <a id="g25" href="/terms.html">Terms of service</a>
   <label>Volume <input id="g26" type="range" min="0" max="10" value="3"></label>
   <label>Quantity <input id="g27" type="number" min="1" max="9" value="1"></label>
   <span id="status" role="status"></span>
@@ -279,14 +279,25 @@ PAGE = """<!doctype html>
     }
   });
   on("g24", "change", function (e) { put(e, {row: "g24", value: this.value}); });
-  on("g25", "click", function (e) {
-    e.preventDefault(); say("Terms opened"); put(e, {row: "g25"});
-  });
+  on("g25", "click", function (e) { put(e, {row: "g25"}); });
 })();
 </script>
 </body></html>
 """
 
 
+TERMS_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Terms of service</title></head>
+<body><h1>Terms of service</h1><p>These are the gallery's terms.</p></body></html>
+"""
+"""The page g25's link opens: a real navigation to a page titled like the link (the log row is
+written on the click, before the page goes, and stays in the origin's localStorage)."""
+
+
 def page_html() -> str:
     return PAGE.replace("LOG_KEY_HERE", LOG_KEY)
+
+
+def pages() -> dict[str, str]:
+    """Every page the gallery serves, by path."""
+    return {"/page.html": page_html(), "/terms.html": TERMS_PAGE}
