@@ -28,6 +28,7 @@ from steerai.probes.layer_b import WINDOW, _free_port
 from steerai.probes.layer_b_pages import PageServer
 from steerai.probes.task_suite import _read
 from steerai.probes.uia_snapshot import UiaClient
+from steerai.probes.win_input import acquire_foreground, click_at
 from steerai.probes.windows import wait_window_for_pid
 
 ACTS: tuple[tuple[str, str, str, str, tuple[tuple[str, str, str], ...]], ...] = (
@@ -54,7 +55,18 @@ ACTS: tuple[tuple[str, str, str, str, tuple[tuple[str, str, str], ...]], ...] = 
         (("Button", "Share", "expand"),),
     ),
     ("menuitem invoke", "MenuItem", "Copy link", "invoke", (("Button", "Share", "expand"),)),
+    ("tree label click", "TreeItem", "Projects", "click", ()),
+    (
+        "tree label click twice",
+        "TreeItem",
+        "Projects",
+        "click",
+        (("TreeItem", "Projects", "click"),),
+    ),
+    ("tree child click", "TreeItem", "Alpha", "click", (("TreeItem", "Projects", "click"),)),
 )
+"""`click` is a physical click on the item's own label text (as `executor.click_point` picks it),
+the way a person opens a tree item: Chrome ignores Expand on one ([v2.77])."""
 
 
 def _out(row: dict[str, object]) -> None:
@@ -71,6 +83,33 @@ def _find(client: UiaClient, hwnd: int, role: str, name: str) -> tuple[Any, list
         if element.role == role and element.name.strip() == name
     ]
     return [h for h, _ in found], [str(list(e.caps)) for _, e in found]
+
+
+def _click_label(client: UiaClient, hwnd: int, role: str, name: str) -> str:
+    """A physical click on the centre of the item's first Text descendant named like it."""
+    elements = elements_from_nodes(client.cached_tree(hwnd).nodes)
+    items = [e for e in elements if e.role == role and e.name.strip() == name]
+    if len(items) != 1:
+        return "not_found"
+    by_id = {e.id: e for e in elements}
+
+    def under(element_id: int) -> bool:
+        parent = by_id[element_id].parent_id
+        while parent is not None:
+            if parent == items[0].id:
+                return True
+            parent = by_id[parent].parent_id
+        return False
+
+    labels = [
+        e
+        for e in elements
+        if e.role == "Text" and e.name.strip() == name and e.has_area and under(e.id)
+    ]
+    box = labels[0].box if labels else items[0].box
+    acquire_foreground(hwnd)
+    click_at((box[0] + box[2]) // 2, (box[1] + box[3]) // 2)
+    return "clicked_label" if labels else "clicked_item"
 
 
 def _act(client: UiaClient, handle: Any, act: str) -> str:  # Any: a comtypes element
@@ -97,8 +136,10 @@ def _act(client: UiaClient, handle: Any, act: str) -> str:  # Any: a comtypes el
     return "called"
 
 
-def run(runs: int) -> None:
+def run(runs: int, only: str = "") -> None:
     for label, role, name, act, setup in ACTS:
+        if only and only not in label:
+            continue
         for number in range(1, runs + 1):
             tmp = Path(tempfile.mkdtemp(prefix="steer-acts-"))
             with PageServer({"/page.html": page_html()}) as server:
@@ -122,11 +163,16 @@ def run(runs: int) -> None:
                         time.sleep(0.25)
                     for s_role, s_name, s_act in setup:
                         handles, _ = _find(client, window.hwnd, s_role, s_name)
-                        if len(handles) == 1:
+                        if s_act == "click":
+                            _click_label(client, window.hwnd, s_role, s_name)
+                        elif len(handles) == 1:
                             _act(client, handles[0], s_act)
                         time.sleep(0.4)
                     handles, before = _find(client, window.hwnd, role, name)
-                    outcome = _act(client, handles[0], act) if handles else "not_found"
+                    if act == "click":
+                        outcome = _click_label(client, window.hwnd, role, name)
+                    else:
+                        outcome = _act(client, handles[0], act) if handles else "not_found"
                     time.sleep(0.6)
                     _, after = _find(client, window.hwnd, role, name)
                     log = _read(port, f'localStorage.getItem("{LOG_KEY}") || "[]"', "log")
@@ -153,8 +199,9 @@ def run(runs: int) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--only", default="", help="run only the acts whose label holds this")
     args = parser.parse_args()
-    run(args.runs)
+    run(args.runs, args.only)
     return 0
 
 

@@ -24,8 +24,8 @@ STATE_ROLES: Mapping[StateName, frozenset[str]] = {
     "on": frozenset({"CheckBox", "Button"}),
     "off": frozenset({"CheckBox", "Button"}),
     "selected": frozenset({"TabItem", "RadioButton", "ListItem", "DataItem"}),
-    "expanded": frozenset({"Button"}),
-    "collapsed": frozenset({"Button"}),
+    "expanded": frozenset({"Button", "TreeItem"}),
+    "collapsed": frozenset({"Button", "TreeItem"}),
 }
 """The roles each wanted state is read on: the static role ceiling of each capability (packet
 interaction-model-2026-11-12 §2, principal item 2), from Microsoft's control-pattern table and
@@ -33,8 +33,9 @@ measured on the gallery (Chrome 156, `gallery_acts`). Toggle: a CheckBox (native
 tri-state; menuitemcheckbox is exposed as one) and a Button (`role=switch`, `aria-pressed`:
 Toggle flips it with a trusted click). SelectionItem: a TabItem, a RadioButton (menuitemradio is
 exposed as one), a listbox option (ListItem, W3b) and a grid row (DataItem: Select selects it).
-ExpandCollapse: a disclosure or menu Button (W5). Not admitted until measured: a TreeItem
-(Chrome ignores Expand on an ARIA tree item), a MenuItem. A ListItem or DataItem is admitted only
+ExpandCollapse: a disclosure or menu Button (W5) and a TreeItem ([v2.81]: Chrome ignores Expand
+on an ARIA tree item, but one click opens or closes it and the state reads back, 3/3). Not
+admitted until measured: a MenuItem; a TreeItem's selection (it is chosen by click). A ListItem or DataItem is admitted only
 under a single-select container, read live before the gate (`loop._listbox_admission`)."""
 
 

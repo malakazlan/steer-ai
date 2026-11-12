@@ -31,7 +31,7 @@ def _state(wanted: Any = "expanded", role: str = "Button", name: str = "Shipping
 @pytest.mark.parametrize("wanted", ["expanded", "collapsed"])
 def test_a_button_reads_expanded_or_collapsed(wanted: Any) -> None:
     assert _state(wanted).wanted == wanted
-    assert STATE_ROLES[wanted] == frozenset({"Button"})
+    assert STATE_ROLES[wanted] == frozenset({"Button", "TreeItem"})
     assert State(target_id=5, wanted=wanted).wanted == wanted
 
 
@@ -51,11 +51,17 @@ def test_the_role_and_the_wanted_value_must_agree(role: str, wanted: Any) -> Non
         CheckState(role=role, name_pattern="Shipping questions", wanted=wanted)
 
 
-@pytest.mark.parametrize("role", ["TreeItem", "ComboBox", "MenuItem", "SplitButton", "Group"])
+@pytest.mark.parametrize("role", ["ComboBox", "MenuItem", "SplitButton", "Group"])
 @pytest.mark.parametrize("wanted", ["expanded", "collapsed"])
 def test_expanded_on_another_role_is_refused(role: str, wanted: Any) -> None:
     with pytest.raises(ValueError, match="role"):
         CheckState(role=role, name_pattern="Shipping questions", wanted=wanted)
+
+
+@pytest.mark.parametrize("wanted", ["expanded", "collapsed"])
+def test_a_tree_item_reads_expanded_and_collapsed(wanted: Any) -> None:
+    """[v2.81]: a tree item opens by one click, and its state is read back (Chrome 157, 3/3)."""
+    assert CheckState(role="TreeItem", name_pattern="Projects", wanted=wanted).role == "TreeItem"
 
 
 @pytest.mark.parametrize("wanted", ["open", "closed", "partially_expanded", "EXPANDED"])
@@ -120,7 +126,11 @@ def test_a_collapsed_state_is_proven_by_its_collapse() -> None:
             "$.subgoals[0].condition.state.wanted",
         ),
         (
-            {"role": "TreeItem", "name": "Folders", "wanted": "expanded"},
+            {"role": "TreeItem", "name": "Folders", "wanted": "selected"},
+            "$.subgoals[0].condition.state.wanted",
+        ),
+        (
+            {"role": "MenuItem", "name": "Folders", "wanted": "expanded"},
             "$.subgoals[0].condition.state.role",
         ),
         (
@@ -236,3 +246,27 @@ def test_redaction_keeps_the_role_and_wanted_only() -> None:
     spec = redact(_state("collapsed", name="sentinel-button-1c4f"))
     assert spec == {"kind": "CheckState", "role": "Button", "wanted": "collapsed"}
     assert "sentinel" not in repr(_state("collapsed", name="sentinel-button-1c4f"))
+
+
+# ---- a tree item ([v2.81]) -----------------------------------------------------------------------
+
+SRC: Row = (40, "TreeItem", "src", (42, 80), None)
+SRC_GROUP: Row = (41, "Group", "", (42, 81), 40)
+SRC_CHILD: Row = (42, "TreeItem", "src", (42, 82), 41)
+DOCS: Row = (43, "TreeItem", "docs", (42, 83), None)
+
+
+def test_a_tree_items_expanded_state_is_read_live() -> None:
+    state = _state("expanded", role="TreeItem", name="docs")
+    assert _judge(state, _live(DOCS, expanded=1), DOCS).holds is True
+    assert _judge(state, _live(DOCS, expanded=0), DOCS).holds is False
+
+
+def test_nested_same_named_tree_items_are_ambiguous() -> None:
+    """Hunter TE-02: `src` inside `src` is two folders, never one folded into the other as a
+    grid row and its cell are; the condition cannot say which is meant."""
+    state = _state("expanded", role="TreeItem", name="src")
+    live = FakeLive(states={SRC[3]: FakeHandle(expanded=1), SRC_CHILD[3]: FakeHandle(expanded=0)})
+    verdict = _judge(state, live, SRC, SRC_GROUP, SRC_CHILD)
+    assert verdict.holds is False
+    assert verdict.evidence == {"reason": "ambiguous_target"}

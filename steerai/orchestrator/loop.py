@@ -30,6 +30,7 @@ from typing import Any, Literal, Protocol
 
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.action.executor import Action, click_point, physical_click_target
+from steerai.action.tree import TREE_ITEM, expand_decision
 from steerai.action.launch import (
     APPS,
     expected_title,
@@ -462,6 +463,8 @@ class Session:
         self._gate = gate
         self._ledger = ledger
         self._live = live
+        self._tree_clicks: set[tuple[int, ...]] = set()
+        """Tree items (RuntimeId) a fallback click went to in this task ([v2.81] rule 4)."""
         self._windows = windows
         self._trace: Trace = NullTrace() if trace is None else trace
         self._monotonic = monotonic
@@ -2466,12 +2469,48 @@ class Session:
             point = click_point(before, before.element(element_id))
             physical = PhysicalAction(verb="click", element_id=point.id)
             return self._physical.execute(physical, before), before, element_id
+        if (
+            refused
+            and executor is self._semantic
+            and action.verb in ("expand", "collapse")
+            and detail == EXPAND_BY_CLICK
+            and before.element(element_id).role == TREE_ITEM
+            and physical_click_target(before, before.element(element_id))
+        ):
+            return self._tree_click(step, action.verb, before, element_id)
         if not (step.verb == "focus" and refused and detail == "hit_test_miss"):
             return result, before, element_id
         before, element_id = self._fallback_look(step, before, element_id)
         result = self._semantic.execute(Action(verb="focus", element_id=element_id), before)
         self._act_evidence["focus_fallback"] = "set_focus"
         return result, before, element_id
+
+    def _tree_click(
+        self, step: Step, verb: str, before: Snapshot, element_id: int
+    ) -> tuple[ActionResult, Snapshot, int]:
+        """A tree item's expand / collapse ([v2.81] rules 3-4): Chrome ignores Expand on one, so
+        a person's click opens or closes it. The state is read again on the look the click is
+        sent against (principal item 1, TE-04): in state sends nothing, a leaf or a third state
+        is refused; and one fallback click per item per task (TE-05), so a page that ignored the
+        click is never toggled a second time."""
+        before, element_id = self._fallback_look(step, before, element_id)
+        element = before.element(element_id)
+        if element.role != TREE_ITEM or not physical_click_target(before, element):
+            return _tree_refused(verb, EXPAND_BY_CLICK), before, element_id
+        state = None if self._live is None else self._live.expand_state(before.handle(element_id))
+        decision = expand_decision(state, verb)
+        if decision == "in_state":
+            return ActionResult.already_satisfied(verb), before, element_id
+        if decision != "click":
+            return _tree_refused(verb, decision), before, element_id
+        if element.runtime_id in self._tree_clicks:
+            return _tree_refused(verb, "already_clicked"), before, element_id
+        self._tree_clicks.add(element.runtime_id)
+        self._act_evidence["click_fallback"] = "physical"
+        self._act_evidence["semantic_detail"] = EXPAND_BY_CLICK
+        point = click_point(before, element)
+        physical = PhysicalAction(verb="click", element_id=point.id)
+        return self._physical.execute(physical, before), before, element_id
 
     def _fallback_look(self, step: Step, before: Snapshot, element_id: int) -> tuple[Snapshot, int]:
         """Before a fallback dispatch: a boundary wait restarts from a fresh look at the same
@@ -2752,6 +2791,7 @@ class Session:
         results: list[StepResult] = []
         if not continuation:
             self._verbs_complete = True
+            self._tree_clicks.clear()  # one click per item per task, across its replans
         elif not self._verbs_complete:
             earlier = self._ledger.earlier_verbs()
             if earlier is not None:
@@ -3156,6 +3196,21 @@ def _named_container(snapshot: Snapshot, element: Element) -> str:
             return parent.name
         parent = by_id.get(parent.parent_id) if parent.parent_id is not None else None
     return ""
+
+
+EXPAND_BY_CLICK = "expand_by_click"
+"""The semantic executor's refusal for a tree item's expand / collapse ([v2.81] rule 2)."""
+
+
+def _tree_refused(verb: str, detail: str) -> ActionResult:
+    """A tree item's expand / collapse refused with nothing sent."""
+    return ActionResult(
+        verb=verb,
+        delivery=Delivery.NOT_DELIVERED,
+        steps=[],
+        code=ErrorCode.ELEMENT_NOT_ACTIONABLE,
+        evidence={"detail": detail},
+    )
 
 
 def _quiet_set(snapshot: Snapshot) -> set[tuple[tuple[int, ...], str]]:

@@ -50,10 +50,16 @@ def test_the_role_and_the_wanted_value_must_agree(role: str, wanted: Any) -> Non
         CheckState(role=role, name_pattern="Details", wanted=wanted)
 
 
-@pytest.mark.parametrize("role", ["TreeItem", "MenuItem", "Hyperlink"])
+@pytest.mark.parametrize("role", ["MenuItem", "Hyperlink"])
 def test_selected_on_another_role_is_refused(role: str) -> None:
     with pytest.raises(ValueError, match="role"):
         CheckState(role=role, name_pattern="Details", wanted="selected")
+
+
+def test_a_tree_item_is_never_read_selected() -> None:
+    """[v2.81]: a tree item is chosen by click; only its expanded state is read."""
+    with pytest.raises(ValueError, match="wanted for a"):
+        CheckState(role="TreeItem", name_pattern="Details", wanted="selected")
 
 
 # ---- the plan file -------------------------------------------------------------------------------
@@ -119,7 +125,7 @@ def test_a_listbox_option_selected_state_is_proven_by_its_select() -> None:
         ),
         (
             {"role": "TreeItem", "name": "Details", "wanted": "selected"},
-            "$.subgoals[0].condition.state.role",
+            "$.subgoals[0].condition.state.wanted",
         ),
         (
             {"role": "ListItem", "name": "Kyoto", "wanted": "on"},
