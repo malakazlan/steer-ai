@@ -440,4 +440,6 @@ def test_the_poll_counts_in_the_verify_stage() -> None:
     h, _bar = _slow(delay=NAVIGATION_VERIFY_S + 1.0)
     result = h.session.run_step(_guessed())
     assert result.ok is False
-    assert result.latency_ms["verify"] >= NAVIGATION_VERIFY_S * 1000 - URL_POLL_S * 1000
+    verify_ms = result.latency_ms["verify"]
+    assert verify_ms >= NAVIGATION_VERIFY_S * 1000 - URL_POLL_S * 1000
+    assert verify_ms <= NAVIGATION_VERIFY_S * 1000 + 2 * URL_POLL_S * 1000, "never counted twice"
