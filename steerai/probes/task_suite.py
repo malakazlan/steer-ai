@@ -72,6 +72,7 @@ Check = Literal[
     "h4_final",
     "h5_event",
     "h5_final",
+    "h6_event",
     "calc_display",
     "file_text",
     "google_search",
@@ -111,7 +112,7 @@ class Task:
     field the task means (packet h4-2026-11-11 round 2, item 5). A harness oracle."""
 
 
-PAGE_SETS = ("h2", "h3", "h4", "h5")
+PAGE_SETS = ("h2", "h3", "h4", "h5", "h6")
 """The `start` values that mean a held-out page served from memory."""
 
 
@@ -533,6 +534,71 @@ fold: class C's shape, the person answers `kw`); MetaCPAN, NuGet and Flathub tit
 results with the words."""
 
 
+def _h6(task_id: str, goal: str, event: dict[str, Any], **kw: Any) -> Task:
+    return Task(task_id, goal, "h6", "h6_event", json.dumps(event, sort_keys=True), **kw)
+
+
+H6: tuple[Task, ...] = (
+    _h6("u1", "mute notifications", {"kind": "mute", "on": True}),
+    _h6("u2", "turn on Auto-save", {"kind": "autosave", "on": True}),
+    _h6("u3", "open the Reports folder and select 2024", {"kind": "year", "value": "2024"}),
+    _h6("u4", "select Invoice 2042 in the invoices", {"kind": "invoice", "value": "Invoice 2042"}),
+    _h6("u5", "sort the results by Newest first", {"kind": "sort", "value": "Newest first"}),
+    _url_search(
+        "gd1",
+        "Go packages",
+        "https://pkg.go.dev/",
+        "cobra",
+        path="/search",
+        param="q",
+        title="cobra - Search Results - Go Packages",
+    ),
+    _url_search(
+        "pd1",
+        "pub.dev",
+        "https://pub.dev/",
+        "provider",
+        path="/packages",
+        param="q",
+        title="Search results for provider",
+    ),
+    _url_search(
+        "cp1",
+        "CocoaPods",
+        "https://cocoapods.org/",
+        "alamofire",
+        path="/",
+        param="q",
+        title="CocoaPods.org",
+    ),
+    _url_search(
+        "am1",
+        "Firefox add-ons",
+        "https://addons.mozilla.org/en-US/firefox/",
+        "ublock",
+        path="/en-US/firefox/search/",
+        param="q",
+        title='Search results for "ublock" \u2013 Add-ons for Firefox (en-US)',
+    ),
+    Task(
+        "wt1",
+        "look up serendipity on Wiktionary",
+        "https://en.wiktionary.org/wiki/Wiktionary:Main_Page",
+        "wiki_article",
+        "/wiki/serendipity",
+        frozenset({"serendipity"}),
+    ),
+)
+"""H6 (packet interaction-model-2026-11-12 §6): sealed before the interaction model's verb
+admission merges, run once after the gallery is 3/3 per row. Five widget tasks on a new page
+(`h6_page`: a toolbar toggle button, a switch on a native checkbox input, a tree folder opened
+and a year selected, a div grid row, a menuitemradio in a menu button), each a row of the model's
+table in markup no earlier page or the gallery uses; five sites no earlier set used (probe
+`h6_sites`, Chrome 156, 2026-11-12): pkg.go.dev and pub.dev title their results with the words,
+CocoaPods keeps its home title (class B's shape), Firefox add-ons lists its search Edit over an
+unnamed ComboBox, Wiktionary's search lands on the entry."""
+
+
 H4: tuple[Task, ...] = (
     _h4("q1", "expand the returns policy", {"kind": "policy", "open": True}),
     _h4("q2", "choose Swahili in the languages list", {"kind": "language", "value": "Swahili"}),
@@ -738,6 +804,24 @@ r3 types the first letter of the wanted zone group's first option (Europe/Berlin
 its group); r4 opens the menu, then picks PDF."""
 
 
+H6_DRIVES: dict[str, tuple[tuple[str, str], ...]] = {
+    "u1": (("click", "#mute"),),
+    "u2": (("click", "#autosave"),),
+    "u3": (("click", "#reports > span"), ("click", "#y2024")),
+    "u4": (("click", "#inv-2042"),),
+    "u5": (("click", "#sort"), ("click", "#sort-newest")),
+}
+"""What a person would do for each H6 page task, as trusted CDP input (positive control only)."""
+
+
+def h6_controls() -> list[str]:
+    """Each H6 page task done by scripted trusted input and judged by `passed`; the site tasks
+    by opening their results URL or the entry."""
+    return _page_controls(H6, H6_DRIVES) + controls(
+        [task for task in H6 if task.check in ("url_search", "wiki_article")]
+    )
+
+
 def h5_controls() -> list[str]:
     """Each H5 page task done by scripted trusted input and judged by `passed`; the site tasks
     by opening their results URL."""
@@ -850,6 +934,10 @@ def _calc_control(task: Task, buttons: Sequence[str]) -> str:
 
 def _page_for(task: Task) -> str:
     """The held-out page a page task runs on (H2, H3 or H4)."""
+    if task.start == "h6":
+        from steerai.probes.h6_page import page_html as h6_html  # noqa: PLC0415 - H6 only
+
+        return h6_html()
     if task.start == "h5":
         from steerai.probes.h5_page import page_html as h5_html  # noqa: PLC0415 - H5 only
 
@@ -885,6 +973,10 @@ def _page_observed(task: Task, port: int) -> str:
 
 
 def _page_log_key(task: Task) -> str:
+    if task.start == "h6":
+        from steerai.probes.h6_page import LOG_KEY as H6_KEY  # noqa: PLC0415 - H6 only
+
+        return H6_KEY
     if task.start == "h5":
         from steerai.probes.h5_page import LOG_KEY as H5_KEY  # noqa: PLC0415 - H5 only
 
@@ -903,6 +995,8 @@ def _page_log_key(task: Task) -> str:
 
 
 def task_set(name: str) -> tuple[Task, ...]:
+    if name == "h6":
+        return H6
     if name == "h5":
         return H5
     if name == "h4":
@@ -997,7 +1091,15 @@ def passed(task: Task, status: str | None, observed: str) -> bool:  # noqa: PLR0
         return bool(json.loads(observed or "{}") == json.loads(task.expected))
     if task.check in ("h3_final", "h4_final", "h5_final"):
         return bool(json.loads(observed or "{}") == json.loads(task.expected))
-    if task.check in ("notepad_text", "app_text", "h2_event", "h3_event", "h4_event", "h5_event"):
+    if task.check in (
+        "notepad_text",
+        "app_text",
+        "h2_event",
+        "h3_event",
+        "h4_event",
+        "h5_event",
+        "h6_event",
+    ):
         return observed.strip() == task.expected
     if task.check == "file_text":
         return observed == task.expected
@@ -1236,6 +1338,7 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
             "h4_final",
             "h5_event",
             "h5_final",
+            "h6_event",
         ):
             row["observed"] = _page_observed(task, port)
         elif task.check == "inbox_chat":
@@ -1409,7 +1512,9 @@ def _header() -> dict[str, Any]:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Phase 1 bar: ten single-app tasks, live.")
     parser.add_argument("--runs", type=int, default=3)
-    parser.add_argument("--set", choices=("dev", "held_out", "h2", "h3", "h4", "h5"), default="dev")
+    parser.add_argument(
+        "--set", choices=("dev", "held_out", "h2", "h3", "h4", "h5", "h6"), default="dev"
+    )
     parser.add_argument(
         "--controls", action="store_true", help="open each search task's results URL instead"
     )
@@ -1424,6 +1529,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             lines = h2_controls()
         elif args.set == "h3":
             lines = h3_controls()
+        elif args.set == "h6":
+            lines = h6_controls()
         elif args.set == "h5":
             lines = h5_controls()
         elif args.set == "h4":
