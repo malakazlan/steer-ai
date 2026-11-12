@@ -53,3 +53,14 @@ def test_the_link_row_opens_a_page_titled_like_the_link() -> None:
     assert 'href="/terms.html"' in served["/page.html"]
     assert "<title>Terms of service</title>" in served["/terms.html"]
     assert 'preventDefault(); say("Terms opened")' not in served["/page.html"]
+
+
+def test_the_search_row_submits_a_form_to_a_results_page_titled_with_the_words() -> None:
+    """Gallery g23 (0/3 after the approval fix): the box only wrote a status line, so no proof
+    of the R2 submit could hold; a real search box submits to a results page."""
+    from steerai.probes.gallery_page import pages  # noqa: PLC0415 - this test only
+
+    served = pages()
+    assert '<form action="/search.html" method="get"' in served["/page.html"]
+    assert 'name="q"' in served["/page.html"]
+    assert 'document.title = q + " - Gallery search"' in served["/search.html"]
