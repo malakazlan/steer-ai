@@ -77,6 +77,7 @@ def test_no_single_swapped_field_is_a_changed_screen(swapped_in: tuple[Row, ...]
     h, _live = _harness(*swapped_in)
     result = h.session.run_step(_focus())
     assert result.ok is False
+    assert "act_swap" not in result.evidence
     assert result.code is ErrorCode.FOCUS_LOST
     assert result.evidence["detail"] == "screen_changed_during_act"
     assert h.physical.calls == [("click", EDIT[0], None)]
@@ -110,6 +111,7 @@ def test_a_swapped_field_whose_id_raises_the_tier_is_never_followed() -> None:
     result = h.session.run_step(_focus())
     assert result.ok is False
     assert result.evidence["detail"] == "screen_changed_during_act"
+    assert result.evidence["act_swap"] == "tier", "a refused swap, not a plain miss"
     assert h.physical.calls == [("click", EDIT[0], None)]
 
 

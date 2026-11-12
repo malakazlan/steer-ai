@@ -2414,18 +2414,21 @@ class Session:
             ):
                 raise
             swapped, _ = swapped_field(asked, previous, snapshot)
-            if swapped is None or self._raises_tier(step, risk, swapped):
+            if swapped is None:
+                raise
+            if self._raises_tier(step, risk, swapped, snapshot):
+                self._act_evidence["act_swap"] = "tier"  # told apart from a plain miss
                 raise
             self._act_evidence["act_alias"] = swapped.role
             return swapped.id
 
-    def _raises_tier(self, step: Step, risk: Risk, swapped: Element) -> bool:
-        """Whether the swapped field's automation id would raise the tier the gate approved
-        (#245): the gate read the ids of the field it resolved (#84), never this one's."""
-        if not swapped.automation_id:
-            return False
-        bound = self._binding.full_name if self._binding is not None else None
-        rescored = effective_risk(step, bound, element_ids=(swapped.automation_id,))
+    def _raises_tier(self, step: Step, risk: Risk, swapped: Element, snapshot: Snapshot) -> bool:
+        """Whether the swapped field would raise the tier the gate approved (#245): the gate
+        read the ids of the field it resolved (#84), never this one's. Scored as any resolved
+        element is, by `_settled_tier` (its id and its group's name)."""
+        rescored = self._settled_tier(
+            step, risk, swapped.automation_id, group_name(snapshot, swapped)
+        )
         return _RISK_ORDER[rescored] > _RISK_ORDER[risk]
 
     def _still_shown(  # noqa: PLR0913 - the step's state after the ask, passed once
