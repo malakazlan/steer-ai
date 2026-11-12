@@ -71,6 +71,7 @@ from steerai.orchestrator.gate import (
     open_tier,
     params_for,
     rename_counts,
+    url_proof_eligible,
     url_query_eligible,
 )
 from steerai.orchestrator.identity import (
@@ -168,6 +169,9 @@ NAVIGATION_VERIFY_S = 10.0
 """Verify deadline for a replacing `appeared` (a page replacing itself; 5.10 [v1.9]): a heavy
 page loads slower than the 3 s step deadline (Wikipedia article: over 3.5 s, under 5 s, n=1).
 Unmeasured beyond that."""
+URL_POLL_S = 0.25
+"""Between address-bar reads while an in-page expect's submit waits for its page (5.10
+[v2.79], principal item 3); each read costs 110-140 ms ([v2.48])."""
 STOP_CODES: frozenset[ErrorCode] = frozenset(
     {
         ErrorCode.APP_CRASHED,
@@ -419,7 +423,11 @@ class Session:
         self._document_url = document_url
         """The URL of the window's one top-level Document, the load signal's second rule."""
         self._url_step = False
-        """The step in flight is a Chrome search submit the address bar may prove (#148)."""
+        """The step in flight is a Chrome search submit the address bar may prove (#148,
+        widened to any expect by [v2.79])."""
+        self._url_query_step = False
+        """The step is `url_query_eligible` (its expect the replacing Document): the no-effect
+        facts are read for it only ([v2.68] scope, kept by [v2.79])."""
         self._url_before: UrlBefore | None = None
         self._foreground = foreground
         self._goal = ""
@@ -464,7 +472,7 @@ class Session:
         """When the last `type` was dispatched: the next R2/R3 step waits for a quiet page."""
         self._proof: tuple[Predicate, Verdict] | None = None
         """The step's own verified postcondition, as bound by the gate (#124)."""
-        self._url_proof: tuple[Predicate, Verdict, str] | None = None
+        self._url_proof: tuple[tuple[Predicate, ...], Verdict, str] | None = None
         """The step's expect, counted by the address bar (#148): it ticks only the subgoal whose
         condition is exactly that expect (5.10 [v2.48])."""
         self._windows_at_step: list[WindowLike] | None = None
@@ -550,7 +558,9 @@ class Session:
                     expect = self._rebuilt(step, risk, before, element_id)
                 if waited:
                     evidence["restarted"] = True
-            before_of_record, recorded = self._record(step, risk, before, decision, expect)
+            before_of_record, recorded = self._record(
+                step, risk, before, decision, expect, element_id=element_id
+            )
             action, before, retries = stage.measure(
                 "act", lambda: self._act(step, risk, before, element_id)
             )
@@ -983,6 +993,7 @@ class Session:
         gate: GateToken,
     ) -> StepResult:
         """T1 against the before of record, the label of record, the ledger outcome."""
+        started = self._monotonic()
         verdict, after = stage.measure(
             "verify", lambda: self._verify(expect, before_of_record, windows_before)
         )
@@ -997,16 +1008,19 @@ class Session:
             reason = {**verdict.evidence, "reason": "renamed_at_risk"}
             verdict = replace(verdict, holds=False, code=ErrorCode.VERIFY_TIMEOUT, evidence=reason)
         url_counted = no_effect = False
-        if self._url_step and not verdict.holds:
-            # a Chrome search submit whose title is in no frame: the address bar's query
-            # parameter is the proof, never a label (#148 design D); read once, after the
-            # verify's deadline, and shared with the no-effect facts
-            url_now = self._read_url()
-            url_counted, url_evidence = self._url_counts(step, before_of_record, after, url_now)
-            if url_counted:
-                verdict = replace(verdict, holds=True, code=None, evidence=url_evidence)
-            else:
-                verdict = replace(verdict, evidence={**verdict.evidence, **url_evidence})
+        # a widened step's proof stands in for a deadline miss only, never for a positive
+        # contradiction such as a duplicate or a failed status (hunter UA-04)
+        missed_only = self._url_query_step or verdict.code is ErrorCode.VERIFY_TIMEOUT
+        if self._url_step and not verdict.holds and missed_only:
+            # a Chrome search submit whose title is in no frame, or whose expect guessed an
+            # in-page effect: the address bar's query parameter is the proof, never a label
+            # (#148 design D, [v2.79]); read after the verify's deadline, polled up to the
+            # navigation deadline, and the last read shared with the no-effect facts
+            url_now, after, url_counted, url_evidence = self._url_polled(
+                step, before_of_record, after, started
+            )
+            verdict = _url_verdict(verdict, url_counted, url_evidence)
+            if not url_counted and self._url_query_step:
                 no_effect = self._no_effect(
                     step,
                     verdict,
@@ -1026,7 +1040,11 @@ class Session:
                     code=ErrorCode.VERIFY_FAILED,
                     evidence={**verdict.evidence, **tokens},
                 )
-            self._url_proof = (expect, verdict, str(step.params["text"])) if url_counted else None
+            # the gate's expect and the plan's own, so the step's subgoal condition, written
+            # as the plan's expect, meets it whatever the gate's rung did (principal item 5)
+            expects = (expect,) if step.expect is None else (expect, step.expect)
+            text = str(step.params["text"])
+            self._url_proof = (expects, verdict, text) if url_counted else None
         label = (
             None
             if renamed_at_risk or url_counted or no_effect
@@ -1078,23 +1096,29 @@ class Session:
             code=None if ok else (verdict.code or action.code),
         )
 
-    def _record(
+    def _record(  # noqa: PLR0913 - the step, its tier, its screen, decision and expect
         self,
         step: Step,
         risk: Risk,
         before: Snapshot,
         decision: GateDecision,
         expect: Predicate | None = None,
+        *,
+        element_id: int | None = None,
     ) -> tuple[Snapshot, bool]:
-        """The write-ahead record before any R2/R3 dispatch; (before of record, written)."""
-        self._url_step, self._url_before = False, None
+        """The write-ahead record before any R2/R3 dispatch; (before of record, written). The
+        URL proof's eligibility reads the resolved element's role, as `_act` does to choose
+        the Enter (principal item 2)."""
+        self._url_step, self._url_query_step, self._url_before = False, False, None
         if risk not in ("R2", "R3"):
             return before, False
         try:
             before_of_record = self._ledger.before_of_record(step, before)
             chosen = self._binding.to_record() if self._binding is not None else None
-            if self._url_eligible(step, expect, risk, before_of_record):
-                self._url_step = True
+            role = before.element(element_id).role if element_id is not None else None
+            narrow, wide = self._url_eligible(step, expect, risk, before_of_record, role=role)
+            if wide:
+                self._url_step, self._url_query_step = True, narrow
                 self._url_before = self._url_before_of(step)
             self._ledger.write_ahead(
                 step, before_of_record, decision, chosen=chosen, url_before=self._url_before
@@ -1451,6 +1475,7 @@ class Session:
         self._no_effect_facts = None
         self._proof = None
         self._url_proof = None
+        self._url_query_step = False
         self._scrolled = None
         self._secure_step = False
         self._sent_in_act = False
@@ -2015,15 +2040,20 @@ class Session:
         if persisted.hwnd != now.hwnd or (persisted.pid and now.pid and persisted.pid != now.pid):
             return False
         risk = effective_risk(step, element_ids=self._step_ids(step, persisted))
-        if url_before is not None and self._url_eligible(step, predicate, risk, persisted):
-            # the same proof as a live verify, on the record's digest (#148 design D item 5)
+        # the record carries a before URL only for a step eligible on its resolved role; the
+        # target's role stands for it on a resume (no element is resolved before the guard)
+        role = step.target.role if step.target is not None else None
+        narrow, eligible = self._url_eligible(step, predicate, risk, persisted, role=role)
+        if url_before is not None and eligible:
+            # the same proof as a live verify, on the record's digest (#148 design D item 5);
+            # a widened step needs a page named by the words there too ([v2.79], UA-02)
             after, text = self._read_url(), step.params.get("text")
-            if (
-                after is not None
-                and isinstance(text, str)
-                and url_before.counts(after, text)
-                and self._loaded(text, persisted, now, after, url_before) is not None
-            ):
+            kind = (
+                self._loaded(text, persisted, now, after, url_before)
+                if after is not None and isinstance(text, str) and url_before.counts(after, text)
+                else None
+            )
+            if kind is not None and (narrow or kind == "name"):
                 return True
         structural = _structural_part(predicate)
         if structural is None:
@@ -2039,18 +2069,27 @@ class Session:
         return verdict.holds and verdict.level != 3
 
     def _url_eligible(
-        self, step: Step, expect: Predicate | None, risk: Risk, before: Snapshot
-    ) -> bool:
-        """A search submit (`url_query_eligible`) in a chrome.exe window this session can read
-        the address bar of (#148 design D item 3)."""
+        self,
+        step: Step,
+        expect: Predicate | None,
+        risk: Risk,
+        before: Snapshot,
+        *,
+        role: str | None,
+    ) -> tuple[bool, bool]:
+        """(`url_query_eligible`, `url_proof_eligible`) for a submit in a chrome.exe window
+        this session can read the address bar of (#148 design D item 3, [v2.79])."""
         if self._address_bar is None or self._identify is None:
-            return False
+            return False, False
         identity = self._identify(self.hwnd)
         if identity is None or str(identity.get("image", "")).lower() != "chrome.exe":
-            return False
+            return False, False
         bound = self._binding.full_name if self._binding is not None else None
         deny = deny_tier(step, bound, self._step_ids(step, before))
-        return url_query_eligible(step, expect, risk=risk, deny=deny, goal=self._goal)
+        return (
+            url_query_eligible(step, expect, risk=risk, deny=deny, goal=self._goal),
+            url_proof_eligible(step, expect, role=role, risk=risk, deny=deny, goal=self._goal),
+        )
 
     def _read_url(self) -> str | None:
         """The task window's address bar; a failed read is no URL (the step stays unverified
@@ -2107,6 +2146,27 @@ class Session:
         value, text = self._read_url(), step.params.get("text")
         return None if value is None or not isinstance(text, str) else UrlBefore.of(value, text)
 
+    def _url_polled(
+        self, step: Step, before: Snapshot, page: Snapshot, started: float
+    ) -> tuple[str | None, Snapshot, bool, dict[str, Any]]:
+        """The address bar read until the proof counts or the navigation deadline from
+        `started` (the verify's start) runs out: at least once, and a bounded number of times
+        whatever the clock does (principal item 3). A navigation expect already waited that
+        deadline, so it reads once, as before [v2.79]. Returns the last read, the last page
+        observed, whether it counted, and its evidence."""
+        deadline = started + NAVIGATION_VERIFY_S
+        reads = int(NAVIGATION_VERIFY_S / URL_POLL_S) + 1
+        for read in range(reads):
+            url_now = self._read_url()
+            counted, evidence = self._url_counts(step, before, page, url_now)
+            if counted or read == reads - 1 or self._monotonic() >= deadline:
+                break
+            if self._monitor is not None and self._monitor.kill_requested():
+                raise _KilledError
+            self._sleep(URL_POLL_S)
+            page = self._observe()
+        return url_now, page, counted, evidence
+
     def _url_counts(
         self, step: Step, before: Snapshot, page: Snapshot, after: str | None
     ) -> tuple[bool, dict[str, Any]]:
@@ -2121,6 +2181,11 @@ class Session:
         kind = self._loaded(text, before, page, after, self._url_before)
         if kind is None:
             return False, {"detail": "no_load"}
+        if kind != "name" and not self._url_query_step:
+            # an in-page expect proven by a page titled with the words only: a GET form that
+            # carries a value to a page not named by it (an amount, a coupon) is no search
+            # result (hunter UA-05; [v2.79] residual)
+            return False, {"detail": "no_named_load"}
         return True, {"reason": "url_query", "load": kind}
 
     def _no_effect(  # noqa: PLR0913 - the step's state at the verify deadline
@@ -3036,8 +3101,8 @@ class Session:
         `url_query_title`. Nothing else is proven by it."""
         if self._url_proof is None:
             return None
-        expect, verdict, text = self._url_proof
-        if expect == condition:
+        expects, verdict, text = self._url_proof
+        if condition in expects:
             return verdict
         if isinstance(condition, TitleMatches) and same_title(condition.pattern, text):
             return replace(verdict, evidence={**verdict.evidence, "reason": "url_query_title"})
@@ -3390,6 +3455,18 @@ def _unchosen(action: ActionResult) -> bool:
     if action.skipped:
         return False
     return not any(s.label == "SelectionItemPattern.Select" for s in action.steps)
+
+
+def _url_verdict(verdict: Verdict, counted: bool, url_evidence: dict[str, Any]) -> Verdict:
+    """The step's verdict after the address bar's proof: counted, it holds with the proof's
+    evidence and the verify's miss kept as a closed token (`missed`, principal item 4; never
+    the pattern or the landmark, hunter UA-13); else the miss with the proof's detail."""
+    if not counted:
+        return replace(verdict, evidence={**verdict.evidence, **url_evidence})
+    missed = verdict.evidence.get("reason")
+    if missed in _MISSES:
+        url_evidence = {**url_evidence, "missed": missed}
+    return replace(verdict, holds=True, code=None, evidence=url_evidence)
 
 
 def _verify_deadline(expect: Predicate, step_deadline_s: float) -> float:

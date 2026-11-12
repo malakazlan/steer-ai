@@ -396,6 +396,45 @@ def url_query_eligible(
     )
 
 
+URL_PROOF_ROLES: frozenset[str] = frozenset({"Edit", "ComboBox"})
+"""5.10 [v2.79]: the fields an Enter submits a GET form from (WHATWG HTML 4.10.22.2, implicit
+submission). A Document-role composer is no form field, a Button submit with an in-page
+expect is unmeasured: both keep the expect-shape rule (principal item 2)."""
+
+
+def url_proof_eligible(  # noqa: PLR0913 - the step, its expect and the tier facts
+    step: Step,
+    expect: Predicate | None,
+    *,
+    role: str | None,
+    risk: Risk,
+    deny: Risk,
+    goal: str,
+) -> bool:
+    """Whether the address bar may prove a submit (5.10 [v2.79], amending [v2.48]): every
+    `url_query_eligible` step, and an Enter on an Edit or ComboBox composer (`role`, the
+    resolved element's) under the same tier and text rules whose expect is a lone `appeared`
+    of any role and shape naming exactly the typed text (gallery g23: an in-page result
+    guessed for a form that navigates). Never a composite or a `disappeared`, which say more
+    than the words arrived (hunter UA-01/16). The proof reads the address bar and the page,
+    never the expect. The rename rule and the no-effect scope stay on `url_query_eligible`
+    (principal item 1)."""
+    if url_query_eligible(step, expect, risk=risk, deny=deny, goal=goal):
+        return True
+    text = step.params.get("text")
+    return (
+        step.verb == "submit"
+        and role in URL_PROOF_ROLES
+        and risk == "R2"
+        and _RISK_ORDER[step.risk] <= _RISK_ORDER["R2"]
+        and _RISK_ORDER[deny] < _RISK_ORDER["R2"]
+        and isinstance(text, str)
+        and isinstance(expect, Appeared)
+        and expect.name_pattern == text
+        and verbatim_in(text, goal)
+    )
+
+
 def _reads(text: str, pattern: str) -> bool:
     """The plain words (5.13 1a [v1.3]), or the closure through lookalikes ([v2.26], #83)."""
     return _contains(_words(text), pattern) or holds(text, pattern)
