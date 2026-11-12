@@ -88,8 +88,34 @@ def test_a_plain_switch_and_a_plain_row_stay_at_their_plan_tier() -> None:
 
 
 def test_a_click_on_a_button_named_agree_is_not_raised_by_the_consent_class() -> None:
-    """Consent is a statement made by setting a state; a click keeps its own rules."""
-    assert effective_risk(_step("click", "Button", "Read the agreement")) == "R1"
+    """Consent is a statement made by setting a value; a click keeps its own rules."""
+    assert effective_risk(_step("click", "Button", "I agree")) == "R1"
+    assert effective_risk(_step("uncheck", "Button", "I agree to share my data")) == "R2"
+
+
+def test_the_consent_class_reads_a_switch_s_automation_id() -> None:
+    switch = Step(
+        id="s1",
+        subgoal="g1",
+        verb="check",
+        target=Target(role="Button", name="Terms", automation_id="agreeTerms"),
+        risk="R1",
+    )
+    assert effective_risk(switch) == "R2"
+
+
+def test_billing_reads_a_switch_s_group_name_as_a_checkbox_s() -> None:
+    """Principal blocking item 1: a switch "Auto-renew" in a "Subscription" fieldset is a
+    billing choice, as the same CheckBox is (W3-02); a "Pay" group is no billing word."""
+    switch = _step("check", "Button", "Auto-renew")
+    assert effective_risk(switch, group_name="Subscription") == "R2"
+    assert (
+        effective_risk(_step("check", "CheckBox", "Auto-renew"), group_name="Subscription") == "R2"
+    )
+    assert effective_risk(switch, group_name="Pay") == "R1"
+    assert (
+        effective_risk(_step("select", "TabItem", "Auto-renew"), group_name="Subscription") == "R1"
+    )
 
 
 # ---- a grid row: the row is the selection unit, never its same-named cell -------------------
