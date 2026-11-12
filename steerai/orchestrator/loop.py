@@ -593,9 +593,7 @@ class Session:
                 risk=risk,
                 gate=gate_result.outcome,
             )
-            if self._tree_pending is not None and verified.ok:
-                self._tree_unverified.discard(self._tree_pending)  # the click did what it said
-            return verified
+            return self._tree_settled(verified)
         except (_StepFailureError, SteerError) as failure:
             # a refusal before anything was sent, or the world model failing to observe (RN-14):
             # a result either way, with the dispatched action when there is one
@@ -2491,6 +2489,13 @@ class Session:
         result = self._semantic.execute(Action(verb="focus", element_id=element_id), before)
         self._act_evidence["focus_fallback"] = "set_focus"
         return result, before, element_id
+
+    def _tree_settled(self, result: StepResult) -> StepResult:
+        """A step whose tree click verified clears the item's mark: the click did what it said,
+        so closing it again later is a new act, not a repeat ([v2.81] rule 4)."""
+        if self._tree_pending is not None and result.ok:
+            self._tree_unverified.discard(self._tree_pending)
+        return result
 
     def _tree_click(
         self, step: Step, verb: str, before: Snapshot, element_id: int
