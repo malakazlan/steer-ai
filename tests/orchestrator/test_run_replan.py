@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,15 @@ from steerai.orchestrator.loop import TaskResult
 from steerai.orchestrator.plan_io import plan_from_bytes, plan_to_json
 from steerai.planner.contracts import DoneStep, OpenSubgoal, PlannerError, PlanOutcome, PlanRequest
 from steerai.probes.windows import WindowInfo
-from steerai.run import EXIT_BLOCKED, EXIT_DONE, EXIT_PAUSED, EXIT_STOPPED, parse_args, run
+from steerai.run import (
+    EXIT_BLOCKED,
+    EXIT_DONE,
+    EXIT_PAUSED,
+    EXIT_STOPPED,
+    ScreenRead,
+    parse_args,
+    run,
+)
 from steerai.verify.predicates import TitleMatches, WindowExists
 from tests.orchestrator.test_run import FakeLedger, World
 
@@ -167,6 +176,7 @@ class Rig:
     world: World = field(default_factory=World)
     screens: list[int] = field(default_factory=list)
     screen_error: Exception | None = None
+    kills: list[Callable[[], bool] | None] = field(default_factory=list)
     unsettled: bool = False
 
     def options(self, *extra: str) -> Any:
@@ -178,11 +188,13 @@ class Rig:
     def run(self, stdin: str, *extra: str, options: Any = None) -> tuple[int, dict[str, Any], str]:
         self.world.session = self.session  # type: ignore[assignment]  # the scripted protocol
 
-        def screen(hwnd: int) -> tuple[str, list[str]]:
+        def screen(hwnd: int, kill: Callable[[], bool] | None) -> ScreenRead:
             self.screens.append(hwnd)
+            self.kills.append(kill)
             if self.screen_error is not None and len(self.screens) > 1:
                 raise self.screen_error
-            return "YouTube - Google Chrome", ['1  Link "Drake - Video"   [0,0,10,10]']
+            lines = ['1  Link "Drake - Video"   [0,0,10,10]']
+            return ScreenRead("YouTube - Google Chrome", lines, capped=False)
 
         base = self.world.deps()
 

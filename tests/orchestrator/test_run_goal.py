@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ from steerai.run import (
     EXIT_DONE,
     EXIT_PAUSED,
     EXIT_USAGE,
+    ScreenRead,
     UsageError,
     parse_args,
     preview_lines,
@@ -119,10 +121,10 @@ def _run_goal(
 ) -> tuple[int, dict[str, Any], str]:
     calls = screen_calls if screen_calls is not None else []
 
-    def screen(hwnd: int) -> tuple[str, list[str]]:
+    def screen(hwnd: int, _kill: Callable[[], bool] | None) -> ScreenRead:
         calls.append(hwnd)
         world.calls.append("screen")
-        return "Amir Khan - Chat - Google Chrome", list(SCREEN_LINES)
+        return ScreenRead("Amir Khan - Chat - Google Chrome", list(SCREEN_LINES), capped=False)
 
     deps = world.deps().replace(screen=screen, planner=planner)
     stdout, stderr = io.StringIO(), io.StringIO()
@@ -390,8 +392,8 @@ def test_the_planner_sees_the_open_windows_of_registry_apps(tmp_path: Path) -> N
     world = World(session=FakeSession(_done(plan)))
     planner = FakePlanner(outcome)
 
-    def screen(_hwnd: int) -> tuple[str, list[str]]:
-        return "Program Manager", list(SCREEN_LINES)
+    def screen(_hwnd: int, _kill: Callable[[], bool] | None) -> ScreenRead:
+        return ScreenRead("Program Manager", list(SCREEN_LINES), capped=False)
 
     deps = world.deps().replace(
         screen=screen, planner=planner, open_windows=lambda: ["Inbox - Google Chrome"]
