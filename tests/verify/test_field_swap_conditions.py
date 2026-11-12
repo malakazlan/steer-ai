@@ -93,7 +93,7 @@ def test_a_disappeared_field_shown_under_the_other_role_has_not_gone() -> None:
     assert verdict.evidence.get("reason") == "swapped"
 
 
-def test_aswapped_field_is_found_after_the_suggestion_rows_shifted_every_id() -> None:
+def test_a_swapped_field_is_found_after_the_suggestion_rows_shifted_every_id() -> None:
     """Principal re-review item 1: Wikipedia's +17 suggestion rows move the positional ids;
     the swapped check resolves its scope on `after`, never with `before`'s ids."""
     rows: list[Row] = [(3 + i, "ListItem", f"suggestion {i}", (42, 100 + i), 1) for i in range(17)]

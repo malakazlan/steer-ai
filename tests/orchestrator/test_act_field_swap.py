@@ -32,8 +32,9 @@ def _focus(risk: str = "R0") -> Step:
     )
 
 
-def _harness(*swapped_in: Row) -> tuple[Harness, FocusLive]:
-    """The Edit is on screen; the first act finds it gone and `swapped_in` in its place."""
+def _harness(*swapped_in: Row, keep: bool = False) -> tuple[Harness, FocusLive]:
+    """The Edit is on screen; the first act finds it gone (or, with `keep`, still there) and
+    `swapped_in` beside it."""
     h = Harness()
     h.world.rows.append(EDIT)
     live = FocusLive(h.world)
@@ -42,7 +43,8 @@ def _harness(*swapped_in: Row) -> tuple[Harness, FocusLive]:
     def swaps(executor: FakeExecutor, action: Any) -> None:
         if action.element_id == EDIT[0]:
             executor.outcomes[EDIT[0]] = not_delivered(ErrorCode.ELEMENT_NOT_FOUND, "element_gone")
-            h.world.rows.remove(EDIT)
+            if not keep:
+                h.world.rows.remove(EDIT)
             h.world.rows.extend(swapped_in)
             return
         live.focused = next(r[3] for r in h.world.rows if r[0] == action.element_id)
@@ -113,24 +115,8 @@ def test_a_type_whose_field_swapped_before_any_key_types_into_the_new_field() ->
     result = h.session.run_step(step)
     assert [c[1] for c in h.physical.calls] == [EDIT[0], COMBO[0]]
     assert result.evidence.get("act_alias") == "ComboBox", result.to_dict()
-
-
-def test_a_swap_under_an_r2_step_stays_a_changed_screen() -> None:
-    """The asked identity at R2/R3 is RuntimeId and role (#89, [v2.71] R3): never an alias."""
-    h, _live = _harness(COMBO)
-    h.world.composer_value = "Ada Lovelace"
-    submit = Step(
-        id="s1",
-        subgoal="g1",
-        verb="submit",
-        target=Target(role="Edit", name="Search Wikipedia"),
-        risk="R2",
-        params={"text": "Ada Lovelace"},
-    )
-    result = h.session.run_step(submit)
-    assert result.ok is False
-    assert result.evidence.get("act_alias") is None
-    assert len(h.physical.calls) <= 1
+    assert result.ok is True, result.to_dict()
+    assert h.world.composer_value == "Ada Lovelace"
 
 
 @pytest.mark.parametrize("risk", ["R2", "R3"])
@@ -147,5 +133,40 @@ def test_the_retry_never_follows_a_swap_at_r2_or_r3(risk: str) -> None:
     session: Any = h.session
     session._act_evidence = {}
     with pytest.raises(Exception, match="screen_changed_during_act"):
-        session._retry_target(_focus(), risk, previous, now, asked)
-    assert session._retry_target(_focus(), "R0", previous, now, asked) == COMBO[0]
+        session._retry_target(
+            _focus(), risk, gate="approve", previous=previous, snapshot=now, asked=asked
+        )
+    picked = session._retry_target(
+        _focus(), "R0", gate="approve", previous=previous, snapshot=now, asked=asked
+    )
+    assert picked == COMBO[0]
+
+
+def test_a_new_twin_beside_the_asked_field_is_never_the_swap() -> None:
+    """#236 review item 2: the asked Edit still there and a new same-named Edit beside it is an
+    ambiguity, never a swap; only a gone field is followed."""
+    h, _live = _harness((52, "Edit", "Search Wikipedia", (42, 102), None), keep=True)
+    result = h.session.run_step(_focus())
+    assert result.ok is False
+    assert result.evidence["detail"] == "screen_changed_during_act"
+    assert h.physical.calls == [("click", EDIT[0], None)]
+
+
+def test_a_type_the_person_said_yes_to_never_follows_the_swap() -> None:
+    """#236 review item 1: generated text asks at R1; the yes covered the Edit the person saw
+    ([v2.71] R3), so a swap under the act stays a changed screen."""
+    h, _live = _harness(COMBO)
+    step = Step(
+        id="t1",
+        subgoal="g1",
+        verb="type",
+        target=Target(role="Edit", name="Search Wikipedia"),
+        text="Ada Lovelace",
+        text_provenance="generated",
+        risk="R1",
+    )
+    result = h.session.run_step(step)
+    assert result.gate == "confirm"
+    assert result.ok is False
+    assert result.evidence["detail"] == "screen_changed_during_act"
+    assert [c[1] for c in h.physical.calls] == [EDIT[0]]
