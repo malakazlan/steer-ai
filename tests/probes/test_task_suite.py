@@ -257,6 +257,90 @@ def test_the_planner_wrapper_records_a_refused_plan_s_boundary_reason(
     assert planner.refusals == [(2, "$.steps[0].expect", "a click names its effect in expect")]
 
 
+def test_the_planner_wrapper_keeps_the_screen_an_empty_plan_was_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#201: an empty plan is resampled once and both came back empty on g05 (2026-11-12), so
+    the cause is what the model saw. The suite keeps that screen (a fixture or public page,
+    never the person's) for `--keep`; the row carries its line count only."""
+    import steerai.probes.task_suite as suite  # noqa: PLC0415 - this test only
+    import steerai.run as run_mod  # noqa: PLC0415
+    from steerai.errors import ErrorCode  # noqa: PLC0415
+    from steerai.planner.contracts import PlannerError, PlanOutcome, PlanRequest  # noqa: PLC0415
+
+    def empty(request: PlanRequest) -> PlanOutcome:
+        raise PlannerError(ErrorCode.MODEL_ERROR, "no_steps", attempt=2)
+
+    monkeypatch.setattr(run_mod, "_planner", empty)
+    planner = suite._Planner()
+    lines = ('1  CheckBox "Remember this device"   [0,0,10,10]',)
+    with pytest.raises(PlannerError):
+        planner(PlanRequest(goal="g", screen_lines=lines, window_title="Gallery"))
+    assert planner.empty == [("Gallery", list(lines))]
+    assert planner.refusals == []
+
+
+def test_a_kept_run_writes_the_empty_plans_screen_and_the_row_keeps_no_text(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import steerai.probes.task_suite as suite  # noqa: PLC0415 - this test only
+
+    def started(task: Any, number: int, tmp: Path, planner: Any) -> dict[str, Any]:
+        planner.empty.append(("Gallery", ['1  CheckBox "Remember this device"']))
+        return {
+            "status": "error",
+            "detail": "no_steps",
+            "observed": "",
+            "opens_recorded": 0,
+            "empty_screens": suite.empty_lines(planner, 1),
+        }
+
+    monkeypatch.setattr(suite, "wait_until_idle", lambda: None)
+    monkeypatch.setattr(suite, "_started", started)
+    planner = suite._Planner()
+    planner.empty.append(("Earlier", ["1  an earlier run's screen"]))
+    row = suite.one_run(TASKS[0], 1, planner, keep=tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["np1-1-empty-1.txt"]
+    kept = (tmp_path / "np1-1-empty-1.txt").read_bytes()
+    assert kept == b'Gallery\n1  CheckBox "Remember this device"\n', "LF, on every OS"
+    assert row["empty_screens"] == [1]
+    assert "Remember" not in json.dumps(row)
+
+
+def test_a_shared_planner_keeps_only_this_runs_empty_screens(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The suite shares one `_Planner` across runs: an earlier run's screen is never this
+    run's file nor its count (principal on #240)."""
+    import steerai.probes.task_suite as suite  # noqa: PLC0415 - this test only
+    import steerai.run as run_mod  # noqa: PLC0415
+    from steerai.errors import ErrorCode  # noqa: PLC0415
+    from steerai.planner.contracts import PlannerError, PlanOutcome, PlanRequest  # noqa: PLC0415
+
+    def empty(request: PlanRequest) -> PlanOutcome:
+        raise PlannerError(ErrorCode.MODEL_ERROR, "no_steps", attempt=2)
+
+    def run(_options: Any, deps: Any, **_kw: Any) -> int:
+        with pytest.raises(PlannerError):
+            deps.planner(PlanRequest(goal="g", screen_lines=("1  now",), window_title="Now"))
+        return 1
+
+    monkeypatch.setattr(run_mod, "_planner", empty)
+    monkeypatch.setattr(run_mod, "run", run)
+
+    class Deps:
+        """Only what `_steer` replaces and the fake run reads."""
+
+        def replace(self, **changes: Any) -> SimpleNamespace:
+            return SimpleNamespace(**changes)
+
+    monkeypatch.setattr(run_mod, "_real_deps", Deps)
+    planner = suite._Planner()
+    planner.empty.append(("Earlier", ["1  a", "2  b"]))
+    row = suite._steer(TASKS[0], 2, 0x10, tmp_path, planner)
+    assert row["empty_screens"] == [1]
+
+
 def test_an_anubis_bot_check_is_an_invalid_run(monkeypatch: pytest.MonkeyPatch) -> None:
     """H4 aw1 (2026-11-11): the Arch wiki's search path lands on Anubis's "Making sure you're
     not a bot!"; a run that ends there measured nothing (as PyPI's and Cloudflare's)."""
