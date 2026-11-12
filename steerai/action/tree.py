@@ -73,21 +73,29 @@ def own_row(snapshot: Snapshot, element: Element) -> int | None:
     return height
 
 
-def _child_items_and_groups(snapshot: Snapshot, element: Element) -> list[Element]:
-    """The descendant TreeItems with area, and the Groups with area that hold one."""
+def _by_parent(snapshot: Snapshot) -> dict[int | None, list[Element]]:
     by_parent: dict[int | None, list[Element]] = {}
     for candidate in snapshot.elements:
         by_parent.setdefault(candidate.parent_id, []).append(candidate)
+    return by_parent
 
-    def holds_item(node: Element) -> bool:
-        stack = list(by_parent.get(node.id, []))
-        while stack:
-            below = stack.pop()
-            if below.role == TREE_ITEM and below.has_area:
-                return True
-            stack.extend(by_parent.get(below.id, []))
-        return False
 
+def _holds_item(
+    by_parent: dict[int | None, list[Element]], node: Element, *, with_area: bool
+) -> bool:
+    """Whether a TreeItem sits anywhere under the node (only one with area, if `with_area`)."""
+    stack = list(by_parent.get(node.id, []))
+    while stack:
+        below = stack.pop()
+        if below.role == TREE_ITEM and (below.has_area or not with_area):
+            return True
+        stack.extend(by_parent.get(below.id, []))
+    return False
+
+
+def _child_items_and_groups(snapshot: Snapshot, element: Element) -> list[Element]:
+    """The descendant TreeItems with area, and the Groups with area that hold one."""
+    by_parent = _by_parent(snapshot)
     found: list[Element] = []
     stack = list(by_parent.get(element.id, []))
     while stack:
@@ -95,7 +103,9 @@ def _child_items_and_groups(snapshot: Snapshot, element: Element) -> list[Elemen
         if not node.has_area:
             stack.extend(by_parent.get(node.id, []))
             continue
-        if node.role == TREE_ITEM or (node.role == "Group" and holds_item(node)):
+        if node.role == TREE_ITEM or (
+            node.role == "Group" and _holds_item(by_parent, node, with_area=True)
+        ):
             found.append(node)
             continue
         stack.extend(by_parent.get(node.id, []))
@@ -105,15 +115,17 @@ def _child_items_and_groups(snapshot: Snapshot, element: Element) -> list[Elemen
 def own_hit_ids(snapshot: Snapshot, element: Element) -> frozenset[tuple[int, ...]]:
     """A tree item's hit-test acceptance set ([v2.81], hunter TE-01): its own RuntimeId and
     those of its descendants outside its child items, never an acting control nor anything
-    inside one (a Delete button the page left in the row, its Text included)."""
-    children: dict[int | None, list[Element]] = {}
-    for candidate in snapshot.elements:
-        children.setdefault(candidate.parent_id, []).append(candidate)
+    inside one (a Delete button the page left in the row, its Text included), nor the Group that
+    holds the child items: it is the children's list, a point on it is on a child's line (#235).
+    A child item with no area still makes its Group the list's: leaving it out fails closed."""
+    children = _by_parent(snapshot)
     ids: set[tuple[int, ...]] = {element.runtime_id} if element.runtime_id else set()
     stack = list(children.get(element.id, []))
     while stack:
         node = stack.pop()
         if node.role == TREE_ITEM or node.role in ACTING_ROLES:
+            continue
+        if node.role == "Group" and _holds_item(children, node, with_area=False):
             continue
         if node.runtime_id:
             ids.add(node.runtime_id)
