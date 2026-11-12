@@ -292,16 +292,46 @@ def test_a_kept_run_writes_the_empty_plans_screen_and_the_row_keeps_no_text(
             "detail": "no_steps",
             "observed": "",
             "opens_recorded": 0,
-            "empty_screens": suite.empty_lines(planner, 0),
+            "empty_screens": suite.empty_lines(planner, 1),
         }
 
     monkeypatch.setattr(suite, "wait_until_idle", lambda: None)
     monkeypatch.setattr(suite, "_started", started)
-    row = suite.one_run(TASKS[0], 1, suite._Planner(), keep=tmp_path)
+    planner = suite._Planner()
+    planner.empty.append(("Earlier", ["1  an earlier run's screen"]))
+    row = suite.one_run(TASKS[0], 1, planner, keep=tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["np1-1-empty-1.txt"]
+    kept = (tmp_path / "np1-1-empty-1.txt").read_bytes()
+    assert kept == b'Gallery\n1  CheckBox "Remember this device"\n', "LF, on every OS"
     assert row["empty_screens"] == [1]
-    kept = (tmp_path / "np1-1-empty-1.txt").read_text(encoding="utf-8")
-    assert kept == 'Gallery\n1  CheckBox "Remember this device"\n'
     assert "Remember" not in json.dumps(row)
+
+
+def test_a_shared_planner_keeps_only_this_runs_empty_screens(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The suite shares one `_Planner` across runs: an earlier run's screen is never this
+    run's file nor its count (principal on #240)."""
+    import steerai.probes.task_suite as suite  # noqa: PLC0415 - this test only
+    import steerai.run as run_mod  # noqa: PLC0415
+    from steerai.errors import ErrorCode  # noqa: PLC0415
+    from steerai.planner.contracts import PlannerError, PlanOutcome, PlanRequest  # noqa: PLC0415
+
+    def empty(request: PlanRequest) -> PlanOutcome:
+        raise PlannerError(ErrorCode.MODEL_ERROR, "no_steps", attempt=2)
+
+    def run(_options: Any, deps: Any, **_kw: Any) -> int:
+        with pytest.raises(PlannerError):
+            deps.planner(PlanRequest(goal="g", screen_lines=("1  now",), window_title="Now"))
+        return 1
+
+    monkeypatch.setattr(run_mod, "_planner", empty)
+    monkeypatch.setattr(run_mod, "run", run)
+    monkeypatch.setattr(run_mod, "_real_deps", lambda: run_mod.Deps(*([None] * 5)))
+    planner = suite._Planner()
+    planner.empty.append(("Earlier", ["1  a", "2  b"]))
+    row = suite._steer(TASKS[0], 2, 0x10, tmp_path, planner)
+    assert row["empty_screens"] == [1]
 
 
 def test_an_anubis_bot_check_is_an_invalid_run(monkeypatch: pytest.MonkeyPatch) -> None:

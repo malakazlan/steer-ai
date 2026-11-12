@@ -1442,8 +1442,9 @@ def one_run(task: Task, number: int, planner: _Planner, keep: Path | None = None
         if keep is not None:
             for index, (title, lines) in enumerate(planner.empty[empty_before:], start=1):
                 text = "".join(line + "\n" for line in [title, *lines])
-                (keep / f"{task.task_id}-{number}-empty-{index}.txt").write_text(
-                    text, encoding="utf-8"
+                # LF on every OS; a lone surrogate from UIA is escaped, never a suite crash
+                (keep / f"{task.task_id}-{number}-empty-{index}.txt").write_bytes(
+                    text.encode("utf-8", errors="backslashreplace")
                 )
             # diagnosis only: the plans and trace of a fixture goal, into a local folder
             for kept in [*tmp.glob("*.plan*.json"), tmp / "trace.jsonl"]:
