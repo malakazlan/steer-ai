@@ -153,9 +153,11 @@ def pinned_twin(
     pinned: Mapping[PinKey, tuple[int, ...]],
     value_of: ValueOf | None = None,
 ) -> Element | None:
-    """The one twin the pin names in this window (D-150 v2 item 4); None when the matches are
-    no twin set, nothing is pinned, or the pin names neither."""
-    if not twin_set(matches, snapshot, value_of):
+    """The one twin the pin names in this window (D-150 v2 item 4), for copies and for a named
+    pair (TW-45; the `value` condition reads the field the person chose and the verified type
+    pinned, packet h4-2026-11-11 round 2 item 6); None when the matches are neither, nothing is
+    pinned, or the pin names neither."""
+    if not twin_set(matches, snapshot, value_of) and not named_pair(matches, snapshot):
         return None
     pin = pinned.get(pin_key(snapshot.hwnd, matches[0].role, matches[0].name))
     found = [e for e in matches if pin and e.runtime_id == pin]

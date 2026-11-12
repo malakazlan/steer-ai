@@ -298,3 +298,51 @@ def test_an_offscreen_chosen_field_is_scrolled_into_view_never_substituted() -> 
     assert result.evidence["twin"] == "chosen"
     assert live.focused == BODY.runtime_id
     assert len(_which_asks(h)) == 1
+
+
+# ---- conditions over a named pair (principal item 6; H5 ub1: precondition_unmet 2/3) ---------
+
+
+def test_a_value_condition_reads_the_pinned_field_of_a_pair() -> None:
+    """The verified type pinned the chosen field; the `value` condition reads that one."""
+    from steerai.verify.predicates import FieldValue  # noqa: PLC0415 - this test only
+
+    h, page, _live = _pair_harness(answer="2")
+    assert h.session.run_step(_focus()).ok is True
+    assert h.session.run_step(_type()).ok is True
+    condition = FieldValue(role="Edit", name_pattern="Quick search", text=QUERY)
+    assert h.session._holds_now(condition, page.observe(0x10)) is True
+
+
+def test_a_value_condition_reads_the_chosen_field_before_any_pin() -> None:
+    """A focus asked and chose; nothing typed yet: the choice is the key (pins first, then it)."""
+    from steerai.verify.predicates import FieldValue  # noqa: PLC0415
+
+    h, page, live = _pair_harness(answer="2")
+    assert h.session.run_step(_focus()).ok is True
+    live.values[BODY.runtime_id] = QUERY
+    condition = FieldValue(role="Edit", name_pattern="Quick search", text=QUERY)
+    assert h.session._pins == {}
+    assert h.session._holds_now(condition, page.observe(0x10)) is True
+
+
+def test_a_value_condition_over_a_pair_with_no_choice_is_ambiguous() -> None:
+    """A resume has no choice (never in the record): the condition stays ambiguous."""
+    from steerai.verify.predicates import FieldValue  # noqa: PLC0415
+
+    h, page, live = _pair_harness(answer="2")
+    live.values[BODY.runtime_id] = QUERY
+    condition = FieldValue(role="Edit", name_pattern="Quick search", text=QUERY)
+    assert h.session._holds_now(condition, page.observe(0x10)) is False
+
+
+def test_a_state_condition_over_a_pair_stays_ambiguous() -> None:
+    """State verbs never ask on a pair, so a `state` condition never reads a choice."""
+    from steerai.world.twins import named_pair, pinned_twin  # noqa: PLC0415
+
+    page = Page(top=HEADER, bottom=BODY)
+    snapshot = page.observe(0x10)
+    pair = [e for e in snapshot.elements if e.name == "Quick search"]
+    assert named_pair(pair, snapshot)
+    pins = {KEY: BODY.runtime_id}
+    assert pinned_twin(pair, snapshot, pins) is not None

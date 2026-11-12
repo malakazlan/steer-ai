@@ -1753,6 +1753,12 @@ class Session:
             return self._picked(found, "focused")
         raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target")
 
+    @property
+    def _pins_and_choices(self) -> Mapping[PinKey, tuple[int, ...]]:
+        """The fields a condition over twins reads: the verified type's pin, else the person's
+        choice on a named pair (principal item 6: pins first, then the choice)."""
+        return {**self._chosen, **self._pins}
+
     def _chosen_of_pair(self, step: Step, snapshot: Snapshot, matches: list[Element]) -> int:
         """The field of a named pair the person chose: a verified type's pin or the task's
         earlier choice on this name (then no ask; a choice whose field is gone while the pair
@@ -2477,7 +2483,7 @@ class Session:
             live=self._live,
             windows=self._windows() if self._windows else None,
             windows_before=windows_before,
-            pinned=self._pins,
+            pinned=self._pins_and_choices,
             deadline_s=_verify_deadline(expect, self._verify_deadline_s),
             monotonic=self._monotonic,
             sleep=self._sleep,
@@ -2878,7 +2884,9 @@ class Session:
         twinned, patternless, unreadable (a value read empty included: T1 reads an unreadable
         value as empty) or secure keeps the tick."""
         try:
-            verdict = evaluate(leaf, snapshot, snapshot, live=self._live, pinned=self._pins)
+            verdict = evaluate(
+                leaf, snapshot, snapshot, live=self._live, pinned=self._pins_and_choices
+            )
         except (SteerError, ValueError):
             return False
         return not verdict.holds and verdict.evidence.get("reason") in _CONTRADICTIONS
@@ -2988,7 +2996,7 @@ class Session:
                 live=self._live,
                 windows=self._windows() if self._windows else None,
                 windows_before=list(self._windows()) if self._windows else None,
-                pinned=self._pins,
+                pinned=self._pins_and_choices,
             ).holds
         except (SteerError, ValueError):
             return False
@@ -3048,7 +3056,7 @@ class Session:
                 live=self._live,
                 windows=self._windows() if self._windows else None,
                 windows_before=self._windows_at_step,
-                pinned=self._pins,
+                pinned=self._pins_and_choices,
             )
         except (SteerError, ValueError):
             return None
