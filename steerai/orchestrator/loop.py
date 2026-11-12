@@ -232,13 +232,15 @@ class TaskLedger(Protocol):
     def admit(self, key: str, decision: GateDecision | None = None) -> str: ...
     def outcome_of(self, key: str) -> str | None: ...
     def closed_by(self, key: str) -> str | None: ...
-    def write_ahead(
+    def write_ahead(  # noqa: PLR0913 - the record's optional parts, by keyword
         self,
         step: Step,
         before: Snapshot,
         decision: GateDecision | None,
+        *,
         chosen: dict[str, Any] | None = None,
         url_before: UrlBefore | None = None,
+        url_narrow: bool | None = None,
     ) -> WriteAheadRecord: ...
     def mark(self, step: Step, phase: Any) -> None: ...
     def record_outcome(self, step: Step, outcome: str) -> None: ...
@@ -1130,7 +1132,12 @@ class Session:
                 self._url_step, self._url_query_step = True, narrow
                 self._url_before = self._url_before_of(step)
             self._ledger.write_ahead(
-                step, before_of_record, decision, chosen=chosen, url_before=self._url_before
+                step,
+                before_of_record,
+                decision,
+                chosen=chosen,
+                url_before=self._url_before,
+                url_narrow=narrow if self._url_before is not None else None,
             )
         except LedgerError as exc:
             raise _StepFailureError(ErrorCode.GATE_BLOCKED, _wal_detail(exc)) from exc
@@ -2032,21 +2039,15 @@ class Session:
         except _StepFailureError:
             return record.phase
         expect = self._gate.predicate_for(step, composer_id=composer_id, bound=self._binding)
-        if expect is not None and self._effect_present(
-            expect, record.before, before, step, record.url_before
-        ):
+        if expect is not None and self._effect_present(expect, before, step, record):
             self._ledger.record_outcome(step, "done_already")
             return "done"
         return record.phase
 
     def _effect_present(
-        self,
-        predicate: Predicate,
-        persisted: Snapshot,
-        now: Snapshot,
-        step: Step,
-        url_before: UrlBefore | None = None,
+        self, predicate: Predicate, now: Snapshot, step: Step, record: WriteAheadRecord
     ) -> bool:
+        persisted, url_before = record.before, record.url_before
         if persisted.hwnd != now.hwnd or (persisted.pid and now.pid and persisted.pid != now.pid):
             return False
         risk = effective_risk(step, element_ids=self._step_ids(step, persisted))
@@ -2054,6 +2055,9 @@ class Session:
         # target's role stands for it on a resume (no element is resolved before the guard)
         role = step.target.role if step.target is not None else None
         narrow, eligible = self._url_eligible(step, predicate, risk, persisted, role=role)
+        # the bit of record and the bit computed now must both allow the narrow proof (#231):
+        # a rebuilt expect never widens it alone; a record from before the bit keeps today's
+        narrow = narrow and record.url_narrow is not False
         if url_before is not None and eligible:
             # the same proof as a live verify, on the record's digest (#148 design D item 5);
             # a widened step needs a page named by the words there too ([v2.79], UA-02)

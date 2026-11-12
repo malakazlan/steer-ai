@@ -110,6 +110,10 @@ class WriteAheadRecord:
     so a resume never dispatches to another row (PT-05)."""
     url_before: UrlBefore | None = field(default=None, repr=False)
     """A Chrome search submit's before URL as a digest and one bit (#148 design D item 5)."""
+    url_narrow: bool | None = field(default=None, repr=False)
+    """Whether the step was `url_query_eligible` when the record was written (#231): a resume
+    takes it with the bit it computes again, so neither side widens the proof alone. None in
+    a record written before the bit was kept."""
 
     def to_json(self) -> str:
         return json.dumps(
@@ -130,6 +134,7 @@ class WriteAheadRecord:
                         "url_before": {
                             "digest": self.url_before.digest,
                             "carried": self.url_before.carried,
+                            **({} if self.url_narrow is None else {"narrow": self.url_narrow}),
                         }
                     }
                 ),
@@ -157,6 +162,7 @@ class WriteAheadRecord:
                 before=snapshot_from_json(json.dumps(payload["before"])),
                 written_at=float(payload["written_at"]),
                 url_before=_url_before(payload.get("url_before")),
+                url_narrow=_url_narrow(payload.get("url_before")),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"write-ahead record is malformed: {type(exc).__name__}") from exc
@@ -171,6 +177,16 @@ def _url_before(raw: object) -> UrlBefore | None:
     if not isinstance(digest, str) or not _SHA256.fullmatch(digest) or type(carried) is not bool:
         raise ValueError("url_before is not a digest and a flag")
     return UrlBefore(digest=digest, carried=carried)
+
+
+def _url_narrow(raw: object) -> bool | None:
+    """The record's `url_query_eligible` bit; absent in a record written before #231."""
+    if not isinstance(raw, dict) or "narrow" not in raw:
+        return None
+    narrow = raw["narrow"]
+    if type(narrow) is not bool:
+        raise ValueError("url_before narrow is not a flag")
+    return narrow
 
 
 def _digest(text: str) -> str:
@@ -573,13 +589,15 @@ class Ledger:
     def _record_path(self, step_id: str) -> Path:
         return self._dir / f"{_digest(step_id)}.wal"
 
-    def write_ahead(
+    def write_ahead(  # noqa: PLR0913 - the record's optional parts, by keyword
         self,
         step: Step,
         before: Snapshot,
         decision: GateDecision | None,
+        *,
         chosen: dict[str, Any] | None = None,
         url_before: UrlBefore | None = None,
+        url_narrow: bool | None = None,
     ) -> WriteAheadRecord:
         """Consume the key and persist the before snapshot, before any R2/R3 action; a failed
         write means no action and no consumed key."""
@@ -598,6 +616,7 @@ class Ledger:
             written_at=time.time(),
             chosen=chosen,
             url_before=url_before,
+            url_narrow=url_narrow,
         )
         text = record.to_json()
         if len(text.encode()) > self._max_record_bytes:
