@@ -71,9 +71,9 @@ def test_expand_and_collapse_run_on_the_semantic_expand_collapse_path(verb: str)
     assert verb in WIDGET_VERBS
 
 
-def test_each_verb_maps_to_a_button_and_its_wanted_value() -> None:
-    assert state_roles("expand") == frozenset({"Button"})
-    assert state_roles("collapse") == frozenset({"Button"})
+def test_each_verb_maps_to_a_button_or_tree_item_and_its_wanted_value() -> None:
+    assert state_roles("expand") == frozenset({"Button", "TreeItem"})
+    assert state_roles("collapse") == frozenset({"Button", "TreeItem"})
     assert STATE_WANTED["expand"] == "expanded"
     assert STATE_WANTED["collapse"] == "collapsed"
 
@@ -85,7 +85,7 @@ def test_the_verbs_are_raised_to_the_r1_floor(verb: str) -> None:
 
 @pytest.mark.parametrize("verb", ["expand", "collapse"])
 @pytest.mark.parametrize(
-    "role", ["TreeItem", "ComboBox", "MenuItem", "SplitButton", "CheckBox", "TabItem", "Group"]
+    "role", ["ComboBox", "MenuItem", "SplitButton", "CheckBox", "TabItem", "Group"]
 )
 def test_the_verbs_on_another_role_are_refused(verb: str, role: str) -> None:
     with pytest.raises(ValueError, match="targets a Button"):
@@ -144,7 +144,6 @@ def test_a_plan_file_step_decodes_at_the_r1_floor(verb: str) -> None:
         ({"verb": "collapse", "path": "physical"}, "$.steps[0].path"),
         ({"preapproved_by_request": True}, "$.steps[0].preapproved_by_request"),
         ({"verb": "collapse", "preapproved_by_request": True}, "$.steps[0].preapproved_by_request"),
-        ({"target": {"role": "TreeItem", "name": "Shipping questions"}}, "$.steps[0].target.role"),
         ({"target": {"role": "ComboBox", "name": "Shipping questions"}}, "$.steps[0].target.role"),
         ({"target": {"role": "MenuItem", "name": "Shipping questions"}}, "$.steps[0].target.role"),
         (

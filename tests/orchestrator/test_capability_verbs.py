@@ -42,15 +42,23 @@ def test_the_role_ceilings_are_the_measured_ones() -> None:
     assert state_roles("check") == frozenset({"CheckBox", "Button"})
     assert state_roles("uncheck") == frozenset({"CheckBox", "Button"})
     assert state_roles("select") == frozenset({"TabItem", "RadioButton", "ListItem", "DataItem"})
-    assert state_roles("expand") == frozenset({"Button"})
+    assert state_roles("expand") == frozenset({"Button", "TreeItem"})
+    assert state_roles("collapse") == frozenset({"Button", "TreeItem"})
+    for verb in ("check", "select"):
+        assert "TreeItem" not in state_roles(verb), "a tree item is chosen by click ([v2.81])"
     for verb in ("check", "select", "expand"):
-        assert "TreeItem" not in state_roles(verb), "Expand on an ARIA tree item does nothing"
         assert "MenuItem" not in state_roles(verb), "menu checkboxes and radios are CheckBox/Radio"
 
 
 @pytest.mark.parametrize(
     ("verb", "role"),
-    [("check", "Button"), ("uncheck", "Button"), ("select", "DataItem")],
+    [
+        ("check", "Button"),
+        ("uncheck", "Button"),
+        ("select", "DataItem"),
+        ("expand", "TreeItem"),
+        ("collapse", "TreeItem"),
+    ],
 )
 def test_a_measured_capability_target_loads(verb: str, role: str) -> None:
     plan = plan_from_bytes(_plan_bytes(verb, role, "Dark mode"))
@@ -58,7 +66,7 @@ def test_a_measured_capability_target_loads(verb: str, role: str) -> None:
     assert plan.steps[0].target.role == role
 
 
-@pytest.mark.parametrize(("verb", "role"), [("expand", "TreeItem"), ("check", "MenuItem")])
+@pytest.mark.parametrize(("verb", "role"), [("select", "TreeItem"), ("check", "MenuItem")])
 def test_an_unmeasured_capability_target_is_refused_at_its_path(verb: str, role: str) -> None:
     with pytest.raises(PlanError) as refused:
         plan_from_bytes(_plan_bytes(verb, role, "Projects"))

@@ -302,7 +302,7 @@ def test_check_is_idempotent_and_uncheck_toggles_once(fast_clock: None) -> None:
 def test_expand_and_select_are_verified_by_their_state(fast_clock: None) -> None:
     handle = FakeHandle(patterns={UIA_EXPAND, UIA_SELECTION_ITEM})
     expanded = _executor().execute(
-        Action(verb="expand", element_id=1), _snapshot(handle, role="TreeItem")
+        Action(verb="expand", element_id=1), _snapshot(handle, role="Button")
     )
     selected = _executor().execute(
         Action(verb="select", element_id=1), _snapshot(handle, role="ListItem")
@@ -750,7 +750,7 @@ def test_expand_on_a_leaf_node_is_refused_before_any_call(fast_clock: None) -> N
 def test_collapse_on_a_partially_expanded_node_sends_and_verifies(fast_clock: None) -> None:
     handle = FakeHandle(patterns={UIA_EXPAND}, expanded=2)
     result = _executor().execute(
-        Action(verb="collapse", element_id=1), _snapshot(handle, role="TreeItem")
+        Action(verb="collapse", element_id=1), _snapshot(handle, role="Button")
     )
     assert handle.calls == ["collapse"]
     assert result.delivery is Delivery.DELIVERED_VERIFIED
@@ -759,13 +759,13 @@ def test_collapse_on_a_partially_expanded_node_sends_and_verifies(fast_clock: No
 def test_collapse_is_verified_and_idempotent(fast_clock: None) -> None:
     handle = FakeHandle(patterns={UIA_EXPAND}, expanded=1)
     collapsed = _executor().execute(
-        Action(verb="collapse", element_id=1), _snapshot(handle, role="TreeItem")
+        Action(verb="collapse", element_id=1), _snapshot(handle, role="Button")
     )
     assert handle.expanded == 0
     assert collapsed.steps[0].label == "ExpandCollapsePattern.Collapse"
     assert collapsed.delivery is Delivery.DELIVERED_VERIFIED
     again = _executor().execute(
-        Action(verb="collapse", element_id=1), _snapshot(handle, role="TreeItem")
+        Action(verb="collapse", element_id=1), _snapshot(handle, role="Button")
     )
     assert again.skipped is True
     assert again.ok is True

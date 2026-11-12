@@ -90,6 +90,8 @@ class FakeInput:
     """Raise InjectionError on this 1-based burst."""
     after_burst: Callable[[FakeInput, int], None] | None = None
     """Hook after each burst (1-based index) to flip foreground, focus or modifiers."""
+    after_move: Callable[[int, int], None] | None = None
+    """Hook after each cursor move: the page moves the target under the pointer."""
     moves: list[tuple[int, int]] = field(default_factory=list)
     clicks: list[tuple[int, int]] = field(default_factory=list)
     bursts: list[str] = field(default_factory=list)
@@ -165,6 +167,8 @@ class FakeInput:
 
     def move_cursor(self, x: int, y: int) -> None:
         self.moves.append((x, y))
+        if self.after_move is not None:
+            self.after_move(x, y)
 
     def cursor_pos(self) -> tuple[int, int]:
         if self.cursor_override is not None:

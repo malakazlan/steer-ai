@@ -61,11 +61,15 @@ class Element:
 def outermost(matches: Sequence[Element], elements: Sequence[Element]) -> list[Element]:
     """The matches that are not inside another match: a grid row and its cell carry one name as
     two DataItems (gallery, Chrome 156); the cell is part of the row, and the row is what a
-    `select` acts on and a `selected` condition reads."""
+    `select` acts on and a `selected` condition reads. A TreeItem inside a same-named TreeItem
+    is another item (a folder `src` in a folder `src`), never folded ([v2.81], TE-02); the check
+    skips every TreeItem match, which is the same while the matches share one role."""
     by_id = {e.id: e for e in elements}
     ids = {e.id for e in matches}
 
     def nested(element: Element) -> bool:
+        if element.role == "TreeItem":
+            return False
         parent = element.parent_id
         while parent is not None:
             if parent in ids:

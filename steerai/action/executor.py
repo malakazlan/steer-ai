@@ -40,6 +40,7 @@ from steerai.action.keyboard import GateApproval
 from steerai.action.options import OptionItem, OptionSource, clean_option, option_key
 from steerai.action.readback import Readback, poll_found, poll_state, poll_until
 from steerai.action.sanitize import normalise_newlines, sanitize_value
+from steerai.action.tree import ACTING_ROLES, TREE_ITEM, expand_decision, own_descendants
 from steerai.errors import ErrorCode, SteerError
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot, normalise_name
@@ -143,6 +144,8 @@ class Executor:
                 action = replace(action, element_id=link.id)
                 element, handle = self._admission.admit(action, snapshot)
             call.secure = element.secure
+            if action.verb in ("expand", "collapse") and element.role == TREE_ITEM:
+                return self._tree_expand(action, handle)
             done = _DISPATCH[action.verb](self, action, handle, call)
             if link is None:
                 return done
@@ -258,6 +261,18 @@ class Executor:
             evidence={"detail": "unchanged"},
         )
 
+    def _tree_expand(self, action: Action, handle: Any) -> ActionResult:
+        """A tree item ([v2.81] rule 2): Chrome ignores Expand on one (measured 3/3), so the
+        state is read and the step is either in state or refused with nothing sent; the loop
+        clicks it once (`expand_by_click`). Never an Expand, which a later Chrome might honour
+        and the click would then undo."""
+        pattern = self._uia.pattern(handle, UIA_EXPAND_COLLAPSE_PATTERN, "ExpandCollapsePattern")
+        decision = expand_decision(int(pattern.CurrentExpandCollapseState), action.verb)
+        if decision == "in_state":
+            return ActionResult.already_satisfied(action.verb)
+        detail = "expand_by_click" if decision == "click" else decision
+        raise RefusalError(ErrorCode.ELEMENT_NOT_ACTIONABLE, detail)
+
     def _expand(self, action: Action, handle: Any, call: Call) -> ActionResult:
         return self._expand_to(action, handle, call, _EXPANDED)
 
@@ -358,23 +373,6 @@ class Executor:
         return _finish(call, _poll_postcondition(action.postcondition))
 
 
-_ACTING_ROLES = frozenset(
-    {
-        "Hyperlink",
-        "Button",
-        "SplitButton",
-        "MenuItem",
-        "CheckBox",
-        "RadioButton",
-        "TabItem",
-        "ComboBox",
-        "Edit",
-    }
-)
-"""Roles a row may hold that act on their own: more than the one link means the row is not
-just a link (a "Delete chat" button inside it), so the click stays refused."""
-
-
 _FALLBACK_ROLES = frozenset(
     {"Button", "SplitButton", "Hyperlink", "MenuItem", "TabItem", "TreeItem"}
 )
@@ -402,19 +400,21 @@ def _under(snapshot: Snapshot, ancestor: Element) -> list[Element]:
 def physical_click_target(snapshot: Snapshot, element: Element) -> bool:
     """Whether a physical click may stand in for a refused Invoke (5.9 [v2.50], #149): a plain
     acting control with no acting descendant, since the physical hit test accepts any
-    descendant and a row would press the Delete button it holds (#84/#124)."""
+    descendant and a row would press the Delete button it holds (#84/#124). A tree item's
+    child items are not its descendants here: what they hold is theirs ([v2.81], TE-10)."""
     return element.role in _FALLBACK_ROLES and not any(
-        e.role in _ACTING_ROLES for e in _under(snapshot, element)
+        e.role in ACTING_ROLES for e in own_descendants(snapshot, element)
     )
 
 
 def click_point(snapshot: Snapshot, element: Element) -> Element:
     """Where the physical click lands: a labelled role's own label (its first Text descendant
-    named exactly like it), else the element itself."""
+    named exactly like it, never one inside a child item, [v2.81] TE-06), else the element
+    itself."""
     if element.role not in LABELLED_ROLES:
         return element
     wanted = normalise_name(element.name)
-    for candidate in _under(snapshot, element):
+    for candidate in own_descendants(snapshot, element):
         if (
             candidate.role == "Text"
             and candidate.has_area
@@ -428,7 +428,7 @@ def row_link(snapshot: Snapshot, row: Element) -> Element | None:
     """The row's one acting descendant when it is a Hyperlink with the row's exact name and no
     automation id: the gate judged the row's name and id, so the link carries nothing it did
     not judge (#84). Anything else is None: the click stays refused."""
-    acting = [e for e in _under(snapshot, row) if e.role in _ACTING_ROLES]
+    acting = [e for e in _under(snapshot, row) if e.role in ACTING_ROLES]
     if len(acting) != 1 or acting[0].role != "Hyperlink":
         return None
     link = acting[0]

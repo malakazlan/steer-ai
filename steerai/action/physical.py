@@ -52,6 +52,7 @@ from steerai.action.sanitize import (
     normalise_newlines,
     sanitize_text,
 )
+from steerai.action.tree import TREE_ITEM, own_hit_ids, own_row
 from steerai.errors import ErrorCode, SteerError
 from steerai.probes import win_input, windows
 from steerai.probes.uia_snapshot import UiaClient
@@ -259,8 +260,11 @@ class _Target:
     point: tuple[int, int]
     visible: Box
     subtree: frozenset[tuple[int, ...]]
-    """RuntimeIds of the element and its snapshot descendants: the hit-test acceptance set."""
+    """RuntimeIds of the element and its snapshot descendants: the hit-test acceptance set (a
+    tree item's: itself and its plain descendants outside its child items, [v2.81] TE-01)."""
     ancestors: frozenset[tuple[int, ...]]
+    row: int | None = None
+    """A tree item's own-row height from its top ([v2.81]); None aims at the centre."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,15 +334,22 @@ class PhysicalExecutor:
             raise RefusalError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "offscreen")
         live = sample_stable_rect(lambda: _rect(handle))
         visible = _visible_part(live, inputs.window_rect(snapshot.hwnd), inputs.screen_rect())
-        if visible is None:
+        row = own_row(snapshot, element)
+        point = None if visible is None else _aim(live, visible, row)
+        if visible is None or point is None:
             raise RefusalError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "clipped")
         target = _Target(
             element=element,
             handle=handle,
-            point=centre_of(visible),
+            point=point,
             visible=visible,
-            subtree=_subtree_ids(snapshot, element),
+            subtree=(
+                own_hit_ids(snapshot, element)
+                if element.role == TREE_ITEM
+                else _subtree_ids(snapshot, element)
+            ),
             ancestors=_ancestor_ids(snapshot, element),
+            row=row,
         )
         if action.verb != "press":
             # a chord lands on the focused element, never under the pointer
@@ -400,10 +411,9 @@ class PhysicalExecutor:
             raise RefusalError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "cursor_mismatch")
         evidence["cursor_at"] = list(cursor)
         # Last look before the button goes down: still the same rectangle, still the target.
-        visible = _visible_part(
-            _rect(target.handle), inputs.window_rect(snapshot.hwnd), inputs.screen_rect()
-        )
-        if visible is None or centre_of(visible) != target.point:
+        live = _rect(target.handle)
+        visible = _visible_part(live, inputs.window_rect(snapshot.hwnd), inputs.screen_rect())
+        if visible is None or _aim(live, visible, target.row) != target.point:
             raise RefusalError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "target_moved")
         self._hit_test(target, snapshot.hwnd, moved_detail="target_moved")
         call.send("mouse.click", lambda: inputs.click_at(*target.point))
@@ -609,6 +619,16 @@ _DISPATCH: dict[
 def _rect(handle: Any) -> Box:
     rect = handle.CurrentBoundingRectangle
     return int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
+
+
+def _aim(live: Box, visible: Box, row: int | None) -> tuple[int, int] | None:
+    """The click point: the visible part's centre, or for a tree item with an own row
+    ([v2.81]) the middle of that row on the live rectangle, horizontally the visible centre;
+    None when that row lies outside the visible part (TE-08)."""
+    if row is None:
+        return centre_of(visible)
+    point = ((visible[0] + visible[2]) // 2, live[1] + row // 2)
+    return point if visible[1] <= point[1] < visible[3] else None
 
 
 def _within(cursor: tuple[int, int], point: tuple[int, int], tolerance: int, box: Box) -> bool:
