@@ -82,6 +82,18 @@ def _out(row: dict[str, object]) -> None:
     sys.stdout.flush()
 
 
+def _warm(client: UiaClient, hwnd: int) -> None:
+    """Chrome builds the page's accessibility tree on the first UIA access: fetch until three
+    node counts agree (the product's warm-up, 5.1 [v0.6]), at most 10 s."""
+    counts: list[int] = []
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        counts.append(len(client.cached_tree(hwnd).nodes))
+        if len(counts) >= 3 and counts[-1] == counts[-2] == counts[-3] and counts[-1] > 60:
+            return
+        time.sleep(0.25)
+
+
 def _open(url: str) -> tuple[subprocess.Popen[bytes], Path, int]:
     tmp = Path(tempfile.mkdtemp(prefix="steer-caps-"))
     port = _free_port()
@@ -96,7 +108,9 @@ def gallery() -> None:
     with PageServer({"/page.html": page_html()}) as server:
         proc, tmp, hwnd = _open(f"http://127.0.0.1:{server.port}/page.html")
         try:
-            tree = UiaClient().cached_tree(hwnd)
+            client = UiaClient()
+            _warm(client, hwnd)
+            tree = client.cached_tree(hwnd)
             for element in elements_from_nodes(tree.nodes):
                 if element.name.strip() in GALLERY_NAMES:
                     _out({"name": element.name.strip(), "role": element.role, "caps": element.caps})
@@ -112,6 +126,7 @@ def cost(runs: int) -> None:
         proc, tmp, hwnd = _open(url)
         try:
             client = UiaClient()
+            _warm(client, hwnd)
             timings: dict[str, list[float]] = {"old": [], "full": []}
             nodes = 0
             for _ in range(runs):

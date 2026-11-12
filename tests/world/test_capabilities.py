@@ -51,12 +51,22 @@ def _element(**kw: object) -> Element:
 def test_capabilities_become_closed_tokens_in_a_fixed_order(
     caps: Caps, expected: tuple[str, ...]
 ) -> None:
-    assert tokens(caps) == expected
+    assert tokens(caps, "Edit") == expected
+
+
+@pytest.mark.parametrize(
+    "role", ["CheckBox", "RadioButton", "Button", "List", "DataGrid", "ComboBox", "Hyperlink"]
+)
+def test_a_value_token_is_shown_on_text_fields_only(role: str) -> None:
+    """Gallery, Chrome 156: Value with IsReadOnly false on boxes, radios, switches, lists, grids
+    and native selects; `editable` there would be noise."""
+    assert tokens(Caps(toggle=0, read_only=False), role) == ("toggle:off",)
+    assert tokens(Caps(read_only=False), "Document") == ("editable",)
 
 
 def test_an_unknown_toggle_state_is_no_token() -> None:
     """UIA's ToggleState is 0, 1 or 2; anything else is not a state Steer acts on."""
-    assert tokens(Caps(toggle=7)) == ()
+    assert tokens(Caps(toggle=7), "Button") == ()
 
 
 def test_the_listing_line_carries_the_tokens_after_the_box_and_flags() -> None:
@@ -138,6 +148,6 @@ def test_a_state_without_its_pattern_is_never_a_capability() -> None:
     client = UiaClient.__new__(UiaClient)
     client._uia_module = _Mod()  # a name-echo module for the property ids
     plain = client._caps(_Cached(set()))
-    assert tokens(plain) == ()
+    assert tokens(plain, "Button") == ()
     switch = client._caps(_Cached({"UIA_IsTogglePatternAvailablePropertyId"}))
-    assert tokens(switch) == ("toggle:off",)
+    assert tokens(switch, "Button") == ("toggle:off",)

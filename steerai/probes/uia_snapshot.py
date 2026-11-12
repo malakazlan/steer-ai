@@ -168,10 +168,11 @@ class UiaClient:
         rect = element.CachedBoundingRectangle
         type_id = int(element.CachedControlType)
         runtime_id = element.GetCachedPropertyValue(self._uia_module.UIA_RuntimeIdPropertyId)
+        role = self._control_type_names.get(type_id, str(type_id))
         out.append(
             RawNode(
                 depth=depth,
-                role=self._control_type_names.get(type_id, str(type_id)),
+                role=role,
                 name=str(element.CachedName or ""),
                 automation_id=str(element.CachedAutomationId or ""),
                 box=(int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)),
@@ -179,7 +180,7 @@ class UiaClient:
                 enabled=bool(element.CachedIsEnabled),
                 runtime_id=tuple(int(v) for v in runtime_id) if runtime_id else (),
                 secure=bool(element.CachedIsPassword),
-                caps=tokens(self._caps(element)) if caps else (),
+                caps=tokens(self._caps(element), role) if caps else (),
             )
         )
         handles.append(element)

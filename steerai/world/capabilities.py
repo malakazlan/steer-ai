@@ -50,9 +50,17 @@ class Caps:
     range_value: bool = False
 
 
-def tokens(caps: Caps) -> tuple[str, ...]:
-    """The tokens in the fixed order: toggle, selection, expand, value, range. Invoke has no token:
-    it never changes the verb (principal, packet interaction-model-2026-11-12)."""
+VALUE_ROLES: frozenset[str] = frozenset({"Edit", "Document"})
+"""The roles whose Value pattern says "a field you type into". Measured on the gallery (Chrome 156,
+2026-11-12): Chrome also exposes Value, IsReadOnly false, on CheckBox, RadioButton, a switch
+Button, List, DataGrid, Slider and Spinner, and a native `<select>` reads exactly like Google's
+search ComboBox, so `editable` / `readonly` outside these roles would say nothing true."""
+
+
+def tokens(caps: Caps, role: str = "") -> tuple[str, ...]:
+    """The tokens in the fixed order: toggle, selection, expand, value (on `VALUE_ROLES` only),
+    range. Invoke has no token: it never changes the verb (principal, packet
+    interaction-model-2026-11-12)."""
     out: list[str] = []
     if caps.toggle is not None and caps.toggle in TOGGLE_STATES:
         out.append(f"toggle:{TOGGLE_STATES[caps.toggle]}")
@@ -63,7 +71,7 @@ def tokens(caps: Caps) -> tuple[str, ...]:
             out.append("expanded")
         elif caps.expanded == 0:
             out.append("collapsed")
-    if caps.read_only is not None:
+    if caps.read_only is not None and role in VALUE_ROLES:
         out.append("readonly" if caps.read_only else "editable")
     if caps.range_value:
         out.append("range")
