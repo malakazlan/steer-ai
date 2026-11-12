@@ -1109,3 +1109,52 @@ def test_the_prompt_teaches_select_on_a_listbox_option() -> None:
     )
     assert "state: role TabItem, RadioButton or ListItem with wanted selected" in prose
     assert PROMPT_VERSION == "planner-23"
+
+
+# ---- an empty first plan is resampled once, never repaired (H5 ng1, 2026-11-12) --------------
+
+
+class _Sequence:
+    """`parse` answering with each response in turn."""
+
+    def __init__(self, *responses: _Response) -> None:
+        self.responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, **kwargs: Any) -> _Response:
+        self.calls.append(kwargs)
+        return self.responses.pop(0)
+
+
+def test_an_empty_first_plan_is_resampled_once_with_the_same_request() -> None:
+    """H5 ng1: one of three identical NuGet runs came back with no steps; the others planned.
+    A fresh sample of the same request (no repair note: an empty plan may mean the goal cannot
+    be done here, [v2.38]) recovers variance without pressing the model to invent steps."""
+    empty = _doc()
+    empty.steps = []
+    parse = _Sequence(
+        _Response(parsed_output=empty), _Response(parsed_output=_doc(), usage=_Usage())
+    )
+    outcome = ClaudePlanner(parse=parse).plan(_request())
+    assert [s.id for s in outcome.plan.steps] == ["focus", "type", "submit"]
+    assert len(parse.calls) == 2
+    assert parse.calls[1]["messages"] == parse.calls[0]["messages"], "the same request, no note"
+    assert outcome.repaired is False
+    assert outcome.trace_record()["resampled"] is True
+
+
+def test_two_empty_plans_are_no_steps_on_the_second_attempt() -> None:
+    empty = _doc()
+    empty.steps = []
+    parse = _Sequence(_Response(parsed_output=empty), _Response(parsed_output=empty))
+    with pytest.raises(PlannerError) as refused:
+        ClaudePlanner(parse=parse).plan(_request())
+    assert (refused.value.detail, refused.value.attempt) == ("no_steps", 2)
+    assert len(parse.calls) == 2
+
+
+def test_a_plan_with_steps_first_time_is_never_resampled() -> None:
+    planner, parse = _planner(_Response(parsed_output=_doc()))
+    outcome = planner.plan(_request())
+    assert len(parse.calls) == 1
+    assert outcome.trace_record()["resampled"] is False
