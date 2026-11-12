@@ -14,7 +14,6 @@ from tests.orchestrator.test_takeover_loop import FakeMonitor, _wire
 from tests.stress.injection.catalogue import fixture
 from tests.stress.injection.hostile import Dispatch, rebuild
 
-
 CARD = "4111 1111"
 """The typed text's sentinel. Spaced, so it can never occur by chance in a trace's random hex
 ids: a bare "4111" did once (`decision_id` d-<12 hex>, about 1 in 7000 runs; CI on #238)."""
