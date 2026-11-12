@@ -1137,7 +1137,7 @@ class Session:
                 decision,
                 chosen=chosen,
                 url_before=self._url_before,
-                url_narrow=narrow if wide else None,
+                url_narrow=narrow if self._url_before is not None else None,
             )
         except LedgerError as exc:
             raise _StepFailureError(ErrorCode.GATE_BLOCKED, _wal_detail(exc)) from exc

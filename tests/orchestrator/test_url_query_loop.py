@@ -644,6 +644,16 @@ def test_the_record_keeps_the_narrow_bit_the_step_was_written_with() -> None:
     assert h.ledger.records[_submit().id].url_narrow is True
 
 
+def test_no_before_url_means_no_narrow_bit_either() -> None:
+    """Principal on #244: a record whose before URL could not be read keeps no bit, so it
+    reads back the same from disk (the bit lives inside `url_before`)."""
+    h = _same_title_harness(Bar(RG_HOME, RG_RESULTS), bound_rid=(42, 91))
+    h.session._address_bar = lambda _hwnd: None
+    h.session.run_step(_submit())
+    record = h.ledger.records[_submit().id]
+    assert (record.url_before, record.url_narrow) == (None, None)
+
+
 def test_a_record_written_wide_only_never_resumes_by_the_rid_and_url() -> None:
     """#231: the rid/URL load needs the narrow proof; a record that says the step was not
     narrow keeps it off on a resume even when the bit computed now would allow it."""
