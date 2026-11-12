@@ -28,6 +28,7 @@ from steerai.orchestrator.plan_io import PlanError, check_runnable, plan_from_by
 from steerai.planner.contracts import PlannerError, PlanOutcome, PlanRequest
 from steerai.planner.mirror import PlanDoc
 from steerai.verify.decorations import DECORATIONS
+from steerai.world.capabilities import TOKENS
 from steerai.world.elements import safe_name
 
 DEFAULT_MODEL = "claude-opus-5"
@@ -37,7 +38,7 @@ DEFAULT_MAX_TOKENS = 8192
 """Unmeasured: enough for the 6.3 form of a ten-step plan; a `max_tokens` stop is `truncated`."""
 DEFAULT_MAX_RETRIES = 1
 EFFORT = "medium"
-PROMPT_VERSION = "planner-23"
+PROMPT_VERSION = "planner-24"
 MECHANICAL_VERBS = frozenset(
     {"type", "focus", "open", "check", "uncheck", "select", "choose", "expand", "collapse"}
 )
@@ -58,14 +59,20 @@ Verbs (closed set): click (a button or link), focus (put keyboard focus in a fie
 ComboBox or Document), type (type single-line text into the focused field; needs "text"), send
 (press the send button of a message composer), submit (submit a form; on a text field this
 presses Enter), delete (remove something), open (launch an app; every later step acts in the
-window it opened), check / uncheck (set a CheckBox on or off; never click a CheckBox), select
-(pick a tab, a radio option or an option of a list box, only when the listing shows role
-TabItem, RadioButton or ListItem under a List; never click those), choose (pick an option of a
-ComboBox: params.option is the option's exact text from the goal; never click a ComboBox or its
-options), expand / collapse (open or close a Button
-that shows or hides a panel, a menu or a section; only when the listing shows role Button; never
-click it). A visual tab that is a Hyperlink or a Button stays a click. A ComboBox you type into,
-such as a search box, stays focus and type. There is no other verb.
+window it opened), check / uncheck (turn a control on or off: a checkbox, a switch, a toggle
+button), select (pick one option: a tab, a radio option, an option of a list box, a row of a
+grid), choose (pick an option of a ComboBox: params.option is the option's exact text from the
+goal; never click a ComboBox or its options), expand / collapse (open or close a panel, a menu or
+a section). There is no other verb.
+
+Each listing line shows what its element can do, after its box: toggle:on or toggle:off: check
+or uncheck; selected or selectable: select; expanded or collapsed: expand or collapse (on a
+ComboBox: choose); editable: focus and type. Use the verb the line shows, and never click an
+element whose line shows toggle, selected, selectable, expanded or collapsed. A line with none
+of these is acted on by click: a link, a plain button, a menu item. A visual tab that is a
+Hyperlink or a Button stays a click. A ComboBox you type into, such as a search box, stays
+focus and type. A menu opens with expand on its button; its items are then listed (a menu
+checkbox or radio shows as a CheckBox or a RadioButton with its token).
 
 An open step: {{"verb": "open", "target": {{"role": "App", "name": <one of {sorted(APPS)}>}},
 "params": {{"site": <one of {sorted(SITES)}>, "text": <the words to search>}}}}. A site opens in
@@ -81,8 +88,9 @@ an open reaches is a "title" condition holding the site's name or the search wor
 
 Risk tiers: R0 read-only or focus; R1 reversible typing; R2 an external effect (send, submit,
 post); R3 destructive (delete, pay, reset). send and submit are never below R2, delete never
-below R3. The tier you declare can only be raised by the agent's floors, deny words and gate,
-never lowered; declare the honest tier.
+below R3. Saving, downloading or exporting a file to this computer is R1. The tier you declare
+can only be raised by the agent's floors, deny words and gate, never lowered; declare the honest
+tier.
 
 Targets: {{"role": "<control type as listed>", "name": "<exact name as listed>"}}. Use the exact
 name text from the listing; never invent names. Act inside the page or document content: the
@@ -115,14 +123,14 @@ field's content: use value: role, name, text, only as a subgoal condition, never
 the field (Edit, ComboBox or Document) and the exact text must be those of a type step of the
 same subgoal, or a choose step of the same subgoal whose option is that exact text, and that
 subgoal holds no send, submit or delete.
-When the goal wants a box ticked or cleared, the end state is the box: use state: role CheckBox,
-name, wanted (on or off), a subgoal condition only, proven by a check or uncheck step of the
-same subgoal on that exact box name; that subgoal holds no send, submit or delete. When the goal
-wants a tab, a radio option or a list option chosen, use state: role TabItem, RadioButton or
-ListItem with wanted selected, proven by a select step of the same subgoal on that exact name.
-When the goal wants a panel, a menu or a section opened or closed, use state: role Button with
-wanted expanded or
-collapsed, proven by an expand or collapse step of the same subgoal on that exact name.
+When the goal wants a box or a switch turned on or off, the end state is the control: use state:
+role CheckBox or Button (the listed role), name, wanted (on or off), a subgoal condition only,
+proven by a check or uncheck step of the same subgoal on that exact name; that subgoal holds no
+send, submit or delete. When the goal wants a tab, a radio option, a list option or a grid row
+chosen, use state: role TabItem, RadioButton, ListItem or DataItem with wanted selected, proven
+by a select step of the same subgoal on that exact name. When the goal wants a panel, a menu or a
+section opened or closed, use state: role Button with wanted expanded or collapsed, proven by an
+expand or collapse step of the same subgoal on that exact name.
 
 Selecting what may already be selected (opening a chat, a conversation, a mail or a list row
 that can already be the open one): give it its own subgoal of exactly one click on the item,
@@ -378,11 +386,62 @@ def _runnable(data: bytes, request: PlanRequest) -> Plan:
     check_runnable(plan)
     if request.continuation:
         _refuse_twin_button_submit(plan, request.screen_lines)
+    _refuse_missing_capability(plan, request.screen_lines)
     return plan
 
 
 _LISTED = re.compile(r'^\d+ +(\S+) "([^"]*)"')
 """A listing row as `format_lines` writes it: id, indentation, role, the escaped name."""
+_LISTED_TAIL = re.compile(r'^\d+ +(\S+) "([^"]*)" \[[^\]]*\](.*)$')
+"""The same row with what follows its box: the flags and the capability tokens."""
+_FAMILIES: dict[str, frozenset[str]] = {
+    "check": frozenset({"toggle:on", "toggle:off", "toggle:mixed"}),
+    "uncheck": frozenset({"toggle:on", "toggle:off", "toggle:mixed"}),
+    "select": frozenset({"selected", "selectable"}),
+    "expand": frozenset({"expanded", "collapsed"}),
+    "collapse": frozenset({"expanded", "collapsed"}),
+}
+"""The tokens a state verb's capability shows on its line (`steerai.world.capabilities`)."""
+TOKEN_SET: frozenset[str] = frozenset(TOKENS)
+_FAMILY_NAMES: dict[str, str] = {
+    "check": "toggle",
+    "uncheck": "toggle",
+    "select": "selected or selectable",
+    "expand": "expanded or collapsed",
+    "collapse": "expanded or collapsed",
+}
+
+
+def _refuse_missing_capability(plan: Plan, screen_lines: Sequence[str]) -> None:
+    """A state verb whose target is exactly one listing line that lacks the verb's capability
+    token is refused at the target, so the repair turn picks the verb the line shows (packet
+    interaction-model-2026-11-12, principal item 2). A click is never refused for a token
+    ([v2.61]); a target not listed, or listed twice, goes to the live check at resolve; a
+    listing with no token at all (the capabilities were unread, `caps_read=False`) refuses
+    nothing: a missing token is then unread, never absent."""
+    rows: list[tuple[str, str, frozenset[str]]] = []
+    for line in screen_lines:
+        found = _LISTED_TAIL.match(line)
+        if found is not None:
+            rows.append((found.group(1), found.group(2), frozenset(found.group(3).split())))
+    if not any(tail & TOKEN_SET for _role, _name, tail in rows):
+        return
+    for index, step in enumerate(plan.steps):
+        family = _FAMILIES.get(step.verb)
+        target = step.target
+        if family is None or target is None:
+            continue
+        shown = [
+            tail
+            for role, name, tail in rows
+            if (role, name) == (target.role, safe_name(target.name))
+        ]
+        if len(shown) == 1 and not shown[0] & family:
+            raise PlanError(
+                f"$.steps[{index}].target",
+                f"its listing line shows no {_FAMILY_NAMES[step.verb]}; use the verb the line "
+                "shows, or click when it shows none of the capability tokens",
+            )
 
 
 def _refuse_twin_button_submit(plan: Plan, screen_lines: Sequence[str]) -> None:

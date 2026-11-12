@@ -221,7 +221,7 @@ def test_a_continuation_after_no_effect_submits_on_the_one_button_beside_the_fie
     )
     assert "unless the listing shows exactly one Button" not in prose
     assert "whose name says it submits" not in prose
-    assert PROMPT_VERSION == "planner-23"
+    assert PROMPT_VERSION == "planner-24"
 
 
 def test_the_prompt_says_a_selection_click_is_proven_by_present() -> None:
@@ -772,8 +772,10 @@ def test_the_prompt_teaches_check_uncheck_and_the_state_condition() -> None:
     proven by a check or uncheck step of the same subgoal."""
     system, _ = build_prompt(_request(), tag="t")
     prose = " ".join(system.split())
-    assert "check / uncheck (set a CheckBox on or off; never click a CheckBox)" in prose
-    assert "state: role CheckBox, name, wanted (on or off)" in prose
+    assert (
+        "check / uncheck (turn a control on or off: a checkbox, a switch, a toggle button)" in prose
+    )
+    assert "state: role CheckBox or Button (the listed role), name, wanted (on or off)" in prose
     assert (
         "a subgoal condition only, proven by a check or uncheck step of the same subgoal" in prose
     )
@@ -817,14 +819,14 @@ def test_the_prompt_teaches_select_and_the_selected_state() -> None:
     system, _ = build_prompt(_request(), tag="t")
     prose = " ".join(system.split())
     assert (
-        "select (pick a tab, a radio option or an option of a list box, only when the listing "
-        "shows role TabItem, RadioButton or ListItem under a List; never click those)" in prose
+        "select (pick one option: a tab, a radio option, an option of a list box, a row of a "
+        "grid)" in prose
     )
     assert "A visual tab that is a Hyperlink or a Button stays a click." in prose
-    assert "state: role CheckBox, name, wanted (on or off)" in prose
+    assert "state: role CheckBox or Button (the listed role), name, wanted (on or off)" in prose
     assert (
-        "role TabItem, RadioButton or ListItem with wanted selected, proven by a select step"
-        in prose
+        "role TabItem, RadioButton, ListItem or DataItem with wanted selected, proven by a "
+        "select step" in prose
     )
     assert "a tab's item" not in prose
     assert "A tab is a select and a state selected" in prose
@@ -906,10 +908,8 @@ def test_the_prompt_teaches_expand_collapse_and_their_state() -> None:
     expect on either verb."""
     system, _ = build_prompt(_request(), tag="t")
     prose = " ".join(system.split())
-    assert (
-        "expand / collapse (open or close a Button that shows or hides a panel, a menu or a "
-        "section; only when the listing shows role Button; never click it)" in prose
-    )
+    assert "expand / collapse (open or close a panel, a menu or a section)" in prose
+    assert "expanded or collapsed: expand or collapse (on a ComboBox: choose)" in prose
     assert (
         "use state: role Button with wanted expanded or collapsed, proven by an expand or "
         "collapse step of the same subgoal on that exact name" in prose
@@ -1103,12 +1103,128 @@ def test_the_prompt_teaches_select_on_a_listbox_option() -> None:
     loop selects a listbox option since W3b ([v2.67]); the prompt never said so."""
     system, _ = build_prompt(_request())
     prose = " ".join(system.split())
-    assert (
-        "an option of a list box, only when the listing shows role TabItem, RadioButton or "
-        "ListItem under a List" in prose
+    assert "an option of a list box" in prose
+    assert "selected or selectable: select" in prose
+    assert "state: role TabItem, RadioButton, ListItem or DataItem with wanted selected" in prose
+    assert PROMPT_VERSION == "planner-24"
+
+
+# ---- planner-24: verbs by capability (interaction model §2, principal item 2) -----------------
+
+CAPS_SCREEN = (
+    '1  Document "Settings"                    [0,0,1100,760]',
+    '2    Button "Dark mode" [100,300,180,330] toggle:off',
+    '3    Button "Save draft" [100,340,180,370]',
+    '4    Button "Share" [100,380,180,410] collapsed',
+    '5    DataItem "Order 1001" [100,420,400,440] selectable',
+    '6    Hyperlink "Help" [100,450,180,470]',
+)
+
+
+def _caps_request(screen: tuple[str, ...] = CAPS_SCREEN) -> PlanRequest:
+    return PlanRequest(goal="turn on dark mode", screen_lines=screen, window_title="Settings")
+
+
+def _one_step_doc(verb: str, role: str, name: str) -> PlanDoc:
+    return PlanDoc(
+        goal="turn on dark mode",
+        subgoals=[
+            SubgoalDoc(
+                id="g1",
+                desc="d",
+                condition=PredicateDoc(kind="title", pattern="Settings"),
+            )
+        ],
+        steps=[
+            StepDoc(
+                id="s1",
+                subgoal="g1",
+                verb=verb,  # type: ignore[arg-type]  # a Verb literal from the parameter
+                target=TargetDoc(role=role, name=name),
+                risk="R1",
+                expect=(
+                    PredicateDoc(kind="appeared", role="Text", name="Draft saved")
+                    if verb == "click"
+                    else None
+                ),
+            )
+        ],
     )
-    assert "state: role TabItem, RadioButton or ListItem with wanted selected" in prose
-    assert PROMPT_VERSION == "planner-23"
+
+
+def test_the_prompt_teaches_verbs_by_the_listing_s_capability_tokens() -> None:
+    system, _ = build_prompt(_caps_request())
+    prose = " ".join(system.split())
+    assert "toggle:on or toggle:off: check or uncheck" in prose
+    assert "selected or selectable: select" in prose
+    assert "expanded or collapsed: expand or collapse" in prose
+    assert "never click an element whose line shows" in prose
+    assert PROMPT_VERSION == "planner-24"
+
+
+def test_the_prompt_says_a_local_export_is_r1() -> None:
+    """Principal ruling on H5 r4: saving or exporting a file to this computer is reversible."""
+    system, _ = build_prompt(_caps_request())
+    prose = " ".join(system.split())
+    assert "Saving, downloading or exporting a file to this computer is R1." in prose
+
+
+@pytest.mark.parametrize(
+    ("verb", "role", "name"),
+    [
+        ("check", "Button", "Dark mode"),
+        ("select", "DataItem", "Order 1001"),
+        ("expand", "Button", "Share"),
+    ],
+)
+def test_a_state_verb_on_a_line_with_its_token_is_runnable(verb: str, role: str, name: str) -> None:
+    planner, parse = _planner(_Response(parsed_output=_one_step_doc(verb, role, name)))
+    outcome = planner.plan(_caps_request())
+    assert outcome.plan.steps[0].verb == verb
+    assert len(parse.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("verb", "name", "token"),
+    [("check", "Save draft", "toggle"), ("expand", "Save draft", "expanded or collapsed")],
+)
+def test_a_state_verb_on_the_one_line_without_its_token_is_refused_at_the_target(
+    verb: str, name: str, token: str
+) -> None:
+    planner, parse = _planner(_Response(parsed_output=_one_step_doc(verb, "Button", name)))
+    with pytest.raises(PlannerError) as refused:
+        planner.plan(_caps_request())
+    assert (refused.value.detail, refused.value.path) == ("invalid_plan", "$.steps[0].target")
+    assert len(parse.calls) == 2, "one repair turn named the line's capability"
+    assert token in parse.calls[1]["messages"][-1]["content"]
+
+
+def test_a_click_is_never_refused_for_a_token() -> None:
+    """Principal item 2: `click TabItem` stays legal ([v2.61]); a click on a toggling line runs."""
+    planner, _ = _planner(_Response(parsed_output=_one_step_doc("click", "Button", "Dark mode")))
+    assert planner.plan(_caps_request()).plan.steps[0].verb == "click"
+
+
+def test_a_target_the_listing_does_not_show_goes_to_the_live_check() -> None:
+    planner, _ = _planner(_Response(parsed_output=_one_step_doc("check", "Button", "Bold")))
+    assert planner.plan(_caps_request()).plan.steps[0].verb == "check"
+
+
+def test_a_listing_with_no_tokens_at_all_never_refuses() -> None:
+    """A provider that raised on the capability fetch (`caps_read=False`) lists no tokens: a
+    missing token is then unread, never absent."""
+    plain = tuple(
+        line.rsplit(" ", 1)[0] if line.endswith(("off", "collapsed", "selectable")) else line
+        for line in CAPS_SCREEN
+    )
+    planner, _ = _planner(_Response(parsed_output=_one_step_doc("check", "Button", "Dark mode")))
+    assert planner.plan(_caps_request(plain)).plan.steps[0].verb == "check"
+
+
+def test_two_lines_of_the_target_go_to_the_live_check() -> None:
+    twins = (*CAPS_SCREEN, '7    Button "Save draft" [300,340,380,370] toggle:off')
+    planner, _ = _planner(_Response(parsed_output=_one_step_doc("check", "Button", "Save draft")))
+    assert planner.plan(_caps_request(twins)).plan.steps[0].verb == "check"
 
 
 # ---- an empty first plan is resampled once, never repaired (H5 ng1, 2026-11-12) --------------
