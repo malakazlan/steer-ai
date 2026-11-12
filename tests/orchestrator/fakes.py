@@ -53,6 +53,7 @@ def build(
     stable: bool = True,
     pid: int = 777,
     secure_ids: frozenset[int] = frozenset(),
+    automation_ids: Mapping[int, str] | None = None,
 ) -> Snapshot:
     by_id = {r[0]: r for r in rows}
 
@@ -73,6 +74,7 @@ def build(
             runtime_id=r[3],
             parent_id=r[4],
             secure=r[0] in secure_ids,
+            automation_id=(automation_ids or {}).get(r[0], ""),
         )
         for r in rows
     ]
@@ -105,6 +107,8 @@ class FakeWorld:
     bubbles: int = 0
     secure_ids: set[int] = field(default_factory=set)
     """Row ids observed as secure (password) fields."""
+    automation_ids: dict[int, str] = field(default_factory=dict)
+    """Row id -> the AutomationId it is observed with (none by default)."""
 
     def observe(self, hwnd: int, **kwargs: Any) -> Snapshot:
         self.observed.append({"hwnd": hwnd, **kwargs})
@@ -117,6 +121,7 @@ class FakeWorld:
             stable=self.stable,
             pid=self.pid,
             secure_ids=frozenset(self.secure_ids),
+            automation_ids=dict(self.automation_ids),
         )
 
     def add_bubble(self, text: str) -> None:
