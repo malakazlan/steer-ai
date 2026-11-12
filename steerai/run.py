@@ -204,6 +204,16 @@ class Bound:
 
 
 @dataclass(frozen=True, slots=True)
+class ScreenRead:
+    """A screen the planner reads: the window's title, its 6.2 lines, and whether the quiet read
+    ended on the cap rather than a quiet window (#233: the capped rate is traced)."""
+
+    title: str
+    lines: Sequence[str]
+    capped: bool
+
+
+@dataclass(frozen=True, slots=True)
 class Deps:
     """The runner's collaborators, injected so the assembly runs pure in tests."""
 
@@ -218,8 +228,9 @@ class Deps:
     """The shell's desktop window for `--desktop`; None only in pure tests."""
     open_windows: Callable[[], Sequence[str]] | None = None
     """Titles of the open windows of registry apps, for the planner; None only in pure tests."""
-    screen: Callable[[int], tuple[str, Sequence[str]]] | None = None
-    """(title, 6.2 lines) of a window after a warm-up observe; None only in pure tests."""
+    screen: Callable[[int, Callable[[], bool] | None], ScreenRead] | None = None
+    """(hwnd, kill) -> the window's title and 6.2 lines after a quiet read ([v2.80]), the kill
+    switch checked between observes (TK-22, #233); None only in pure tests."""
     planner: Callable[[PlanRequest], PlanOutcome] | None = None
     """The LLM planner (5.3); None only in pure tests or a `--plan` run."""
     identify: Callable[[int], Mapping[str, Any] | None] | None = None
@@ -305,6 +316,37 @@ def warm_up(  # noqa: PLR0913 - keyword-only tuning knobs plus the injected cloc
     overlay runs 2026-11-04) is "not yet": polling continues until the cap, and the cap with
     no answer at all raises the last error. The kill switch is honoured between observes
     (TK-22)."""
+    return warm_up_read(
+        observe,
+        cap_s=cap_s,
+        monotonic=monotonic,
+        sleep=sleep,
+        poll_s=poll_s,
+        kill=kill,
+        quiet_s=quiet_s,
+    ).snapshot
+
+
+@dataclass(frozen=True, slots=True)
+class WarmRead:
+    """A warm-up's last snapshot, and whether the cap (or the poll bound) ended it rather than
+    the agreeing counts or the quiet window (#233: a capped plan read is traced)."""
+
+    snapshot: Snapshot
+    capped: bool
+
+
+def warm_up_read(  # noqa: PLR0913 - warm_up's knobs
+    observe: Callable[[], Snapshot],
+    *,
+    cap_s: float,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    poll_s: float = 0.25,
+    kill: Callable[[], bool] | None = None,
+    quiet_s: float | None = None,
+) -> WarmRead:
+    """`warm_up`, telling whether it ended on the cap."""
     _check_warm_up(quiet_s, poll_s)
     start = monotonic()
     counts: list[int] = []
@@ -327,7 +369,7 @@ def warm_up(  # noqa: PLR0913 - keyword-only tuning knobs plus the injected cloc
                 changed_at = monotonic()
             counts.append(snapshot.node_count)
             if _warm(counts, quiet_s, monotonic() - changed_at):
-                return snapshot
+                return WarmRead(snapshot, capped=False)
         if monotonic() - start >= cap_s:
             break
         sleep(poll_s)
@@ -338,7 +380,7 @@ def warm_up(  # noqa: PLR0913 - keyword-only tuning knobs plus the injected cloc
             if failure is not None
             else SteerError(ErrorCode.PERCEPTION_TIMEOUT, "warm-up produced no snapshot")
         )
-    return snapshot
+    return WarmRead(snapshot, capped=True)
 
 
 def _check_warm_up(quiet_s: float | None, poll_s: float) -> None:
@@ -817,6 +859,7 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
                 deps=deps,
                 out=out,
                 confirmer=confirmer,
+                kill=None if monitor is None else monitor.kill_requested,
             )
         )
         planned = _start_checked(planned, options, out)
@@ -977,12 +1020,17 @@ def _planned(  # noqa: PLR0913 - the run's state at planning time
     deps: Deps,
     out: _Out,
     confirmer: GoConfirmer,
+    kill: Callable[[], bool] | None,
 ) -> Plan | int:
     """Observe, plan, write the exact bytes, bind their digest, apply the limit, preview, and
-    wait for `go:<id>`; an int is the exit code of a refusal on the way."""
+    wait for `go:<id>`; an int is the exit code of a refusal on the way (a kill during the
+    read is `killed`, #233)."""
     if deps.screen is None or deps.planner is None or options.goal is None:
         raise SteerError(ErrorCode.GATE_BLOCKED, "no planner configured for --goal")
-    title, lines = deps.screen(window.hwnd)
+    screen = _read_screen(deps.screen, window.hwnd, kill, deps, trace)
+    if screen is None:
+        return _hold_refusal(out, "killed")
+    title, lines = screen
     out.note(f"planning from {len(lines)} screen lines; the model call may take a while")
     open_windows = deps.open_windows() if deps.open_windows is not None else ()
     request = PlanRequest(
@@ -1147,6 +1195,50 @@ def _ms(deps: Deps, started: float) -> float:
     return (deps.monotonic() - started) * 1000
 
 
+def _read_screen(
+    screen: Callable[[int, Callable[[], bool] | None], ScreenRead],
+    hwnd: int,
+    kill: Callable[[], bool] | None,
+    deps: Deps,
+    trace: Trace,
+) -> tuple[str, Sequence[str]] | None:
+    """The planner's screen, read under the kill switch, and traced: how long the read took,
+    how it ended, and whether it hit the cap ([v2.80] section 9 row, #233). No title, no
+    lines. None is a kill during the read: a GATE_BLOCKED with the switch latched (#239
+    review: any other GATE_BLOCKED is raised as it came)."""
+    started = deps.monotonic()
+    try:
+        read = screen(hwnd, kill)
+    except SteerError as exc:
+        killed = exc.code is ErrorCode.GATE_BLOCKED and kill is not None and kill()
+        _traced_read(trace, deps, started, outcome="killed" if killed else "raised")
+        if killed:
+            return None
+        raise
+    _traced_read(trace, deps, started, outcome="ok", capped=read.capped, lines=len(read.lines))
+    return read.title, read.lines
+
+
+def _traced_read(  # noqa: PLR0913 - one trace record's fields
+    trace: Trace,
+    deps: Deps,
+    started: float,
+    *,
+    outcome: str,
+    capped: bool = False,
+    lines: int = 0,
+) -> None:
+    trace.write(
+        {
+            "kind": "plan_read",
+            "outcome": outcome,
+            "read_ms": round(_ms(deps, started)),
+            "capped": capped,
+            "lines": lines,
+        }
+    )
+
+
 def _write_atomic(path: Path, data: bytes) -> None:
     """Whole or absent on a process crash (PL-04); no fsync, so a power loss may still lose
     the file, which the ledger's missing digest then reports as a plan to re-plan."""
@@ -1293,16 +1385,33 @@ def _replanning(r: Replan, plan: Plan, result: TaskResult) -> TaskResult:
         progress.add(planned, r.session.run_task(planned, continuation=True))
 
 
+def _continuation_screen(
+    r: Replan,
+    screen: Callable[[int, Callable[[], bool] | None], ScreenRead],
+    progress: Progress,
+) -> tuple[str, Sequence[str]] | TaskResult:
+    """The replan's read of the window the task reached; a kill during it ends the task
+    `killed` (#233), any other failure `observe_raised`."""
+    kill = None if r.monitor is None else r.monitor.kill_requested
+    try:
+        read = _read_screen(screen, r.session.hwnd, kill, r.deps, r.trace)
+    except SteerError as exc:
+        return progress.ended("stopped", exc.code, "observe_raised")
+    if read is None:
+        return progress.ended("blocked", ErrorCode.GATE_BLOCKED, "killed")
+    return read
+
+
 def _continuation_plan(r: Replan, progress: Progress, number: int) -> Plan | TaskResult:
     """Observe the current window, plan the remaining subgoals, refuse a plan that breaks the
     continuation rules, then bind, preview and ask (`_bound_continuation`); a TaskResult ends
     the task on the way, with what did run."""
     if r.deps.screen is None or r.deps.planner is None or r.options.goal is None:
         raise SteerError(ErrorCode.GATE_BLOCKED, "no planner configured for --goal")
-    try:
-        title, lines = r.deps.screen(r.session.hwnd)
-    except SteerError as exc:
-        return progress.ended("stopped", exc.code, "observe_raised")
+    screen = _continuation_screen(r, r.deps.screen, progress)
+    if isinstance(screen, TaskResult):
+        return screen
+    title, lines = screen
     if progress.last.evidence.get("detail") == NO_EFFECT and not r.session.no_effect_holds():
         # the facts read again after the replan's observe (NE-08): a page that moved since
         # the verify deadline is an uncertain effect, and no plan acts on top of it
@@ -1515,23 +1624,21 @@ def _kill_blocker(monitor: Any) -> Callable[[], str | None]:
     return lambda: "killed" if monitor.kill_requested() else None
 
 
-def _screen(hwnd: int) -> tuple[str, Sequence[str]]:
-    """A warm-up observe of the bound window, quiet for PLAN_QUIET_S ([v2.80]): the title and
-    the 6.2 lines for the planner, for the first plan and every replan."""
+def _screen(hwnd: int, kill: Callable[[], bool] | None) -> ScreenRead:
+    """A warm-up observe of the bound window, quiet for PLAN_QUIET_S ([v2.80]) and stopped by
+    the kill switch (TK-22, #233): the title and the 6.2 lines for the planner, for the first
+    plan and every replan."""
     from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415
     from steerai.world.model import WorldModel  # noqa: PLC0415
 
     model = WorldModel(UiaClient())
-    holder: list[Snapshot] = []
-
-    def observe() -> Snapshot:
-        snapshot = model.observe(hwnd, cap_s=5.0)
-        holder.append(snapshot)
-        return snapshot
-
-    warm_up(observe, cap_s=DEFAULT_WARMUP_S, quiet_s=PLAN_QUIET_S)
-    snapshot = holder[-1] if holder else model.observe(hwnd, cap_s=5.0)
-    return snapshot.title, snapshot.lines
+    read = warm_up_read(
+        lambda: model.observe(hwnd, cap_s=5.0),
+        cap_s=DEFAULT_WARMUP_S,
+        quiet_s=PLAN_QUIET_S,
+        kill=kill,
+    )
+    return ScreenRead(read.snapshot.title, read.snapshot.lines, capped=read.capped)
 
 
 def _planner(request: PlanRequest) -> PlanOutcome:

@@ -13,7 +13,7 @@ from typing import Any
 from steerai.memory.plan_cache import PlanCache
 from steerai.orchestrator.contracts import Plan
 from steerai.orchestrator.loop import TaskResult
-from steerai.run import run
+from steerai.run import ScreenRead, run
 from tests.memory.test_plan_cache import _fake_protect, _fake_unprotect
 from tests.orchestrator.test_run import World, _done
 from tests.orchestrator.test_run_goal import (
@@ -69,7 +69,9 @@ def _goal_run(
 ) -> tuple[int, str]:
     world = World(session=session)  # type: ignore[arg-type]  # a judged fake session
     deps = world.deps().replace(
-        screen=lambda _hwnd: ("Notepad", list(lines if lines is not None else SCREEN_LINES)),
+        screen=lambda _hwnd, _kill: ScreenRead(
+            "Notepad", list(lines if lines is not None else SCREEN_LINES), capped=False
+        ),
         planner=planner,
         plan_cache=cache,
         identify=lambda _hwnd: {"image": r"C:\Windows\notepad.exe"},
@@ -125,7 +127,7 @@ def test_an_old_go_token_never_approves_a_replay(tmp_path: Path) -> None:
     assert shown is not None
     world = World(session=JudgedSession())  # type: ignore[arg-type]
     deps = world.deps().replace(
-        screen=lambda _hwnd: ("Notepad", list(SCREEN_LINES)),
+        screen=lambda _hwnd, _kill: ScreenRead("Notepad", list(SCREEN_LINES), capped=False),
         planner=planner,
         plan_cache=cache,
         identify=lambda _hwnd: {"image": "notepad.exe"},
@@ -194,7 +196,9 @@ def test_a_browser_plan_that_opens_its_page_misses_when_the_start_screen_lacks_i
     for n, lines in ((1, SCREEN_LINES), (2, ['1 Document "New Tab"'])):
         world = World(session=JudgedSession())  # type: ignore[arg-type]
         deps = world.deps().replace(
-            screen=lambda _hwnd, lines=lines: ("New Tab - Google Chrome", list(lines)),
+            screen=lambda _hwnd, _kill, lines=lines: ScreenRead(
+                "New Tab - Google Chrome", list(lines), capped=False
+            ),
             planner=planner,
             plan_cache=cache,
             identify=lambda _hwnd: {"image": "chrome.exe"},

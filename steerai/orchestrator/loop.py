@@ -1025,8 +1025,9 @@ class Session:
             # in-page effect: the address bar's query parameter is the proof, never a label
             # (#148 design D, [v2.79]); read after the verify's deadline, polled up to the
             # navigation deadline, and the last read shared with the no-effect facts
-            url_now, after, url_counted, url_evidence = self._url_polled(
-                step, before_of_record, after, started
+            # the poll is verify time too (#230): the stage keeps the whole wait
+            url_now, after, url_counted, url_evidence = stage.measure(
+                "verify", partial(self._url_polled, step, before_of_record, after, started)
             )
             verdict = _url_verdict(verdict, url_counted, url_evidence)
             if not url_counted and self._url_query_step:

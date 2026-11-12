@@ -1238,11 +1238,14 @@ def verdict(
 
 class _Planner:
     """The real planner, counted; a refused plan's boundary path and reason are kept from the
-    error's cause (Steer's trace keeps the path only: the reason may quote the model's text)."""
+    error's cause (Steer's trace keeps the path only: the reason may quote the model's text),
+    and an empty plan's screen (title and lines) is kept for `--keep` (#201: the model was
+    asked twice and answered empty twice, so what it saw is the cause to read)."""
 
     def __init__(self) -> None:
         self.calls = 0
         self.refusals: list[tuple[int, str, str]] = []
+        self.empty: list[tuple[str, list[str]]] = []
 
     def __call__(self, request: PlanRequest) -> PlanOutcome:
         self.calls += 1
@@ -1252,7 +1255,15 @@ class _Planner:
             cause = exc.__cause__
             if isinstance(cause, PlanError):
                 self.refusals.append((exc.attempt, cause.path, cause.reason))
+            if exc.detail == "no_steps":
+                self.empty.append((request.window_title, list(request.screen_lines)))
             raise
+
+
+def empty_lines(planner: _Planner, before: int) -> list[int]:
+    """The line counts of the screens empty plans were given since `before`: the row's share
+    (the text goes to `--keep` only)."""
+    return [len(lines) for _title, lines in planner.empty[before:]]
 
 
 _WM_GETTEXT = 0x000D
@@ -1311,6 +1322,7 @@ def _steer(task: Task, number: int, hwnd: int, tmp: Path, planner: _Planner) -> 
     started = time.monotonic()
     calls_before = planner.calls
     refusals_before = len(planner.refusals)
+    empty_before = len(planner.empty)
     with _recorded_opens() as opens:
         run_mod.run(
             _options(tmp, hwnd, task, number),
@@ -1336,6 +1348,7 @@ def _steer(task: Task, number: int, hwnd: int, tmp: Path, planner: _Planner) -> 
         "opens_recorded": opened,
         "planner_calls": planner.calls - calls_before,
         "refusals": [list(r) for r in planner.refusals[refusals_before:]],
+        "empty_screens": empty_lines(planner, empty_before),
     }
 
 
@@ -1423,9 +1436,16 @@ def one_run(task: Task, number: int, planner: _Planner, keep: Path | None = None
         # the person stayed active: this run measured nothing, the suite goes on
         return {"task": task.task_id, "run": number, "passed": False, "invalid": str(exc)}
     tmp = Path(tempfile.mkdtemp(prefix="steer-suite-"))
+    empty_before = len(planner.empty)
     try:
         row = _started(task, number, tmp, planner)
         if keep is not None:
+            for index, (title, lines) in enumerate(planner.empty[empty_before:], start=1):
+                text = "".join(line + "\n" for line in [title, *lines])
+                # LF on every OS; a lone surrogate from UIA is escaped, never a suite crash
+                (keep / f"{task.task_id}-{number}-empty-{index}.txt").write_bytes(
+                    text.encode("utf-8", errors="backslashreplace")
+                )
             # diagnosis only: the plans and trace of a fixture goal, into a local folder
             for kept in [*tmp.glob("*.plan*.json"), tmp / "trace.jsonl"]:
                 if kept.is_file():

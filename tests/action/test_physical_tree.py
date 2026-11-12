@@ -172,6 +172,14 @@ def test_a_point_on_a_child_items_label_is_refused(fast_clock: Any) -> None:  # 
     assert result.evidence["detail"] == "covered_in_window"
 
 
+def test_a_point_on_the_group_holding_the_children_is_refused(fast_clock: Any) -> None:  # noqa: F811
+    """#235: the group is the children's list, so a point on it is not the item's row."""
+    inputs = _inputs(GROUP_ID)
+    result = _executor(inputs).execute(CLICK, _tree(OPEN_BOX))
+    assert inputs.clicks == []
+    assert result.evidence["detail"] == "covered_in_window"
+
+
 def test_a_point_on_an_acting_control_in_the_row_is_refused(fast_clock: Any) -> None:  # noqa: F811
     """TE-01: a Delete button the page exposes in the row, however it got under the point."""
     for hit in (BUTTON_ID, BUTTON_TEXT_ID):
