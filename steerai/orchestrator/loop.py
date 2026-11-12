@@ -171,7 +171,8 @@ page loads slower than the 3 s step deadline (Wikipedia article: over 3.5 s, und
 Unmeasured beyond that."""
 URL_POLL_S = 0.25
 """Between address-bar reads while an in-page expect's submit waits for its page (5.10
-[v2.79], principal item 3); each read costs 110-140 ms ([v2.48])."""
+[v2.79], principal item 3). A round is an omnibox locate (p50 53-57 / p95 63-69 ms, probe
+#157), a Document-URL read (p95 52-60 ms, [v2.51]) and an observe: per round unmeasured."""
 STOP_CODES: frozenset[ErrorCode] = frozenset(
     {
         ErrorCode.APP_CRASHED,
