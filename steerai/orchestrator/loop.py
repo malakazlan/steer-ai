@@ -115,6 +115,7 @@ from steerai.verify.t1 import (
     label_of_record,
     reads_wanted,
     same_title,
+    swapped_field,
     title_holds,
     verify,
 )
@@ -2366,10 +2367,36 @@ class Session:
                 continue
             if result.code is ErrorCode.ELEMENT_NOT_FOUND and retries == 0 and not result.steps:
                 retries += 1
-                before = self._observe(stable_window=1)
-                element_id = self._same_target(step, before, asked, ACT_MISMATCH)
+                previous, before = before, self._observe(stable_window=1)
+                element_id = self._retry_target(step, risk, previous, before, asked)
                 continue
             return result, before, retries
+
+    def _retry_target(
+        self, step: Step, risk: Risk, previous: Snapshot, snapshot: Snapshot, asked: Element
+    ) -> int:
+        """The element the act's one retry goes to: the same one (#89), or at R0/R1 for a
+        `focus` / `type` the field swapped under the act ([v2.82]; dev wk2: Wikipedia's search
+        Edit became a same-named ComboBox with a new RuntimeId while the focus acted). The swap
+        is [v2.71]'s readback rule (FS-02): the asked field gone, and the one non-secure, NEW
+        field of its alias pair with its exact name; anything else stays a changed screen. At
+        R2/R3 the asked identity is RuntimeId and role ([v2.71] R3)."""
+        try:
+            return self._same_target(step, snapshot, asked, ACT_MISMATCH)
+        except _StepFailureError as failure:
+            if (
+                failure.detail != ACT_MISMATCH
+                or step.verb not in SWAP_VERBS
+                or risk not in ("R0", "R1")
+                or asked.secure
+                or not asked.runtime_id
+            ):
+                raise
+            swapped, _ = swapped_field(asked, previous, snapshot)
+            if swapped is None:
+                raise
+            self._act_evidence["act_alias"] = swapped.role
+            return swapped.id
 
     def _still_shown(  # noqa: PLR0913 - the step's state after the ask, passed once
         self,
@@ -3187,6 +3214,8 @@ class Session:
 
 
 ACT_MISMATCH = "screen_changed_during_act"
+SWAP_VERBS = frozenset({"focus", "type"})
+"""The verbs whose act retry follows a field swapped under it at R0/R1 ([v2.82])."""
 """A re-resolve inside the act loop (the retry after a refusal, the scroll) found another
 element than the one asked about (#89): `focus_lost`, nothing more dispatched."""
 

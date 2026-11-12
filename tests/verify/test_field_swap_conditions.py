@@ -93,7 +93,7 @@ def test_a_disappeared_field_shown_under_the_other_role_has_not_gone() -> None:
     assert verdict.evidence.get("reason") == "swapped"
 
 
-def test_a_swapped_field_is_found_after_the_suggestion_rows_shifted_every_id() -> None:
+def test_aswapped_field_is_found_after_the_suggestion_rows_shifted_every_id() -> None:
     """Principal re-review item 1: Wikipedia's +17 suggestion rows move the positional ids;
     the swapped check resolves its scope on `after`, never with `before`'s ids."""
     rows: list[Row] = [(3 + i, "ListItem", f"suggestion {i}", (42, 100 + i), 1) for i in range(17)]
@@ -106,14 +106,14 @@ def test_a_swapped_field_is_found_after_the_suggestion_rows_shifted_every_id() -
 
 def test_a_field_without_a_runtime_id_is_never_the_swapped_one() -> None:
     """Principal re-review item 2: an element that cannot be proven new is not taken."""
-    from steerai.verify.t1 import _swapped_field  # noqa: PLC0415 - the rule's own unit
+    from steerai.verify.t1 import swapped_field  # noqa: PLC0415 - the rule's own unit
 
     before = _before(EDIT)
     bare: Row = (3, "ComboBox", "Search Wikipedia", (), 1)
-    element, evidence = _swapped_field(before.element(3), before, _after(bare))
+    element, evidence = swapped_field(before.element(3), before, _after(bare))
     assert element is None
     assert evidence == {}
-    found, evidence = _swapped_field(before.element(3), before, _after(COMBO))
+    found, evidence = swapped_field(before.element(3), before, _after(COMBO))
     assert found is not None
     assert found.role == "ComboBox"
     assert evidence == {"alias": "ComboBox"}

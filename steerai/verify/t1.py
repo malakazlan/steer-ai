@@ -707,7 +707,7 @@ def _read_value(element: Element, snapshot: Snapshot, live: LiveReads) -> str:
     return field_text("" if raw is None else str(raw), element.role)
 
 
-def _swapped_field(
+def swapped_field(
     was: Element, before: Snapshot, after: Snapshot
 ) -> tuple[Element | None, dict[str, Any]]:
     """The one non-secure field of the alias roles with the gone element's exact name; two
@@ -742,7 +742,7 @@ def _value_equals(
         # the field re-rendered under the typing (Wikipedia's search Edit becomes a ComboBox
         # of the same name, packet wiki-field-swap-2026-11-11): the one same-named, non-secure
         # field now on screen; a choose's value (folded) names its ComboBox itself (W4-10)
-        element, evidence = _swapped_field(before.element(predicate.target_id), before, after)
+        element, evidence = swapped_field(before.element(predicate.target_id), before, after)
     if element is None:
         return _plain("target_not_found", settles=True)
     value = _read_value(element, after, live)
@@ -863,7 +863,7 @@ def _focused(predicate: Focused, before: Snapshot, after: Snapshot, ctx: Context
     if element is None:
         # the field re-rendered between the focus and its readback (Wikipedia, 2 of 7 probe
         # runs): the one same-named new field of an alias role
-        element, evidence = _swapped_field(before.element(predicate.target_id), before, after)
+        element, evidence = swapped_field(before.element(predicate.target_id), before, after)
     if element is None:
         return _plain("target_not_found", settles=True)
     focused = live.focused_runtime_id()
