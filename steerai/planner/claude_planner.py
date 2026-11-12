@@ -245,9 +245,20 @@ class ClaudePlanner:
         started = time.perf_counter_ns()
         messages: list[dict[str, str]] = [{"role": "user", "content": user}]
         response = self._call(system, messages)
-        doc = self._document(response)
+        resampled: list[ParsedLike] = []
+        try:
+            doc = self._document(response)
+        except PlannerError as empty:
+            if empty.detail != "no_steps":
+                raise
+            # an empty first plan is sampled once more with the same request, never repaired:
+            # it may mean the goal cannot be done here ([v2.38]), and a fresh sample answers
+            # that again; variance does not (H5 ng1: one of three identical runs came back empty)
+            resampled.append(response)
+            response = self._call(system, messages, attempt=2)
+            doc = self._document(response, attempt=2)
         data = _document_bytes(doc, request)
-        responses = [response]
+        responses = [*resampled, response]
         try:
             plan = _runnable(data, request)
         except PlanError as exc:
@@ -277,7 +288,8 @@ class ClaudePlanner:
             stop_reason=None if stop_reason is None else str(stop_reason),
             input_tokens=_total(responses, "input_tokens"),
             output_tokens=_total(responses, "output_tokens"),
-            repaired=len(responses) > 1,
+            repaired=len(responses) > 1 + len(resampled),
+            resampled=bool(resampled),
         )
 
     def _document(self, response: ParsedLike, *, attempt: int = 1) -> PlanDoc:

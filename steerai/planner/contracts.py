@@ -99,6 +99,8 @@ class PlanOutcome:
     output_tokens: int | None = None
     repaired: bool = False
     """The first document was refused at the plan boundary and one repair turn fixed it."""
+    resampled: bool = False
+    """The first answer had no steps and a fresh sample of the same request planned."""
 
     def trace_record(self) -> dict[str, Any]:
         """Counts and codes only (5.14 [v1.2]): never the goal, the screen or the plan."""
@@ -113,6 +115,7 @@ class PlanOutcome:
             "steps": len(self.plan.steps),
             "subgoals": len(self.plan.subgoals),
             "repaired": self.repaired,
+            "resampled": self.resampled,
         }
 
 

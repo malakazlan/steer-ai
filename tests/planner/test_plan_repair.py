@@ -66,15 +66,18 @@ def test_a_valid_first_plan_is_not_repaired() -> None:
     assert outcome.repaired is False
 
 
-def test_no_steps_and_empty_answers_are_never_repaired() -> None:
+def test_no_steps_is_resampled_never_repaired() -> None:
+    """An empty first plan gets one fresh sample of the same request (H5 ng1), never a repair
+    note ([v2.38]: an empty plan may mean the goal cannot be done here)."""
     doc = _doc()
     doc.steps = []
-    parse = Sequence(_Response(parsed_output=doc), _Response(parsed_output=_doc()))
+    parse = Sequence(_Response(parsed_output=doc), _Response(parsed_output=doc))
     with pytest.raises(PlannerError) as caught:
         ClaudePlanner(parse=parse).plan(_request())
     assert caught.value.detail == "no_steps"
-    assert len(parse.calls) == 1
-    assert GOAL  # the request goal is unchanged by a repair
+    assert len(parse.calls) == 2
+    assert parse.calls[1]["messages"] == parse.calls[0]["messages"], "no repair note"
+    assert GOAL  # the request goal is unchanged by a resample
 
 
 def test_errors_say_which_attempt_failed() -> None:
@@ -90,10 +93,10 @@ def test_errors_say_which_attempt_failed() -> None:
     with pytest.raises(PlannerError) as caught:
         ClaudePlanner(parse=parse).plan(_request())
     assert (caught.value.detail, caught.value.attempt) == ("no_steps", 2)
-    parse = Sequence(_Response(parsed_output=empty))
+    parse = Sequence(_Response(parsed_output=empty), _Response(parsed_output=empty))
     with pytest.raises(PlannerError) as caught:
         ClaudePlanner(parse=parse).plan(_request())
-    assert caught.value.attempt == 1
+    assert caught.value.attempt == 2, "the resample's empty answer"
 
 
 def test_the_note_names_the_path_once_and_escapes_the_reason() -> None:
