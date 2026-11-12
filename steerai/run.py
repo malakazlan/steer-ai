@@ -859,7 +859,7 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
                 deps=deps,
                 out=out,
                 confirmer=confirmer,
-                monitor=monitor,
+                kill=None if monitor is None else monitor.kill_requested,
             )
         )
         planned = _start_checked(planned, options, out)
@@ -1020,19 +1020,17 @@ def _planned(  # noqa: PLR0913 - the run's state at planning time
     deps: Deps,
     out: _Out,
     confirmer: GoConfirmer,
-    monitor: Any,
+    kill: Callable[[], bool] | None,
 ) -> Plan | int:
     """Observe, plan, write the exact bytes, bind their digest, apply the limit, preview, and
     wait for `go:<id>`; an int is the exit code of a refusal on the way (a kill during the
-    read is `killed`: the read's only GATE_BLOCKED, #233)."""
+    read is `killed`, #233)."""
     if deps.screen is None or deps.planner is None or options.goal is None:
         raise SteerError(ErrorCode.GATE_BLOCKED, "no planner configured for --goal")
-    try:
-        title, lines = _read_screen(deps.screen, window.hwnd, monitor, deps, trace)
-    except SteerError as exc:
-        if exc.code is not ErrorCode.GATE_BLOCKED:
-            raise
+    screen = _read_screen(deps.screen, window.hwnd, kill, deps, trace)
+    if screen is None:
         return _hold_refusal(out, "killed")
+    title, lines = screen
     out.note(f"planning from {len(lines)} screen lines; the model call may take a while")
     open_windows = deps.open_windows() if deps.open_windows is not None else ()
     request = PlanRequest(
@@ -1200,23 +1198,45 @@ def _ms(deps: Deps, started: float) -> float:
 def _read_screen(
     screen: Callable[[int, Callable[[], bool] | None], ScreenRead],
     hwnd: int,
-    monitor: Any,
+    kill: Callable[[], bool] | None,
     deps: Deps,
     trace: Trace,
-) -> tuple[str, Sequence[str]]:
-    """The planner's screen, read under the kill switch, and traced: how long the quiet read
-    took and whether it hit the cap ([v2.80] section 9 row, #233). No title, no lines."""
+) -> tuple[str, Sequence[str]] | None:
+    """The planner's screen, read under the kill switch, and traced: how long the read took,
+    how it ended, and whether it hit the cap ([v2.80] section 9 row, #233). No title, no
+    lines. None is a kill during the read: a GATE_BLOCKED with the switch latched (#239
+    review: any other GATE_BLOCKED is raised as it came)."""
     started = deps.monotonic()
-    read = screen(hwnd, None if monitor is None else monitor.kill_requested)
+    try:
+        read = screen(hwnd, kill)
+    except SteerError as exc:
+        killed = exc.code is ErrorCode.GATE_BLOCKED and kill is not None and kill()
+        _traced_read(trace, deps, started, outcome="killed" if killed else "raised")
+        if killed:
+            return None
+        raise
+    _traced_read(trace, deps, started, outcome="ok", capped=read.capped, lines=len(read.lines))
+    return read.title, read.lines
+
+
+def _traced_read(  # noqa: PLR0913 - one trace record's fields
+    trace: Trace,
+    deps: Deps,
+    started: float,
+    *,
+    outcome: str,
+    capped: bool = False,
+    lines: int = 0,
+) -> None:
     trace.write(
         {
             "kind": "plan_read",
+            "outcome": outcome,
             "read_ms": round(_ms(deps, started)),
-            "capped": read.capped,
-            "lines": len(read.lines),
+            "capped": capped,
+            "lines": lines,
         }
     )
-    return read.title, read.lines
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
@@ -1371,13 +1391,15 @@ def _continuation_screen(
     progress: Progress,
 ) -> tuple[str, Sequence[str]] | TaskResult:
     """The replan's read of the window the task reached; a kill during it ends the task
-    `killed` (the read's only GATE_BLOCKED, #233), any other failure `observe_raised`."""
+    `killed` (#233), any other failure `observe_raised`."""
+    kill = None if r.monitor is None else r.monitor.kill_requested
     try:
-        return _read_screen(screen, r.session.hwnd, r.monitor, r.deps, r.trace)
+        read = _read_screen(screen, r.session.hwnd, kill, r.deps, r.trace)
     except SteerError as exc:
-        if exc.code is ErrorCode.GATE_BLOCKED:
-            return progress.ended("blocked", ErrorCode.GATE_BLOCKED, "killed")
         return progress.ended("stopped", exc.code, "observe_raised")
+    if read is None:
+        return progress.ended("blocked", ErrorCode.GATE_BLOCKED, "killed")
+    return read
 
 
 def _continuation_plan(r: Replan, progress: Progress, number: int) -> Plan | TaskResult:
