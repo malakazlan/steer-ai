@@ -327,7 +327,14 @@ def test_a_shared_planner_keeps_only_this_runs_empty_screens(
 
     monkeypatch.setattr(run_mod, "_planner", empty)
     monkeypatch.setattr(run_mod, "run", run)
-    monkeypatch.setattr(run_mod, "_real_deps", lambda: run_mod.Deps(*([None] * 5)))
+
+    class Deps:
+        """Only what `_steer` replaces and the fake run reads."""
+
+        def replace(self, **changes: Any) -> SimpleNamespace:
+            return SimpleNamespace(**changes)
+
+    monkeypatch.setattr(run_mod, "_real_deps", Deps)
     planner = suite._Planner()
     planner.empty.append(("Earlier", ["1  a", "2  b"]))
     row = suite._steer(TASKS[0], 2, 0x10, tmp_path, planner)
