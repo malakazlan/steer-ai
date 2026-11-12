@@ -1274,3 +1274,21 @@ def test_a_plan_with_steps_first_time_is_never_resampled() -> None:
     outcome = planner.plan(_request())
     assert len(parse.calls) == 1
     assert outcome.trace_record()["resampled"] is False
+
+
+def test_the_prompt_says_a_tree_item_is_clicked() -> None:
+    """Chrome ignores Expand on an ARIA tree item and gives it no Invoke (gallery_acts, [v2.77]):
+    until its act is measured, a TreeItem is opened and chosen by click, so the token rule never
+    sends the planner into a refused expand."""
+    system, _ = build_prompt(_caps_request())
+    prose = " ".join(system.split())
+    assert "A TreeItem is opened, closed and chosen by click, whatever its line shows." in prose
+
+
+def test_a_click_on_a_collapsed_tree_item_is_runnable() -> None:
+    screen = (*CAPS_SCREEN, '8    TreeItem "Projects" [100,480,300,500] selectable collapsed')
+    planner, parse = _planner(
+        _Response(parsed_output=_one_step_doc("click", "TreeItem", "Projects"))
+    )
+    assert planner.plan(_caps_request(screen)).plan.steps[0].verb == "click"
+    assert len(parse.calls) == 1
