@@ -58,6 +58,24 @@ class Element:
         return self.box[2] > self.box[0] and self.box[3] > self.box[1]
 
 
+def outermost(matches: Sequence[Element], elements: Sequence[Element]) -> list[Element]:
+    """The matches that are not inside another match: a grid row and its cell carry one name as
+    two DataItems (gallery, Chrome 156); the cell is part of the row, and the row is what a
+    `select` acts on and a `selected` condition reads."""
+    by_id = {e.id: e for e in elements}
+    ids = {e.id for e in matches}
+
+    def nested(element: Element) -> bool:
+        parent = element.parent_id
+        while parent is not None:
+            if parent in ids:
+                return True
+            parent = by_id[parent].parent_id if parent in by_id else None
+        return False
+
+    return [e for e in matches if not nested(e)]
+
+
 def _wanted(element: Element) -> bool:
     return (
         not element.offscreen

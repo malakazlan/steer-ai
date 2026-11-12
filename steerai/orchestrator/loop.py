@@ -29,7 +29,7 @@ from functools import partial
 from typing import Any, Literal, Protocol
 
 from steerai.action.dispositions import ActionResult, Delivery
-from steerai.action.executor import Action, physical_click_target
+from steerai.action.executor import Action, click_point, physical_click_target
 from steerai.action.launch import (
     APPS,
     expected_title,
@@ -118,7 +118,7 @@ from steerai.verify.t1 import (
 )
 from steerai.verify.url_query import LoadKind, UrlBefore, load_kind
 from steerai.world.address_bar import DocumentUrl
-from steerai.world.elements import Element
+from steerai.world.elements import Element, outermost
 from steerai.world.fingerprint import similarity
 from steerai.world.model import Snapshot, normalise_name
 from steerai.world.people import MAX_CANDIDATES, lookalike_only, name_part
@@ -1703,6 +1703,8 @@ class Session:
             for e in snapshot.elements
             if e.role == target.role and normalise_name(e.name).casefold() == wanted
         ]
+        if target.role == GRID_ITEM_ROLE:
+            matches = outermost(matches, snapshot.elements)
         if not matches:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_match")
         if len(matches) > 1:
@@ -2395,7 +2397,8 @@ class Session:
                 return result, before, element_id  # an acting child appeared in the wait
             self._act_evidence["click_fallback"] = "physical"
             self._act_evidence["semantic_detail"] = "no_InvokePattern"
-            physical = PhysicalAction(verb="click", element_id=element_id)
+            point = click_point(before, before.element(element_id))
+            physical = PhysicalAction(verb="click", element_id=point.id)
             return self._physical.execute(physical, before), before, element_id
         if not (step.verb == "focus" and refused and detail == "hit_test_miss"):
             return result, before, element_id
@@ -3294,6 +3297,10 @@ def _measured_provider(step: Step, snapshot: Snapshot) -> None:
 
 LISTBOX_ITEM_ROLE = "ListItem"
 LISTBOX_ROLE = "List"
+GRID_ITEM_ROLE = "DataItem"
+GRID_ROLE = "DataGrid"
+
+
 _NOT_A_LISTBOX = frozenset({"Tree", "DataGrid"})
 
 
@@ -3308,7 +3315,7 @@ def _listbox_admission(step: Step, snapshot: Snapshot, element_id: int, live: ob
     `<select size>` both read Selection with CanSelectMultiple false, and their items expose
     SelectionItem. The ancestors are the snapshot's; the patterns are read live."""
     element = snapshot.element(element_id)
-    if step.verb != "select" or element.role != LISTBOX_ITEM_ROLE:
+    if step.verb != "select" or element.role not in (LISTBOX_ITEM_ROLE, GRID_ITEM_ROLE):
         return
     container: Element | None = None
     parent_id = element.parent_id
@@ -3316,9 +3323,14 @@ def _listbox_admission(step: Step, snapshot: Snapshot, element_id: int, live: ob
         ancestor = snapshot.element(parent_id)
         if ancestor.role == CHOOSE_ROLE:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "in_combobox")
-        if ancestor.role in _NOT_A_LISTBOX:
+        if element.role == GRID_ITEM_ROLE:
+            # a grid row's container is its grid (principal item 4: the single-select rule reads
+            # the SelectionItem's container for every role but TabItem and RadioButton)
+            if container is None and ancestor.role == GRID_ROLE:
+                container = ancestor
+        elif ancestor.role in _NOT_A_LISTBOX:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "not_a_listbox_item")
-        if container is None and ancestor.role == LISTBOX_ROLE:
+        elif container is None and ancestor.role == LISTBOX_ROLE:
             container = ancestor
         parent_id = ancestor.parent_id
     if container is None:

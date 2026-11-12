@@ -73,6 +73,7 @@ Check = Literal[
     "h5_event",
     "h5_final",
     "h6_event",
+    "gallery_event",
     "calc_display",
     "file_text",
     "google_search",
@@ -112,7 +113,7 @@ class Task:
     field the task means (packet h4-2026-11-11 round 2, item 5). A harness oracle."""
 
 
-PAGE_SETS = ("h2", "h3", "h4", "h5", "h6")
+PAGE_SETS = ("h2", "h3", "h4", "h5", "h6", "gallery")
 """The `start` values that mean a held-out page served from memory."""
 
 
@@ -534,6 +535,50 @@ fold: class C's shape, the person answers `kw`); MetaCPAN, NuGet and Flathub tit
 results with the words."""
 
 
+def _row(
+    task_id: str, goal: str, event: dict[str, Any], approve: frozenset[str] = frozenset()
+) -> Task:
+    return Task(
+        task_id, goal, "gallery", "gallery_event", json.dumps(event, sort_keys=True), approve
+    )
+
+
+GALLERY: tuple[Task, ...] = (
+    _row("g01", "click Save draft", {"row": "g01"}),
+    _row("g02", "turn on Bold", {"row": "g02", "on": True}),
+    _row("g03", "turn on Dark mode", {"row": "g03", "on": True}),
+    _row("g04", "tick Email me updates", {"row": "g04", "on": True}),
+    _row("g05", "tick Remember this device", {"row": "g05", "on": True}),
+    _row("g06", "tick Select all files", {"row": "g06", "on": True}),
+    _row("g07", "choose Express as the delivery speed", {"row": "g07", "value": "Express"}),
+    _row("g08", "choose Letter as the paper size", {"row": "g08", "value": "Letter"}),
+    _row("g09", "open the Billing details tab", {"row": "g09", "value": "Billing details"}),
+    _row("g10", "pick Mango as the favourite fruit", {"row": "g10", "value": "Mango"}),
+    _row("g11", "pick Poetry on the shelf", {"row": "g11", "value": "Poetry"}),
+    _row("g12", "set the country to Kenya", {"row": "g12", "value": "Kenya"}),
+    _row("g13", "set the time zone to Europe/Rome", {"row": "g13", "value": "Europe/Rome"}),
+    _row("g14", "set the colour to Teal", {"row": "g14", "value": "Teal"}),
+    _row("g15", "expand the Shipping policy", {"row": "g15", "open": True}),
+    _row("g16", "show the filters", {"row": "g16", "open": True}),
+    _row("g17", "copy the link from the Share menu", {"row": "g17", "item": "Copy link"}),
+    _row("g18", "turn on Show word count in the Share menu", {"row": "g18", "on": True}),
+    _row("g19", "pick Large font in the Share menu", {"row": "g19", "value": "Large font"}),
+    _row("g20", "open the Projects folder", {"row": "g20", "open": True}),
+    _row("g21", "select Order 1002 in the orders", {"row": "g21", "value": "Order 1002"}),
+    _row("g22", "type Ada Lovelace as the full name", {"row": "g22", "value": "Ada Lovelace"}),
+    _row(
+        "g23",
+        "search the articles for automation",
+        {"row": "g23", "value": "automation"},
+        frozenset({"automation"}),
+    ),
+    _row("g25", "open the Terms of service", {"row": "g25"}),
+)
+"""The gallery rows as goals (packet interaction-model-2026-11-12 §5): the regression bar before
+H6, 3/3 per row through the planner. Not held out: the gallery is the model's own instrument.
+g24 (a textarea, whose `change` fires on blur) and g26/g27 (range: no verb) are not goals."""
+
+
 def _h6(task_id: str, goal: str, event: dict[str, Any], **kw: Any) -> Task:
     return Task(task_id, goal, "h6", "h6_event", json.dumps(event, sort_keys=True), **kw)
 
@@ -847,7 +892,7 @@ def _page_controls(
         if drive is None:
             continue
         tmp = Path(tempfile.mkdtemp(prefix="steer-ctl-"))
-        with PageServer({"/page.html": _page_for(task)}) as server:
+        with PageServer(_pages_for(task)) as server:
             port = _free_port()
             url = f"http://127.0.0.1:{server.port}/page.html"
             proc = launch_chrome(
@@ -932,8 +977,21 @@ def _calc_control(task: Task, buttons: Sequence[str]) -> str:
         _close(window.hwnd)
 
 
+def _pages_for(task: Task) -> dict[str, str]:
+    """Every page a page task's server holds: the held-out page, and the gallery's own extras."""
+    if task.start == "gallery":
+        from steerai.probes.gallery_page import pages  # noqa: PLC0415 - the gallery only
+
+        return pages()
+    return {"/page.html": _page_for(task)}
+
+
 def _page_for(task: Task) -> str:
     """The held-out page a page task runs on (H2, H3 or H4)."""
+    if task.start == "gallery":
+        from steerai.probes.gallery_page import page_html as gallery_html  # noqa: PLC0415
+
+        return gallery_html()
     if task.start == "h6":
         from steerai.probes.h6_page import page_html as h6_html  # noqa: PLC0415 - H6 only
 
@@ -973,6 +1031,10 @@ def _page_observed(task: Task, port: int) -> str:
 
 
 def _page_log_key(task: Task) -> str:
+    if task.start == "gallery":
+        from steerai.probes.gallery_page import LOG_KEY as GALLERY_KEY  # noqa: PLC0415
+
+        return GALLERY_KEY
     if task.start == "h6":
         from steerai.probes.h6_page import LOG_KEY as H6_KEY  # noqa: PLC0415 - H6 only
 
@@ -995,17 +1057,17 @@ def _page_log_key(task: Task) -> str:
 
 
 def task_set(name: str) -> tuple[Task, ...]:
-    if name == "h6":
-        return H6
-    if name == "h5":
-        return H5
-    if name == "h4":
-        return H4
-    if name == "h3":
-        return H3
-    if name == "h2":
-        return H2
-    return HELD_OUT if name == "held_out" else TASKS
+    """The set by its `--set` name; `dev` and anything unknown are the development set."""
+    sets = {
+        "gallery": GALLERY,
+        "h6": H6,
+        "h5": H5,
+        "h4": H4,
+        "h3": H3,
+        "h2": H2,
+        "held_out": HELD_OUT,
+    }
+    return sets.get(name, TASKS)
 
 
 def _folded(text: str) -> str:
@@ -1099,6 +1161,7 @@ def passed(task: Task, status: str | None, observed: str) -> bool:  # noqa: PLR0
         "h4_event",
         "h5_event",
         "h6_event",
+        "gallery_event",
     ):
         return observed.strip() == task.expected
     if task.check == "file_text":
@@ -1339,6 +1402,7 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
             "h5_event",
             "h5_final",
             "h6_event",
+            "gallery_event",
         ):
             row["observed"] = _page_observed(task, port)
         elif task.check == "inbox_chat":
@@ -1469,7 +1533,7 @@ def _started(  # noqa: PLR0911 - one per start kind
             raise InvalidRun("wordpad_absent")  # removed from newer Windows builds
         return _run_app(task, number, tmp, planner, exe=WORDPAD, edit_class="RICHEDIT50W")
     if task.start in PAGE_SETS:
-        with PageServer({"/page.html": _page_for(task)}) as server:
+        with PageServer(_pages_for(task)) as server:
             return _run_chrome(
                 task, number, tmp, planner, f"http://127.0.0.1:{server.port}/page.html"
             )
@@ -1513,7 +1577,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Phase 1 bar: ten single-app tasks, live.")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument(
-        "--set", choices=("dev", "held_out", "h2", "h3", "h4", "h5", "h6"), default="dev"
+        "--set", choices=("dev", "held_out", "h2", "h3", "h4", "h5", "h6", "gallery"), default="dev"
     )
     parser.add_argument(
         "--controls", action="store_true", help="open each search task's results URL instead"

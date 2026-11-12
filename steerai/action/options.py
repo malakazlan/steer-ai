@@ -70,16 +70,29 @@ class _Descendants(Protocol):
 
 
 class UiaOptions:
-    """The ListItems in a ComboBox's subtree through one cached FindAll (`UiaClient`)."""
+    """The ListItems in a ComboBox's subtree through one cached FindAll (`UiaClient`); when the
+    subtree holds none, the ListItems of the elements its ControllerFor names: an ARIA combobox
+    opens a separate listbox named by `aria-controls` (W3C Core-AAM: ControllerFor), measured on
+    the gallery (g14, Chrome 156: empty while the list is hidden, the List once Expand opened
+    it)."""
 
     def __init__(self, client: _Descendants) -> None:
         self._client = client
 
     def list_items(self, combo: Any) -> list[OptionItem]:
-        found = self._client.cached_list_items(
-            combo,
-            (UIA_NAME_PROPERTY, UIA_IS_ENABLED_PROPERTY, UIA_IS_SELECTION_ITEM_AVAILABLE_PROPERTY),
+        properties = (
+            UIA_NAME_PROPERTY,
+            UIA_IS_ENABLED_PROPERTY,
+            UIA_IS_SELECTION_ITEM_AVAILABLE_PROPERTY,
         )
+        found = self._client.cached_list_items(combo, properties)
+        if not found:
+            controlled = combo.CurrentControllerFor
+            for index in range(int(controlled.Length) if controlled else 0):
+                found = [
+                    *found,
+                    *self._client.cached_list_items(controlled.GetElement(index), properties),
+                ]
         return [
             OptionItem(
                 name=str(element.CachedName or ""),

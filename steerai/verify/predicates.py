@@ -21,17 +21,21 @@ StateName = Literal["on", "off", "selected", "expanded", "collapsed"]
 STATE_NAMES: tuple[StateName, ...] = ("on", "off", "selected", "expanded", "collapsed")
 _STATES: frozenset[str] = frozenset(STATE_NAMES)
 STATE_ROLES: Mapping[StateName, frozenset[str]] = {
-    "on": frozenset({"CheckBox"}),
-    "off": frozenset({"CheckBox"}),
-    "selected": frozenset({"TabItem", "RadioButton", "ListItem"}),
+    "on": frozenset({"CheckBox", "Button"}),
+    "off": frozenset({"CheckBox", "Button"}),
+    "selected": frozenset({"TabItem", "RadioButton", "ListItem", "DataItem"}),
     "expanded": frozenset({"Button"}),
     "collapsed": frozenset({"Button"}),
 }
-"""The roles each wanted state is read on (W3 verdict ruling (c)): a CheckBox's ToggleState is
-on or off; a TabItem's, a RadioButton's or a listbox option's (ListItem, W3b) SelectionItem is
-selected; a disclosure Button's ExpandCollapseState is expanded (1 only) or collapsed (0 only;
-W5). Role and state agree. A ListItem is admitted only under a single-select List, read live
-before the gate (`loop._listbox_admission`)."""
+"""The roles each wanted state is read on: the static role ceiling of each capability (packet
+interaction-model-2026-11-12 §2, principal item 2), from Microsoft's control-pattern table and
+measured on the gallery (Chrome 156, `gallery_acts`). Toggle: a CheckBox (native, ARIA,
+tri-state; menuitemcheckbox is exposed as one) and a Button (`role=switch`, `aria-pressed`:
+Toggle flips it with a trusted click). SelectionItem: a TabItem, a RadioButton (menuitemradio is
+exposed as one), a listbox option (ListItem, W3b) and a grid row (DataItem: Select selects it).
+ExpandCollapse: a disclosure or menu Button (W5). Not admitted until measured: a TreeItem
+(Chrome ignores Expand on an ARIA tree item), a MenuItem. A ListItem or DataItem is admitted only
+under a single-select container, read live before the gate (`loop._listbox_admission`)."""
 
 
 def _clean_pattern(text: str, what: str) -> str:

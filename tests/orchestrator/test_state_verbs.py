@@ -65,8 +65,9 @@ def test_a_state_verb_is_raised_to_the_r1_floor() -> None:
     assert _step(verb="uncheck", risk="R0").risk == "R1"
 
 
-@pytest.mark.parametrize("role", ["Button", "RadioButton", "ListItem", "Edit"])
-def test_a_state_verb_targets_a_checkbox_only(role: str) -> None:
+@pytest.mark.parametrize("role", ["RadioButton", "ListItem", "Edit", "MenuItem", "TreeItem"])
+def test_a_state_verb_targets_a_toggling_control_only(role: str) -> None:
+    """Toggle's role ceiling: a CheckBox or a Button (interaction model §2)."""
     with pytest.raises(ValueError, match="CheckBox"):
         _step(role=role)
 
@@ -104,9 +105,9 @@ def test_a_plan_file_check_on_the_physical_path_is_refused() -> None:
     assert caught.value.path == "$.steps[0].path"
 
 
-def test_a_plan_file_check_on_a_button_is_refused() -> None:
+def test_a_plan_file_check_on_a_menu_item_is_refused() -> None:
     with pytest.raises(PlanError, match="CheckBox"):
-        plan_from_json(_plan({"target": {"role": "Button", "name": "Email alerts"}}))
+        plan_from_json(_plan({"target": {"role": "MenuItem", "name": "Email alerts"}}))
 
 
 # ---- template and strength ---------------------------------------------------------------------

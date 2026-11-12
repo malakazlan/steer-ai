@@ -103,9 +103,11 @@ CONSENT_PATTERNS: Mapping[str, Risk] = {
     "acknowledge": "R2",
     "certify": "R2",
 }
-"""5.13 [v2.58] the consent class (widget-verbs WV-08): words that make ticking a CheckBox or
-choosing a radio option a statement the person signs, read on the name and automation id of a
-CheckBox or a RadioButton only (W3 verdict ruling (a): "I agree / I do not agree" radios)."""
+"""5.13 [v2.58] the consent class (widget-verbs WV-08): words that make setting a value a
+statement the person signs, read on the name and automation id of a CheckBox or a RadioButton
+under any verb and, since [v2.77], of every `check`/`uncheck`/`select` target but a TabItem (a
+switch Button, a grid row): W3 verdict ruling (a) "I agree / I do not agree" radios; a tab
+changes the view and sets nothing."""
 CONSENT_ROLES: frozenset[str] = frozenset({"CheckBox", "RadioButton"})
 BILLING_PATTERNS: Mapping[str, Risk] = {
     "per month": "R2",
@@ -113,13 +115,20 @@ BILLING_PATTERNS: Mapping[str, Risk] = {
     "subscription": "R2",
     "billing": "R2",
 }
-"""W3-02: whole words that make a CheckBox or a RadioButton a billing choice, read on its name
-and its group name. "plan" alone is not one ("Plan your trip"); prices are `_BILLED`."""
+"""W3-02: whole words that make a value a billing choice, read on the name and the group name of
+a CheckBox, a RadioButton and, since [v2.77], every `check`/`uncheck`/`select` target but a
+TabItem (a switch "Auto-renew" in a "Subscription" fieldset is a CheckBox's case). "plan" alone
+is not one ("Plan your trip"); prices are `_BILLED`."""
 _BILLED = re.compile(r"[$€£¥₹]\s?\d|\d\s?[$€£¥₹]|/\s?(?:mo|month|yr|year)\b")
 """W3-02 on the comparable form (NFKC folds a full-width or small dollar sign to $): a currency
 symbol ($, euro, pound, yen, rupee) on either side of a digit, with or without a space, and a
 slash period ("/mo", "/yr", and their long forms)."""
 BILLING_ROLES: frozenset[str] = frozenset({"CheckBox", "RadioButton"})
+STATED_VERBS: frozenset[str] = frozenset({"check", "uncheck", "select"})
+"""The verbs that set a value the person states: the consent and billing classes read their
+targets on every role but a TabItem ([v2.77], WAI-ARIA 1.2: a switch is a checkbox and sets a
+value; a tab and expand/collapse change the view and set nothing)."""
+TAB_ROLE = "TabItem"
 GROUP_ROLE = "Group"
 GROUPED_ROLE = "RadioButton"
 """W3-03: the role whose nearest Group ancestor's name is read through the deny, control and
@@ -231,7 +240,9 @@ def deny_tier(
     """The tier the deny, control, consent and billing patterns alone raise the step to,
     without the plan's tier or the verb floor: R0 when nothing reads. `group_name` is the name
     of the resolved element's nearest ancestor when that is a Group: read for a RadioButton
-    through every class (W3-03), for a CheckBox through billing only (W3-02). A choose reads
+    through every class (W3-03), for a CheckBox and every other value-setting target but a tab
+    through billing only (W3-02, [v2.77]). Consent and billing read every `check`/`uncheck`/
+    `select` target but a TabItem, by name and automation id ([v2.77]). A choose reads
     every class on its option, its ComboBox's name and that group's name (W4-03). A select on a
     listbox option reads every class on the option's name and its List's name too (W3b, #206
     review: a `<select size>` is the same control as a `<select>`, so an option's tier never
@@ -244,13 +255,19 @@ def deny_tier(
     if step.verb == "select" and step.target.role == SELECTED_CONTROL_ROLE:
         return _listed_tier(step, bound_name, element_ids, group_name)
     role = step.target.role
-    group = [group_name] if group_name and role in BILLING_ROLES else []
+    # a value the person sets is a statement on every role but a tab ([v2.77]; WAI-ARIA 1.2:
+    # a switch is a checkbox): consent and billing read a switch Button under check/uncheck and
+    # a grid row under select as they read a CheckBox or a RadioButton, and billing reads their
+    # group name as W3-02 reads a CheckBox's; a tab and expand/collapse change the view (W3
+    # ruling (a), W5); the group name goes through every class for a RadioButton only (W3-03)
+    stated = step.verb in STATED_VERBS and role != TAB_ROLE
+    group = [group_name] if group_name and (role in BILLING_ROLES or stated) else []
     grouped = group if role == GROUPED_ROLE else []
     names = [step.target.name, *([bound_name] if bound_name else []), *grouped]
     ids = [i for i in (step.target.automation_id, *element_ids) if i]
     controlled = [step.target.name, *grouped] if role in CONTROL_ROLES else []
-    consenting = role in CONSENT_ROLES
-    billed = [step.target.name, *group] if role in BILLING_ROLES else []
+    consenting = role in CONSENT_ROLES or stated
+    billed = [step.target.name, *group] if role in BILLING_ROLES or stated else []
     if any(_BILLED.search(comparable(name)) for name in billed):
         risk = "R2"
     classes: tuple[tuple[Mapping[str, Risk], list[str], list[str]], ...] = (

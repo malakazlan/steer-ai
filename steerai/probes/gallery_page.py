@@ -129,9 +129,11 @@ PAGE = """<!doctype html>
 </section>
 <section aria-label="Fields">
   <label>Full name <input id="g22" type="text"></label>
-  <label>Find articles <input id="g23" type="search"></label>
+  <form action="/search.html" method="get">
+    <label>Find articles <input id="g23" type="search" name="q"></label>
+  </form>
   <label>Comments <textarea id="g24" rows="2"></textarea></label>
-  <a id="g25" href="#terms">Terms of service</a>
+  <a id="g25" href="/terms.html">Terms of service</a>
   <label>Volume <input id="g26" type="range" min="0" max="10" value="3"></label>
   <label>Quantity <input id="g27" type="number" min="1" max="9" value="1"></label>
   <span id="status" role="status"></span>
@@ -264,22 +266,50 @@ PAGE = """<!doctype html>
       put(e, {row: "g21", value: row.textContent.trim()});
     });
   });
-  on("g22", "change", function (e) { put(e, {row: "g22", value: this.value}); });
+  on("g22", "input", function (e) {
+    // keep only the last input of the row: typing fires one event per character
+    var log = JSON.parse(localStorage.getItem(KEY) || "[]").filter(function (x) {
+      return x.row !== "g22";
+    });
+    localStorage.setItem(KEY, JSON.stringify(log));
+    put(e, {row: "g22", value: this.value});
+  });
   on("g23", "keydown", function (e) {
-    if (e.key === "Enter") {
-      say("Results for " + this.value);
-      put(e, {row: "g23", value: this.value});
-    }
+    // logged before the form's own submission navigates to the results page
+    if (e.key === "Enter") { put(e, {row: "g23", value: this.value}); }
   });
   on("g24", "change", function (e) { put(e, {row: "g24", value: this.value}); });
-  on("g25", "click", function (e) {
-    e.preventDefault(); say("Terms opened"); put(e, {row: "g25"});
-  });
+  on("g25", "click", function (e) { put(e, {row: "g25"}); });
 })();
 </script>
 </body></html>
 """
 
 
+TERMS_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Terms of service</title></head>
+<body><h1>Terms of service</h1><p>These are the gallery's terms.</p></body></html>
+"""
+"""The page g25's link opens: a real navigation to a page titled like the link (the log row is
+written on the click, before the page goes, and stays in the origin's localStorage)."""
+
+
+SEARCH_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Gallery search</title></head>
+<body><h1 id="heading">Results</h1>
+<script>
+  var q = new URLSearchParams(location.search).get("q") || "";
+  document.title = q + " - Gallery search";
+  document.getElementById("heading").textContent = "Results for " + q;
+</script></body></html>
+"""
+"""The page g23's search form opens: titled with the words, as a real results page is."""
+
+
 def page_html() -> str:
     return PAGE.replace("LOG_KEY_HERE", LOG_KEY)
+
+
+def pages() -> dict[str, str]:
+    """Every page the gallery serves, by path."""
+    return {"/page.html": page_html(), "/terms.html": TERMS_PAGE, "/search.html": SEARCH_PAGE}

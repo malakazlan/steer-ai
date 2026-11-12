@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+import steerai.action.executor as executor_mod
 import steerai.action.readback as readback_mod
 from steerai.action.dispositions import Delivery
 from steerai.action.execution import UiaBindings
@@ -508,3 +509,52 @@ def test_the_option_never_reaches_a_repr_or_the_result() -> None:
     assert "Secret" not in repr(action)
     item = OptionItem(name="Secret plan", enabled=True, selectable=True, handle=None)
     assert "Secret" not in repr(item)
+
+
+# ---- an ARIA combobox closes itself on the option's click (gallery g14, Chrome 156) -------------
+
+
+@dataclass
+class ClosingItem(Item):
+    """An ARIA option: its Select is a click the page answers by closing the list; Chrome's tree
+    reads Collapsed 16-36 ms later (measured, n=3), so the first reads still say Expanded."""
+
+    reads_until_closed: int = 2
+
+    def GetCurrentPattern(self, pattern_id: int) -> Any:  # noqa: N802
+        pattern = super().GetCurrentPattern(pattern_id)
+        if pattern is None:
+            return None
+        item = self
+        select = pattern.Select
+
+        class _Closing:
+            def QueryInterface(self, _iface: Any) -> Any:  # noqa: N802
+                return self
+
+            def Select(self) -> None:  # noqa: N802
+                select()
+                item.combo.state = COLLAPSED
+                item.combo._pending = item.reads_until_closed
+
+        return _Closing()
+
+
+def test_a_box_that_closes_itself_after_select_gets_no_collapse(fast_clock: Any) -> None:
+    """Chrome performs Collapse on an author-managed combobox as a click (a toggle): sent while
+    the page's own close is still in flight, it re-opened the list (g14 `left_expanded` 1/3)."""
+    combo = Combo()
+    item = ClosingItem(combo, "Teal")
+    options = _source(combo, OptionItem(name="Teal", enabled=True, selectable=True, handle=item))
+    result = _executor(options).execute(_choose("Teal"), _snapshot(combo))
+    assert result.delivery is Delivery.DELIVERED_VERIFIED, result.to_dict()
+    assert combo.calls == ["expand", "select:Teal"], "no Collapse: the box closed itself"
+
+
+def test_a_box_that_stays_open_after_select_is_collapsed_after_the_wait(fast_clock: Any) -> None:
+    """A native select never closes itself (measured, n=3): after the bounded wait, Collapse."""
+    combo = Combo()
+    result = _executor(_source(combo, *_items(combo, "Large"))).execute(_choose(), _snapshot(combo))
+    assert result.delivery is Delivery.DELIVERED_VERIFIED, result.to_dict()
+    assert combo.calls == ["expand", "select:Large", "collapse"]
+    assert fast_clock["t"] >= executor_mod.SELF_CLOSE_WAIT_S

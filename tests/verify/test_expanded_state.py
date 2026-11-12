@@ -38,8 +38,6 @@ def test_a_button_reads_expanded_or_collapsed(wanted: Any) -> None:
 @pytest.mark.parametrize(
     ("role", "wanted"),
     [
-        ("Button", "on"),
-        ("Button", "off"),
         ("Button", "selected"),
         ("CheckBox", "expanded"),
         ("CheckBox", "collapsed"),
@@ -109,10 +107,6 @@ def test_a_collapsed_state_is_proven_by_its_collapse() -> None:
 @pytest.mark.parametrize(
     ("body", "path"),
     [
-        (
-            {"role": "Button", "name": "Shipping questions", "wanted": "on"},
-            "$.subgoals[0].condition.state.wanted",
-        ),
         (
             {"role": "Button", "name": "Shipping questions", "wanted": "selected"},
             "$.subgoals[0].condition.state.wanted",
