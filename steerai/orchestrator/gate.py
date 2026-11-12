@@ -120,6 +120,10 @@ _BILLED = re.compile(r"[$€£¥₹]\s?\d|\d\s?[$€£¥₹]|/\s?(?:mo|month|yr|
 symbol ($, euro, pound, yen, rupee) on either side of a digit, with or without a space, and a
 slash period ("/mo", "/yr", and their long forms)."""
 BILLING_ROLES: frozenset[str] = frozenset({"CheckBox", "RadioButton"})
+STATED_VERBS: frozenset[str] = frozenset({"check", "uncheck", "select"})
+"""The verbs that set a value the person states (the consent and billing classes read their
+targets whatever the role); expand and collapse change the view."""
+TAB_ROLE = "TabItem"
 GROUP_ROLE = "Group"
 GROUPED_ROLE = "RadioButton"
 """W3-03: the role whose nearest Group ancestor's name is read through the deny, control and
@@ -244,13 +248,19 @@ def deny_tier(
     if step.verb == "select" and step.target.role == SELECTED_CONTROL_ROLE:
         return _listed_tier(step, bound_name, element_ids, group_name)
     role = step.target.role
+    # a value the person sets is a statement whatever the control's role (packet
+    # interaction-model-2026-11-12, principal item 4): the consent and billing classes read a
+    # switch Button under check/uncheck and a grid row under select as they read a CheckBox or
+    # a RadioButton. Selecting a tab and opening a panel change the view, not a value: they keep
+    # W3 ruling (a) and W5; group names keep W3-02/W3-03
+    stated = step.verb in STATED_VERBS and role != TAB_ROLE
     group = [group_name] if group_name and role in BILLING_ROLES else []
     grouped = group if role == GROUPED_ROLE else []
     names = [step.target.name, *([bound_name] if bound_name else []), *grouped]
     ids = [i for i in (step.target.automation_id, *element_ids) if i]
     controlled = [step.target.name, *grouped] if role in CONTROL_ROLES else []
-    consenting = role in CONSENT_ROLES
-    billed = [step.target.name, *group] if role in BILLING_ROLES else []
+    consenting = role in CONSENT_ROLES or stated
+    billed = [step.target.name, *group] if role in BILLING_ROLES or stated else []
     if any(_BILLED.search(comparable(name)) for name in billed):
         risk = "R2"
     classes: tuple[tuple[Mapping[str, Risk], list[str], list[str]], ...] = (

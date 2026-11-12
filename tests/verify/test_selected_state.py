@@ -50,7 +50,7 @@ def test_the_role_and_the_wanted_value_must_agree(role: str, wanted: Any) -> Non
         CheckState(role=role, name_pattern="Details", wanted=wanted)
 
 
-@pytest.mark.parametrize("role", ["TreeItem", "DataItem", "MenuItem"])
+@pytest.mark.parametrize("role", ["TreeItem", "MenuItem", "Hyperlink"])
 def test_selected_on_another_role_is_refused(role: str) -> None:
     with pytest.raises(ValueError, match="role"):
         CheckState(role=role, name_pattern="Details", wanted="selected")

@@ -59,9 +59,9 @@ def test_select_runs_on_the_semantic_selection_item_path() -> None:
 
 
 def test_each_state_verb_maps_to_its_roles_and_its_wanted_value() -> None:
-    assert state_roles("check") == frozenset({"CheckBox"})
-    assert state_roles("uncheck") == frozenset({"CheckBox"})
-    assert state_roles("select") == frozenset({"TabItem", "RadioButton", "ListItem"})
+    assert state_roles("check") == frozenset({"CheckBox", "Button"})
+    assert state_roles("uncheck") == frozenset({"CheckBox", "Button"})
+    assert state_roles("select") == frozenset({"TabItem", "RadioButton", "ListItem", "DataItem"})
     assert dict(STATE_WANTED) == {
         "check": "on",
         "uncheck": "off",
@@ -82,7 +82,7 @@ def test_select_is_raised_to_the_r1_floor() -> None:
     assert _step(risk="R0").risk == "R1"
 
 
-@pytest.mark.parametrize("role", ["CheckBox", "TreeItem", "DataItem", "Button", "Hyperlink"])
+@pytest.mark.parametrize("role", ["CheckBox", "TreeItem", "MenuItem", "Button", "Hyperlink"])
 def test_select_on_another_role_is_refused(role: str) -> None:
     with pytest.raises(ValueError, match="ListItem or RadioButton or TabItem"):
         _step(role=role)
@@ -131,7 +131,7 @@ def test_a_plan_file_select_on_a_listbox_option_decodes() -> None:
         ({"path": "physical"}, "$.steps[0].path"),
         ({"preapproved_by_request": True}, "$.steps[0].preapproved_by_request"),
         ({"target": {"role": "CheckBox", "name": "Details"}}, "$.steps[0].target.role"),
-        ({"target": {"role": "DataItem", "name": "Details"}}, "$.steps[0].target.role"),
+        ({"target": {"role": "MenuItem", "name": "Details"}}, "$.steps[0].target.role"),
         ({"target": {"role": "TreeItem", "name": "Details"}}, "$.steps[0].target.role"),
         (
             {"verb": "uncheck", "target": {"role": "RadioButton", "name": "Annual"}},

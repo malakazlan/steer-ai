@@ -46,10 +46,12 @@ def test_a_non_state_role_is_refused(role: str) -> None:
         CheckState(role=role, name_pattern="Email alerts", wanted="on")
 
 
-def test_a_button_is_never_on_or_off() -> None:
-    """W5: a Button is a state role (expanded / collapsed), so the disagreement names wanted."""
-    with pytest.raises(ValueError, match="wanted for a Button must be expanded or collapsed"):
-        CheckState(role="Button", name_pattern="Email alerts", wanted="on")
+def test_a_button_is_on_or_off_and_never_selected() -> None:
+    """Interaction model §2: a Button toggles (a switch, `aria-pressed`) and opens (W5), and is
+    never a selection item, so the disagreement names wanted."""
+    assert CheckState(role="Button", name_pattern="Dark mode", wanted="on").wanted == "on"
+    with pytest.raises(ValueError, match="wanted for a Button must be"):
+        CheckState(role="Button", name_pattern="Email alerts", wanted="selected")
 
 
 @pytest.mark.parametrize("name", ["", "   ", "\t"])
@@ -161,7 +163,7 @@ def test_state_is_never_a_step_expect_at_any_depth(expect: dict[str, Any]) -> No
     ("body", "field"),
     [
         ({"role": "MenuItem", "name": "Email alerts", "wanted": "on"}, "role"),
-        ({"role": "Button", "name": "Email alerts", "wanted": "on"}, "wanted"),
+        ({"role": "Button", "name": "Email alerts", "wanted": "selected"}, "wanted"),
         ({"role": "CheckBox", "name": "", "wanted": "on"}, "name"),
         ({"role": "CheckBox", "name": "Email alerts", "wanted": "selected"}, "wanted"),
         ({"role": "CheckBox", "name": "Email alerts"}, "wanted"),

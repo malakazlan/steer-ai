@@ -92,10 +92,13 @@ def test_the_verbs_on_another_role_are_refused(verb: str, role: str) -> None:
         _step(verb, role=role)
 
 
-@pytest.mark.parametrize("verb", ["check", "uncheck", "select"])
-def test_the_other_state_verbs_still_refuse_a_button(verb: str) -> None:
+def test_select_still_refuses_a_button_and_check_takes_a_toggling_one() -> None:
+    """Interaction model §2: a Button with Toggle (a switch, `aria-pressed`) is a check target;
+    a Button is never a selection item."""
     with pytest.raises(ValueError, match="targets a"):
-        _step(verb, role="Button")
+        _step("select", role="Button")
+    assert _step("check", role="Button").verb == "check"
+    assert _step("uncheck", role="Button").verb == "uncheck"
 
 
 @pytest.mark.parametrize("verb", ["expand", "collapse"])
@@ -148,7 +151,6 @@ def test_a_plan_file_step_decodes_at_the_r1_floor(verb: str) -> None:
             {"verb": "collapse", "target": {"role": "CheckBox", "name": "Shipping questions"}},
             "$.steps[0].target.role",
         ),
-        ({"verb": "check"}, "$.steps[0].target.role"),
         ({"verb": "select"}, "$.steps[0].target.role"),
         ({"params": {"option": "Large"}}, "$.steps[0].params.option"),
     ],

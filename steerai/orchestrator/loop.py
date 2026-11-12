@@ -1703,6 +1703,8 @@ class Session:
             for e in snapshot.elements
             if e.role == target.role and normalise_name(e.name).casefold() == wanted
         ]
+        if target.role == GRID_ITEM_ROLE:
+            matches = _outermost(matches, snapshot)
         if not matches:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_match")
         if len(matches) > 1:
@@ -3294,6 +3296,27 @@ def _measured_provider(step: Step, snapshot: Snapshot) -> None:
 
 LISTBOX_ITEM_ROLE = "ListItem"
 LISTBOX_ROLE = "List"
+GRID_ITEM_ROLE = "DataItem"
+GRID_ROLE = "DataGrid"
+
+
+def _outermost(matches: list[Element], snapshot: Snapshot) -> list[Element]:
+    """A grid row and its cell carry one name as two DataItems (gallery, Chrome 156): the cell is
+    part of the row, the row is the selection unit, so a match inside another match is dropped."""
+    by_id = {e.id: e for e in snapshot.elements}
+    ids = {e.id for e in matches}
+
+    def nested(element: Element) -> bool:
+        parent = element.parent_id
+        while parent is not None:
+            if parent in ids:
+                return True
+            parent = by_id[parent].parent_id if parent in by_id else None
+        return False
+
+    return [e for e in matches if not nested(e)]
+
+
 _NOT_A_LISTBOX = frozenset({"Tree", "DataGrid"})
 
 
@@ -3308,7 +3331,7 @@ def _listbox_admission(step: Step, snapshot: Snapshot, element_id: int, live: ob
     `<select size>` both read Selection with CanSelectMultiple false, and their items expose
     SelectionItem. The ancestors are the snapshot's; the patterns are read live."""
     element = snapshot.element(element_id)
-    if step.verb != "select" or element.role != LISTBOX_ITEM_ROLE:
+    if step.verb != "select" or element.role not in (LISTBOX_ITEM_ROLE, GRID_ITEM_ROLE):
         return
     container: Element | None = None
     parent_id = element.parent_id
@@ -3316,9 +3339,14 @@ def _listbox_admission(step: Step, snapshot: Snapshot, element_id: int, live: ob
         ancestor = snapshot.element(parent_id)
         if ancestor.role == CHOOSE_ROLE:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "in_combobox")
-        if ancestor.role in _NOT_A_LISTBOX:
+        if element.role == GRID_ITEM_ROLE:
+            # a grid row's container is its grid (principal item 4: the single-select rule reads
+            # the SelectionItem's container for every role but TabItem and RadioButton)
+            if container is None and ancestor.role == GRID_ROLE:
+                container = ancestor
+        elif ancestor.role in _NOT_A_LISTBOX:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "not_a_listbox_item")
-        if container is None and ancestor.role == LISTBOX_ROLE:
+        elif container is None and ancestor.role == LISTBOX_ROLE:
             container = ancestor
         parent_id = ancestor.parent_id
     if container is None:
