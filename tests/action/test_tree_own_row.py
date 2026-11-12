@@ -174,3 +174,10 @@ def test_a_plain_group_and_text_in_the_row_stay_the_items_hit() -> None:
     label = _el(7, "Text", "Projects", (154, 724, 220, 742), 6)
     ids = own_hit_ids(_snapshot(OPEN, icon_box, label, GROUP, ALPHA), OPEN)
     assert ids == frozenset({OPEN.runtime_id, icon_box.runtime_id, label.runtime_id})
+
+
+def test_text_inside_the_childrens_group_is_not_the_items_hit() -> None:
+    """A "Load more" line in the children's list is the list's, not the item's row."""
+    more = _el(6, "Text", "Load more", (182, 768, 300, 780), 4)
+    ids = own_hit_ids(_snapshot(OPEN, GROUP, ALPHA, more), OPEN)
+    assert ids == frozenset({OPEN.runtime_id})
