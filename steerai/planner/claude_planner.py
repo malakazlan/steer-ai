@@ -73,7 +73,8 @@ of these is acted on by click: a link, a plain button, a menu item. A visual tab
 Hyperlink or a Button stays a click. A ComboBox you type into, such as a search box, stays
 focus and type. A menu opens with expand on its button; its items are then listed (a menu
 checkbox or radio shows as a CheckBox or a RadioButton with its token). A TreeItem is opened,
-closed and chosen by click, whatever its line shows.
+closed and chosen by click, whatever its line shows. A menu or a panel opened only to reach
+an item inside it is a step, never a subgoal condition: the subgoal is the item's own effect.
 
 An open step: {{"verb": "open", "target": {{"role": "App", "name": <one of {sorted(APPS)}>}},
 "params": {{"site": <one of {sorted(SITES)}>, "text": <the words to search>}}}}. A site opens in

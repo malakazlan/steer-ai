@@ -535,8 +535,12 @@ fold: class C's shape, the person answers `kw`); MetaCPAN, NuGet and Flathub tit
 results with the words."""
 
 
-def _row(task_id: str, goal: str, event: dict[str, Any]) -> Task:
-    return Task(task_id, goal, "gallery", "gallery_event", json.dumps(event, sort_keys=True))
+def _row(
+    task_id: str, goal: str, event: dict[str, Any], approve: frozenset[str] = frozenset()
+) -> Task:
+    return Task(
+        task_id, goal, "gallery", "gallery_event", json.dumps(event, sort_keys=True), approve
+    )
 
 
 GALLERY: tuple[Task, ...] = (
@@ -562,7 +566,12 @@ GALLERY: tuple[Task, ...] = (
     _row("g20", "open the Projects folder", {"row": "g20", "open": True}),
     _row("g21", "select Order 1002 in the orders", {"row": "g21", "value": "Order 1002"}),
     _row("g22", "type Ada Lovelace as the full name", {"row": "g22", "value": "Ada Lovelace"}),
-    _row("g23", "search the articles for automation", {"row": "g23", "value": "automation"}),
+    _row(
+        "g23",
+        "search the articles for automation",
+        {"row": "g23", "value": "automation"},
+        frozenset({"automation"}),
+    ),
     _row("g25", "open the Terms of service", {"row": "g25"}),
 )
 """The gallery rows as goals (packet interaction-model-2026-11-12 §5): the regression bar before

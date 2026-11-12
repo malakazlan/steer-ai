@@ -118,7 +118,7 @@ from steerai.verify.t1 import (
 )
 from steerai.verify.url_query import LoadKind, UrlBefore, load_kind
 from steerai.world.address_bar import DocumentUrl
-from steerai.world.elements import Element
+from steerai.world.elements import Element, outermost
 from steerai.world.fingerprint import similarity
 from steerai.world.model import Snapshot, normalise_name
 from steerai.world.people import MAX_CANDIDATES, lookalike_only, name_part
@@ -1704,7 +1704,7 @@ class Session:
             if e.role == target.role and normalise_name(e.name).casefold() == wanted
         ]
         if target.role == GRID_ITEM_ROLE:
-            matches = _outermost(matches, snapshot)
+            matches = outermost(matches, snapshot.elements)
         if not matches:
             raise _StepFailureError(ErrorCode.ELEMENT_NOT_FOUND, "no_match")
         if len(matches) > 1:
@@ -3298,23 +3298,6 @@ LISTBOX_ITEM_ROLE = "ListItem"
 LISTBOX_ROLE = "List"
 GRID_ITEM_ROLE = "DataItem"
 GRID_ROLE = "DataGrid"
-
-
-def _outermost(matches: list[Element], snapshot: Snapshot) -> list[Element]:
-    """A grid row and its cell carry one name as two DataItems (gallery, Chrome 156): the cell is
-    part of the row, the row is the selection unit, so a match inside another match is dropped."""
-    by_id = {e.id: e for e in snapshot.elements}
-    ids = {e.id for e in matches}
-
-    def nested(element: Element) -> bool:
-        parent = element.parent_id
-        while parent is not None:
-            if parent in ids:
-                return True
-            parent = by_id[parent].parent_id if parent in by_id else None
-        return False
-
-    return [e for e in matches if not nested(e)]
 
 
 _NOT_A_LISTBOX = frozenset({"Tree", "DataGrid"})

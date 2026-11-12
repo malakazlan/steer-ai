@@ -264,7 +264,14 @@ PAGE = """<!doctype html>
       put(e, {row: "g21", value: row.textContent.trim()});
     });
   });
-  on("g22", "change", function (e) { put(e, {row: "g22", value: this.value}); });
+  on("g22", "input", function (e) {
+    // keep only the last input of the row: typing fires one event per character
+    var log = JSON.parse(localStorage.getItem(KEY) || "[]").filter(function (x) {
+      return x.row !== "g22";
+    });
+    localStorage.setItem(KEY, JSON.stringify(log));
+    put(e, {row: "g22", value: this.value});
+  });
   on("g23", "keydown", function (e) {
     if (e.key === "Enter") {
       say("Results for " + this.value);

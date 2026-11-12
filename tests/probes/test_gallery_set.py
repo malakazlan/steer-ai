@@ -32,3 +32,13 @@ def test_a_row_passes_only_on_its_own_trusted_event() -> None:
     assert judged([{"row": "g03", "on": False}]) is False
     assert judged([{"row": "g02", "on": True}]) is False
     assert judged([{"row": "g03", "on": True, "untrusted": True}]) is False
+
+
+def test_the_typed_row_logs_its_last_input_and_the_submit_row_approves_its_words() -> None:
+    """Gallery g22 logged `change`, which fires on blur (Steer typed and the row saw nothing);
+    g23's R2 Enter asked and the scripted person had no approved text."""
+    html = page_html()
+    assert 'on("g22", "input"' in html
+    assert "keep only the last" in html
+    g23 = next(t for t in GALLERY if t.task_id == "g23")
+    assert g23.approve == frozenset({"automation"})

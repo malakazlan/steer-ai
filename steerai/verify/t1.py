@@ -55,7 +55,7 @@ from steerai.verify.predicates import (
     name_matches,
 )
 from steerai.verify.scope import Scope, container_of, resolve_scope
-from steerai.world.elements import Element
+from steerai.world.elements import Element, outermost
 from steerai.world.model import Snapshot, normalise_name, resolve_in
 from steerai.world.twins import PinKey, pinned_twin
 
@@ -816,11 +816,14 @@ def _check_state(predicate: CheckState, snapshot: Snapshot, ctx: Context) -> Ver
     after its step's own check passed, so nothing is still in flight."""
     live = _live(ctx, "CheckState")
     wanted = normalise_name(predicate.name_pattern).casefold()
-    found = [
-        e
-        for e in snapshot.elements
-        if e.role == predicate.role and normalise_name(e.name).casefold() == wanted
-    ]
+    found = outermost(
+        [
+            e
+            for e in snapshot.elements
+            if e.role == predicate.role and normalise_name(e.name).casefold() == wanted
+        ],
+        snapshot.elements,
+    )
     if not found:
         return _plain("target_not_found", settles=True)
     if len(found) > 1:

@@ -161,3 +161,16 @@ def test_a_row_of_a_multi_select_grid_is_refused_before_the_gate() -> None:
     assert result.ok is False
     assert result.evidence.get("detail") == "multi_select", result.to_dict()
     assert h.semantic.calls == []
+
+
+def test_a_selected_state_condition_on_a_grid_row_reads_the_row() -> None:
+    """Gallery g21 (0/3): the select ran, but `state DataItem "Order 1001" selected` found the
+    row and its same-named cell and read ambiguous; a condition reads the row as the step does."""
+    from steerai.verify.predicates import CheckState  # noqa: PLC0415 - this test only
+
+    h, boxes = _grid_harness()
+    assert h.session.run_step(_step("select", "DataItem", "Order 1001")).ok is True
+    condition = CheckState(role="DataItem", name_pattern="Order 1001", wanted="selected")
+    assert h.session._holds_now(condition, h.world.observe(0x10)) is True
+    boxes.selected[ROW[3]] = False
+    assert h.session._holds_now(condition, h.world.observe(0x10)) is False

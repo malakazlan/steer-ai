@@ -1292,3 +1292,15 @@ def test_a_click_on_a_collapsed_tree_item_is_runnable() -> None:
     )
     assert planner.plan(_caps_request(screen)).plan.steps[0].verb == "click"
     assert len(parse.calls) == 1
+
+
+def test_the_prompt_says_a_menu_opened_to_reach_an_item_is_no_subgoal() -> None:
+    """Gallery g17 (0/3): "copy the link from the Share menu" planned `state Button "Share"
+    expanded` as a subgoal; the menu closes when its item is clicked, so the re-read before done
+    unticked it and the task replanned. Opening a menu to reach an item is a step, not an end."""
+    system, _ = build_prompt(_caps_request())
+    prose = " ".join(system.split())
+    assert (
+        "A menu or a panel opened only to reach an item inside it is a step, never a subgoal "
+        "condition: the subgoal is the item's own effect." in prose
+    )
