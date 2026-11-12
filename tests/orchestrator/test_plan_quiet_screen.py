@@ -15,7 +15,7 @@ import pytest
 
 from steerai import run as run_mod
 from steerai.errors import ErrorCode, SteerError
-from steerai.run import PLAN_QUIET_S, warm_up
+from steerai.run import PLAN_QUIET_S, WarmRead, warm_up, warm_up_read
 from steerai.world.model import Snapshot
 from tests.orchestrator.fakes import Row, build
 
@@ -139,13 +139,52 @@ def test_a_quiet_window_must_be_positive(quiet_s: float) -> None:
         )
 
 
-def test_every_plan_screen_waits_for_the_quiet_window(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`run._screen` (the first plan and every replan) reads through the quiet window."""
+def test_a_quiet_read_is_not_capped_and_a_read_that_never_settles_is() -> None:
+    """#233: the plan read's capped rate is traced, so the read says how it ended."""
+    quiet = Page(SKELETON)
+    read = warm_up_read(
+        quiet.observe, cap_s=10.0, monotonic=lambda: quiet.t, sleep=quiet.sleep, quiet_s=2.0
+    )
+    assert (read.snapshot.node_count, read.capped) == (598, False)
+    busy = Page([(i * 0.25, 100 + i) for i in range(100)])
+    read = warm_up_read(
+        busy.observe, cap_s=4.0, monotonic=lambda: busy.t, sleep=busy.sleep, quiet_s=2.0
+    )
+    assert read.capped
+
+
+def test_a_kill_during_the_quiet_read_stops_it_before_the_next_observe() -> None:
+    """TK-22 on the plan read (#233): the read lasts 2-10 s, the kill is checked every poll."""
+    page = Page(SKELETON)
+    killed = {"now": False}
+
+    def sleep(seconds: float) -> None:
+        page.sleep(seconds)
+        killed["now"] = page.t >= 0.5
+
+    with pytest.raises(SteerError) as info:
+        warm_up_read(
+            page.observe,
+            cap_s=10.0,
+            monotonic=lambda: page.t,
+            sleep=sleep,
+            quiet_s=PLAN_QUIET_S,
+            kill=lambda: killed["now"],
+        )
+    assert info.value.code is ErrorCode.GATE_BLOCKED
+    assert page.observed == [0.0, 0.25]
+
+
+def test_every_plan_screen_reads_quiet_under_the_kill_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`run._screen` (the first plan and every replan) reads through the quiet window, passes
+    the kill switch on, and says whether the read hit the cap."""
     seen: dict[str, Any] = {}
 
-    def fake_warm_up(observe: Callable[[], Snapshot], **kwargs: Any) -> Snapshot:
+    def fake_read(observe: Callable[[], Snapshot], **kwargs: Any) -> WarmRead:
         seen.update(kwargs)
-        return observe()
+        return WarmRead(observe(), capped=True)
 
     class FakeModel:
         def __init__(self, _client: Any) -> None:
@@ -154,9 +193,15 @@ def test_every_plan_screen_waits_for_the_quiet_window(monkeypatch: pytest.Monkey
         def observe(self, _hwnd: int, **_kw: Any) -> Snapshot:
             return build([(1, "Button", "Go", (42, 1), None)], snapshot_id="s", taken_at=0.0)
 
-    monkeypatch.setattr(run_mod, "warm_up", fake_warm_up)
+    def kill() -> bool:
+        return False
+
+    monkeypatch.setattr(run_mod, "warm_up_read", fake_read)
     monkeypatch.setattr("steerai.probes.uia_snapshot.UiaClient", object)
     monkeypatch.setattr("steerai.world.model.WorldModel", FakeModel)
-    run_mod._screen(0x10)
+    read = run_mod._screen(0x10, kill)
     assert seen["quiet_s"] == PLAN_QUIET_S
     assert seen["cap_s"] == run_mod.DEFAULT_WARMUP_S
+    assert seen["kill"] is kill
+    assert read.capped
+    assert len(read.lines) == 1

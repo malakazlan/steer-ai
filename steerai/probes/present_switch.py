@@ -18,7 +18,7 @@ import secrets
 import shutil
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -221,10 +221,10 @@ def _measure(  # noqa: PLR0913 - one run's state, passed once by keyword
     )
     seen: list[int] = []
 
-    def screen(hwnd: int) -> tuple[str, Sequence[str]]:
-        title, lines = run_mod._screen(hwnd)
-        seen.append(len(lines))
-        return title, lines
+    def screen(hwnd: int, kill: Callable[[], bool] | None) -> run_mod.ScreenRead:
+        read = run_mod._screen(hwnd, kill)
+        seen.append(len(read.lines))
+        return read
 
     deps = run_mod._real_deps().replace(
         screen=screen,

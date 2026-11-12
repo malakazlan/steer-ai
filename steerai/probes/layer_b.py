@@ -324,10 +324,10 @@ def _measure(  # noqa: PLR0913 - one run's whole state, passed once by keyword
     _in_front(window.hwnd)
     seen: list[str] = []
 
-    def screen(hwnd: int) -> tuple[str, Sequence[str]]:
-        title, lines = run_mod._screen(hwnd)
-        seen.append(title + "\n" + "\n".join(lines))
-        return title, lines
+    def screen(hwnd: int, kill: Callable[[], bool] | None) -> run_mod.ScreenRead:
+        read = run_mod._screen(hwnd, kill)
+        seen.append(read.title + "\n" + "\n".join(read.lines))
+        return read
 
     plan_path = tmp / "task.plan.json"
     if kind == "control":

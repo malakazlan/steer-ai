@@ -7,12 +7,13 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from steerai.orchestrator.gate import Ask
-from steerai.run import EXIT_DONE, run
+from steerai.run import EXIT_DONE, ScreenRead, run
 from tests.orchestrator.test_run import FakeSession, World, _done, _options, _run
 from tests.orchestrator.test_run_goal import FakePlanner, _outcome, _plan
 
@@ -53,8 +54,9 @@ def test_a_made_confirmer_answers_the_preview_and_reaches_the_session(tmp_path: 
         made.append(confirmer)
         return confirmer
 
-    def screen(_hwnd: int) -> tuple[str, list[str]]:
-        return "Amir Khan - Chat - Google Chrome", ['1  Edit "Message"   [0,0,10,10]']
+    def screen(_hwnd: int, _kill: Callable[[], bool] | None) -> ScreenRead:
+        lines = ['1  Edit "Message"   [0,0,10,10]']
+        return ScreenRead("Amir Khan - Chat - Google Chrome", lines, capped=False)
 
     argv = [
         "--goal",
