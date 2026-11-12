@@ -50,6 +50,8 @@ class Element:
     runtime_id: tuple[int, ...] = ()
     parent_id: int | None = None
     secure: bool = False
+    caps: tuple[str, ...] = ()
+    """What the element can do, as closed tokens (`steerai.world.capabilities`)."""
 
     @property
     def has_area(self) -> bool:
@@ -167,6 +169,8 @@ def format_lines(elements: Sequence[Element], *, remaining: int = 0) -> list[str
             line += " secure"
         if element.offscreen:
             line += " offscreen"
+        for token in element.caps:
+            line += f" {token}"
         lines.append(line)
     if remaining > 0:
         lines.append(f"(... {remaining} more not shown)")

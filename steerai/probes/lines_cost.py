@@ -23,7 +23,7 @@ import tempfile
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +61,12 @@ PAGES = (
     Page("h2", "load more items in the feed", "h2"),
     Page("notepad", "type hello from steer in notepad", "notepad"),
 )
+
+
+def uncapped_lines(snapshot: Snapshot) -> list[str]:
+    """The lines as they were before the capability tokens (packet interaction-model-2026-11-12):
+    the same snapshot with every element's tokens removed."""
+    return replace(snapshot, elements=[replace(e, caps=()) for e in snapshot.elements]).lines
 
 
 def before_lines(snapshot: Snapshot) -> list[str]:
@@ -166,7 +172,7 @@ def _plans(
     return {"p50_ms": round(stats.p50_ms), "p95_ms": round(stats.p95_ms), "calls": calls}
 
 
-def measure(page: Page, runs: int) -> dict[str, Any]:
+def measure(page: Page, runs: int, compare: str = "offscreen") -> dict[str, Any]:
     import anthropic  # noqa: PLC0415 - the SDK, only for a live run
 
     from steerai.planner.claude_planner import ClaudePlanner  # noqa: PLC0415
@@ -183,9 +189,11 @@ def measure(page: Page, runs: int) -> dict[str, Any]:
             started = time.perf_counter()
             after = snapshot.lines
             lines_ms = (time.perf_counter() - started) * 1000
-        before = before_lines(snapshot)
+        before = before_lines(snapshot) if compare == "offscreen" else uncapped_lines(snapshot)
         row: dict[str, Any] = {
             "page": page.name,
+            "compare": compare,
+            "capped_lines": sum(bool(e.caps) for e in snapshot.elements),
             "elements": len(snapshot.elements),
             "offscreen_elements": sum(e.offscreen for e in snapshot.elements),
             "lines_before": len(before),
@@ -209,11 +217,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="The planner cost of offscreen lines.")
     parser.add_argument("--runs", type=int, default=5, help="planner calls per variant; 0: none")
     parser.add_argument("--page", choices=[p.name for p in PAGES], action="append")
+    parser.add_argument(
+        "--compare",
+        choices=("offscreen", "caps"),
+        default="offscreen",
+        help="the before variant: no offscreen lines, or no capability tokens",
+    )
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     for page in PAGES:
         if args.page and page.name not in args.page:
             continue
-        sys.stdout.write(json.dumps(measure(page, args.runs)) + "\n")
+        sys.stdout.write(json.dumps(measure(page, args.runs, args.compare)) + "\n")
         sys.stdout.flush()
     return 0
 
