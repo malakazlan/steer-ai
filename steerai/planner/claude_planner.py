@@ -38,7 +38,7 @@ DEFAULT_MAX_TOKENS = 8192
 """Unmeasured: enough for the 6.3 form of a ten-step plan; a `max_tokens` stop is `truncated`."""
 DEFAULT_MAX_RETRIES = 1
 EFFORT = "medium"
-PROMPT_VERSION = "planner-24"
+PROMPT_VERSION = "planner-25"
 MECHANICAL_VERBS = frozenset(
     {"type", "focus", "open", "check", "uncheck", "select", "choose", "expand", "collapse"}
 )
@@ -72,8 +72,9 @@ element whose line shows toggle, selected, selectable, expanded or collapsed. A 
 of these is acted on by click: a link, a plain button, a menu item. A visual tab that is a
 Hyperlink or a Button stays a click. A ComboBox you type into, such as a search box, stays
 focus and type. A menu opens with expand on its button; its items are then listed (a menu
-checkbox or radio shows as a CheckBox or a RadioButton with its token). A TreeItem is opened,
-closed and chosen by click, whatever its line shows. A menu or a panel opened only to reach
+checkbox or radio shows as a CheckBox or a RadioButton with its token). A TreeItem whose line
+shows expanded or collapsed is opened and closed by expand or collapse; a TreeItem is chosen by
+click, whatever its line shows. A menu or a panel opened only to reach
 an item inside it is a step, never a subgoal condition: the subgoal is the item's own effect.
 
 An open step: {{"verb": "open", "target": {{"role": "App", "name": <one of {sorted(APPS)}>}},
@@ -131,8 +132,8 @@ proven by a check or uncheck step of the same subgoal on that exact name; that s
 send, submit or delete. When the goal wants a tab, a radio option, a list option or a grid row
 chosen, use state: role TabItem, RadioButton, ListItem or DataItem with wanted selected, proven
 by a select step of the same subgoal on that exact name. When the goal wants a panel, a menu or a
-section opened or closed, use state: role Button with wanted expanded or collapsed, proven by an
-expand or collapse step of the same subgoal on that exact name.
+section opened or closed, use state: role Button or TreeItem with wanted expanded or collapsed,
+proven by an expand or collapse step of the same subgoal on that exact name.
 
 Selecting what may already be selected (opening a chat, a conversation, a mail or a list row
 that can already be the open one): give it its own subgoal of exactly one click on the item,

@@ -144,7 +144,6 @@ def test_a_plan_file_step_decodes_at_the_r1_floor(verb: str) -> None:
         ({"verb": "collapse", "path": "physical"}, "$.steps[0].path"),
         ({"preapproved_by_request": True}, "$.steps[0].preapproved_by_request"),
         ({"verb": "collapse", "preapproved_by_request": True}, "$.steps[0].preapproved_by_request"),
-        ({"target": {"role": "MenuItem", "name": "Shipping questions"}}, "$.steps[0].target.role"),
         ({"target": {"role": "ComboBox", "name": "Shipping questions"}}, "$.steps[0].target.role"),
         ({"target": {"role": "MenuItem", "name": "Shipping questions"}}, "$.steps[0].target.role"),
         (

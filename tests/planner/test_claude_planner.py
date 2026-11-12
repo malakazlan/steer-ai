@@ -221,7 +221,7 @@ def test_a_continuation_after_no_effect_submits_on_the_one_button_beside_the_fie
     )
     assert "unless the listing shows exactly one Button" not in prose
     assert "whose name says it submits" not in prose
-    assert PROMPT_VERSION == "planner-24"
+    assert PROMPT_VERSION == "planner-25"
 
 
 def test_the_prompt_says_a_selection_click_is_proven_by_present() -> None:
@@ -911,8 +911,8 @@ def test_the_prompt_teaches_expand_collapse_and_their_state() -> None:
     assert "expand / collapse (open or close a panel, a menu or a section)" in prose
     assert "expanded or collapsed: expand or collapse (on a ComboBox: choose)" in prose
     assert (
-        "use state: role Button with wanted expanded or collapsed, proven by an expand or "
-        "collapse step of the same subgoal on that exact name" in prose
+        "use state: role Button or TreeItem with wanted expanded or collapsed, proven by an "
+        "expand or collapse step of the same subgoal on that exact name" in prose
     )
     assert (
         'Do not write "expect" for focus, type, open, check, uncheck, select, choose, expand or '
@@ -1106,7 +1106,7 @@ def test_the_prompt_teaches_select_on_a_listbox_option() -> None:
     assert "an option of a list box" in prose
     assert "selected or selectable: select" in prose
     assert "state: role TabItem, RadioButton, ListItem or DataItem with wanted selected" in prose
-    assert PROMPT_VERSION == "planner-24"
+    assert PROMPT_VERSION == "planner-25"
 
 
 # ---- planner-24: verbs by capability (interaction model §2, principal item 2) -----------------
@@ -1159,7 +1159,7 @@ def test_the_prompt_teaches_verbs_by_the_listing_s_capability_tokens() -> None:
     assert "selected or selectable: select" in prose
     assert "expanded or collapsed: expand or collapse" in prose
     assert "never click an element whose line shows" in prose
-    assert PROMPT_VERSION == "planner-24"
+    assert PROMPT_VERSION == "planner-25"
 
 
 def test_the_prompt_says_a_local_export_is_r1() -> None:
@@ -1276,13 +1276,26 @@ def test_a_plan_with_steps_first_time_is_never_resampled() -> None:
     assert outcome.trace_record()["resampled"] is False
 
 
-def test_the_prompt_says_a_tree_item_is_clicked() -> None:
-    """Chrome ignores Expand on an ARIA tree item and gives it no Invoke (gallery_acts, [v2.77]):
-    until its act is measured, a TreeItem is opened and chosen by click, so the token rule never
-    sends the planner into a refused expand."""
+def test_the_prompt_says_a_tree_item_opens_by_expand_and_is_chosen_by_click() -> None:
+    """[v2.81] (planner-25): one click opens or closes a tree item and its state reads back
+    (Chrome 157, 3/3), so the planner opens it with expand, whose postcondition the code owns,
+    instead of a click with a guessed expect (gallery g20 0/3); choosing one stays a click."""
     system, _ = build_prompt(_caps_request())
     prose = " ".join(system.split())
-    assert "A TreeItem is opened, closed and chosen by click, whatever its line shows." in prose
+    assert (
+        "A TreeItem whose line shows expanded or collapsed is opened and closed by expand or "
+        "collapse; a TreeItem is chosen by click, whatever its line shows." in prose
+    )
+    assert "A TreeItem is opened, closed and chosen by click" not in prose
+
+
+def test_an_expand_on_a_collapsed_tree_item_is_runnable() -> None:
+    screen = (*CAPS_SCREEN, '8    TreeItem "Projects" [100,480,300,500] selectable collapsed')
+    planner, parse = _planner(
+        _Response(parsed_output=_one_step_doc("expand", "TreeItem", "Projects"))
+    )
+    assert planner.plan(_caps_request(screen)).plan.steps[0].verb == "expand"
+    assert len(parse.calls) == 1
 
 
 def test_a_click_on_a_collapsed_tree_item_is_runnable() -> None:

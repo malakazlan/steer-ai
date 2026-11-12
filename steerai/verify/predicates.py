@@ -35,8 +35,9 @@ Toggle flips it with a trusted click). SelectionItem: a TabItem, a RadioButton (
 exposed as one), a listbox option (ListItem, W3b) and a grid row (DataItem: Select selects it).
 ExpandCollapse: a disclosure or menu Button (W5) and a TreeItem ([v2.81]: Chrome ignores Expand
 on an ARIA tree item, but one click opens or closes it and the state reads back, 3/3). Not
-admitted until measured: a MenuItem; a TreeItem's selection (it is chosen by click). A ListItem or DataItem is admitted only
-under a single-select container, read live before the gate (`loop._listbox_admission`)."""
+admitted until measured: a MenuItem; a TreeItem's selection (it is chosen by click). A ListItem
+or DataItem is admitted only under a single-select container, read live before the gate
+(`loop._listbox_admission`)."""
 
 
 def _clean_pattern(text: str, what: str) -> str:

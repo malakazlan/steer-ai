@@ -128,6 +128,16 @@ def test_a_page_that_ignores_the_click_is_never_clicked_twice() -> None:
     assert h.physical.calls == [("click", PROJECTS[0], None)]
 
 
+def test_verified_clicks_may_open_close_and_open_the_same_item() -> None:
+    """The rule is against a click the page ignored, never against opening what was closed."""
+    h, boxes = _harness()
+    for step_id, verb in (("s1", "expand"), ("s2", "collapse"), ("s3", "expand")):
+        result = h.session.run_step(_expand(step_id=step_id, verb=verb))
+        assert result.ok is True, (step_id, result.to_dict())
+    assert len(h.physical.calls) == 3
+    assert boxes.expanded[PROJECTS[3]] == _EXPANDED
+
+
 def test_a_continuation_keeps_the_one_click_rule() -> None:
     h, _boxes = _harness(opens=False)
     h.session.run_task(_plan(_expand()))
