@@ -297,15 +297,15 @@ def warm_up(  # noqa: PLR0913 - keyword-only tuning knobs plus the injected cloc
     quiet_s: float | None = None,
 ) -> Snapshot:
     """First contact (5.1 [v0.6], RN-18): observe until three consecutive snapshots agree on
-    the node count, or, with `quiet_s`, until the node count has not changed for `quiet_s`
-    ([v2.80]: a screen the planner reads); or the cap passes; the last snapshot is returned
+    the node count, or, with `quiet_s`, until the node count has not changed, every walk
+    stable and every observe answered, for `quiet_s` ([v2.80]: a screen the planner reads); or
+    the cap passes; the last snapshot is returned
     either way. Bounded by polls too, so a clock that never moves still ends. A provider
     that answers `perception_timeout` for a moment (E_FAIL right after a foreground change,
     overlay runs 2026-11-04) is "not yet": polling continues until the cap, and the cap with
     no answer at all raises the last error. The kill switch is honoured between observes
     (TK-22)."""
-    if quiet_s is not None and quiet_s <= 0:
-        raise ValueError("quiet_s must be positive")
+    _check_warm_up(quiet_s, poll_s)
     start = monotonic()
     counts: list[int] = []
     changed_at = start
@@ -320,14 +320,13 @@ def warm_up(  # noqa: PLR0913 - keyword-only tuning knobs plus the injected cloc
             if exc.code is not ErrorCode.PERCEPTION_TIMEOUT:
                 raise
             failure = exc
+            changed_at = monotonic()  # "not yet" is never quiet time (#232 review item 1)
         else:
-            if not counts or counts[-1] != snapshot.node_count:
+            if not counts or counts[-1] != snapshot.node_count or not snapshot.stable:
+                # a tree changing during the walk is not quiet either, as `Session._quiet`
                 changed_at = monotonic()
             counts.append(snapshot.node_count)
-            if quiet_s is None:
-                if len(counts) >= 3 and counts[-1] == counts[-2] == counts[-3]:
-                    return snapshot
-            elif monotonic() - changed_at >= quiet_s:
+            if _warm(counts, quiet_s, monotonic() - changed_at):
                 return snapshot
         if monotonic() - start >= cap_s:
             break
@@ -340,6 +339,20 @@ def warm_up(  # noqa: PLR0913 - keyword-only tuning knobs plus the injected cloc
             else SteerError(ErrorCode.PERCEPTION_TIMEOUT, "warm-up produced no snapshot")
         )
     return snapshot
+
+
+def _check_warm_up(quiet_s: float | None, poll_s: float) -> None:
+    if quiet_s is not None and quiet_s <= 0:
+        raise ValueError("quiet_s must be positive")
+    if poll_s <= 0:
+        raise ValueError("poll_s must be positive")
+
+
+def _warm(counts: list[int], quiet_s: float | None, quiet_for: float) -> bool:
+    """Three equal node counts in a row (first contact), or quiet for `quiet_s` ([v2.80])."""
+    if quiet_s is None:
+        return len(counts) >= 3 and counts[-1] == counts[-2] == counts[-3]
+    return quiet_for >= quiet_s
 
 
 class SafeTrace:

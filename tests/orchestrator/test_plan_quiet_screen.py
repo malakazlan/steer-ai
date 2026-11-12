@@ -8,11 +8,13 @@ return the skeleton; a planner reading it sees no video and plans the search aga
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 import pytest
 
 from steerai import run as run_mod
+from steerai.errors import ErrorCode, SteerError
 from steerai.run import PLAN_QUIET_S, warm_up
 from steerai.world.model import Snapshot
 from tests.orchestrator.fakes import Row, build
@@ -21,18 +23,32 @@ POLL_S = 0.25
 
 
 class Page:
-    """A page whose node count follows a timeline of (from_s, count) on a fake clock."""
+    """A page whose node count follows a timeline of (from_s, count) on a fake clock; between
+    `shaky` seconds a walk is unstable, between `failing` seconds the provider answers
+    `perception_timeout`."""
 
-    def __init__(self, timeline: list[tuple[float, int]]) -> None:
+    def __init__(
+        self,
+        timeline: list[tuple[float, int]],
+        *,
+        shaky: tuple[float, float] = (-1.0, -1.0),
+        failing: tuple[float, float] = (-1.0, -1.0),
+    ) -> None:
         self.timeline = timeline
+        self.shaky = shaky
+        self.failing = failing
         self.t = 0.0
         self.observed: list[float] = []
 
     def observe(self) -> Snapshot:
         self.observed.append(self.t)
+        if self.failing[0] <= self.t < self.failing[1]:
+            raise SteerError(ErrorCode.PERCEPTION_TIMEOUT, "not yet")
         count = next(c for start, c in reversed(self.timeline) if self.t >= start)
         rows: list[Row] = [(i, "Group", f"n{i}", (42, i), None) for i in range(count)]
-        return build(rows, snapshot_id="s", taken_at=self.t)
+        snapshot = build(rows, snapshot_id="s", taken_at=self.t)
+        stable = not self.shaky[0] <= self.t < self.shaky[1]
+        return snapshot if stable else replace(snapshot, stable=False)
 
     def sleep(self, seconds: float) -> None:
         self.t += seconds
@@ -87,6 +103,31 @@ def test_a_clock_that_never_moves_still_ends() -> None:
         quiet_s=PLAN_QUIET_S,
     )
     assert snapshot.node_count == 50
+
+
+def test_an_unstable_walk_at_an_equal_count_restarts_the_quiet_window() -> None:
+    """Principal item 1 on #232: a tree changing during the walk is not quiet (as `_quiet`)."""
+    page = Page([(0.0, 50)], shaky=(0.0, 1.5))
+    warm_up(
+        page.observe, cap_s=10.0, monotonic=lambda: page.t, sleep=page.sleep, quiet_s=PLAN_QUIET_S
+    )
+    assert page.t >= 1.25 + PLAN_QUIET_S, "quiet only from the last shaky or failed look (1.25 s)"
+
+
+def test_a_provider_that_is_not_ready_restarts_the_quiet_window() -> None:
+    page = Page([(0.0, 50)], failing=(0.5, 1.5))
+    snapshot = warm_up(
+        page.observe, cap_s=10.0, monotonic=lambda: page.t, sleep=page.sleep, quiet_s=PLAN_QUIET_S
+    )
+    assert snapshot.node_count == 50
+    assert page.t >= 1.25 + PLAN_QUIET_S, "quiet only from the last shaky or failed look (1.25 s)"
+
+
+@pytest.mark.parametrize("poll_s", [0.0, -0.25])
+def test_a_poll_interval_must_be_positive(poll_s: float) -> None:
+    page = Page([(0.0, 50)])
+    with pytest.raises(ValueError, match="poll_s"):
+        warm_up(page.observe, cap_s=1.0, poll_s=poll_s, quiet_s=PLAN_QUIET_S)
 
 
 @pytest.mark.parametrize("quiet_s", [0.0, -1.0])
