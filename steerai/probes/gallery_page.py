@@ -129,7 +129,7 @@ PAGE = """<!doctype html>
 </section>
 <section aria-label="Fields">
   <label>Full name <input id="g22" type="text"></label>
-  <form action="/search.html" method="get" role="search" aria-label="Articles">
+  <form action="/search.html" method="get">
     <label>Find articles <input id="g23" type="search" name="q"></label>
   </form>
   <label>Comments <textarea id="g24" rows="2"></textarea></label>
