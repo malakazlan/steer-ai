@@ -3,7 +3,8 @@
 The semantic executor refuses `expand_by_click` with nothing sent (Chrome ignores Expand on an
 ARIA tree item); the loop clicks the item once, physically and hit-tested, after re-reading its
 state on the look the click is sent against (principal item 1, TE-04); T1 reads the live state;
-one fallback click per item per task (TE-05)."""
+an item whose delivered click never verified is not clicked again in the task (TE-05), and a
+click the physical executor refused with nothing sent marks nothing (#234 review item 1)."""
 
 from __future__ import annotations
 
@@ -16,6 +17,8 @@ from steerai.orchestrator.contracts import Plan, Step, Subgoal, Target
 from steerai.orchestrator.gate import effective_risk
 from steerai.verify.predicates import CheckState, TitleMatches
 from tests.orchestrator.fakes import BASE_ROWS, Row, not_delivered
+from tests.orchestrator.test_edge_cases import _rebuild
+from tests.orchestrator.test_expand_loop import Process
 from tests.orchestrator.test_loop import Harness
 from tests.orchestrator.test_state_verbs_loop import Boxes
 
@@ -128,6 +131,26 @@ def test_a_page_that_ignores_the_click_is_never_clicked_twice() -> None:
     assert h.physical.calls == [("click", PROJECTS[0], None)]
 
 
+def test_a_click_refused_with_nothing_sent_never_marks_the_item() -> None:
+    """#234 review item 1: `covered_in_window` is no click; a later step clicks once."""
+    h, boxes = _harness()
+    toggles = h.physical.on_execute
+    h.physical.on_execute = None  # refused: nothing reached the page
+    h.physical.outcomes[PROJECTS[0]] = not_delivered(
+        ErrorCode.ELEMENT_NOT_ACTIONABLE, "covered_in_window"
+    )
+    first = h.session.run_step(_expand())
+    assert first.ok is False
+    assert first.evidence["detail"] == "covered_in_window"
+    assert boxes.expanded[PROJECTS[3]] == _COLLAPSED
+    del h.physical.outcomes[PROJECTS[0]]
+    h.physical.on_execute = toggles
+    again = h.session.run_step(_expand(step_id="s2"))
+    assert again.ok is True, again.to_dict()
+    assert len(h.physical.calls) == 2
+    assert boxes.expanded[PROJECTS[3]] == _EXPANDED
+
+
 def test_verified_clicks_may_open_close_and_open_the_same_item() -> None:
     """The rule is against a click the page ignored, never against opening what was closed."""
     h, boxes = _harness()
@@ -208,3 +231,17 @@ def test_expand_on_a_tree_item_is_never_below_a_click_on_it(name: str) -> None:
     expand = effective_risk(Step(id="e", subgoal="g1", verb="expand", target=target, risk="R1"))
     assert _ORDER[expand] >= _ORDER[click]
     assert _ORDER[expand] >= 1, "the R1 floor"
+
+
+@pytest.mark.parametrize("process", ["explorer.exe", "notepad.exe", "msedge.exe"])
+def test_a_native_tree_item_is_refused_before_the_gate(process: str) -> None:
+    """TE-09: a native tree (Explorer's navigation pane) never gets the click fallback; expand
+    outside Chrome is `unmeasured_provider` whatever the role (W3-04)."""
+    h, boxes = _harness()
+    _rebuild(h, live=boxes, observer=Process(h.world, process))
+    result = h.session.run_step(_expand())
+    assert result.ok is False
+    assert result.gate == "unreached"
+    assert result.evidence["detail"] == "unmeasured_provider"
+    assert h.semantic.calls == []
+    assert h.physical.calls == []

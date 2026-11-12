@@ -6,6 +6,7 @@ refused `clipped`, and the last look before the button goes down recomputes the 
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from steerai.action.dispositions import Delivery
@@ -14,7 +15,13 @@ from steerai.errors import ErrorCode
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
 from tests.action.fakes import TYPE_IDS, FakeHandle
-from tests.action.test_physical import FakeInput, _executor, fast_clock  # noqa: F401 - fixture
+from tests.action.test_physical import CHILD_ID as BUTTON_CHILD
+from tests.action.test_physical import (  # noqa: F401 - fast_clock is a fixture
+    FakeInput,
+    _executor,
+    _snapshot,
+    fast_clock,
+)
 
 ITEM_ID = (9, 1)
 GROUP_ID = (9, 2)
@@ -238,8 +245,6 @@ def test_a_horizontal_tree_is_refused_no_own_row(fast_clock: Any) -> None:  # no
         parent_id=1,
     )
     inputs = _inputs()
-    from dataclasses import replace  # noqa: PLC0415
-
     result = _executor(inputs).execute(CLICK, replace(snapshot, elements=elements))
     assert inputs.clicks == []
     assert result.evidence["detail"] == "no_own_row"
@@ -247,9 +252,6 @@ def test_a_horizontal_tree_is_refused_no_own_row(fast_clock: Any) -> None:  # no
 
 def test_another_roles_click_keeps_its_whole_subtree(fast_clock: Any) -> None:  # noqa: F811
     """A Button's Text child under the point is the Button (unchanged, #149)."""
-    from tests.action.test_physical import CHILD_ID as BUTTON_CHILD  # noqa: PLC0415
-    from tests.action.test_physical import _snapshot  # noqa: PLC0415
-
     inputs = FakeInput(hits=[BUTTON_CHILD])
     result = _executor(inputs).execute(CLICK, _snapshot(FakeHandle()))
     assert inputs.clicks == [(60, 30)]

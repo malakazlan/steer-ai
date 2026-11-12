@@ -18,7 +18,8 @@ from steerai.world.model import Snapshot
 
 TREE_ITEM = "TreeItem"
 MIN_OWN_ROW_PX = 3
-"""The thinnest own row aimed at: under it the band is an edge pixel, not a row (hunter TE-11)."""
+"""The thinnest own row aimed at: under it the band is an edge pixel, not a row (hunter TE-11).
+A guard, not a measured budget: unmeasured."""
 ACTING_ROLES = frozenset(
     {
         "Hyperlink",

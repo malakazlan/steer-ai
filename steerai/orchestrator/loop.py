@@ -2517,13 +2517,15 @@ class Session:
             return _tree_refused(verb, decision), before, element_id
         if element.runtime_id in self._tree_unverified:
             return _tree_refused(verb, "already_clicked"), before, element_id
-        self._tree_unverified.add(element.runtime_id)  # until the step verifies
-        self._tree_pending = element.runtime_id
         self._act_evidence["click_fallback"] = "physical"
         self._act_evidence["semantic_detail"] = EXPAND_BY_CLICK
         point = click_point(before, element)
-        physical = PhysicalAction(verb="click", element_id=point.id)
-        return self._physical.execute(physical, before), before, element_id
+        result = self._physical.execute(PhysicalAction(verb="click", element_id=point.id), before)
+        if result.delivery is not Delivery.NOT_DELIVERED:
+            # a click went out: marked until its step verifies (a refusal is no click, #234)
+            self._tree_unverified.add(element.runtime_id)
+            self._tree_pending = element.runtime_id
+        return result, before, element_id
 
     def _fallback_look(self, step: Step, before: Snapshot, element_id: int) -> tuple[Snapshot, int]:
         """Before a fallback dispatch: a boundary wait restarts from a fresh look at the same

@@ -373,9 +373,6 @@ class Executor:
         return _finish(call, _poll_postcondition(action.postcondition))
 
 
-_ACTING_ROLES = ACTING_ROLES
-
-
 _FALLBACK_ROLES = frozenset(
     {"Button", "SplitButton", "Hyperlink", "MenuItem", "TabItem", "TreeItem"}
 )
@@ -406,7 +403,7 @@ def physical_click_target(snapshot: Snapshot, element: Element) -> bool:
     descendant and a row would press the Delete button it holds (#84/#124). A tree item's
     child items are not its descendants here: what they hold is theirs ([v2.81], TE-10)."""
     return element.role in _FALLBACK_ROLES and not any(
-        e.role in _ACTING_ROLES for e in own_descendants(snapshot, element)
+        e.role in ACTING_ROLES for e in own_descendants(snapshot, element)
     )
 
 
@@ -431,7 +428,7 @@ def row_link(snapshot: Snapshot, row: Element) -> Element | None:
     """The row's one acting descendant when it is a Hyperlink with the row's exact name and no
     automation id: the gate judged the row's name and id, so the link carries nothing it did
     not judge (#84). Anything else is None: the click stays refused."""
-    acting = [e for e in _under(snapshot, row) if e.role in _ACTING_ROLES]
+    acting = [e for e in _under(snapshot, row) if e.role in ACTING_ROLES]
     if len(acting) != 1 or acting[0].role != "Hyperlink":
         return None
     link = acting[0]
