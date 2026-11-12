@@ -71,6 +71,12 @@ _STATUS_EXIT = {
 DEFAULT_WARMUP_S = 10.0
 """First-contact settle cap (RN-18). Unmeasured as a default; Chrome's cold tree needed up to
 25 s on CI in `tests/orchestrator/test_live.py`, ~0.5 s locally (probe 2026-09-27)."""
+PLAN_QUIET_S = 2.0
+"""How long a screen the planner reads must keep its node count ([v2.80]). Measured 2026-11-12
+(Chrome 157, n=3, an Enter search on YouTube, a UIA observe every 100 ms): the tree holds a
+91-node skeleton for 0.72-0.94 s before the results land (1.2-2.8 s after the Enter), so three
+equal counts 0.25 s apart can return the skeleton; doubled, as QUIET_AFTER_TYPE_S. Other pages
+unmeasured."""
 _LEDGER_TOKENS = frozenset(
     {
         "ledger_locked",
@@ -288,18 +294,24 @@ def warm_up(  # noqa: PLR0913 - keyword-only tuning knobs plus the injected cloc
     sleep: Callable[[float], None] = time.sleep,
     poll_s: float = 0.25,
     kill: Callable[[], bool] | None = None,
+    quiet_s: float | None = None,
 ) -> Snapshot:
     """First contact (5.1 [v0.6], RN-18): observe until three consecutive snapshots agree on
-    the node count, or the cap passes; the last snapshot is returned either way. A provider
+    the node count, or, with `quiet_s`, until the node count has not changed, every walk
+    stable and every observe answered, for `quiet_s` ([v2.80]: a screen the planner reads); or
+    the cap passes; the last snapshot is returned
+    either way. Bounded by polls too, so a clock that never moves still ends. A provider
     that answers `perception_timeout` for a moment (E_FAIL right after a foreground change,
     overlay runs 2026-11-04) is "not yet": polling continues until the cap, and the cap with
     no answer at all raises the last error. The kill switch is honoured between observes
     (TK-22)."""
+    _check_warm_up(quiet_s, poll_s)
     start = monotonic()
     counts: list[int] = []
+    changed_at = start
     snapshot: Snapshot | None = None
     failure: SteerError | None = None
-    while True:
+    for _ in range(int(cap_s / poll_s) + 2):
         if kill is not None and kill():
             raise SteerError(ErrorCode.GATE_BLOCKED, "killed: the kill switch was pressed")
         try:
@@ -308,19 +320,39 @@ def warm_up(  # noqa: PLR0913 - keyword-only tuning knobs plus the injected cloc
             if exc.code is not ErrorCode.PERCEPTION_TIMEOUT:
                 raise
             failure = exc
+            changed_at = monotonic()  # "not yet" is never quiet time (#232 review item 1)
         else:
+            if not counts or counts[-1] != snapshot.node_count or not snapshot.stable:
+                # a tree changing during the walk is not quiet either, as `Session._quiet`
+                changed_at = monotonic()
             counts.append(snapshot.node_count)
-            if len(counts) >= 3 and counts[-1] == counts[-2] == counts[-3]:
+            if _warm(counts, quiet_s, monotonic() - changed_at):
                 return snapshot
         if monotonic() - start >= cap_s:
-            if snapshot is None:
-                raise (
-                    failure
-                    if failure is not None
-                    else SteerError(ErrorCode.PERCEPTION_TIMEOUT, "warm-up produced no snapshot")
-                )
-            return snapshot
+            break
         sleep(poll_s)
+    # the cap, or the poll bound under a clock that never moves: the last look either way
+    if snapshot is None:
+        raise (
+            failure
+            if failure is not None
+            else SteerError(ErrorCode.PERCEPTION_TIMEOUT, "warm-up produced no snapshot")
+        )
+    return snapshot
+
+
+def _check_warm_up(quiet_s: float | None, poll_s: float) -> None:
+    if quiet_s is not None and quiet_s <= 0:
+        raise ValueError("quiet_s must be positive")
+    if poll_s <= 0:
+        raise ValueError("poll_s must be positive")
+
+
+def _warm(counts: list[int], quiet_s: float | None, quiet_for: float) -> bool:
+    """Three equal node counts in a row (first contact), or quiet for `quiet_s` ([v2.80])."""
+    if quiet_s is None:
+        return len(counts) >= 3 and counts[-1] == counts[-2] == counts[-3]
+    return quiet_for >= quiet_s
 
 
 class SafeTrace:
@@ -1484,7 +1516,8 @@ def _kill_blocker(monitor: Any) -> Callable[[], str | None]:
 
 
 def _screen(hwnd: int) -> tuple[str, Sequence[str]]:
-    """A warm-up observe of the bound window: the title and the 6.2 lines for the planner."""
+    """A warm-up observe of the bound window, quiet for PLAN_QUIET_S ([v2.80]): the title and
+    the 6.2 lines for the planner, for the first plan and every replan."""
     from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415
     from steerai.world.model import WorldModel  # noqa: PLC0415
 
@@ -1496,7 +1529,7 @@ def _screen(hwnd: int) -> tuple[str, Sequence[str]]:
         holder.append(snapshot)
         return snapshot
 
-    warm_up(observe, cap_s=DEFAULT_WARMUP_S)
+    warm_up(observe, cap_s=DEFAULT_WARMUP_S, quiet_s=PLAN_QUIET_S)
     snapshot = holder[-1] if holder else model.observe(hwnd, cap_s=5.0)
     return snapshot.title, snapshot.lines
 
