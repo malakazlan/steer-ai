@@ -432,3 +432,12 @@ def test_a_kill_during_the_poll_keeps_the_record_open_and_never_sends_twice() ->
     resumed = h.session.run_step(_guessed())
     assert resumed.gate == "done_already", resumed.to_dict()
     assert len(presses) == 1, "never a second Enter"
+
+
+def test_the_poll_counts_in_the_verify_stage() -> None:
+    """#230: the address-bar poll after the verify's miss is verify time; the stage latency
+    held only the in-page wait, so a widened step under-counted by up to the poll's ~7 s."""
+    h, _bar = _slow(delay=NAVIGATION_VERIFY_S + 1.0)
+    result = h.session.run_step(_guessed())
+    assert result.ok is False
+    assert result.latency_ms["verify"] >= NAVIGATION_VERIFY_S * 1000 - URL_POLL_S * 1000
