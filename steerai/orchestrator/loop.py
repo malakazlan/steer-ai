@@ -29,7 +29,7 @@ from functools import partial
 from typing import Any, Literal, Protocol
 
 from steerai.action.dispositions import ActionResult, Delivery
-from steerai.action.executor import Action, physical_click_target
+from steerai.action.executor import Action, click_point, physical_click_target
 from steerai.action.launch import (
     APPS,
     expected_title,
@@ -2397,7 +2397,8 @@ class Session:
                 return result, before, element_id  # an acting child appeared in the wait
             self._act_evidence["click_fallback"] = "physical"
             self._act_evidence["semantic_detail"] = "no_InvokePattern"
-            physical = PhysicalAction(verb="click", element_id=element_id)
+            point = click_point(before, before.element(element_id))
+            physical = PhysicalAction(verb="click", element_id=point.id)
             return self._physical.execute(physical, before), before, element_id
         if not (step.verb == "focus" and refused and detail == "hit_test_miss"):
             return result, before, element_id

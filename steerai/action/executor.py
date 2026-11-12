@@ -71,6 +71,10 @@ OPTION_MAX_READS = 100
 Measured (probe `widget_patterns --section choose`, Chrome 156, n=10): the option appears in
 the ComboBox's subtree 16.8-34.1 ms after Expand."""
 COLLAPSE_POLL_S = 0.01
+SELF_CLOSE_WAIT_S = 0.15
+"""How long a box may take to close itself after its option's Select before Steer collapses it:
+4x the slowest measured self-close (36 ms, gallery g14, Chrome 156, n=3); a native select, which
+never closes itself, pays it once per choose."""
 COLLAPSE_DEADLINE_S = 1.0
 COLLAPSE_MAX_READS = 100
 """The Collapse readback (W4 v1 verdict ruling (b)): measured, it still reads Expanded at once
@@ -371,8 +375,14 @@ _ACTING_ROLES = frozenset(
 just a link (a "Delete chat" button inside it), so the click stays refused."""
 
 
-_FALLBACK_ROLES = frozenset({"Button", "SplitButton", "Hyperlink", "MenuItem", "TabItem"})
-"""Plain controls a physical click may stand in for when they expose no InvokePattern (#149)."""
+_FALLBACK_ROLES = frozenset(
+    {"Button", "SplitButton", "Hyperlink", "MenuItem", "TabItem", "TreeItem"}
+)
+"""Plain controls a physical click may stand in for when they expose no InvokePattern (#149);
+a TreeItem since [v2.77]: Chrome gives an ARIA tree item no Invoke and ignores Expand on it."""
+LABELLED_ROLES = frozenset({"TreeItem"})
+"""Roles a person clicks on their label text, not their middle: a tree item's row can be wider
+than its label, and a click beside the label can select the row without opening it."""
 
 
 def _under(snapshot: Snapshot, ancestor: Element) -> list[Element]:
@@ -396,6 +406,22 @@ def physical_click_target(snapshot: Snapshot, element: Element) -> bool:
     return element.role in _FALLBACK_ROLES and not any(
         e.role in _ACTING_ROLES for e in _under(snapshot, element)
     )
+
+
+def click_point(snapshot: Snapshot, element: Element) -> Element:
+    """Where the physical click lands: a labelled role's own label (its first Text descendant
+    named exactly like it), else the element itself."""
+    if element.role not in LABELLED_ROLES:
+        return element
+    wanted = normalise_name(element.name)
+    for candidate in _under(snapshot, element):
+        if (
+            candidate.role == "Text"
+            and candidate.has_area
+            and normalise_name(candidate.name) == wanted
+        ):
+            return candidate
+    return element
 
 
 def row_link(snapshot: Snapshot, row: Element) -> Element | None:
@@ -446,13 +472,24 @@ def _option_refusal(found: list[OptionItem] | None) -> str | None:
 
 
 def _collapsed(expander: Any, call: Call) -> bool:
-    """Collapse unless the box already reads Collapsed, then poll the readback: measured, it
-    reads Expanded at once and Collapsed within 25 ms (W4 v1). `expander` is the COM pattern."""
+    """Collapse unless the box closes itself, then poll the readback: measured, a native select
+    reads Expanded at once and Collapsed within 25 ms of a Collapse (W4 v1). An ARIA combobox
+    closes itself on its option's click and reads Collapsed 16-36 ms later (gallery g14, n=3);
+    Chrome performs Collapse on it as a click, a toggle, so a Collapse sent before that read
+    re-opens it: the box gets SELF_CLOSE_WAIT_S to close itself first. `expander` is the COM
+    pattern."""
 
     def state() -> int:
         return int(expander.CurrentExpandCollapseState)
 
-    if state() != _COLLAPSED:
+    closed_itself = poll_state(
+        state,
+        _COLLAPSED,
+        step_s=COLLAPSE_POLL_S,
+        deadline_s=SELF_CLOSE_WAIT_S,
+        max_steps=int(SELF_CLOSE_WAIT_S / COLLAPSE_POLL_S) + 1,
+    ).verified
+    if not closed_itself:
         call.send("ExpandCollapsePattern.Collapse", expander.Collapse)
     return poll_state(
         state,
