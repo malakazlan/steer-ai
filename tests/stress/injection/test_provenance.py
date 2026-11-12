@@ -14,6 +14,11 @@ from tests.orchestrator.test_takeover_loop import FakeMonitor, _wire
 from tests.stress.injection.catalogue import fixture
 from tests.stress.injection.hostile import Dispatch, rebuild
 
+CARD = "4111 1111"
+"""The typed text's sentinel. Spaced, so it can never occur by chance in a trace's random hex
+ids: a bare "4111" did once (`decision_id` d-<12 hex>, about 1 in 7000 runs; CI on #238)."""
+CARD_TEXT = f"my card number is {CARD}"
+
 
 def _typed(text: str, provenance: TextProvenance) -> Step:
     return Step(
@@ -53,13 +58,14 @@ def test_generated_text_typed_into_a_page_asks_first() -> None:
 @pytest.mark.parametrize(("answer", "gate"), [("yes", "confirm"), ("no", "block")])
 def test_the_ask_reason_is_traced_as_a_token(answer: str, gate: str) -> None:
     h = Harness(default=answer)
-    result = h.session.run_step(_typed("my card number is 4111", "generated"))
+    result = h.session.run_step(_typed(CARD_TEXT, "generated"))
     assert result.gate == gate
     assert result.evidence["ask_reasons"] == ["generated_text"]
     traced = [line for line in h.trace.lines if '"step_id": "t1"' in line]
     assert traced
     assert '"ask_reasons": ["generated_text"]' in traced[-1]
-    assert all("4111" not in line for line in h.trace.lines), "the text never reaches the trace"
+    assert all(CARD not in line for line in h.trace.lines), "the text never reaches the trace"
+    assert all("card number" not in line for line in h.trace.lines), "nor any part of it"
 
 
 @pytest.mark.parametrize(
