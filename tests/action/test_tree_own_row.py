@@ -9,7 +9,7 @@ import pytest
 
 from steerai.action.execution import RefusalError
 from steerai.action.executor import click_point, physical_click_target
-from steerai.action.tree import MIN_OWN_ROW_PX, own_row
+from steerai.action.tree import MIN_OWN_ROW_PX, own_hit_ids, own_row
 from steerai.errors import ErrorCode
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
@@ -151,3 +151,33 @@ def test_a_link_inside_a_child_item_never_refuses_the_parents_click() -> None:
 def test_a_button_in_the_items_own_row_still_refuses_it() -> None:
     twisty = _el(6, "Button", "Toggle", (134, 724, 150, 742), 3)
     assert not physical_click_target(_snapshot(OPEN, twisty, GROUP, ALPHA), OPEN)
+
+
+# ---- the acceptance set leaves out the group that holds the child items (#235) ------------------
+
+
+def test_the_group_holding_child_items_is_not_the_items_hit() -> None:
+    """The group is the children's list: a point on it is on a child's line, not the row."""
+    ids = own_hit_ids(_snapshot(OPEN, GROUP, ALPHA), OPEN)
+    assert ids == frozenset({OPEN.runtime_id})
+
+
+def test_a_group_holding_a_hidden_child_item_is_left_out_too() -> None:
+    """A child with no area still belongs to the group's list; leaving it out fails closed."""
+    hidden = _item(5, "Alpha", (0, 0, 0, 0), 4, 4)
+    ids = own_hit_ids(_snapshot(OPEN, GROUP, hidden), OPEN)
+    assert GROUP.runtime_id not in ids
+
+
+def test_a_plain_group_and_text_in_the_row_stay_the_items_hit() -> None:
+    icon_box = _el(6, "Group", "", (136, 726, 150, 740), 3)
+    label = _el(7, "Text", "Projects", (154, 724, 220, 742), 6)
+    ids = own_hit_ids(_snapshot(OPEN, icon_box, label, GROUP, ALPHA), OPEN)
+    assert ids == frozenset({OPEN.runtime_id, icon_box.runtime_id, label.runtime_id})
+
+
+def test_text_inside_the_childrens_group_is_not_the_items_hit() -> None:
+    """A "Load more" line in the children's list is the list's, not the item's row."""
+    more = _el(6, "Text", "Load more", (182, 768, 300, 780), 4)
+    ids = own_hit_ids(_snapshot(OPEN, GROUP, ALPHA, more), OPEN)
+    assert ids == frozenset({OPEN.runtime_id})
