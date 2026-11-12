@@ -356,10 +356,35 @@ def test_a_record_keeps_the_before_url_only_as_a_digest_and_one_bit() -> None:
     assert "private" not in text
     assert WriteAheadRecord.from_json(text) == record
     payload = json.loads(text)
-    for bad in ({"digest": "zz", "carried": False}, {"digest": url_before.digest, "carried": 1}):
+    assert "narrow" not in payload["url_before"], "a record from before #231 has no bit"
+    assert WriteAheadRecord.from_json(text).url_narrow is None
+    for bad in (
+        {"digest": "zz", "carried": False},
+        {"digest": url_before.digest, "carried": 1},
+        {"digest": url_before.digest, "carried": False, "narrow": 1},
+    ):
         payload["url_before"] = bad
         with pytest.raises(ValueError, match="malformed"):
             WriteAheadRecord.from_json(json.dumps(payload))
+
+
+@pytest.mark.parametrize("narrow", [True, False])
+def test_a_record_keeps_the_url_proofs_narrow_bit(narrow: bool) -> None:
+    """#231: the step's `url_query_eligible` of record, beside the digest."""
+    record = WriteAheadRecord(
+        task_id="task-1",
+        step_id="s3",
+        action_key="k",
+        decision_id="d-1",
+        phase="written",
+        before=_snapshot(),
+        written_at=7.0,
+        url_before=UrlBefore.of("example.org/", "words"),
+        url_narrow=narrow,
+    )
+    back = WriteAheadRecord.from_json(record.to_json())
+    assert back.url_narrow is narrow
+    assert back == record
 
 
 # ---- the runner's needs: one runner per task, a plan and a window bound to the task ----------

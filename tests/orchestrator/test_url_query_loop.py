@@ -637,6 +637,43 @@ def test_a_same_titled_resume_loads_by_the_rid_and_url_too() -> None:
     assert len(presses) == 1
 
 
+def test_the_record_keeps_the_narrow_bit_the_step_was_written_with() -> None:
+    """#231: the eligibility of record, so a resume never widens the proof by itself."""
+    h = _same_title_harness(Bar(RG_HOME, RG_RESULTS), bound_rid=(42, 91))
+    _crash_after_enter(h)
+    assert h.ledger.records[_submit().id].url_narrow is True
+
+
+def test_no_before_url_means_no_narrow_bit_either() -> None:
+    """Principal on #244: a record whose before URL could not be read keeps no bit, so it
+    reads back the same from disk (the bit lives inside `url_before`)."""
+    h = _same_title_harness(Bar(RG_HOME, RG_RESULTS), bound_rid=(42, 91))
+    h.session._address_bar = lambda _hwnd: None
+    h.session.run_step(_submit())
+    record = h.ledger.records[_submit().id]
+    assert (record.url_before, record.url_narrow) == (None, None)
+
+
+def test_a_record_written_wide_only_never_resumes_by_the_rid_and_url() -> None:
+    """#231: the rid/URL load needs the narrow proof; a record that says the step was not
+    narrow keeps it off on a resume even when the bit computed now would allow it."""
+    h = _same_title_harness(Bar(RG_HOME, RG_RESULTS), bound_rid=(42, 91))
+    _crash_after_enter(h)
+    step_id = _submit().id
+    h.ledger.records[step_id] = replace(h.ledger.records[step_id], url_narrow=False)
+    assert h.session.run_step(_submit()).gate != "done_already"
+
+
+def test_a_record_from_before_the_bit_resumes_as_today() -> None:
+    h = _same_title_harness(Bar(RG_HOME, RG_RESULTS), bound_rid=(42, 91))
+    presses = _crash_after_enter(h)
+    step_id = _submit().id
+    h.ledger.records[step_id] = replace(h.ledger.records[step_id], url_narrow=None)
+    result = h.session.run_step(_submit())
+    assert result.gate == "done_already", result.to_dict()
+    assert len(presses) == 1
+
+
 def test_the_title_tick_reads_the_typed_words_not_the_screen_a_written_limit() -> None:
     """H4-02 (aw1): a `title` condition naming the words ticks by the URL proof even when the
     page that loaded is a bot check titled otherwise. [v2.65] compares the typed words by

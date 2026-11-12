@@ -290,8 +290,10 @@ class MemoryLedger:
         step: Step,
         before: Snapshot,
         decision: GateDecision | None,
+        *,
         chosen: dict[str, Any] | None = None,
         url_before: UrlBefore | None = None,
+        url_narrow: bool | None = None,
     ) -> WriteAheadRecord:
         key = self.key_for(step)
         if decision is None or decision.action_key != key or decision.outcome == "block":
@@ -310,6 +312,7 @@ class MemoryLedger:
             before=replace(before, handles=[]),
             written_at=self.started_at,
             url_before=url_before,
+            url_narrow=url_narrow,
         )
         self.records[step.id] = record
         self.executions[key] = {"step_id": step.id, "phase": "written", "outcome": None}
