@@ -65,6 +65,7 @@ def test_the_ask_reason_is_traced_as_a_token(answer: str, gate: str) -> None:
     assert traced
     assert '"ask_reasons": ["generated_text"]' in traced[-1]
     assert all(CARD not in line for line in h.trace.lines), "the text never reaches the trace"
+    assert all("card number" not in line for line in h.trace.lines), "nor any part of it"
 
 
 @pytest.mark.parametrize(
