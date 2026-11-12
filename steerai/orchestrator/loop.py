@@ -115,6 +115,7 @@ from steerai.verify.t1 import (
     label_of_record,
     reads_wanted,
     same_title,
+    swapped_field,
     title_holds,
     verify,
 )
@@ -571,7 +572,7 @@ class Session:
                 step, risk, before, decision, expect, element_id=element_id
             )
             action, before, retries = stage.measure(
-                "act", lambda: self._act(step, risk, before, element_id)
+                "act", lambda: self._act(step, risk, before, element_id, gate_result.outcome)
             )
             dispatched = action
             evidence["retries"] = retries
@@ -2325,7 +2326,7 @@ class Session:
         return decision, expect
 
     def _act(
-        self, step: Step, risk: Risk, before: Snapshot, element_id: int
+        self, step: Step, risk: Risk, before: Snapshot, element_id: int, gate: GateToken
     ) -> tuple[ActionResult, Snapshot, int]:
         path, verb = executor_verb(step.verb)
         if step.path is not None:
@@ -2367,14 +2368,55 @@ class Session:
             if detail in ("offscreen", "clipped") and not scrolled and risk in ("R0", "R1"):
                 # at R2/R3 never a scroll after the write-ahead and the before of record (OS-01r)
                 scrolled = True
+                # after a followed swap `asked` is still the gone field: a scroll then stops
+                # `screen_changed_during_act`, which fails safe (#236 review)
                 before, element_id = self._scrolled_in_act(step, before, element_id, asked)
                 continue
             if result.code is ErrorCode.ELEMENT_NOT_FOUND and retries == 0 and not result.steps:
                 retries += 1
-                before = self._observe(stable_window=1)
-                element_id = self._same_target(step, before, asked, ACT_MISMATCH)
+                previous, before = before, self._observe(stable_window=1)
+                element_id = self._retry_target(
+                    step, risk, gate=gate, previous=previous, snapshot=before, asked=asked
+                )
                 continue
             return result, before, retries
+
+    def _retry_target(  # noqa: PLR0913 - the retry's tier, answer, two looks and asked element
+        self,
+        step: Step,
+        risk: Risk,
+        *,
+        gate: GateToken,
+        previous: Snapshot,
+        snapshot: Snapshot,
+        asked: Element,
+    ) -> int:
+        """The element the act's one retry goes to: the same one (#89), or at R0/R1 for a
+        `focus` / `type` the field swapped under the act ([v2.82]; dev wk2: Wikipedia's search
+        Edit became a same-named ComboBox with a new RuntimeId while the focus acted). The swap
+        is [v2.71]'s readback rule (FS-02): the asked field gone, and the one non-secure, NEW
+        field of its alias pair with its exact name; anything else stays a changed screen. At
+        R2/R3, or after a person's yes at any tier (#236 review item 1), the asked identity is
+        RuntimeId and role ([v2.71] R3); an asked field still on screen is an ambiguity, never
+        a swap (item 2)."""
+        try:
+            return self._same_target(step, snapshot, asked, ACT_MISMATCH)
+        except _StepFailureError as failure:
+            if (
+                failure.detail != ACT_MISMATCH
+                or step.verb not in SWAP_VERBS
+                or risk not in ("R0", "R1")
+                or gate != "approve"
+                or asked.secure
+                or not asked.runtime_id
+                or any(e.runtime_id == asked.runtime_id for e in snapshot.elements)
+            ):
+                raise
+            swapped, _ = swapped_field(asked, previous, snapshot)
+            if swapped is None:
+                raise
+            self._act_evidence["act_alias"] = swapped.role
+            return swapped.id
 
     def _still_shown(  # noqa: PLR0913 - the step's state after the ask, passed once
         self,
@@ -3194,6 +3236,8 @@ class Session:
 ACT_MISMATCH = "screen_changed_during_act"
 """A re-resolve inside the act loop (the retry after a refusal, the scroll) found another
 element than the one asked about (#89): `focus_lost`, nothing more dispatched."""
+SWAP_VERBS = frozenset({"focus", "type"})
+"""The verbs whose act retry follows a field swapped under it at R0/R1 ([v2.82])."""
 
 
 def _note_reasons(evidence: dict[str, Any], gate_result: GateResult) -> None:
