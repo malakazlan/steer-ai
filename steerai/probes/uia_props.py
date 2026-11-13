@@ -161,12 +161,89 @@ def run_once() -> dict[str, Any]:
     return {"elements": before, "focused_after": after, "typed": TYPED}
 
 
+SEARCH_LANDMARK = 80004
+"""UIA_SearchLandmarkTypeId."""
+FIELD_TYPES = (50004, 50003)
+"""Edit and ComboBox: the fields a search Enter is sent from."""
+
+
+def site_fields(url: str) -> dict[str, Any]:  # Any: JSON values
+    """The page's visible Edit and ComboBox fields on `url`: per field its AriaRole and whether an
+    ancestor is a search landmark (the §7.2 classifier's two inputs). Read-only: no input."""
+    from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415 - Windows only
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415 - Windows only
+    from steerai.run import warm_up  # noqa: PLC0415
+    from steerai.world.model import WorldModel  # noqa: PLC0415
+
+    tmp = Path(tempfile.mkdtemp(prefix="steer-sitefields-"))
+    port = _free_port()
+    proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, url)
+    try:
+        hwnd = wait_window_for_pid(proc.pid, image="chrome.exe", process=proc).hwnd
+        page_ws_url(port)
+        time.sleep(6.0)  # the site settles its first layout and any redirect
+        model = WorldModel(UiaClient())
+        warm_up(lambda: model.observe(hwnd), cap_s=15.0)
+        uia, mod = _uia()
+        root = uia.ElementFromHandle(hwnd)
+        documents = root.FindAll(
+            mod.TreeScope_Descendants,
+            uia.CreatePropertyCondition(
+                mod.UIA_ControlTypePropertyId, mod.UIA_DocumentControlTypeId
+            ),
+        )
+        fields = []
+        for d in range(documents.Length):
+            found = documents.GetElement(d).FindAll(
+                mod.TreeScope_Descendants, uia.CreateTrueCondition()
+            )
+            for i in range(found.Length):
+                element = found.GetElement(i)
+                if element.CurrentControlType not in FIELD_TYPES or element.CurrentIsOffscreen:
+                    continue
+                landmark, node = False, element
+                for _ in range(40):
+                    node = uia.ControlViewWalker.GetParentElement(node)
+                    if not node:
+                        break
+                    if node.GetCurrentPropertyValue(_IDS["LandmarkType"]) == SEARCH_LANDMARK:
+                        landmark = True
+                        break
+                fields.append(
+                    {
+                        "role": str(element.GetCurrentPropertyValue(_IDS["AriaRole"])),
+                        "in_search_landmark": landmark,
+                    }
+                )
+    finally:
+        stop_chrome(proc, tmp / "profile")
+        shutil.rmtree(tmp, ignore_errors=True)
+    query = any(f["role"] == "searchbox" or f["in_search_landmark"] for f in fields)
+    return {"fields": fields, "query_class_possible": query}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--runs", type=int, default=1)
+    parser.add_argument("--sites", action="store_true", help="the pooled set's search sites")
     args = parser.parse_args(argv)
     if sys.platform != "win32":
         sys.stdout.write(json.dumps({"skipped": "windows only"}) + "\n")
+        return 0
+    if args.sites:
+        from steerai.probes.task_suite import H2, H3, H4, H5, H6, HELD_OUT, TASKS  # noqa: PLC0415
+
+        seen: set[str] = set()
+        for task in (*TASKS, *HELD_OUT, *H2, *H3, *H4, *H5, *H6):
+            if not task.start.startswith("https://") or task.start in seen:
+                continue
+            seen.add(task.start)
+            try:
+                row = site_fields(task.start)
+            except (OSError, TimeoutError, RuntimeError) as exc:
+                row = {"error": type(exc).__name__}
+            sys.stdout.write(json.dumps({"task": task.task_id, **row}) + "\n")
+            sys.stdout.flush()
         return 0
     for number in range(1, args.runs + 1):
         sys.stdout.write(json.dumps({"run": number, **run_once()}, default=str) + "\n")
