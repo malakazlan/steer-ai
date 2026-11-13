@@ -1,9 +1,13 @@
-"""The v2 observe path (V2 step 3b, [V2.5]): one `Observed` from the snapshot v1 already fetches
-plus separate reads for the facts the observer needs. v1's fetch is unchanged; each extra read
-is its own call, timed by the caller, and a read that fails is `None` (not observed), never a
+"""The v2 observe path (V2 step 3b, [V2.5], [V2.7]): one `Observed` from the snapshot v1 already
+fetches plus separate reads for the facts the observer needs. v1's fetch is unchanged; each
+extra read is its own call, and a read that fails is `None` (not observed or unread), never a
 guess.
 
-- `url`: the top Document's URL (`DocumentUrl`), read with every snapshot of a page ([V2.4]).
+- `document_url`: the top Document's URL through the snapshot's own handle ([V2.7]: identity,
+  scheme and host, for `navigated` and error pages; correct after a real navigation).
+- `url`: the in-place URL from the address bar (path, query, fragment), with the Document's
+  scheme, accepted only when its host matches the Document's ([V2.7]); a mismatch is unread,
+  a window without a bar has `url_observed=False`. Chrome 157 elides the scheme (probe #271).
 - `windows`: the top-level window list.
 - `focus`: the RuntimeId with keyboard focus.
 - `acted_value`: the acted field's value as a `ValueFact` (filled + keyed digest); the text is
@@ -13,22 +17,48 @@ guess.
 
 from __future__ import annotations
 
+import urllib.parse
 from collections.abc import Callable
 from typing import Protocol
 
 from steerai.world.address_bar import DocumentUrl
-from steerai.world.effects import Observed, value_fact
+from steerai.world.effects import Observed, top_document, value_fact
 from steerai.world.model import Snapshot
 
 
 class FactReader(Protocol):
-    def document_url(self, hwnd: int) -> DocumentUrl | None: ...
+    def document_url_in(self, snapshot: Snapshot, document_id: int) -> DocumentUrl | None: ...
+
+    def address_bar(self, hwnd: int) -> str | None: ...
 
     def focused_runtime_id(self) -> tuple[int, ...]: ...
 
     def roles_and_headings(
         self, hwnd: int
     ) -> tuple[dict[tuple[int, ...], str], dict[tuple[int, ...], int]]: ...
+
+
+def in_place_url(
+    document: str | None, bar: str | None, *, bar_read: bool
+) -> tuple[str | None, bool]:
+    """([V2.7]) the in-place URL and whether it is observed: the bar's text with the Document's
+    scheme when the bar has none, accepted only on the Document's host. No bar at all is not
+    observed; a failed read, no Document to check against, or another host is unread."""
+    if not bar_read:
+        return None, True
+    if bar is None:
+        return None, False
+    if document is None:
+        return None, True
+    doc = urllib.parse.urlsplit(document)
+    text = bar if "://" in bar else f"{doc.scheme}://{bar}"
+    try:
+        host = urllib.parse.urlsplit(text).hostname
+    except ValueError:
+        return None, True
+    if host is None or doc.hostname is None or host != doc.hostname:
+        return None, True
+    return text, True
 
 
 def read_observed(  # noqa: PLR0913 - the snapshot, the reader and each optional fact, keyword-only
@@ -40,15 +70,12 @@ def read_observed(  # noqa: PLR0913 - the snapshot, the reader and each optional
     acted_value: Callable[[], str | None] | None = None,
     page_facts: bool = True,
 ) -> Observed:
-    """`snapshot` with the facts read now. `page_facts=False` skips the URL, roles and headings
+    """`snapshot` with the facts read now. `page_facts=False` skips the URLs, roles and headings
     (a window without a Document); `acted_value` is None for no acted field or a secure one."""
-    url = roles = headings = None
+    document_url = url = roles = headings = None
+    url_observed = True
     if page_facts:
-        try:
-            document = reader.document_url(snapshot.hwnd)
-            url = None if document is None else document.url
-        except OSError:
-            url = None
+        document_url, url, url_observed = _urls(snapshot, reader)
         try:
             roles, headings = reader.roles_and_headings(snapshot.hwnd)
         except OSError:
@@ -76,4 +103,21 @@ def read_observed(  # noqa: PLR0913 - the snapshot, the reader and each optional
         acted_value=value,
         headings=headings,
         aria_roles=roles,
+        document_url=document_url,
+        url_observed=url_observed,
     )
+
+
+def _urls(snapshot: Snapshot, reader: FactReader) -> tuple[str | None, str | None, bool]:
+    top = top_document(snapshot)
+    try:
+        found = None if top is None else reader.document_url_in(snapshot, top.id)
+        document = None if found is None else found.url
+    except OSError:
+        document = None
+    try:
+        bar, bar_read = reader.address_bar(snapshot.hwnd), True
+    except OSError:
+        bar, bar_read = None, False
+    url, observed = in_place_url(document, bar, bar_read=bar_read)
+    return document, url, observed

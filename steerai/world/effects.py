@@ -116,6 +116,11 @@ class Observed:
     acted_value: ValueFact | None = None
     headings: Mapping[tuple[int, ...], int] | None = None
     aria_roles: Mapping[tuple[int, ...], str] | None = None
+    document_url: str | None = None
+    """[V2.7] the top Document's URL: identity, scheme and host (`navigated`, error pages)."""
+    url_observed: bool = True
+    """[V2.7] False when this window has no address bar: the in-place URL is not observed and
+    its absence is never `unread`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -469,6 +474,11 @@ def _outermost(elements: Sequence[Element]) -> int | None:
     return roots[0] if len(roots) == 1 else None
 
 
+def top_document(snapshot: Snapshot) -> Element | None:
+    """The one Document with no Document above it; none or several is None."""
+    return _top_document(snapshot)
+
+
 def _top_document(snapshot: Snapshot) -> Element | None:
     """As `loop._top_document`: the one Document with no Document above it; none or several is
     None."""
@@ -505,7 +515,8 @@ def _unread(before: Observed, after: Observed, *, url_fact: bool) -> frozenset[U
     """The facts not read. The URL is one only once the task has read a parsable URL ([V2.4]
     ruling (i)): before that, a window without a URL can still reach `none`."""
     out: set[Unread] = set()
-    if url_fact and (before.url is None or after.url is None):
+    url_observed = before.url_observed and after.url_observed
+    if url_fact and url_observed and (before.url is None or after.url is None):
         out.add("url")
     if before.windows is None or after.windows is None:
         out.add("windows")

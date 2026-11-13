@@ -161,3 +161,12 @@ def test_once_the_url_is_a_fact_a_failed_read_is_unread() -> None:
     )
     assert "url" in report.unread
     assert "none" not in report.classes
+
+
+def test_a_url_not_observed_on_either_side_is_never_unread() -> None:
+    """[V2.7]: no address bar means the in-place URL fact is not observed, even once the task
+    has read a URL; only a failed read is unread."""
+    after = Observed(snapshot=_snap(BASE), url=None, windows=(16,), url_observed=False)
+    report = observe(_read(_snap(BASE)), after, acted=FIELD[3], url_fact=True)
+    assert "url" not in report.unread
+    assert report.classes == frozenset({"none"})
