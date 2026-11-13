@@ -6,7 +6,13 @@ from __future__ import annotations
 
 import pytest
 
-from steerai.probes.suite_outcome import Run, outcome
+from steerai.probes.suite_outcome import (
+    STAGE_BUCKETS,
+    Run,
+    outcome,
+    planner_output_tokens,
+    split_ms,
+)
 
 
 def _run(status: str | None, independent: str = "ok", **kw: object) -> Run:
@@ -57,3 +63,58 @@ def test_a_done_found_invalid_after_the_run_still_counts_against_the_bar() -> No
 
 def test_a_pre_run_invalid_measured_nothing() -> None:
     assert outcome(_run(None, "unread", pre_invalid=True)) == "invalid"
+
+
+# ---- the wall-time split and the planner's output (packet §D; hunter OB-23/38/39) ----------
+
+
+def _records() -> list[dict[str, object]]:
+    return [
+        {"kind": "plan_read", "read_ms": 2000},
+        {"kind": "plan", "latency_ms": 7000.0, "output_tokens": 500},
+        {"kind": "goal_match", "latency_ms": 1500.0},
+        {
+            "kind": "step",
+            "latency_ms": {"observe": 100.0, "gate": 10.0, "decide": 0.0, "act": 60.0},
+        },
+        {
+            "kind": "step",
+            "latency_ms": {"observe": 300.0, "settle": 2000.0, "act": 80.0, "verify": 10000.0},
+        },
+    ]
+
+
+def test_every_millisecond_lands_in_exactly_one_bucket() -> None:
+    split = split_ms(_records(), seconds=25.0)
+    assert split == {
+        "read": 2000,
+        "model": 8500,
+        "observe": 400,
+        "gate": 10,
+        "decide": 0,
+        "act": 140,
+        "settle": 2000,
+        "verify_wait": 10000,
+        "other": 25000 - 23050,
+    }
+
+
+def test_a_split_larger_than_the_run_is_double_counting() -> None:
+    with pytest.raises(ValueError, match="double"):
+        split_ms(_records(), seconds=20.0)
+
+
+def test_every_stage_the_loop_measures_has_a_bucket() -> None:
+    assert set(STAGE_BUCKETS) == {"observe", "gate", "decide", "act", "settle", "verify"}
+
+
+def test_an_unknown_stage_is_refused_never_dropped() -> None:
+    records = [{"kind": "step", "latency_ms": {"teleport": 5.0}}]
+    with pytest.raises(ValueError, match="teleport"):
+        split_ms(records, seconds=1.0)
+
+
+def test_output_tokens_count_a_failed_plan_as_incomplete() -> None:
+    assert planner_output_tokens(_records()) == (500, False)
+    records = [*_records(), {"kind": "plan", "latency_ms": 900.0}]
+    assert planner_output_tokens(records) == (500, True)

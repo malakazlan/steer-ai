@@ -12,8 +12,9 @@ unknown status is `error`, never a stop (OB-20).
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 Independent = Literal["ok", "not", "unread"]
 Outcome = Literal[
@@ -74,3 +75,66 @@ def outcome(run: Run) -> Outcome:
             return "false_stop"
         return "true_stop" if run.independent == "not" else "stop_unread"
     return "error"
+
+
+# ---- where a run's wall time went (packet §D; hunter OB-23/38/39) ----------------------------
+
+STAGE_BUCKETS: Final[dict[str, str]] = {
+    "observe": "observe",
+    "gate": "gate",
+    "decide": "decide",
+    "act": "act",
+    "settle": "settle",
+    "verify": "verify_wait",
+}
+"""Every stage the loop measures (`_Stage.measure`) and its bucket; a stage missing here is
+refused, never dropped. Model time is the `plan` and `goal_match` records, never a stage."""
+BUCKETS: Final[tuple[str, ...]] = (
+    "read",
+    "model",
+    "observe",
+    "gate",
+    "decide",
+    "act",
+    "settle",
+    "verify_wait",
+    "other",
+)
+
+
+def split_ms(records: Sequence[Mapping[str, Any]], *, seconds: float) -> dict[str, int]:
+    """A run's wall time by bucket, from its trace records: the planner's screen read, model
+    calls, each loop stage, and `other` (warm-up, waits outside the stages: the run's seconds
+    minus the rest). More than the run itself is double counting and is refused."""
+    totals = dict.fromkeys(BUCKETS, 0.0)
+    for record in records:
+        kind = record.get("kind")
+        if kind == "plan_read":
+            totals["read"] += float(record.get("read_ms") or 0)
+        elif kind in ("plan", "goal_match"):
+            totals["model"] += float(record.get("latency_ms") or 0)
+        elif kind == "step":
+            for stage, ms in (record.get("latency_ms") or {}).items():
+                if stage not in STAGE_BUCKETS:
+                    raise ValueError(f"unmapped stage {stage!r}")
+                totals[STAGE_BUCKETS[stage]] += float(ms)
+    split = {bucket: round(totals[bucket]) for bucket in BUCKETS if bucket != "other"}
+    other = round(seconds * 1000) - sum(split.values())
+    if other < 0:
+        raise ValueError(f"double counting: the buckets exceed the run by {-other} ms")
+    return {**split, "other": other}
+
+
+def planner_output_tokens(records: Sequence[Mapping[str, Any]]) -> tuple[int, bool]:
+    """The planner's output tokens over the run, and whether any plan record lacked them (a
+    failed call's record carries none: counted 0, the total marked incomplete)."""
+    total, incomplete = 0, False
+    for record in records:
+        if record.get("kind") != "plan":
+            continue
+        tokens = record.get("output_tokens")
+        if isinstance(tokens, int):
+            total += tokens
+        else:
+            incomplete = True
+    return total, incomplete

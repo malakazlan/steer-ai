@@ -31,7 +31,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from ctypes import wintypes
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -57,6 +57,14 @@ from steerai.probes.layer_b_pages import (
     PageServer,
 )
 from steerai.probes.present_switch import _plan_kinds, _steps, page_html
+from steerai.probes.suite_outcome import (
+    OUTCOMES,
+    Independent,
+    Run,
+    outcome,
+    planner_output_tokens,
+    split_ms,
+)
 from steerai.probes.windows import wait_window_for_pid
 
 NOTEPAD = Path(r"C:\Windows\System32\notepad.exe")
@@ -1232,7 +1240,11 @@ def verdict(
         ok = ok and bool(runs) and good == len(runs)
     measured = [r for r in rows if "task" in r]
     total = sum(bool(r["passed"]) for r in measured)
-    lines.append(f"all: {total}/{len(measured)}")
+    counts = {name: sum(r.get("outcome") == name for r in measured) for name in OUTCOMES}
+    shown = ", ".join(f"{name} {n}" for name, n in counts.items() if n)
+    lines.append(f"outcomes: {shown}")
+    lines.append(f"false_done: {counts['false_done']} (the bar is 0)")
+    lines.append(f"all: {total}/{len(measured)}")  # last: readers take the total from it
     return lines, ok
 
 
@@ -1338,12 +1350,21 @@ def _steer(task: Task, number: int, hwnd: int, tmp: Path, planner: _Planner) -> 
     records = (
         [json.loads(x) for x in trace.read_text("utf-8").splitlines()] if trace.is_file() else []
     )
+    seconds = time.monotonic() - started
+    tokens, incomplete = planner_output_tokens(records)
+    try:
+        split: dict[str, Any] = dict(split_ms(records, seconds=seconds))
+    except ValueError:
+        split = {"error": "split_refused"}  # a stage unmapped, or double counting: never a crash
     return {
         "expects": _plan_kinds(tmp),
         "steps": _steps(records),
         "status": result.get("status"),
         "detail": result.get("detail"),
-        "seconds": round(time.monotonic() - started, 1),
+        "seconds": round(seconds, 1),
+        "split_ms": split,
+        "planner_output_tokens": tokens,
+        **({"tokens_incomplete": True} if incomplete else {}),
         "asks": "".join("y" if a["approved"] else "n" for a in person.log),
         "opens_recorded": opened,
         "planner_calls": planner.calls - calls_before,
@@ -1360,7 +1381,7 @@ def _run_app(  # noqa: PLR0913 - one app's start and read, passed once
         window = wait_window_for_pid(proc.pid, image=exe.name, process=proc)
         _in_front(window.hwnd)
         row = _steer(task, number, window.hwnd, tmp, planner)
-        row["observed"] = notepad_text(window.hwnd, edit_class)
+        _read_into(row, lambda: notepad_text(window.hwnd, edit_class))
         return row
     finally:
         subprocess.run(  # noqa: S603 - fixed argv
@@ -1404,8 +1425,12 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
         _in_front(window.hwnd)
         row = _steer(task, number, window.hwnd, tmp, planner)
         if task.check == "inbox_send":
-            raw = _read(port, 'localStorage.getItem("steer-present") || "[]"', "read")
-            row["observed"] = inbox_send(raw)
+            _read_into(
+                row,
+                lambda: inbox_send(
+                    _read(port, 'localStorage.getItem("steer-present") || "[]"', "read")
+                ),
+            )
         elif task.check in (
             "h2_event",
             "h3_event",
@@ -1417,16 +1442,29 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
             "h6_event",
             "gallery_event",
         ):
-            row["observed"] = _page_observed(task, port)
+            _read_into(row, lambda: _page_observed(task, port))
         elif task.check == "inbox_chat":
-            row["observed"] = _read(port, "document.body.dataset.chat", "chat")
+            _read_into(row, lambda: _read(port, "document.body.dataset.chat", "chat"))
         else:
-            row["observed"] = _read_page(port, "page")
+            _read_into(row, lambda: _read_page(port, "page"))
         return row
     finally:
         from steerai.probes.chrome_a11y import stop_chrome  # noqa: PLC0415 - with launch
 
         stop_chrome(proc, tmp / "profile")
+
+
+def _read_into(row: dict[str, Any], read: Callable[[], str]) -> None:
+    """The independent read into the row (packet §D, re-review item 3): its value; a run found
+    invalid during the read (`InvalidRun`: a second tab, a bot check) is a post-run invalid
+    that keeps Steer's verdict; a read that failed otherwise is `unread`, by exception type
+    only (a message can quote the page). Anything else is a bug and propagates."""
+    try:
+        row["observed"] = read()
+    except InvalidRun as exc:
+        row["post_invalid"] = str(exc)
+    except (OSError, ValueError, KeyError) as exc:
+        row["unread"] = type(exc).__name__
 
 
 def one_run(task: Task, number: int, planner: _Planner, keep: Path | None = None) -> dict[str, Any]:
@@ -1455,8 +1493,23 @@ def one_run(task: Task, number: int, planner: _Planner, keep: Path | None = None
         return {"task": task.task_id, "run": number, "passed": False, "invalid": str(exc)}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    observed = str(row.pop("observed", ""))
-    ok = passed(task, row["status"], observed) and row["opens_recorded"] == 0
+    observed = row.pop("observed", None)
+    ok = passed(task, row["status"], str(observed or "")) and row["opens_recorded"] == 0
+    independent: Independent
+    if observed is None or "unread" in row or "post_invalid" in row:
+        independent = "unread"
+    else:
+        independent = "ok" if passed(task, "done", str(observed)) else "not"
+    row["independent"] = independent
+    row["outcome"] = outcome(
+        Run(
+            status=row["status"],
+            independent=independent,
+            detail=row.get("detail"),
+            opens=int(row.get("opens_recorded") or 0),
+            post_invalid="post_invalid" in row,
+        )
+    )
     # the observed address is a public site's, the text a fixture's: tokens, never person data
     # a takeover is a fail, never invalid: conservative, labelled by its status token
     return {"task": task.task_id, "run": number, "passed": ok, **row}
@@ -1501,7 +1554,7 @@ def _run_calculator(task: Task, number: int, tmp: Path, planner: _Planner) -> di
         time.sleep(2.0)  # the UWP frame fills its content (unmeasured)
         _in_front(window.hwnd)
         row = _steer(task, number, window.hwnd, tmp, planner)
-        row["observed"] = calc_display(_calc_names(window.hwnd))
+        _read_into(row, lambda: calc_display(_calc_names(window.hwnd)))
         return row
     finally:
         _close(window.hwnd)

@@ -124,6 +124,21 @@ def _landmarks(tmp: Path) -> list[str]:
     return found
 
 
+def _reason_tokens(evidence: dict[str, Any]) -> str:
+    """The verify reason, then the detail when it says more, then the closed V2 step 1 tokens
+    (`url_proof`, `aim`): each a fixed token, never a name or a URL."""
+    reason = evidence.get("reason") or ""
+    detail = evidence.get("detail") or ""
+    parts = [reason or detail]
+    if reason and detail and detail != reason:
+        parts.append(detail)
+    if evidence.get("url_proof"):
+        parts.append(f"url={evidence['url_proof']}")
+    if evidence.get("aim"):
+        parts.append(f"aim={evidence['aim']}")
+    return "/".join(p for p in parts if p)
+
+
 def _steps(records: Sequence[dict[str, Any]]) -> list[str]:
     """Each step's outcome as tokens: id, ok, the verify reason or detail, the scope level."""
     out: list[str] = []
@@ -131,7 +146,7 @@ def _steps(records: Sequence[dict[str, Any]]) -> list[str]:
         if r.get("kind") != "step":
             continue
         evidence = r.get("evidence") or {}
-        reason = evidence.get("reason") or evidence.get("detail") or ""
+        reason = _reason_tokens(evidence)
         ok = "ok" if r.get("ok") else "no"
         action = r.get("action") or {}
         keys = json.dumps(
