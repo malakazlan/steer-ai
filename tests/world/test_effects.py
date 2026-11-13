@@ -200,3 +200,13 @@ def test_a_very_deep_or_cyclic_tree_is_bounded_never_a_recursion_error() -> None
     assert "dismissed" in report.tokens
     cyclic: list[Row] = [PAGE, (2, "Group", "a", (9, 2), 3), (3, "Group", "b", (9, 3), 2)]
     observe(_obs(cyclic), _obs(cyclic[:-1]))
+
+
+def test_an_unchanged_element_without_a_runtime_id_carries_nothing() -> None:
+    """#262 review: an anonymous element already shown before is not a new result."""
+    anonymous: Row = (9, "Text", "Red shoes in stock", (), 3)
+    after_only: Row = (10, "Text", "unrelated", (9, 10), 1)
+    report = observe(
+        _obs([*BASE, anonymous]), _obs([*BASE, anonymous, after_only]), text="red shoes"
+    )
+    assert "results" not in report.carriers

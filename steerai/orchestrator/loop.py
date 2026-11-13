@@ -447,9 +447,9 @@ class Session:
         self._url_raw_reads: list[str | None] = []
         self._url_before_source: Literal["read", "ledger"] | None = None
         self._url_raw_document: DocumentUrl | None = None
+        """The top Document's URL as `_loaded` read it (debug record only)."""
         self._acted_rid: tuple[int, ...] = ()
         """The acted element's RuntimeId, taken in `_record` before the act (effect log)."""
-        """The top Document's URL as `_loaded` read it (debug record only)."""
         self._url_leg: UrlLeg | None = None
         """How far the address-bar proof got for this R2/R3 step (`URL_LEGS`); None below R2."""
         self._url_reads = 0
@@ -1267,7 +1267,15 @@ class Session:
         text = step.text if step.text is not None else step.params.get("text")
         try:
             report = observe(*pair, acted=acted or None, text=text)
-        except (ValueError, KeyError, TypeError, RecursionError):
+        except (  # the pure observer's own failures; a kill or takeover is never caught
+            ValueError,
+            KeyError,
+            TypeError,
+            AttributeError,
+            IndexError,
+            OverflowError,
+            RecursionError,
+        ):
             self._trace.write(
                 {
                     "kind": "effect",

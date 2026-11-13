@@ -75,3 +75,12 @@ def test_an_observer_that_fails_is_one_token_and_the_step_is_the_same(
         "detail": "build_failed",
     }
     assert HELLO not in "\n".join(h.trace.lines)
+
+
+def test_a_step_never_logs_the_previous_steps_acted_element() -> None:
+    """#262 review: `_begin_step` resets the acted element; `_record` sets it again."""
+    h = Harness()
+    h.session.run_step(_type())
+    h.session._acted_rid = (99, 99)
+    h.session._begin_step(_send(), None)
+    assert not h.session._acted_rid

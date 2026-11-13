@@ -378,22 +378,32 @@ def _carriers(
     b, a = before.snapshot, after.snapshot
     if _contains(a.title, needle) and not _contains(b.title, needle):
         out.add("title")
+    if _results_carrier(b, a, acted, needle):
+        out.add("results")
+    return out
+
+
+def _results_carrier(
+    b: Snapshot, a: Snapshot, acted: tuple[int, ...] | None, needle: Sequence[str]
+) -> bool:
+    """The text on an appeared or renamed element outside the acted field's exemption, and on
+    no element before it (an element without a RuntimeId is new only by its role and name)."""
     acted_after = next((e for e in a.elements if acted and e.runtime_id == acted), None)
     exempt = _exemption(a, acted_after)
     under = set() if acted_after is None else _under(a, acted_after.id)
     known = {e.runtime_id: e.name for e in b.elements if e.runtime_id}
-    shown_before = any(
-        _contains(e.name, needle) for e in b.elements if not (acted and e.runtime_id == acted)
-    )
-    if not shown_before:
-        for element in a.elements:
-            if element.id in exempt or element.id in under:
-                continue
-            new_name = known.get(element.runtime_id) != element.name
-            if new_name and _contains(element.name, needle):
-                out.add("results")
-                break
-    return out
+    if any(_contains(e.name, needle) for e in b.elements if not (acted and e.runtime_id == acted)):
+        return False
+    anonymous_before = _anonymous(b.elements)
+    for element in a.elements:
+        if element.id in exempt or element.id in under or not _contains(element.name, needle):
+            continue
+        if element.runtime_id:
+            if known.get(element.runtime_id) != element.name:
+                return True
+        elif anonymous_before[(element.role, normalise_name(element.name))] == 0:
+            return True
+    return False
 
 
 def _report(  # noqa: PLR0913, PLR0917 - the report's fields, one each
