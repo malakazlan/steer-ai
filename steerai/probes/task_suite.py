@@ -120,6 +120,11 @@ class Task:
     which: tuple[tuple[str, str], ...] = ()
     """The scripted person's answer to a twin ask, per target name: the automation id of the
     field the task means (packet h4-2026-11-11 round 2, item 5). A harness oracle."""
+    result_link: str = ""
+    """For an instant-search `url_search`: the path prefix of a result's own link (`/pods/`).
+    The page lists results as the words are typed and never changes its URL (cocoapods.org,
+    V2 step 1 diagnostics 2026-11-13), so a link to `<prefix><words>` on the page is the
+    independent read as well as the URL. Empty: the URL alone."""
 
 
 PAGE_SETS = ("h2", "h3", "h4", "h5", "h6", "gallery")
@@ -191,6 +196,7 @@ def _url_search(  # noqa: PLR0913 - one task's fields
     path: str,
     param: str = "q",
     title: str = "",
+    result_link: str = "",
 ) -> Task:
     return Task(
         task_id,
@@ -202,6 +208,7 @@ def _url_search(  # noqa: PLR0913 - one task's fields
         path=path,
         param=param,
         title=title,
+        result_link=result_link,
     )
 
 
@@ -212,9 +219,14 @@ CHALLENGE_TITLES = frozenset(
 path, H4 aw1 2026-11-11): the run measured nothing."""
 
 
-def _read_page(port: int, stage: str) -> str:
-    """The page's href and title as JSON; a bot check is an invalid run, never a pass."""
-    expression = "JSON.stringify({href: location.href, title: document.title})"
+_LINKS_JS = "[...document.querySelectorAll('a[href]')].map(a => new URL(a.href).pathname)"
+
+
+def _read_page(port: int, stage: str, *, links: bool = False) -> str:
+    """The page's href and title as JSON (with `links`, its links' paths, at most 500); a bot
+    check is an invalid run, never a pass."""
+    extra = f", links: {_LINKS_JS}.slice(0, 500)" if links else ""
+    expression = f"JSON.stringify({{href: location.href, title: document.title{extra}}})"
     observed = _read(port, expression, stage)
     if str(json.loads(observed or "{}").get("title", "")) in CHALLENGE_TITLES:
         raise InvalidRun("bot_check")
@@ -624,6 +636,7 @@ H6: tuple[Task, ...] = (
         path="/",
         param="q",
         title="CocoaPods.org",
+        result_link="/pods/",
     ),
     _url_search(
         "am1",
@@ -1184,7 +1197,12 @@ def passed(task: Task, status: str | None, observed: str) -> bool:  # noqa: PLR0
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(href).query)
         words = " ".join(query.get(task.param, [""])[0].split())
         same_title = not task.title or title == task.title
-        return path == task.path and words.casefold() == task.expected.casefold() and same_title
+        by_url = path == task.path and words.casefold() == task.expected.casefold() and same_title
+        wanted = (task.result_link + task.expected).casefold()
+        shown = bool(task.result_link) and any(
+            str(link).casefold() == wanted for link in page.get("links") or []
+        )
+        return by_url or shown
     if task.check in _SEARCH_PATHS:
         return path == _SEARCH_PATHS[task.check] and (
             query_of(href).casefold() == task.expected.casefold()
@@ -1456,7 +1474,7 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
         elif task.check == "inbox_chat":
             _read_into(row, lambda: _read(port, "document.body.dataset.chat", "chat"))
         else:
-            _read_into(row, lambda: _read_page(port, "page"))
+            _read_into(row, lambda: _read_page(port, "page", links=bool(task.result_link)))
         return row
     finally:
         from steerai.probes.chrome_a11y import stop_chrome  # noqa: PLC0415 - with launch
