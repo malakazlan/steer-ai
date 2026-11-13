@@ -123,6 +123,7 @@ from steerai.verify.t1 import (
 )
 from steerai.verify.url_query import LoadKind, UrlBefore, load_kind
 from steerai.world.address_bar import DocumentUrl
+from steerai.world.effects import Observed, observe
 from steerai.world.elements import Element, outermost
 from steerai.world.fingerprint import similarity
 from steerai.world.model import Snapshot, normalise_name
@@ -447,6 +448,8 @@ class Session:
         self._url_before_source: Literal["read", "ledger"] | None = None
         self._url_raw_document: DocumentUrl | None = None
         """The top Document's URL as `_loaded` read it (debug record only)."""
+        self._acted_rid: tuple[int, ...] = ()
+        """The acted element's RuntimeId, taken in `_record` before the act (effect log)."""
         self._url_leg: UrlLeg | None = None
         """How far the address-bar proof got for this R2/R3 step (`URL_LEGS`); None below R2."""
         self._url_reads = 0
@@ -1127,6 +1130,7 @@ class Session:
                 label_kind=label.kind if label else None,
                 code=ErrorCode.GATE_BLOCKED,
             )
+        self._log_effect(step, before_of_record, after, windows_before, self._acted_rid)
         evidence.update({k: v for k, v in verdict.evidence.items() if k != "level"})
         evidence["level"] = verdict.level
         if no_effect:
@@ -1170,6 +1174,8 @@ class Session:
         self._url_step, self._url_query_step, self._url_before = False, False, None
         self._url_leg, self._url_reads = None, 0
         self._url_raw_before, self._url_raw_reads = None, []
+        # before the act (a swap re-observes): the effect log's acted element, never raising
+        self._acted_rid = () if element_id is None else _runtime_id_of(before, element_id)
         self._url_before_source, self._url_raw_document = None, None
         if risk not in ("R2", "R3"):
             return before, False
@@ -1235,6 +1241,68 @@ class Session:
             verify_code=None,
             label_kind=None,
             code=action.code,
+        )
+
+    def _log_effect(
+        self,
+        step: Step,
+        before: Snapshot,
+        after: Snapshot,
+        windows_before: list[WindowLike] | None,
+        acted: tuple[int, ...],
+    ) -> None:
+        """V2 step 2a, logged beside v1 ([V2.2]): the effect report of this step's before of
+        record and verify's after, from values already read (the URL only where the R2/R3 proof
+        read it; no window list after, so `windows` is unread), as closed tokens. Nothing reads
+        it back; a failure is one token, never an exception into the step (EO-33/42)."""
+        polled = [u for u in self._url_raw_reads if u is not None]
+        pair = (
+            Observed(
+                snapshot=before,
+                url=self._url_raw_before,
+                windows=None if windows_before is None else tuple(w.hwnd for w in windows_before),
+            ),
+            Observed(snapshot=after, url=polled[-1] if polled else None, windows=None),
+        )
+        text = step.text if step.text is not None else step.params.get("text")
+        try:
+            report = observe(*pair, acted=acted or None, text=text)
+        except (  # the pure observer's own failures; a kill or takeover is never caught
+            ValueError,
+            KeyError,
+            TypeError,
+            AttributeError,
+            IndexError,
+            OverflowError,
+            RecursionError,
+        ):
+            self._trace.write(
+                {
+                    "kind": "effect",
+                    "task_id": self.task_id,
+                    "step_id": step.id,
+                    "detail": "build_failed",
+                }
+            )
+            return
+        self._trace.write(
+            {
+                "kind": "effect",
+                "task_id": self.task_id,
+                "step_id": step.id,
+                "before": "record",
+                "primary": report.primary,
+                "classes": sorted(report.classes),
+                "tokens": sorted(report.tokens),
+                "unread": sorted(report.unread),
+                "carriers": sorted(report.carriers),
+                "revealed": report.revealed_root is not None,
+                "stable_after": report.stable_after,
+            }
+        )
+        self._debug.capture(
+            "effect",
+            lambda: {"revealed_root": report.revealed_root, "acted": list(acted)},
         )
 
     def _rebuilt(self, step: Step, risk: Risk, before: Snapshot, element_id: int) -> Predicate:
@@ -1539,6 +1607,7 @@ class Session:
 
     def _begin_step(self, step: Step, windows_before: list[WindowLike] | None) -> None:
         self._debug.begin_step(step.id)
+        self._acted_rid = ()  # set again by `_record`: never a previous step's element
         self._windows_at_step = windows_before
         self._no_effect_facts = None
         self._proof = None
@@ -3756,6 +3825,13 @@ def _before_url(raw: str | None, source: Literal["read", "ledger"] | None) -> st
     if raw is not None:
         return raw
     return "unread" if source == "read" else "digest_only"
+
+
+def _runtime_id_of(snapshot: Snapshot, element_id: int) -> tuple[int, ...]:
+    """The element's RuntimeId for the effect log, or () when it is not there: a lookup that
+    never raises, so the log can never change a step (V2 step 2a)."""
+    found = next((e for e in snapshot.elements if e.id == element_id), None)
+    return () if found is None else found.runtime_id
 
 
 def _top_ref(snapshot: Snapshot) -> dict[str, Any] | None:

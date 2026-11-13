@@ -28,6 +28,8 @@ from tests.orchestrator.test_loop import HELLO, Harness, _send, _type
 FIXTURE = Path(__file__).parent / "golden" / "v1_loop.json"
 ADDED = frozenset({"url_proof", "url_reads", "aim"})
 """The keys V2 step 1 adds (packet §C); stripped before the comparison, nowhere else."""
+ADDED_KINDS = frozenset({"effect"})
+"""Trace record kinds logged beside v1 (V2 step 2a, [V2.2]); dropped, nothing else."""
 
 
 def _strip(value: Any) -> Any:
@@ -41,7 +43,11 @@ def _strip(value: Any) -> Any:
 def _record(h: Harness, results: list[Any], task: Any = None, **extra: Any) -> dict[str, Any]:
     out: dict[str, Any] = {
         "results": [r.to_dict() for r in results],
-        "trace": [json.loads(line) for line in h.trace.lines],
+        "trace": [
+            record
+            for record in (json.loads(line) for line in h.trace.lines)
+            if record.get("kind") not in ADDED_KINDS
+        ],
         "semantic_calls": [list(c) for c in h.semantic.calls],
         "physical_calls": [list(c) for c in h.physical.calls],
         "clock": h.clock["t"],
