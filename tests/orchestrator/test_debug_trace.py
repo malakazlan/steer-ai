@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -26,12 +28,14 @@ def _keyed(data: bytes) -> bytes:
     return bytes(b ^ 0x5A for b in data)
 
 
-def _sink(tmp_path: Path, protect: object = _keyed) -> tuple[BufferedDebugSink, Path]:
+def _sink(
+    tmp_path: Path, protect: Callable[[bytes], bytes] = _keyed
+) -> tuple[BufferedDebugSink, Path]:
     path = tmp_path / "trace.debug.jsonl.dpapi"
-    return BufferedDebugSink(path, protect=protect), path  # type: ignore[arg-type]  # fakes
+    return BufferedDebugSink(path, protect=protect), path  # fakes
 
 
-def _lines(path: Path) -> list[dict[str, object]]:
+def _lines(path: Path) -> list[dict[str, Any]]:
     out = []
     for line in path.read_bytes().splitlines():
         out.append(json.loads(_keyed(base64.b64decode(line)).decode("utf-8")))
@@ -110,7 +114,7 @@ def test_strings_and_lists_are_capped_with_a_count(tmp_path: Path) -> None:
     (record,) = _lines(path)
     assert record["name"] == "x" * MAX_STRING
     assert record["truncated"] == {"name": 10, "elements": 7}
-    assert len(record["elements"]) == MAX_NEIGHBOURS  # type: ignore[arg-type]  # a list
+    assert len(record["elements"]) == MAX_NEIGHBOURS
 
 
 def test_the_null_sink_does_nothing(tmp_path: Path) -> None:
@@ -178,3 +182,22 @@ def test_a_build_that_raises_is_a_token_and_the_caller_goes_on(tmp_path: Path) -
 
     sink.capture("aim", build)
     assert sink.flush() == "build_failed"
+
+
+def test_caps_reach_every_nested_string_and_list(tmp_path: Path) -> None:
+    """Principal #259 item 1: 50 descendants with paragraph names stay a record, capped."""
+    sink, path = _sink(tmp_path)
+    sink.begin_step("s1")
+    long = "y" * (MAX_STRING + 5)
+    sink.record(
+        "neighbourhood",
+        {"element": {"name": long}, "descendants": [{"name": long} for _ in range(MAX_NEIGHBOURS)]},
+    )
+    sink.flush()
+    (record,) = _lines(path)
+    assert "dropped" not in record
+    assert record["element"] == {"name": "y" * MAX_STRING}
+    assert all(d["name"] == "y" * MAX_STRING for d in record["descendants"])
+    truncated = record["truncated"]
+    assert truncated["element.name"] == 5
+    assert truncated["descendants[0].name"] == 5

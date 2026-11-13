@@ -50,7 +50,7 @@ def test_v1_is_the_golden_with_the_debug_channel_on(
 ) -> None:
     fixture = json.loads(golden.FIXTURE.read_text("utf-8"))
     assert golden._strip(fixture[name]) == golden.SCENARIOS[name](), name
-    assert sinks, "the scenario ran with the channel on"
+    assert any(sink._pending for sink in sinks), "the channel was on and built records"
 
 
 def test_the_urls_go_to_the_protected_file_never_the_clear_trace(
@@ -94,3 +94,74 @@ def test_credentials_reach_neither_file_and_a_key_shaped_name_only_the_protected
     assert secret.encode() not in path.read_bytes()
     assert shown not in clear
     assert shown in decoded, "the page's own text is what the debug file is for"
+
+
+def test_the_document_url_is_recorded_when_the_load_check_read_it(
+    sinks: list[BufferedDebugSink], tmp_path: Path
+) -> None:
+    """Principal #259 item 4: the packet's url_proof field, from `_loaded`'s own read."""
+    from steerai.world.address_bar import DocumentUrl  # noqa: PLC0415 - the read's shape
+
+    bar = url.Bar(url.HOME, url.RESULTS)
+    h = url._harness(bar, loaded="Bing")
+    h.session._document_url = lambda _hwnd: DocumentUrl(
+        runtime_id=(42, 90), url="https://" + (url.RESULTS if bar.pressed else url.HOME)
+    )
+    h.session.run_step(url._submit())
+    records = _decoded(sinks[-1], tmp_path / f"d{len(sinks) - 1}.dpapi")
+    proof = next(r for r in records if r["kind"] == "url_proof")
+    assert proof["document_url"] == {"url": "https://" + url.RESULTS, "runtime_id": [42, 90]}
+
+
+def test_an_unreadable_bar_before_the_enter_is_unread_not_a_digest(
+    sinks: list[BufferedDebugSink], tmp_path: Path
+) -> None:
+    h = url._harness(url.Bar(None, url.RESULTS))
+    h.session.run_step(url._submit())
+    records = _decoded(sinks[-1], tmp_path / f"d{len(sinks) - 1}.dpapi")
+    assert next(r for r in records if r["kind"] == "url_proof")["before_url"] == "unread"
+
+
+_TIMING = frozenset({"latency_ms", "clock", "unchanged_s"})
+"""What a slower build may move: the measured times themselves, never a decision."""
+
+
+def _decisions(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _decisions(v) for k, v in value.items() if k not in _TIMING}
+    if isinstance(value, list):
+        return [_decisions(v) for v in value]
+    return value
+
+
+class _Ticking(BufferedDebugSink):
+    """A sink whose every build costs 5 ms on the session's own fake clock."""
+
+    tick: Any = None
+
+    def capture(self, kind: str, build: Any) -> None:
+        if self.tick is not None:
+            self.tick(0.005)
+        super().capture(kind, build)
+
+
+@pytest.mark.parametrize("name", sorted(golden.SCENARIOS))
+def test_building_records_moves_no_decision(
+    name: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Invariant 8 (principal #259 item 3): record building that takes time on the fake clock
+    leaves every verdict, poll count and settle decision as the golden has them."""
+    real_init = loop_mod.Session.__init__
+    built: list[_Ticking] = []
+
+    def init(self: Any, *args: Any, **kwargs: Any) -> None:
+        real_init(self, *args, **kwargs)
+        sink = _Ticking(tmp_path / f"t{len(built)}.dpapi", protect=_keyed)
+        sink.tick = self._sleep
+        self._debug = sink
+        built.append(sink)
+
+    monkeypatch.setattr(loop_mod.Session, "__init__", init)
+    fixture = json.loads(golden.FIXTURE.read_text("utf-8"))
+    assert _decisions(golden._strip(fixture[name])) == _decisions(golden.SCENARIOS[name]())
+    assert any(sink._pending for sink in built), "records were built, so time was spent"

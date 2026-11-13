@@ -444,6 +444,9 @@ class Session:
         """The address bar read before the Enter on this attempt, kept for the debug record
         only; None when the before came from the ledger (a digest) or was unreadable."""
         self._url_raw_reads: list[str | None] = []
+        self._url_before_source: Literal["read", "ledger"] | None = None
+        self._url_raw_document: DocumentUrl | None = None
+        """The top Document's URL as `_loaded` read it (debug record only)."""
         self._url_leg: UrlLeg | None = None
         """How far the address-bar proof got for this R2/R3 step (`URL_LEGS`); None below R2."""
         self._url_reads = 0
@@ -1078,9 +1081,13 @@ class Session:
                 "url_proof",
                 lambda: {
                     "leg": self._url_leg,
-                    "before_url": self._url_raw_before
-                    if self._url_raw_before is not None
-                    else "digest_only",
+                    "before_url": _before_url(self._url_raw_before, self._url_before_source),
+                    "document_url": None
+                    if self._url_raw_document is None
+                    else {
+                        "url": self._url_raw_document.url,
+                        "runtime_id": list(self._url_raw_document.runtime_id),
+                    },
                     "reads": list(self._url_raw_reads),
                     "title_before": before_of_record.title,
                     "title_after": after.title,
@@ -1163,6 +1170,7 @@ class Session:
         self._url_step, self._url_query_step, self._url_before = False, False, None
         self._url_leg, self._url_reads = None, 0
         self._url_raw_before, self._url_raw_reads = None, []
+        self._url_before_source, self._url_raw_document = None, None
         if risk not in ("R2", "R3"):
             return before, False
         try:
@@ -2176,6 +2184,7 @@ class Session:
         Document URL counts only when read off the page's one top Document, and the rid branch
         only when that Document is new against the before's one top Document (H4-15/16/17)."""
         read = self._read_document_url()
+        self._url_raw_document = read
         top_now, top_before = _top_document(page), _top_document(before)
         bound = read is not None and top_now is not None and read.runtime_id == top_now.runtime_id
         new_top = (
@@ -2200,9 +2209,10 @@ class Session:
         of record does); else read now, before the Enter."""
         prior = self._ledger.read_ahead(step)
         if prior is not None:
+            self._url_before_source = "ledger"
             return prior.url_before
         value, text = self._read_url(), step.params.get("text")
-        self._url_raw_before = value
+        self._url_raw_before, self._url_before_source = value, "read"
         return None if value is None or not isinstance(text, str) else UrlBefore.of(value, text)
 
     def _url_polled(
@@ -3738,6 +3748,14 @@ def _top_document(snapshot: Snapshot) -> Element | None:
         if parent is None:
             tops.append(element)
     return tops[0] if len(tops) == 1 else None
+
+
+def _before_url(raw: str | None, source: Literal["read", "ledger"] | None) -> str:
+    """The debug record's before URL: as read; `unread` when the read gave nothing; the
+    ledger's digest on a retry or a resume (never re-read)."""
+    if raw is not None:
+        return raw
+    return "unread" if source == "read" else "digest_only"
 
 
 def _top_ref(snapshot: Snapshot) -> dict[str, Any] | None:

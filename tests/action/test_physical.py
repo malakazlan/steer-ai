@@ -1705,3 +1705,17 @@ def test_debug_records_say_where_the_click_went_and_change_nothing(
     assert aim["live"] is not None
     descendants = records["neighbourhood"]["descendants"]
     assert [(d["role"], d["name"]) for d in descendants] == [("Text", "Send")]
+
+
+def test_an_empty_hit_test_is_never_matched_to_an_element_without_an_id() -> None:
+    """Principal #259 item 2: `runtime_id_at` returns () over nothing, and an element read
+    without a RuntimeId has () too: that is no hit, never the first id-less element."""
+    from steerai.action.physical import _aim_record  # noqa: PLC0415 - the pure helper
+
+    snapshot = _snapshot(FakeHandle())
+    nameless = replace(snapshot.elements[0], runtime_id=())
+    snapshot = replace(snapshot, elements=[nameless, *snapshot.elements[1:]])
+    target = SimpleNamespace(
+        element=snapshot.elements[1], live=None, visible=(0, 0, 1, 1), row=None, point=(0, 0)
+    )
+    assert _aim_record(snapshot, target, ())["hit"] == "not_in_snapshot"  # type: ignore[arg-type]

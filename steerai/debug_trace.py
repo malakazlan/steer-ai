@@ -27,8 +27,9 @@ DebugFailure = Literal["build_failed", "write_failed", "unavailable"]
 DEBUG_ENTROPY: Final = b"steer-debug-trace-v1"
 """DPAPI entropy of the debug file: its own, so a ledger or cache blob never opens as one
 (OB-42)."""
-MAX_STRING: Final = 2000
-"""Characters kept of any string (a code-point cut; `truncated` counts the rest)."""
+MAX_STRING: Final = 1000
+"""Characters kept of any string, at any depth (a code-point cut; `truncated` counts the
+rest): 50 neighbours at the cap stay under `MAX_RECORD_BYTES`."""
 MAX_NEIGHBOURS: Final = 50
 """Items kept of any list (a neighbourhood, poll reads)."""
 MAX_RECORD_BYTES: Final = 64 * 1024
@@ -137,19 +138,29 @@ def _check_kind(kind: str) -> None:
 
 
 def _bounded(record: Mapping[str, Any]) -> dict[str, Any]:
-    """The record with every top-level string and list capped; `truncated` counts what went."""
-    out: dict[str, Any] = {}
+    """The record with every string and list capped, at any depth (principal #259 item 1);
+    `truncated` maps each cut field's path (`element.name`, `descendants[0].name`) to what
+    went."""
     cut: dict[str, int] = {}
-    for key, value in record.items():
-        if isinstance(value, str) and len(value) > MAX_STRING:
-            out[key], cut[key] = value[:MAX_STRING], len(value) - MAX_STRING
-        elif isinstance(value, list | tuple) and len(value) > MAX_NEIGHBOURS:
-            out[key], cut[key] = list(value[:MAX_NEIGHBOURS]), len(value) - MAX_NEIGHBOURS
-        else:
-            out[key] = value
+    out = _capped(dict(record), "", cut)
     if cut:
         out["truncated"] = cut
-    return out
+    return out  # type: ignore[no-any-return]  # a dict in, a dict out
+
+
+def _capped(value: Any, path: str, cut: dict[str, int]) -> Any:
+    if isinstance(value, str):
+        if len(value) > MAX_STRING:
+            cut[path] = len(value) - MAX_STRING
+            return value[:MAX_STRING]
+        return value
+    if isinstance(value, Mapping):
+        return {k: _capped(v, f"{path}.{k}" if path else str(k), cut) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        if len(value) > MAX_NEIGHBOURS:
+            cut[path] = len(value) - MAX_NEIGHBOURS
+        return [_capped(v, f"{path}[{n}]", cut) for n, v in enumerate(value[:MAX_NEIGHBOURS])]
+    return value
 
 
 def debug_path_for(trace: Path) -> Path:

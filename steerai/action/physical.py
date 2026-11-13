@@ -286,7 +286,8 @@ def _aim_record(snapshot: Snapshot, target: _Target, hit: tuple[int, ...]) -> di
     """Where the click went, from values already read (V2 step 1 packet §B): the element, its
     snapshot box, the live and visible rectangles, the row and the point (physical pixels),
     and what the one hit test after the click found, resolved in the snapshot (no new read)."""
-    found = next((e for e in snapshot.elements if e.runtime_id == hit), None)
+    # () is no hit at all, never the first element read without a RuntimeId (#259 item 2)
+    found = None if not hit else next((e for e in snapshot.elements if e.runtime_id == hit), None)
     return {
         "element": _plain_element(target.element),
         "live": None if target.live is None else list(target.live),
