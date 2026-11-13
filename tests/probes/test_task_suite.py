@@ -162,7 +162,13 @@ def test_a_person_who_stays_active_gives_an_invalid_row_and_the_suite_goes_on(
 
     monkeypatch.setattr(suite, "wait_until_idle", active)
     row = suite.one_run(TASKS[0], 1, suite._Planner())
-    assert row == {"task": "np1", "run": 1, "passed": False, "invalid": "person_active"}
+    assert row == {
+        "task": "np1",
+        "run": 1,
+        "passed": False,
+        "invalid": "person_active",
+        "outcome": "invalid",
+    }
 
 
 def test_the_goal_rule_matches_whole_tokens_of_at_least_three_characters() -> None:
@@ -402,3 +408,107 @@ def test_keep_creates_its_folder_before_the_first_run(
     suite.main(["--tasks", "np1", "--runs", "1", "--keep", str(keep), "--out", str(out)])
     assert seen == [True]
     assert '"task": "np1"' in out.read_text("utf-8")
+
+
+# ---- the four-way outcome on each row (V2 step 1 packet §D) -----------------------------------
+
+
+def _one(monkeypatch: pytest.MonkeyPatch, **row: Any) -> dict[str, Any]:
+    import steerai.probes.task_suite as suite  # noqa: PLC0415 - this test only
+
+    base: dict[str, Any] = {"status": "done", "detail": None, "opens_recorded": 0}
+    base.update(row)
+    monkeypatch.setattr(suite, "wait_until_idle", lambda: None)
+    monkeypatch.setattr(suite, "_started", lambda *_a: dict(base))
+    return suite.one_run(_task("np1"), 1, suite._Planner())
+
+
+def test_a_row_says_steer_and_the_independent_read_apart(monkeypatch: pytest.MonkeyPatch) -> None:
+    expected = _task("np1").expected
+    row = _one(monkeypatch, observed=expected)
+    assert (row["passed"], row["independent"], row["outcome"]) == (True, "ok", "true_done")
+    row = _one(monkeypatch, observed="something else")
+    assert (row["independent"], row["outcome"]) == ("not", "false_done")
+    row = _one(monkeypatch, status="stopped", detail="unfinished", observed=expected)
+    assert (row["passed"], row["outcome"]) == (False, "false_stop"), "the page shows the goal"
+
+
+def test_an_unread_or_post_run_invalid_row_is_never_a_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    row = _one(monkeypatch, unread="OSError")
+    assert (row["passed"], row["independent"], row["outcome"]) == (False, "unread", "false_done")
+    row = _one(monkeypatch, post_invalid="page_targets:2")
+    assert (row["passed"], row["outcome"]) == (False, "false_done")
+    row = _one(monkeypatch, observed=_task("np1").expected, opens_recorded=1)
+    assert (row["passed"], row["outcome"]) == (False, "false_done")
+
+
+def test_a_read_says_why_it_has_no_value() -> None:
+    from steerai.probes.layer_b_pages import InvalidRun  # noqa: PLC0415
+    from steerai.probes.task_suite import _read_into  # noqa: PLC0415 - this test only
+
+    def raising(exc: BaseException) -> Any:
+        def read() -> str:
+            raise exc
+
+        return read
+
+    row: dict[str, Any] = {}
+    _read_into(row, lambda: "text")
+    assert row == {"observed": "text"}
+    row = {}
+    _read_into(row, raising(InvalidRun("page_targets:2")))
+    assert row == {"post_invalid": "page_targets:2"}
+    row = {}
+    _read_into(row, raising(OSError("socket closed")))
+    assert row == {"unread": "OSError"}, "the type only: a message can quote the page"
+    with pytest.raises(ZeroDivisionError):
+        _read_into({}, raising(ZeroDivisionError()))
+
+
+def test_the_verdict_counts_the_outcomes_and_names_false_done() -> None:
+    rows = [
+        {"task": "np1", "passed": True, "outcome": "true_done"},
+        {"task": "np1", "passed": False, "outcome": "false_stop"},
+        {"task": "np1", "passed": False, "outcome": "false_done"},
+    ]
+    lines, _ok = verdict(rows, TASKS[:1])
+    assert "outcomes: true_done 1, false_done 1, false_stop 1" in lines
+    assert "false_done: 1 (the bar is 0)" in lines
+
+
+def test_the_step_summary_carries_the_proof_and_aim_tokens() -> None:
+    from steerai.probes.present_switch import _steps  # noqa: PLC0415 - this test only
+
+    record = {
+        "kind": "step",
+        "step_id": "s3",
+        "ok": False,
+        "gate": "confirm",
+        "code": "verify_timeout",
+        "evidence": {"reason": "no_match", "detail": "no_load", "url_proof": "no_load"},
+        "action": {},
+    }
+    (line,) = _steps([record])
+    assert ":no_match/no_load/url=no_load:" in line
+    record["evidence"] = {"detail": "no_effect", "aim": "no_label"}
+    (line,) = _steps([record])
+    assert ":no_effect/aim=no_label:" in line
+
+
+def test_a_stop_after_the_scripted_person_said_no_is_flagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hunter OB-37: a stop the scripted person caused is not Steer's alone."""
+    row = _one(monkeypatch, status="blocked", detail="user_declined", observed="x", asks="yn")
+    assert (row["outcome"], row.get("declined")) == ("true_stop", True)
+    row = _one(monkeypatch, status="stopped", detail="unfinished", observed="x", asks="y")
+    assert "declined" not in row
+    row = _one(monkeypatch, observed="x", asks="n")
+    assert "declined" not in row, "a done is never flagged"
+
+
+def test_the_verdict_says_none_when_no_row_has_an_outcome() -> None:
+    lines, _ok = verdict([{"task": "np1", "passed": False}], TASKS[:1])
+    assert "outcomes: none" in lines

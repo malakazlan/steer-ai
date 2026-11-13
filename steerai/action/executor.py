@@ -18,7 +18,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Literal
 
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.action.execution import (
@@ -422,6 +422,18 @@ def click_point(snapshot: Snapshot, element: Element) -> Element:
         ):
             return candidate
     return element
+
+
+Aim = Literal["label", "item", "no_label"]
+"""Where a physical click aimed (V2 step 1 packet §C): the element's own label Text, the element
+itself, or a labelled role whose label was not found (H6 u3's open question)."""
+
+
+def aim_of(element: Element, point: Element) -> Aim:
+    """The closed token for a click aimed at `point` on behalf of `element` (pure)."""
+    if point.id != element.id:
+        return "label"
+    return "no_label" if element.role in LABELLED_ROLES else "item"
 
 
 def row_link(snapshot: Snapshot, row: Element) -> Element | None:
