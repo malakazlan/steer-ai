@@ -452,6 +452,8 @@ class Session:
         """The acted element's RuntimeId, taken in `_record` before the act (effect log)."""
         self._scope_rid: tuple[int, ...] = ()
         """The last targeted element's RuntimeId: a key press's effect scope ([V2.3])."""
+        self._scope_doc: tuple[int, ...] = ()
+        """The top Document's RuntimeId when `_scope_rid` was taken; () for none."""
         self._windows_after: list[WindowLike] | None = None
         """The window list verify read after the act; None when none was read."""
         self._url_leg: UrlLeg | None = None
@@ -1180,7 +1182,8 @@ class Session:
         self._url_raw_before, self._url_raw_reads = None, []
         # before the act (a swap re-observes): the effect log's acted element, never raising
         self._acted_rid = () if element_id is None else _runtime_id_of(before, element_id)
-        self._scope_rid = self._acted_rid or self._scope_rid
+        if self._acted_rid:
+            self._scope_rid, self._scope_doc = self._acted_rid, _top_rid(before)
         self._url_before_source, self._url_raw_document = None, None
         if risk not in ("R2", "R3"):
             return before, False
@@ -1248,6 +1251,13 @@ class Session:
             code=action.code,
         )
 
+    def _key_scope(self, before: Snapshot) -> tuple[int, ...] | None:
+        """The last target's RuntimeId, while the top Document it was taken on is still the top
+        Document; after a navigation, None: the whole window (#263 review)."""
+        if not self._scope_rid or _top_rid(before) != self._scope_doc:
+            return None
+        return self._scope_rid
+
     def _log_effect(
         self,
         step: Step,
@@ -1278,7 +1288,7 @@ class Session:
         )
         text = step.text if step.text is not None else step.params.get("text")
         try:
-            report = observe(*pair, acted=acted or None, text=text, scope=self._scope_rid or None)
+            report = observe(*pair, acted=acted or None, text=text, scope=self._key_scope(before))
         except (  # the pure observer's own failures; a kill or takeover is never caught
             ValueError,
             KeyError,
@@ -3817,6 +3827,11 @@ def _wal_detail(exc: LedgerError) -> str:
 
 def _document_names(snapshot: Snapshot) -> list[str]:
     return [element.name for element in snapshot.elements if element.role == "Document"]
+
+
+def _top_rid(snapshot: Snapshot) -> tuple[int, ...]:
+    top = _top_document(snapshot)
+    return () if top is None else top.runtime_id
 
 
 def _top_document(snapshot: Snapshot) -> Element | None:

@@ -119,3 +119,14 @@ def test_a_key_press_keeps_the_last_targeted_element_as_its_scope() -> None:
     h.session._begin_step(_send(), None)
     assert not h.session._acted_rid
     assert h.session._scope_rid == targeted
+
+
+def test_a_key_press_after_the_page_changed_has_no_inherited_scope() -> None:
+    """#263 review: the last target scopes a key press only while the top Document it was taken
+    on is still the top Document; after a navigation the whole window is compared."""
+    h = Harness()
+    h.session.run_step(_type())
+    before = h.world.observe(0x10)
+    assert h.session._key_scope(before) == h.session._scope_rid
+    h.session._scope_doc = (77, 77)  # the page it was taken on is gone
+    assert h.session._key_scope(before) is None

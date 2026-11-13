@@ -140,3 +140,13 @@ def test_an_expand_that_grows_its_own_box_is_still_own_state() -> None:
 
 def test_own_state_ranks_above_revealed() -> None:
     assert PRECEDENCE.index("own_state") < PRECEDENCE.index("revealed")
+
+
+def test_an_inner_document_that_vanishes_compares_the_whole_window() -> None:
+    """#263 review: an iframe's Document gone after is not found again, and it was not the top
+    one, so the whole window is compared: the change is content, never `frame_changed`."""
+    frame: Row = (14, "Document", "Widget", (9, 14), 10)
+    button: Row = (15, "Button", "Close widget", (9, 15), 14)
+    report = observe(_obs([*BROWSER, frame, button]), _obs(BROWSER), acted=button[3])
+    assert "frame_changed" not in report.tokens
+    assert "dismissed" in report.tokens
