@@ -124,7 +124,8 @@ class Task:
     """For an instant-search `url_search`: the path prefix of a result's own link (`/pods/`).
     The page lists results as the words are typed and never changes its URL (cocoapods.org,
     V2 step 1 diagnostics 2026-11-13), so a link to `<prefix><words>` on the page is the
-    independent read as well as the URL. Empty: the URL alone."""
+    independent read as well as the URL. The start page is read first: one that already links
+    to the result makes the run invalid (`result_link_preexisting`). Empty: the URL alone."""
 
 
 PAGE_SETS = ("h2", "h3", "h4", "h5", "h6", "gallery")
@@ -219,7 +220,7 @@ CHALLENGE_TITLES = frozenset(
 path, H4 aw1 2026-11-11): the run measured nothing."""
 
 
-_LINKS_JS = "[...document.querySelectorAll('a[href]')].map(a => new URL(a.href).pathname)"
+_LINKS_JS = "[...document.querySelectorAll('a[href]')].map(a => a.pathname)"
 
 
 def _read_page(port: int, stage: str, *, links: bool = False) -> str:
@@ -1167,6 +1168,15 @@ def query_of(url: str) -> str:
 _SEARCH_PATHS: dict[str, str] = {"google_search": "/search", "youtube_search": "/results"}
 
 
+def shows_result(task: Task, page: Mapping[str, Any]) -> bool:
+    """The page links to the searched result's own page (`result_link` + the words, casefolded
+    equality: a neighbour such as `/pods/AlamofireImage` is not it)."""
+    if not task.result_link:
+        return False
+    wanted = (task.result_link + task.expected).casefold()
+    return any(str(link).casefold() == wanted for link in page.get("links") or [])
+
+
 def passed(task: Task, status: str | None, observed: str) -> bool:  # noqa: PLR0911 - one per check
     """Steer said `done` and the independent read agrees exactly (#139 review item 3)."""
     if status != "done":
@@ -1198,11 +1208,7 @@ def passed(task: Task, status: str | None, observed: str) -> bool:  # noqa: PLR0
         words = " ".join(query.get(task.param, [""])[0].split())
         same_title = not task.title or title == task.title
         by_url = path == task.path and words.casefold() == task.expected.casefold() and same_title
-        wanted = (task.result_link + task.expected).casefold()
-        shown = bool(task.result_link) and any(
-            str(link).casefold() == wanted for link in page.get("links") or []
-        )
-        return by_url or shown
+        return by_url or shows_result(task, page)
     if task.check in _SEARCH_PATHS:
         return path == _SEARCH_PATHS[task.check] and (
             query_of(href).casefold() == task.expected.casefold()
@@ -1450,6 +1456,7 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
         # follows and demands three agreeing node counts)
         _settled(port, SETTLE_LIMIT_S)
         time.sleep(3.0)
+        _not_shown_before(task, port)
         _in_front(window.hwnd)
         row = _steer(task, number, window.hwnd, tmp, planner)
         if task.check == "inbox_send":
@@ -1494,6 +1501,15 @@ def _invalid(task: Task, number: int, exc: InvalidRun) -> dict[str, Any]:
         "invalid": str(exc),
         "outcome": "invalid",
     }
+
+
+def _not_shown_before(task: Task, port: int) -> None:
+    """The `result_link` oracle's before (#261 review item 1): the start page must not already
+    link to the result, or the read after the run proves nothing; such a run is invalid."""
+    if task.result_link and shows_result(
+        task, json.loads(_read_page(port, "before", links=True) or "{}")
+    ):
+        raise InvalidRun("result_link_preexisting")
 
 
 def _read_into(row: dict[str, Any], read: Callable[[], str]) -> None:

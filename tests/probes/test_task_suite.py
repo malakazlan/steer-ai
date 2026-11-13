@@ -578,3 +578,25 @@ def test_a_search_without_a_result_link_still_needs_its_url() -> None:
         {"href": "https://pkg.go.dev/", "title": "x", "links": ["/github.com/spf13/cobra"]}
     )
     assert not passed(gd1, "done", page)
+
+
+def test_a_start_page_that_already_links_the_result_is_an_invalid_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#261 review item 1: the oracle has a before; without it a start page listing the pod
+    would pass with no search at all."""
+    import steerai.probes.task_suite as suite  # noqa: PLC0415 - this test only
+    from steerai.probes.layer_b_pages import InvalidRun  # noqa: PLC0415
+
+    cp1 = next(t for t in suite.task_set("h6") if t.task_id == "cp1")
+    page = {"href": "https://cocoapods.org/", "title": "CocoaPods.org"}
+    monkeypatch.setattr(
+        suite, "_read_page", lambda *_a, **_k: json.dumps({**page, "links": ["/pods/Alamofire"]})
+    )
+    with pytest.raises(InvalidRun, match="result_link_preexisting"):
+        suite._not_shown_before(cp1, 9)
+    monkeypatch.setattr(suite, "_read_page", lambda *_a, **_k: json.dumps({**page, "links": ["/"]}))
+    suite._not_shown_before(cp1, 9)
+    gd1 = next(t for t in suite.task_set("h6") if t.task_id == "gd1")
+    monkeypatch.setattr(suite, "_read_page", lambda *_a, **_k: pytest.fail("no read without it"))
+    suite._not_shown_before(gd1, 9)
