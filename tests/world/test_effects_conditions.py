@@ -143,3 +143,21 @@ def test_a_click_that_opens_a_window_is_never_none() -> None:
     report = observe(_read(_snap(BASE)), _read(_snap(BASE), windows=(16, 32)), acted=FIELD[3])
     assert "windows_changed" in report.tokens
     assert "none" not in report.classes
+
+
+def test_before_any_url_was_read_in_the_task_the_url_is_not_a_fact() -> None:
+    """[V2.4] lead ruling (i): the URL is a fact for a task only once a parsable URL was read;
+    before that its absence is not `unread`, so a window without a URL can reach `none`."""
+    report = observe(
+        _read(_snap(BASE), url=None), _read(_snap(BASE), url=None), acted=FIELD[3], url_fact=False
+    )
+    assert report.unread == frozenset()
+    assert report.classes == frozenset({"none"})
+
+
+def test_once_the_url_is_a_fact_a_failed_read_is_unread() -> None:
+    report = observe(
+        _read(_snap(BASE)), _read(_snap(BASE), url=None), acted=FIELD[3], url_fact=True
+    )
+    assert "url" in report.unread
+    assert "none" not in report.classes

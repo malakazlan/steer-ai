@@ -44,6 +44,7 @@ def test_each_verified_step_logs_one_effect_record_of_closed_tokens() -> None:
         }
         assert "windows" in effect["unread"], "no window list read at all: never `none`"
         assert effect["not_observed"] == list(NOT_OBSERVED)
+        assert "url" not in effect["unread"], "no URL read yet in this task: not a fact"
         assert "none" not in effect["classes"]
     clear = "\n".join(h.trace.lines)
     for sentinel in (HELLO, "Message", "Amir"):
@@ -130,3 +131,24 @@ def test_a_key_press_after_the_page_changed_has_no_inherited_scope() -> None:
     assert h.session._key_scope(before) == h.session._scope_rid
     h.session._scope_doc = (77, 77)  # the page it was taken on is gone
     assert h.session._key_scope(before) is None
+
+
+def test_after_a_url_was_read_a_later_step_without_one_has_it_unread() -> None:
+    h = _harness(Bar(HOME, RESULTS))
+    h.session.run_step(_submit())
+    assert h.session._url_fact
+
+
+@pytest.mark.parametrize(
+    ("url", "parsable"),
+    [
+        ("https://shop.test/a", True),
+        ("file:///C:/pages/a.html", True),
+        ("www.bing.com/", True),
+        ("chrome://newtab/", False),
+        ("", False),
+        ("search terms", False),
+    ],
+)
+def test_a_parsable_url_has_a_web_scheme_or_a_dotted_host(url: str, parsable: bool) -> None:
+    assert loop_mod._parsable_url(url) is parsable

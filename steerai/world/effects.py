@@ -93,18 +93,20 @@ class EffectReport:
     stable_after: bool
 
 
-def observe(
+def observe(  # noqa: PLR0913 - keyword-only facts the caller read, each with a safe default
     before: Observed,
     after: Observed,
     *,
     acted: tuple[int, ...] | None = None,
     text: str | None = None,
     scope: tuple[int, ...] | None = None,
+    url_fact: bool = True,
 ) -> EffectReport:
     """What changed from `before` to `after`, the element `acted` on given by RuntimeId; `scope`
-    is the last targeted element's RuntimeId, used when nothing was acted on (a key press)."""
+    is the last targeted element's RuntimeId, used when nothing was acted on (a key press);
+    `url_fact` says a parsable URL was read in this task, so a missing one is unread ([V2.4])."""
     b, a = before.snapshot, after.snapshot
-    unread = _unread(before, after)
+    unread = _unread(before, after, url_fact=url_fact)
     if b.hwnd != a.hwnd or not a.stable or a.minimized:
         return _report({"unknown"}, set(), unread, None, set(), a.stable)
     top_b, top_a = _top_document(b), _top_document(a)
@@ -424,9 +426,11 @@ def _rerendered_page(before: Observed, after: Observed, top_b: Element, top_a: E
 # ---- facts not read and carriers ---------------------------------------------------------------
 
 
-def _unread(before: Observed, after: Observed) -> frozenset[Unread]:
+def _unread(before: Observed, after: Observed, *, url_fact: bool) -> frozenset[Unread]:
+    """The facts not read. The URL is one only once the task has read a parsable URL ([V2.4]
+    ruling (i)): before that, a window without a URL can still reach `none`."""
     out: set[Unread] = set()
-    if before.url is None or after.url is None:
+    if url_fact and (before.url is None or after.url is None):
         out.add("url")
     if before.windows is None or after.windows is None:
         out.add("windows")

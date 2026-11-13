@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import dataclasses
 import time
+import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import partial
@@ -452,6 +453,8 @@ class Session:
         """The acted element's RuntimeId, taken in `_record` before the act (effect log)."""
         self._scope_rid: tuple[int, ...] = ()
         """The last targeted element's RuntimeId: a key press's effect scope ([V2.3])."""
+        self._url_fact = False
+        """A parsable URL was read in this task: from then on a missing one is unread."""
         self._scope_doc: tuple[int, ...] = ()
         """The top Document's RuntimeId when `_scope_rid` was taken; () for none."""
         self._windows_after: list[WindowLike] | None = None
@@ -1272,6 +1275,9 @@ class Session:
         last targeted element ([V2.3]). Nothing reads it back; a failure is one token, never an
         exception into the step (EO-33/42)."""
         polled = [u for u in self._url_raw_reads if u is not None]
+        self._url_fact = self._url_fact or any(
+            _parsable_url(u) for u in (self._url_raw_before, *polled) if u is not None
+        )
         pair = (
             Observed(
                 snapshot=before,
@@ -1288,7 +1294,13 @@ class Session:
         )
         text = step.text if step.text is not None else step.params.get("text")
         try:
-            report = observe(*pair, acted=acted or None, text=text, scope=self._key_scope(before))
+            report = observe(
+                *pair,
+                acted=acted or None,
+                text=text,
+                scope=self._key_scope(before),
+                url_fact=self._url_fact,
+            )
         except (  # the pure observer's own failures; a kill or takeover is never caught
             ValueError,
             KeyError,
@@ -3827,6 +3839,15 @@ def _wal_detail(exc: LedgerError) -> str:
 
 def _document_names(snapshot: Snapshot) -> list[str]:
     return [element.name for element in snapshot.elements if element.role == "Document"]
+
+
+def _parsable_url(url: str) -> bool:
+    """A URL with an http, https or file scheme, or the address bar's display form without one
+    (a host with a dot, as `www.bing.com/`)."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme in ("http", "https", "file"):
+        return bool(parts.netloc or parts.path)
+    return not parts.scheme and "." in urllib.parse.urlsplit("//" + url).netloc
 
 
 def _top_rid(snapshot: Snapshot) -> tuple[int, ...]:
