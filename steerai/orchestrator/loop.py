@@ -2372,8 +2372,11 @@ class Session:
                 # `screen_changed_during_act`, which fails safe (#236 review)
                 before, element_id = self._scrolled_in_act(step, before, element_id, asked)
                 continue
-            if result.code is ErrorCode.ELEMENT_NOT_FOUND and retries == 0 and not result.steps:
+            if result.code in _ACT_RETRY_CODES and retries == 0 and not result.steps:
+                # nothing reached the app: the target left, or its box was still moving (dev
+                # wk1: a search box expanding under the type's two rect samples)
                 retries += 1
+                self._act_evidence["act_retry"] = result.code.value
                 previous, before = before, self._observe(stable_window=1)
                 element_id = self._retry_target(
                     step, risk, gate=gate, previous=previous, snapshot=before, asked=asked
@@ -3251,6 +3254,9 @@ ACT_MISMATCH = "screen_changed_during_act"
 element than the one asked about (#89): `focus_lost`, nothing more dispatched."""
 SWAP_VERBS = frozenset({"focus", "type"})
 """The verbs whose act retry follows a field swapped under it at R0/R1 ([v2.82])."""
+_ACT_RETRY_CODES = frozenset({ErrorCode.ELEMENT_NOT_FOUND, ErrorCode.UNSTABLE_UI})
+"""The refusals, with nothing sent, that get the act's one retry under the same decision (#89,
+[v2.87])."""
 
 
 def _note_reasons(evidence: dict[str, Any], gate_result: GateResult) -> None:
