@@ -71,3 +71,26 @@ def test_the_urls_go_to_the_protected_file_never_the_clear_trace(
     verify = next(r for r in records if r["kind"] == "verify")
     assert verify["expect"]["type"] == "Appeared"
     assert {r["step_id"] for r in records} == {"s3"}
+
+
+def test_credentials_reach_neither_file_and_a_key_shaped_name_only_the_protected_one(
+    sinks: list[BufferedDebugSink], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Invariant 3 (hunter OB-03): the debug channel reads screens, never the environment; a
+    key-shaped string on screen is page data, so it is protected, never in clear."""
+    secret = "sk-ant-api03-SENTINEL0000000000"  # noqa: S105 - a fake key, the sentinel
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "TYPESAFE_API_KEY"):
+        monkeypatch.setenv(name, secret)
+    shown = "sk-ant-SHOWNONPAGE000000"
+    bar = url.Bar(url.HOME, url.RESULTS)
+    h = url._harness(bar, loaded=shown)
+    h.session.run_step(url._submit())
+    clear = "\n".join(h.trace.lines)
+    sink = sinks[-1]
+    path = tmp_path / f"d{len(sinks) - 1}.dpapi"
+    decoded = json.dumps(_decoded(sink, path))
+    assert secret not in clear
+    assert secret not in decoded
+    assert secret.encode() not in path.read_bytes()
+    assert shown not in clear
+    assert shown in decoded, "the page's own text is what the debug file is for"
