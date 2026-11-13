@@ -22,14 +22,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import shutil
 import sys
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from steerai.probes.chrome_a11y import (
     CHROME_DEFAULT,
@@ -40,10 +41,20 @@ from steerai.probes.chrome_a11y import (
 )
 from steerai.probes.layer_b import _free_port
 from steerai.probes.layer_b_pages import PageServer
+from steerai.world.address_bar import DocumentUrl
 from steerai.world.effects import EffectReport, Observed, _top_document, observe
 from steerai.world.model import Snapshot, WorldModel, snapshot_to_json
+from steerai.world.observe2 import read_observed
+from steerai.world.watch import watch
 
 WINDOW = (1100, 800)
+WATCH_POLL_S = 0.1
+WATCH_SETTLE_S = 0.5
+"""Unmeasured starting values for `watch`; this section measures what they should be."""
+WATCH_DEADLINE_S = 5.0
+KEY = secrets.token_bytes(32)
+"""The run's own value-digest key: never stored."""
+T = TypeVar("T")
 SETTLE_S = 1.0
 """Wait after a change before the after read; `WorldModel.observe` then polls until stable."""
 READY_S = 20.0
@@ -203,6 +214,26 @@ PAIRS = (
 )
 
 
+class _TimedReader:
+    """The browser's UIA client as a `FactReader`, each read timed under its own name."""
+
+    def __init__(self, browser: _Browser) -> None:
+        self._browser = browser
+
+    def document_url(self, hwnd: int) -> DocumentUrl | None:
+        client = self._browser.client
+        return self._browser.timed("url", lambda: client.document_url(hwnd))
+
+    def focused_runtime_id(self) -> tuple[int, ...]:
+        return self._browser.timed("focus", self._browser.client.focused_runtime_id)
+
+    def roles_and_headings(
+        self, hwnd: int
+    ) -> tuple[dict[tuple[int, ...], str], dict[tuple[int, ...], int]]:
+        client = self._browser.client
+        return self._browser.timed("roles", lambda: client.roles_and_headings(hwnd))
+
+
 class _Browser:
     """One throwaway Chrome on one local page, driven through DevTools."""
 
@@ -223,7 +254,9 @@ class _Browser:
         except BaseException:
             self.close()
             raise
-        self._model = WorldModel(UiaClient())
+        self.client = UiaClient()
+        self._model = WorldModel(self.client)
+        self.costs: dict[str, list[float]] = {}
         from steerai.run import warm_up  # noqa: PLC0415 - the probe's only use
 
         warm_up(lambda: self._model.observe(self.hwnd), cap_s=15.0)
@@ -246,6 +279,20 @@ class _Browser:
         return Observed(
             snapshot=snapshot, url=str(self.run("location.href")), windows=self.windows()
         )
+
+    def timed(self, name: str, read: Callable[[], T]) -> T:
+        started = time.perf_counter()
+        try:
+            return read()
+        finally:
+            self.costs.setdefault(name, []).append((time.perf_counter() - started) * 1000)
+
+    def read_v2(self) -> Observed:
+        """The v2 observe path (`read_observed`) on one snapshot fetch, each read timed."""
+        snapshot = self.timed(
+            "snapshot", lambda: self._model.observe(self.hwnd, cap_s=1.0, stable_window=1)
+        )
+        return read_observed(snapshot, _TimedReader(self), key=KEY, windows=self.windows)
 
     def ready(self, marker: str) -> Observed:
         deadline = time.monotonic() + READY_S
@@ -418,9 +465,60 @@ def _emit(row: dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
+def watch_run(base: str, pair: Pair) -> dict[str, Any]:
+    """One pair through `observer.watch` on the v2 observe path: the measured first change,
+    settle and per-read costs ([V2.4]: the per-step URL cost is reported in 3b)."""
+    browser = _Browser(base + pair.path)
+    try:
+        browser.ready(_marker(pair.path))
+        if pair.setup:
+            browser.run(pair.setup)
+            time.sleep(SETTLE_S)
+        probe = browser.read()
+        acted = _rid(probe.snapshot, *pair.acted) if pair.acted else None
+        browser.costs.clear()
+        before = browser.read_v2()
+        browser.run(pair.act)
+        result = watch(
+            browser.read_v2,
+            before,
+            acted=acted,
+            text=pair.text,
+            clock=time.monotonic,
+            sleep=time.sleep,
+            poll_s=WATCH_POLL_S,
+            settle_s=WATCH_SETTLE_S,
+            deadline_s=WATCH_DEADLINE_S,
+        )
+        costs = {k: _pcts(v) for k, v in browser.costs.items()}
+    finally:
+        browser.close()
+    return {
+        "case": pair.case,
+        "first_change_ms": result.first_change_ms,
+        "settled_ms": result.settled_ms,
+        "timed_out": result.timed_out,
+        "report": _report_dict(result.report),
+        "read_ms": costs,
+        "url_read": [before.url is not None, result.after.url is not None],
+        "url_changed": before.url != result.after.url,
+    }
+
+
+def _pcts(values: list[float]) -> dict[str, float]:
+    ordered = sorted(values)
+    return {
+        "n": len(ordered),
+        "p50": round(ordered[len(ordered) // 2], 1),
+        "max": round(ordered[-1], 1),
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--section", choices=("document", "offscreen", "pairs"), required=True)
+    parser.add_argument(
+        "--section", choices=("document", "offscreen", "pairs", "watch"), required=True
+    )
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--case", action="append", default=None)
     parser.add_argument("--out", type=Path, default=None)
@@ -437,6 +535,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             elif args.section == "offscreen":
                 for row in offscreen_run(base):
                     _emit({"run": number, **row})
+            elif args.section == "watch":
+                for pair in PAIRS:
+                    if args.case and pair.case not in args.case:
+                        continue
+                    _emit({"run": number, **watch_run(base, pair)})
             else:
                 for pair in PAIRS:
                     if args.case and pair.case not in args.case:

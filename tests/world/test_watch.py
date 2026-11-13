@@ -137,3 +137,29 @@ def test_the_read_count_is_bounded_whatever_the_clock_does() -> None:
         deadline_s=1.0,
     )
     assert len(reads) <= 11 + 1
+
+
+def test_a_change_already_in_the_first_read_settles_no_earlier_than_that_read() -> None:
+    """The baseline is the before, never the first read: a change seen at once is changed at
+    that read's time, so `settled_ms` is never before `first_change_ms`."""
+    clock = Clock()
+    before = _obs(BASE)
+    after = _obs([*BASE, ITEM2])
+
+    def read() -> Observed:
+        clock.t += 0.03  # a read takes time
+        return after
+
+    result = watch(
+        read,
+        before,
+        acted=FIELD[3],
+        clock=clock.now,
+        sleep=clock.sleep,
+        poll_s=0.1,
+        settle_s=0.3,
+        deadline_s=5.0,
+    )
+    assert result.first_change_ms is not None
+    assert result.settled_ms is not None
+    assert result.settled_ms >= result.first_change_ms

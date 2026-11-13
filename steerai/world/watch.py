@@ -61,7 +61,7 @@ def watch(  # noqa: PLR0913 - the action's facts and the injected clock, keyword
     start = clock()
     first: float | None = None
     changed_at = 0.0
-    last_signature: Signature | None = None
+    last_signature = _signature(before)
     seen = before
     report = observe(before, before, acted=acted, text=text, scope=scope, url_fact=url_fact)
     for _ in range(int(deadline_s / poll_s) + 1):
@@ -72,8 +72,7 @@ def watch(  # noqa: PLR0913 - the action's facts and the injected clock, keyword
             first = elapsed
         signature = _signature(seen)
         if signature != last_signature or not seen.snapshot.stable:
-            if last_signature is not None:
-                changed_at = elapsed
+            changed_at = elapsed
             last_signature = signature
         held = seen.snapshot.stable and elapsed - changed_at >= settle_s
         if first is not None and held:
