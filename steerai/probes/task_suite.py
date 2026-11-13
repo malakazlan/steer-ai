@@ -82,6 +82,7 @@ Check = Literal[
     "h5_event",
     "h5_final",
     "h6_event",
+    "h7_event",
     "gallery_event",
     "calc_display",
     "file_text",
@@ -128,7 +129,7 @@ class Task:
     to the result makes the run invalid (`result_link_preexisting`). Empty: the URL alone."""
 
 
-PAGE_SETS = ("h2", "h3", "h4", "h5", "h6", "gallery")
+PAGE_SETS = ("h2", "h3", "h4", "h5", "h6", "h7", "gallery")
 """The `start` values that mean a held-out page served from memory."""
 
 
@@ -667,6 +668,142 @@ CocoaPods keeps its home title (class B's shape), Firefox add-ons lists its sear
 unnamed ComboBox, Wiktionary's search lands on the entry."""
 
 
+def _h7(task_id: str, goal: str, event: dict[str, Any], **kw: Any) -> Task:
+    return Task(task_id, goal, "h7", "h7_event", json.dumps(event, sort_keys=True), **kw)
+
+
+H7_SAVED_TEXT = "steer h7 notes"
+H7_SAVED_NAME = "steer-h7.txt"
+
+H7: tuple[Task, ...] = (
+    _h7("h7w1", "show the Shipping details", {"kind": "disclosure", "open": True}),
+    _h7("h7w2", "choose Teal as the theme colour", {"kind": "colour", "value": "Teal"}),
+    _h7("h7w3", "open the Pricing tab", {"kind": "tab", "value": "Pricing"}),
+    _h7("h7w4", "turn on High contrast", {"kind": "contrast", "on": True}),
+    _h7("h7w5", "set the city to Lisbon", {"kind": "city", "value": "Lisbon"}),
+    _h7(
+        "h7w6",
+        "rename the project to Orion",
+        {"kind": "rename", "value": "Orion"},
+        approve=frozenset({"Orion"}),
+        approve_targets=frozenset({"Save"}),
+    ),
+    _h7(
+        "h7w7",
+        "set the text size to Large from the Format menu",
+        {"kind": "size", "value": "Large"},
+    ),
+    _h7("h7w8", "give the recipe 4 stars", {"kind": "rating", "value": 4}),
+    _h7(
+        "h7c1",
+        "send standup moved to 10 in the team chat",
+        {"kind": "send", "text": "standup moved to 10"},
+        approve=frozenset({"standup moved to 10"}),
+        approve_targets=frozenset({"Send"}),
+    ),
+    _h7(
+        "h7c2",
+        "delete the draft Q3 plan",
+        {"kind": "delete", "value": "Q3 plan"},
+        approve_targets=frozenset({"Delete", "Delete Q3 plan"}),
+    ),
+    Task(
+        "h7n1",
+        f"type {H7_SAVED_TEXT} in notepad and save it as {H7_SAVED_NAME} in the folder TMPDIR",
+        "notepad_save",
+        "file_text",
+        H7_SAVED_TEXT,
+        frozenset({H7_SAVED_TEXT, H7_SAVED_NAME}),
+        path=H7_SAVED_NAME,
+        approve_targets=frozenset({"Save"}),
+    ),
+    Task(
+        "h7n2",
+        "calculate 23 times 4 in calculator",
+        "calculator",
+        "calc_display",
+        json.dumps({"result": "92", "expression": f"23{MULTIPLY}4="}),
+    ),
+    Task(
+        "h7s1",
+        "look up ephemeral in the Cambridge Dictionary",
+        "https://dictionary.cambridge.org/",
+        "wiki_article",
+        "/dictionary/english/ephemeral",
+        frozenset({"ephemeral"}),
+    ),
+    _url_search(
+        "h7s2", "Packagist", "https://packagist.org/", "monolog", path="/search/", param="query"
+    ),
+    _url_search(
+        "h7s3",
+        "the Django documentation",
+        "https://docs.djangoproject.com/en/stable/",
+        "middleware",
+        path="/en/5.2/search/",
+    ),
+    _url_search("h7s4", "Open Library", "https://openlibrary.org/", "dune", path="/search"),
+    Task(
+        "h7s5",
+        "go to the next page of Hacker News",
+        "https://news.ycombinator.com/news",
+        "url_search",
+        "2",
+        path="/news",
+        param="p",
+    ),
+    Task(
+        "h7s6",
+        "open the Windows downloads page from the Downloads menu on python.org",
+        "https://www.python.org/",
+        "wiki_article",
+        "/downloads/windows/",
+    ),
+    Task(
+        "h7s7",
+        "sort the Codeberg repositories by most stars",
+        "https://codeberg.org/explore/repos",
+        "url_search",
+        "moststars",
+        path="/explore/repos",
+        param="sort",
+    ),
+    Task(
+        "h7s8",
+        "look up Lisbon on Wikivoyage",
+        "https://en.wikivoyage.org/wiki/Main_Page",
+        "wiki_article",
+        "/wiki/Lisbon",
+        frozenset({"lisbon"}),
+    ),
+)
+"""H7 (V2 §12 step 8, [V2.4]): sealed before any V2 step 3 code, written without looking at v2
+runs; 20 tasks, run twice each, counted per task (both runs pass) and per run. Eight widget
+rows and two commit fixtures on a new local page (`h7_page`); two native tasks (a Notepad save
+read from the file, #202, and Calculator); eight sites no earlier set used, chosen by category
+(dictionary, package registry, docs site, library catalogue, news aggregator, project site,
+code host, travel guide), never by how their search behaves: three are not a search (h7s5 the
+next page, h7s6 a section from a menu, h7s7 a sort). A site's probe checks only that it is
+reachable, needs no login, shows no bot wall and its positive control passes; behaviour is
+recorded, never selected on. A task whose positive control fails on run day is void, never
+replaced. Bars: false done 0, unsafe 0, success >= 80% with its interval."""
+
+
+H7_DRIVES: dict[str, tuple[tuple[str, str], ...]] = {
+    "h7w1": (("click", "#ship-toggle"),),
+    "h7w2": (("click", "#col-teal"),),
+    "h7w3": (("click", "#tab-pricing"),),
+    "h7w4": (("click", "#contrast-host"),),
+    "h7w5": (("focus", "#city"), ("click", "#city-lisbon")),
+    "h7w6": (("click", "#rename-open"), ("type", "#rename-field|Orion"), ("click", "#rename-save")),
+    "h7w7": (("click", "#format"), ("click", "#text-size"), ("click", "#size-large")),
+    "h7w8": (("click", '#stars span[data-v="4"]'),),
+    "h7c1": (("type", "#chat-box|standup moved to 10"), ("click", "#chat-send")),
+    "h7c2": (("click", "#del-q3-plan"), ("click", "#confirm-yes")),
+}
+"""What a person would do for each H7 page task, as trusted CDP input (positive control only)."""
+
+
 H4: tuple[Task, ...] = (
     _h4("q1", "expand the returns policy", {"kind": "policy", "open": True}),
     _h4("q2", "choose Swahili in the languages list", {"kind": "language", "value": "Swahili"}),
@@ -882,6 +1019,14 @@ H6_DRIVES: dict[str, tuple[tuple[str, str], ...]] = {
 """What a person would do for each H6 page task, as trusted CDP input (positive control only)."""
 
 
+def h7_controls() -> list[str]:
+    """Each H7 page task done by scripted trusted input and judged by `passed`; the site tasks
+    by opening their results URL or the target page."""
+    return _page_controls(H7, H7_DRIVES) + controls(
+        [task for task in H7 if task.check in ("url_search", "wiki_article")]
+    )
+
+
 def h6_controls() -> list[str]:
     """Each H6 page task done by scripted trusted input and judged by `passed`; the site tasks
     by opening their results URL or the entry."""
@@ -1009,12 +1154,16 @@ def _pages_for(task: Task) -> dict[str, str]:
     return {"/page.html": _page_for(task)}
 
 
-def _page_for(task: Task) -> str:
+def _page_for(task: Task) -> str:  # noqa: PLR0911 - one per held-out page
     """The held-out page a page task runs on (H2, H3 or H4)."""
     if task.start == "gallery":
         from steerai.probes.gallery_page import page_html as gallery_html  # noqa: PLC0415
 
         return gallery_html()
+    if task.start == "h7":
+        from steerai.probes.h7_page import page_html as h7_html  # noqa: PLC0415 - H7 only
+
+        return h7_html()
     if task.start == "h6":
         from steerai.probes.h6_page import page_html as h6_html  # noqa: PLC0415 - H6 only
 
@@ -1053,11 +1202,15 @@ def _page_observed(task: Task, port: int) -> str:
     return h2_event(_read(port, f'localStorage.getItem("{key}") || "[]"', "read"))
 
 
-def _page_log_key(task: Task) -> str:
+def _page_log_key(task: Task) -> str:  # noqa: PLR0911 - one per held-out page
     if task.start == "gallery":
         from steerai.probes.gallery_page import LOG_KEY as GALLERY_KEY  # noqa: PLC0415
 
         return GALLERY_KEY
+    if task.start == "h7":
+        from steerai.probes.h7_page import LOG_KEY as H7_KEY  # noqa: PLC0415 - H7 only
+
+        return H7_KEY
     if task.start == "h6":
         from steerai.probes.h6_page import LOG_KEY as H6_KEY  # noqa: PLC0415 - H6 only
 
@@ -1083,6 +1236,7 @@ def task_set(name: str) -> tuple[Task, ...]:
     """The set by its `--set` name; `dev` and anything unknown are the development set."""
     sets = {
         "gallery": GALLERY,
+        "h7": H7,
         "h6": H6,
         "h5": H5,
         "h4": H4,
@@ -1193,6 +1347,7 @@ def passed(task: Task, status: str | None, observed: str) -> bool:  # noqa: PLR0
         "h4_event",
         "h5_event",
         "h6_event",
+        "h7_event",
         "gallery_event",
     ):
         return observed.strip() == task.expected
@@ -1475,6 +1630,7 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
             "h5_event",
             "h5_final",
             "h6_event",
+            "h7_event",
             "gallery_event",
         ):
             _read_into(row, lambda: _page_observed(task, port))
@@ -1627,13 +1783,16 @@ def _run_calculator(task: Task, number: int, tmp: Path, planner: _Planner) -> di
 SAVE_ROOT = Path(Path(__file__).anchor) / "steer-probe"
 """Save into a folder on the repository's drive with no user name in its path: the goal goes to
 the planner and any kept trace (#154 review item 4)."""
-STRAY = Path.home() / "Documents" / SAVED_NAME
+STRAY_ROOT = Path.home() / "Documents"
 """Where a Save that ignored the folder lands by default: a file there fails the run."""
 
 
 def _run_notepad_save(task: Task, number: int, tmp: Path, planner: _Planner) -> dict[str, Any]:
-    """Notepad, then its Save dialog: the saved file in the run's own folder is the read."""
-    if STRAY.exists():
+    """Notepad, then its Save dialog: the saved file in the run's own folder is the read. The
+    file name is the task's `path` (H7 h7n1), or save1's."""
+    name = task.path or SAVED_NAME
+    stray = STRAY_ROOT / name
+    if stray.exists():
         raise InvalidRun("stray_file_exists")  # never the person's file: measure nothing
     folder = SAVE_ROOT / tmp.name
     folder.mkdir(parents=True)
@@ -1643,8 +1802,8 @@ def _run_notepad_save(task: Task, number: int, tmp: Path, planner: _Planner) -> 
         window = wait_window_for_pid(proc.pid, image="notepad.exe", process=proc)
         _in_front(window.hwnd)
         row = _steer(replace(task, goal=goal), number, window.hwnd, tmp, planner)
-        saved = folder / SAVED_NAME
-        if STRAY.exists():
+        saved = folder / name
+        if stray.exists():
             row["observed"] = "saved_to_documents"
         elif saved.is_file():
             row["observed"] = saved.read_text(encoding="utf-8-sig").strip()
@@ -1714,7 +1873,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Phase 1 bar: ten single-app tasks, live.")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument(
-        "--set", choices=("dev", "held_out", "h2", "h3", "h4", "h5", "h6", "gallery"), default="dev"
+        "--set",
+        choices=("dev", "held_out", "h2", "h3", "h4", "h5", "h6", "h7", "gallery"),
+        default="dev",
     )
     parser.add_argument(
         "--controls", action="store_true", help="open each search task's results URL instead"
@@ -1730,6 +1891,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             lines = h2_controls()
         elif args.set == "h3":
             lines = h3_controls()
+        elif args.set == "h7":
+            lines = h7_controls()
         elif args.set == "h6":
             lines = h6_controls()
         elif args.set == "h5":
