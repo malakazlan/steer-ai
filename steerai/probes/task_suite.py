@@ -120,6 +120,12 @@ class Task:
     which: tuple[tuple[str, str], ...] = ()
     """The scripted person's answer to a twin ask, per target name: the automation id of the
     field the task means (packet h4-2026-11-11 round 2, item 5). A harness oracle."""
+    result_link: str = ""
+    """For an instant-search `url_search`: the path prefix of a result's own link (`/pods/`).
+    The page lists results as the words are typed and never changes its URL (cocoapods.org,
+    V2 step 1 diagnostics 2026-11-13), so a link to `<prefix><words>` on the page is the
+    independent read as well as the URL. The start page is read first: one that already links
+    to the result makes the run invalid (`result_link_preexisting`). Empty: the URL alone."""
 
 
 PAGE_SETS = ("h2", "h3", "h4", "h5", "h6", "gallery")
@@ -191,6 +197,7 @@ def _url_search(  # noqa: PLR0913 - one task's fields
     path: str,
     param: str = "q",
     title: str = "",
+    result_link: str = "",
 ) -> Task:
     return Task(
         task_id,
@@ -202,6 +209,7 @@ def _url_search(  # noqa: PLR0913 - one task's fields
         path=path,
         param=param,
         title=title,
+        result_link=result_link,
     )
 
 
@@ -212,9 +220,14 @@ CHALLENGE_TITLES = frozenset(
 path, H4 aw1 2026-11-11): the run measured nothing."""
 
 
-def _read_page(port: int, stage: str) -> str:
-    """The page's href and title as JSON; a bot check is an invalid run, never a pass."""
-    expression = "JSON.stringify({href: location.href, title: document.title})"
+_LINKS_JS = "[...document.querySelectorAll('a[href]')].map(a => a.pathname)"
+
+
+def _read_page(port: int, stage: str, *, links: bool = False) -> str:
+    """The page's href and title as JSON (with `links`, its links' paths, at most 500); a bot
+    check is an invalid run, never a pass."""
+    extra = f", links: {_LINKS_JS}.slice(0, 500)" if links else ""
+    expression = f"JSON.stringify({{href: location.href, title: document.title{extra}}})"
     observed = _read(port, expression, stage)
     if str(json.loads(observed or "{}").get("title", "")) in CHALLENGE_TITLES:
         raise InvalidRun("bot_check")
@@ -624,6 +637,7 @@ H6: tuple[Task, ...] = (
         path="/",
         param="q",
         title="CocoaPods.org",
+        result_link="/pods/",
     ),
     _url_search(
         "am1",
@@ -1154,6 +1168,15 @@ def query_of(url: str) -> str:
 _SEARCH_PATHS: dict[str, str] = {"google_search": "/search", "youtube_search": "/results"}
 
 
+def shows_result(task: Task, page: Mapping[str, Any]) -> bool:
+    """The page links to the searched result's own page (`result_link` + the words, casefolded
+    equality: a neighbour such as `/pods/AlamofireImage` is not it)."""
+    if not task.result_link:
+        return False
+    wanted = (task.result_link + task.expected).casefold()
+    return any(str(link).casefold() == wanted for link in page.get("links") or [])
+
+
 def passed(task: Task, status: str | None, observed: str) -> bool:  # noqa: PLR0911 - one per check
     """Steer said `done` and the independent read agrees exactly (#139 review item 3)."""
     if status != "done":
@@ -1184,7 +1207,8 @@ def passed(task: Task, status: str | None, observed: str) -> bool:  # noqa: PLR0
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(href).query)
         words = " ".join(query.get(task.param, [""])[0].split())
         same_title = not task.title or title == task.title
-        return path == task.path and words.casefold() == task.expected.casefold() and same_title
+        by_url = path == task.path and words.casefold() == task.expected.casefold() and same_title
+        return by_url or shows_result(task, page)
     if task.check in _SEARCH_PATHS:
         return path == _SEARCH_PATHS[task.check] and (
             query_of(href).casefold() == task.expected.casefold()
@@ -1432,6 +1456,7 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
         # follows and demands three agreeing node counts)
         _settled(port, SETTLE_LIMIT_S)
         time.sleep(3.0)
+        _not_shown_before(task, port)
         _in_front(window.hwnd)
         row = _steer(task, number, window.hwnd, tmp, planner)
         if task.check == "inbox_send":
@@ -1456,7 +1481,7 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
         elif task.check == "inbox_chat":
             _read_into(row, lambda: _read(port, "document.body.dataset.chat", "chat"))
         else:
-            _read_into(row, lambda: _read_page(port, "page"))
+            _read_into(row, lambda: _read_page(port, "page", links=bool(task.result_link)))
         return row
     finally:
         from steerai.probes.chrome_a11y import stop_chrome  # noqa: PLC0415 - with launch
@@ -1476,6 +1501,15 @@ def _invalid(task: Task, number: int, exc: InvalidRun) -> dict[str, Any]:
         "invalid": str(exc),
         "outcome": "invalid",
     }
+
+
+def _not_shown_before(task: Task, port: int) -> None:
+    """The `result_link` oracle's before (#261 review item 1): the start page must not already
+    link to the result, or the read after the run proves nothing; such a run is invalid."""
+    if task.result_link and shows_result(
+        task, json.loads(_read_page(port, "before", links=True) or "{}")
+    ):
+        raise InvalidRun("result_link_preexisting")
 
 
 def _read_into(row: dict[str, Any], read: Callable[[], str]) -> None:

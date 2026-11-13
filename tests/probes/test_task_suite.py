@@ -544,3 +544,59 @@ def test_keep_copies_the_protected_debug_file_as_it_is() -> None:
 
     assert "trace.debug.jsonl.dpapi" in KEPT_FILES
     assert not any(name.endswith(".txt") and "debug" in name for name in KEPT_FILES)
+
+
+def test_an_instant_search_passes_on_the_result_it_shows_without_a_url_change() -> None:
+    """V2 step 1 diagnostics (2026-11-13): cocoapods.org lists results while typing and never
+    puts the words in its URL, and Enter does nothing; the old check needed `?q=` and could
+    never pass on a real search. A link to the result's own page is the independent read."""
+    from steerai.probes.task_suite import task_set  # noqa: PLC0415 - this test only
+
+    cp1 = next(t for t in task_set("h6") if t.task_id == "cp1")
+    shown = json.dumps(
+        {
+            "href": "https://cocoapods.org/",
+            "title": "CocoaPods.org",
+            "links": ["/", "/pods/Alamofire", "/pods/AlamofireImage"],
+        }
+    )
+    assert passed(cp1, "done", shown)
+    others = json.dumps(
+        {"href": "https://cocoapods.org/", "title": "CocoaPods.org", "links": ["/pods/Moya"]}
+    )
+    assert not passed(cp1, "done", others), "only the searched pod's own link"
+    assert passed(cp1, "done", _page("https://cocoapods.org/?q=alamofire", "CocoaPods.org"))
+    assert not passed(cp1, "done", _page("https://cocoapods.org/", "CocoaPods.org"))
+
+
+def test_a_search_without_a_result_link_still_needs_its_url() -> None:
+    from steerai.probes.task_suite import task_set  # noqa: PLC0415 - this test only
+
+    gd1 = next(t for t in task_set("h6") if t.task_id == "gd1")
+    assert gd1.result_link == ""
+    page = json.dumps(
+        {"href": "https://pkg.go.dev/", "title": "x", "links": ["/github.com/spf13/cobra"]}
+    )
+    assert not passed(gd1, "done", page)
+
+
+def test_a_start_page_that_already_links_the_result_is_an_invalid_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#261 review item 1: the oracle has a before; without it a start page listing the pod
+    would pass with no search at all."""
+    import steerai.probes.task_suite as suite  # noqa: PLC0415 - this test only
+    from steerai.probes.layer_b_pages import InvalidRun  # noqa: PLC0415
+
+    cp1 = next(t for t in suite.task_set("h6") if t.task_id == "cp1")
+    page = {"href": "https://cocoapods.org/", "title": "CocoaPods.org"}
+    monkeypatch.setattr(
+        suite, "_read_page", lambda *_a, **_k: json.dumps({**page, "links": ["/pods/Alamofire"]})
+    )
+    with pytest.raises(InvalidRun, match="result_link_preexisting"):
+        suite._not_shown_before(cp1, 9)
+    monkeypatch.setattr(suite, "_read_page", lambda *_a, **_k: json.dumps({**page, "links": ["/"]}))
+    suite._not_shown_before(cp1, 9)
+    gd1 = next(t for t in suite.task_set("h6") if t.task_id == "gd1")
+    monkeypatch.setattr(suite, "_read_page", lambda *_a, **_k: pytest.fail("no read without it"))
+    suite._not_shown_before(gd1, 9)
