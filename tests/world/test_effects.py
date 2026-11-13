@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 
 from steerai.world.effects import Observed, observe
-from tests.world.test_effects_conditions import BASE, FIELD, ITEM, LIST, URL, Row, _snap
+from tests.world.test_effects_conditions import BASE, FIELD, ITEM, LIST, PAGE, URL, Row, _snap
 
 HOME = "https://shop.test/"
 RESULTS = "https://shop.test/search?q=red+shoes"
@@ -190,3 +190,13 @@ def test_the_report_is_pure_and_round_trips_through_json() -> None:
     )
     assert first == again
     assert URL == HOME
+
+
+def test_a_very_deep_or_cyclic_tree_is_bounded_never_a_recursion_error() -> None:
+    deep: list[Row] = [(1, "Document", "Shop", (9, 1), None)]
+    for n in range(2, 3000):
+        deep.append((n, "Group", f"g{n}", (9, n), n - 1))
+    report = observe(_obs(deep), _obs(deep[:-1]))
+    assert "dismissed" in report.tokens
+    cyclic: list[Row] = [PAGE, (2, "Group", "a", (9, 2), 3), (3, "Group", "b", (9, 3), 2)]
+    observe(_obs(cyclic), _obs(cyclic[:-1]))

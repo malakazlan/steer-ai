@@ -20,7 +20,7 @@ import re
 import unicodedata
 import urllib.parse
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal
 
@@ -55,6 +55,8 @@ PAGE_ROLES: Final = frozenset({"Document", "Pane", "Window"})
 """As `loop._PAGE_ROLES`: a field whose parent is the page is exempt only for its own subtree."""
 RERENDER_SIMILARITY: Final = 0.9
 """A replaced top Document whose element names are this similar (multiset) is a re-render."""
+MAX_CHAIN: Final = 64
+"""Ancestors kept in a re-render key: deeper chains are cut, never followed further."""
 MIN_TOKEN_CHARS: Final = 3
 """A single-token text shorter than this gives no title or results carrier (hunter EO-21)."""
 
@@ -176,8 +178,11 @@ def _changes(
             tokens.add("moved")
         elif new.id not in exempt and new.id not in revealed_ids:
             classes.add("content_changed")
+    revealed_set = {e.id for e in revealed}
     outside = [
-        e for e in appeared if e.id not in exempt and e.id not in revealed_ids and e not in revealed
+        e
+        for e in appeared
+        if e.id not in exempt and e.id not in revealed_ids and e.id not in revealed_set
     ]
     if outside or anonymous:
         classes.add("content_changed")
@@ -201,15 +206,33 @@ def _changed_fields(old: Element, new: Element, *, caps_read: bool) -> set[str]:
     return fields
 
 
-def _chain(snapshot: Snapshot, element: Element) -> tuple[tuple[str, str], ...]:
-    """The element's ancestors as (role, normalised name), nearest first."""
+def _chains(snapshot: Snapshot) -> Callable[[Element], tuple[tuple[str, str], ...]]:
+    """Each element's ancestors as (role, normalised name), nearest first, at most
+    `MAX_CHAIN`, memoised per snapshot and iterative: linear in nodes (hunter EO-29), never
+    deep recursion, and a parent cycle in a hostile tree ends at the first repeat."""
     by_id = {e.id: e for e in snapshot.elements}
-    out: list[tuple[str, str]] = []
-    parent = by_id.get(element.parent_id) if element.parent_id is not None else None
-    while parent is not None and len(out) < 64:
-        out.append((parent.role, normalise_name(parent.name)))
-        parent = by_id.get(parent.parent_id) if parent.parent_id is not None else None
-    return tuple(out)
+    memo: dict[int, tuple[tuple[str, str], ...]] = {}
+
+    def chain_of(element: Element) -> tuple[tuple[str, str], ...]:
+        out: list[tuple[str, str]] = []
+        seen: set[int] = set()
+        parent_id = element.parent_id
+        while parent_id is not None and parent_id in by_id and len(out) < MAX_CHAIN:
+            if parent_id in memo:
+                out.extend(memo[parent_id])
+                break
+            if parent_id in seen:
+                break
+            seen.add(parent_id)
+            parent = by_id[parent_id]
+            out.append((parent.role, normalise_name(parent.name)))
+            parent_id = parent.parent_id
+        chain = tuple(out[:MAX_CHAIN])
+        if element.id in by_id:
+            memo[element.id] = ((element.role, normalise_name(element.name)), *chain)[:MAX_CHAIN]
+        return chain
+
+    return chain_of
 
 
 def _pair_rerenders(
@@ -217,14 +240,15 @@ def _pair_rerenders(
 ) -> tuple[list[Element], list[Element], bool]:
     """Drop appeared/gone pairs with the same role, normalised name and ancestor chain: a
     re-render, never an appearance ([V2.2] §6.1)."""
+    chain_before, chain_after = _chains(before), _chains(after)
     pool: dict[tuple[object, ...], list[Element]] = {}
     for element in gone:
-        key = (element.role, normalise_name(element.name), _chain(before, element))
+        key = (element.role, normalise_name(element.name), chain_before(element))
         pool.setdefault(key, []).append(element)
     kept: list[Element] = []
     paired = False
     for element in appeared:
-        key = (element.role, normalise_name(element.name), _chain(after, element))
+        key = (element.role, normalise_name(element.name), chain_after(element))
         if pool.get(key):
             pool[key].pop()
             paired = True
