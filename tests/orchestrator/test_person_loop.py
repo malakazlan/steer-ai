@@ -312,7 +312,8 @@ def test_the_trace_never_carries_candidate_names_previews_or_the_chosen_row() ->
     h.confirmer.default = "yes"
     h.session.run_step(_person_delete("Amir"))
     text = "\n".join(h.trace.lines)
-    for sentinel in ("Amir", "Khan", "hi bro", "3d", CYR_A, "(42, 17)", "[42, 17]"):
+    # the preview whole: a bare "3d" is valid hex, so a decision id could hold it (#243)
+    for sentinel in ("Amir", "Khan", "hi bro", f"ok {MID} 3d", CYR_A, "(42, 17)", "[42, 17]"):
         assert sentinel not in text, sentinel
     assert '"candidates": 3' in text
 
