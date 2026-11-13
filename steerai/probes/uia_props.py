@@ -222,13 +222,136 @@ def site_fields(url: str) -> dict[str, Any]:  # Any: JSON values
     return {"fields": fields, "query_class_possible": query}
 
 
+SLOW_S = 3.0
+"""The slow page's answer delay: a navigation still pending when the probe samples."""
+BUSY_SAMPLES = 45
+BUSY_EVERY_S = 0.1
+
+
+class _SlowPages:
+    """`/start` at once and `/slow` after SLOW_S, from memory on 127.0.0.1 only."""
+
+    def __init__(self) -> None:
+        import http.server  # noqa: PLC0415 - the busy section only
+        import threading  # noqa: PLC0415 - the busy section only
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                if self.path.startswith("/slow"):
+                    time.sleep(SLOW_S)
+                    body = "<!doctype html><title>Slow</title><p id=ready>Slow ready</p>"
+                elif self.path.startswith("/start"):
+                    body = "<!doctype html><title>Start</title><p id=ready>Start ready</p>"
+                else:
+                    self.send_error(404)
+                    return
+                data = body.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args: Any) -> None:  # noqa: ARG002 - Any: stdlib format args
+                return
+
+        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    @property
+    def port(self) -> int:
+        return int(self._server.server_address[1])
+
+    def __enter__(self) -> _SlowPages:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+def _top_documents(uia: Any, mod: Any, hwnd: int) -> list[Any]:  # Any: comtypes elements
+    root = uia.ElementFromHandle(hwnd)
+    found = root.FindAll(
+        mod.TreeScope_Descendants,
+        uia.CreatePropertyCondition(mod.UIA_ControlTypePropertyId, mod.UIA_DocumentControlTypeId),
+    )
+    return [found.GetElement(i) for i in range(found.Length)]
+
+
+def busy_run() -> list[dict[str, Any]]:
+    """[V2.8] probe: what the Documents expose while a navigation is pending (SLOW_S). Each
+    sample: the number of Documents, whether any AriaProperties says busy, the ItemStatus and
+    IsEnabled of each, and which RuntimeId is new; closed values only.
+
+    Measured 2026-11-14, Chrome 157, n=1: no busy signal. For the whole 3 s the old Document
+    stays (one Document, not busy, ItemStatus empty, enabled); the new Document replaces it at
+    ~3.1 s. So [V2.8]'s settle has no busy extension: deadline, quiet window, unstable token."""
+    from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415 - Windows only
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415 - Windows only
+    from steerai.run import warm_up  # noqa: PLC0415
+    from steerai.world.model import WorldModel  # noqa: PLC0415
+
+    tmp = Path(tempfile.mkdtemp(prefix="steer-busy-"))
+    rows: list[dict[str, Any]] = []
+    with _SlowPages() as server:
+        port = _free_port()
+        base = f"http://127.0.0.1:{server.port}"
+        proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, base + "/start")
+        try:
+            hwnd = wait_window_for_pid(proc.pid, image="chrome.exe", process=proc).hwnd
+            cdp = CdpSession(page_ws_url(port))
+            model = WorldModel(UiaClient())
+            warm_up(lambda: model.observe(hwnd), cap_s=15.0)
+            uia, mod = _uia()
+            first = {tuple(d.GetRuntimeId() or ()) for d in _top_documents(uia, mod, hwnd)}
+            cdp.call("Runtime.evaluate", {"expression": f"location.href='{base}/slow'"})
+            started = time.monotonic()
+            for _ in range(BUSY_SAMPLES):
+                docs = _top_documents(uia, mod, hwnd)
+                rows.append(
+                    {
+                        "at_ms": round((time.monotonic() - started) * 1000),
+                        "documents": len(docs),
+                        "new_document": any(
+                            tuple(d.GetRuntimeId() or ()) not in first for d in docs
+                        ),
+                        "aria_busy": any(
+                            "busy=true" in str(d.GetCurrentPropertyValue(_IDS["AriaProperties"]))
+                            for d in docs
+                        ),
+                        "item_status": sorted(
+                            {str(d.GetCurrentPropertyValue(ITEM_STATUS)) for d in docs}
+                        ),
+                        "enabled": sorted({bool(d.CurrentIsEnabled) for d in docs}),
+                    }
+                )
+                time.sleep(BUSY_EVERY_S)
+            cdp.close()
+        finally:
+            stop_chrome(proc, tmp / "profile")
+            shutil.rmtree(tmp, ignore_errors=True)
+    return rows
+
+
+ITEM_STATUS = 30026
+"""UIA_ItemStatusPropertyId."""
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--sites", action="store_true", help="the pooled set's search sites")
+    parser.add_argument("--busy", action="store_true", help="a pending navigation's Documents")
     args = parser.parse_args(argv)
     if sys.platform != "win32":
         sys.stdout.write(json.dumps({"skipped": "windows only"}) + "\n")
+        return 0
+    if args.busy:
+        for row in busy_run():
+            sys.stdout.write(json.dumps(row) + "\n")
         return 0
     if args.sites:
         from steerai.probes.task_suite import H2, H3, H4, H5, H6, HELD_OUT, TASKS  # noqa: PLC0415
