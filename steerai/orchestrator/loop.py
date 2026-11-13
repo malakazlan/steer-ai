@@ -123,7 +123,7 @@ from steerai.verify.t1 import (
 )
 from steerai.verify.url_query import LoadKind, UrlBefore, load_kind
 from steerai.world.address_bar import DocumentUrl
-from steerai.world.effects import Observed, observe
+from steerai.world.effects import NOT_OBSERVED, Observed, observe
 from steerai.world.elements import Element, outermost
 from steerai.world.fingerprint import similarity
 from steerai.world.model import Snapshot, normalise_name
@@ -450,6 +450,10 @@ class Session:
         """The top Document's URL as `_loaded` read it (debug record only)."""
         self._acted_rid: tuple[int, ...] = ()
         """The acted element's RuntimeId, taken in `_record` before the act (effect log)."""
+        self._scope_rid: tuple[int, ...] = ()
+        """The last targeted element's RuntimeId: a key press's effect scope ([V2.3])."""
+        self._windows_after: list[WindowLike] | None = None
+        """The window list verify read after the act; None when none was read."""
         self._url_leg: UrlLeg | None = None
         """How far the address-bar proof got for this R2/R3 step (`URL_LEGS`); None below R2."""
         self._url_reads = 0
@@ -1176,6 +1180,7 @@ class Session:
         self._url_raw_before, self._url_raw_reads = None, []
         # before the act (a swap re-observes): the effect log's acted element, never raising
         self._acted_rid = () if element_id is None else _runtime_id_of(before, element_id)
+        self._scope_rid = self._acted_rid or self._scope_rid
         self._url_before_source, self._url_raw_document = None, None
         if risk not in ("R2", "R3"):
             return before, False
@@ -1253,8 +1258,9 @@ class Session:
     ) -> None:
         """V2 step 2a, logged beside v1 ([V2.2]): the effect report of this step's before of
         record and verify's after, from values already read (the URL only where the R2/R3 proof
-        read it; no window list after, so `windows` is unread), as closed tokens. Nothing reads
-        it back; a failure is one token, never an exception into the step (EO-33/42)."""
+        read it, the window list verify read), as closed tokens; a key press is scoped by the
+        last targeted element ([V2.3]). Nothing reads it back; a failure is one token, never an
+        exception into the step (EO-33/42)."""
         polled = [u for u in self._url_raw_reads if u is not None]
         pair = (
             Observed(
@@ -1262,11 +1268,17 @@ class Session:
                 url=self._url_raw_before,
                 windows=None if windows_before is None else tuple(w.hwnd for w in windows_before),
             ),
-            Observed(snapshot=after, url=polled[-1] if polled else None, windows=None),
+            Observed(
+                snapshot=after,
+                url=polled[-1] if polled else None,
+                windows=None
+                if self._windows_after is None
+                else tuple(w.hwnd for w in self._windows_after),
+            ),
         )
         text = step.text if step.text is not None else step.params.get("text")
         try:
-            report = observe(*pair, acted=acted or None, text=text)
+            report = observe(*pair, acted=acted or None, text=text, scope=self._scope_rid or None)
         except (  # the pure observer's own failures; a kill or takeover is never caught
             ValueError,
             KeyError,
@@ -1298,6 +1310,7 @@ class Session:
                 "carriers": sorted(report.carriers),
                 "revealed": report.revealed_root is not None,
                 "stable_after": report.stable_after,
+                "not_observed": list(NOT_OBSERVED),
             }
         )
         self._debug.capture(
@@ -1608,6 +1621,7 @@ class Session:
     def _begin_step(self, step: Step, windows_before: list[WindowLike] | None) -> None:
         self._debug.begin_step(step.id)
         self._acted_rid = ()  # set again by `_record`: never a previous step's element
+        self._windows_after = None
         self._windows_at_step = windows_before
         self._no_effect_facts = None
         self._proof = None
@@ -2805,6 +2819,7 @@ class Session:
         self, expect: Predicate, before: Snapshot, windows_before: Sequence[WindowLike] | None
     ) -> tuple[Any, Snapshot]:
         decided: list[Snapshot] = [self._observe(stable_window=1)]
+        self._windows_after = list(self._windows()) if self._windows else None
 
         def observe(**kwargs: Any) -> Snapshot:
             decided.append(self._observe(**kwargs))
@@ -2816,7 +2831,7 @@ class Session:
             decided[0],
             observe,
             live=self._live,
-            windows=self._windows() if self._windows else None,
+            windows=self._windows_after,
             windows_before=windows_before,
             pinned=self._pins_and_choices,
             deadline_s=_verify_deadline(expect, self._verify_deadline_s),
