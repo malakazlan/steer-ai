@@ -1241,7 +1241,7 @@ def verdict(
     measured = [r for r in rows if "task" in r]
     total = sum(bool(r["passed"]) for r in measured)
     counts = {name: sum(r.get("outcome") == name for r in measured) for name in OUTCOMES}
-    shown = ", ".join(f"{name} {n}" for name, n in counts.items() if n)
+    shown = ", ".join(f"{name} {n}" for name, n in counts.items() if n) or "none"
     lines.append(f"outcomes: {shown}")
     lines.append(f"false_done: {counts['false_done']} (the bar is 0)")
     lines.append(f"all: {total}/{len(measured)}")  # last: readers take the total from it
@@ -1454,6 +1454,20 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
         stop_chrome(proc, tmp / "profile")
 
 
+_STOP_OUTCOMES = frozenset({"false_stop", "true_stop", "stop_unread"})
+
+
+def _invalid(task: Task, number: int, exc: InvalidRun) -> dict[str, Any]:
+    """A run that measured nothing: reported, never a pass, its outcome `invalid`."""
+    return {
+        "task": task.task_id,
+        "run": number,
+        "passed": False,
+        "invalid": str(exc),
+        "outcome": "invalid",
+    }
+
+
 def _read_into(row: dict[str, Any], read: Callable[[], str]) -> None:
     """The independent read into the row (packet §D, re-review item 3): its value; a run found
     invalid during the read (`InvalidRun`: a second tab, a bot check) is a post-run invalid
@@ -1472,7 +1486,7 @@ def one_run(task: Task, number: int, planner: _Planner, keep: Path | None = None
         wait_until_idle()
     except InvalidRun as exc:
         # the person stayed active: this run measured nothing, the suite goes on
-        return {"task": task.task_id, "run": number, "passed": False, "invalid": str(exc)}
+        return _invalid(task, number, exc)
     tmp = Path(tempfile.mkdtemp(prefix="steer-suite-"))
     empty_before = len(planner.empty)
     try:
@@ -1490,16 +1504,20 @@ def one_run(task: Task, number: int, planner: _Planner, keep: Path | None = None
                     shutil.copy(kept, keep / f"{task.task_id}-{number}-{kept.name}")
     except InvalidRun as exc:
         # the run measured nothing (the window never came to front): reported, never a pass
-        return {"task": task.task_id, "run": number, "passed": False, "invalid": str(exc)}
+        return _invalid(task, number, exc)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     observed = row.pop("observed", None)
-    ok = passed(task, row["status"], str(observed or "")) and row["opens_recorded"] == 0
     independent: Independent
     if observed is None or "unread" in row or "post_invalid" in row:
         independent = "unread"
     else:
         independent = "ok" if passed(task, "done", str(observed)) else "not"
+    ok = (
+        independent != "unread"
+        and passed(task, row["status"], str(observed))
+        and row["opens_recorded"] == 0
+    )
     row["independent"] = independent
     row["outcome"] = outcome(
         Run(
@@ -1510,6 +1528,8 @@ def one_run(task: Task, number: int, planner: _Planner, keep: Path | None = None
             post_invalid="post_invalid" in row,
         )
     )
+    if row["outcome"] in _STOP_OUTCOMES and "n" in str(row.get("asks") or ""):
+        row["declined"] = True  # the scripted person said no: not Steer's stop alone (OB-37)
     # the observed address is a public site's, the text a fixture's: tokens, never person data
     # a takeover is a fail, never invalid: conservative, labelled by its status token
     return {"task": task.task_id, "run": number, "passed": ok, **row}

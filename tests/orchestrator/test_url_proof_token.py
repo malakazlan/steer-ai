@@ -104,3 +104,16 @@ def test_every_value_is_a_closed_literal() -> None:
         "no_named_load",
         "counted",
     }
+
+
+def test_a_step_that_never_reached_the_verify_carries_no_token() -> None:
+    """The token is the verify's (packet §C v4): an R2 submit refused with nothing sent ends
+    before it, so it carries none, and never the leg of a step before it."""
+    from steerai.errors import ErrorCode  # noqa: PLC0415 - this test only
+    from tests.orchestrator.fakes import COMPOSER, not_delivered  # noqa: PLC0415
+
+    h = _harness(Bar(HOME, RESULTS))
+    h.physical.outcomes[COMPOSER[0]] = not_delivered(ErrorCode.ELEMENT_NOT_ACTIONABLE, "clipped")
+    evidence = h.session.run_step(_submit()).evidence
+    assert evidence.get("delivery") == "not_delivered"
+    assert "url_proof" not in evidence

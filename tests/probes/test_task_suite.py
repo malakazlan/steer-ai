@@ -162,7 +162,13 @@ def test_a_person_who_stays_active_gives_an_invalid_row_and_the_suite_goes_on(
 
     monkeypatch.setattr(suite, "wait_until_idle", active)
     row = suite.one_run(TASKS[0], 1, suite._Planner())
-    assert row == {"task": "np1", "run": 1, "passed": False, "invalid": "person_active"}
+    assert row == {
+        "task": "np1",
+        "run": 1,
+        "passed": False,
+        "invalid": "person_active",
+        "outcome": "invalid",
+    }
 
 
 def test_the_goal_rule_matches_whole_tokens_of_at_least_three_characters() -> None:
@@ -489,3 +495,20 @@ def test_the_step_summary_carries_the_proof_and_aim_tokens() -> None:
     record["evidence"] = {"detail": "no_effect", "aim": "no_label"}
     (line,) = _steps([record])
     assert ":no_effect/aim=no_label:" in line
+
+
+def test_a_stop_after_the_scripted_person_said_no_is_flagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hunter OB-37: a stop the scripted person caused is not Steer's alone."""
+    row = _one(monkeypatch, status="blocked", detail="user_declined", observed="x", asks="yn")
+    assert (row["outcome"], row.get("declined")) == ("true_stop", True)
+    row = _one(monkeypatch, status="stopped", detail="unfinished", observed="x", asks="y")
+    assert "declined" not in row
+    row = _one(monkeypatch, observed="x", asks="n")
+    assert "declined" not in row, "a done is never flagged"
+
+
+def test_the_verdict_says_none_when_no_row_has_an_outcome() -> None:
+    lines, _ok = verdict([{"task": "np1", "passed": False}], TASKS[:1])
+    assert "outcomes: none" in lines
