@@ -152,6 +152,11 @@ def _bounded(record: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def debug_path_for(trace: Path) -> Path:
+    """The debug file beside a trace: `trace.jsonl` -> `trace.debug.jsonl.dpapi`."""
+    return trace.with_name(f"{trace.stem}.debug{trace.suffix}.dpapi")
+
+
 def protect_for_user(data: bytes) -> bytes:
     """DPAPI to the current Windows user with the debug entropy; `OSError` elsewhere."""
     from steerai.platform import dpapi  # noqa: PLC0415 - ctypes Windows bindings

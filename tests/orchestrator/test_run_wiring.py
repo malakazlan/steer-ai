@@ -9,6 +9,7 @@ from typing import Any, cast
 import pytest
 
 import steerai.run as run_mod
+from steerai.debug_trace import NullDebugSink
 
 
 def test_the_real_session_brings_a_switched_window_forward_through_the_guard(
@@ -53,8 +54,10 @@ def test_the_real_session_brings_a_switched_window_forward_through_the_guard(
         ledger=None,
         trace=None,
         monitor=None,
+        debug=NullDebugSink(),
     )
     run_mod._build_session(cast("run_mod.Bound", bound))
+    assert built["debug"] is bound.debug, "V2 step 1: the session gets the run's debug sink"
     assert built["bring_forward"] is win_input.acquire_foreground
     assert built["address_bar"] is client.address_bar, "#148: the omnibox reader is wired"
     assert built["document_url"] is client.document_url, "[v2.51]: the Document URL is wired"
