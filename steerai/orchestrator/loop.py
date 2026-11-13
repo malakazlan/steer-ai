@@ -22,6 +22,7 @@ planner yet to replan).
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -43,6 +44,7 @@ from steerai.action.options import option_key
 from steerai.action.physical import TEXT_ROLES, PhysicalAction
 from steerai.action.sanitize import field_text, normalise_newlines
 from steerai.action.tree import TREE_ITEM, expand_decision
+from steerai.debug_trace import DebugSink, NullDebugSink
 from steerai.errors import ErrorCode, SteerError
 from steerai.goal_match import GoalMatcher
 from steerai.orchestrator.contracts import (
@@ -374,7 +376,11 @@ class Session:
         max_risk: Risk = "R3",
         address_bar: Callable[[int], str | None] | None = None,
         document_url: Callable[[int], DocumentUrl | None] | None = None,
+        debug: DebugSink | None = None,
     ) -> None:
+        self._debug: DebugSink = NullDebugSink() if debug is None else debug
+        """V2 step 1's debug channel: records kept in memory, written by the runner at task
+        end; never evidence, never the clear trace (packet v4 §A)."""
         self.max_risk: Risk = max_risk
         """The person's `--max-risk` for the whole run: a tier the screen raises past it stops
         the step before the ask (#88); R3 means no limit."""
@@ -434,6 +440,10 @@ class Session:
         """The step is `url_query_eligible` (its expect the replacing Document): the no-effect
         facts are read for it only ([v2.68] scope, kept by [v2.79])."""
         self._url_before: UrlBefore | None = None
+        self._url_raw_before: str | None = None
+        """The address bar read before the Enter on this attempt, kept for the debug record
+        only; None when the before came from the ledger (a digest) or was unreadable."""
+        self._url_raw_reads: list[str | None] = []
         self._url_leg: UrlLeg | None = None
         """How far the address-bar proof got for this R2/R3 step (`URL_LEGS`); None below R2."""
         self._url_reads = 0
@@ -515,7 +525,7 @@ class Session:
         gate_stage: GateToken = "unreached"
         dispatched: ActionResult | None = None
         windows_before = list(self._windows()) if self._windows else None
-        self._begin_step(windows_before)
+        self._begin_step(step, windows_before)
         recorded = False
         try:
             self._enter_window(step, evidence)
@@ -636,7 +646,7 @@ class Session:
         key = self._ledger.key_for(step)
         evidence: dict[str, Any] = {"risk": risk}
         gate_stage: GateToken = "unreached"
-        self._begin_step(None)
+        self._begin_step(step, None)
         recorded = False
         try:
             self._boundary(evidence)
@@ -1064,6 +1074,28 @@ class Session:
             evidence["url_proof"] = self._url_leg  # a closed token, never the URL (V2 step 1)
             if self._url_reads:
                 evidence["url_reads"] = self._url_reads
+            self._debug.capture(
+                "url_proof",
+                lambda: {
+                    "leg": self._url_leg,
+                    "before_url": self._url_raw_before
+                    if self._url_raw_before is not None
+                    else "digest_only",
+                    "reads": list(self._url_raw_reads),
+                    "title_before": before_of_record.title,
+                    "title_after": after.title,
+                    "top_before": _top_ref(before_of_record),
+                    "top_after": _top_ref(after),
+                },
+            )
+        self._debug.capture(
+            "verify",
+            lambda: {
+                "expect": "secure" if self._secure_step else _plain(expect),
+                "holds": verdict.holds,
+                "reason": verdict.evidence.get("reason"),
+            },
+        )
         label = (
             None
             if renamed_at_risk or url_counted or no_effect
@@ -1130,6 +1162,7 @@ class Session:
         the Enter (principal item 2)."""
         self._url_step, self._url_query_step, self._url_before = False, False, None
         self._url_leg, self._url_reads = None, 0
+        self._url_raw_before, self._url_raw_reads = None, []
         if risk not in ("R2", "R3"):
             return before, False
         try:
@@ -1496,7 +1529,8 @@ class Session:
             code=failure.code,
         )
 
-    def _begin_step(self, windows_before: list[WindowLike] | None) -> None:
+    def _begin_step(self, step: Step, windows_before: list[WindowLike] | None) -> None:
+        self._debug.begin_step(step.id)
         self._windows_at_step = windows_before
         self._no_effect_facts = None
         self._proof = None
@@ -2168,6 +2202,7 @@ class Session:
         if prior is not None:
             return prior.url_before
         value, text = self._read_url(), step.params.get("text")
+        self._url_raw_before = value
         return None if value is None or not isinstance(text, str) else UrlBefore.of(value, text)
 
     def _url_polled(
@@ -2182,6 +2217,7 @@ class Session:
         reads = int(NAVIGATION_VERIFY_S / URL_POLL_S) + 1
         for read in range(reads):
             url_now = self._read_url()
+            self._url_raw_reads.append(url_now)
             counted, evidence = self._url_counts(step, before, page, url_now)
             self._note_leg(step, counted, evidence)
             if counted or read == reads - 1 or self._monotonic() >= deadline:
@@ -3702,6 +3738,19 @@ def _top_document(snapshot: Snapshot) -> Element | None:
         if parent is None:
             tops.append(element)
     return tops[0] if len(tops) == 1 else None
+
+
+def _top_ref(snapshot: Snapshot) -> dict[str, Any] | None:
+    """The top Document's RuntimeId and name, for the debug record only."""
+    top = _top_document(snapshot)
+    return None if top is None else {"runtime_id": list(top.runtime_id), "name": top.name}
+
+
+def _plain(value: Any) -> Any:
+    """A predicate as plain data for the debug record (a frozen dataclass tree)."""
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {"type": type(value).__name__, **dataclasses.asdict(value)}
+    return value
 
 
 def _same_top_document(before: Snapshot, after: Snapshot) -> bool:

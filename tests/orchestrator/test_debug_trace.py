@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from steerai.orchestrator.debug_trace import (
+from steerai.debug_trace import (
     MAX_NEIGHBOURS,
     MAX_STRING,
     BufferedDebugSink,
@@ -138,7 +138,7 @@ def test_a_record_kind_is_a_short_token(tmp_path: Path, kind: str) -> None:
 
 @pytest.mark.windows
 def test_the_real_protector_round_trips_only_with_the_debug_entropy(tmp_path: Path) -> None:
-    from steerai.orchestrator.debug_trace import DEBUG_ENTROPY, protect_for_user  # noqa: PLC0415
+    from steerai.debug_trace import DEBUG_ENTROPY, protect_for_user  # noqa: PLC0415
     from steerai.platform import dpapi  # noqa: PLC0415
 
     sink = BufferedDebugSink(tmp_path / "d.dpapi", protect=protect_for_user)
@@ -151,3 +151,30 @@ def test_the_real_protector_round_trips_only_with_the_debug_entropy(tmp_path: Pa
     assert SENTINEL in dpapi.unprotect(blob, entropy=DEBUG_ENTROPY).decode("utf-8")
     with pytest.raises(OSError, match="CryptUnprotectData failed"):
         dpapi.unprotect(blob, entropy=b"steer-ledger")
+
+
+def test_capture_builds_only_when_debug_is_on(tmp_path: Path) -> None:
+    calls: list[int] = []
+
+    def build() -> dict[str, object]:
+        calls.append(1)
+        return {"n": 1}
+
+    NullDebugSink().capture("aim", build)
+    assert calls == [], "off: nothing is read or built"
+    sink, path = _sink(tmp_path)
+    sink.begin_step("s1")
+    sink.capture("aim", build)
+    sink.flush()
+    assert calls == [1]
+    assert _lines(path)[0]["n"] == 1
+
+
+def test_a_build_that_raises_is_a_token_and_the_caller_goes_on(tmp_path: Path) -> None:
+    sink, _path = _sink(tmp_path)
+
+    def build() -> dict[str, object]:
+        raise KeyError(SENTINEL)
+
+    sink.capture("aim", build)
+    assert sink.flush() == "build_failed"

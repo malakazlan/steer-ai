@@ -43,6 +43,8 @@ class DebugSink(Protocol):
 
     def record(self, kind: str, fields: Mapping[str, Any]) -> None: ...
 
+    def capture(self, kind: str, build: Callable[[], Mapping[str, Any]]) -> None: ...
+
     def flush(self) -> DebugFailure | None: ...
 
 
@@ -53,6 +55,10 @@ class NullDebugSink:
         return None
 
     def record(self, kind: str, fields: Mapping[str, Any]) -> None:  # noqa: ARG002 - protocol
+        _check_kind(kind)
+
+    def capture(self, kind: str, build: Callable[[], Mapping[str, Any]]) -> None:  # noqa: ARG002
+        """Off: `build` never runs, so debug costs nothing and reads nothing."""
         _check_kind(kind)
 
     def flush(self) -> DebugFailure | None:
@@ -89,6 +95,17 @@ class BufferedDebugSink:
                 {"kind": kind, "step_id": self._step_id, "seq": self._seq, "dropped": "too_large"}
             ).encode("utf-8")
         self._pending.append(data)
+
+    def capture(self, kind: str, build: Callable[[], Mapping[str, Any]]) -> None:
+        """Build the record's fields and keep it. Only the building is guarded: a failure is
+        the `build_failed` token, never an exception into the step that called it (OB-09)."""
+        _check_kind(kind)
+        try:
+            fields = build()
+        except Exception:  # noqa: BLE001 - debug only: a bug here never touches the task
+            self._fail("build_failed")
+            return
+        self.record(kind, fields)
 
     def flush(self) -> DebugFailure | None:
         """Protect and append every pending record; the failure token, if any, else None."""

@@ -52,7 +52,8 @@ from steerai.action.sanitize import (
     normalise_newlines,
     sanitize_text,
 )
-from steerai.action.tree import TREE_ITEM, own_hit_ids, own_row
+from steerai.action.tree import TREE_ITEM, own_descendants, own_hit_ids, own_row
+from steerai.debug_trace import DebugSink, NullDebugSink
 from steerai.errors import ErrorCode, SteerError
 from steerai.probes import win_input, windows
 from steerai.probes.uia_snapshot import UiaClient
@@ -265,6 +266,8 @@ class _Target:
     ancestors: frozenset[tuple[int, ...]]
     row: int | None = None
     """A tree item's own-row height from its top ([v2.81]); None aims at the centre."""
+    live: Box | None = None
+    """The live rectangle the aim was taken from (the debug record only)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,6 +276,34 @@ class _Burst:
 
     kind: str
     payload: str
+
+
+def _plain_element(element: Element) -> dict[str, Any]:
+    return {"id": element.id, "role": element.role, "name": element.name, "box": list(element.box)}
+
+
+def _aim_record(snapshot: Snapshot, target: _Target, hit: tuple[int, ...]) -> dict[str, Any]:
+    """Where the click went, from values already read (V2 step 1 packet §B): the element, its
+    snapshot box, the live and visible rectangles, the row and the point (physical pixels),
+    and what the one hit test after the click found, resolved in the snapshot (no new read)."""
+    found = next((e for e in snapshot.elements if e.runtime_id == hit), None)
+    return {
+        "element": _plain_element(target.element),
+        "live": None if target.live is None else list(target.live),
+        "visible": list(target.visible),
+        "row": target.row,
+        "point": list(target.point),
+        "hit": "not_in_snapshot" if found is None else _plain_element(found),
+    }
+
+
+def _neighbourhood(snapshot: Snapshot, element: Element) -> dict[str, Any]:
+    """The clicked element's parent and own descendants, from the snapshot it was sent against."""
+    parent = next((e for e in snapshot.elements if e.id == element.parent_id), None)
+    return {
+        "parent": None if parent is None else _plain_element(parent),
+        "descendants": [_plain_element(e) for e in own_descendants(snapshot, element)],
+    }
 
 
 class PhysicalExecutor:
@@ -285,8 +316,10 @@ class PhysicalExecutor:
         inputs: InputPort | None = None,
         pace: TypingPace = DEFAULT_PACE,
         blocker: Callable[[], str | None] | None = None,
+        debug: DebugSink | None = None,
     ) -> None:
         self._blocker = blocker
+        self._debug: DebugSink = NullDebugSink() if debug is None else debug
         self._uia = UiaBindings.load() if uia is None else uia
         self._admission = Admission(
             windows=LiveWindows() if windows is None else windows, bindings=self._uia, clock=clock
@@ -350,6 +383,7 @@ class PhysicalExecutor:
             ),
             ancestors=_ancestor_ids(snapshot, element),
             row=row,
+            live=live,
         )
         if action.verb != "press":
             # a chord lands on the focused element, never under the pointer
@@ -418,9 +452,10 @@ class PhysicalExecutor:
         self._hit_test(target, snapshot.hwnd, moved_detail="target_moved")
         call.send("mouse.click", lambda: inputs.click_at(*target.point))
         self._last_click = (time.monotonic(), target.point)
-        evidence["hit_after"] = (
-            "target" if inputs.runtime_id_at(*target.point) in target.subtree else "other"
-        )
+        hit = inputs.runtime_id_at(*target.point)
+        evidence["hit_after"] = "target" if hit in target.subtree else "other"
+        self._debug.capture("aim", lambda: _aim_record(snapshot, target, hit))
+        self._debug.capture("neighbourhood", lambda: _neighbourhood(snapshot, target.element))
         if action.postcondition is None:
             return _unverified(call, {"reason": "no_postcondition", **evidence})
         return _finish(call, _poll_postcondition(action.postcondition), evidence)
