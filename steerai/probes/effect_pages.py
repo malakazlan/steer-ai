@@ -505,6 +505,79 @@ def watch_run(base: str, pair: Pair) -> dict[str, Any]:
     }
 
 
+def _url_reads(browser: _Browser, snapshot: Snapshot) -> dict[str, Any]:
+    """[V2.7] the top Document's URL by its handle and by the tree search, and the address bar
+    read raw: whether the two Document reads agree, the bar's shape, and each read's cost."""
+    top = _top_document(snapshot)
+    by_handle = (
+        None
+        if top is None
+        else browser.timed("url_handle", lambda: browser.client.document_url_in(snapshot, top.id))
+    )
+    by_search = browser.timed("url_search", lambda: browser.client.document_url(browser.hwnd))
+    bar = browser.timed("address_bar", lambda: browser.client.address_bar(browser.hwnd))
+    href = str(browser.run("location.href"))
+    handle_url = None if by_handle is None else by_handle.url
+    search_url = None if by_search is None else by_search.url
+    return {
+        "handle_equals_search": handle_url == search_url,
+        "document_is_href": search_url == href,
+        "bar_has_scheme": bar is not None and "://" in bar,
+        "bar_matches_href_without_scheme": bar is not None and href.split("://", 1)[-1] == bar,
+        "bar_shape": None if bar is None else _shape(bar, href),
+    }
+
+
+def _shape(bar: str, href: str) -> str:
+    """How the bar differs from `location.href`, as a closed token (never the URL itself)."""
+    if bar == href:
+        return "full"
+    rest = href.split("://", 1)[-1]
+    if bar == rest:
+        return "no_scheme"
+    if bar == rest.rstrip("/"):
+        return "no_scheme_no_slash"
+    return "other"
+
+
+def urls_run(base: str, pair: Pair) -> dict[str, Any]:
+    browser = _Browser(base + pair.path)
+    try:
+        browser.ready(_marker(pair.path))
+        if pair.setup:
+            browser.run(pair.setup)
+            time.sleep(SETTLE_S)
+        before = _url_reads(browser, browser.read().snapshot)
+        browser.run(pair.act)
+        time.sleep(1.5)
+        after_snapshot = (browser.ready(pair.ready) if pair.ready else browser.read()).snapshot
+        after = _url_reads(browser, after_snapshot)
+        costs = {k: _pcts(v) for k, v in browser.costs.items()}
+    finally:
+        browser.close()
+    return {"case": pair.case, "before": before, "after": after, "read_ms": costs}
+
+
+def noise_run(base: str, seconds: float = 4.0) -> list[dict[str, Any]]:
+    """After a no-op, which elements change and when (role.field tokens, never names)."""
+    browser = _Browser(base + "/shop")
+    rows: list[dict[str, Any]] = []
+    try:
+        browser.ready("Shop ready")
+        last = browser.read().snapshot
+        started = time.monotonic()
+        while time.monotonic() - started < seconds:
+            time.sleep(0.2)
+            now = browser.read().snapshot
+            diff = _diff_roles(last, now)
+            if diff["appeared"] or diff["changed"]:
+                rows.append({"at_ms": round((time.monotonic() - started) * 1000), **diff})
+            last = now
+    finally:
+        browser.close()
+    return rows
+
+
 def _pcts(values: list[float]) -> dict[str, float]:
     ordered = sorted(values)
     return {
@@ -514,10 +587,12 @@ def _pcts(values: list[float]) -> dict[str, float]:
     }
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0912 - one branch per section
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "--section", choices=("document", "offscreen", "pairs", "watch"), required=True
+        "--section",
+        choices=("document", "offscreen", "pairs", "watch", "urls", "noise"),
+        required=True,
     )
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--case", action="append", default=None)
@@ -534,6 +609,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     _emit({"run": number, **row})
             elif args.section == "offscreen":
                 for row in offscreen_run(base):
+                    _emit({"run": number, **row})
+            elif args.section == "urls":
+                for pair in PAIRS:
+                    if args.case and pair.case not in args.case:
+                        continue
+                    _emit({"run": number, **urls_run(base, pair)})
+            elif args.section == "noise":
+                for row in noise_run(base):
                     _emit({"run": number, **row})
             elif args.section == "watch":
                 for pair in PAIRS:

@@ -284,6 +284,24 @@ class UiaClient:
         except Exception as exc:  # COMError exists only once comtypes is loaded (see #160)
             raise OSError(f"document url unreadable: {exc}") from exc
 
+    def document_url_in(self, snapshot: Any, document_id: int) -> DocumentUrl | None:
+        """[V2.7] the URL of `document_id` (the snapshot's top Document) through the snapshot's
+        own live handle: one pattern call, never a second search of the tree. `snapshot` is a
+        `steerai.world.model.Snapshot` (Any: probes import no world types here). None when the
+        handle or its value is gone."""
+        try:
+            handle = snapshot.handle(document_id)
+            pattern = handle.GetCurrentPattern(self._uia_module.UIA_ValuePatternId)
+            if not pattern:
+                return None
+            value = pattern.QueryInterface(self._uia_module.IUIAutomationValuePattern).CurrentValue
+            runtime_id = tuple(int(v) for v in (handle.GetRuntimeId() or ()))
+        except Exception as exc:  # COMError exists only once comtypes is loaded; SteerError too
+            raise OSError(f"document url unreadable through its handle: {exc}") from exc
+        if not value or not runtime_id:
+            return None
+        return DocumentUrl(runtime_id=runtime_id, url=str(value))
+
     def roles_and_headings(
         self, hwnd: int
     ) -> tuple[dict[tuple[int, ...], str], dict[tuple[int, ...], int]]:
