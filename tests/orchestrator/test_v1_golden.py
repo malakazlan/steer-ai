@@ -58,7 +58,8 @@ def _record(h: Harness, results: list[Any], task: Any = None, **extra: Any) -> d
             "evidence": task.evidence,
             "ticked": sorted(task.ticked),
         }
-    return json.loads(json.dumps(_strip(out), sort_keys=True, default=str))
+    normalised: dict[str, Any] = json.loads(json.dumps(_strip(out), sort_keys=True, default=str))
+    return normalised
 
 
 def _type_send() -> dict[str, Any]:
