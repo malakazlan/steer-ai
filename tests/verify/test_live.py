@@ -45,6 +45,20 @@ def _observe_until_exposed(model: WorldModel, hwnd: int, *, max_s: float = 25.0)
         time.sleep(0.5)
 
 
+FOCUS_WAIT_S = 5.0
+"""How long the composer may take to report keyboard focus after its click on a CI runner."""
+
+
+def _wait_for_focus(client: UiaClient, element: Element, *, max_s: float = FOCUS_WAIT_S) -> None:
+    """Until `element` holds keyboard focus: the click is delivered at once, but a slow runner
+    moves focus later, and a type sent before it fails `focus_lost` (CI run 43524675079)."""
+    deadline = time.monotonic() + max_s
+    while client.focused_runtime_id() != element.runtime_id:
+        if time.monotonic() > deadline:
+            raise AssertionError("the composer never took keyboard focus after its click")
+        time.sleep(0.05)
+
+
 def _find(snapshot: Snapshot, role: str, name: str) -> Element:
     return next(e for e in snapshot.elements if e.role == role and e.name == name)
 
@@ -86,6 +100,7 @@ def test_send_on_the_inbox_page_is_verified_by_t1() -> None:
         physical = PhysicalExecutor()
         clicked = physical.execute(PhysicalAction(verb="click", element_id=composer.id), before)
         assert clicked.delivery.value.startswith("delivered"), clicked.to_dict()
+        _wait_for_focus(client, composer)
         typed = physical.execute(
             PhysicalAction(verb="type", element_id=composer.id, text=MESSAGE), before
         )
