@@ -17,6 +17,15 @@ from steerai.world.effects import EffectReport, Observed, observe
 
 Signature = tuple[object, ...]
 
+WEAK_CLASSES = frozenset({"none", "focus", "own_state"})
+"""[V2.8] what a trigger action's first change may be without ending phase 1."""
+WEAK_TOKENS = frozenset({"moved", "frame_changed"})
+
+
+def strong(report: EffectReport) -> bool:
+    """[V2.8] anything but `focus`, `own_state`, `frame_changed` (and `none`, `moved`)."""
+    return bool(report.classes - WEAK_CLASSES) or bool(report.tokens - WEAK_TOKENS)
+
 
 @dataclass(frozen=True, slots=True)
 class Watched:
@@ -55,9 +64,12 @@ def watch(  # noqa: PLR0913 - the action's facts and the injected clock, keyword
     settle_s: float,
     deadline_s: float,
     full: Callable[[Observed], Observed] | None = None,
+    trigger: bool = False,
 ) -> Watched:
     """The effect of the action just sent, against `before`. `read` is the cheap poll; `full`,
-    when given, adds the costly facts once, on the settled (or last) read ([V2.7] two tiers)."""
+    when given, adds the costly facts once, on the settled (or last) read ([V2.7] two tiers).
+    `trigger` marks an action with no read-back (a non-field click, an Enter): it settles only
+    once a strong report arrives, or ends at the deadline with what it saw ([V2.8])."""
     if poll_s <= 0 or settle_s < 0 or deadline_s <= 0:
         raise ValueError("watch needs a positive poll and deadline and a settle window >= 0")
     start = clock()
@@ -77,7 +89,7 @@ def watch(  # noqa: PLR0913 - the action's facts and the injected clock, keyword
             changed_at = elapsed
             last_signature = signature
         held = seen.snapshot.stable and elapsed - changed_at >= settle_s
-        if first is not None and held:
+        if first is not None and held and (not trigger or strong(report)):
             if full is not None:
                 seen = full(seen)
                 report = observe(
