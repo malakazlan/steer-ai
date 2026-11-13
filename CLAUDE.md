@@ -2,7 +2,9 @@
 
 Steer is a Windows-first computer-use agent: UIA-first perception, Jev (TypeSafe System One) for
 fast typed decisions, a frontier LLM planner, verified actions, a scored cache, and a hard safety gate.
-The design of record is `docs/design/STEERAI_ARCHITECTURE.md` (local only, see "Folders").
+The design of record is `docs/design/STEER_ARCHITECTURE_V2.md` for the loop, planner, verifier and
+memory, and `docs/design/STEERAI_ARCHITECTURE.md` for the gate, ledger and safety (both local only,
+see "Folders").
 
 ## Constraints, in priority order
 
@@ -54,6 +56,18 @@ The design of record is `docs/design/STEERAI_ARCHITECTURE.md` (local only, see "
   (use the context7 docs tool or a web search) or measured, and the source is cited in the PR or the doc.
 - Numbers come from a probe or a benchmark, never from memory. If unmeasured, say "unmeasured".
 - If the design doc and reality disagree, reality wins: fix the doc in the same PR under a new tag.
+  For V2, see "V2 rules": stop and report instead.
+
+## V2 rules
+
+- All V2 work is behind `--loop v2`. Do not change v1 behaviour.
+- No site names, app names, registries or prompt special cases in code.
+- The model never writes a proof in advance and never names an unseen element.
+- The V2 §8 invariants are tests, written before the code they guard.
+- Facts marked "probe" in V2 get a probe before they are relied on.
+- If V2 and reality disagree, stop and report.
+- v1 gets no new class fixes (decorations, aliases, prompt special cases, per-site rules); only
+  fixes the suite itself needs to run.
 
 ## Skills to use
 
