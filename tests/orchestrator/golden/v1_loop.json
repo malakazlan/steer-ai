@@ -761,6 +761,104 @@
    }
   ]
  },
+ "url_expect_held": {
+  "bar_reads": 1,
+  "clock": 0.0,
+  "physical_calls": [
+   [
+    "press",
+    8,
+    null
+   ]
+  ],
+  "results": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": null,
+    "evidence": {
+     "delivery": "delivered_verified",
+     "level": 3,
+     "matched": 1,
+     "observe_reused": false,
+     "replaced": 1,
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter"
+    },
+    "gate": "confirm",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 0.0
+    },
+    "ok": true,
+    "step_id": "s3",
+    "verify_code": null
+   }
+  ],
+  "semantic_calls": [],
+  "trace": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": null,
+    "evidence": {
+     "delivery": "delivered_verified",
+     "level": 3,
+     "matched": 1,
+     "observe_reused": false,
+     "replaced": 1,
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter"
+    },
+    "gate": "confirm",
+    "kind": "step",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 0.0
+    },
+    "ok": true,
+    "step_id": "s3",
+    "task_id": "task-1",
+    "verify_code": null
+   }
+  ]
+ },
  "url_no_load": {
   "bar_reads": 2,
   "clock": 10.0,
@@ -1126,6 +1224,298 @@
     "evidence": {
      "delivery": "delivered_verified",
      "level": 3,
+     "observe_reused": false,
+     "reason": "no_match",
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter"
+    },
+    "gate": "confirm",
+    "kind": "step",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 10000.0
+    },
+    "ok": false,
+    "step_id": "s3",
+    "task_id": "task-1",
+    "verify_code": "verify_timeout"
+   }
+  ]
+ },
+ "url_polled_no_load": {
+  "bar_reads": 40,
+  "clock": 10.0,
+  "physical_calls": [
+   [
+    "press",
+    8,
+    null
+   ]
+  ],
+  "results": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": "verify_timeout",
+    "evidence": {
+     "delivery": "delivered_verified",
+     "detail": "no_load",
+     "level": 1,
+     "observe_reused": false,
+     "reason": "no_match",
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter"
+    },
+    "gate": "confirm",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 10000.0
+    },
+    "ok": false,
+    "step_id": "s3",
+    "verify_code": "verify_timeout"
+   }
+  ],
+  "semantic_calls": [],
+  "trace": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": "verify_timeout",
+    "evidence": {
+     "delivery": "delivered_verified",
+     "detail": "no_load",
+     "level": 1,
+     "observe_reused": false,
+     "reason": "no_match",
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter"
+    },
+    "gate": "confirm",
+    "kind": "step",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 10000.0
+    },
+    "ok": false,
+    "step_id": "s3",
+    "task_id": "task-1",
+    "verify_code": "verify_timeout"
+   }
+  ]
+ },
+ "url_polled_no_named_load": {
+  "bar_reads": 40,
+  "clock": 10.0,
+  "physical_calls": [
+   [
+    "press",
+    8,
+    null
+   ]
+  ],
+  "results": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": "verify_timeout",
+    "evidence": {
+     "delivery": "delivered_verified",
+     "detail": "no_named_load",
+     "level": 1,
+     "observe_reused": false,
+     "reason": "no_match",
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter"
+    },
+    "gate": "confirm",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 10000.0
+    },
+    "ok": false,
+    "step_id": "s3",
+    "verify_code": "verify_timeout"
+   }
+  ],
+  "semantic_calls": [],
+  "trace": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": "verify_timeout",
+    "evidence": {
+     "delivery": "delivered_verified",
+     "detail": "no_named_load",
+     "level": 1,
+     "observe_reused": false,
+     "reason": "no_match",
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter"
+    },
+    "gate": "confirm",
+    "kind": "step",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 10000.0
+    },
+    "ok": false,
+    "step_id": "s3",
+    "task_id": "task-1",
+    "verify_code": "verify_timeout"
+   }
+  ]
+ },
+ "url_polled_no_words": {
+  "bar_reads": 40,
+  "clock": 10.0,
+  "physical_calls": [
+   [
+    "press",
+    8,
+    null
+   ]
+  ],
+  "results": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": "verify_timeout",
+    "evidence": {
+     "delivery": "delivered_verified",
+     "level": 1,
+     "observe_reused": false,
+     "reason": "no_match",
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter"
+    },
+    "gate": "confirm",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 10000.0
+    },
+    "ok": false,
+    "step_id": "s3",
+    "verify_code": "verify_timeout"
+   }
+  ],
+  "semantic_calls": [],
+  "trace": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": "verify_timeout",
+    "evidence": {
+     "delivery": "delivered_verified",
+     "level": 1,
      "observe_reused": false,
      "reason": "no_match",
      "retries": 0,
