@@ -1623,6 +1623,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             lines = controls(tasks)
         sys.stdout.write("\n".join(lines) + "\n")
         return 0 if all(" control passes" in line for line in lines) else 1
+    if args.keep is not None:
+        args.keep.mkdir(parents=True, exist_ok=True)  # never a lost row after the run (#249)
     planner = _Planner()
     rows: list[dict[str, Any]] = []
     with args.out.open("w", encoding="utf-8") as out:
