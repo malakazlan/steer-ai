@@ -45,6 +45,12 @@ _CACHED_PROPERTIES: tuple[str, ...] = (
 )
 
 
+HEADING_LEVEL_NONE = 80050
+"""UIA's HeadingLevel_None; levels 1 to 9 are 80051 to 80059."""
+HEADING_LEVEL_1 = 80051
+HEADING_LEVEL_9 = 80059
+
+
 @dataclass(frozen=True, slots=True)
 class Snapshot:
     scope: str
@@ -277,6 +283,48 @@ class UiaClient:
             return read_document_url(self._uia, self._uia_module, hwnd)
         except Exception as exc:  # COMError exists only once comtypes is loaded (see #160)
             raise OSError(f"document url unreadable: {exc}") from exc
+
+    def roles_and_headings(
+        self, hwnd: int
+    ) -> tuple[dict[tuple[int, ...], str], dict[tuple[int, ...], int]]:
+        """V2 step 3b ([V2.5]): the window's AriaRoles and heading levels by RuntimeId, in one
+        cached subtree fetch of three properties of its own, apart from the snapshot fetch, which
+        stays as v1 has it. An element whose AriaRole is empty, or whose HeadingLevel is none
+        (80050), is left out: absent is not observed, never false (probe #266, Chrome 157)."""
+        try:
+            element = self._uia.ElementFromHandle(hwnd)
+            cache_request = self._uia.CreateCacheRequest()
+            for name in (
+                "UIA_RuntimeIdPropertyId",
+                "UIA_AriaRolePropertyId",
+                "UIA_HeadingLevelPropertyId",
+            ):
+                cache_request.AddProperty(getattr(self._uia_module, name))
+            cache_request.TreeScope = self._uia_module.TreeScope_Subtree
+            root = element.BuildUpdatedCache(cache_request)
+        except Exception as exc:  # COMError exists only once comtypes is loaded
+            raise OSError(f"roles and headings unreadable for hwnd {hwnd:#x}: {exc}") from exc
+        roles: dict[tuple[int, ...], str] = {}
+        headings: dict[tuple[int, ...], int] = {}
+        pending = [root]
+        while pending:
+            node = pending.pop()
+            runtime_id = node.GetCachedPropertyValue(self._uia_module.UIA_RuntimeIdPropertyId)
+            key = tuple(int(v) for v in runtime_id) if runtime_id else ()
+            if key:
+                role = node.GetCachedPropertyValue(self._uia_module.UIA_AriaRolePropertyId)
+                if role:
+                    roles[key] = str(role)
+                level = node.GetCachedPropertyValue(self._uia_module.UIA_HeadingLevelPropertyId)
+                if isinstance(level, int) and HEADING_LEVEL_1 <= level <= HEADING_LEVEL_9:
+                    headings[key] = level - HEADING_LEVEL_NONE
+            try:
+                children = node.GetCachedChildren()
+                count = int(children.Length)
+            except ValueError:  # comtypes raises on a NULL pointer: leaf node
+                continue
+            pending.extend(children.GetElement(i) for i in range(count))
+        return roles, headings
 
     def focused_runtime_id(self) -> tuple[int, ...]:
         """RuntimeId of the element with keyboard focus (`GetFocusedElement`), empty when none."""
