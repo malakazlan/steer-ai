@@ -381,3 +381,24 @@ def test_the_scripted_person_answers_a_which_ask_by_the_tasks_automation_id() ->
     assert person.log[-1]["approved"] is True
     assert Person(frozenset()).ask(ask) == "no:w-1"
     assert Person(frozenset(), which={"Find crate by search query": "footer"}).ask(ask) == "no:w-1"
+
+
+def test_keep_creates_its_folder_before_the_first_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#249 item 5: `--keep` into a folder that did not exist crashed after the run in
+    `shutil.copy`, and the run's row was lost."""
+    import steerai.probes.task_suite as suite  # noqa: PLC0415 - this test only
+
+    keep = tmp_path / "new" / "keep"
+    seen: list[bool] = []
+
+    def run(task: Any, number: int, planner: Any, kept: Path | None = None) -> dict[str, Any]:
+        seen.append(kept is not None and kept.is_dir())
+        return {"task": task.task_id, "run": number, "passed": False}
+
+    monkeypatch.setattr(suite, "one_run", run)
+    out = tmp_path / "rows.jsonl"
+    suite.main(["--tasks", "np1", "--runs", "1", "--keep", str(keep), "--out", str(out)])
+    assert seen == [True]
+    assert '"task": "np1"' in out.read_text("utf-8")
