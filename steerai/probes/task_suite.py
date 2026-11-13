@@ -35,9 +35,10 @@ from collections.abc import Callable, Mapping, Sequence
 from ctypes import wintypes
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 from steerai import run as run_mod
+from steerai.debug_trace import TraceLevel
 from steerai.orchestrator.plan_io import PlanError
 from steerai.planner.contracts import PlannerError, PlanOutcome, PlanRequest
 from steerai.probes.chrome_a11y import CHROME_DEFAULT, CdpSession, launch_chrome, page_ws_url
@@ -1304,8 +1305,17 @@ def notepad_text(hwnd: int, edit_class: str = "Edit") -> str:
     return buffer.value
 
 
+KEPT_FILES: Final = ("trace.jsonl", "trace.debug.jsonl.dpapi")
+"""What `--keep` copies besides the plans: the clear trace and the debug file as it is, still
+DPAPI-protected (never decrypted into the keep folder, OB-07)."""
+_LEVEL: dict[str, TraceLevel] = {"trace_level": "redacted"}
+"""This invocation's trace level: `debug` only with `--keep` (set by `main`), since the debug
+file lives in the run's temp folder and is removed with it otherwise."""
+
+
 def _options(tmp: Path, hwnd: int, task: Task, number: int) -> run_mod.Options:
     return run_mod.Options(
+        trace_level=_LEVEL["trace_level"],
         plan=tmp / "task.plan.json",
         window=None,
         hwnd=hwnd,
@@ -1499,7 +1509,7 @@ def one_run(task: Task, number: int, planner: _Planner, keep: Path | None = None
                     text.encode("utf-8", errors="backslashreplace")
                 )
             # diagnosis only: the plans and trace of a fixture goal, into a local folder
-            for kept in [*tmp.glob("*.plan*.json"), tmp / "trace.jsonl"]:
+            for kept in [*tmp.glob("*.plan*.json"), *(tmp / name for name in KEPT_FILES)]:
                 if kept.is_file():
                     shutil.copy(kept, keep / f"{task.task_id}-{number}-{kept.name}")
     except InvalidRun as exc:
@@ -1696,6 +1706,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             lines = controls(tasks)
         sys.stdout.write("\n".join(lines) + "\n")
         return 0 if all(" control passes" in line for line in lines) else 1
+    _LEVEL["trace_level"] = "redacted" if args.keep is None else "debug"
     if args.keep is not None:
         args.keep.mkdir(parents=True, exist_ok=True)  # never a lost row after the run (#249)
     planner = _Planner()

@@ -396,6 +396,7 @@ def test_keep_creates_its_folder_before_the_first_run(
     `shutil.copy`, and the run's row was lost."""
     import steerai.probes.task_suite as suite  # noqa: PLC0415 - this test only
 
+    monkeypatch.setitem(suite._LEVEL, "trace_level", "redacted")  # main sets it: restored after
     keep = tmp_path / "new" / "keep"
     seen: list[bool] = []
 
@@ -512,3 +513,34 @@ def test_a_stop_after_the_scripted_person_said_no_is_flagged(
 def test_the_verdict_says_none_when_no_row_has_an_outcome() -> None:
     lines, _ok = verdict([{"task": "np1", "passed": False}], TASKS[:1])
     assert "outcomes: none" in lines
+
+
+def test_keep_turns_the_debug_level_on_and_nothing_else_does(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """V2 step 1 (packet v4 §A): the debug file exists only where `--keep` keeps it (otherwise
+    the run's temp folder is removed with it); every other run is redacted."""
+    import steerai.probes.task_suite as suite  # noqa: PLC0415 - this test only
+
+    monkeypatch.setitem(suite._LEVEL, "trace_level", "redacted")  # restored after the test
+    task = _task("np1")
+    assert suite._options(tmp_path, 1, task, 1).trace_level == "redacted"
+    levels: list[str] = []
+
+    def run(task: Any, number: int, planner: Any, kept: Path | None = None) -> dict[str, Any]:
+        levels.append(suite._options(tmp_path, 1, task, number).trace_level)
+        return {"task": task.task_id, "run": number, "passed": False}
+
+    monkeypatch.setattr(suite, "one_run", run)
+    out = tmp_path / "rows.jsonl"
+    suite.main(["--tasks", "np1", "--runs", "1", "--keep", str(tmp_path / "k"), "--out", str(out)])
+    assert levels == ["debug"]
+    suite.main(["--tasks", "np1", "--runs", "1", "--out", str(out)])
+    assert levels == ["debug", "redacted"]
+
+
+def test_keep_copies_the_protected_debug_file_as_it_is() -> None:
+    from steerai.probes.task_suite import KEPT_FILES  # noqa: PLC0415 - this test only
+
+    assert "trace.debug.jsonl.dpapi" in KEPT_FILES
+    assert not any(name.endswith(".txt") and "debug" in name for name in KEPT_FILES)
