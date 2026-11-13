@@ -191,3 +191,71 @@ def test_the_full_read_is_made_once_after_settle_never_on_each_poll() -> None:
     assert len(full_calls) == 1
     assert result.after.url == "https://shop.test/?q=red"
     assert "url_changed_in_place" in result.report.classes
+
+
+# ---- [V2.8] the navigation-aware settle ------------------------------------------------------
+
+
+def _focus_only(rows: Sequence[Row], focus: tuple[int, ...]) -> Observed:
+    return Observed(snapshot=_snap(rows), url="https://shop.test/", windows=(16,), focus=focus)
+
+
+def test_a_trigger_action_waits_past_a_weak_focus_change_for_the_strong_one() -> None:
+    clock = Clock()
+    before = _focus_only(BASE, (9, 2))
+    weak = _focus_only(BASE, (9, 1))
+    strong = _focus_only([*BASE, ITEM2], (9, 1))
+    read = _reader([before, weak, strong], clock, [0.0, 0.05, 1.2])
+    result = watch(
+        read,
+        before,
+        acted=FIELD[3],
+        clock=clock.now,
+        sleep=clock.sleep,
+        poll_s=0.1,
+        settle_s=0.3,
+        deadline_s=5.0,
+        trigger=True,
+    )
+    assert "content_changed" in result.report.classes
+    assert result.timed_out is False
+
+
+def test_without_the_trigger_a_weak_change_settles_as_before() -> None:
+    clock = Clock()
+    before = _focus_only(BASE, (9, 2))
+    read = _reader(
+        [before, _focus_only(BASE, (9, 1)), _focus_only([*BASE, ITEM2], (9, 1))],
+        clock,
+        [0.0, 0.05, 1.2],
+    )
+    result = watch(
+        read,
+        before,
+        acted=FIELD[3],
+        clock=clock.now,
+        sleep=clock.sleep,
+        poll_s=0.1,
+        settle_s=0.3,
+        deadline_s=5.0,
+    )
+    assert result.report.classes == frozenset({"focus"})
+
+
+def test_a_trigger_with_only_weak_changes_is_final_at_the_deadline() -> None:
+    clock = Clock()
+    before = _focus_only(BASE, (9, 2))
+    read = _reader([before, _focus_only(BASE, (9, 1))], clock, [0.0, 0.05])
+    result = watch(
+        read,
+        before,
+        acted=FIELD[3],
+        clock=clock.now,
+        sleep=clock.sleep,
+        poll_s=0.1,
+        settle_s=0.3,
+        deadline_s=2.0,
+        trigger=True,
+    )
+    assert result.report.classes == frozenset({"focus"})
+    assert result.timed_out is True

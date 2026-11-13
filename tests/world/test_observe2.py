@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from steerai.world.address_bar import DocumentUrl
 from steerai.world.effects import value_fact
-from steerai.world.observe2 import read_observed
+from steerai.world.observe2 import in_place_url, read_observed
 from tests.world.test_effects_conditions import BASE, _snap
 
 KEY = b"k" * 32
@@ -127,3 +127,21 @@ def test_no_bar_means_the_in_place_url_is_not_observed() -> None:
     assert seen.document_url == "https://shop.test/"
     assert seen.url is None
     assert seen.url_observed is False
+
+
+# ---- [V2.8] the bar's host --------------------------------------------------------------------
+
+
+def test_a_bar_without_the_documents_www_is_the_same_host() -> None:
+    url, observed = in_place_url("https://www.shop.test/", "shop.test/search?q=red", bar_read=True)
+    assert url == "https://www.shop.test/search?q=red", "scheme and host from the Document"
+    assert observed is True
+
+
+def test_the_reverse_www_difference_is_unread() -> None:
+    assert in_place_url("https://shop.test/", "www.shop.test/?q=red", bar_read=True) == (None, True)
+
+
+def test_a_unicode_bar_host_against_a_punycode_document_fails_closed() -> None:
+    document = "https://xn--bcher-kva.test/"
+    assert in_place_url(document, "bücher.test/?q=red", bar_read=True) == (None, True)

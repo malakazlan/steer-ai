@@ -41,9 +41,10 @@ class FactReader(Protocol):
 def in_place_url(
     document: str | None, bar: str | None, *, bar_read: bool
 ) -> tuple[str | None, bool]:
-    """([V2.7]) the in-place URL and whether it is observed: the bar's text with the Document's
-    scheme when the bar has none, accepted only on the Document's host. No bar at all is not
-    observed; a failed read, no Document to check against, or another host is unread."""
+    """([V2.7], [V2.8]) the in-place URL and whether it is observed: the Document's scheme and
+    host with the bar's path, query and fragment, accepted only on the Document's host (or the
+    bar's elided `www.`). No bar at all is not observed; a failed read, no Document to check
+    against, or another host is unread."""
     if not bar_read:
         return None, True
     if bar is None:
@@ -51,14 +52,24 @@ def in_place_url(
     if document is None:
         return None, True
     doc = urllib.parse.urlsplit(document)
-    text = bar if "://" in bar else f"{doc.scheme}://{bar}"
     try:
-        host = urllib.parse.urlsplit(text).hostname
+        shown = urllib.parse.urlsplit(bar if "://" in bar else f"{doc.scheme}://{bar}")
+        host = shown.hostname
     except ValueError:
         return None, True
-    if host is None or doc.hostname is None or host != doc.hostname:
+    if host is None or doc.hostname is None or not _same_host(host, doc.hostname):
         return None, True
-    return text, True
+    # [V2.8]: scheme and host from the Document; path, query and fragment from the bar
+    composed = (doc.scheme, doc.netloc, shown.path, shown.query, shown.fragment)
+    return urllib.parse.urlunsplit(composed), True
+
+
+def _same_host(bar_host: str, document_host: str) -> bool:
+    """[V2.8] equal, or the bar shows the Document's host with one leading `www.` removed;
+    never the reverse, and any other difference (a Unicode host against punycode) is not."""
+    return bar_host == document_host or (
+        document_host.startswith("www.") and bar_host == document_host[len("www.") :]
+    )
 
 
 def read_observed(  # noqa: PLR0913 - the snapshot, the reader and each optional fact, keyword-only
