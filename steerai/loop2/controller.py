@@ -1,21 +1,33 @@
-"""Controller prompt building and reply parsing. The model call itself is injected."""
+"""Controller prompt building and reply parsing. The model call itself is injected.
+
+Free text (element names, subgoal descriptions, the request) only ever appears inside a fence.
+The task fence is fixed for a task so the stable and log blocks stay byte-identical across calls;
+the screen fence is fresh for every call.
+"""
 
 from __future__ import annotations
 
 import json
+import re
 import secrets
-import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import ValidationError
 
-from steerai.loop2.decision import Decision, validate
+from steerai.loop2.decision import SUBGOAL_ID, Decision, Verb, validate
+from steerai.loop2.task import Status
+from steerai.loop2.text import clean_line, has_control
 
 PROMPT_VERSION = "controller-2"
 ASK_PREFIX = "Steer asks: "
 ASK_MAX_CHARS = 200
+MAX_REPLY_BYTES = 64 * 1024
+MAX_DEPTH = 32
+TOKEN = re.compile(r"[a-z_]{1,32}")
+VERBS = frozenset(get_args(Verb))
+STATUSES = frozenset(get_args(Status))
 
 SYSTEM_RULES = (
     "You control a Windows computer-use agent, one window at a time. Each turn you see the task, "
@@ -49,16 +61,7 @@ SYSTEM_RULES = (
 )
 
 AskModel = Callable[[list[str], list[str]], str]
-ErrorCode = Literal["not_json", "schema", "rejected"]
-
-
-class ControllerError(Exception):
-    """A controller reply that could not be used; `code` is closed, `tokens` are rejection codes."""
-
-    def __init__(self, code: ErrorCode, tokens: Sequence[str] = ()) -> None:
-        super().__init__(code)
-        self.code: ErrorCode = code
-        self.tokens: tuple[str, ...] = tuple(tokens)
+ErrorCode = Literal["not_json", "schema", "rejected", "fence_in_data", "fence_bad", "unsafe_token"]
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,25 @@ class DecideRecord:
     prompt_version: str
     calls: int
     repaired: bool
+    failed: bool = False
+
+
+class ControllerError(Exception):
+    """A controller reply or prompt input that could not be used.
+
+    `code` is closed, `tokens` are rejection codes, `record` is set when the model was called.
+    """
+
+    def __init__(
+        self,
+        code: ErrorCode,
+        tokens: Sequence[str] = (),
+        record: DecideRecord | None = None,
+    ) -> None:
+        super().__init__(code)
+        self.code: ErrorCode = code
+        self.tokens: tuple[str, ...] = tuple(tokens)
+        self.record: DecideRecord | None = record
 
 
 @dataclass(frozen=True)
@@ -88,64 +110,100 @@ class LogEntry:
 
 
 def repair_rate(records: Sequence[DecideRecord]) -> float:
-    """Repairs per decision over a run; 0.0 for an empty run."""
+    """Decisions that needed a repair call, failed ones included, over all decisions."""
     if not records:
         return 0.0
     return sum(1 for r in records if r.repaired) / len(records)
 
 
-def _fold(text: str) -> str:
-    """One line: every str.splitlines boundary becomes a space."""
-    return " ".join(text.splitlines())
+def failure_rate(records: Sequence[DecideRecord]) -> float:
+    """Decisions that ended in a ControllerError over all decisions."""
+    if not records:
+        return 0.0
+    return sum(1 for r in records if r.failed) / len(records)
+
+
+def _check_fences(task_fence: str, screen_fence: str) -> None:
+    for fence in (task_fence, screen_fence):
+        if not fence or any(c.isspace() for c in fence) or has_control(fence):
+            raise ControllerError("fence_bad")
+    if task_fence == screen_fence:
+        raise ControllerError("fence_bad")
 
 
 def _data(text: str, fence: str) -> str:
-    line = _fold(text)
+    line = clean_line(text)
     if fence in line:
-        raise ValueError("fence_in_data")
+        raise ControllerError("fence_in_data")
     return line
 
 
+def _token(text: str) -> str:
+    if TOKEN.fullmatch(text) is None:
+        raise ControllerError("unsafe_token")
+    return text
+
+
 def _log_line(index: int, entry: LogEntry, fence: str) -> str:
-    effects = ",".join(_data(e, fence) for e in entry.effects) or "none"
-    head = f"{index} {_data(entry.verb, fence)} {_data(entry.role, fence)}"
-    tail = f"effects={effects} claim={_data(entry.claim, fence)}"
-    return f"{head} {tail} <<<name {fence} {_data(entry.name, fence)} {fence}>>>"
+    if entry.verb not in VERBS:
+        raise ControllerError("unsafe_token")
+    effects = ",".join(_token(e) for e in entry.effects) or "none"
+    head = f"{index} {entry.verb} {_token(entry.role)}"
+    return (
+        f"{head} effects={effects} claim={_token(entry.claim)} "
+        f"<<<name {fence} {_data(entry.name, fence)} {fence}>>>"
+    )
+
+
+def _status_line(sid: str, status: str) -> str:
+    if SUBGOAL_ID.fullmatch(sid) is None or status not in STATUSES:
+        raise ControllerError("unsafe_token")
+    return f"{sid} {status}"
 
 
 def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
     task_goal: str,
     subgoal_lines: Sequence[str],
     action_log: Sequence[LogEntry],
-    subgoal_status: Sequence[str],
+    subgoal_status: Sequence[tuple[str, str]],
     window_title: str,
     listing_rows: Sequence[ListingRow],
     *,
-    fence: str,
+    task_fence: str,
+    screen_fence: str,
     unstable: bool = False,
 ) -> tuple[list[str], list[str]]:
     """Return (system blocks, user blocks): stable, then append-only log, then the live turn."""
+    _check_fences(task_fence, screen_fence)
     schema_json = json.dumps(Decision.model_json_schema(), sort_keys=True)
     subgoals = (
-        ["subgoals:", *(_data(s, fence) for s in subgoal_lines)]
+        [
+            "subgoals:",
+            f"<<<subgoals {task_fence}",
+            *(_data(s, task_fence) for s in subgoal_lines),
+            f"{task_fence}>>>",
+        ]
         if subgoal_lines
         else ["subgoals: none yet; return subgoals"]
     )
-    stable = "\n".join([f"request: {_data(task_goal, fence)}", *subgoals])
+    stable = "\n".join([f"request: {_data(task_goal, task_fence)}", *subgoals])
     log = "\n".join(
-        ["action log:", *(_log_line(i, e, fence) for i, e in enumerate(action_log, 1))]
+        ["action log:", *(_log_line(i, e, task_fence) for i, e in enumerate(action_log, 1))]
         if action_log
         else ["action log: none"]
     )
     turn = "\n".join(
         [
             "subgoal status:",
-            *(_data(s, fence) for s in subgoal_status),
+            *(_status_line(sid, status) for sid, status in subgoal_status),
             *(["screen: unstable"] if unstable else []),
-            f"<<<screen {fence}",
-            f"window: {_data(window_title, fence)}",
-            *("  " * max(r.depth, 0) + _data(r.text, fence).lstrip() for r in listing_rows),
-            f"{fence}>>>",
+            f"<<<screen {screen_fence}",
+            f"window: {_data(window_title, screen_fence)}",
+            *(
+                "  " * min(max(r.depth, 0), MAX_DEPTH) + _data(r.text, screen_fence)
+                for r in listing_rows
+            ),
+            f"{screen_fence}>>>",
         ]
     )
     return [SYSTEM_RULES, schema_json], [stable, log, turn]
@@ -153,9 +211,7 @@ def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
 
 def ask_text(raw: str) -> str:
     """Neutralise a model question for display: one line, no control chars, capped, prefixed."""
-    folded = " ".join(raw.split())
-    clean = "".join(c for c in folded if not unicodedata.category(c).startswith("C"))
-    return ASK_PREFIX + clean[:ASK_MAX_CHARS].strip()
+    return ASK_PREFIX + clean_line(raw)[:ASK_MAX_CHARS].strip()
 
 
 def _strip_fence(raw: str) -> str:
@@ -166,11 +222,32 @@ def _strip_fence(raw: str) -> str:
     return text.strip()
 
 
+class _DuplicateKeyError(ValueError):
+    pass
+
+
+def _no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    keys = [k for k, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise _DuplicateKeyError
+    return dict(pairs)
+
+
+def _reject_constant(name: str) -> object:
+    raise ValueError(name)
+
+
 def parse(raw: str) -> Decision:
     """Extract exactly one JSON object and validate it against the Decision schema."""
+    if len(raw.encode("utf-8")) > MAX_REPLY_BYTES:
+        raise ControllerError("not_json")
     try:
-        obj = json.loads(_strip_fence(raw))
-    except ValueError as exc:
+        obj = json.loads(
+            _strip_fence(raw), object_pairs_hook=_no_duplicates, parse_constant=_reject_constant
+        )
+    except _DuplicateKeyError as exc:
+        raise ControllerError("schema") from exc
+    except (ValueError, RecursionError) as exc:
         raise ControllerError("not_json") from exc
     if not isinstance(obj, dict):
         raise ControllerError("not_json")
@@ -186,17 +263,21 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     task_goal: str,
     subgoal_lines: Sequence[str],
     action_log: Sequence[LogEntry],
-    subgoal_status: Sequence[str],
+    subgoal_status: Sequence[tuple[str, str]],
     window_title: str,
     listing_rows: Sequence[ListingRow],
     listed_ids: frozenset[int],
     first_turn: bool,
-    subgoal_params: Mapping[str, frozenset[str]] | None = None,
+    task_fence: str,
+    known_subgoals: Mapping[str, frozenset[str]] | None = None,
     unstable: bool = False,
-    fence: str | None = None,
+    screen_fence: str | None = None,
     max_repairs: int = 1,
 ) -> tuple[Decision, DecideRecord]:
-    """Ask, parse, validate; on failure repair with code tokens only, up to `max_repairs` times."""
+    """Ask, parse, validate; on failure repair with code tokens only, up to `max_repairs` times.
+
+    A failure raises ControllerError carrying the DecideRecord of the calls spent.
+    """
     system, user = build_prompt(
         task_goal,
         subgoal_lines,
@@ -204,7 +285,8 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
         subgoal_status,
         window_title,
         listing_rows,
-        fence=fence if fence is not None else secrets.token_hex(16),
+        task_fence=task_fence,
+        screen_fence=screen_fence if screen_fence is not None else secrets.token_hex(16),
         unstable=unstable,
     )
     error: ControllerError | None = None
@@ -222,9 +304,12 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
             listed_ids=listed_ids,
             goal=task_goal,
             first_turn=first_turn,
-            subgoal_params=subgoal_params,
+            known_subgoals=known_subgoals,
         )
         if not tokens:
             return decision, DecideRecord(PROMPT_VERSION, attempt + 1, attempt > 0)
         error = ControllerError("rejected", tokens)
-    raise error if error is not None else ControllerError("schema")
+    calls = max_repairs + 1
+    final = error if error is not None else ControllerError("schema")
+    final.record = DecideRecord(PROMPT_VERSION, calls, calls > 1, True)
+    raise final
