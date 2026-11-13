@@ -21,11 +21,13 @@ top Document is `loop._top_document`'s (NE-13), and `url_param` is `url_query.ca
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import re
 import unicodedata
 import urllib.parse
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal
 
@@ -41,26 +43,38 @@ EffectClass = Literal[
     "navigated",
     "url_changed_in_place",
     "unknown",
+    "own_value",
+    "focus",
+    "dialog_opened",
 ]
 Token = Literal[
     "rerendered", "dismissed", "moved", "title_only", "windows_changed", "frame_changed"
 ]
 Unread = Literal["url", "windows", "caps"]
-Carrier = Literal["url_param", "url_path", "title", "results"]
+Carrier = Literal["url_param", "url_path", "title", "results", "heading"]
 
 PRECEDENCE: Final[tuple[EffectClass, ...]] = (
     "unknown",
     "navigated",
     "url_changed_in_place",
+    "dialog_opened",
     "own_state",
+    "own_value",
     "revealed",
     "content_changed",
+    "focus",
     "none",
 )
 """The order `primary` is chosen in, for logs only (condition 3). The acted element's own change
 ranks above `revealed` ([V2.3]): a tree expand or a menu button gives both."""
 NOT_OBSERVED: Final = ("focus", "value", "heading", "dialog", "window_opened", "window_closed")
-"""Facts this version never reads ([V2.3]): fixed, never in `unread`, never blocking `none`."""
+"""Facts v1's effect log never reads ([V2.3]): fixed, never in `unread`, never blocking `none`.
+The v2 observe path reads focus, value, headings and dialog roles into `Observed` (2b)."""
+DIALOG_ROLES: Final = frozenset({"dialog", "alertdialog"})
+"""AriaRoles that open a dialog ([V2.5]); Chrome also maps `role=dialog` to a Window control
+(probe #266)."""
+MIN_KEY_BYTES: Final = 16
+"""The shortest key a value digest accepts."""
 PAGE_ROLES: Final = frozenset({"Document", "Pane", "Window"})
 """As `loop._PAGE_ROLES`: a field whose parent is the page is exempt only for its own subtree."""
 RERENDER_SIMILARITY: Final = 0.9
@@ -72,12 +86,36 @@ MIN_TOKEN_CHARS: Final = 3
 
 
 @dataclass(frozen=True, slots=True)
+class ValueFact:
+    """A field's value as [V2.5] allows it to be kept: whether it is filled, and a keyed digest
+    for change detection. The text itself is never kept."""
+
+    filled: bool
+    digest: str
+
+
+def value_fact(text: str, *, key: bytes) -> ValueFact:
+    """The value fact of `text` under a per-session `key` (HMAC-SHA256): equal texts give equal
+    facts within a session, and the digest says nothing without the key."""
+    if len(key) < MIN_KEY_BYTES:
+        raise ValueError("value digest key is too short")
+    digest = hmac.new(key, text.encode("utf-8"), hashlib.sha256).hexdigest()
+    return ValueFact(filled=bool(text), digest=digest)
+
+
+@dataclass(frozen=True, slots=True)
 class Observed:
-    """One observation and the facts read with it: None is not read, never assumed."""
+    """One observation and the facts read with it: None is not read, never assumed. The 2b facts
+    ([V2.5]) are kept by RuntimeId: the keyboard focus, the acted element's value, the heading
+    levels and the AriaRoles read; an element missing from a mapping is not observed."""
 
     snapshot: Snapshot
     url: str | None = None
     windows: tuple[int, ...] | None = None
+    focus: tuple[int, ...] | None = None
+    acted_value: ValueFact | None = None
+    headings: Mapping[tuple[int, ...], int] | None = None
+    aria_roles: Mapping[tuple[int, ...], str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,7 +166,9 @@ def observe(  # noqa: PLR0913 - keyword-only facts the caller read, each with a 
         classes.add("url_changed_in_place")
     changes = _changes(b, a, acted, (in_b, in_a), caps_read="caps" not in unread)
     classes |= changes.classes
+    classes |= _dialogs(changes.appeared, after.aria_roles, in_a)
     tokens |= changes.tokens
+    classes |= _own_facts(before, after, acted)
     if b.title != a.title and not classes and not changes.tokens - {"moved", "frame_changed"}:
         tokens.add("title_only")
     if not classes and not (tokens - {"moved"}) and not unread:
@@ -144,6 +184,40 @@ class _Changes:
     classes: frozenset[EffectClass]
     tokens: frozenset[Token]
     revealed_root: int | None
+    appeared: tuple[Element, ...] = ()
+    """Every element that appeared (re-render pairs dropped), inside the scope or not."""
+
+
+def _own_facts(
+    before: Observed, after: Observed, acted: tuple[int, ...] | None
+) -> set[EffectClass]:
+    """`own_value` and `focus`, each only when read on both sides ([V2.5]: absent is not false)."""
+    out: set[EffectClass] = set()
+    values = before.acted_value, after.acted_value
+    if acted and values[0] is not None and values[1] is not None and values[0] != values[1]:
+        out.add("own_value")
+    if before.focus is not None and after.focus is not None and before.focus != after.focus:
+        out.add("focus")
+    return out
+
+
+def _dialogs(
+    appeared: Sequence[Element],
+    aria: Mapping[tuple[int, ...], str] | None,
+    scope: set[int] | None,
+) -> set[EffectClass]:
+    """`dialog_opened` on a new Window control or an AriaRole of dialog or alertdialog, anywhere
+    in the window; inside the scope it comes with `revealed` ([V2.5])."""
+    dialogs = [
+        e
+        for e in appeared
+        if e.role == "Window" or (aria is not None and aria.get(e.runtime_id) in DIALOG_ROLES)
+    ]
+    if not dialogs:
+        return set()
+    if any(_inside(e, scope) for e in dialogs):
+        return {"dialog_opened", "revealed"}
+    return {"dialog_opened"}
 
 
 def _changes(
@@ -165,6 +239,7 @@ def _changes(
     in_a = scopes[1]
     classes: set[EffectClass] = set()
     tokens: set[Token] = set()
+    every = tuple(appeared)
     appeared, gone, inside_changed, frame = _split(b_elems, a_elems, appeared, gone, scopes)
     classes |= {"content_changed"} if inside_changed else set()
     tokens |= {"frame_changed"} if frame else set()
@@ -214,7 +289,7 @@ def _changes(
         classes.add("content_changed")
     if gone:
         tokens.add("dismissed")
-    return _Changes(frozenset(classes), frozenset(tokens), root)
+    return _Changes(frozenset(classes), frozenset(tokens), root, every)
 
 
 def _changed_fields(old: Element, new: Element, *, caps_read: bool) -> set[str]:
@@ -483,9 +558,40 @@ def _carriers(
     b, a = before.snapshot, after.snapshot
     if _contains(a.title, needle) and not _contains(b.title, needle):
         out.add("title")
+    if _heading_carrier(before, after, needle, scopes):
+        out.add("heading")
     if _results_carrier(b, a, acted, needle, scopes):
         out.add("results")
     return out
+
+
+def _top_heading(
+    snapshot: Snapshot, headings: Mapping[tuple[int, ...], int], scope: set[int] | None
+) -> Element | None:
+    """The scope Document's top-level heading: the first element with the lowest level read."""
+    levels = [
+        (headings[e.runtime_id], index, e)
+        for index, e in enumerate(snapshot.elements)
+        if e.runtime_id in headings and _inside(e, scope)
+    ]
+    return min(levels, key=lambda row: (row[0], row[1]))[2] if levels else None
+
+
+def _heading_carrier(
+    before: Observed,
+    after: Observed,
+    needle: Sequence[str],
+    scopes: tuple[set[int] | None, set[int] | None],
+) -> bool:
+    """The top-level heading carries the text and did not before ([V2.5]: new or changed since
+    the before, or the Document replaced); headings not read on both sides carry nothing."""
+    if before.headings is None or after.headings is None:
+        return False
+    top_a = _top_heading(after.snapshot, after.headings, scopes[1])
+    if top_a is None or not _contains(top_a.name, needle):
+        return False
+    top_b = _top_heading(before.snapshot, before.headings, scopes[0])
+    return top_b is None or not _contains(top_b.name, needle)
 
 
 def _results_carrier(
