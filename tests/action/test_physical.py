@@ -7,6 +7,8 @@ a throwaway Notepad.
 
 from __future__ import annotations
 
+import base64
+import json
 import subprocess
 import time
 from collections.abc import Callable
@@ -29,6 +31,7 @@ from steerai.action.physical import (
     TypingPace,
 )
 from steerai.action.sanitize import NewlineBinding
+from steerai.debug_trace import BufferedDebugSink
 from steerai.errors import ErrorCode
 from steerai.probes.uia_snapshot import UiaClient
 from steerai.probes.win_input import acquire_foreground
@@ -1667,3 +1670,52 @@ def test_a_chord_into_a_window_in_menu_mode_is_focus_lost(fast_clock: Any) -> No
     result = _executor(inputs).execute(action, _snapshot(FakeHandle()))
     assert result.code is ErrorCode.FOCUS_LOST
     assert result.delivery is Delivery.NOT_DELIVERED
+
+
+# ---- the debug channel (V2 step 1 packet v4 §B; hunter OB-02/11/12/27) ----------------------
+
+
+def _keyed(data: bytes) -> bytes:
+    return bytes(b ^ 0x5A for b in data)
+
+
+def test_debug_records_say_where_the_click_went_and_change_nothing(
+    fast_clock: Any, tmp_path: Any
+) -> None:
+    """`aim` and `neighbourhood` from values the executor already holds; the hit element is
+    resolved in the snapshot from the one hit test it already makes. Nothing goes into the
+    evidence and no input call is added."""
+    plain_inputs = FakeInput()
+    plain = _executor(plain_inputs).execute(CLICK, _snapshot(FakeHandle()))
+    inputs = FakeInput()
+    executor = _executor(inputs)
+    sink = BufferedDebugSink(tmp_path / "d.dpapi", protect=_keyed)
+    executor._debug = sink
+    sink.begin_step("s1")
+    debugged = executor.execute(CLICK, _snapshot(FakeHandle()))
+    assert debugged.evidence == plain.evidence, "nothing debug in the evidence"
+    assert (inputs.moves, inputs.clicks) == (plain_inputs.moves, plain_inputs.clicks)
+    assert sink.flush() is None
+    lines = (tmp_path / "d.dpapi").read_bytes().splitlines()
+    records = {r["kind"]: r for r in (json.loads(_keyed(base64.b64decode(x))) for x in lines)}
+    aim = records["aim"]
+    assert aim["element"]["name"] == "Send"
+    assert aim["point"] == [60, 30]
+    assert aim["hit"]["id"] == 1, "the hit resolved in the snapshot, not read again"
+    assert aim["live"] is not None
+    descendants = records["neighbourhood"]["descendants"]
+    assert [(d["role"], d["name"]) for d in descendants] == [("Text", "Send")]
+
+
+def test_an_empty_hit_test_is_never_matched_to_an_element_without_an_id() -> None:
+    """Principal #259 item 2: `runtime_id_at` returns () over nothing, and an element read
+    without a RuntimeId has () too: that is no hit, never the first id-less element."""
+    from steerai.action.physical import _aim_record  # noqa: PLC0415 - the pure helper
+
+    snapshot = _snapshot(FakeHandle())
+    nameless = replace(snapshot.elements[0], runtime_id=())
+    snapshot = replace(snapshot, elements=[nameless, *snapshot.elements[1:]])
+    target = SimpleNamespace(
+        element=snapshot.elements[1], live=None, visible=(0, 0, 1, 1), row=None, point=(0, 0)
+    )
+    assert _aim_record(snapshot, target, ())["hit"] == "not_in_snapshot"  # type: ignore[arg-type]

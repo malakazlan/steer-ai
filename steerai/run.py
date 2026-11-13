@@ -21,11 +21,19 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol, TextIO
 
 from steerai import model_calls
+from steerai.debug_trace import (
+    BufferedDebugSink,
+    DebugSink,
+    NullDebugSink,
+    TraceLevel,
+    debug_path_for,
+    protect_for_user,
+)
 from steerai.errors import ErrorCode, SteerError
 from steerai.goal_match import GoalMatcher, matcher_id
 from steerai.memory.plan_cache import CacheKey, Entry, PlanCache, outcome_of, refusal
@@ -123,6 +131,9 @@ class Options:
     """Plan from this goal first (the planner writes `plan`), instead of reading `plan`."""
     desktop: bool = False
     """Start on the shell's desktop window (a task that begins with an `open`)."""
+    trace_level: TraceLevel = "redacted"
+    """`debug` adds the DPAPI debug file beside the trace (V2 step 1). Set only by a probe that
+    builds `Options` itself: no flag and no environment variable reach it (invariant 4)."""
 
     def replace(self, **changes: Any) -> Options:
         return dataclasses.replace(self, **changes)
@@ -201,6 +212,8 @@ class Bound:
     trace: Trace
     monitor: Any = None
     """The takeover monitor (`steerai.session.monitor.HookMonitor`), or None in pure tests."""
+    debug: DebugSink = field(default_factory=NullDebugSink)
+    """The debug channel for the session and the physical executor; null unless debug."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -737,6 +750,22 @@ def _run_from_plan(
         _closed(ledger, out)
 
 
+def _open_debug(options: Options) -> DebugSink:
+    """The debug sink beside the trace at the debug level; null otherwise, and with no trace
+    path (never a default location, OB-41)."""
+    if options.trace_level != "debug" or options.trace is None:
+        return NullDebugSink()
+    return BufferedDebugSink(debug_path_for(options.trace), protect=protect_for_user)
+
+
+def _flush_debug(debug: DebugSink, trace: Trace, stderr: TextIO) -> None:
+    """Once, at the run's end: the records protected and written; a failure is one closed
+    token in the clear trace (a trace that cannot take it warns, as any trace write)."""
+    failure = debug.flush()
+    if failure is not None:
+        SafeTrace(trace, stderr).write({"kind": "debug", "detail": failure})
+
+
 def _open_trace(options: Options) -> Trace:
     if options.trace is None:
         return NullTrace()
@@ -761,6 +790,7 @@ def _run_bound(  # noqa: PLR0913 - the run's state, one return per exit path
 ) -> int:
     try:
         trace = _open_trace(options)  # first: a bad path binds nothing and taps nothing
+        debug = _open_debug(options)
         if data is not None and plan is not None:
             ledger.bind_plan(
                 _digest(data),
@@ -783,6 +813,7 @@ def _run_bound(  # noqa: PLR0913 - the run's state, one return per exit path
             ledger=ledger,
             monitor=monitor,
             trace=trace,
+            debug=debug,
             options=options,
             deps=deps,
             out=out,
@@ -792,6 +823,7 @@ def _run_bound(  # noqa: PLR0913 - the run's state, one return per exit path
     finally:
         if monitor is not None:
             monitor.close()
+        _flush_debug(debug, trace, stderr)
 
 
 def _started_monitor(deps: Deps, options: Options) -> Any:
@@ -830,6 +862,7 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
     ledger: LedgerLike,
     monitor: Any,
     trace: Trace,
+    debug: DebugSink,
     options: Options,
     deps: Deps,
     out: _Out,
@@ -882,6 +915,7 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
             ledger=ledger,
             trace=SafeTrace(trace, stderr),
             monitor=monitor,
+            debug=debug,
         )
         session = deps.build_session(bound)
         _preset_cached(out.cache, session, plan)
@@ -1581,12 +1615,13 @@ def _build_session(bound: Bound) -> SessionLike:
         hwnd=bound.hwnd,
         observer=model,
         semantic=Executor(blocker=blocker, options=UiaOptions(client)),
-        physical=PhysicalExecutor(blocker=blocker),
+        physical=PhysicalExecutor(blocker=blocker, debug=bound.debug),
         gate=Gate(confirmer=bound.confirmer, own_pid=os.getpid(), task_id=bound.task_id),
         ledger=bound.ledger,
         live=UiaLiveReads(client, bindings),
         windows=list_top_windows,
         trace=bound.trace,
+        debug=bound.debug,
         verify_deadline_s=bound.options.verify_deadline_s,
         max_steps=bound.options.max_steps,
         max_risk=bound.options.max_risk,
