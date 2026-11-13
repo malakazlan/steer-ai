@@ -29,7 +29,7 @@ from functools import partial
 from typing import Any, Literal, Protocol
 
 from steerai.action.dispositions import ActionResult, Delivery
-from steerai.action.executor import Action, click_point, physical_click_target
+from steerai.action.executor import Action, aim_of, click_point, physical_click_target
 from steerai.action.launch import (
     APPS,
     expected_title,
@@ -2385,6 +2385,8 @@ class Session:
                 self._counts_at_step = self._monitor.counts()
             option = step.params.get(OPTION_PARAM) if verb == "choose" else None
             action = self._build(path, verb, element_id, step.text, chord, option=option)
+            if path == "physical" and verb == "click":
+                self._act_evidence["aim"] = "item"  # the direct path aims at the element itself
             result, before, element_id = self._dispatch(step, executor, action, before)
             if result.delivery is not Delivery.NOT_DELIVERED or (
                 result.steps and not result.skipped
@@ -2565,6 +2567,7 @@ class Session:
             self._act_evidence["click_fallback"] = "physical"
             self._act_evidence["semantic_detail"] = "no_InvokePattern"
             point = click_point(before, before.element(element_id))
+            self._act_evidence["aim"] = aim_of(before.element(element_id), point)
             physical = PhysicalAction(verb="click", element_id=point.id)
             return self._physical.execute(physical, before), before, element_id
         if (
@@ -2613,6 +2616,7 @@ class Session:
         self._act_evidence["click_fallback"] = "physical"
         self._act_evidence["semantic_detail"] = EXPAND_BY_CLICK
         point = click_point(before, element)
+        self._act_evidence["aim"] = aim_of(element, point)
         result = self._physical.execute(PhysicalAction(verb="click", element_id=point.id), before)
         if result.delivery is not Delivery.NOT_DELIVERED:
             # a click went out: marked until its step verifies (a refusal is no click, #234)
