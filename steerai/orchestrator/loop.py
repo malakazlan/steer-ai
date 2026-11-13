@@ -434,6 +434,9 @@ class Session:
         """The step is `url_query_eligible` (its expect the replacing Document): the no-effect
         facts are read for it only ([v2.68] scope, kept by [v2.79])."""
         self._url_before: UrlBefore | None = None
+        self._url_leg: UrlLeg | None = None
+        """How far the address-bar proof got for this R2/R3 step (`URL_LEGS`); None below R2."""
+        self._url_reads = 0
         self._foreground = foreground
         self._goal = ""
         self._content_landmarks: tuple[str, ...] = ()
@@ -1057,6 +1060,10 @@ class Session:
             expects = (expect,) if step.expect is None else (expect, step.expect)
             text = str(step.params["text"])
             self._url_proof = (expects, verdict, text) if url_counted else None
+        if self._url_leg is not None:
+            evidence["url_proof"] = self._url_leg  # a closed token, never the URL (V2 step 1)
+            if self._url_reads:
+                evidence["url_reads"] = self._url_reads
         label = (
             None
             if renamed_at_risk or url_counted or no_effect
@@ -1122,6 +1129,7 @@ class Session:
         URL proof's eligibility reads the resolved element's role, as `_act` does to choose
         the Enter (principal item 2)."""
         self._url_step, self._url_query_step, self._url_before = False, False, None
+        self._url_leg, self._url_reads = None, 0
         if risk not in ("R2", "R3"):
             return before, False
         try:
@@ -1129,6 +1137,7 @@ class Session:
             chosen = self._binding.to_record() if self._binding is not None else None
             role = before.element(element_id).role if element_id is not None else None
             narrow, wide = self._url_eligible(step, expect, risk, before_of_record, role=role)
+            self._url_leg = "not_run" if wide else "not_eligible"
             if wide:
                 self._url_step, self._url_query_step = True, narrow
                 self._url_before = self._url_before_of(step)
@@ -2174,6 +2183,7 @@ class Session:
         for read in range(reads):
             url_now = self._read_url()
             counted, evidence = self._url_counts(step, before, page, url_now)
+            self._note_leg(step, counted, evidence)
             if counted or read == reads - 1 or self._monotonic() >= deadline:
                 break
             if self._monitor is not None and self._monitor.kill_requested():
@@ -2181,6 +2191,26 @@ class Session:
             self._sleep(URL_POLL_S)
             page = self._observe()
         return url_now, page, counted, evidence
+
+    def _note_leg(self, step: Step, counted: bool, evidence: Mapping[str, Any]) -> None:
+        """One address-bar read's leg, kept when it got further than any read before it: a
+        later unreadable bar never hides an earlier load miss (hunter OB-24)."""
+        self._url_reads += 1
+        leg: UrlLeg
+        detail = evidence.get("detail")
+        if counted:
+            leg = "counted"
+        elif detail == "no_url":
+            missing_before = self._url_before is None or not isinstance(
+                step.params.get("text"), str
+            )
+            leg = "no_url_before" if missing_before else "no_url_after"
+        elif detail in ("no_load", "no_named_load"):
+            leg = "no_load" if detail == "no_load" else "no_named_load"
+        else:
+            leg = "no_words"
+        if self._url_leg is None or _LEG_RANK[leg] > _LEG_RANK[self._url_leg]:
+            self._url_leg = leg
 
     def _url_counts(
         self, step: Step, before: Snapshot, page: Snapshot, after: str | None
@@ -3254,6 +3284,30 @@ ACT_MISMATCH = "screen_changed_during_act"
 element than the one asked about (#89): `focus_lost`, nothing more dispatched."""
 SWAP_VERBS = frozenset({"focus", "type"})
 """The verbs whose act retry follows a field swapped under it at R0/R1 ([v2.82])."""
+UrlLeg = Literal[
+    "not_eligible",
+    "not_run",
+    "no_url_before",
+    "no_url_after",
+    "no_words",
+    "no_load",
+    "no_named_load",
+    "counted",
+]
+URL_LEGS: tuple[UrlLeg, ...] = (
+    "not_eligible",
+    "not_run",
+    "no_url_before",
+    "no_url_after",
+    "no_words",
+    "no_load",
+    "no_named_load",
+    "counted",
+)
+"""How far the address-bar proof got on an R2/R3 step, in order (V2 step 1 packet §C): not
+eligible; eligible but never run (the verify held, or missed otherwise than by its deadline);
+then the furthest leg any read reached."""
+_LEG_RANK: dict[UrlLeg, int] = {leg: rank for rank, leg in enumerate(URL_LEGS)}
 _ACT_RETRY_CODES = frozenset({ErrorCode.ELEMENT_NOT_FOUND, ErrorCode.UNSTABLE_UI})
 """The refusals, with nothing sent, that get the act's one retry under the same decision (#89,
 [v2.87])."""
