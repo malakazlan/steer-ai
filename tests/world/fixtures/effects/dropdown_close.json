@@ -1,0 +1,2523 @@
+{
+ "case": "dropdown_close",
+ "before": {
+  "version": 2,
+  "id": "c344bd882045",
+  "hwnd": 11011640,
+  "process": "chrome.exe",
+  "title": "Shop - Google Chrome",
+  "taken_at": 1794607250.9804728,
+  "node_count": 48,
+  "stable": true,
+  "minimized": false,
+  "pid": 30308,
+  "cap": 150,
+  "elements": [
+   {
+    "id": 1,
+    "depth": 0,
+    "role": "Window",
+    "name": "Shop - Google Chrome",
+    "box": [
+     50,
+     50,
+     1425,
+     1050
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640
+    ],
+    "parent_id": null,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 2,
+    "depth": 1,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     59,
+     50,
+     1416,
+     1041
+    ],
+    "offscreen": false,
+    "enabled": false,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     3738452
+    ],
+    "parent_id": 1,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 3,
+    "depth": 1,
+    "role": "Pane",
+    "name": "Shop - Google Chrome",
+    "box": [
+     59,
+     50,
+     1418,
+     1042
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     152
+    ],
+    "parent_id": 1,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 4,
+    "depth": 2,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     59,
+     50,
+     1418,
+     1042
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     154
+    ],
+    "parent_id": 3,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 5,
+    "depth": 3,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     59,
+     50,
+     1418,
+     1042
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     155
+    ],
+    "parent_id": 4,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 6,
+    "depth": 4,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     1245,
+     51,
+     1417,
+     100
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     158
+    ],
+    "parent_id": 5,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 7,
+    "depth": 5,
+    "role": "Button",
+    "name": "Minimize",
+    "box": [
+     1245,
+     51,
+     1302,
+     100
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_1",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     156
+    ],
+    "parent_id": 6,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 8,
+    "depth": 5,
+    "role": "Button",
+    "name": "Maximize",
+    "box": [
+     1301,
+     51,
+     1359,
+     100
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_2",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     159
+    ],
+    "parent_id": 6,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 9,
+    "depth": 5,
+    "role": "Button",
+    "name": "Close",
+    "box": [
+     1359,
+     51,
+     1418,
+     100
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_4",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     163
+    ],
+    "parent_id": 6,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 10,
+    "depth": 4,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     59,
+     50,
+     1418,
+     1042
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     1
+    ],
+    "parent_id": 5,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 11,
+    "depth": 5,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     59,
+     100,
+     1418,
+     158
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     3
+    ],
+    "parent_id": 10,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 12,
+    "depth": 6,
+    "role": "ToolBar",
+    "name": "",
+    "box": [
+     59,
+     100,
+     1418,
+     158
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_1000",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     4
+    ],
+    "parent_id": 11,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 13,
+    "depth": 7,
+    "role": "Button",
+    "name": "Back",
+    "box": [
+     66,
+     108,
+     109,
+     151
+    ],
+    "offscreen": false,
+    "enabled": false,
+    "automation_id": "view_1001",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     184
+    ],
+    "parent_id": 12,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 14,
+    "depth": 7,
+    "role": "Button",
+    "name": "Forward",
+    "box": [
+     111,
+     108,
+     154,
+     151
+    ],
+    "offscreen": false,
+    "enabled": false,
+    "automation_id": "view_1002",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     189
+    ],
+    "parent_id": 12,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 15,
+    "depth": 7,
+    "role": "Button",
+    "name": "Reload",
+    "box": [
+     156,
+     108,
+     199,
+     151
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_1003",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     194
+    ],
+    "parent_id": 12,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 16,
+    "depth": 7,
+    "role": "Group",
+    "name": "",
+    "box": [
+     210,
+     108,
+     1310,
+     151
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     167
+    ],
+    "parent_id": 12,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 17,
+    "depth": 8,
+    "role": "Button",
+    "name": "View site information",
+    "box": [
+     216,
+     114,
+     247,
+     145
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_1011",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     264
+    ],
+    "parent_id": 16,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 18,
+    "depth": 8,
+    "role": "Edit",
+    "name": "Address and search bar",
+    "box": [
+     256,
+     114,
+     1255,
+     145
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_1012",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     271
+    ],
+    "parent_id": 16,
+    "secure": false,
+    "caps": [
+     "editable"
+    ]
+   },
+   {
+    "id": 19,
+    "depth": 8,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     1265,
+     114,
+     1295,
+     145
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     421
+    ],
+    "parent_id": 16,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 20,
+    "depth": 9,
+    "role": "Button",
+    "name": "Bookmark this tab",
+    "box": [
+     1265,
+     114,
+     1295,
+     145
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     604
+    ],
+    "parent_id": 19,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 21,
+    "depth": 7,
+    "role": "Button",
+    "name": "You",
+    "box": [
+     1321,
+     108,
+     1364,
+     151
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_1018",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     235
+    ],
+    "parent_id": 12,
+    "secure": false,
+    "caps": [
+     "collapsed"
+    ]
+   },
+   {
+    "id": 22,
+    "depth": 7,
+    "role": "Button",
+    "name": "Chrome",
+    "box": [
+     1366,
+     108,
+     1409,
+     151
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_1007",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     245
+    ],
+    "parent_id": 12,
+    "secure": false,
+    "caps": [
+     "collapsed"
+    ]
+   },
+   {
+    "id": 23,
+    "depth": 5,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     59,
+     158,
+     1418,
+     1043
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     6
+    ],
+    "parent_id": 10,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 24,
+    "depth": 6,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     59,
+     159,
+     1418,
+     1043
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     10
+    ],
+    "parent_id": 23,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 25,
+    "depth": 7,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     0,
+     0,
+     0,
+     0
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     12
+    ],
+    "parent_id": 24,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 26,
+    "depth": 7,
+    "role": "Document",
+    "name": "Shop",
+    "box": [
+     59,
+     159,
+     1417,
+     1042
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "RootWebArea",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     8
+    ],
+    "parent_id": 24,
+    "secure": false,
+    "caps": [
+     "readonly"
+    ]
+   },
+   {
+    "id": 27,
+    "depth": 8,
+    "role": "Group",
+    "name": "",
+    "box": [
+     69,
+     169,
+     1407,
+     239
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     14
+    ],
+    "parent_id": 26,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 28,
+    "depth": 9,
+    "role": "ComboBox",
+    "name": "Search",
+    "box": [
+     69,
+     169,
+     281,
+     196
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "q",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     1
+    ],
+    "parent_id": 27,
+    "secure": false,
+    "caps": [
+     "expanded"
+    ]
+   },
+   {
+    "id": 29,
+    "depth": 9,
+    "role": "List",
+    "name": "Suggestions",
+    "box": [
+     69,
+     215,
+     1407,
+     239
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "sugg",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     16
+    ],
+    "parent_id": 27,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 30,
+    "depth": 10,
+    "role": "ListItem",
+    "name": "red shoes size 9",
+    "box": [
+     119,
+     215,
+     1407,
+     239
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     23
+    ],
+    "parent_id": 29,
+    "secure": false,
+    "caps": [
+     "selectable"
+    ]
+   },
+   {
+    "id": 31,
+    "depth": 8,
+    "role": "Group",
+    "name": "",
+    "box": [
+     69,
+     265,
+     1407,
+     429
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     17
+    ],
+    "parent_id": 26,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 32,
+    "depth": 9,
+    "role": "Text",
+    "name": "Shop",
+    "box": [
+     69,
+     265,
+     1407,
+     313
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     18
+    ],
+    "parent_id": 31,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 33,
+    "depth": 9,
+    "role": "List",
+    "name": "Products",
+    "box": [
+     69,
+     339,
+     1407,
+     386
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "res",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     19
+    ],
+    "parent_id": 31,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 34,
+    "depth": 10,
+    "role": "ListItem",
+    "name": "Blue shoes",
+    "box": [
+     119,
+     339,
+     1407,
+     363
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     20
+    ],
+    "parent_id": 33,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 35,
+    "depth": 10,
+    "role": "ListItem",
+    "name": "Green hats",
+    "box": [
+     119,
+     362,
+     1407,
+     386
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     21
+    ],
+    "parent_id": 33,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 36,
+    "depth": 9,
+    "role": "Text",
+    "name": "Shop ready",
+    "box": [
+     69,
+     405,
+     160,
+     428
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     7
+    ],
+    "parent_id": 31,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 37,
+    "depth": 6,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     59,
+     158,
+     1418,
+     160
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     65
+    ],
+    "parent_id": 23,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 38,
+    "depth": 5,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     59,
+     50,
+     1246,
+     102
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     83
+    ],
+    "parent_id": 10,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 39,
+    "depth": 6,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     66,
+     50,
+     102,
+     102
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     89
+    ],
+    "parent_id": 38,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 40,
+    "depth": 7,
+    "role": "Button",
+    "name": "Tab search",
+    "box": [
+     66,
+     58,
+     102,
+     94
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     84
+    ],
+    "parent_id": 39,
+    "secure": false,
+    "caps": [
+     "collapsed"
+    ]
+   },
+   {
+    "id": 41,
+    "depth": 6,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     94,
+     50,
+     415,
+     102
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_21",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     109
+    ],
+    "parent_id": 38,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 42,
+    "depth": 7,
+    "role": "Tab",
+    "name": "",
+    "box": [
+     94,
+     50,
+     415,
+     102
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     614
+    ],
+    "parent_id": 41,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 43,
+    "depth": 8,
+    "role": "TabItem",
+    "name": "Shop - Memory usage - 17.4 MB",
+    "box": [
+     94,
+     50,
+     415,
+     102
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_20",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     620
+    ],
+    "parent_id": 42,
+    "secure": false,
+    "caps": [
+     "selected"
+    ]
+   },
+   {
+    "id": 44,
+    "depth": 9,
+    "role": "Button",
+    "name": "Close",
+    "box": [
+     361,
+     58,
+     397,
+     94
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     625
+    ],
+    "parent_id": 43,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 45,
+    "depth": 7,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     94,
+     50,
+     415,
+     102
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     110
+    ],
+    "parent_id": 41,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 46,
+    "depth": 6,
+    "role": "Button",
+    "name": "New Tab",
+    "box": [
+     406,
+     50,
+     442,
+     102
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     111
+    ],
+    "parent_id": 38,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 47,
+    "depth": 6,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     456,
+     50,
+     1245,
+     102
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     116
+    ],
+    "parent_id": 38,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 48,
+    "depth": 5,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     0,
+     0,
+     0,
+     0
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     149
+    ],
+    "parent_id": 10,
+    "secure": false,
+    "caps": []
+   }
+  ]
+ },
+ "after": {
+  "version": 2,
+  "id": "1e148c046b8e",
+  "hwnd": 11011640,
+  "process": "chrome.exe",
+  "title": "Shop - Google Chrome",
+  "taken_at": 1794607252.085346,
+  "node_count": 46,
+  "stable": true,
+  "minimized": false,
+  "pid": 30308,
+  "cap": 150,
+  "elements": [
+   {
+    "id": 1,
+    "depth": 0,
+    "role": "Window",
+    "name": "Shop - Google Chrome",
+    "box": [
+     50,
+     50,
+     1425,
+     1050
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640
+    ],
+    "parent_id": null,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 2,
+    "depth": 1,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     59,
+     50,
+     1416,
+     1041
+    ],
+    "offscreen": false,
+    "enabled": false,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     3738452
+    ],
+    "parent_id": 1,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 3,
+    "depth": 1,
+    "role": "Pane",
+    "name": "Shop - Google Chrome",
+    "box": [
+     59,
+     50,
+     1418,
+     1042
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     152
+    ],
+    "parent_id": 1,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 4,
+    "depth": 2,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     59,
+     50,
+     1418,
+     1042
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     154
+    ],
+    "parent_id": 3,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 5,
+    "depth": 3,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     59,
+     50,
+     1418,
+     1042
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     155
+    ],
+    "parent_id": 4,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 6,
+    "depth": 4,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     1245,
+     51,
+     1417,
+     100
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     158
+    ],
+    "parent_id": 5,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 7,
+    "depth": 5,
+    "role": "Button",
+    "name": "Minimize",
+    "box": [
+     1245,
+     51,
+     1302,
+     100
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_1",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     156
+    ],
+    "parent_id": 6,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 8,
+    "depth": 5,
+    "role": "Button",
+    "name": "Maximize",
+    "box": [
+     1301,
+     51,
+     1359,
+     100
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_2",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     159
+    ],
+    "parent_id": 6,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 9,
+    "depth": 5,
+    "role": "Button",
+    "name": "Close",
+    "box": [
+     1359,
+     51,
+     1418,
+     100
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_4",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     163
+    ],
+    "parent_id": 6,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 10,
+    "depth": 4,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     59,
+     50,
+     1418,
+     1042
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     1
+    ],
+    "parent_id": 5,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 11,
+    "depth": 5,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     59,
+     100,
+     1418,
+     158
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     3
+    ],
+    "parent_id": 10,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 12,
+    "depth": 6,
+    "role": "ToolBar",
+    "name": "",
+    "box": [
+     59,
+     100,
+     1418,
+     158
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_1000",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     4
+    ],
+    "parent_id": 11,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 13,
+    "depth": 7,
+    "role": "Button",
+    "name": "Back",
+    "box": [
+     66,
+     108,
+     109,
+     151
+    ],
+    "offscreen": false,
+    "enabled": false,
+    "automation_id": "view_1001",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     184
+    ],
+    "parent_id": 12,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 14,
+    "depth": 7,
+    "role": "Button",
+    "name": "Forward",
+    "box": [
+     111,
+     108,
+     154,
+     151
+    ],
+    "offscreen": false,
+    "enabled": false,
+    "automation_id": "view_1002",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     189
+    ],
+    "parent_id": 12,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 15,
+    "depth": 7,
+    "role": "Button",
+    "name": "Reload",
+    "box": [
+     156,
+     108,
+     199,
+     151
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_1003",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     194
+    ],
+    "parent_id": 12,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 16,
+    "depth": 7,
+    "role": "Group",
+    "name": "",
+    "box": [
+     210,
+     108,
+     1194,
+     151
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     167
+    ],
+    "parent_id": 12,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 17,
+    "depth": 8,
+    "role": "Button",
+    "name": "View site information",
+    "box": [
+     216,
+     114,
+     247,
+     145
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_1011",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     264
+    ],
+    "parent_id": 16,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 18,
+    "depth": 8,
+    "role": "Edit",
+    "name": "Address and search bar",
+    "box": [
+     256,
+     114,
+     1139,
+     145
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_1012",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     271
+    ],
+    "parent_id": 16,
+    "secure": false,
+    "caps": [
+     "editable"
+    ]
+   },
+   {
+    "id": 19,
+    "depth": 8,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     1149,
+     114,
+     1180,
+     145
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     421
+    ],
+    "parent_id": 16,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 20,
+    "depth": 9,
+    "role": "Button",
+    "name": "Bookmark this tab",
+    "box": [
+     1149,
+     114,
+     1180,
+     145
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     604
+    ],
+    "parent_id": 19,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 21,
+    "depth": 7,
+    "role": "Button",
+    "name": "You",
+    "box": [
+     1205,
+     108,
+     1248,
+     151
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_1018",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     235
+    ],
+    "parent_id": 12,
+    "secure": false,
+    "caps": [
+     "collapsed"
+    ]
+   },
+   {
+    "id": 22,
+    "depth": 7,
+    "role": "Button",
+    "name": "Action required",
+    "box": [
+     1254,
+     108,
+     1409,
+     151
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_1007",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     245
+    ],
+    "parent_id": 12,
+    "secure": false,
+    "caps": [
+     "collapsed"
+    ]
+   },
+   {
+    "id": 23,
+    "depth": 5,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     59,
+     158,
+     1418,
+     1043
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     6
+    ],
+    "parent_id": 10,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 24,
+    "depth": 6,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     59,
+     159,
+     1418,
+     1043
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     10
+    ],
+    "parent_id": 23,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 25,
+    "depth": 7,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     0,
+     0,
+     0,
+     0
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     12
+    ],
+    "parent_id": 24,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 26,
+    "depth": 7,
+    "role": "Document",
+    "name": "Shop",
+    "box": [
+     59,
+     159,
+     1417,
+     1042
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "RootWebArea",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     8
+    ],
+    "parent_id": 24,
+    "secure": false,
+    "caps": [
+     "readonly"
+    ]
+   },
+   {
+    "id": 27,
+    "depth": 8,
+    "role": "Group",
+    "name": "",
+    "box": [
+     69,
+     169,
+     1407,
+     196
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     14
+    ],
+    "parent_id": 26,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 28,
+    "depth": 9,
+    "role": "ComboBox",
+    "name": "Search",
+    "box": [
+     69,
+     169,
+     281,
+     196
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "q",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     1
+    ],
+    "parent_id": 27,
+    "secure": false,
+    "caps": [
+     "collapsed"
+    ]
+   },
+   {
+    "id": 29,
+    "depth": 8,
+    "role": "Group",
+    "name": "",
+    "box": [
+     69,
+     222,
+     1407,
+     386
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     17
+    ],
+    "parent_id": 26,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 30,
+    "depth": 9,
+    "role": "Text",
+    "name": "Shop",
+    "box": [
+     69,
+     222,
+     1407,
+     270
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     18
+    ],
+    "parent_id": 29,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 31,
+    "depth": 9,
+    "role": "List",
+    "name": "Products",
+    "box": [
+     69,
+     296,
+     1407,
+     343
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "res",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     19
+    ],
+    "parent_id": 29,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 32,
+    "depth": 10,
+    "role": "ListItem",
+    "name": "Blue shoes",
+    "box": [
+     119,
+     296,
+     1407,
+     320
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     20
+    ],
+    "parent_id": 31,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 33,
+    "depth": 10,
+    "role": "ListItem",
+    "name": "Green hats",
+    "box": [
+     119,
+     319,
+     1407,
+     343
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     21
+    ],
+    "parent_id": 31,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 34,
+    "depth": 9,
+    "role": "Text",
+    "name": "Shop ready",
+    "box": [
+     69,
+     362,
+     160,
+     385
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     4261640,
+     4,
+     6,
+     1,
+     7
+    ],
+    "parent_id": 29,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 35,
+    "depth": 6,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     59,
+     158,
+     1418,
+     160
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     65
+    ],
+    "parent_id": 23,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 36,
+    "depth": 5,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     59,
+     50,
+     1246,
+     102
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     83
+    ],
+    "parent_id": 10,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 37,
+    "depth": 6,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     66,
+     50,
+     102,
+     102
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     89
+    ],
+    "parent_id": 36,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 38,
+    "depth": 7,
+    "role": "Button",
+    "name": "Tab search",
+    "box": [
+     66,
+     58,
+     102,
+     94
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     84
+    ],
+    "parent_id": 37,
+    "secure": false,
+    "caps": [
+     "collapsed"
+    ]
+   },
+   {
+    "id": 39,
+    "depth": 6,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     94,
+     50,
+     415,
+     102
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_21",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     109
+    ],
+    "parent_id": 36,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 40,
+    "depth": 7,
+    "role": "Tab",
+    "name": "",
+    "box": [
+     94,
+     50,
+     415,
+     102
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     614
+    ],
+    "parent_id": 39,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 41,
+    "depth": 8,
+    "role": "TabItem",
+    "name": "Shop - Memory usage - 17.4 MB",
+    "box": [
+     94,
+     50,
+     415,
+     102
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "view_20",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     620
+    ],
+    "parent_id": 40,
+    "secure": false,
+    "caps": [
+     "selected"
+    ]
+   },
+   {
+    "id": 42,
+    "depth": 9,
+    "role": "Button",
+    "name": "Close",
+    "box": [
+     361,
+     58,
+     397,
+     94
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     625
+    ],
+    "parent_id": 41,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 43,
+    "depth": 7,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     94,
+     50,
+     415,
+     102
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     110
+    ],
+    "parent_id": 39,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 44,
+    "depth": 6,
+    "role": "Button",
+    "name": "New Tab",
+    "box": [
+     406,
+     50,
+     442,
+     102
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     111
+    ],
+    "parent_id": 36,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 45,
+    "depth": 6,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     456,
+     50,
+     1245,
+     102
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     116
+    ],
+    "parent_id": 36,
+    "secure": false,
+    "caps": []
+   },
+   {
+    "id": 46,
+    "depth": 5,
+    "role": "Pane",
+    "name": "",
+    "box": [
+     0,
+     0,
+     0,
+     0
+    ],
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "",
+    "runtime_id": [
+     42,
+     11011640,
+     4,
+     0,
+     0,
+     149
+    ],
+    "parent_id": 10,
+    "secure": false,
+    "caps": []
+   }
+  ]
+ },
+ "before_url": "http://127.0.0.1:60071/shop",
+ "after_url": "http://127.0.0.1:60071/shop",
+ "windows_before": [
+  11011640
+ ],
+ "windows_after": [
+  11011640
+ ],
+ "acted": [
+  42,
+  4261640,
+  4,
+  6,
+  1,
+  1
+ ],
+ "text": "red shoes",
+ "report": {
+  "classes": [
+   "content_changed",
+   "own_state"
+  ],
+  "tokens": [
+   "dismissed",
+   "moved"
+  ],
+  "unread": [],
+  "primary": "own_state",
+  "carriers": [],
+  "revealed_root": null,
+  "stable_after": true
+ }
+}

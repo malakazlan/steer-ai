@@ -10,6 +10,11 @@ The owner's four conditions ([V2.2], 2026-11-13):
 3. `classes` is the full set; `primary` is one class, for logs only.
 4. A changed window list is the token `windows_changed`, never `none`.
 
+The scope ([V2.3], the lead's ruling from the step 2a probe): `own_state`, `revealed` and
+`content_changed` are computed inside the outermost Document that holds the acted element (for
+a key press, the last targeted one); a change outside it, such as a browser tab's name, is the
+token `frame_changed`. An element with no Document above it compares the whole window.
+
 The rules reuse v1's: "outside the field" is `loop._new_outside`'s exemption (NE-01/01b), the
 top Document is `loop._top_document`'s (NE-13), and `url_param` is `url_query.carries`.
 """
@@ -37,7 +42,9 @@ EffectClass = Literal[
     "url_changed_in_place",
     "unknown",
 ]
-Token = Literal["rerendered", "dismissed", "moved", "title_only", "windows_changed"]
+Token = Literal[
+    "rerendered", "dismissed", "moved", "title_only", "windows_changed", "frame_changed"
+]
 Unread = Literal["url", "windows", "caps"]
 Carrier = Literal["url_param", "url_path", "title", "results"]
 
@@ -45,12 +52,15 @@ PRECEDENCE: Final[tuple[EffectClass, ...]] = (
     "unknown",
     "navigated",
     "url_changed_in_place",
-    "revealed",
     "own_state",
+    "revealed",
     "content_changed",
     "none",
 )
-"""The order `primary` is chosen in, for logs only (condition 3)."""
+"""The order `primary` is chosen in, for logs only (condition 3). The acted element's own change
+ranks above `revealed` ([V2.3]): a tree expand or a menu button gives both."""
+NOT_OBSERVED: Final = ("focus", "value", "heading", "dialog", "window_opened", "window_closed")
+"""Facts this version never reads ([V2.3]): fixed, never in `unread`, never blocking `none`."""
 PAGE_ROLES: Final = frozenset({"Document", "Pane", "Window"})
 """As `loop._PAGE_ROLES`: a field whose parent is the page is exempt only for its own subtree."""
 RERENDER_SIMILARITY: Final = 0.9
@@ -89,8 +99,10 @@ def observe(
     *,
     acted: tuple[int, ...] | None = None,
     text: str | None = None,
+    scope: tuple[int, ...] | None = None,
 ) -> EffectReport:
-    """What changed from `before` to `after`, the element `acted` on given by RuntimeId."""
+    """What changed from `before` to `after`, the element `acted` on given by RuntimeId; `scope`
+    is the last targeted element's RuntimeId, used when nothing was acted on (a key press)."""
     b, a = before.snapshot, after.snapshot
     unread = _unread(before, after)
     if b.hwnd != a.hwnd or not a.stable or a.minimized:
@@ -102,7 +114,8 @@ def observe(
     windows_read = before.windows is not None and after.windows is not None
     if windows_read and set(before.windows or ()) != set(after.windows or ()):
         tokens.add("windows_changed")
-    carriers = _carriers(before, after, acted, text)
+    in_b, in_a = _scopes(b, a, acted or scope)
+    carriers = _carriers(before, after, acted, text, (in_b, in_a))
     classes: set[EffectClass] = set()
     if top_b is not None and top_a is not None and top_b.runtime_id != top_a.runtime_id:
         if _rerendered_page(before, after, top_b, top_a):
@@ -111,10 +124,10 @@ def observe(
             return _report({"navigated"}, tokens, unread, None, carriers, a.stable)
     if before.url is not None and after.url is not None and before.url != after.url:
         classes.add("url_changed_in_place")
-    changes = _changes(b, a, acted, caps_read="caps" not in unread)
+    changes = _changes(b, a, acted, (in_b, in_a), caps_read="caps" not in unread)
     classes |= changes.classes
     tokens |= changes.tokens
-    if b.title != a.title and not classes and not changes.tokens - {"moved"}:
+    if b.title != a.title and not classes and not changes.tokens - {"moved", "frame_changed"}:
         tokens.add("title_only")
     if not classes and not (tokens - {"moved"}) and not unread:
         classes.add("none")
@@ -132,7 +145,12 @@ class _Changes:
 
 
 def _changes(
-    before: Snapshot, after: Snapshot, acted: tuple[int, ...] | None, *, caps_read: bool
+    before: Snapshot,
+    after: Snapshot,
+    acted: tuple[int, ...] | None,
+    scopes: tuple[set[int] | None, set[int] | None],
+    *,
+    caps_read: bool,
 ) -> _Changes:
     b_elems = [e for e in before.elements if e.role not in TRANSIENT_ROLES]
     a_elems = [e for e in after.elements if e.role not in TRANSIENT_ROLES]
@@ -142,9 +160,12 @@ def _changes(
     appeared = [e for e in a_elems if e.runtime_id and e.runtime_id not in same]
     gone = [e for e in b_elems if e.runtime_id and e.runtime_id not in same]
     appeared, gone, rerendered = _pair_rerenders(before, after, appeared, gone)
-    anonymous = _anonymous(b_elems) != _anonymous(a_elems)
+    in_a = scopes[1]
     classes: set[EffectClass] = set()
     tokens: set[Token] = set()
+    appeared, gone, inside_changed, frame = _split(b_elems, a_elems, appeared, gone, scopes)
+    classes |= {"content_changed"} if inside_changed else set()
+    tokens |= {"frame_changed"} if frame else set()
     if rerendered:
         tokens.add("rerendered")
     acted_after = a_by.get(acted) if acted else None
@@ -169,13 +190,16 @@ def _changes(
         if not fields:
             continue
         if rid == acted:
-            if fields == {"caps"} and normalise_name(old.name) == normalise_name(new.name):
+            own = fields - {"box"} == {"caps"}  # an expand may grow its own box
+            if own and normalise_name(old.name) == normalise_name(new.name):
                 classes.add("own_state")
             elif fields != {"box"}:
                 classes.add("content_changed")
             continue
         if fields == {"box"}:
             tokens.add("moved")
+        elif not _inside(new, in_a):
+            tokens.add("frame_changed")
         elif new.id not in exempt and new.id not in revealed_ids:
             classes.add("content_changed")
     revealed_set = {e.id for e in revealed}
@@ -184,7 +208,7 @@ def _changes(
         for e in appeared
         if e.id not in exempt and e.id not in revealed_ids and e.id not in revealed_set
     ]
-    if outside or anonymous:
+    if outside:
         classes.add("content_changed")
     if gone:
         tokens.add("dismissed")
@@ -258,9 +282,82 @@ def _pair_rerenders(
     return kept, left, paired
 
 
-def _anonymous(elements: Sequence[Element]) -> Counter[tuple[str, str]]:
-    """Elements without a RuntimeId, as a multiset: a change among them is a change."""
-    return Counter((e.role, normalise_name(e.name)) for e in elements if not e.runtime_id)
+def _anonymous(
+    elements: Sequence[Element], scope: set[int] | None, *, outside: bool = False
+) -> Counter[tuple[str, str]]:
+    """Elements without a RuntimeId inside the scope (or outside it), as a multiset: a change
+    among them is a change."""
+    return Counter(
+        (e.role, normalise_name(e.name))
+        for e in elements
+        if not e.runtime_id and _inside(e, scope) != outside
+    )
+
+
+def _split(
+    b_elems: Sequence[Element],
+    a_elems: Sequence[Element],
+    appeared: list[Element],
+    gone: list[Element],
+    scopes: tuple[set[int] | None, set[int] | None],
+) -> tuple[list[Element], list[Element], bool, bool]:
+    """The appeared and gone elements inside the scope; whether the anonymous elements inside
+    it changed; whether anything outside it appeared, went or changed among the anonymous."""
+    in_b, in_a = scopes
+    inside_changed = _anonymous(b_elems, in_b) != _anonymous(a_elems, in_a)
+    frame = (
+        _anonymous(b_elems, in_b, outside=True) != _anonymous(a_elems, in_a, outside=True)
+        or any(not _inside(e, in_a) for e in appeared)
+        or any(not _inside(e, in_b) for e in gone)
+    )
+    return (
+        [e for e in appeared if _inside(e, in_a)],
+        [e for e in gone if _inside(e, in_b)],
+        inside_changed,
+        frame,
+    )
+
+
+def _inside(element: Element, scope: set[int] | None) -> bool:
+    return scope is None or element.id in scope
+
+
+def _scope_document(snapshot: Snapshot, rid: tuple[int, ...]) -> Element | None:
+    """The outermost Document at or above the element with RuntimeId `rid`; None when there is
+    no such element or no Document above it. Iterative, and a parent cycle ends at a repeat."""
+    by_id = {e.id: e for e in snapshot.elements}
+    element = next((e for e in snapshot.elements if e.runtime_id == rid), None)
+    found: Element | None = None
+    seen: set[int] = set()
+    while element is not None and element.id not in seen:
+        seen.add(element.id)
+        if element.role == "Document":
+            found = element
+        element = by_id.get(element.parent_id) if element.parent_id is not None else None
+    return found
+
+
+def _scopes(
+    before: Snapshot, after: Snapshot, rid: tuple[int, ...] | None
+) -> tuple[set[int] | None, set[int] | None]:
+    """The ids inside the scope Document on each side ([V2.3]); None, the whole window, when
+    there is no target, no Document above it, or no Document after in its place (the same
+    RuntimeId, or the new top Document when the scope was the top one)."""
+    if not rid:
+        return None, None
+    doc_b = _scope_document(before, rid)
+    if doc_b is None:
+        return None, None
+    doc_a = _scope_document(after, rid) or next(
+        (e for e in after.elements if e.runtime_id == doc_b.runtime_id and e.role == "Document"),
+        None,
+    )
+    top_b = _top_document(before)
+    if doc_a is None and top_b is not None and top_b.id == doc_b.id:
+        doc_a = _top_document(after)  # the page that replaced it (a navigation)
+    if doc_a is None:
+        return None, None
+    return _under(before, doc_b.id), _under(after, doc_a.id)
 
 
 def _exemption(after: Snapshot, acted: Element | None) -> set[int]:
@@ -358,7 +455,11 @@ def _segments(url: str) -> list[str]:
 
 
 def _carriers(
-    before: Observed, after: Observed, acted: tuple[int, ...] | None, text: str | None
+    before: Observed,
+    after: Observed,
+    acted: tuple[int, ...] | None,
+    text: str | None,
+    scopes: tuple[set[int] | None, set[int] | None],
 ) -> set[Carrier]:
     """Where the action's text now shows that it did not before ([V2.2] §6.4)."""
     if not text:
@@ -378,25 +479,37 @@ def _carriers(
     b, a = before.snapshot, after.snapshot
     if _contains(a.title, needle) and not _contains(b.title, needle):
         out.add("title")
-    if _results_carrier(b, a, acted, needle):
+    if _results_carrier(b, a, acted, needle, scopes):
         out.add("results")
     return out
 
 
 def _results_carrier(
-    b: Snapshot, a: Snapshot, acted: tuple[int, ...] | None, needle: Sequence[str]
+    b: Snapshot,
+    a: Snapshot,
+    acted: tuple[int, ...] | None,
+    needle: Sequence[str],
+    scopes: tuple[set[int] | None, set[int] | None],
 ) -> bool:
-    """The text on an appeared or renamed element outside the acted field's exemption, and on
-    no element before it (an element without a RuntimeId is new only by its role and name)."""
+    """The text on an appeared or renamed element inside the scope and outside the acted field's
+    exemption, and on no element of the scope before it (an element without a RuntimeId is new
+    only by its role and name). A tab name or the address bar is never a result ([V2.3])."""
+    in_b, in_a = scopes
     acted_after = next((e for e in a.elements if acted and e.runtime_id == acted), None)
     exempt = _exemption(a, acted_after)
     under = set() if acted_after is None else _under(a, acted_after.id)
     known = {e.runtime_id: e.name for e in b.elements if e.runtime_id}
-    if any(_contains(e.name, needle) for e in b.elements if not (acted and e.runtime_id == acted)):
+    if any(
+        _contains(e.name, needle)
+        for e in b.elements
+        if _inside(e, in_b) and not (acted and e.runtime_id == acted)
+    ):
         return False
-    anonymous_before = _anonymous(b.elements)
+    anonymous_before = _anonymous(b.elements, in_b)
     for element in a.elements:
-        if element.id in exempt or element.id in under or not _contains(element.name, needle):
+        if not _inside(element, in_a) or element.id in exempt or element.id in under:
+            continue
+        if not _contains(element.name, needle):
             continue
         if element.runtime_id:
             if known.get(element.runtime_id) != element.name:
