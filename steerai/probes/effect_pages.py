@@ -52,6 +52,8 @@ WATCH_POLL_S = 0.1
 WATCH_SETTLE_S = 0.5
 """Unmeasured starting values for `watch`; this section measures what they should be."""
 WATCH_DEADLINE_S = 5.0
+SITE_DEADLINE_S = 15.0
+"""A real site's guard deadline (unmeasured until this probe's samples)."""
 KEY = secrets.token_bytes(32)
 """The run's own value-digest key: never stored."""
 T = TypeVar("T")
@@ -593,6 +595,47 @@ def noise_run(base: str, seconds: float = 4.0) -> list[dict[str, Any]]:
     return rows
 
 
+SITE_READY_S = 8.0
+"""How long a real site is given to load and settle before the timed navigation (a guard)."""
+
+
+def site_run(start: str, target: str) -> dict[str, Any]:
+    """[V2.7] one real-site sample: open `start`, then navigate to `target` (the task's own
+    results page) through DevTools, and watch it on the two-tier v2 read. Records the first
+    change, the settle, the report and the address bar's shape as closed tokens; never the
+    URL or the page's text."""
+    browser = _Browser(start)
+    try:
+        time.sleep(SITE_READY_S)
+        before = browser.read_v2()
+        browser.run(f"location.href={json.dumps(target)}")
+        result = watch(
+            browser.read_cheap,
+            before,
+            clock=time.monotonic,
+            sleep=time.sleep,
+            poll_s=WATCH_POLL_S,
+            settle_s=WATCH_SETTLE_S,
+            deadline_s=SITE_DEADLINE_S,
+            full=browser.read_full,
+        )
+        href = str(browser.run("location.href"))
+        bar = browser.client.address_bar(browser.hwnd)
+    finally:
+        browser.close()
+    return {
+        "first_change_ms": result.first_change_ms,
+        "settled_ms": result.settled_ms,
+        "timed_out": result.timed_out,
+        "classes": sorted(result.report.classes),
+        "tokens": sorted(result.report.tokens),
+        "bar_shape": None if bar is None else _shape(bar, href),
+        "bar_www_elided": bar is not None and "://www." in href and "www." not in bar,
+        "url_read": result.after.url is not None,
+        "url_observed": result.after.url_observed,
+    }
+
+
 def _pcts(values: list[float]) -> dict[str, float]:
     ordered = sorted(values)
     return {
@@ -603,11 +646,32 @@ def _pcts(values: list[float]) -> dict[str, float]:
     }
 
 
+def _sites(number: int) -> None:
+    """Every pooled-set search or article site once (never H7: it is sealed)."""
+    from steerai.probes.task_suite import (  # noqa: PLC0415 - the sites section only
+        H3,
+        H4,
+        H5,
+        H6,
+        HELD_OUT,
+        results_url,
+    )
+
+    for task in (*HELD_OUT, *H3, *H4, *H5, *H6):
+        if task.check not in ("url_search", "wiki_article"):
+            continue
+        try:
+            row = site_run(task.start, results_url(task))
+        except (OSError, TimeoutError, RuntimeError) as exc:
+            row = {"error": type(exc).__name__}
+        _emit({"run": number, "task": task.task_id, **row})
+
+
 def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0912 - one branch per section
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--section",
-        choices=("document", "offscreen", "pairs", "watch", "urls", "noise"),
+        choices=("document", "offscreen", "pairs", "watch", "urls", "noise", "sites"),
         required=True,
     )
     parser.add_argument("--runs", type=int, default=1)
@@ -631,6 +695,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0912 - one branc
                     if args.case and pair.case not in args.case:
                         continue
                     _emit({"run": number, **urls_run(base, pair)})
+            elif args.section == "sites":
+                _sites(number)
             elif args.section == "noise":
                 for row in noise_run(base):
                     _emit({"run": number, **row})
