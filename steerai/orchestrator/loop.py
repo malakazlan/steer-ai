@@ -2398,7 +2398,8 @@ class Session:
         field of its alias pair with its exact name; anything else stays a changed screen. At
         R2/R3, or after a person's yes at any tier (#236 review item 1), the asked identity is
         RuntimeId and role ([v2.71] R3); an asked field still on screen is an ambiguity, never
-        a swap (item 2)."""
+        a swap (item 2); a swapped field whose automation id raises the tier is not followed
+        (#245)."""
         try:
             return self._same_target(step, snapshot, asked, ACT_MISMATCH)
         except _StepFailureError as failure:
@@ -2415,8 +2416,20 @@ class Session:
             swapped, _ = swapped_field(asked, previous, snapshot)
             if swapped is None:
                 raise
+            if self._raises_tier(step, risk, swapped, snapshot):
+                self._act_evidence["act_swap"] = "tier"  # told apart from a plain miss
+                raise
             self._act_evidence["act_alias"] = swapped.role
             return swapped.id
+
+    def _raises_tier(self, step: Step, risk: Risk, swapped: Element, snapshot: Snapshot) -> bool:
+        """Whether the swapped field would raise the tier the gate approved (#245): the gate
+        read the ids of the field it resolved (#84), never this one's. Scored as any resolved
+        element is, by `_settled_tier` (its id and its group's name)."""
+        rescored = self._settled_tier(
+            step, risk, swapped.automation_id, group_name(snapshot, swapped)
+        )
+        return _RISK_ORDER[rescored] > _RISK_ORDER[risk]
 
     def _still_shown(  # noqa: PLR0913 - the step's state after the ask, passed once
         self,
