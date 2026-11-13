@@ -1,0 +1,1152 @@
+{
+ "no_effect_task": {
+  "bar_reads": 2,
+  "clock": 10.0,
+  "physical_calls": [
+   [
+    "press",
+    8,
+    null
+   ]
+  ],
+  "results": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": "verify_failed",
+    "evidence": {
+     "delivery": "delivered_verified",
+     "detail": "no_effect",
+     "level": 3,
+     "observe_reused": false,
+     "outcome": "no_effect",
+     "reason": "no_effect",
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter",
+     "unchanged_s": 10.0
+    },
+    "gate": "confirm",
+    "label_kind": null,
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 10000.0
+    },
+    "ok": false,
+    "step_id": "s3",
+    "verify_code": "verify_failed"
+   }
+  ],
+  "semantic_calls": [],
+  "task": {
+   "code": "verify_failed",
+   "evidence": {
+    "detail": "no_effect"
+   },
+   "status": "stopped",
+   "ticked": []
+  },
+  "trace": [
+   {
+    "kind": "task",
+    "steps": 1,
+    "subgoals": 1,
+    "task_id": "task-1"
+   },
+   {
+    "goal_match": "off",
+    "kind": "goal_match",
+    "task_id": "task-1"
+   },
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": "verify_failed",
+    "evidence": {
+     "delivery": "delivered_verified",
+     "detail": "no_effect",
+     "level": 3,
+     "observe_reused": false,
+     "outcome": "no_effect",
+     "reason": "no_effect",
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter",
+     "unchanged_s": 10.0
+    },
+    "gate": "confirm",
+    "kind": "step",
+    "label_kind": null,
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 10000.0
+    },
+    "ok": false,
+    "step_id": "s3",
+    "task_id": "task-1",
+    "verify_code": "verify_failed"
+   },
+   {
+    "detail": "no_effect",
+    "kind": "task_end",
+    "status": "stopped",
+    "task_id": "task-1"
+   }
+  ]
+ },
+ "tree_click_twice": {
+  "clock": 0.0,
+  "physical_calls": [
+   [
+    "click",
+    31,
+    null
+   ]
+  ],
+  "results": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.click",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "click"
+    },
+    "code": null,
+    "evidence": {
+     "click_fallback": "physical",
+     "delivery": "delivered_verified",
+     "level": 3,
+     "observe_reused": false,
+     "retries": 0,
+     "risk": "R1",
+     "semantic_detail": "expand_by_click"
+    },
+    "gate": "approve",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 0.0
+    },
+    "ok": true,
+    "step_id": "s1",
+    "verify_code": null
+   },
+   {
+    "action": {
+     "code": null,
+     "delivery": "not_delivered",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": true,
+     "steps": [
+      {
+       "label": "AlreadyInState",
+       "mechanism": "none",
+       "outcome": "skipped"
+      }
+     ],
+     "verb": "expand"
+    },
+    "code": null,
+    "evidence": {
+     "delivery": "not_delivered",
+     "level": 3,
+     "observe_reused": true,
+     "retries": 0,
+     "risk": "R1"
+    },
+    "gate": "approve",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 0.0
+    },
+    "ok": true,
+    "step_id": "s1",
+    "verify_code": null
+   }
+  ],
+  "semantic_calls": [
+   [
+    "expand",
+    31,
+    null
+   ],
+   [
+    "expand",
+    31,
+    null
+   ]
+  ],
+  "trace": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.click",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "click"
+    },
+    "code": null,
+    "evidence": {
+     "click_fallback": "physical",
+     "delivery": "delivered_verified",
+     "level": 3,
+     "observe_reused": false,
+     "retries": 0,
+     "risk": "R1",
+     "semantic_detail": "expand_by_click"
+    },
+    "gate": "approve",
+    "kind": "step",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 0.0
+    },
+    "ok": true,
+    "step_id": "s1",
+    "task_id": "task-1",
+    "verify_code": null
+   },
+   {
+    "action": {
+     "code": null,
+     "delivery": "not_delivered",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": true,
+     "steps": [
+      {
+       "label": "AlreadyInState",
+       "mechanism": "none",
+       "outcome": "skipped"
+      }
+     ],
+     "verb": "expand"
+    },
+    "code": null,
+    "evidence": {
+     "delivery": "not_delivered",
+     "level": 3,
+     "observe_reused": true,
+     "retries": 0,
+     "risk": "R1"
+    },
+    "gate": "approve",
+    "kind": "step",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 0.0
+    },
+    "ok": true,
+    "step_id": "s1",
+    "task_id": "task-1",
+    "verify_code": null
+   }
+  ]
+ },
+ "tree_page_ignores_click": {
+  "clock": 0.5,
+  "physical_calls": [
+   [
+    "click",
+    31,
+    null
+   ]
+  ],
+  "results": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.click",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "click"
+    },
+    "code": "verify_timeout",
+    "evidence": {
+     "click_fallback": "physical",
+     "delivery": "delivered_verified",
+     "level": 3,
+     "observe_reused": false,
+     "reason": "state_differs",
+     "retries": 0,
+     "risk": "R1",
+     "semantic_detail": "expand_by_click"
+    },
+    "gate": "approve",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 500.0
+    },
+    "ok": false,
+    "step_id": "s1",
+    "verify_code": "verify_timeout"
+   },
+   {
+    "action": {
+     "code": "element_not_actionable",
+     "delivery": "not_delivered",
+     "evidence": {
+      "detail": "already_clicked"
+     },
+     "ok": false,
+     "retry_safe": true,
+     "steps": [],
+     "verb": "expand"
+    },
+    "code": "element_not_actionable",
+    "evidence": {
+     "delivery": "not_delivered",
+     "detail": "already_clicked",
+     "observe_reused": true,
+     "retries": 0,
+     "risk": "R1"
+    },
+    "gate": "approve",
+    "label_kind": null,
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0
+    },
+    "ok": false,
+    "step_id": "s1",
+    "verify_code": null
+   }
+  ],
+  "semantic_calls": [
+   [
+    "expand",
+    31,
+    null
+   ],
+   [
+    "expand",
+    31,
+    null
+   ]
+  ],
+  "trace": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.click",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "click"
+    },
+    "code": "verify_timeout",
+    "evidence": {
+     "click_fallback": "physical",
+     "delivery": "delivered_verified",
+     "level": 3,
+     "observe_reused": false,
+     "reason": "state_differs",
+     "retries": 0,
+     "risk": "R1",
+     "semantic_detail": "expand_by_click"
+    },
+    "gate": "approve",
+    "kind": "step",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 500.0
+    },
+    "ok": false,
+    "step_id": "s1",
+    "task_id": "task-1",
+    "verify_code": "verify_timeout"
+   },
+   {
+    "action": {
+     "code": "element_not_actionable",
+     "delivery": "not_delivered",
+     "evidence": {
+      "detail": "already_clicked"
+     },
+     "ok": false,
+     "retry_safe": true,
+     "steps": [],
+     "verb": "expand"
+    },
+    "code": "element_not_actionable",
+    "evidence": {
+     "delivery": "not_delivered",
+     "detail": "already_clicked",
+     "observe_reused": true,
+     "retries": 0,
+     "risk": "R1"
+    },
+    "gate": "approve",
+    "kind": "step",
+    "label_kind": null,
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0
+    },
+    "ok": false,
+    "step_id": "s1",
+    "task_id": "task-1",
+    "verify_code": null
+   }
+  ]
+ },
+ "type_then_send": {
+  "clock": 2.0000000000000004,
+  "physical_calls": [
+   [
+    "type",
+    8,
+    "hello there"
+   ]
+  ],
+  "results": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.type",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "type"
+    },
+    "code": null,
+    "evidence": {
+     "delivery": "delivered_verified",
+     "level": 3,
+     "observe_reused": false,
+     "retries": 0,
+     "risk": "R1"
+    },
+    "gate": "approve",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 0.0
+    },
+    "ok": true,
+    "step_id": "s2",
+    "verify_code": null
+   },
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "semantic.click",
+       "mechanism": "semantic",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "click"
+    },
+    "code": null,
+    "evidence": {
+     "delivery": "delivered_verified",
+     "level": 1,
+     "observe_reused": false,
+     "parts": 2,
+     "retries": 0,
+     "risk": "R2",
+     "settled_after_type": true
+    },
+    "gate": "confirm",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "settle": 2000.0000000000005,
+     "verify": 0.0
+    },
+    "ok": true,
+    "step_id": "s3",
+    "verify_code": null
+   }
+  ],
+  "semantic_calls": [
+   [
+    "click",
+    9,
+    null
+   ]
+  ],
+  "trace": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.type",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "type"
+    },
+    "code": null,
+    "evidence": {
+     "delivery": "delivered_verified",
+     "level": 3,
+     "observe_reused": false,
+     "retries": 0,
+     "risk": "R1"
+    },
+    "gate": "approve",
+    "kind": "step",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 0.0
+    },
+    "ok": true,
+    "step_id": "s2",
+    "task_id": "task-1",
+    "verify_code": null
+   },
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "semantic.click",
+       "mechanism": "semantic",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "click"
+    },
+    "code": null,
+    "evidence": {
+     "delivery": "delivered_verified",
+     "level": 1,
+     "observe_reused": false,
+     "parts": 2,
+     "retries": 0,
+     "risk": "R2",
+     "settled_after_type": true
+    },
+    "gate": "confirm",
+    "kind": "step",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "settle": 2000.0000000000005,
+     "verify": 0.0
+    },
+    "ok": true,
+    "step_id": "s3",
+    "task_id": "task-1",
+    "verify_code": null
+   }
+  ]
+ },
+ "url_counted": {
+  "bar_reads": 2,
+  "clock": 10.0,
+  "physical_calls": [
+   [
+    "press",
+    8,
+    null
+   ]
+  ],
+  "results": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": null,
+    "evidence": {
+     "delivery": "delivered_verified",
+     "level": 3,
+     "load": "name",
+     "missed": "no_match",
+     "observe_reused": false,
+     "reason": "url_query",
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter"
+    },
+    "gate": "confirm",
+    "label_kind": null,
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 10000.0
+    },
+    "ok": true,
+    "step_id": "s3",
+    "verify_code": null
+   }
+  ],
+  "semantic_calls": [],
+  "trace": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": null,
+    "evidence": {
+     "delivery": "delivered_verified",
+     "level": 3,
+     "load": "name",
+     "missed": "no_match",
+     "observe_reused": false,
+     "reason": "url_query",
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter"
+    },
+    "gate": "confirm",
+    "kind": "step",
+    "label_kind": null,
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 10000.0
+    },
+    "ok": true,
+    "step_id": "s3",
+    "task_id": "task-1",
+    "verify_code": null
+   }
+  ]
+ },
+ "url_no_load": {
+  "bar_reads": 2,
+  "clock": 10.0,
+  "physical_calls": [
+   [
+    "press",
+    8,
+    null
+   ]
+  ],
+  "results": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": "verify_timeout",
+    "evidence": {
+     "delivery": "delivered_verified",
+     "detail": "no_load",
+     "level": 3,
+     "observe_reused": false,
+     "reason": "no_match",
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter"
+    },
+    "gate": "confirm",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 10000.0
+    },
+    "ok": false,
+    "step_id": "s3",
+    "verify_code": "verify_timeout"
+   }
+  ],
+  "semantic_calls": [],
+  "trace": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": "verify_timeout",
+    "evidence": {
+     "delivery": "delivered_verified",
+     "detail": "no_load",
+     "level": 3,
+     "observe_reused": false,
+     "reason": "no_match",
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter"
+    },
+    "gate": "confirm",
+    "kind": "step",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 10000.0
+    },
+    "ok": false,
+    "step_id": "s3",
+    "task_id": "task-1",
+    "verify_code": "verify_timeout"
+   }
+  ]
+ },
+ "url_no_url": {
+  "bar_reads": 2,
+  "clock": 10.0,
+  "physical_calls": [
+   [
+    "press",
+    8,
+    null
+   ]
+  ],
+  "results": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": "verify_timeout",
+    "evidence": {
+     "delivery": "delivered_verified",
+     "detail": "no_url",
+     "level": 3,
+     "observe_reused": false,
+     "reason": "no_match",
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter"
+    },
+    "gate": "confirm",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 10000.0
+    },
+    "ok": false,
+    "step_id": "s3",
+    "verify_code": "verify_timeout"
+   }
+  ],
+  "semantic_calls": [],
+  "trace": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": "verify_timeout",
+    "evidence": {
+     "delivery": "delivered_verified",
+     "detail": "no_url",
+     "level": 3,
+     "observe_reused": false,
+     "reason": "no_match",
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter"
+    },
+    "gate": "confirm",
+    "kind": "step",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 10000.0
+    },
+    "ok": false,
+    "step_id": "s3",
+    "task_id": "task-1",
+    "verify_code": "verify_timeout"
+   }
+  ]
+ },
+ "url_no_words": {
+  "bar_reads": 2,
+  "clock": 10.0,
+  "physical_calls": [
+   [
+    "press",
+    8,
+    null
+   ]
+  ],
+  "results": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": "verify_timeout",
+    "evidence": {
+     "delivery": "delivered_verified",
+     "level": 3,
+     "observe_reused": false,
+     "reason": "no_match",
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter"
+    },
+    "gate": "confirm",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 10000.0
+    },
+    "ok": false,
+    "step_id": "s3",
+    "verify_code": "verify_timeout"
+   }
+  ],
+  "semantic_calls": [],
+  "trace": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": "verify_timeout",
+    "evidence": {
+     "delivery": "delivered_verified",
+     "level": 3,
+     "observe_reused": false,
+     "reason": "no_match",
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter"
+    },
+    "gate": "confirm",
+    "kind": "step",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 10000.0
+    },
+    "ok": false,
+    "step_id": "s3",
+    "task_id": "task-1",
+    "verify_code": "verify_timeout"
+   }
+  ]
+ },
+ "url_not_chrome": {
+  "bar_reads": 0,
+  "clock": 10.0,
+  "physical_calls": [
+   [
+    "press",
+    8,
+    null
+   ]
+  ],
+  "results": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": "verify_timeout",
+    "evidence": {
+     "delivery": "delivered_verified",
+     "level": 3,
+     "observe_reused": false,
+     "reason": "no_match",
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter"
+    },
+    "gate": "confirm",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 10000.0
+    },
+    "ok": false,
+    "step_id": "s3",
+    "verify_code": "verify_timeout"
+   }
+  ],
+  "semantic_calls": [],
+  "trace": [
+   {
+    "action": {
+     "code": null,
+     "delivery": "delivered_verified",
+     "evidence": {},
+     "ok": true,
+     "retry_safe": false,
+     "steps": [
+      {
+       "label": "physical.press",
+       "mechanism": "physical",
+       "outcome": "succeeded"
+      }
+     ],
+     "verb": "press"
+    },
+    "code": "verify_timeout",
+    "evidence": {
+     "delivery": "delivered_verified",
+     "level": 3,
+     "observe_reused": false,
+     "reason": "no_match",
+     "retries": 0,
+     "risk": "R2",
+     "submit": "enter"
+    },
+    "gate": "confirm",
+    "kind": "step",
+    "label_kind": "t1",
+    "latency_ms": {
+     "act": 0.0,
+     "decide": 0.0,
+     "gate": 0.0,
+     "observe": 0.0,
+     "verify": 10000.0
+    },
+    "ok": false,
+    "step_id": "s3",
+    "task_id": "task-1",
+    "verify_code": "verify_timeout"
+   }
+  ]
+ }
+}
