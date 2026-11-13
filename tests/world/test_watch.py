@@ -163,3 +163,31 @@ def test_a_change_already_in_the_first_read_settles_no_earlier_than_that_read() 
     assert result.first_change_ms is not None
     assert result.settled_ms is not None
     assert result.settled_ms >= result.first_change_ms
+
+
+def test_the_full_read_is_made_once_after_settle_never_on_each_poll() -> None:
+    """[V2.7] two tiers: polls use the cheap read; the full read runs once, on the settled
+    screen, and the report is against it."""
+    clock = Clock()
+    before = _obs(BASE)
+    after = _obs([*BASE, ITEM2])
+    full_calls: list[Observed] = []
+
+    def full(seen: Observed) -> Observed:
+        full_calls.append(seen)
+        return Observed(snapshot=seen.snapshot, url="https://shop.test/?q=red", windows=(16,))
+
+    result = watch(
+        _reader([before, after], clock, [0.0, 0.2]),
+        before,
+        acted=FIELD[3],
+        clock=clock.now,
+        sleep=clock.sleep,
+        poll_s=0.1,
+        settle_s=0.3,
+        deadline_s=5.0,
+        full=full,
+    )
+    assert len(full_calls) == 1
+    assert result.after.url == "https://shop.test/?q=red"
+    assert "url_changed_in_place" in result.report.classes

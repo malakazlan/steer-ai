@@ -54,8 +54,10 @@ def watch(  # noqa: PLR0913 - the action's facts and the injected clock, keyword
     poll_s: float,
     settle_s: float,
     deadline_s: float,
+    full: Callable[[Observed], Observed] | None = None,
 ) -> Watched:
-    """The effect of the action just sent, against `before`."""
+    """The effect of the action just sent, against `before`. `read` is the cheap poll; `full`,
+    when given, adds the costly facts once, on the settled (or last) read ([V2.7] two tiers)."""
     if poll_s <= 0 or settle_s < 0 or deadline_s <= 0:
         raise ValueError("watch needs a positive poll and deadline and a settle window >= 0")
     start = clock()
@@ -76,9 +78,17 @@ def watch(  # noqa: PLR0913 - the action's facts and the injected clock, keyword
             last_signature = signature
         held = seen.snapshot.stable and elapsed - changed_at >= settle_s
         if first is not None and held:
+            if full is not None:
+                seen = full(seen)
+                report = observe(
+                    before, seen, acted=acted, text=text, scope=scope, url_fact=url_fact
+                )
             return Watched(report, seen, _ms(first), _ms(changed_at), timed_out=False)
         if elapsed >= deadline_s:
             break
         sleep(poll_s)
+    if full is not None:
+        seen = full(seen)
+        report = observe(before, seen, acted=acted, text=text, scope=scope, url_fact=url_fact)
     settled = None if first is None else _ms(changed_at)
     return Watched(report, seen, None if first is None else _ms(first), settled, timed_out=True)

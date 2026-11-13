@@ -16,13 +16,21 @@ class Reader:
         self.fail = fail
         self.calls: list[str] = []
         self.hwnds: list[int] = []
+        self.snapshots: list[object] = []
 
-    def document_url(self, hwnd: int) -> DocumentUrl | None:
+    def document_url_in(self, snapshot: object, document_id: int) -> DocumentUrl | None:
+        self.snapshots.append(snapshot)
         self.calls.append("url")
+        if "url" in self.fail:
+            raise OSError("gone")
+        return DocumentUrl(runtime_id=(9, document_id), url="https://shop.test/?q=red")
+
+    def address_bar(self, hwnd: int) -> str | None:
+        self.calls.append("bar")
         self.hwnds.append(hwnd)
         if "url" in self.fail:
             raise OSError("gone")
-        return DocumentUrl(runtime_id=(9, 1), url="https://shop.test/?q=red")
+        return "shop.test/?q=red"
 
     def focused_runtime_id(self) -> tuple[int, ...]:
         self.calls.append("focus")
@@ -75,3 +83,47 @@ def test_a_window_without_a_page_skips_the_page_reads() -> None:
     assert reader.calls == ["focus"]
     assert seen.url is None
     assert seen.headings is None
+
+
+# ---- [V2.7] the URL from two sources -------------------------------------------------------
+
+
+class BarReader(Reader):
+    def __init__(self, *, document: str | None, bar: str | None, **kw: frozenset[str]) -> None:
+        super().__init__(**kw)
+        self.document, self.bar = document, bar
+
+    def document_url_in(self, snapshot: object, document_id: int) -> DocumentUrl | None:
+        self.snapshots.append(snapshot)
+        self.calls.append("document")
+        if self.document is None:
+            return None
+        return DocumentUrl(runtime_id=(9, document_id), url=self.document)
+
+    def address_bar(self, hwnd: int) -> str | None:
+        self.calls.append("bar")
+        self.hwnds.append(hwnd)
+        return self.bar
+
+
+def test_the_bar_gives_the_in_place_url_and_the_document_its_identity() -> None:
+    reader = BarReader(document="https://shop.test/", bar="shop.test/?q=red+shoes")
+    seen = read_observed(_snap(BASE), reader, key=KEY)
+    assert seen.document_url == "https://shop.test/"
+    assert seen.url == "https://shop.test/?q=red+shoes", "the Document's scheme, the bar's rest"
+    assert seen.url_observed is True
+
+
+def test_a_bar_on_another_host_makes_the_url_unread() -> None:
+    reader = BarReader(document="https://shop.test/", bar="other.test/typed words")
+    seen = read_observed(_snap(BASE), reader, key=KEY)
+    assert seen.url is None
+    assert seen.url_observed is True, "a mismatch is unread, never not observed"
+
+
+def test_no_bar_means_the_in_place_url_is_not_observed() -> None:
+    reader = BarReader(document="https://shop.test/", bar=None)
+    seen = read_observed(_snap(BASE), reader, key=KEY)
+    assert seen.document_url == "https://shop.test/"
+    assert seen.url is None
+    assert seen.url_observed is False

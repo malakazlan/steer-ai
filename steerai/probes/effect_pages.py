@@ -220,9 +220,13 @@ class _TimedReader:
     def __init__(self, browser: _Browser) -> None:
         self._browser = browser
 
-    def document_url(self, hwnd: int) -> DocumentUrl | None:
+    def document_url_in(self, snapshot: Snapshot, document_id: int) -> DocumentUrl | None:
         client = self._browser.client
-        return self._browser.timed("url", lambda: client.document_url(hwnd))
+        return self._browser.timed("url", lambda: client.document_url_in(snapshot, document_id))
+
+    def address_bar(self, hwnd: int) -> str | None:
+        client = self._browser.client
+        return self._browser.timed("address_bar", lambda: client.address_bar(hwnd))
 
     def focused_runtime_id(self) -> tuple[int, ...]:
         return self._browser.timed("focus", self._browser.client.focused_runtime_id)
@@ -287,12 +291,22 @@ class _Browser:
         finally:
             self.costs.setdefault(name, []).append((time.perf_counter() - started) * 1000)
 
-    def read_v2(self) -> Observed:
-        """The v2 observe path (`read_observed`) on one snapshot fetch, each read timed."""
+    def read_cheap(self) -> Observed:
+        """[V2.7] the poll tier: one snapshot fetch and nothing else."""
         snapshot = self.timed(
             "snapshot", lambda: self._model.observe(self.hwnd, cap_s=1.0, stable_window=1)
         )
-        return read_observed(snapshot, _TimedReader(self), key=KEY, windows=self.windows)
+        return Observed(snapshot=snapshot)
+
+    def read_full(self, seen: Observed) -> Observed:
+        """[V2.7] the full tier on a settled snapshot: every fact, the whole read timed."""
+        return self.timed(
+            "full",
+            lambda: read_observed(seen.snapshot, _TimedReader(self), key=KEY, windows=self.windows),
+        )
+
+    def read_v2(self) -> Observed:
+        return self.read_full(self.read_cheap())
 
     def ready(self, marker: str) -> Observed:
         deadline = time.monotonic() + READY_S
@@ -480,7 +494,7 @@ def watch_run(base: str, pair: Pair) -> dict[str, Any]:
         before = browser.read_v2()
         browser.run(pair.act)
         result = watch(
-            browser.read_v2,
+            browser.read_cheap,
             before,
             acted=acted,
             text=pair.text,
@@ -489,6 +503,7 @@ def watch_run(base: str, pair: Pair) -> dict[str, Any]:
             poll_s=WATCH_POLL_S,
             settle_s=WATCH_SETTLE_S,
             deadline_s=WATCH_DEADLINE_S,
+            full=browser.read_full,
         )
         costs = {k: _pcts(v) for k, v in browser.costs.items()}
     finally:
@@ -583,6 +598,7 @@ def _pcts(values: list[float]) -> dict[str, float]:
     return {
         "n": len(ordered),
         "p50": round(ordered[len(ordered) // 2], 1),
+        "p95": round(ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))], 1),
         "max": round(ordered[-1], 1),
     }
 
