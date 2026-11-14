@@ -110,15 +110,15 @@ def test_an_action_on_an_unlisted_id_is_refused_with_a_token_and_a_strike() -> N
 # ---- §8.2 risk only rises ---------------------------------------------------------------------
 
 
-@pending("§8.2 risk only rises")
 def test_a_declared_commit_raises_a_neutral_button_to_r2() -> None:
-    risk = action_risk(act("click", target=GO.id, commit="send"), GO, goal="go", search=None)
+    action = act("click", target=GO.id, commit="send")
+    risk = action_risk(action, GO, goal="go", observed=observed()).risk
     assert risk == "R2"
 
 
-@pending("§8.2 risk only rises")
 def test_no_model_field_lowers_a_deny_word_button() -> None:
-    risk = action_risk(act("click", target=SEND.id, commit="none"), SEND, goal="go", search=None)
+    action = act("click", target=SEND.id, commit="none")
+    risk = action_risk(action, SEND, goal="go", observed=observed()).risk
     assert risk in {"R2", "R3"}
 
 
@@ -134,26 +134,25 @@ SEARCH_FORM = element(96, "Group", "Search", (9, 96), 1)
 SEARCHBOX = element(97, "Edit", "Search", (9, 97), 96)
 SEARCH_BUTTON = element(98, "Button", "", (9, 98), 96)
 SEARCH_LANDMARK = Landmark(kind="search", runtime_id=SEARCH_FORM.runtime_id)
+SUBMIT_SHOWN = [
+    *PAGE,
+    COMPOSE,
+    COMPOSER,
+    SEND_ICON,
+    ICON_BUTTON,
+    SUGGESTION,
+    ELSEWHERE,
+    SEARCH_FORM,
+    SEARCHBOX,
+    SEARCH_BUTTON,
+]
 SUBMIT_SCREEN = dataclasses.replace(
-    observed(
-        [
-            *PAGE,
-            COMPOSE,
-            COMPOSER,
-            SEND_ICON,
-            ICON_BUTTON,
-            SUGGESTION,
-            ELSEWHERE,
-            SEARCH_FORM,
-            SEARCHBOX,
-            SEARCH_BUTTON,
-        ]
-    ),
-    landmarks={
-        SEARCHBOX.runtime_id: SEARCH_LANDMARK,
-        SEARCH_BUTTON.runtime_id: SEARCH_LANDMARK,
-    },
+    observed(SUBMIT_SHOWN),
+    landmarks={e.runtime_id: None for e in SUBMIT_SHOWN}
+    | {SEARCHBOX.runtime_id: SEARCH_LANDMARK, SEARCH_BUTTON.runtime_id: SEARCH_LANDMARK},
 )
+"""Every shown element's nearest landmark was read: none, except the search form's two. An
+element missing from the map would be not observed, and the submit rule fails closed on it."""
 TYPED = ValueFact(filled=True, digest="typed")
 EMPTIED = ValueFact(filled=False, digest="empty")
 PLAIN_FIELD = SearchFacts(
@@ -170,52 +169,58 @@ def typed_into(
     return PendingText(field.runtime_id, TYPED, now, search, goal_span=True)
 
 
-def click_risk(target: Element, pending: Sequence[PendingText]) -> str:
+def click_risk(
+    target: Element, pending: Sequence[PendingText], *, seen: Observed = SUBMIT_SCREEN
+) -> str:
     return action_risk(
         act("click", target=target.id),
         target,
         goal=GOAL,
-        search=None,
-        observed=SUBMIT_SCREEN,
+        observed=seen,
         pending=pending,
-    )
+    ).risk
 
 
-@pending("[V2.22] an unnamed button beside a just-typed plain field is R2")
 def test_an_unnamed_button_beside_a_just_typed_plain_field_is_r2() -> None:
     assert click_risk(ICON_BUTTON, [typed_into(COMPOSER)]) == "R2"
 
 
-@pending("[V2.22] the same button beside a searchbox in a search landmark is a query")
 def test_a_button_in_the_searchboxs_landmark_is_a_query() -> None:
     pending_search = [typed_into(SEARCHBOX, search=SEARCH_FIELD)]
     assert click_risk(SEARCH_BUTTON, pending_search) == "R1"
 
 
-@pending("[V2.22] a button elsewhere on the page stays a plain click")
 def test_a_button_elsewhere_on_the_page_stays_a_plain_click() -> None:
     assert click_risk(ELSEWHERE, [typed_into(COMPOSER)]) == click_risk(ELSEWHERE, [])
 
 
-@pending("[V2.22] addendum 2: any click target counts; an unnamed Image beside a filled composer")
 def test_an_unnamed_image_beside_a_filled_composer_is_r2() -> None:
     assert click_risk(SEND_ICON, [typed_into(COMPOSER)]) == "R2"
 
 
-@pending("[V2.22] addendum 1: bound to pending text, not to the action right after the type")
 def test_the_send_icon_three_actions_after_the_type_is_still_r2() -> None:
     """The rule reads state, not order: three actions later the composer still holds the typed
     digest, so the click is still a submit."""
     assert click_risk(SEND_ICON, [typed_into(COMPOSER, now=TYPED)]) == "R2"
 
 
-@pending("[V2.22] addendum 1: once the field is emptied or gone, a plain click")
-@pytest.mark.parametrize("now", [EMPTIED, None], ids=["emptied", "gone"])
-def test_once_the_field_is_emptied_or_gone_the_click_is_plain(now: ValueFact | None) -> None:
-    assert click_risk(SEND_ICON, [typed_into(COMPOSER, now=now)]) == click_risk(SEND_ICON, [])
+def test_once_the_field_is_emptied_the_click_is_plain() -> None:
+    assert click_risk(SEND_ICON, [typed_into(COMPOSER, now=EMPTIED)]) == click_risk(SEND_ICON, [])
 
 
-@pending("[V2.22] addendum 2: a state-set role under the field's container stays a plain click")
+def test_once_the_field_is_gone_from_the_snapshot_the_click_is_plain() -> None:
+    """Gone means the field left the snapshot; the send icon stays."""
+    without = [e for e in SUBMIT_SHOWN if e.id != COMPOSER.id]
+    seen = dataclasses.replace(observed(without), landmarks={e.runtime_id: None for e in without})
+    pending_gone = [typed_into(COMPOSER, now=None)]
+    assert click_risk(SEND_ICON, pending_gone, seen=seen) == click_risk(SEND_ICON, [], seen=seen)
+
+
+def test_a_field_still_shown_but_unread_fails_closed_to_r2() -> None:
+    """Principal review: `now` unread while the field is in the snapshot is not "gone"."""
+    assert click_risk(SEND_ICON, [typed_into(COMPOSER, now=None)]) == "R2"
+
+
 def test_a_suggestion_list_item_under_the_fields_container_stays_a_plain_click() -> None:
     assert click_risk(SUGGESTION, [typed_into(COMPOSER)]) == click_risk(SUGGESTION, [])
 

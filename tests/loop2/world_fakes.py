@@ -46,6 +46,7 @@ def element(
     parent: int | None,
     *,
     secure: bool = False,
+    automation_id: str = "",
 ) -> Element:
     return Element(
         id=eid,
@@ -56,6 +57,7 @@ def element(
         runtime_id=rid,
         parent_id=parent,
         secure=secure,
+        automation_id=automation_id,
     )
 
 

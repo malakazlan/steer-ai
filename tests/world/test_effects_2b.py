@@ -214,3 +214,18 @@ def test_with_no_scope_document_the_whole_window_is_inside() -> None:
     dialog: Row = (3, "Window", "Save as", (7, 3), 1)
     report = observe(_obs([root, save]), _obs([root, save, dialog]), acted=save[3])
     assert report.dialog_scope == "inside"
+
+
+# ---- [V2.25] addendum: the digest is over normalised text (normalise_name's fold, case kept) --
+
+
+def test_the_digest_ignores_spacing_that_normalisation_folds() -> None:
+    assert value_fact(" red  shoes ", key=KEY) == value_fact("red shoes", key=KEY)
+
+
+def test_the_digest_keeps_case() -> None:
+    assert value_fact("Red shoes", key=KEY) != value_fact("red shoes", key=KEY)
+
+
+def test_only_spaces_is_not_filled() -> None:
+    assert value_fact("   ", key=KEY).filled is False

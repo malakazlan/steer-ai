@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from steerai.action.dispositions import ActionResult, Delivery
+from steerai.errors import ErrorCode
 from steerai.goal_match import Verdict, build_prompt
 from steerai.loop2.consent import (
     Consents,
@@ -59,6 +61,8 @@ class Script:
     asks: list[Ask] = field(default_factory=list)
     rows: list[GoalRow] = field(default_factory=list)
     dispatched: list[GateDecision] = field(default_factory=list)
+    results: list[ActionResult] = field(default_factory=list)
+    """What each dispatch returns, in order (then delivered and verified)."""
 
     def _checks(self) -> RefusalToken | None:
         self.events.append("checks")
@@ -86,9 +90,12 @@ class Script:
         self.events.append("write_ahead")
         return self.written
 
-    def _dispatch(self, decision: GateDecision) -> None:
+    def _dispatch(self, decision: GateDecision) -> ActionResult:
         self.events.append("dispatch")
         self.dispatched.append(decision)
+        if self.results:
+            return self.results.pop(0)
+        return ActionResult(verb="click", delivery=Delivery.DELIVERED_VERIFIED)
 
     def steps(self) -> GateSteps:
         return GateSteps(
@@ -302,3 +309,38 @@ def test_the_goal_check_sees_the_asked_actions_row() -> None:
     script = Script()
     run(script)
     assert (script.rows[0].role, script.rows[0].name) == ("Button", "Send")
+
+
+# ---- [V2.25] (c): v1's one local retry reuses the record and the answer ----------------------
+
+LEFT = ActionResult(verb="click", delivery=Delivery.NOT_DELIVERED, code=ErrorCode.ELEMENT_NOT_FOUND)
+UNCERTAIN = ActionResult(
+    verb="click", delivery=Delivery.DELIVERY_UNCERTAIN, code=ErrorCode.VERIFY_TIMEOUT
+)
+
+
+@pending("[V2.25] (c), §8.4: nothing sent is retried once under the same record and answer")
+@pytest.mark.parametrize("risk", ["R2", "R3"])
+def test_nothing_sent_is_retried_once_with_no_second_ask_or_write_ahead(risk: Risk) -> None:
+    script = Script(results=[LEFT])
+    end = run(script, dataclasses.replace(REQUEST, risk=risk))
+    assert end.kind == "dispatched"
+    assert script.events.count("ask") == 1, "no second answer token"
+    assert script.events.count("write_ahead") == 1, "no second write-ahead for the same key"
+    assert script.events.count("dispatch") == 2
+    assert script.dispatched[0] == script.dispatched[1], "the same decision"
+
+
+@pending("[V2.25] (c): v1's local retry is once")
+def test_the_local_retry_is_once() -> None:
+    script = Script(results=[LEFT, LEFT])
+    run(script)
+    assert script.events.count("dispatch") == 2
+    assert script.events.count("write_ahead") == 1
+
+
+@pending("[V2.25] (c), §8.4: an uncertain delivery is never re-sent")
+def test_an_uncertain_delivery_is_never_re_sent() -> None:
+    script = Script(results=[UNCERTAIN])
+    run(script)
+    assert script.events.count("dispatch") == 1
