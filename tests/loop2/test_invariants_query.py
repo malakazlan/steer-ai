@@ -11,19 +11,19 @@ from steerai.world.effects import EffectClass, EffectReport, Token
 from tests.loop2.world_fakes import report
 
 SEARCHBOX = SearchFacts(
-    searchbox=True, in_search_landmark=False, secure_in_form=False, payment_in_form=False
+    searchbox=True, in_search_landmark=False, secure_in_form=False, risky_in_form=False
 )
 LANDMARK = SearchFacts(
-    searchbox=False, in_search_landmark=True, secure_in_form=False, payment_in_form=False
+    searchbox=False, in_search_landmark=True, secure_in_form=False, risky_in_form=False
 )
 PLAIN = SearchFacts(
-    searchbox=False, in_search_landmark=False, secure_in_form=False, payment_in_form=False
+    searchbox=False, in_search_landmark=False, secure_in_form=False, risky_in_form=False
 )
 WITH_SECURE = SearchFacts(
-    searchbox=True, in_search_landmark=True, secure_in_form=True, payment_in_form=False
+    searchbox=True, in_search_landmark=True, secure_in_form=True, risky_in_form=False
 )
 WITH_PAYMENT = SearchFacts(
-    searchbox=True, in_search_landmark=True, secure_in_form=False, payment_in_form=True
+    searchbox=True, in_search_landmark=True, secure_in_form=False, risky_in_form=True
 )
 
 
@@ -50,7 +50,7 @@ FAILED: list[tuple[SearchFacts, bool, Commit, bool]] = [
 @pytest.mark.parametrize(
     ("field", "goal_span", "commit", "deny_word"),
     FAILED,
-    ids=["secure_in_form", "payment_in_form", "deny_word", "generated_text", "commit_declared"],
+    ids=["secure_in_form", "risky_in_form", "deny_word", "generated_text", "commit_declared"],
 )
 def test_any_failed_condition_makes_it_a_commit(
     field: SearchFacts, goal_span: bool, commit: Commit, deny_word: bool

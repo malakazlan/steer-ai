@@ -30,6 +30,13 @@ from steerai.action.dispositions import ActionResult, Delivery
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2._stub import stub
 from steerai.loop2.decision import ActionDoc, Decision
+from steerai.loop2.form import (
+    ACTING_ROLES,
+    ENTER_FIELDS,
+    STATE_SET_VERB,
+    beside,
+    form_facts,
+)
 from steerai.loop2.guards import StrikeReason
 from steerai.loop2.query import SearchFacts, classify, search_landmark_of
 from steerai.loop2.task import Commit, Task
@@ -212,32 +219,19 @@ ACTIVATING_VERBS: Final = frozenset(
 review 2); the role exclusion keeps real state targets out."""
 SUBMIT_KEYS: Final = frozenset({"Enter", "Space"})
 """Keys that activate a non-field element the way a click does ([V2.22])."""
-STATE_SET_VERB: Final[Mapping[str, str]] = {
-    "ListItem": "select",
-    "TabItem": "select",
-    "TreeItem": "select",
-    "CheckBox": "check",
-    "RadioButton": "check",
-}
-"""[V2.26] (1): the state verb a Space or an Enter performs on each state-set role; the press
-takes that verb's deny scoping (consent and billing read a selected option, as `select` does)."""
 NEIGHBOUR_KEYS: Final = frozenset({"Up", "Down", "Left", "Right", "Home", "End"})
 NEIGHBOUR_ROLES: Final = frozenset({"RadioButton", "ListItem", "TabItem"})
 """[V2.26] (1): an arrow, Home or End on these selects a NEIGHBOUR: the press takes the highest
 tier among the group's members. The group is the target and its siblings of the same role
 under the same parent (the radio group, the list, the tab list). Every ListItem counts as
 single-select (multi-select is not observed), which can only raise the tier."""
-ENTER_FIELDS: Final = frozenset({"Edit", "ComboBox"})
-ACTING_ROLES: Final = frozenset({"Button", "Hyperlink", "MenuItem", "SplitButton"})
-"""[V2.26] (3): Enter by the role it goes to: a field is classified, an acting role is a click
-(deny words and the pending-text rule), a state-set role is (1), anything else is R2."""
 NOT_A_SUBMIT: Final = FIELD_ROLES | frozenset(
     {"CheckBox", "RadioButton", "ListItem", "TabItem", "TreeItem"}
 )
 """[V2.22] addendum: a field or a state-set role is never a submit of a field's text."""
 SENT_COMMITS: Final = frozenset({"send", "submit"})
 NO_SEARCH = SearchFacts(
-    searchbox=False, in_search_landmark=False, secure_in_form=False, payment_in_form=False
+    searchbox=False, in_search_landmark=False, secure_in_form=False, risky_in_form=False
 )
 _ORDER: Final = {risk: index for index, risk in enumerate(RISKS)}
 AskReason = Literal["generated_text", "text_changed", "submit_pending_text"]
@@ -434,12 +428,20 @@ def _classified(  # noqa: PLR0913 - one submit: the tally, the action, its text 
 ) -> Risk:
     """One submit of `held`'s text, like its Enter. The search landmark recorded at typing time
     counts only while the current observation still reads the field in a Search landmark: an
-    unread map or another kind fails closed (#307 review)."""
+    unread map or another kind fails closed (#307 review). The form facts are computed again on
+    this observation and combined with the type-time ones by OR ([V2.30] timing)."""
     _text_checked(tally, action, state)
-    in_landmark = held.search.in_search_landmark
-    still = in_landmark and search_landmark_of(observed, held.field) is not None
+    recorded = held.search
+    still = recorded.in_search_landmark and search_landmark_of(observed, held.field) is not None
+    secure, risky = form_facts(observed, held.field)
+    now = dataclasses.replace(
+        recorded,
+        in_search_landmark=still,
+        secure_in_form=recorded.secure_in_form or secure,
+        risky_in_form=recorded.risky_in_form or risky,
+    )
     return classify(
-        field=dataclasses.replace(held.search, in_search_landmark=still),
+        field=now,
         goal_span=held.goal_span and state == "held",
         commit=action.commit,
         deny_word=denied,
@@ -477,11 +479,11 @@ def _submit(  # noqa: PLR0913 - the tally, the action, its target and the read f
     if not states or target.role in NOT_A_SUBMIT:
         return
     for held, state in states:
-        beside = _beside(observed, held.field, target)
-        if beside is False:
+        near = beside(observed, held.field, target)
+        if near is False:
             continue
         tally.submit_parent = tally.submit_parent or _parent_kind(observed, held.field)
-        if beside is True:
+        if near is True:
             # [V2.28] item 5: decided by the field. A submit click within the [V2.22] scope of a
             # query-class field is classified as that field's Enter; the search landmark only
             # qualifies the field, never the button. A deny word on the target still commits.
@@ -493,39 +495,6 @@ def _submit(  # noqa: PLR0913 - the tally, the action, its target and the read f
         if _ORDER[tier] >= _ORDER["R2"]:
             tally.reasons.add("submit_pending_text")
         tally.raise_to(tier)
-
-
-def _beside(observed: Observed, field: tuple[int, ...], target: Element) -> bool | None:
-    """[V2.22] the target is under the field's parent container, or shares its nearest landmark;
-    None when a fact needed to tell is missing (a broken parent chain, or the landmark map or
-    either element in it not read)."""
-    by_id = {e.id: e for e in observed.snapshot.elements}
-    typed = next(e for e in observed.snapshot.elements if e.runtime_id == field)
-    if typed.parent_id is not None:
-        under = _under(target, typed.parent_id, by_id)
-        if under is not False:
-            return under
-    marks = observed.landmarks
-    if marks is None or field not in marks or target.runtime_id not in marks:
-        return None
-    mine, theirs = marks[field], marks[target.runtime_id]
-    return mine is not None and theirs is not None and mine.runtime_id == theirs.runtime_id
-
-
-def _under(element: Element, ancestor: int, by_id: Mapping[int, Element]) -> bool | None:
-    """True when `ancestor` is above `element`; None when the chain breaks (a parent id that is
-    not in the snapshot): unknown, never "elsewhere" (principal review 3)."""
-    seen: set[int] = set()
-    parent = element.parent_id
-    while parent is not None and parent not in seen:
-        if parent == ancestor:
-            return True
-        current = by_id.get(parent)
-        if current is None:
-            return None
-        seen.add(parent)
-        parent = current.parent_id
-    return False
 
 
 def _parent_kind(observed: Observed, field: tuple[int, ...]) -> ParentKind:

@@ -304,7 +304,7 @@ def deny_tier_of(facts: DenyFacts) -> Risk:
     ids = [i for i in (facts.automation_id, *facts.element_ids) if i]
     controlled = [facts.name, *grouped] if role in CONTROL_ROLES else []
     consenting = role in CONSENT_ROLES or stated
-    billed = [facts.name, *group] if role in BILLING_ROLES or stated else []
+    billed = _billed_names(facts)
     if any(_BILLED.search(comparable(name)) for name in billed):
         risk = "R2"
     classes: tuple[tuple[Mapping[str, Risk], list[str], list[str]], ...] = (
@@ -322,6 +322,30 @@ def deny_tier_of(facts: DenyFacts) -> Risk:
             ):
                 risk = tier
     return risk
+
+
+def _billed_names(facts: DenyFacts) -> list[str]:
+    """The names the billing class reads on the general path (W3-02, [v2.77]): the name and
+    the group name of a CheckBox, a RadioButton and every stated target but a tab."""
+    stated = facts.verb in STATED_VERBS and facts.role != TAB_ROLE
+    if not (facts.role in BILLING_ROLES or stated):
+        return []
+    return [facts.name, *([facts.group_name] if facts.group_name else [])]
+
+
+def billing_reads(facts: DenyFacts) -> bool:
+    """Whether the billing class (its words or the price pattern) reads on these facts, by the
+    same names `deny_tier_of` reads it on: the general path's billed names, or every name of a
+    choose or a listbox select ([V2.30] (3): `risky_in_form`). Raise-only: no tier."""
+    if facts.verb == "choose" and facts.role == CHOOSE_ROLE:
+        names = [facts.name, *(n for n in (facts.option, facts.bound_name, facts.group_name) if n)]
+    elif facts.verb == "select" and facts.role == SELECTED_CONTROL_ROLE:
+        names = [facts.name, *(n for n in (facts.bound_name, facts.group_name) if n)]
+    else:
+        names = _billed_names(facts)
+    if any(_BILLED.search(comparable(name)) for name in names):
+        return True
+    return any(_reads(name, pattern) for pattern in BILLING_PATTERNS for name in names)
 
 
 def _listed_tier(facts: DenyFacts) -> Risk:
