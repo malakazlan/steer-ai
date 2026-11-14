@@ -17,6 +17,8 @@ from steerai.world.effects import EffectReport, Observed, ValueFact, top_documen
 
 QueryOutcome = Literal["expected", "back_to_controller", "unexpected_effect"]
 EnterToken = Literal["unexpected_effect", "unknown", "none", "no_carrier", "weak"]
+RowId = Literal["1", "2", "3", "3b", "4", "5", "6", "7", "8", "9"]
+"""The table's rows; `3b` is [V2.23]/[V2.24]'s out-of-scope dialog, right after row 3."""
 FieldState = Literal["not_typed", "kept", "emptied", "gone", "unread"]
 """The typed field after the Enter or click: `not_typed` when no field typed under the subgoal
 applies (row 2 is skipped), `gone` when it left the snapshot, `unread` when its value could not
@@ -41,7 +43,7 @@ class EnterOutcome:
 
     outcome: QueryOutcome
     token: EnterToken
-    row: int
+    row: RowId
 
     @property
     def releases_key(self) -> bool:
@@ -50,7 +52,7 @@ class EnterOutcome:
         return self.row == ROW_NONE
 
 
-ROW_NONE = 9
+ROW_NONE: Final = "9"
 _STOP: Final = "unexpected_effect"
 _BACK: Final = "back_to_controller"
 
@@ -139,43 +141,53 @@ def query_outcome(  # noqa: PLR0911 - one return per row of the table
     (row 3). A fact the table needs and does not have is `unknown`, never a guess."""
     classes, tokens = report.classes, report.tokens
     if "windows_changed" in tokens:
-        return EnterOutcome(_STOP, "unexpected_effect", 1)
+        return EnterOutcome(_STOP, "unexpected_effect", "1")
     if typed_field == "emptied":
-        return EnterOutcome(_STOP, "unexpected_effect", 2)
+        return EnterOutcome(_STOP, "unexpected_effect", "2")
     if typed_field == "unread":
-        return EnterOutcome(_BACK, "unknown", 2)
-    if "rerendered" in tokens and top_replaced is not False:
-        if top_replaced is None:
-            return EnterOutcome(_BACK, "unknown", 3)
-        return EnterOutcome(_STOP, "unexpected_effect", 3)
+        return EnterOutcome(_BACK, "unknown", "2")
+    third = _rows_3(report, top_replaced=top_replaced)
+    if third is not None:
+        return third
     if _row_4(report, text_carried=text_carried):
-        return EnterOutcome(_STOP, "unexpected_effect", 4)
+        return EnterOutcome(_STOP, "unexpected_effect", "4")
     if "unknown" in classes or (not classes and report.unread):
-        return EnterOutcome(_BACK, "unknown", 5)
+        return EnterOutcome(_BACK, "unknown", "5")
     if classes & STRONG and text_carried:
-        return EnterOutcome("expected", "none", 6)
+        return EnterOutcome("expected", "none", "6")
     if classes & URL_MOVED:
-        return EnterOutcome(_BACK, "no_carrier", 7)
+        return EnterOutcome(_BACK, "no_carrier", "7")
     if _weak_only(report):
-        return EnterOutcome(_BACK, "weak", 8)
+        return EnterOutcome(_BACK, "weak", "8")
     if classes == frozenset({"none"}) and not tokens and not report.unread:
         return EnterOutcome(_BACK, "none", ROW_NONE)
-    return EnterOutcome(_BACK, "unknown", 5)
+    return EnterOutcome(_BACK, "unknown", "5")
+
+
+def _rows_3(report: EffectReport, *, top_replaced: bool | None) -> EnterOutcome | None:
+    """Row 3, a reload of the top Document, and row 3b ([V2.23], [V2.24]): a dialog outside the
+    scope beside a strong class, read only from the observer's `dialog_scope`. A missing fact is
+    `unknown`."""
+    if "rerendered" in report.tokens and top_replaced is not False:
+        if top_replaced is None:
+            return EnterOutcome(_BACK, "unknown", "3")
+        return EnterOutcome(_STOP, "unexpected_effect", "3")
+    if "dialog_opened" in report.classes and report.classes & STRONG:
+        if report.dialog_scope == "outside":
+            return EnterOutcome(_STOP, "unexpected_effect", "3b")
+        if report.dialog_scope is None:
+            return EnterOutcome(_BACK, "unknown", "3b")
+    return None
 
 
 def _row_4(report: EffectReport, *, text_carried: bool) -> bool:
-    """[V2.21], [V2.23] row 4, a stop, after row 3 and before rows 5 to 7:
-
-    - a dialog outside the scope (it comes with `frame_changed`, never `revealed`), even with a
-      URL change: evaluated first;
-    - a dialog in the scope with no strong class, whatever the carrier;
-    - content or a reveal with no carrier, only while the URL did not change.
-    """
+    """[V2.21], [V2.23] row 4, a stop: a dialog with no strong class, whatever the carrier and
+    wherever it opened; content or a reveal with no carrier, only while the URL did not change.
+    An out-of-scope dialog beside a strong class is row 3b, read from the observer's
+    `dialog_scope` ([V2.24]), never inferred from other tokens."""
     classes = report.classes
-    if "dialog_opened" in classes:
-        outside = "revealed" not in classes and "frame_changed" in report.tokens
-        if outside or not classes & STRONG:
-            return True
+    if "dialog_opened" in classes and not classes & STRONG:
+        return True
     return bool(classes & NEEDS_CARRIER) and not text_carried and not classes & URL_MOVED
 
 

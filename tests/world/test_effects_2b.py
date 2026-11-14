@@ -165,3 +165,52 @@ def test_the_new_classes_have_a_place_in_the_log_precedence() -> None:
     assert PRECEDENCE.index("dialog_opened") < PRECEDENCE.index("own_state")
     assert replace(_obs(BASE), focus=None).focus is None
     assert LIST[0] != PAGE[0]
+
+
+# ---- [V2.24] 1: where the dialog opened, as an explicit fact ----------------------------------
+
+CHROME_WINDOW: Row = (20, "Window", "Shop - Browser", (8, 1), None)
+IN_WINDOW_PAGE: Row = (1, "Document", "Shop", (9, 1), 20)
+FRAMED = [CHROME_WINDOW, IN_WINDOW_PAGE, *BASE[1:]]
+PROMPT: Row = (30, "Window", "Allow notifications?", (8, 30), 20)
+
+
+def test_no_dialog_has_no_dialog_scope() -> None:
+    assert observe(_obs(BASE), _obs(BASE), acted=FIELD[3]).dialog_scope is None
+
+
+def test_a_dialog_under_the_acted_element_is_inside() -> None:
+    dialog: Row = (6, "Window", "Rename project", (9, 6), 1)
+    report = observe(_obs(BASE), _obs([*BASE, dialog]), acted=FIELD[3])
+    assert report.dialog_scope == "inside"
+
+
+def test_an_in_page_modal_elsewhere_in_the_document_is_inside() -> None:
+    """[V2.24]: `revealed` covers only what appears under the acted element; a modal elsewhere
+    in the page is still inside the scope Document."""
+    modal: Row = (6, "Group", "Sign in", (9, 6), 1)
+    after = _obs([*BASE, modal], aria={(9, 6): "dialog"})
+    report = observe(_obs(BASE), after, acted=FIELD[3])
+    assert "dialog_opened" in report.classes
+    assert report.dialog_scope == "inside"
+
+
+def test_a_dialog_outside_the_scope_document_is_outside() -> None:
+    report = observe(_obs(FRAMED), _obs([*FRAMED, PROMPT]), acted=FIELD[3])
+    assert report.dialog_scope == "outside"
+
+
+def test_any_dialog_outside_makes_the_fact_outside() -> None:
+    inside: Row = (6, "Group", "Sign in", (9, 6), 1)
+    after = _obs([*FRAMED, inside, PROMPT], aria={(9, 6): "dialog"})
+    report = observe(_obs(FRAMED), after, acted=FIELD[3])
+    assert report.dialog_scope == "outside"
+
+
+def test_with_no_scope_document_the_whole_window_is_inside() -> None:
+    """[V2.11] item 7: with no scope Document the whole window is the scope."""
+    root: Row = (1, "Window", "Notes", (7, 1), None)
+    save: Row = (2, "Button", "Save", (7, 2), 1)
+    dialog: Row = (3, "Window", "Save as", (7, 3), 1)
+    report = observe(_obs([root, save]), _obs([root, save, dialog]), acted=save[3])
+    assert report.dialog_scope == "inside"
