@@ -350,3 +350,109 @@ def test_landmarks_unread_and_changed_text_under_commit_none_asks_text_changed()
     seen = verdict("click", UNNAMED, pend=pending(COMPOSER, now=CHANGED), seen=blind)
     assert seen.risk == "R2"
     assert "text_changed" in seen.reasons
+
+
+# ---- [V2.26] (1): a press on a state-set element takes its state verb's scoping ---------------
+
+PLANS = element(70, "Group", "Plan", (9, 70), 1)
+FREE = element(71, "RadioButton", "Free", (9, 71), 70)
+PRO = element(72, "RadioButton", "Pro $9/mo", (9, 72), 70)
+OPTIONS = element(73, "List", "Options", (9, 73), 1)
+KEEP = element(74, "ListItem", "Keep account", (9, 74), 73)
+GONE = element(75, "ListItem", "Delete account", (9, 75), 73)
+SUBSCRIBE = element(76, "ListItem", "Subscribe $10/mo", (9, 76), 73)
+TABS = element(77, "Tab", "", (9, 77), 1)
+HOME_TAB = element(78, "TabItem", "Home", (9, 78), 77)
+DELETE_TAB = element(79, "TabItem", "Delete", (9, 79), 77)
+TERMS = element(80, "CheckBox", "I agree to the terms", (9, 80), 1)
+LINK = element(81, "Hyperlink", "Help", (9, 81), 1)
+STATIC = element(82, "Text", "Total", (9, 82), 1)
+PANEL = element(83, "Pane", "", (9, 83), 1)
+STATE_SHOWN = [
+    *SHOWN,
+    PLANS,
+    FREE,
+    PRO,
+    OPTIONS,
+    KEEP,
+    GONE,
+    SUBSCRIBE,
+    TABS,
+    HOME_TAB,
+    DELETE_TAB,
+    TERMS,
+    LINK,
+    STATIC,
+    PANEL,
+]
+
+
+def press(target: Element, key: str, **kw: object) -> str:
+    return risk("press", target, key=key, seen=screen(STATE_SHOWN), **kw)
+
+
+@pytest.mark.parametrize("key", ["Space", "Enter"])
+def test_space_or_enter_on_a_list_item_takes_selects_scoping(key: str) -> None:
+    assert press(SUBSCRIBE, key) == "R2", "billing reads a selected option, as `select` does"
+
+
+@pytest.mark.parametrize("key", ["Space", "Enter"])
+def test_space_or_enter_on_a_checkbox_takes_checks_scoping(key: str) -> None:
+    assert press(TERMS, key) == "R2"
+
+
+def test_space_on_a_neutral_list_item_keeps_the_state_floor() -> None:
+    assert press(KEEP, "Space") == "R1"
+
+
+@pytest.mark.parametrize("key", ["Down", "Up", "Home", "End"])
+def test_an_arrow_key_in_a_billing_radio_group_is_raised(key: str) -> None:
+    """The arrow selects a neighbour: the group's highest tier, not the focused one's."""
+    assert press(FREE, key) == "R2"
+
+
+def test_an_arrow_key_on_a_list_item_takes_its_lists_highest_tier() -> None:
+    assert press(KEEP, "Down") == "R3"
+
+
+def test_an_arrow_key_on_a_tab_takes_its_tab_lists_highest_tier() -> None:
+    assert press(HOME_TAB, "Right") == "R3"
+
+
+def test_an_arrow_key_on_a_field_is_unchanged() -> None:
+    assert press(PLAIN_BOX, "Down") == "R0"
+
+
+# ---- [V2.26] (3): Enter by the role of the element it goes to --------------------------------
+
+
+def test_enter_on_a_search_field_is_classified() -> None:
+    assert press(BOX, "Enter", pend=pending(BOX, SEARCHY)) == "R1"
+
+
+def test_enter_on_an_acting_role_is_a_click_with_its_deny_words() -> None:
+    assert press(SENDER, "Enter") == "R2"
+
+
+def test_enter_on_a_neutral_link_is_a_plain_click() -> None:
+    assert press(LINK, "Enter") == "R0"
+
+
+def test_enter_on_an_acting_role_beside_pending_text_is_a_submit() -> None:
+    assert press(ICON, "Enter", pend=pending(COMPOSER)) == "R2"
+
+
+@pytest.mark.parametrize(
+    "target", [WRAP, DOC, PANEL, STATIC], ids=["group", "document", "pane", "text"]
+)
+def test_enter_on_anything_else_is_r2(target: Element) -> None:
+    assert press(target, "Enter") == "R2"
+
+
+@pytest.mark.parametrize("key", ["Tab", "Escape", "PageDown", "PageUp"])
+def test_tab_escape_and_paging_keys_are_unchanged(key: str) -> None:
+    assert press(WRAP, key) == "R0"
+
+
+def test_space_on_a_neutral_button_is_unchanged() -> None:
+    assert press(UNNAMED, "Space") == "R0"

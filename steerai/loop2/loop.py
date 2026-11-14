@@ -211,6 +211,25 @@ ACTIVATING_VERBS: Final = frozenset(
 review 2); the role exclusion keeps real state targets out."""
 SUBMIT_KEYS: Final = frozenset({"Enter", "Space"})
 """Keys that activate a non-field element the way a click does ([V2.22])."""
+STATE_SET_VERB: Final[Mapping[str, str]] = {
+    "ListItem": "select",
+    "TabItem": "select",
+    "TreeItem": "select",
+    "CheckBox": "check",
+    "RadioButton": "check",
+}
+"""[V2.26] (1): the state verb a Space or an Enter performs on each state-set role; the press
+takes that verb's deny scoping (consent and billing read a selected option, as `select` does)."""
+NEIGHBOUR_KEYS: Final = frozenset({"Up", "Down", "Left", "Right", "Home", "End"})
+NEIGHBOUR_ROLES: Final = frozenset({"RadioButton", "ListItem", "TabItem"})
+"""[V2.26] (1): an arrow, Home or End on these selects a NEIGHBOUR: the press takes the highest
+tier among the group's members. The group is the target and its siblings of the same role
+under the same parent (the radio group, the list, the tab list). Every ListItem counts as
+single-select (multi-select is not observed), which can only raise the tier."""
+ENTER_FIELDS: Final = frozenset({"Edit", "ComboBox"})
+ACTING_ROLES: Final = frozenset({"Button", "Hyperlink", "MenuItem", "SplitButton"})
+"""[V2.26] (3): Enter by the role it goes to: a field is classified, an acting role is a click
+(deny words and the pending-text rule), a state-set role is (1), anything else is R2."""
 NOT_A_SUBMIT: Final = FIELD_ROLES | frozenset(
     {"CheckBox", "RadioButton", "ListItem", "TabItem", "TreeItem"}
 )
@@ -290,11 +309,12 @@ def action_risk(
     An empty name raises nothing by itself; an unnamed target is still raised by its automation
     id, its group name and the submit rule. `goal` is kept for the step-4 goal check."""
     del goal  # the per-action goal check is step 4
+    scoping = _scoping_verb(action, element)
     tally = _Tally(COMMIT_RISK[action.commit])
-    tally.raise_to("R1" if action.verb in STATE_FLOOR else "R0")
+    tally.raise_to("R1" if scoping in STATE_FLOOR else "R0")
     deny: Risk = "R0"
     if action.verb not in NO_DENY_VERBS:
-        deny = deny_tier_of(_deny_facts(action, element, observed))
+        deny = _deny(action, element, observed, scoping)
         tally.raise_to(deny)
         if _parent_unread(element, observed):
             tally.raise_to("R2")  # its group name cannot be read: never read as "no group"
@@ -303,9 +323,14 @@ def action_risk(
     states = _states(observed, pending)
     denied = _ORDER[deny] >= _ORDER["R2"]
     is_key = action.verb == "press"
-    if is_key and action.key == "Enter" and element.role in FIELD_ROLES:
-        _enter(tally, action, element, states, denied=denied)
-    elif action.verb in ACTIVATING_VERBS or (is_key and action.key in SUBMIT_KEYS):
+    if is_key and action.key == "Enter":
+        if element.role in ENTER_FIELDS:
+            _enter(tally, action, element, states, denied=denied)
+        elif element.role in ACTING_ROLES:
+            _submit(tally, action, element, observed, states, denied=denied)
+        elif element.role not in STATE_SET_VERB:
+            tally.raise_to("R2")  # [V2.26] (3): an Enter on anything else, or no known target
+    elif action.verb in ACTIVATING_VERBS or (is_key and action.key == "Space"):
         _submit(tally, action, element, observed, states, denied=denied)
     if _ORDER[tally.risk] >= _ORDER["R2"] and _generated(action, states):
         tally.reasons.add("generated_text")
@@ -325,9 +350,38 @@ def _parent_unread(element: Element, observed: Observed) -> bool:
     )
 
 
-def _deny_facts(action: ActionDoc, element: Element, observed: Observed) -> DenyFacts:
+def _scoping_verb(action: ActionDoc, element: Element) -> str:
+    """The verb whose deny scoping the action takes ([V2.26]): a Space or an Enter on a
+    state-set role takes its state verb, an Enter on an acting role a click's; any other action
+    its own verb (a press keeps the element it goes to)."""
+    if action.verb != "press":
+        return action.verb
+    if action.key in {"Space", "Enter"} and element.role in STATE_SET_VERB:
+        return STATE_SET_VERB[element.role]
+    if action.key == "Enter" and element.role in ACTING_ROLES:
+        return "click"
+    return action.verb
+
+
+def _deny(action: ActionDoc, element: Element, observed: Observed, scoping: str) -> Risk:
+    """v1's deny tier for the element, or, for an arrow, Home or End on a radio, a list item or
+    a tab, the highest among the members of its group ([V2.26] (1))."""
+    neighbour = action.verb == "press" and action.key in NEIGHBOUR_KEYS
+    if not (neighbour and element.role in NEIGHBOUR_ROLES):
+        return deny_tier_of(_deny_facts(action, element, observed, verb=scoping))
+    verb = STATE_SET_VERB[element.role]
+    members = [
+        e
+        for e in observed.snapshot.elements
+        if e.role == element.role and e.parent_id == element.parent_id
+    ] or [element]
+    tiers = [deny_tier_of(_deny_facts(action, m, observed, verb=verb)) for m in members]
+    return _highest(*tiers)
+
+
+def _deny_facts(action: ActionDoc, element: Element, observed: Observed, *, verb: str) -> DenyFacts:
     return DenyFacts(
-        verb=action.verb,
+        verb=verb,
         role=element.role,
         name=element.name,
         automation_id=element.automation_id,
