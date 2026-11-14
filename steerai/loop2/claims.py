@@ -34,13 +34,38 @@ ClaimToken = Literal[
     "standard_only",
     "no_record",
     "param_not_sent",
-    "preexisting",
-    "duplicate_effect",
-    "partial_content",
     "inside_composer",
     "composer_not_cleared",
     "composer_unreadable",
+    "no_scope",
+    "anchor_vanished",
+    "scope_churn",
+    "not_new",
+    "no_match",
+    "scope_shifted",
+    "not_replaced",
+    "duplicate_effect",
+    "count_unchanged",
+    "pending_status",
+    "failed_status",
 ]
+"""Step 4's own tokens, then the strict tier's: `inside_composer` and `composer_not_cleared` are
+new in v2 (T1 has no equivalent); `no_scope` to `failed_status` are T1's `Appeared` reasons,
+passed through unchanged ([V2.17] item 7)."""
+T1_REASONS: Final = (
+    "no_scope",
+    "anchor_vanished",
+    "scope_churn",
+    "not_new",
+    "no_match",
+    "scope_shifted",
+    "not_replaced",
+    "duplicate_effect",
+    "count_unchanged",
+    "pending_status",
+    "failed_status",
+)
+"""The failure reasons `verify.t1` gives an `Appeared` (`_appeared_exact`, `_miss`)."""
 Signal = Literal["in_delta", "new_top_document", "under_revealed"]
 MAX_EVIDENCE: Final = 4
 """The most ids one `content_present` claim may cite (§3.1 rule 2)."""
@@ -73,11 +98,9 @@ class SubgoalFacts:
     """Revealed roots of this subgoal's effect reports since the baseline (§3.2)."""
     controlled: tuple[RuntimeId, ...] = ()
     """Elements named by a typed field's ControllerFor, as read (§3.2; probe P1)."""
-
-    @property
-    def search(self) -> bool:
-        """[V2.15] Q4 as read in packet §9: a commit-`none` subgoal with a `type` into a field."""
-        return self.commit == "none" and bool(self.typed_fields)
+    typed_params: frozenset[str] = frozenset()
+    """The params Steer itself typed under this subgoal. [V2.17] item 2: the selectable-option
+    rule applies only when the claim's param is one of them (the echo risk)."""
 
 
 @dataclass(frozen=True)
@@ -122,6 +145,13 @@ def check_content(  # noqa: PLR0913 - the claim, its screens, and keyword-only f
     `none`, the strict rules (§3.3) otherwise. `records` are this task's write-ahead records;
     `field_filled` is the live read of `sent.field` (None: unread)."""
     raise NotImplementedError("step 4: content_present")
+
+
+@stub
+def strict_reason(t1_reason: str) -> ClaimToken:
+    """A T1 `Appeared` failure reason as the strict tier's reject token: passed through
+    unchanged ([V2.17] item 7). A reason outside `T1_REASONS` raises ValueError."""
+    raise NotImplementedError("step 4: T1 reasons")
 
 
 @stub

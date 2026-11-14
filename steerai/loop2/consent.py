@@ -45,17 +45,25 @@ def effective_commit(declared: Commit, dispatched: Sequence[Commit]) -> Commit:
     raise NotImplementedError("step 4: the effective commit")
 
 
+WordClass = Literal["deny", "control", "consent", "billing"]
+"""The gate's word classes: `DENY_PATTERNS`, `CONTROL_PATTERNS`, `CONSENT_PATTERNS`,
+`BILLING_PATTERNS`."""
+
+
 @stub
-def commit_refusal(
+def commit_refusal(  # noqa: PLR0913 - the closed facts of §3.3, keyword-only
     *,
     subgoal_commit: Commit,
     prior: Sequence[Commit],
     action_commit: Commit,
-    deny_raised: bool,
+    verb: str,
+    raised_by: WordClass | None,
     typed_param: str | None,
 ) -> CommitToken | None:
-    """§3.3, before any ask: two non-`none` kinds on one subgoal (`commit_conflict`); a deny-word
-    raise with declared commit `none` (`commit_undeclared`); a delete or pay (`not_in_step`); a
+    """§3.3, before any ask: two non-`none` kinds on one subgoal (`commit_conflict`); a raise
+    with declared commit `none` (`commit_undeclared`) by a deny word on any verb, or by a
+    control, consent or billing word on a click or a key press ([V2.17] item 1; on a state verb
+    those classes ask and the live read proves the state); a delete or pay (`not_in_step`); a
     send or submit with no verified `type` of a subgoal param (`no_strict_shape`). `prior` are
     the declared commits of the subgoal's dispatched actions."""
     raise NotImplementedError("step 4: commit checks")

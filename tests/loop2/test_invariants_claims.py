@@ -29,6 +29,7 @@ def facts(
     typed_fields: tuple[RuntimeId, ...] = (),
     revealed_roots: tuple[RuntimeId, ...] = (),
     controlled: tuple[RuntimeId, ...] = (),
+    typed_params: frozenset[str] = frozenset(),
 ) -> SubgoalFacts:
     return dataclasses.replace(
         BASE,
@@ -36,6 +37,7 @@ def facts(
         typed_fields=typed_fields,
         revealed_roots=revealed_roots,
         controlled=controlled,
+        typed_params=typed_params,
     )
 
 
@@ -230,8 +232,8 @@ def test_a_list_that_only_shares_a_container_with_the_field_is_not_field_owned()
     assert result.proof is not None
 
 
-@pending("[V2.15] Q4: a selectable ListItem is never evidence for a search subgoal")
-def test_a_selectable_list_item_is_option_evidence_for_a_search_subgoal() -> None:
+@pending("[V2.17].2: a selectable ListItem is never evidence for text Steer typed")
+def test_a_selectable_list_item_is_option_evidence_for_typed_text() -> None:
     option = Element(
         id=75,
         depth=2,
@@ -242,13 +244,13 @@ def test_a_selectable_list_item_is_option_evidence_for_a_search_subgoal() -> Non
         parent_id=73,
         caps=("selectable",),
     )
-    subgoal = facts(typed_fields=(FORM_FIELD.runtime_id,))
+    subgoal = facts(typed_fields=(FORM_FIELD.runtime_id,), typed_params=frozenset({"text"}))
     shown = [FORM, INNER, FORM_FIELD, FORM_LIST, option]
     assert "option_evidence" in check(claim(option.id), shown, subgoal).tokens
 
 
-@pending("[V2.15] Q4: a selected ListItem is a listbox option too")
-def test_a_selected_list_item_is_option_evidence_for_a_search_subgoal() -> None:
+@pending("[V2.17].2: a selected ListItem is a listbox option too")
+def test_a_selected_list_item_is_option_evidence_for_typed_text() -> None:
     option = Element(
         id=76,
         depth=2,
@@ -259,9 +261,26 @@ def test_a_selected_list_item_is_option_evidence_for_a_search_subgoal() -> None:
         parent_id=73,
         caps=("selected",),
     )
-    subgoal = facts(typed_fields=(FORM_FIELD.runtime_id,))
+    subgoal = facts(typed_fields=(FORM_FIELD.runtime_id,), typed_params=frozenset({"text"}))
     shown = [FORM, INNER, FORM_FIELD, FORM_LIST, option]
     assert "option_evidence" in check(claim(option.id), shown, subgoal).tokens
+
+
+@pending("[V2.17].2: the option rule covers only the param Steer typed under the subgoal")
+def test_a_list_option_is_evidence_when_the_subgoal_typed_something_else() -> None:
+    option = Element(
+        id=77,
+        depth=2,
+        role="ListItem",
+        name="Red shoes",
+        box=(0, 770, 100, 778),
+        runtime_id=(9, 77),
+        parent_id=73,
+        caps=("selectable",),
+    )
+    subgoal = facts(typed_fields=(FORM_FIELD.runtime_id,), typed_params=frozenset({"short"}))
+    shown = [FORM, INNER, FORM_FIELD, FORM_LIST, option]
+    assert check(claim(option.id), shown, subgoal).proof is not None
 
 
 @pending("[V2.3]: under a revealed root that is not field-owned, with under_revealed")

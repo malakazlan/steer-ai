@@ -6,7 +6,10 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Sequence
 
+import pytest
+
 from steerai.loop2.claims import (
+    T1_REASONS,
     Checked,
     CommitRecord,
     Proof,
@@ -15,6 +18,7 @@ from steerai.loop2.claims import (
     Tier,
     check_content,
     closes,
+    strict_reason,
 )
 from steerai.loop2.decision import Claim
 from steerai.loop2.task import GoalSpan
@@ -106,10 +110,10 @@ def test_a_param_other_than_the_one_typed_is_param_not_sent() -> None:
     assert "param_not_sent" in result.tokens
 
 
-@pending("§3.3 strict rule 4 preexisting")
-def test_content_already_in_the_records_before_is_preexisting() -> None:
+@pending("§3.3 strict rule 4, T1 not_new ([V2.17].7)")
+def test_content_already_in_the_records_before_is_not_new() -> None:
     old = dataclasses.replace(RECORD, before=snapshot([*PAGE, BUBBLE]))
-    assert "preexisting" in check([*PAGE, BUBBLE], records=(old,)).tokens
+    assert "not_new" in check([*PAGE, BUBBLE], records=(old,)).tokens
 
 
 @pending("§3.3 strict rule 4 duplicate_effect")
@@ -127,19 +131,19 @@ def test_a_second_record_never_hides_a_duplicate() -> None:
     assert "duplicate_effect" in check([*PAGE, BUBBLE, twin], records=(RECORD, later)).tokens
 
 
-@pending("§3.3 strict rule 4 partial_content")
-def test_part_of_the_content_is_partial_content() -> None:
+@pending("§3.3 strict rule 4, T1 no_match ([V2.17].7)")
+def test_part_of_the_content_is_no_match() -> None:
     part = element(12, "ListItem", "ok", (5, 12), 4)
-    assert "partial_content" in check([*PAGE, part], cited=claim(part.id)).tokens
+    assert "no_match" in check([*PAGE, part], cited=claim(part.id)).tokens
 
 
-@pending("§3.3 strict rule 4 inside_composer")
+@pending("§3.3 inside_composer, a v2 token with no T1 equivalent")
 def test_the_content_inside_the_composer_is_inside_composer() -> None:
     echo = element(13, "Text", "ok thanks", (5, 13), 2)
     assert "inside_composer" in check([*PAGE, echo], cited=claim(echo.id)).tokens
 
 
-@pending("§3.3 strict rule 6 composer_not_cleared")
+@pending("§3.3 composer_not_cleared, a v2 token with no T1 equivalent")
 def test_a_field_still_filled_is_composer_not_cleared() -> None:
     assert "composer_not_cleared" in check([*PAGE, BUBBLE], filled=True).tokens
 
@@ -185,3 +189,15 @@ def test_a_strict_proof_closes_a_commit_subgoal() -> None:
 @pending("§7.1: a standard proof closes a commit-none subgoal")
 def test_a_standard_proof_closes_a_commit_none_subgoal() -> None:
     assert closes("none", proof("standard")) is None
+
+
+@pending("[V2.17].7: the strict tier passes T1's Appeared reasons through unchanged")
+@pytest.mark.parametrize("reason", T1_REASONS)
+def test_every_t1_reason_passes_through_the_strict_tier(reason: str) -> None:
+    assert strict_reason(reason) == reason
+
+
+@pending("[V2.17].7: a reason T1 never gives is refused, never mapped")
+def test_a_reason_outside_t1_is_refused() -> None:
+    with pytest.raises(ValueError, match="reason"):
+        strict_reason("preexisting")

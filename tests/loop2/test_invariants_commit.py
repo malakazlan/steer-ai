@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 
 from steerai.loop2.consent import (
+    WordClass,
     commit_refusal,
     effective_commit,
     needs_write_ahead,
@@ -15,7 +16,7 @@ from steerai.loop2.consent import (
 from steerai.loop2.query import query_outcome
 from steerai.loop2.task import Commit
 from steerai.orchestrator.contracts import Risk
-from steerai.world.effects import EffectClass
+from steerai.world.effects import EffectClass, Token
 from tests.loop2.world_fakes import pending, report
 
 
@@ -47,31 +48,48 @@ def refusal(
     subgoal: Commit = "none",
     prior: tuple[Commit, ...] = (),
     action: Commit = "none",
-    deny: bool = False,
+    verb: str = "click",
+    raised_by: WordClass | None = None,
     typed: str | None = "text",
 ) -> str | None:
     return commit_refusal(
         subgoal_commit=subgoal,
         prior=prior,
         action_commit=action,
-        deny_raised=deny,
+        verb=verb,
+        raised_by=raised_by,
         typed_param=typed,
     )
 
 
 @pending("[V2.15] Q2 commit_undeclared: a deny-word raise needs a declared commit")
-def test_a_deny_word_raise_with_commit_none_is_commit_undeclared() -> None:
-    assert refusal(deny=True) == "commit_undeclared"
+@pytest.mark.parametrize("verb", ["click", "press", "check"])
+def test_a_deny_word_raise_with_commit_none_is_commit_undeclared(verb: str) -> None:
+    assert refusal(verb=verb, raised_by="deny") == "commit_undeclared"
 
 
 @pending("[V2.15] Q2: a deny-word raise with a declared commit goes on")
 def test_a_deny_word_raise_with_a_declared_send_and_a_typed_param_is_allowed() -> None:
-    assert refusal(deny=True, action="send", subgoal="send") is None
+    assert refusal(raised_by="deny", action="send", subgoal="send") is None
 
 
 @pending("[V2.15] Q2: only a deny-word raise makes a subgoal strict")
-def test_a_caution_raise_without_a_deny_word_is_not_refused() -> None:
-    assert refusal(deny=False, action="none", typed="text") is None
+def test_a_caution_raise_without_a_word_class_is_not_refused() -> None:
+    assert refusal(raised_by=None, action="none", typed="text") is None
+
+
+@pending("[V2.17].1: a control, consent or billing raise on a click or a press is like a deny word")
+@pytest.mark.parametrize("verb", ["click", "press"])
+@pytest.mark.parametrize("word", ["control", "consent", "billing"])
+def test_a_word_class_raise_on_a_click_or_press_needs_a_commit(verb: str, word: WordClass) -> None:
+    assert refusal(verb=verb, raised_by=word) == "commit_undeclared"
+
+
+@pending("[V2.17].1: on a state verb those classes ask, and the live read proves the state")
+@pytest.mark.parametrize("verb", ["check", "uncheck", "select"])
+@pytest.mark.parametrize("word", ["control", "consent", "billing"])
+def test_a_word_class_raise_on_a_state_verb_is_not_refused(verb: str, word: WordClass) -> None:
+    assert refusal(verb=verb, raised_by=word) is None
 
 
 @pending("§3.3 commit_conflict")
@@ -87,13 +105,13 @@ def test_a_kind_other_than_an_earlier_actions_is_commit_conflict() -> None:
 @pending("[V2.15] Q3: delete and pay are not in 4a to 4d")
 @pytest.mark.parametrize("commit", ["delete", "pay"])
 def test_delete_and_pay_are_not_in_step(commit: Commit) -> None:
-    assert refusal(subgoal=commit, action=commit, deny=True) == "not_in_step"
+    assert refusal(subgoal=commit, action=commit, raised_by="deny") == "not_in_step"
 
 
 @pending("[V2.15] amendment 2: no_strict_shape is a recorded limit")
 @pytest.mark.parametrize("commit", ["send", "submit"])
 def test_a_send_without_a_typed_param_is_no_strict_shape(commit: Commit) -> None:
-    assert refusal(subgoal=commit, action=commit, deny=True, typed=None) == "no_strict_shape"
+    assert refusal(subgoal=commit, action=commit, raised_by="deny", typed=None) == "no_strict_shape"
 
 
 @pending("§8.4: every R2/R3 dispatch has a write-ahead record first")
@@ -143,3 +161,25 @@ def test_anything_else_after_a_caution_enter_is_unexpected(effect: EffectClass) 
 @pending("[V2.15] Q2: results without the text are not results")
 def test_a_change_without_the_text_after_a_caution_enter_is_unexpected() -> None:
     assert query_outcome(report("content_changed"), text_carried=False) == "unexpected_effect"
+
+
+WEAK: list[tuple[tuple[EffectClass, ...], tuple[Token, ...]]] = [
+    (("focus",), ()),
+    (("own_state",), ()),
+    ((), ("frame_changed",)),
+    (("focus", "own_state"), ("frame_changed",)),
+]
+
+
+@pending("[V2.17].4: weak only at the deadline goes back to the controller, never unexpected")
+@pytest.mark.parametrize(("classes", "tokens"), WEAK, ids=["focus", "own_state", "frame", "all"])
+def test_weak_only_after_a_caution_enter_goes_back_to_the_controller(
+    classes: tuple[EffectClass, ...], tokens: tuple[Token, ...]
+) -> None:
+    effect = report(*classes, tokens=tokens)
+    assert query_outcome(effect, text_carried=False) == "back_to_controller"
+
+
+@pending("[V2.17].4: unknown after a caution Enter goes back to the controller")
+def test_unknown_after_a_caution_enter_goes_back_to_the_controller() -> None:
+    assert query_outcome(report("unknown"), text_carried=False) == "back_to_controller"
