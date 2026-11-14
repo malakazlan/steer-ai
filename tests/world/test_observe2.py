@@ -3,17 +3,22 @@ None (not observed), the value is kept only as a `ValueFact`, and a secure field
 
 from __future__ import annotations
 
+import dataclasses
+from collections.abc import Callable
+
 from steerai.world.address_bar import DocumentUrl
-from steerai.world.effects import Observed, observe, poll_tier, value_fact
+from steerai.world.effects import Observed, value_fact
 from steerai.world.landmarks import Landmark, PageFacts
+from steerai.world.model import Snapshot
 from steerai.world.observe2 import (
-    document_ready,
+    FIRST_QUIET_S,
+    FirstTouches,
+    document_nodes,
     first_observation,
     in_place_url,
-    poll_observed,
     read_observed,
 )
-from tests.world.test_effects_conditions import BASE, FIELD, PAGE, _snap
+from tests.world.test_effects_conditions import BASE, PAGE, _snap
 
 KEY = b"k" * 32
 
@@ -166,7 +171,6 @@ def _never() -> str:
 
 
 def test_the_value_of_a_field_with_an_unread_secure_flag_is_never_read() -> None:
-    import dataclasses  # noqa: PLC0415 - this test only
 
     snap = dataclasses.replace(_snap(BASE), unread_secure=frozenset({2}))
     seen = read_observed(snap, Reader(), key=KEY, acted=2, acted_value=_never)
@@ -174,7 +178,6 @@ def test_the_value_of_a_field_with_an_unread_secure_flag_is_never_read() -> None
 
 
 def test_the_value_of_a_secure_field_is_never_read() -> None:
-    import dataclasses  # noqa: PLC0415 - this test only
 
     snap = _snap(BASE)
     secure = [dataclasses.replace(e, secure=True) if e.id == 2 else e for e in snap.elements]
@@ -189,37 +192,20 @@ def test_the_value_of_a_read_non_secure_field_is_still_read() -> None:
     assert seen.acted_value == value_fact("red", key=KEY)
 
 
-# ---- [V2.27] the first-observation rule: a scope Document with no descendants is not ready ----
+# ---- [V2.28] 2: first-observation readiness, keyed on the first touch of a process ----------
 
 EMPTY_PAGE = _snap([PAGE])
 """A fresh Chrome's first read: the Document exists, its tree is not built yet."""
+NO_DOCUMENT = _snap([(1, "Pane", "Chrome", (7, 1), None), (2, "Button", "Back", (7, 2), 1)])
+"""A fresh Chrome before its Document appears (measured up to 3 s after the first touch), or a
+native window, which never has one."""
+GROWN = _snap([*BASE, (5, "Edit", "Email", (9, 5), 1)])
+"""The same page one node bigger: a lazily built tree still growing."""
+PID = 4242
 
 
-def test_a_document_with_descendants_is_ready() -> None:
-    assert document_ready(_snap(BASE)) is True
-
-
-def test_a_document_with_no_descendants_is_not_ready() -> None:
-    assert document_ready(EMPTY_PAGE) is False
-
-
-def test_a_window_with_no_document_is_ready() -> None:
-    """A native window has no Document: the rule is about a page whose tree is not built."""
-    button = (1, "Button", "Save", (7, 1), None)
-    assert document_ready(_snap([button])) is True
-
-
-def test_the_full_read_of_an_empty_document_is_unstable() -> None:
-    seen = read_observed(EMPTY_PAGE, Reader(), key=KEY)
-    assert seen.snapshot.stable is False
-    assert read_observed(_snap(BASE), Reader(), key=KEY).snapshot.stable is True
-
-
-def test_a_poll_of_an_empty_document_is_unstable_and_reports_unknown() -> None:
-    polled = poll_observed(EMPTY_PAGE)
-    assert polled.tier == "poll"
-    assert polled.snapshot.stable is False
-    assert observe(poll_tier(_snap(BASE)), polled, acted=FIELD[3]).classes == {"unknown"}
+def _pid(snapshot: Snapshot, pid: int = PID) -> Snapshot:
+    return dataclasses.replace(snapshot, pid=pid)
 
 
 class _Clock:
@@ -233,31 +219,152 @@ class _Clock:
         self.now += seconds
 
 
-def test_the_first_observation_polls_until_the_document_is_built() -> None:
+def test_document_nodes_are_the_descendants_of_the_top_document() -> None:
+    assert document_nodes(_snap(BASE)) == frozenset({2, 3, 4})
+    assert document_nodes(EMPTY_PAGE) == frozenset()
+    assert document_nodes(NO_DOCUMENT) is None
+
+
+def test_the_first_touch_is_never_ready_even_on_a_built_page() -> None:
+    """The quiet window starts after the first touch: one read cannot show it."""
+    touches = FirstTouches(clock=_Clock().monotonic)
+    assert touches.ready(_pid(_snap(BASE))) is False
+
+
+def test_a_built_document_is_ready_once_its_node_count_holds_for_the_quiet_window() -> None:
     clock = _Clock()
-    reads = iter([EMPTY_PAGE, EMPTY_PAGE, _snap(BASE)])
+    touches = FirstTouches(clock=clock.monotonic)
+    touches.ready(_pid(_snap(BASE)))
+    clock.now = FIRST_QUIET_S - 0.01
+    assert touches.ready(_pid(_snap(BASE))) is False
+    clock.now = FIRST_QUIET_S
+    assert touches.ready(_pid(_snap(BASE))) is True
+
+
+def test_a_growing_document_restarts_the_quiet_window() -> None:
+    """gh1: a 156-node plateau held up to 2.5 s before the page grew to 303 nodes."""
+    clock = _Clock()
+    touches = FirstTouches(clock=clock.monotonic)
+    touches.ready(_pid(_snap(BASE)))
+    clock.now = FIRST_QUIET_S - 0.5
+    assert touches.ready(_pid(GROWN)) is False
+    clock.now = FIRST_QUIET_S + 0.5
+    assert touches.ready(_pid(GROWN)) is False
+    clock.now = 2 * FIRST_QUIET_S - 0.5
+    assert touches.ready(_pid(GROWN)) is True
+
+
+def test_a_document_with_no_children_is_never_ready() -> None:
+    clock = _Clock()
+    touches = FirstTouches(clock=clock.monotonic)
+    for step in range(5):
+        clock.now = step * FIRST_QUIET_S
+        assert touches.ready(_pid(EMPTY_PAGE)) is False
+
+
+def test_an_unstable_snapshot_is_not_ready() -> None:
+    clock = _Clock()
+    touches = FirstTouches(clock=clock.monotonic)
+    touches.ready(_pid(_snap(BASE)))
+    clock.now = FIRST_QUIET_S
+    assert touches.ready(_pid(_snap(BASE, stable=False))) is False
+
+
+def test_a_window_with_no_document_is_ready_when_its_node_count_holds() -> None:
+    """A native window never has a Document; its whole tree must hold for the quiet window."""
+    clock = _Clock()
+    touches = FirstTouches(clock=clock.monotonic)
+    touches.ready(_pid(NO_DOCUMENT))
+    clock.now = FIRST_QUIET_S
+    assert touches.ready(_pid(NO_DOCUMENT)) is True
+
+
+def test_a_document_appearing_restarts_the_quiet_window() -> None:
+    clock = _Clock()
+    touches = FirstTouches(clock=clock.monotonic)
+    touches.ready(_pid(NO_DOCUMENT))
+    clock.now = FIRST_QUIET_S - 0.25
+    assert touches.ready(_pid(_snap(BASE))) is False
+    clock.now = FIRST_QUIET_S + 0.25
+    assert touches.ready(_pid(_snap(BASE))) is False
+
+
+def test_readiness_is_keyed_on_the_process_not_the_browser_name() -> None:
+    """A second process of the same browser is its own first touch; a ready process stays
+    ready for the rest of the task, whatever its tree does next."""
+    clock = _Clock()
+    touches = FirstTouches(clock=clock.monotonic)
+    touches.ready(_pid(_snap(BASE)))
+    clock.now = FIRST_QUIET_S
+    assert touches.ready(_pid(_snap(BASE))) is True
+    assert touches.ready(_pid(_snap(BASE), pid=PID + 1)) is False
+    assert touches.ready(_pid(EMPTY_PAGE)) is True
+
+
+def _reader(snapshots: list[Snapshot]) -> tuple[list[int], Callable[[], Observed]]:
     calls: list[int] = []
 
     def read() -> Observed:
         calls.append(1)
-        return read_observed(next(reads), Reader(), key=KEY)
+        return read_observed(snapshots[min(len(calls), len(snapshots)) - 1], Reader(), key=KEY)
 
-    got = first_observation(read, clock=clock.monotonic, sleep=clock.sleep)
+    return calls, read
+
+
+def test_the_first_observation_polls_until_the_document_holds() -> None:
+    clock = _Clock()
+    calls, read = _reader([_pid(EMPTY_PAGE), _pid(_snap(BASE))])
+    touches = FirstTouches(clock=clock.monotonic)
+    got = first_observation(read, touches=touches, clock=clock.monotonic, sleep=clock.sleep)
     assert got.snapshot.stable is True
     assert len(got.snapshot.elements) == len(BASE)
-    assert len(calls) == 3
+    assert clock.now >= FIRST_QUIET_S
+    assert len(calls) > 2
+
+
+def test_a_later_observation_of_a_ready_process_does_not_wait() -> None:
+    clock = _Clock()
+    touches = FirstTouches(clock=clock.monotonic)
+    _, read = _reader([_pid(_snap(BASE))])
+    first_observation(read, touches=touches, clock=clock.monotonic, sleep=clock.sleep)
+    calls, again = _reader([_pid(_snap(BASE))])
+    first_observation(again, touches=touches, clock=clock.monotonic, sleep=clock.sleep)
+    assert len(calls) == 1
 
 
 def test_the_first_observation_ends_unstable_at_the_deadline() -> None:
     clock = _Clock()
-    calls: list[int] = []
-
-    def read() -> Observed:
-        calls.append(1)
-        return read_observed(EMPTY_PAGE, Reader(), key=KEY)
-
+    calls, read = _reader([_pid(EMPTY_PAGE)])
     got = first_observation(
-        read, clock=clock.monotonic, sleep=clock.sleep, deadline_s=2.0, poll_s=0.5
+        read,
+        touches=FirstTouches(clock=clock.monotonic),
+        clock=clock.monotonic,
+        sleep=clock.sleep,
+        deadline_s=2.0,
+        poll_s=0.5,
     )
-    assert got.snapshot.stable is False, "never handed over as a stable, empty listing"
+    assert got.snapshot.stable is False, "never handed over as a stable, partial listing"
     assert 3 <= len(calls) <= 6
+
+
+def test_a_page_still_growing_at_the_deadline_is_unstable() -> None:
+    """A model-stable but growing tree (the RuntimeId set repeated twice) is not handed over."""
+    clock = _Clock()
+    pages = [_pid(_snap(BASE)) if step % 2 else _pid(GROWN) for step in range(100)]
+    _, read = _reader(pages)
+    touches = FirstTouches(clock=clock.monotonic)
+    got = first_observation(read, touches=touches, clock=clock.monotonic, sleep=clock.sleep)
+    assert got.snapshot.stable is False
+
+
+def test_without_touches_the_call_is_the_first_touch() -> None:
+    clock = _Clock()
+    _, read = _reader([_pid(_snap(BASE))])
+    got = first_observation(read, clock=clock.monotonic, sleep=clock.sleep)
+    assert got.snapshot.stable is True
+    assert clock.now >= FIRST_QUIET_S
+
+
+def test_reads_do_not_apply_the_readiness_rule() -> None:
+    """[V2.28] 2 replaces #305's per-read test: readiness is the first observation's alone."""
+    assert read_observed(EMPTY_PAGE, Reader(), key=KEY).snapshot.stable is True
