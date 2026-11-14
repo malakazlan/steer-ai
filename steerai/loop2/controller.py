@@ -278,6 +278,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
 
     A failure raises ControllerError carrying the DecideRecord of the calls spent.
     """
+    screen = screen_fence if screen_fence is not None else secrets.token_hex(16)
     system, user = build_prompt(
         task_goal,
         subgoal_lines,
@@ -286,7 +287,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
         window_title,
         listing_rows,
         task_fence=task_fence,
-        screen_fence=screen_fence if screen_fence is not None else secrets.token_hex(16),
+        screen_fence=screen,
         unstable=unstable,
     )
     error: ControllerError | None = None
@@ -305,8 +306,11 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
             goal=task_goal,
             first_turn=first_turn,
             known_subgoals=known_subgoals,
+            fences=frozenset({task_fence, screen}),
         )
         if not tokens:
+            if decision.ask is not None:
+                decision = decision.model_copy(update={"ask": ask_text(decision.ask)})
             return decision, DecideRecord(PROMPT_VERSION, attempt + 1, attempt > 0)
         error = ControllerError("rejected", tokens)
     calls = max_repairs + 1

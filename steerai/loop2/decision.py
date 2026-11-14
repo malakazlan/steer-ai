@@ -153,11 +153,12 @@ def _claim_tokens(
     return tokens
 
 
-def _subgoal_doc_tokens(sub: SubgoalDoc, goal: str) -> list[str]:
+def _subgoal_doc_tokens(sub: SubgoalDoc, goal: str, fences: frozenset[str]) -> list[str]:
     tokens: list[str] = []
     if SUBGOAL_ID.fullmatch(sub.id) is None:
         tokens.append("subgoal_id_bad")
-    if len(sub.desc) > MAX_DESC_CHARS or has_control(sub.desc):
+    bad = has_control(sub.desc) or any(fence in sub.desc for fence in fences)
+    if len(sub.desc) > MAX_DESC_CHARS or bad:
         tokens.append("desc_bad")
     if any(PARAM_NAME.fullmatch(name) is None for name in sub.params):
         tokens.append("param_name_bad")
@@ -167,7 +168,11 @@ def _subgoal_doc_tokens(sub: SubgoalDoc, goal: str) -> list[str]:
 
 
 def _subgoal_tokens(
-    decision: Decision, goal: str, first_turn: bool, known: dict[str, set[str]]
+    decision: Decision,
+    goal: str,
+    first_turn: bool,
+    known: dict[str, set[str]],
+    fences: frozenset[str],
 ) -> list[str]:
     subs = decision.subgoals
     if subs is None or (first_turn and not subs):
@@ -181,7 +186,7 @@ def _subgoal_tokens(
         tokens.append("subgoal_duplicate")
     for sub in subs:
         known.setdefault(sub.id, set()).update(sub.params)
-        tokens.extend(_subgoal_doc_tokens(sub, goal))
+        tokens.extend(_subgoal_doc_tokens(sub, goal, fences))
     return tokens
 
 
@@ -200,21 +205,23 @@ def _shape_tokens(decision: Decision) -> list[str]:
     return tokens
 
 
-def validate(
+def validate(  # noqa: PLR0913 - the decision and its keyword-only context
     decision: Decision,
     *,
     listed_ids: frozenset[int],
     goal: str,
     first_turn: bool,
     known_subgoals: Mapping[str, frozenset[str]] | None = None,
+    fences: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Return the closed rejection tokens for a decision, deduplicated, in first-seen order.
 
-    `known_subgoals` maps each declared subgoal id to the names of its params; subgoals declared
-    by this decision (first turn) are added to it.
+    `known_subgoals` maps each declared subgoal id to the names of its params (build it with
+    `task.known_params`); subgoals declared by this decision (first turn) are added to it. A
+    subgoal desc holding any of `fences` is `desc_bad`: it is shown inside the task fence later.
     """
     known = {sid: set(names) for sid, names in (known_subgoals or {}).items()}
-    tokens = _subgoal_tokens(decision, goal, first_turn, known)
+    tokens = _subgoal_tokens(decision, goal, first_turn, known, fences)
     tokens.extend(_shape_tokens(decision))
     for action in decision.actions:
         tokens.extend(_action_tokens(action, listed_ids, known))

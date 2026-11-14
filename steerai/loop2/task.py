@@ -6,7 +6,7 @@ history holds closed tokens written by code.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -43,6 +43,12 @@ class Subgoal:
     commit: Commit = "none"
     status: Status = "open"
     baseline_seq: int | None = None
+
+
+def known_params(subgoals: Iterable[Subgoal]) -> dict[str, frozenset[str]]:
+    """The `known_subgoals` map for `validate`: every declared subgoal id, with or without params,
+    mapped to its param names. A subgoal missing from the map is `subgoal_unknown`."""
+    return {sub.id: frozenset(sub.params) for sub in subgoals}
 
 
 @dataclass(frozen=True)

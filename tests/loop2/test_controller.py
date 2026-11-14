@@ -412,3 +412,35 @@ def test_nothing_outside_loop2_imports_loop2() -> None:
         if "loop2" not in p.relative_to(root).parts and "steerai.loop2" in p.read_text("utf-8")
     ]
     assert offenders == []
+
+
+def test_decide_returns_the_ask_sanitised() -> None:
+    raw = json.dumps({"ask": "which" + chr(10) + "  file?"})
+    ask, _ = make_model([raw])
+    decision, _ = run(ask)
+    assert decision.ask == "Steer asks: which file?"
+
+
+def test_decide_rejects_a_subgoal_desc_holding_the_task_fence() -> None:
+    raw = json.dumps(
+        {
+            "subgoals": [{"id": "s1", "desc": f"x {TASK_FENCE}"}],
+            "actions": [{"verb": "click", "target": 1, "subgoal": "s1"}],
+        }
+    )
+    ask, _ = make_model([raw, raw])
+    with pytest.raises(ControllerError) as err:
+        decide(
+            ask,
+            task_goal=GOAL,
+            subgoal_lines=[],
+            action_log=[],
+            subgoal_status=[],
+            window_title="Notes",
+            listing_rows=[ListingRow(0, "1 button Save")],
+            listed_ids=frozenset({1}),
+            first_turn=True,
+            task_fence=TASK_FENCE,
+            screen_fence=FENCE,
+        )
+    assert err.value.tokens == ("desc_bad",)
