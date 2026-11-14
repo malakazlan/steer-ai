@@ -52,6 +52,7 @@ from steerai.world.effects import (
     top_document,
     value_fact,
 )
+from steerai.world.elements import Element
 from steerai.world.landmarks import PageFacts
 from steerai.world.model import Snapshot
 from steerai.world.observe2 import FactReader, read_observed
@@ -92,6 +93,26 @@ class _Read:
     observed: Observed | None
     values: dict[tuple[int, ...], ValueFact]
     ms: float
+    editable: tuple[tuple[int, ...], ...] = ()
+    """The RuntimeIds `_values` selected (in order, before the `MAX_FIELDS` cut)."""
+
+
+def _editable(snapshot: Snapshot) -> list[Element]:
+    return [
+        e
+        for e in snapshot.elements
+        if "editable" in e.caps and e.runtime_id and not _secure(snapshot, e.id)
+    ]
+
+
+def _has_value_cap(caps: Sequence[str]) -> bool:
+    """The Value pattern is available when the listing carries `editable` or `readonly`; only
+    Edit and Document roles carry either (`world.capabilities.VALUE_ROLES`)."""
+    return "editable" in caps or "readonly" in caps
+
+
+def _focus(observed: Observed | None) -> list[int] | None:
+    return None if observed is None or observed.focus is None else list(observed.focus)
 
 
 def _secure(snapshot: Snapshot, element_id: int) -> bool:
@@ -134,6 +155,8 @@ class V2Shadow:
         self._effect = True
         after = self._read("after", acted=acted)
         self._after = self._compare(before, after, acted)
+        if self._after is not None and acted:
+            self._after["acted_field"] = self._acted_field(before, after, acted)
 
     def finish(self, step_row: Mapping[str, Any]) -> None:
         action = step_row.get("action") or {}
@@ -181,18 +204,19 @@ class V2Shadow:
             self._errors.append(f"{side}:{type(exc).__name__}")
             return _Read(None, {}, (self._clock() - started) * 1000)
         values = self._values(snapshot) if acted is None else {}
-        return _Read(observed, values, (self._clock() - started) * 1000)
+        editable = _editable(snapshot) if acted is None else ()
+        return _Read(
+            observed,
+            values,
+            (self._clock() - started) * 1000,
+            tuple(e.runtime_id for e in editable),
+        )
 
     def _values(self, snapshot: Snapshot) -> dict[tuple[int, ...], ValueFact]:
         """Every editable, non-secure field's value as a keyed digest: the acted field is known
         only after the act, so the before keeps them all (at most `MAX_FIELDS`)."""
         out: dict[tuple[int, ...], ValueFact] = {}
-        fields = [
-            e
-            for e in snapshot.elements
-            if "editable" in e.caps and e.runtime_id and not _secure(snapshot, e.id)
-        ]
-        for element in fields[:MAX_FIELDS]:
+        for element in _editable(snapshot)[:MAX_FIELDS]:
             try:
                 text = self._reads.value(snapshot, element.id)
             except (OSError, SteerError) as exc:
@@ -201,6 +225,52 @@ class V2Shadow:
             if text is not None:
                 out[element.runtime_id] = value_fact(text, key=self._key)
         return out
+
+    def _acted_field(self, before: _Read, after: _Read, acted: tuple[int, ...]) -> Row:
+        """[V2.28] item 3: why the before value of the acted field was or was not kept. Closed
+        tokens, counts and booleans; never a value or a name. `editable` is the cap the before
+        map keys on, and it is only ever set on the roles in `VALUE_ROLES` (Edit, Document), so a
+        ComboBox is expected to be absent from the map; `before_value_probe` reads the field's
+        value from the before snapshot regardless of its caps, to tell a missing cap from an
+        unreadable Value pattern."""
+        a_snap = None if after.observed is None else after.observed.snapshot
+        b_snap = None if before.observed is None else before.observed.snapshot
+        target = None
+        if a_snap is not None:
+            target = next((e for e in a_snap.elements if e.runtime_id == acted), None)
+        in_before = None
+        if b_snap is not None:
+            in_before = next((e for e in b_snap.elements if e.runtime_id == acted), None)
+        position = before.editable.index(acted) if acted in before.editable else None
+        return {
+            "role": None if target is None else target.role,
+            "caps": [] if target is None else list(target.caps),
+            "value_pattern": None if target is None else _has_value_cap(target.caps),
+            "in_before_snapshot": in_before is not None,
+            "in_before_map": acted in before.values,
+            "editable_position": position,
+            "editable_count": len(before.editable),
+            "editable_truncated": len(before.editable) > MAX_FIELDS,
+            "before_value_probe": self._probe_before(b_snap, in_before, acted in before.values),
+            "focus_id": [_focus(before.observed), _focus(after.observed)],
+            "focus_is_acted": [
+                _focus(before.observed) == list(acted),
+                _focus(after.observed) == list(acted),
+            ],
+        }
+
+    def _probe_before(self, snapshot: Snapshot | None, element: Element | None, kept: bool) -> str:
+        if kept:
+            return "kept"
+        if snapshot is None or element is None:
+            return "absent"
+        if _secure(snapshot, element.id):
+            return "secure"
+        try:
+            text = self._reads.value(snapshot, element.id)
+        except (OSError, SteerError) as exc:
+            return f"error:{type(exc).__name__}"
+        return "unreadable" if text is None else "readable"
 
     def _compare(self, before: _Read, after: _Read, acted: tuple[int, ...]) -> Row | None:
         if before.observed is None or after.observed is None:

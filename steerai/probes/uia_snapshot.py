@@ -357,7 +357,26 @@ class UiaClient:
         fetch, which stays as v1 has it. An empty AriaRole or a HeadingLevel of none (80050) is
         left out: absent is not observed, never false (probe #266, Chrome 157)."""
         try:
-            element = self._uia.ElementFromHandle(hwnd)
+            return self._facts_below(self._uia.ElementFromHandle(hwnd), f"hwnd {hwnd:#x}")
+        except OSError:
+            raise
+        except Exception as exc:  # COMError exists only once comtypes is loaded
+            raise OSError(f"page facts unreadable for hwnd {hwnd:#x}: {exc}") from exc
+
+    def page_facts_in(self, snapshot: Any, document_id: int) -> PageFacts:
+        """[V2.28] (a): `page_facts` for the subtree of `document_id` (the snapshot's top
+        Document) only, through the snapshot's own handle. A probe's measurement of whether
+        scoping the fetch cuts its cost; nothing reads it on a loop path yet. `snapshot` is a
+        `steerai.world.model.Snapshot` (Any: probes import no world types here)."""
+        try:
+            return self._facts_below(snapshot.handle(document_id), f"document {document_id}")
+        except OSError:
+            raise
+        except Exception as exc:  # COMError exists only once comtypes is loaded; SteerError too
+            raise OSError(f"page facts unreadable for document {document_id}: {exc}") from exc
+
+    def _facts_below(self, element: Any, what: str) -> PageFacts:  # Any: COM element
+        try:
             cache_request = self._uia.CreateCacheRequest()
             for prop in (
                 self._uia_module.UIA_RuntimeIdPropertyId,
@@ -369,7 +388,7 @@ class UiaClient:
             cache_request.TreeScope = self._uia_module.TreeScope_Subtree
             root = element.BuildUpdatedCache(cache_request)
         except Exception as exc:  # COMError exists only once comtypes is loaded
-            raise OSError(f"page facts unreadable for hwnd {hwnd:#x}: {exc}") from exc
+            raise OSError(f"page facts unreadable for {what}: {exc}") from exc
         roles: dict[tuple[int, ...], str] = {}
         headings: dict[tuple[int, ...], int] = {}
         nodes: list[tuple[tuple[int, ...], tuple[int, ...] | None, int | None]] = []

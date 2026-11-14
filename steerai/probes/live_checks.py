@@ -151,6 +151,12 @@ CHECKS: tuple[Check, ...] = (
         ("steerai.probes.first_observation", "--check"),
     ),
     Check(
+        "read_cost",
+        "the full read's cost per site and whether scoping the page facts fixes it ([V2.28] a)",
+        30,
+        ("steerai.probes.read_cost", "--out", "{dir}/read_cost.jsonl"),
+    ),
+    Check(
         "comparability",
         "chunked against in-process ([V2.16])",
         20,
