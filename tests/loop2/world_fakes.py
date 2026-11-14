@@ -8,8 +8,10 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from steerai.action.dispositions import ActionResult, Delivery
+from steerai.errors import ErrorCode
 from steerai.loop2.decision import ActionDoc, Claim, Decision, SubgoalDoc
-from steerai.loop2.loop import Dispatch, Ports, TurnView
+from steerai.loop2.loop import READ_BACK_VERBS, ActResult, Dispatch, Ports, TurnView
 from steerai.loop2.task import Budgets, Envelope, Task
 from steerai.world.effects import (
     PRECEDENCE,
@@ -151,6 +153,29 @@ def decision(*actions: ActionDoc, first: bool = False, claims: Sequence[Claim] =
     )
 
 
+CODES = {
+    Delivery.NOT_DELIVERED: ErrorCode.ELEMENT_NOT_ACTIONABLE,
+    Delivery.DELIVERY_UNCERTAIN: ErrorCode.VERIFY_TIMEOUT,
+    Delivery.DELIVERED_UNVERIFIED: ErrorCode.VERIFY_FAILED,
+}
+"""v1 requires a code on every delivery but a verified one (dispositions)."""
+
+
+def act_result(verb: str, delivery: Delivery, *, read_back: bool | None = None) -> ActResult:
+    """One act's result as v1's ActionResult plus the read-back; a read-back verb that was not
+    verified and sent something reads back None unless told otherwise."""
+    action = ActionResult(verb=verb, delivery=delivery, code=CODES.get(delivery))
+    sent = delivery is not Delivery.NOT_DELIVERED
+    if (
+        verb in READ_BACK_VERBS
+        and sent
+        and read_back is None
+        and delivery is Delivery.DELIVERED_VERIFIED
+    ):
+        read_back = True
+    return ActResult(action, read_back=read_back if sent else None)
+
+
 @dataclass
 class World:
     """A scripted world: the controller's decisions in order (then `stop: cannot`), one effect
@@ -160,6 +185,9 @@ class World:
     effects: list[EffectReport] = field(default_factory=list)
     screen: Observed = field(default_factory=observed)
     read_backs: list[bool | None] = field(default_factory=list)
+    """The read-back of each read-back verb's act, in order (then True)."""
+    results: list[ActResult] = field(default_factory=list)
+    """A scripted result for each act, in order; empty: from `read_backs`, delivered."""
     interrupt_after: int | None = None
     """Report `interruption` once this many actions were dispatched."""
     interruption: str = "takeover"
@@ -197,9 +225,17 @@ class World:
         self._arrive()
         return self.screen
 
-    def _act(self, sent: Dispatch) -> None:
+    def _act(self, sent: Dispatch) -> ActResult:
         self.events.append("act")
         self.dispatched.append(sent)
+        verb = sent.action.verb
+        reads = verb in READ_BACK_VERBS
+        read_back = (self.read_backs.pop(0) if self.read_backs else True) if reads else None
+        if self.results:
+            return self.results.pop(0)
+        if read_back is None or read_back:
+            return act_result(verb, Delivery.DELIVERED_VERIFIED, read_back=read_back)
+        return act_result(verb, Delivery.DELIVERED_UNVERIFIED, read_back=read_back)
 
     def _watch(self, before: Observed, sent: Dispatch) -> Watched:  # noqa: ARG002 - the Ports shape; scripted
         self.events.append("watch")
@@ -210,9 +246,6 @@ class World:
         return Watched(
             report=effect, after=after, first_change_ms=None, settled_ms=None, timed_out=False
         )
-
-    def _read_back(self, sent: Dispatch) -> bool | None:  # noqa: ARG002 - the Ports shape; scripted
-        return self.read_backs.pop(0) if self.read_backs else True
 
     def _write_ahead(self, sent: Dispatch) -> str:
         self.write_aheads.append(sent)
@@ -229,7 +262,6 @@ class World:
             observe=self._observe,
             act=self._act,
             watch=self._watch,
-            read_back=self._read_back,
             write_ahead=self._write_ahead,
             interrupted=self._interrupted,
             clock=lambda: self.now,
