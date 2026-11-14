@@ -326,7 +326,7 @@ class _Run:
         """Stale observations in the task, reported on the outcome."""
         self.standing: dict[str, list[tuple[RefusalKind, str, int]]] = {}
         """[V2.42] RT-30: per subgoal, the policy and step-limit refusals that stand until it is
-        proven (kind, token, order)."""
+        proven (kind, token, order); a proven subgoal's entries are ignored at the stop."""
         self.refused_seq = 0
         self.target_changes = 0
         """[V2.43] (2): targets re-rendered after the observation the model saw."""
@@ -636,7 +636,6 @@ class _Run:
             self.turn.claim_rejected = True
             return
         self.proven.add(subgoal.id)
-        self.standing.pop(subgoal.id, None)  # [V2.42] RT-30: its standing refusals end here
         self.turn.ticked = True
         self.refusal = None
         self.history.append(f"proven:{subgoal.id}:{how}")
