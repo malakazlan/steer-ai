@@ -92,11 +92,12 @@ from steerai.world.watch import Watched
 STRIKE_LIMIT: Final = 3
 """[V2.4]: the pooled set runs with a limit of 3, frozen before H7."""
 RefusalKind = Literal["policy", "step", "model", "world"]
-Moved = Literal["page", "target", "focus"]
 """[V2.12], [V2.37] P5: every refusal replaces the latest one, whatever its kind. A policy
 refusal ends `blocked` with its token; a step limit ends `blocked` with `not_in_step`; a model
 fault and a `world` refusal (nothing delivered, the focus not where the press goes) keep the
 stop's own value, recorded `after_refusal:<token>`."""
+Moved = Literal["page", "target", "focus"]
+"""[V2.43] (2): what moved after the observation the model saw."""
 REFUSAL_KIND: Final[Mapping[str, RefusalKind]] = {
     "secure_field": "policy",
     "secure_unread": "policy",
@@ -687,6 +688,11 @@ class _Run:
         element = self._target(action, listed, observed)
         if element is None and action.verb != "wait":
             return None
+        if element is not None and self._old(observed):
+            again = self._read_again(element, listed)
+            if again is None:
+                return None  # the page moved under it (`_moved`)
+            observed, element = again  # everything below uses the read it is sent against
         if element is not None and action.verb == "type":
             refusal = type_refusal(element, observed.snapshot)
             if refusal is not None:
@@ -698,11 +704,6 @@ class _Run:
         risk, submit = rated
         if RISKS.index(risk) >= _R2:
             raise _End("blocked", Reason("commit_not_in_step"))
-        if element is not None and self._old(observed):
-            again = self._read_again(element, listed)
-            if again is None:
-                return None  # the page moved: the staleness rule (`_loop`)
-            observed, element = again
         text = self._text(action)
         digest = None if action.text is None else self.ports.fact_of(action.text).digest
         key = None if element is None else _key(action, element, text_digest=digest)
@@ -740,13 +741,30 @@ class _Run:
         )
         if same and not stale_observation(listed, read):
             return read, found[0]
-        self.turn.stale_read, self.turn.moved = read, "page"
+        self._moved("page", read)
         return None
 
-    def _moved(self, what: Moved) -> None:
-        """[V2.43] (2): the world moved after the observation the model saw: read again, and
-        the loop applies the staleness rule to that read (no refusal)."""
-        self.turn.stale_read, self.turn.moved = self._observe(), what
+    def _moved(self, what: Moved, read: Observed | None = None) -> None:
+        """[V2.43] (2): the world moved after the observation the model saw. With nothing
+        dispatched this turn, the staleness rule applies to a fresh read (the loop re-asks, no
+        refusal). After a send in the same batch, the move only ends the batch, as the batch
+        rule does: it is counted with its token and the turn is scored normally, so its send is
+        never forgotten (principal re-review: staleness applies when nothing was dispatched)."""
+        if self.turn.sent > 0:
+            self._count_moved(what)
+            return
+        self.turn.stale_read = self._observe() if read is None else read
+        self.turn.moved = what
+
+    def _count_moved(self, what: Moved) -> None:
+        """Each kind of world move counted on its own, with its history token."""
+        if what == "page":
+            self.stale_count += 1
+        elif what == "target":
+            self.target_changes += 1
+        else:
+            self.focus_losses += 1
+        self.history.append(_MOVED_TOKEN[what])
 
     def _text(self, action: ActionDoc) -> str | None:
         """RT-36: the text a `type` sends: its param's goal span, or its free text."""
@@ -1121,13 +1139,7 @@ class _Run:
         controller asked again on the fresh read. No strike for one; the second in a row (and
         each after) is a strike. Each kind is counted on its own."""
         self.stale_streak += 1
-        if moved == "page":
-            self.stale_count += 1
-        elif moved == "target":
-            self.target_changes += 1
-        else:
-            self.focus_losses += 1
-        self.history.append(_MOVED_TOKEN[moved])
+        self._count_moved(moved)
         if self.stale_streak < 2:
             self.turn.neutral = True
         else:

@@ -525,3 +525,45 @@ def test_standing_refusals_take_the_rt29_order_before_the_latest() -> None:
     outcome = run_task(task(), world.ports())
     assert "refused:not_in_step" in world.views[-1].history
     assert (outcome.status, outcome.reason) == ("blocked", "secure_field")
+
+
+# ---- principal re-review at e236066 ----------------------------------------------------------
+
+
+def test_an_old_observation_is_rated_on_the_read_it_is_sent_against() -> None:
+    """repro_risk: GO keeps its RuntimeId, role and name on the re-read, but its parent is now
+    unread: R0 on the old read, R2 on the re-read. Refusal, risk, key and dispatch all use the
+    read that is sent against, so it is never sent at R0."""
+    moved_go = element(GO.id, "Button", "Go", GO.runtime_id, 99)  # parent no longer read
+    reread = observed([moved_go if e.id == GO.id else e for e in PAGE])
+    world = World(
+        [decision(act("click", target=GO.id), first=True)],
+        observations=[observed(), observed(), reread],
+    )
+    world.observe_lag_s = REUSE_FRESHNESS_S + 1.0
+    outcome = run_task(task(), world.ports())
+    assert world.dispatched == []
+    assert (outcome.status, outcome.reason) == ("blocked", "commit_not_in_step")
+
+
+def test_a_move_after_a_send_in_the_batch_is_scored_and_the_send_remembered() -> None:
+    """repro_neutral: [type, press Enter], focus leaves the field after the type. The move ends
+    the batch and is counted, but the turn is scored normally: the type is the last send, so
+    the same type next turn is a repeat (RT-26). Staleness applies only when nothing was sent."""
+    world = World(
+        [
+            decision(
+                act("type", target=FIELD.id, param="text"), act("press", key="Enter"), first=True
+            ),
+            decision(act("type", target=FIELD.id, param="text")),
+        ],
+        effects=[report("own_value"), report("own_value")],
+        observations=[FOCUSED, FOCUSED],
+        later=ELSEWHERE,
+        later_after_acts=1,
+    )
+    outcome = run_task(task(), world.ports())
+    assert [d.action.verb for d in world.dispatched] == ["type"]
+    assert "focus_lost" in world.views[1].history
+    assert "refused:repeat_send" in world.views[-1].history
+    assert outcome.focus_losses == 1
