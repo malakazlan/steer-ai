@@ -71,7 +71,14 @@ from steerai.loop2.query import (
     top_document_replaced,
 )
 from steerai.loop2.task import GoalSpan, Subgoal, Task, known_params
-from steerai.loop2.verify import Readers, auto_proof, check_claim, holds_words
+from steerai.loop2.verify import (
+    PAGE_CARRIERS,
+    URL_CARRIERS,
+    Readers,
+    auto_proof,
+    check_claim,
+    holds_words,
+)
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.orchestrator.loop import REUSE_FRESHNESS_S
 from steerai.world.effects import EffectReport, Observed, ValueFact, top_document
@@ -79,6 +86,7 @@ from steerai.world.elements import Element
 from steerai.world.model import normalise_name
 from steerai.world.observe2 import YOUNG_S
 from steerai.world.reads import ReadCost
+from steerai.world.watch import Watched
 
 STRIKE_LIMIT: Final = 3
 """[V2.4]: the pooled set runs with a limit of 3, frozen before H7."""
@@ -115,6 +123,17 @@ class _Typed:
     typed: ValueFact | None
     search: SearchFacts
     goal_span: bool
+
+
+@dataclass(frozen=True)
+class _Pending:
+    """#335 review: a pending field as `_pending` found it: its `_Typed` record, the one element
+    holding it (None: not found on a partial read, or several identity matches), and the value
+    read then."""
+
+    typed: _Typed
+    element: Element | None
+    value: ValueFact | None
 
 
 class _End(Exception):  # noqa: N818 - a control-flow signal, not an error
@@ -218,16 +237,19 @@ def run_task(task: Task, ports: Ports) -> TaskOutcome:
     return _Run(task, ports).go()
 
 
-URL_CARRIERS: Final = frozenset({"url_param", "url_path"})
-PAGE_CARRIERS: Final = frozenset({"title", "heading"})
-
-
 def stale_observation(decided_on: Observed, now: Observed) -> bool:
     """[V2.28] item 1: the top Document was replaced or the URL changed since the observation a
     Decision was made on. Only those two facts, never the whole signature: a ticker page would
-    always look stale. A fact not read on either side is no change."""
+    always look stale. A fact unread on both sides is no change; read on one side only, it is a
+    change (#335 review): a top Document present on one side, or a URL read on one side where
+    both observe the address bar (`url_observed`, as the observer's `url` fact)."""
     old, new = top_document(decided_on.snapshot), top_document(now.snapshot)
+    if (old is None) != (new is None):
+        return True
     if old is not None and new is not None and old.runtime_id != new.runtime_id:
+        return True
+    bar = decided_on.url_observed and now.url_observed
+    if bar and (decided_on.url is None) != (now.url is None):
         return True
     return decided_on.url is not None and now.url is not None and decided_on.url != now.url
 
@@ -238,9 +260,7 @@ def enter_outcome(
     """[V2.28] item 1, [V2.21]-[V2.24]: the Enter table, evaluated once on the watch's final
     report of a submit (the watch held it to a conclusive report). The text is carried by a URL,
     title or heading carrier, or by the results beside a URL carrier ([V2.29] Q1)."""
-    carriers = report.carriers
-    url = bool(carriers & URL_CARRIERS)
-    carried = url or bool(carriers & PAGE_CARRIERS) or ("results" in carriers and url)
+    carried = bool(report.carriers & (URL_CARRIERS | PAGE_CARRIERS))  # results alone: none
     return query_outcome(
         report,
         text_carried=carried,
@@ -264,6 +284,8 @@ class _Run:
         self.strike_log: list[tuple[StrikeReason, ...]] = []
         self.refusal: tuple[RefusalKind, str] | None = None
         self.typed: list[_Typed] = []
+        self.pending: list[_Pending] = []
+        """#335 review: the pending fields as the last `_pending` found them, for row 2."""
         self.baselines: dict[str, Observed] = {}
         self.first: Observed | None = None
         self.last_acted: _Acted | None = None
@@ -338,6 +360,8 @@ class _Run:
             decision = self._decide(observed)
             self.turn = _Turn()
             fresh = self._observe()
+            if fresh.read_cost is not None:
+                self.read_costs.append(fresh.read_cost)  # [V2.34]: this re-read is paid for too
             if stale_observation(observed, fresh):
                 observed = self._stale(fresh)
                 continue
@@ -714,6 +738,7 @@ class _Run:
         scope = None if top is None else top.runtime_id
         kept: list[_Typed] = []
         out: list[PendingText] = []
+        found: list[_Pending] = []
         for typed in self.typed:
             if typed.scope is not None and scope is not None and typed.scope != scope:
                 continue  # a replaced top Document ends it; an unreadable one proves nothing
@@ -721,16 +746,19 @@ class _Run:
             if not matches:
                 if not _complete(observed):
                     kept.append(typed)  # gone is not proven on a read that may be partial
+                    found.append(_Pending(typed, None, None))
                 continue
             field = matches[0]
             now = None if len(matches) > 1 else self._read_value(field, observed)
             if now is not None and not now.filled:
                 continue  # emptied: the text is no longer pending
             kept.append(typed)
+            found.append(_Pending(typed, field if len(matches) == 1 else None, now))
             out.append(
                 PendingText(field.runtime_id, typed.typed, now, typed.search, typed.goal_span)
             )
         self.typed = kept
+        self.pending = found
         return out
 
     def _readers(self, observed: Observed) -> Readers:
@@ -790,7 +818,7 @@ class _Run:
         if act.delivery is Delivery.NOT_DELIVERED and not act.action.skipped:
             self._refuse("world", "not_delivered")
             return None
-        pending_before = dict(self.fresh)  # each pending field's value just before dispatch
+        pending_before = list(self.pending)  # each pending field as found just before dispatch
         watched = self.ports.watch(before, sent)
         self.read_costs.append(watched.read_cost)
         self.turn.sent += 1
@@ -804,13 +832,7 @@ class _Run:
         if not report.classes <= {"none", "unknown"}:
             self.refusal = None  # [V2.12]: progress resets the refusal that decides the status
         if sent.submit:
-            self._judge_submit(
-                element,
-                before=observed,
-                after=watched.after,
-                report=report,
-                values_before=pending_before,
-            )
+            self._judge_submit(element, before=observed, watched=watched, pending=pending_before)
         if element is not None and sent.action.verb == "type":
             self._remember_type(sent, element, observed, verified=act.read_back is True)
         return self._after(watched.after), (act, report)
@@ -820,45 +842,59 @@ class _Run:
         element: Element | None,
         *,
         before: Observed,
-        after: Observed,
-        report: EffectReport,
-        values_before: dict[tuple[int, ...], ValueFact | None],
+        watched: Watched,
+        pending: Sequence[_Pending],
     ) -> None:
         """[V2.28] item 1: the Enter table once, on the final report. `unexpected_effect` stops
-        the task; any other row is a closed token for the controller."""
+        the task; any other row is a closed token for the controller. A report the watch did not
+        hold (neither conclusive nor to the guard) is not final: a stop stays a stop, anything
+        else is `unknown`, row 5 (#335 review)."""
         outcome = enter_outcome(
-            report,
+            watched.report,
             before=before,
-            after=after,
-            typed_field=self._submitted_field(element, after, values_before),
+            after=watched.after,
+            typed_field=self._submitted_field(element, watched.after, pending),
         )
+        held = watched.timed_out or watched.conclusive_ms is not None
+        if not held and outcome.outcome != "unexpected_effect":
+            outcome = EnterOutcome("back_to_controller", "unknown", "5")
         self.history.append(f"enter:{outcome.token}:{outcome.row}")
         if outcome.outcome == "unexpected_effect":
             raise _End("stopped", Reason("unexpected_effect"))
 
     def _submitted_field(
-        self,
-        element: Element | None,
-        after: Observed,
-        values_before: dict[tuple[int, ...], ValueFact | None],
+        self, element: Element | None, after: Observed, pending: Sequence[_Pending]
     ) -> FieldState:
         """Row 2's fact: the typed field the submit sent, read again on the final report. The
-        Enter's own field when Steer typed into it; else the pending fields read before the
-        submit (the worst state wins: emptied, then unread, then kept)."""
-        typed = {t.field for t in self.typed}
-        fields = [element.runtime_id] if element is not None and element.runtime_id in typed else []
-        fields = fields or [rid for rid in values_before if rid in typed]
+        Enter's own field when it was pending; else every pending field (the worst state wins:
+        emptied, then unread, then gone, then kept). Each is found again by its `_Typed` record,
+        so a field re-rendered with the same identity is still the field (#335 review, RT-03)."""
+        mine = [
+            p
+            for p in pending
+            if element is not None
+            and p.element is not None
+            and p.element.runtime_id == element.runtime_id
+        ]
+        fields = mine or list(pending)
         if not fields:
             return "not_typed"
-        by_rid = {e.runtime_id: e for e in after.snapshot.elements}
         self.fresh = {}
-        states: list[FieldState] = []
-        for rid in fields:
-            now = by_rid.get(rid)
-            read = None if now is None else self._read_value(now, after)
-            states.append(field_state(values_before.get(rid), read, present=now is not None))
+        states = [self._field_now(p, after) for p in fields]
         order: tuple[FieldState, ...] = ("emptied", "unread", "gone", "kept")
-        return next((worst for worst in order if worst in states), "not_typed")
+        return next(worst for worst in order if worst in states)
+
+    def _field_now(self, pending: _Pending, after: Observed) -> FieldState:
+        """One pending field on the final report. Unmatched or ambiguous before the submit, or
+        ambiguous now, it is `unread`: row 2 then gives `unknown`, never a guess."""
+        if pending.element is None:
+            return "unread"
+        matches = _matches(pending.typed, after)
+        if len(matches) > 1:
+            return "unread"
+        now = matches[0] if matches else None
+        read = None if now is None else self._read_value(now, after)
+        return field_state(pending.value, read, present=now is not None)
 
     def _act(self, sent: Dispatch) -> ActResult:
         """[V2.25] (c): one local retry when nothing was sent, under the same decision, unless

@@ -13,13 +13,17 @@ from steerai.loop2 import runner
 from steerai.loop2._stub import PENDING
 from steerai.loop2.decision import Decision
 from steerai.loop2.query import query_outcome
-from steerai.loop2.runner import run_task
+from steerai.loop2.runner import run_task, stale_observation
+from steerai.world.effects import Observed
+from steerai.world.elements import Element
 from steerai.world.landmarks import Landmark
+from steerai.world.reads import ReadCost
 from tests.loop2.world_fakes import (
     FIELD,
     GO,
     PAGE,
     QUERY_PAGE,
+    TYPED_VALUE,
     URL,
     World,
     act,
@@ -152,14 +156,14 @@ def test_a_plain_click_never_goes_through_the_table(monkeypatch: pytest.MonkeyPa
 # ---- the staleness rule ------------------------------------------------------------------------
 
 
-def _moved(url: str) -> object:
+def _moved(url: str) -> Observed:
     return dataclasses.replace(observed(), url=url, document_url=url)
 
 
 def test_a_decision_on_an_observation_whose_url_changed_is_discarded_and_re_asked() -> None:
     world = World(
         [decision(act("click", target=GO.id), first=True), Decision(stop="cannot")],
-        observations=[observed(), _moved(URL + "next")],  # type: ignore[list-item]  # an Observed
+        observations=[observed(), _moved(URL + "next")],
     )
     outcome = run_task(task(), world.ports())
     assert world.dispatched == []
@@ -182,7 +186,7 @@ def test_a_replaced_top_document_is_stale_too() -> None:
 def test_two_stale_turns_in_a_row_are_a_strike() -> None:
     world = World(
         [decision(act("click", target=GO.id), first=True), decision(act("click", target=GO.id))],
-        observations=[observed(), _moved(URL + "a"), _moved(URL + "b")],  # type: ignore[list-item]  # Observed
+        observations=[observed(), _moved(URL + "a"), _moved(URL + "b")],
     )
     outcome = run_task(task(), world.ports())
     assert world.dispatched == []
@@ -206,3 +210,155 @@ def test_pr_c_stubs_are_built() -> None:
         not {"steerai.loop2.runner.stale_observation", "steerai.loop2.runner.enter_outcome"}
         & PENDING
     )
+
+
+# ---- #335 review: the staleness rule's unread facts ---------------------------------------------
+
+
+def _blind(seen: Observed) -> Observed:
+    return dataclasses.replace(seen, url=None)
+
+
+def _bare(seen: Observed) -> Observed:
+    """No top Document read (no elements)."""
+    return dataclasses.replace(seen, snapshot=dataclasses.replace(seen.snapshot, elements=[]))
+
+
+def test_a_fact_unread_on_both_sides_is_no_change() -> None:
+    seen = observed()
+    assert not stale_observation(_blind(seen), _blind(seen))
+    assert not stale_observation(_bare(seen), _bare(seen))
+
+
+def test_a_url_read_on_one_side_only_is_stale_where_the_bar_is_observed() -> None:
+    seen = observed()
+    assert stale_observation(seen, _blind(seen))
+    assert stale_observation(_blind(seen), seen)
+
+
+def test_a_url_absent_on_one_side_without_an_address_bar_is_no_change() -> None:
+    """A window without an address bar never observes the in-place URL: its absence is not
+    unread (`url_observed`), as for the observer's `url` fact."""
+    seen = observed()
+    native = dataclasses.replace(_blind(seen), url_observed=False)
+    assert not stale_observation(seen, native)
+    assert not stale_observation(native, seen)
+
+
+def test_a_top_document_on_one_side_only_is_stale() -> None:
+    seen = observed()
+    assert stale_observation(seen, _bare(seen))
+    assert stale_observation(_bare(seen), seen)
+
+
+def test_a_url_that_turns_unread_after_the_decision_is_never_dispatched_on() -> None:
+    """The principal's repro: the Decision read the URL; the fresh read has none, same
+    Document: re-asked, nothing dispatched."""
+    world = World(
+        [decision(act("click", target=GO.id), first=True)],
+        observations=[observed(), _blind(observed())],
+    )
+    run_task(task(), world.ports())
+    assert world.dispatched == []
+    assert "stale_observation" in world.views[1].history
+
+
+# ---- #335 review: row 2 on a re-rendered pending field ------------------------------------------
+
+REBUILT = element(77, "Edit", "Search", (9, 77), 1)
+"""FIELD re-rendered: the same ledger identity (role, name, automation id), a new RuntimeId."""
+
+
+TWIN = element(78, "Edit", "Search", (9, 78), 1)
+
+
+def _rebuilt(*shown: Element) -> Observed:
+    rest = [e for e in QUERY_PAGE if e.id != FIELD.id]
+    roles = {e.runtime_id: "searchbox" for e in shown}  # the page keeps the field's role
+    return dataclasses.replace(observed([*rest, *shown]), aria_roles=roles)
+
+
+def _rebuilt_world(*shown: Element, final: Observed | None = None) -> World:
+    """Type, the field re-renders as `shown`, then a submit click whose final report shows
+    `final` (default: the same page)."""
+    world = World(
+        [decision(TYPE, first=True), decision(act("click", target=GO.id))],
+        # a carrier, so only row 2 (the field emptied) can stop it
+        effects=[report("own_value"), report("content_changed", carriers=["title"])],
+        screen=FOCUSED,
+        later=_rebuilt(*shown),
+        timeline=[] if final is None else [(2, final)],
+        cleared={e.runtime_id: 2 for e in shown},
+    )
+    for e in {*shown, TWIN}:
+        world.values[e.runtime_id] = TYPED_VALUE
+    return world
+
+
+def test_a_re_rendered_pending_field_emptied_by_a_submit_click_stops() -> None:
+    """The principal's repro: type, the field re-renders with the same identity, a submit click,
+    the field empties: row 2 stops (it read `not_typed` and went to row 6)."""
+    world = _rebuilt_world(REBUILT)
+    outcome = run_task(task(), world.ports())
+    assert [(d.action.verb, d.submit) for d in world.dispatched] == [
+        ("type", False),
+        ("click", True),
+    ]
+    assert (outcome.status, outcome.reason) == ("stopped", "unexpected_effect")
+
+
+def test_a_pending_field_ambiguous_before_the_click_is_never_clicked_through() -> None:
+    """Two elements carry the field's identity before the click: the pending text is unread,
+    and the risk path fails closed (R2), so the click is never sent in step 3."""
+    world = _rebuilt_world(REBUILT, TWIN)
+    outcome = run_task(task(), world.ports())
+    assert [d.action.verb for d in world.dispatched] == ["type"]
+    assert outcome.reason == "commit_not_in_step"
+
+
+def test_a_pending_field_ambiguous_on_the_final_report_is_unread_on_row_2() -> None:
+    """One match before the click, two on the final report: which one holds the text is not
+    known, so row 2 reads `unread` and gives `unknown`, never a guess."""
+    world = _rebuilt_world(REBUILT, final=_rebuilt(REBUILT, TWIN))
+    run_task(task(), world.ports())
+    assert "enter:unknown:2" in _history(world)
+
+
+# ---- #335 review: the submit hold is checked --------------------------------------------------
+
+
+def test_a_submit_report_neither_held_nor_timed_out_is_row_5() -> None:
+    """No hold facts (a watch that did not hold the submit): the report is not final, so a row
+    that is not a stop is `unknown` (row 5), never `expected`."""
+    world = World(
+        [decision(TYPE, ENTER, first=True)],
+        effects=[report("own_value"), report("navigated", carriers=["url_param"])],
+        screen=FOCUSED,
+        unheld=True,
+    )
+    run_task(task(), world.ports())
+    assert "enter:unknown:5" in _history(world)
+
+
+def test_an_unheld_submit_report_that_is_a_stop_still_stops() -> None:
+    world = World(
+        [decision(TYPE, ENTER, first=True)],
+        effects=[report("own_value"), report("navigated", tokens=["windows_changed"])],
+        screen=FOCUSED,
+        unheld=True,
+    )
+    outcome = run_task(task(), world.ports())
+    assert (outcome.status, outcome.reason) == ("stopped", "unexpected_effect")
+
+
+# ---- #335 review: the post-decision observe is a read the task paid for ([V2.34]) -------------
+
+
+def test_the_post_decision_observe_is_logged_in_read_costs() -> None:
+    cost = ReadCost(full_reads=1, full_ms=40)
+    fresh = dataclasses.replace(observed(), read_cost=cost)
+    world = World(
+        [decision(act("click", target=GO.id), first=True)], observations=[observed(), fresh]
+    )
+    outcome = run_task(task(), world.ports())
+    assert cost in outcome.read_costs

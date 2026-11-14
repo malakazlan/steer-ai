@@ -36,7 +36,7 @@ from steerai.world.effects import (
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
 from steerai.world.reads import ReadCost
-from steerai.world.watch import Watched
+from steerai.world.watch import Watched, conclusive
 
 
 def pending(rule: str) -> pytest.MarkDecorator:
@@ -270,6 +270,9 @@ class World:
     """How long each read takes on the clock ([V2.34]); when set, the watch's after is stamped at
     its completion, `after_age_s` before the clock it returns at."""
     after_age_s: float = 0.0
+    unheld: bool = False
+    """A submit's watch reports no hold facts (neither `timed_out` nor `conclusive_ms`); by
+    default a submit is held as the real watch holds it: conclusive, else to the guard."""
 
     def _decide(self, view: TurnView) -> Decided:
         self.events.append("decide")
@@ -311,7 +314,7 @@ class World:
             return act_result(verb, Delivery.DELIVERED_VERIFIED, read_back=read_back)
         return act_result(verb, Delivery.DELIVERED_UNVERIFIED, read_back=read_back)
 
-    def _watch(self, before: Observed, sent: Dispatch) -> Watched:  # noqa: ARG002 - the Ports shape; scripted
+    def _watch(self, before: Observed, sent: Dispatch) -> Watched:
         self.events.append("watch")
         self.now += self.watch_s
         self._arrive()
@@ -321,12 +324,15 @@ class World:
             self.now += self.read_s
             stamped = dataclasses.replace(after.snapshot, taken_at=self.now - self.after_age_s)
             after = dataclasses.replace(after, snapshot=stamped)
+        held = sent.submit and not self.unheld
+        final = held and conclusive(effect, before, after)
         return Watched(
             report=effect,
             after=after,
             first_change_ms=None,
             settled_ms=None,
-            timed_out=False,
+            timed_out=held and not final,
+            conclusive_ms=0 if final else None,
             read_cost=self.read_cost,
         )
 
