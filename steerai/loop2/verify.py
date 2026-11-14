@@ -3,8 +3,6 @@ be inside the scope Document; a tab name, the address bar or another Document ne
 
 from __future__ import annotations
 
-import re
-import unicodedata
 import urllib.parse
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -13,9 +11,9 @@ from typing import Final, Literal
 from steerai.loop2.decision import Claim
 from steerai.loop2.owned import field_owned
 from steerai.loop2.task import Subgoal
-from steerai.world.effects import Observed, ValueFact, observe, top_document
+from steerai.world.effects import Observed, ValueFact, observe, result_elements, top_document
 from steerai.world.elements import Element
-from steerai.world.model import Snapshot
+from steerai.world.model import Snapshot, normalise_name
 
 
 def _inside(element: Element, by_id: dict[int, Element], scope: tuple[int, ...]) -> bool:
@@ -71,6 +69,8 @@ def check_claim(  # noqa: PLR0911, PLR0913 - one return per outcome; keyword-onl
     readers: Readers,
     scope_document: tuple[int, ...] | None = None,
     typed: Sequence[tuple[int, ...]] = (),
+    acted: tuple[int, ...] | None = None,
+    echo: bool = False,
 ) -> tuple[str, ...]:
     """A `state`, `value` or `navigated` claim checked by code (§7.1): the reject tokens, empty
     when it is proven. `state` and `value` cite exactly one element in the scope Document (the
@@ -78,7 +78,9 @@ def check_claim(  # noqa: PLR0911, PLR0913 - one return per outcome; keyword-onl
     with its own token, never as "false"; a field whose secure flag is set or unread is never
     read. `navigated` is measured since the subgoal's `baseline`."""
     if claim.kind == "navigated":
-        return navigated_tokens(subgoal, baseline, now, cited=claim.evidence, typed=typed)
+        return navigated_tokens(
+            subgoal, baseline, now, cited=claim.evidence, typed=typed, acted=acted, echo=echo
+        )
     if not claim.evidence:
         return ("evidence_missing",)
     if len(claim.evidence) > 1:
@@ -110,8 +112,9 @@ def check_claim(  # noqa: PLR0911, PLR0913 - one return per outcome; keyword-onl
 
 
 NAVIGATED_SCHEMES: Final = frozenset({"http", "https", "file"})
-"""§7.1 ([V2.3]): `navigated` is an allow-list; `file` for the local fixtures. An error page
-(`chrome-error:`) or an unread URL is never navigated."""
+"""§7.1 ([V2.3]): `navigated` is an allow-list; `file` for the local fixtures ([V2.39] narrows it
+to a task whose start URL is `file:`, in the PR after this one). An error page (`chrome-error:`)
+or an unread URL is never navigated."""
 URL_CARRIERS: Final = frozenset({"url_param", "url_path"})
 CHANGE: Final = frozenset({"navigated", "url_changed_in_place"})
 OWNING_ROLES: Final = frozenset({"Menu", "ToolTip"})
@@ -129,19 +132,23 @@ class _Found:
     results: bool
 
 
-def navigated_tokens(
+def navigated_tokens(  # noqa: PLR0913 - the subgoal, both reads and keyword-only facts
     subgoal: Subgoal,
     baseline: Observed,
     now: Observed,
     *,
     cited: Sequence[int],
     typed: Sequence[tuple[int, ...]] = (),
+    acted: tuple[int, ...] | None = None,
+    echo: bool = False,
 ) -> tuple[str, ...]:
     """§7.1 `navigated` since the subgoal's baseline, for a claim citing `cited`: the reject
     tokens, empty when proven. The content signal is a title or heading carrier, or the cited
-    elements, each new since the baseline, inside the scope Document and owned by no typed
-    field."""
-    found = _navigated(subgoal, baseline, now, typed=typed)
+    elements, each absent before the baseline, inside the scope Document, and passing the same
+    exclusions as the auto proof's results (`_excluded`). `typed` is every field Steer typed in
+    the task, `echo` whether the subgoal's words are text Steer typed ([V2.38] RT-39), `acted`
+    the field typed under this subgoal (its Document scopes the carriers)."""
+    found = _navigated(subgoal, baseline, now, typed=typed, acted=acted, echo=echo)
     if isinstance(found, tuple):
         return found
     if found.page is not None:
@@ -150,19 +157,24 @@ def navigated_tokens(
         return ("no_content",)
     rejected: list[str] = []
     for eid in cited:
-        rejected.extend(_cited_tokens(eid, baseline, now, typed))
+        rejected.extend(_cited_tokens(eid, baseline, now, typed=typed, echo=echo))
     return tuple(dict.fromkeys(rejected))
 
 
-def auto_proof(
-    subgoal: Subgoal, baseline: Observed, now: Observed, *, typed: Sequence[tuple[int, ...]] = ()
+def auto_proof(  # noqa: PLR0913 - the subgoal, both reads and keyword-only facts
+    subgoal: Subgoal,
+    baseline: Observed,
+    now: Observed,
+    *,
+    typed: Sequence[tuple[int, ...]] = (),
+    acted: tuple[int, ...] | None = None,
+    echo: bool = False,
 ) -> ProofToken | None:
     """§7.1, [V2.29] Q1: the token of the code-only `navigated` proof of `subgoal` since its
     baseline, or None. The content signal is a title or heading carrier, or the `results`
-    carrier together with a URL carrier: an element holding the words that is new since the
-    baseline, inside the scope Document, not under a Menu or ToolTip, owned by no typed field,
-    and not a selectable option when Steer typed the words."""
-    found = _navigated(subgoal, baseline, now, typed=typed)
+    carrier together with a URL carrier: an element the observer counts as a result (§6.4: in
+    the scope Document, the words absent before) that passes `_excluded`."""
+    found = _navigated(subgoal, baseline, now, typed=typed, acted=acted, echo=echo)
     if isinstance(found, tuple):
         return None
     if found.page is not None:
@@ -171,8 +183,14 @@ def auto_proof(
     return "results_with_url" if found.results else None
 
 
-def _navigated(  # noqa: PLR0911 - one return per closed outcome
-    subgoal: Subgoal, baseline: Observed, now: Observed, *, typed: Sequence[tuple[int, ...]]
+def _navigated(  # noqa: PLR0911, PLR0913 - one return per closed outcome; keyword-only facts
+    subgoal: Subgoal,
+    baseline: Observed,
+    now: Observed,
+    *,
+    typed: Sequence[tuple[int, ...]],
+    acted: tuple[int, ...] | None,
+    echo: bool,
 ) -> _Found | tuple[str, ...]:
     """The carriers since the baseline, or the reject tokens when it is no navigation at all."""
     if baseline.tier != now.tier:
@@ -180,12 +198,11 @@ def _navigated(  # noqa: PLR0911 - one return per closed outcome
     address = now.document_url
     if address is None:
         return ("url_unread",)
-    if urllib.parse.urlsplit(address).scheme not in NAVIGATED_SCHEMES:
+    if urllib.parse.urlsplit(address).scheme.lower() not in NAVIGATED_SCHEMES:
         return ("not_a_page",)
     texts = [span.text for span in subgoal.params.values()]
     if not texts:
         return ("param_missing",)
-    acted = typed[0] if typed else None
     best: _Found | None = None
     for text in texts:
         report = observe(baseline, now, acted=acted, text=text)
@@ -197,11 +214,11 @@ def _navigated(  # noqa: PLR0911 - one return per closed outcome
             page = "title"
         elif "heading" in carriers:
             page = "heading"
-        found = _Found(
-            page=page,
-            url=bool(carriers & URL_CARRIERS),
-            results=_results(text, baseline, now, typed),
+        results = any(
+            not _excluded(e, now, typed=typed, echo=echo)
+            for e in result_elements(baseline, now, acted=acted, text=text)
         )
+        found = _Found(page=page, url=bool(carriers & URL_CARRIERS), results=results)
         if found.page is not None or (found.url and found.results):
             return found
         best = best or found
@@ -212,44 +229,27 @@ def _navigated(  # noqa: PLR0911 - one return per closed outcome
     return best
 
 
-def _words(text: str) -> list[str]:
-    """Casefolded whole tokens of the NFKC form, as the observer's carriers read them."""
-    return re.findall(r"\w+", unicodedata.normalize("NFKC", text).casefold())
-
-
-def _holds(name: str, words: Sequence[str]) -> bool:
-    have = _words(name)
-    n = len(words)
-    return n > 0 and any(have[i : i + n] == list(words) for i in range(len(have) - n + 1))
-
-
-def _results(
-    text: str, baseline: Observed, now: Observed, typed: Sequence[tuple[int, ...]]
-) -> bool:
-    """[V2.29] Q1: an element holding the words that passes the exclusions of a cited claim."""
-    words = _words(text)
-    before = {e.runtime_id: e.name for e in baseline.snapshot.elements if e.runtime_id}
+def _excluded(
+    element: Element, now: Observed, *, typed: Sequence[tuple[int, ...]], echo: bool
+) -> list[str]:
+    """[V2.29] Q1: why an element proves nothing, for the auto proof and a cited claim alike: a
+    typed field itself; under a Menu or ToolTip; a selectable option when the subgoal's words are
+    text Steer typed (the option rule, task-wide); owned by any field Steer typed in the task."""
+    if element.runtime_id in typed:
+        return ["inside_field"]
     by_id = {e.id: e for e in now.snapshot.elements}
-    top = top_document(now.snapshot)
-    for element in now.snapshot.elements:
-        if not _holds(element.name, words) or element.runtime_id in typed:
-            continue
-        if element.runtime_id and before.get(element.runtime_id) == element.name:
-            continue  # present before the baseline
-        if top is not None and not _inside(element, by_id, top.runtime_id):
-            continue
-        if _under_role(element, by_id, OWNING_ROLES):
-            continue
-        if typed and element.role == "ListItem" and OPTION_CAPS & set(element.caps):
-            continue  # the option rule: an option echoing what Steer typed
-        if any(field_owned(element, now, field) for field in typed):
-            continue
-        return True
-    return False
+    tokens: list[str] = []
+    if _under_role(element, by_id, OWNING_ROLES):
+        tokens.append("under_suggestions")
+    if echo and element.role == "ListItem" and OPTION_CAPS & set(element.caps):
+        tokens.append("option_evidence")
+    for field in typed:
+        tokens.extend(field_owned(element, now, field))
+    return list(dict.fromkeys(tokens))
 
 
 def _cited_tokens(
-    eid: int, baseline: Observed, now: Observed, typed: Sequence[tuple[int, ...]]
+    eid: int, baseline: Observed, now: Observed, *, typed: Sequence[tuple[int, ...]], echo: bool
 ) -> list[str]:
     by_id = {e.id: e for e in now.snapshot.elements}
     element = by_id.get(eid)
@@ -258,13 +258,21 @@ def _cited_tokens(
     top = top_document(now.snapshot)
     if top is not None and not _inside(element, by_id, top.runtime_id):
         return ["outside_scope"]
-    before = {e.runtime_id: e.name for e in baseline.snapshot.elements if e.runtime_id}
-    if element.runtime_id and before.get(element.runtime_id) == element.name:
+    if _present_before(element, baseline):
         return ["not_in_delta"]
-    owned: list[str] = []
-    for field in typed:
-        owned.extend(field_owned(element, now, field))
-    return owned
+    return _excluded(element, now, typed=typed, echo=echo)
+
+
+def _present_before(element: Element, baseline: Observed) -> bool:
+    """§6.4: held before the baseline: the same RuntimeId under the same name, or, with no
+    RuntimeId, the same role and normalised name on any element of the baseline."""
+    if element.runtime_id:
+        return any(
+            e.runtime_id == element.runtime_id and e.name == element.name
+            for e in baseline.snapshot.elements
+        )
+    key = (element.role, normalise_name(element.name))
+    return any((e.role, normalise_name(e.name)) == key for e in baseline.snapshot.elements)
 
 
 def _under_role(element: Element, by_id: dict[int, Element], roles: frozenset[str]) -> bool:

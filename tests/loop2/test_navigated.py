@@ -32,8 +32,9 @@ def page(
     url: str = QUERY_URL,
     title: str | None = None,
     landmarks: dict[tuple[int, ...], Landmark | None] | None = None,
+    base: Sequence[Element] = QUERY_PAGE,
 ) -> Observed:
-    seen = observed([*QUERY_PAGE, *extra])
+    seen = observed([*base, *extra])
     if title is not None:
         seen = dataclasses.replace(seen, snapshot=dataclasses.replace(seen.snapshot, title=title))
     marks = (
@@ -116,7 +117,7 @@ def test_a_result_under_a_menu_is_no_content_signal() -> None:
 def test_a_selectable_option_holding_typed_words_is_no_content_signal() -> None:
     """The option rule: Steer typed the param, so a listbox option echoing it proves nothing."""
     option = dataclasses.replace(RESULT, caps=("selectable",))
-    assert auto_proof(SUB, before(), page([option]), typed=TYPED) is None
+    assert auto_proof(SUB, before(), page([option]), typed=TYPED, echo=True) is None
 
 
 def test_with_the_landmark_map_unread_a_typed_search_fails_closed() -> None:

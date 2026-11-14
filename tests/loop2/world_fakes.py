@@ -243,6 +243,8 @@ class World:
     """Each field's value fact as `read_value` returns it (a type that reads back True sets it)."""
     reads: list[tuple[int, ...]] = field(default_factory=list)
     states: dict[tuple[tuple[int, ...], str], bool | None] = field(default_factory=dict)
+    cleared: dict[tuple[int, ...], int] = field(default_factory=dict)
+    """A field that reads empty once this many actions were dispatched (a page that clears it)."""
     """What `read_state` returns for (RuntimeId, wanted); missing: unread."""
     """The RuntimeIds `read_value` was called on, in order."""
     settle_guards: list[float] = field(default_factory=list)
@@ -333,6 +335,9 @@ class World:
     def _read_value(self, element: Element) -> ValueFact | None:
         self.events.append("read")
         self.reads.append(element.runtime_id)
+        after = self.cleared.get(element.runtime_id)
+        if after is not None and len(self.dispatched) >= after:
+            return EMPTY
         return self.values.get(element.runtime_id, EMPTY)
 
     def _write_ahead(self, sent: Dispatch) -> str:

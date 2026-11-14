@@ -664,6 +664,19 @@ def _heading_carrier(
     return top_b is None or not _contains(top_b.name, needle)
 
 
+def result_elements(
+    before: Observed, after: Observed, *, acted: tuple[int, ...] | None, text: str
+) -> list[Element]:
+    """The elements the `results` carrier rests on (§6.4), for a verifier that must apply its own
+    exclusions to them ([V2.29] Q1): the same scope, absent-before rule and token threshold as
+    `observe`'s carrier, so the two can never disagree."""
+    needle = _tokens(text)
+    if not needle or (len(needle) == 1 and len(needle[0]) < MIN_TOKEN_CHARS):
+        return []
+    scopes = _scopes(before.snapshot, after.snapshot, acted)
+    return _result_elements(before.snapshot, after.snapshot, acted, needle, scopes)
+
+
 def _results_carrier(
     b: Snapshot,
     a: Snapshot,
@@ -671,6 +684,16 @@ def _results_carrier(
     needle: Sequence[str],
     scopes: tuple[set[int] | None, set[int] | None],
 ) -> bool:
+    return bool(_result_elements(b, a, acted, needle, scopes))
+
+
+def _result_elements(
+    b: Snapshot,
+    a: Snapshot,
+    acted: tuple[int, ...] | None,
+    needle: Sequence[str],
+    scopes: tuple[set[int] | None, set[int] | None],
+) -> list[Element]:
     """The text on an appeared or renamed element inside the scope and outside the acted field's
     exemption, and on no element of the scope before it (an element without a RuntimeId is new
     only by its role and name). A tab name or the address bar is never a result ([V2.3])."""
@@ -684,8 +707,9 @@ def _results_carrier(
         for e in b.elements
         if _inside(e, in_b) and not (acted and e.runtime_id == acted)
     ):
-        return False
+        return []
     anonymous_before = _anonymous(b.elements, in_b)
+    found: list[Element] = []
     for element in a.elements:
         if not _inside(element, in_a) or element.id in exempt or element.id in under:
             continue
@@ -693,10 +717,10 @@ def _results_carrier(
             continue
         if element.runtime_id:
             if known.get(element.runtime_id) != element.name:
-                return True
+                found.append(element)
         elif anonymous_before[(element.role, normalise_name(element.name))] == 0:
-            return True
-    return False
+            found.append(element)
+    return found
 
 
 def _report(  # noqa: PLR0913, PLR0917 - the report's fields, one each
