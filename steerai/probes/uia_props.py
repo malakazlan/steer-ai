@@ -47,6 +47,14 @@ from steerai.probes.chrome_a11y import (
 )
 from steerai.probes.layer_b import _free_port
 from steerai.probes.layer_b_pages import PageServer
+from steerai.probes.memory_guard import (
+    EXIT_LOW_MEMORY,
+    FLOOR_MB,
+    LowMemory,
+    guarded_launch,
+    guarded_stop,
+    refusal_row,
+)
 
 PAGE = """<!doctype html><meta charset="utf-8"><title>Props</title>
 <div role="search" id="land-role" aria-label="Site search">
@@ -134,7 +142,7 @@ def run_once() -> dict[str, Any]:
     tmp = Path(tempfile.mkdtemp(prefix="steer-props-"))
     with PageServer({"/props": PAGE}) as server:
         port = _free_port()
-        proc = launch_chrome(
+        proc = _launch(
             CHROME_DEFAULT, tmp / "profile", port, f"http://127.0.0.1:{server.port}/props"
         )
         try:
@@ -156,7 +164,7 @@ def run_once() -> dict[str, Any]:
             after = _props(mod, _find(uia, mod, hwnd, FOCUS_FIELD))
             cdp.close()
         finally:
-            stop_chrome(proc, tmp / "profile")
+            _stop(proc, tmp / "profile")
             shutil.rmtree(tmp, ignore_errors=True)
     return {"elements": before, "focused_after": after, "typed": TYPED}
 
@@ -177,7 +185,7 @@ def site_fields(url: str) -> dict[str, Any]:  # Any: JSON values
 
     tmp = Path(tempfile.mkdtemp(prefix="steer-sitefields-"))
     port = _free_port()
-    proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, url)
+    proc = _launch(CHROME_DEFAULT, tmp / "profile", port, url)
     try:
         hwnd = wait_window_for_pid(proc.pid, image="chrome.exe", process=proc).hwnd
         page_ws_url(port)
@@ -216,7 +224,7 @@ def site_fields(url: str) -> dict[str, Any]:  # Any: JSON values
                     }
                 )
     finally:
-        stop_chrome(proc, tmp / "profile")
+        _stop(proc, tmp / "profile")
         shutil.rmtree(tmp, ignore_errors=True)
     query = any(f["role"] == "searchbox" or f["in_search_landmark"] for f in fields)
     return {"fields": fields, "query_class_possible": query}
@@ -299,7 +307,7 @@ def busy_run() -> list[dict[str, Any]]:
     with _SlowPages() as server:
         port = _free_port()
         base = f"http://127.0.0.1:{server.port}"
-        proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, base + "/start")
+        proc = _launch(CHROME_DEFAULT, tmp / "profile", port, base + "/start")
         try:
             hwnd = wait_window_for_pid(proc.pid, image="chrome.exe", process=proc).hwnd
             cdp = CdpSession(page_ws_url(port))
@@ -331,7 +339,7 @@ def busy_run() -> list[dict[str, Any]]:
                 time.sleep(BUSY_EVERY_S)
             cdp.close()
         finally:
-            stop_chrome(proc, tmp / "profile")
+            _stop(proc, tmp / "profile")
             shutil.rmtree(tmp, ignore_errors=True)
     return rows
 
@@ -340,15 +348,49 @@ ITEM_STATUS = 30026
 """UIA_ItemStatusPropertyId."""
 
 
+_RUN = {"floor_mb": FLOOR_MB}
+"""The run's free-memory floor, set by `main` from `--min-free-mb` ([V2.14] 4)."""
+
+
+def _launch(*args: Any, **kwargs: Any) -> Any:  # Any: launch_chrome's arguments and Popen
+    """`launch_chrome` after the pre-flight, holding the process's one browser slot."""
+    return guarded_launch(launch_chrome, *args, floor_mb=_RUN["floor_mb"], **kwargs)
+
+
+def _stop(proc: Any, profile: Path) -> None:  # Any: the Popen `_launch` returned
+    guarded_stop(stop_chrome, proc, profile)
+
+
+def _refused(refused: LowMemory) -> int:
+    sys.stdout.write(json.dumps(refusal_row(refused, [])) + "\n")
+    sys.stderr.write(f"{refused}\n")
+    return EXIT_LOW_MEMORY
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--sites", action="store_true", help="the pooled set's search sites")
     parser.add_argument("--busy", action="store_true", help="a pending navigation's Documents")
+    parser.add_argument(
+        "--min-free-mb",
+        type=int,
+        default=FLOOR_MB,
+        help=f"refuse to launch a browser below this free memory (default {FLOOR_MB}, unmeasured)",
+    )
     args = parser.parse_args(argv)
+    _RUN["floor_mb"] = args.min_free_mb
     if sys.platform != "win32":
         sys.stdout.write(json.dumps({"skipped": "windows only"}) + "\n")
         return 0
+    try:
+        return _probe(args)
+    except LowMemory as refused:
+        return _refused(refused)
+
+
+def _probe(args: argparse.Namespace) -> int:
+    """The chosen probe; a browser launch below the floor raises LowMemory."""
     if args.busy:
         for row in busy_run():
             sys.stdout.write(json.dumps(row) + "\n")
