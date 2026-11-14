@@ -10,7 +10,7 @@ from steerai.loop2.decision import Claim, Decision, SubgoalDoc
 from steerai.loop2.loop import TaskOutcome, action_risk, resolve, run_task
 from steerai.loop2.task import Budgets
 from steerai.orchestrator.loop import REUSE_FRESHNESS_S
-from steerai.world.effects import Observed
+from steerai.world.effects import Observed, poll_tier
 from tests.loop2.world_fakes import (
     FIELD,
     GO,
@@ -438,6 +438,13 @@ def test_a_stable_fresh_full_after_is_reused_with_no_extra_read() -> None:
 def test_an_unstable_after_is_read_again() -> None:
     unstable = dataclasses.replace(observed(), snapshot=snapshot(PAGE, stable=False))
     world = _two_clicks(after=unstable)
+    run_task(task(), world.ports())
+    assert "observe" in _between_first_two_acts(world)
+
+
+@pending("[V2.11].6 between batch actions")
+def test_a_poll_tier_after_is_read_again() -> None:
+    world = _two_clicks(after=poll_tier(observed().snapshot))
     run_task(task(), world.ports())
     assert "observe" in _between_first_two_acts(world)
 

@@ -65,8 +65,6 @@ from steerai.world.elements import safe_name
 from steerai.world.model import Snapshot, normalise_name
 
 EXIT_DONE = 0
-LoopVersion = Literal["v1", "v2"]
-LOOP_VERSIONS: tuple[LoopVersion, ...] = ("v1", "v2")
 EXIT_USAGE = 1
 EXIT_PAUSED = 2
 EXIT_BLOCKED = 3
@@ -101,6 +99,8 @@ _LEDGER_TOKENS = frozenset(
     }
 )
 _RISK_ORDER = {risk: index for index, risk in enumerate(RISKS)}
+LoopVersion = Literal["v1", "v2"]
+LOOP_VERSIONS: tuple[LoopVersion, ...] = ("v1", "v2")
 
 
 class UsageError(ValueError):
