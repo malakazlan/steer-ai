@@ -48,6 +48,8 @@ from steerai.orchestrator.loop import REUSE_FRESHNESS_S
 from steerai.world.effects import EffectReport, Observed, ValueFact, top_document
 from steerai.world.elements import Element
 from steerai.world.model import normalise_name
+from steerai.world.observe2 import YOUNG_S
+from steerai.world.reads import ReadCost
 
 STRIKE_LIMIT: Final = 3
 """[V2.4]: the pooled set runs with a limit of 3, frozen before H7."""
@@ -57,9 +59,10 @@ RefusalKind = Literal["policy", "step", "model", "world"]
 `world` refusal (nothing delivered, the focus not where the press goes) is a token and a strike
 but no model fault: it leaves the status to the stop."""
 STEP_TOKENS: Final = frozenset({"not_in_step"})
-LOAD_GUARD_S: Final = 12.0
+LOAD_GUARD_S: Final = YOUNG_S
 """[V2.31] the load guard: a task gives up (a `cannot` stop, the strike limit) on a top Document
-younger than this only after one settle and one re-ask; provisional, from the 12.3 s reading."""
+younger than this only after one settle and one re-ask; provisional, from the 12.3 s reading.
+The same number as a young page ([V2.35] (2)), so the two cannot drift."""
 _R2: Final = RISKS.index("R2")
 
 
@@ -116,6 +119,7 @@ class _Run:
         self.model_calls = 0
         self.strikes = Strikes(STRIKE_LIMIT)
         self.strike_log: list[tuple[StrikeReason, ...]] = []
+        self.read_costs: list[ReadCost] = []
         self.refusal: tuple[RefusalKind, str] | None = None
         self.typed: list[_Typed] = []
         self.baselines: dict[str, Observed] = {}
@@ -140,6 +144,7 @@ class _Run:
             dispatched=tuple(self.dispatched),
             model_calls=self.model_calls,
             strikes=tuple(self.strike_log),
+            read_costs=tuple(self.read_costs),
         )
 
     def _stopped(self, stop: Literal["cannot", "blocked"]) -> _End:
@@ -162,9 +167,10 @@ class _Run:
             self._check_budgets()
             decision = self._decide(observed)
             self.turn = _Turn()
-            # [V2.31]: a wait chosen while the page grows is not a strike (new elements are new
-            # state anyway); neither is the turn whose stop the load guard held
-            self.turn.neutral = observed.growing and any(a.verb == "wait" for a in decision.actions)
+            # [V2.31], [V2.35] (2): a wait chosen while the page grows or is young is not a strike
+            # (more may arrive); neither is the turn whose stop the load guard held
+            loading = observed.growing or observed.young
+            self.turn.neutral = loading and any(a.verb == "wait" for a in decision.actions)
             observed = self._turn(decision, observed)
             observed = self._record_strike(observed)
 
@@ -372,6 +378,7 @@ class _Run:
             self._refuse("world", "not_delivered")
             return None
         watched = self.ports.watch(before, sent)
+        self.read_costs.append(watched.read_cost)
         report = watched.report
         self.turn.action, self.turn.effect = key, report
         if element is not None:

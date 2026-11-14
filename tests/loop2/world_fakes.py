@@ -3,6 +3,7 @@ plays the `Ports` of the v2 loop. No site or app names; nothing here touches the
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
@@ -25,6 +26,7 @@ from steerai.world.effects import (
 )
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
+from steerai.world.reads import ReadCost
 from steerai.world.watch import Watched
 
 
@@ -221,6 +223,12 @@ class World:
     """Each field's value fact as `read_value` returns it (a type that reads back True sets it)."""
     reads: list[tuple[int, ...]] = field(default_factory=list)
     settle_guards: list[float] = field(default_factory=list)
+    read_cost: ReadCost = field(default_factory=ReadCost)
+    """What each watch reports it read ([V2.34])."""
+    read_s: float = 0.0
+    """How long each read takes on the clock ([V2.34]); when set, the watch's after is stamped at
+    its completion, `after_age_s` before the clock it returns at."""
+    after_age_s: float = 0.0
     """The guard each `settle` (the [V2.31] load-guard wait) was given."""
     """The RuntimeIds `read_value` was called on, in order."""
 
@@ -263,8 +271,17 @@ class World:
         self._arrive()
         effect = self.effects.pop(0) if self.effects else report("none")
         after = self.after if self.after is not None else self.screen
+        if self.read_s:
+            self.now += self.read_s
+            stamped = dataclasses.replace(after.snapshot, taken_at=self.now - self.after_age_s)
+            after = dataclasses.replace(after, snapshot=stamped)
         return Watched(
-            report=effect, after=after, first_change_ms=None, settled_ms=None, timed_out=False
+            report=effect,
+            after=after,
+            first_change_ms=None,
+            settled_ms=None,
+            timed_out=False,
+            read_cost=self.read_cost,
         )
 
     def _settle(self, first: Observed, guard_s: float) -> Observed:  # noqa: ARG002 - the Ports shape

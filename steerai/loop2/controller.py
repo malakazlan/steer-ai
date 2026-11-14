@@ -190,6 +190,7 @@ def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
     screen_fence: str,
     unstable: bool = False,
     growing: bool = False,
+    young: bool = False,
 ) -> tuple[list[str], list[str]]:
     """Return (system blocks, user blocks): stable, then append-only log, then the live turn."""
     _check_fences(task_fence, screen_fence)
@@ -216,6 +217,7 @@ def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
             *(_status_line(sid, status) for sid, status in subgoal_status),
             *(["screen: unstable"] if unstable else []),
             *(["screen: page growing"] if growing else []),
+            *(["screen: page young"] if young else []),
             f"<<<screen {screen_fence}",
             f"window: {_data(window_title, screen_fence)}",
             *(
@@ -291,6 +293,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     known_subgoals: Mapping[str, frozenset[str]] | None = None,
     unstable: bool = False,
     growing: bool = False,
+    young: bool = False,
     screen_fence: str | None = None,
     max_repairs: int = 1,
 ) -> tuple[Decision, DecideRecord]:
@@ -310,6 +313,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
         screen_fence=screen,
         unstable=unstable,
         growing=growing,
+        young=young,
     )
     error: ControllerError | None = None
     for attempt in range(max_repairs + 1):

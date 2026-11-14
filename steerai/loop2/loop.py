@@ -42,6 +42,7 @@ from steerai.verify.predicates import FIELD_ROLES
 from steerai.world.effects import Observed, ValueFact
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot, resolve_in
+from steerai.world.reads import ReadCost
 from steerai.world.watch import Watched
 
 Status = Literal["done", "blocked", "asked", "paused", "stopped", "cannot"]
@@ -137,6 +138,8 @@ class Ports:
     interrupted: Callable[[], str | None]
     """A takeover, the secure desktop or a lock, as a token; None to go on."""
     clock: Callable[[], float]
+    """The loop's clock, in the domain of `Snapshot.taken_at` (a read's completion): the reuse
+    between batch actions compares the two ([V2.11] decision 6, [V2.34])."""
     settle: Callable[[Observed, float], Observed]
     """[V2.31] from this observation, wait until the page's node count holds for the loop's quiet
     window or the guard (seconds) expires, and return the last read (`observe2.hold_still`)."""
@@ -155,6 +158,9 @@ class TaskOutcome:
     model_calls: int
     strikes: tuple[tuple[StrikeReason, ...], ...]
     """The evidence: one entry per strike, with every reason that held in that turn."""
+    read_costs: tuple[ReadCost, ...] = ()
+    """[V2.34] the reads each watched action's watch made (count and ms by tier), in dispatch
+    order: the observe layer's share of the wall-time split."""
 
     @property
     def reason(self) -> str | None:
