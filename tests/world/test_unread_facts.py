@@ -86,9 +86,8 @@ def test_the_secure_flag_is_derived_from_one_typed_read(
 ) -> None:
     """One `GetCachedPropertyValueEx` per property, in place of `CachedIsPassword`: a bool is a
     read; the sentinel, None or any other type is unread and keeps v1's default False."""
-    seen, raised = read_cached(_Cached(value), 30019, bool, SENTINEL)
+    seen = read_cached(_Cached(value), 30019, bool, SENTINEL)
     assert (bool(seen) if seen is not None else False, seen is not None) == (secure, read)
-    assert raised is False
 
 
 @pytest.mark.parametrize(
@@ -105,17 +104,70 @@ def test_the_secure_flag_is_derived_from_one_typed_read(
 def test_the_automation_id_is_derived_from_one_typed_read(
     value: object, automation_id: str, read: bool
 ) -> None:
-    seen, _ = read_cached(_Cached(value), 30011, str, SENTINEL)
+    seen = read_cached(_Cached(value), 30011, str, SENTINEL)
     assert (seen if seen is not None else "", seen is not None) == (automation_id, read)
 
 
 def test_a_wrong_type_is_never_a_read() -> None:
-    assert read_cached(_Cached("yes"), 30019, bool, SENTINEL)[0] is None
+    assert read_cached(_Cached("yes"), 30019, bool, SENTINEL) is None
     assert property_read(_Cached("yes"), 30019, SENTINEL, bool) is False
 
 
-def test_a_provider_error_is_unread_and_counted() -> None:
-    assert read_cached(_Cached(raises=True), 30019, bool, SENTINEL) == (None, True)
+class _ComError(Exception):
+    """Stands in for comtypes' COMError: a plain Exception, not an OSError."""
+
+
+class _Raising(_Cached):
+    def GetCachedPropertyValueEx(self, prop: int, ignore_default: bool) -> object:  # noqa: N802, ARG002 - the COM name and shape
+        raise _ComError("provider failed")
+
+
+def test_a_provider_error_propagates_exactly_as_before() -> None:
+    """Principal re-review: never caught. v1 has no unread set, so a caught error would give it
+    `secure=False` for what may be a password field; on main the error failed the observe."""
+    with pytest.raises(_ComError):
+        read_cached(_Raising(), 30019, bool, SENTINEL)
+
+
+def test_a_bool_is_never_a_read_int() -> None:
+    assert property_read(_Cached(True), 30086, SENTINEL, int) is False
+
+
+def test_the_walk_raises_when_a_read_raises() -> None:
+    """The walk lets the provider's error escape, so `observe` fails as on main."""
+    from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415 - the walk under test
+
+    client = object.__new__(UiaClient)
+    client._uia_module = _Module()  # a structural fake of the comtypes module
+    client._control_type_names = {50000: "Button"}
+    client._not_supported = SENTINEL
+    with pytest.raises(_ComError):
+        client._walk_cached(_RaisingElement(), 0, [], [], caps=False)
+
+
+class _Module:
+    UIA_RuntimeIdPropertyId = 30000
+    UIA_IsPasswordPropertyId = 30019
+    UIA_AutomationIdPropertyId = 30011
+
+
+class _Rect:
+    left = top = 0
+    right = bottom = 10
+
+
+class _RaisingElement:
+    CachedBoundingRectangle = _Rect()
+    CachedControlType = 50000
+    CachedName = "Code"
+    CachedIsOffscreen = False
+    CachedIsEnabled = True
+
+    def GetCachedPropertyValue(self, prop: int) -> object:  # noqa: N802, ARG002 - the COM shape
+        return (1, 2)
+
+    def GetCachedPropertyValueEx(self, prop: int, ignore_default: bool) -> object:  # noqa: N802, ARG002 - the COM shape
+        raise _ComError("provider failed")
 
 
 def test_a_supported_typed_property_is_read() -> None:
