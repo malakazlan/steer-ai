@@ -245,3 +245,45 @@ def test_a_query_click_with_no_typed_field_skips_row_2() -> None:
 @pytest.mark.parametrize("effect_class", ["own_state", "focus"])
 def test_the_buttons_own_change_or_focus_moving_to_it_is_weak(effect_class: EffectClass) -> None:
     assert outcome(report(effect_class)) == ("back_to_controller", "weak", 8)
+
+
+# ---- [V2.23] A: the table's unmatched inputs ---------------------------------------------------
+
+
+def test_a_dialog_with_no_strong_class_stops_whatever_the_carrier() -> None:
+    assert outcome(report("dialog_opened"), carried=True)[:2] == (
+        "unexpected_effect",
+        "unexpected_effect",
+    )
+    assert outcome(report("dialog_opened"), carried=True)[2] == 4
+
+
+def test_a_dialog_inside_the_scope_with_revealed_and_a_carrier_is_expected() -> None:
+    """A search overlay showing results: the observer reports an in-scope dialog with
+    `revealed`."""
+    assert outcome(report("dialog_opened", "revealed")) == ("expected", "none", 6)
+
+
+def test_a_dialog_outside_the_scope_stops_even_with_a_url_change() -> None:
+    """An out-of-scope dialog comes with `frame_changed`, never `revealed`."""
+    effect = report("dialog_opened", "url_changed_in_place", tokens=["frame_changed"])
+    assert outcome(effect, carried=True) == ("unexpected_effect", "unexpected_effect", 4)
+
+
+def test_a_url_change_in_place_without_a_carrier_is_no_carrier() -> None:
+    effect = report("url_changed_in_place")
+    assert outcome(effect, carried=False) == ("back_to_controller", "no_carrier", 7)
+
+
+def test_a_url_change_in_place_beats_content_without_a_carrier() -> None:
+    """Row 4's no-carrier stop applies only when the URL did not change."""
+    effect = report("url_changed_in_place", "content_changed", "revealed")
+    assert outcome(effect, carried=False) == ("back_to_controller", "no_carrier", 7)
+
+
+def test_content_without_a_carrier_and_no_url_change_still_stops() -> None:
+    assert outcome(report("content_changed"), carried=False)[2] == 4
+
+
+def test_own_value_with_no_typed_field_is_weak() -> None:
+    assert outcome(report("own_value"), field="not_typed") == ("back_to_controller", "weak", 8)

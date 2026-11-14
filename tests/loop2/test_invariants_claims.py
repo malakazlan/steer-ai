@@ -52,13 +52,17 @@ def check(
     subgoal: SubgoalFacts | None = None,
     *,
     landmarks: Mapping[RuntimeId, Landmark | None] | None = None,
+    landmarks_read: bool = True,
 ) -> Checked:
+    """`landmarks` overrides the read map, in which every shown element has no landmark."""
+    shown = [*PAGE, *extra]
+    read = {e.runtime_id: None for e in shown} | dict(landmarks or {})
     return check_content(
         cited,
-        snapshot([*PAGE, *extra]),
+        snapshot(shown),
         subgoal or facts(),
         scope_document=DOC.runtime_id,
-        landmarks=landmarks,
+        landmarks=read if landmarks_read else None,
     )
 
 
@@ -319,11 +323,11 @@ def test_the_suggestion_sample_hits_controller_for_landmark_and_parent() -> None
     subgoal = facts(typed_fields=(typed.runtime_id,), controlled=(hints.runtime_id,))
     tokens = check(claim(hint.id), [group, typed, hints, hint], subgoal, landmarks=marks).tokens
     assert "under_suggestions" in tokens
-    assert fired(tokens) == {
+    assert [t for t in tokens if t in OWNED] == [
         "owned_by_controller_for",
         "owned_by_search_landmark",
         "owned_by_parent",
-    }
+    ], "[V2.23] C: every rule that fires, in a stable order"
 
 
 @pending("[V2.21] #9 sample: results directly under the Document (cp1) hit no rule")
@@ -342,6 +346,30 @@ def test_the_results_under_the_document_sample_hits_no_rule() -> None:
     result = check(claim(found.id), [form, typed, listing, found], subgoal, landmarks=marks)
     assert result.proof is not None
     assert fired(result.tokens) == set()
+
+
+@pending("[V2.23] B: no landmark map with a typed field fails closed, landmarks_unread")
+def test_a_missing_landmark_map_with_a_typed_field_fails_closed() -> None:
+    subgoal = facts(typed_fields=(FIELD.runtime_id,))
+    result = check(claim(RESULT.id), [RESULT], subgoal, landmarks_read=False)
+    assert result.proof is None
+    assert "landmarks_unread" in result.tokens
+    assert fired(result.tokens) == set(), "not read is never owned"
+
+
+@pending("[V2.23] B: with no typed field there is nothing to own")
+def test_a_missing_landmark_map_without_a_typed_field_is_no_reject() -> None:
+    result = check(claim(RESULT.id), [RESULT], facts(), landmarks_read=False)
+    assert result.proof is not None
+    assert "landmarks_unread" not in result.tokens
+
+
+@pending("[V2.23] B: an unread ControllerFor is not observed by design and never fails closed")
+def test_an_unread_controller_for_never_fails_closed() -> None:
+    subgoal = facts(typed_fields=(FIELD.runtime_id,), controlled=())
+    result = check(claim(RESULT.id), [RESULT], subgoal)
+    assert result.proof is not None
+    assert "landmarks_unread" not in result.tokens
 
 
 @pending("[V2.21] #9: the option rule stays on top of the field-owned rules")

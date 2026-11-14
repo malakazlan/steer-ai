@@ -22,10 +22,13 @@ FieldState = Literal["not_typed", "kept", "emptied", "gone", "unread"]
 applies (row 2 is skipped), `gone` when it left the snapshot, `unread` when its value could not
 be read."""
 STRONG = frozenset({"navigated", "url_changed_in_place", "content_changed", "revealed"})
-"""[V2.21] row 6's strong classes; a dialog beside them does not change the outcome."""
-NEEDS_CARRIER = frozenset({"dialog_opened", "revealed", "content_changed"})
-"""[V2.21] row 4: these without a carrier stop."""
-WEAK_CLASSES = frozenset({"none", "focus", "own_state"})
+"""[V2.21] row 6's strong classes; an in-scope dialog beside them does not change the outcome."""
+NEEDS_CARRIER = frozenset({"revealed", "content_changed"})
+"""[V2.21], [V2.23] row 4: these without a carrier stop, but only when the URL did not change."""
+URL_MOVED = frozenset({"navigated", "url_changed_in_place"})
+"""[V2.23] row 7: the URL changed, so a missing carrier is `no_carrier`, not a stop."""
+WEAK_CLASSES = frozenset({"none", "focus", "own_state", "own_value"})
+"""[V2.21], [V2.23] row 8: `own_value` is weak (row 2 already took an emptied or unread field)."""
 WEAK_TOKENS = frozenset(
     {"frame_changed", "title_only", "dismissed", "rerendered", "moved", "scrolled"}
 )
@@ -145,26 +148,39 @@ def query_outcome(  # noqa: PLR0911 - one return per row of the table
         if top_replaced is None:
             return EnterOutcome(_BACK, "unknown", 3)
         return EnterOutcome(_STOP, "unexpected_effect", 3)
-    if classes & NEEDS_CARRIER and not text_carried:
+    if _row_4(report, text_carried=text_carried):
         return EnterOutcome(_STOP, "unexpected_effect", 4)
     if "unknown" in classes or (not classes and report.unread):
         return EnterOutcome(_BACK, "unknown", 5)
     if classes & STRONG and text_carried:
         return EnterOutcome("expected", "none", 6)
-    if "navigated" in classes:
+    if classes & URL_MOVED:
         return EnterOutcome(_BACK, "no_carrier", 7)
-    if _weak_only(report, typed_field):
+    if _weak_only(report):
         return EnterOutcome(_BACK, "weak", 8)
     if classes == frozenset({"none"}) and not tokens and not report.unread:
         return EnterOutcome(_BACK, "none", ROW_NONE)
     return EnterOutcome(_BACK, "unknown", 5)
 
 
-def _weak_only(report: EffectReport, typed_field: FieldState) -> bool:
-    """Row 8: only weak signals, and at least one: `own_value` counts while the field is still
-    filled (`kept`); nothing unread."""
-    weak = WEAK_CLASSES | ({"own_value"} if typed_field == "kept" else set())
+def _row_4(report: EffectReport, *, text_carried: bool) -> bool:
+    """[V2.21], [V2.23] row 4, a stop, after row 3 and before rows 5 to 7:
+
+    - a dialog outside the scope (it comes with `frame_changed`, never `revealed`), even with a
+      URL change: evaluated first;
+    - a dialog in the scope with no strong class, whatever the carrier;
+    - content or a reveal with no carrier, only while the URL did not change.
+    """
+    classes = report.classes
+    if "dialog_opened" in classes:
+        outside = "revealed" not in classes and "frame_changed" in report.tokens
+        if outside or not classes & STRONG:
+            return True
+    return bool(classes & NEEDS_CARRIER) and not text_carried and not classes & URL_MOVED
+
+
+def _weak_only(report: EffectReport) -> bool:
+    """Row 8: only weak signals, and at least one; nothing unread."""
     seen = (report.classes - {"none"}) | report.tokens
-    return (
-        bool(seen) and report.classes <= weak and report.tokens <= WEAK_TOKENS and not report.unread
-    )
+    weak = report.classes <= WEAK_CLASSES and report.tokens <= WEAK_TOKENS
+    return bool(seen) and weak and not report.unread

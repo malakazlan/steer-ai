@@ -33,6 +33,7 @@ ClaimToken = Literal[
     "owned_by_controller_for",
     "owned_by_search_landmark",
     "owned_by_parent",
+    "landmarks_unread",
     "option_evidence",
     "words_missing",
     "too_short",
@@ -157,7 +158,14 @@ def check_content(  # noqa: PLR0913 - the claim, its screens, and keyword-only f
     fired: under a typed field's ComboBox ancestor (`owned_by_combobox`); named by its
     ControllerFor when read (`owned_by_controller_for`); sharing its nearest Search landmark
     (`owned_by_search_landmark`); under its parent container unless that parent is the scope
-    Document or a Main landmark (`owned_by_parent`). Anything merely below the Document is not."""
+    Document or a Main landmark (`owned_by_parent`). Anything merely below the Document is not.
+
+    [V2.23] B, C: every rule that fires is emitted, in that order; the false-stop count on the
+    pooled set reports per rule both "fired" and "fired alone" (rule 4's real cost is where it
+    is the only reason). With no landmark map while a field was typed under the subgoal, the
+    check fails closed with `landmarks_unread` (never "owned": it was not read); with no typed
+    field there is nothing to own. A ControllerFor that was not read is not observed by design
+    (it is not in the fetch yet) and never fails closed."""
     raise NotImplementedError("step 4: content_present")
 
 
