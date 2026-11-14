@@ -28,6 +28,7 @@ from steerai.world.address_bar import DocumentUrl
 from steerai.world.effects import Observed, top_document, value_fact
 from steerai.world.landmarks import PageFacts
 from steerai.world.model import Snapshot
+from steerai.world.reads import ReadMeter
 
 FIRST_READY_S = 10.0
 """[V2.27] how long a first observation waits for a page to appear (a browser frame with no
@@ -93,22 +94,33 @@ def hold_still(  # noqa: PLR0913 - the read, the first read and the injected clo
     """[V2.31] from `first`, read every `poll_s` until the node count (`_count`) has held for
     `quiet_s` on stable reads, or `guard_s` has passed. The last read is returned, `growing`
     when the count rose at any point. The first observation holds with `GROW_GUARD_S`; the
-    loop's load-guard wait may hold with its own guard."""
+    loop's load-guard wait may hold with its own guard.
+
+    Slow reads ([V2.34]): times are read completions; the quiet window counts only when two
+    reads span it (`first` or the read that last changed, and a later one); the guard never
+    ends on a change no later read has seen (one more read, once). `read_cost` logs this hold's
+    reads (not `first`)."""
     if quiet_s <= 0 or guard_s < 0 or poll_s <= 0:
         raise ValueError("hold_still needs a positive quiet window and poll and a guard >= 0")
+    meter = ReadMeter(clock)
     start = clock()
     seen, count, quiet_from, grew = first, _count(first.snapshot), start, False
+    spanning, reread = 1, False
     while True:
         now = clock()
-        quiet = seen.snapshot.stable and now - quiet_from >= quiet_s
-        if quiet or now - start >= guard_s:
-            return dataclasses.replace(seen, growing=grew)
+        quiet = seen.snapshot.stable and spanning >= 2 and now - quiet_from >= quiet_s
+        if now - start >= guard_s and not quiet and spanning < 2 and not reread:
+            reread = True
+        elif quiet or now - start >= guard_s:
+            return dataclasses.replace(seen, growing=grew, read_cost=meter.cost())
         sleep(poll_s)
-        seen = read()
+        seen = meter.timed(read)
         current = _count(seen.snapshot)
         if current != count or not seen.snapshot.stable:
             grew = grew or current > count
-            count, quiet_from = current, clock()
+            count, quiet_from, spanning = current, clock(), 1
+        else:
+            spanning += 1
 
 
 class FirstTouches:
@@ -152,25 +164,31 @@ def first_observation(  # noqa: PLR0913 - the read, the quiet window, the touche
       read) is polled until `deadline_s`, then returned with the unstable token: never a bare
       browser frame. A hold that starts before the deadline may end up to `grow_guard_s` past it.
 
-    Without `touches` this call is the process's first touch."""
+    Without `touches` this call is the process's first touch. `read_cost` logs every read
+    this call made, by tier ([V2.34])."""
     touches = FirstTouches() if touches is None else touches
+    meter = ReadMeter(clock)
+
+    def timed() -> Observed:
+        return meter.timed(read)
+
     deadline = clock() + deadline_s
     while True:
-        seen = read()
+        seen = timed()
         if touches.ready(seen.snapshot):
-            return seen
+            return dataclasses.replace(seen, read_cost=meter.cost())
         shape = _shape(seen) if seen.snapshot.stable else "waiting"
         if shape == "page":
             seen = hold_still(
-                read, seen, quiet_s=quiet_s, guard_s=grow_guard_s, clock=clock, sleep=sleep
+                timed, seen, quiet_s=quiet_s, guard_s=grow_guard_s, clock=clock, sleep=sleep
             )
             shape = _shape(seen) if seen.snapshot.stable else "waiting"
         if shape != "waiting":
             touches.mark(seen.snapshot)
-            return seen
+            return dataclasses.replace(seen, read_cost=meter.cost())
         if clock() >= deadline:
             unstable = dataclasses.replace(seen.snapshot, stable=False)
-            return dataclasses.replace(seen, snapshot=unstable)
+            return dataclasses.replace(seen, snapshot=unstable, read_cost=meter.cost())
         sleep(poll_s)
 
 
