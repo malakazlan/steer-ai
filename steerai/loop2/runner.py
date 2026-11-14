@@ -23,7 +23,6 @@ from typing import Final, Literal
 
 from steerai.action.dispositions import Delivery
 from steerai.errors import ErrorCode, SteerError
-from steerai.loop2._stub import stub
 from steerai.loop2.actuate import may_retry, press_allowed
 from steerai.loop2.batch import batch_continues
 from steerai.loop2.controller import ControllerError
@@ -35,6 +34,7 @@ from steerai.loop2.decision import (
     subgoal_tokens,
     validate,
 )
+from steerai.loop2.form import ENTER_FIELDS
 from steerai.loop2.guards import (
     ActionKey,
     StrikeReason,
@@ -61,7 +61,15 @@ from steerai.loop2.loop import (
     action_risk,
     type_refusal,
 )
-from steerai.loop2.query import SearchFacts, search_facts
+from steerai.loop2.query import (
+    EnterOutcome,
+    FieldState,
+    SearchFacts,
+    field_state,
+    query_outcome,
+    search_facts,
+    top_document_replaced,
+)
 from steerai.loop2.task import GoalSpan, Subgoal, Task, known_params
 from steerai.loop2.verify import Readers, auto_proof, check_claim
 from steerai.orchestrator.contracts import RISKS, Risk
@@ -210,17 +218,35 @@ def run_task(task: Task, ports: Ports) -> TaskOutcome:
     return _Run(task, ports).go()
 
 
-@stub
+URL_CARRIERS: Final = frozenset({"url_param", "url_path"})
+PAGE_CARRIERS: Final = frozenset({"title", "heading"})
+
+
 def stale_observation(decided_on: Observed, now: Observed) -> bool:
-    """PR C, [V2.28] item 1: the top Document was replaced or the URL changed since the
-    observation a Decision was made on (the Decision is discarded, re-observed, re-asked)."""
-    raise NotImplementedError("3c PR C: the staleness rule")
+    """[V2.28] item 1: the top Document was replaced or the URL changed since the observation a
+    Decision was made on. Only those two facts, never the whole signature: a ticker page would
+    always look stale. A fact not read on either side is no change."""
+    old, new = top_document(decided_on.snapshot), top_document(now.snapshot)
+    if old is not None and new is not None and old.runtime_id != new.runtime_id:
+        return True
+    return decided_on.url is not None and now.url is not None and decided_on.url != now.url
 
 
-@stub
-def enter_outcome(report: EffectReport) -> str:
-    """PR C, [V2.28] item 1: the Enter table evaluated once on the watch's final report."""
-    raise NotImplementedError("3c PR C: the Enter table on the final report")
+def enter_outcome(
+    report: EffectReport, *, before: Observed, after: Observed, typed_field: FieldState
+) -> EnterOutcome:
+    """[V2.28] item 1, [V2.21]-[V2.24]: the Enter table, evaluated once on the watch's final
+    report of a submit (the watch held it to a conclusive report). The text is carried by a URL,
+    title or heading carrier, or by the results beside a URL carrier ([V2.29] Q1)."""
+    carriers = report.carriers
+    url = bool(carriers & URL_CARRIERS)
+    carried = url or bool(carriers & PAGE_CARRIERS) or ("results" in carriers and url)
+    return query_outcome(
+        report,
+        text_carried=carried,
+        typed_field=typed_field,
+        top_replaced=top_document_replaced(before, after),
+    )
 
 
 class _Run:
@@ -252,6 +278,10 @@ class _Run:
         self.ever: list[_Ever] = []
         self.proofs: dict[str, dict[str, _Proof]] = {}
         """[V2.39] (2): per value or state subgoal, the accepted proof of each param."""
+        self.stale_streak = 0
+        """[V2.28] item 1: stale observations in a row; the second is a strike."""
+        self.stale_count = 0
+        """Stale observations in the task, reported on the outcome."""
 
     # ---- the outcome ----------------------------------------------------------------------
 
@@ -275,6 +305,7 @@ class _Run:
             tokens=self.tokens,
             cost_usd=self._cost(),
             read_costs=tuple(self.read_costs),
+            stale_observations=self.stale_count,
         )
 
     def _cost(self) -> float | None:
@@ -306,8 +337,13 @@ class _Run:
             self._check_budgets()
             decision = self._decide(observed)
             self.turn = _Turn()
+            fresh = self._observe()
+            if stale_observation(observed, fresh):
+                observed = self._stale(fresh)
+                continue
+            self.stale_streak = 0
             loading = (observed.growing or observed.young) and self._guard_left(observed) > 0
-            observed = self._turn(decision, observed)
+            observed = self._turn(decision, observed, fresh)
             waits = bool(decision.actions) and all(a.verb == "wait" for a in decision.actions)
             if loading and waits and self.turn.sent == len(decision.actions):
                 # [V2.31], [V2.35] (2), P3: a wait chosen on a growing or young page, dispatched
@@ -345,7 +381,7 @@ class _Run:
         self.tokens += _tokens(decided.usage)
         return decided.decision
 
-    def _turn(self, decision: Decision, observed: Observed) -> Observed:
+    def _turn(self, decision: Decision, observed: Observed, fresh: Observed) -> Observed:
         listed = frozenset(self.handles.bind(observed).values())
         first = not self.frozen
         goal = self.task.goal
@@ -373,7 +409,7 @@ class _Run:
                 raise self._stopped(decision.stop)
             self.turn.neutral = True
             return held
-        return self._batch(decision.actions, observed)
+        return self._batch(decision.actions, observed, fresh)
 
     def _cited(self, claim: Claim, observed: Observed) -> Claim:
         """The claim with its handles read as this snapshot's elements; a handle with no element
@@ -498,8 +534,11 @@ class _Run:
 
     # ---- the batch ------------------------------------------------------------------------
 
-    def _batch(self, actions: Sequence[ActionDoc], observed: Observed) -> Observed:
-        listed = observed
+    def _batch(
+        self, actions: Sequence[ActionDoc], listed: Observed, observed: Observed
+    ) -> Observed:
+        """The batch, its ids read on `listed` (the observation decided on) and its first action
+        re-checked on `observed`, the read taken after the decision (RT-04)."""
         self.batch_last = None
         for index, action in enumerate(actions):
             self._check_interrupt()
@@ -540,9 +579,10 @@ class _Run:
             if refusal is not None:
                 self._refuse("policy", refusal)
                 return None
-        risk = self._risk(action, element, observed)
-        if risk is None:
+        rated = self._risk(action, element, observed)
+        if rated is None:
             return None
+        risk, submit = rated
         if RISKS.index(risk) >= _R2:
             raise _End("blocked", Reason("commit_not_in_step"))
         key = None if element is None else _key(action, element)
@@ -557,6 +597,7 @@ class _Run:
             name="" if element is None else element.name,
             risk=risk,
             provenance=_provenance(action),
+            submit=submit,
         )
         return self._dispatch(sent, element, observed, key)
 
@@ -616,16 +657,21 @@ class _Run:
             return None
         return element
 
-    def _risk(self, action: ActionDoc, element: Element | None, observed: Observed) -> Risk | None:
+    def _risk(
+        self, action: ActionDoc, element: Element | None, observed: Observed
+    ) -> tuple[Risk, bool] | None:
+        """The action's risk, and whether it is a submit that goes through the Enter table
+        ([V2.28] item 1: an Enter on a field, or a click or key that submits pending text)."""
         if element is None:  # a wait sends nothing: only a declared commit raises it
-            return COMMIT_RISK[action.commit]
+            return COMMIT_RISK[action.commit], False
         verdict = action_risk(
             action, element, goal=self.task.goal, observed=observed, pending=self._pending(observed)
         )
         if verdict.refusal is not None:
             self._refuse("policy", verdict.refusal)
             return None
-        return verdict.risk
+        enter = action.verb == "press" and action.key == "Enter" and element.role in ENTER_FIELDS
+        return verdict.risk, enter or verdict.submit_parent is not None
 
     def _pending(self, observed: Observed) -> list[PendingText]:
         """[V2.37] P2, [V2.38] RT-03: every field typed into in this task that may still hold the
@@ -712,6 +758,7 @@ class _Run:
         if act.delivery is Delivery.NOT_DELIVERED and not act.action.skipped:
             self._refuse("world", "not_delivered")
             return None
+        pending_before = dict(self.fresh)  # each pending field's value just before dispatch
         watched = self.ports.watch(before, sent)
         self.read_costs.append(watched.read_cost)
         self.turn.sent += 1
@@ -724,9 +771,62 @@ class _Run:
         self.history.append(_act_token(sent, act, report))
         if not report.classes <= {"none", "unknown"}:
             self.refusal = None  # [V2.12]: progress resets the refusal that decides the status
+        if sent.submit:
+            self._judge_submit(
+                element,
+                before=observed,
+                after=watched.after,
+                report=report,
+                values_before=pending_before,
+            )
         if element is not None and sent.action.verb == "type":
             self._remember_type(sent, element, observed, verified=act.read_back is True)
         return self._after(watched.after), (act, report)
+
+    def _judge_submit(
+        self,
+        element: Element | None,
+        *,
+        before: Observed,
+        after: Observed,
+        report: EffectReport,
+        values_before: dict[tuple[int, ...], ValueFact | None],
+    ) -> None:
+        """[V2.28] item 1: the Enter table once, on the final report. `unexpected_effect` stops
+        the task; any other row is a closed token for the controller."""
+        outcome = enter_outcome(
+            report,
+            before=before,
+            after=after,
+            typed_field=self._submitted_field(element, after, values_before),
+        )
+        self.history.append(f"enter:{outcome.token}:{outcome.row}")
+        if outcome.outcome == "unexpected_effect":
+            raise _End("stopped", Reason("unexpected_effect"))
+
+    def _submitted_field(
+        self,
+        element: Element | None,
+        after: Observed,
+        values_before: dict[tuple[int, ...], ValueFact | None],
+    ) -> FieldState:
+        """Row 2's fact: the typed field the submit sent, read again on the final report. The
+        Enter's own field when Steer typed into it; else the pending fields read before the
+        submit (the worst state wins: emptied, then unread, then kept)."""
+        typed = {t.field for t in self.typed}
+        fields = [element.runtime_id] if element is not None and element.runtime_id in typed else []
+        fields = fields or [rid for rid in values_before if rid in typed]
+        if not fields:
+            return "not_typed"
+        by_rid = {e.runtime_id: e for e in after.snapshot.elements}
+        self.fresh = {}
+        states: list[FieldState] = []
+        for rid in fields:
+            now = by_rid.get(rid)
+            read = None if now is None else self._read_value(now, after)
+            states.append(field_state(values_before.get(rid), read, present=now is not None))
+        order: tuple[FieldState, ...] = ("emptied", "unread", "gone", "kept")
+        return next((worst for worst in order if worst in states), "not_typed")
 
     def _act(self, sent: Dispatch) -> ActResult:
         """[V2.25] (c): one local retry when nothing was sent, under the same decision, unless
@@ -831,6 +931,18 @@ class _Run:
         held = self.ports.settle(observed, left)
         self._check_interrupt()
         return self._in_domain(held)
+
+    def _stale(self, fresh: Observed) -> Observed:
+        """[V2.28] item 1: the Decision is discarded and the controller asked again on the fresh
+        read. No strike for one; the second in a row (and each after) is a strike."""
+        self.stale_streak += 1
+        self.stale_count += 1
+        self.history.append("stale_observation")
+        if self.stale_streak < 2:
+            self.turn.neutral = True
+        else:
+            self.turn.refused = True
+        return self._record_strike(fresh)
 
     def _record_strike(self, observed: Observed) -> Observed:
         if self.turn.neutral:

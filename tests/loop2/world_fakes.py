@@ -24,6 +24,7 @@ from steerai.loop2.loop import (
 from steerai.loop2.task import Budgets, Envelope, Task
 from steerai.world.effects import (
     PRECEDENCE,
+    Carrier,
     DialogScope,
     EffectClass,
     EffectReport,
@@ -131,6 +132,7 @@ def report(
     unread: Sequence[Unread] = (),
     primary: EffectClass | None = None,
     dialog_scope: DialogScope | None = None,
+    carriers: Sequence[Carrier] = (),
 ) -> EffectReport:
     chosen = primary if primary is not None else next((c for c in PRECEDENCE if c in classes), None)
     return EffectReport(
@@ -139,7 +141,7 @@ def report(
         unread=frozenset(unread),
         primary=chosen,
         revealed_root=None,
-        carriers=frozenset(),
+        carriers=frozenset(carriers),
         stable_after=True,
         dialog_scope=dialog_scope,
     )
@@ -247,6 +249,8 @@ class World:
     """What `read_state` returns for (RuntimeId, wanted); missing: unread."""
     cleared: dict[tuple[int, ...], int] = field(default_factory=dict)
     """A field that reads empty once this many actions were dispatched (a page that clears it)."""
+    observations: list[Observed] = field(default_factory=list)
+    """Each `observe` takes the next of these as the screen, in order (then the screen holds)."""
     fact_text: bool = False
     """`fact_of` digests the text itself (`d:<text>`), as the session key would; default: the
     typed fact for any text."""
@@ -287,6 +291,8 @@ class World:
     def _observe(self) -> Observed:
         self.events.append("observe")
         self._arrive()
+        if self.observations:
+            self.screen = self.observations.pop(0)
         return self.screen
 
     def _act(self, sent: Dispatch) -> ActResult:
@@ -332,7 +338,9 @@ class World:
     def _settle(self, first: Observed, guard_s: float) -> Observed:  # noqa: ARG002 - the Ports shape
         self.events.append("settle")
         self.settle_guards.append(guard_s)
-        return self.settled if self.settled is not None else self.screen
+        if self.settled is not None:
+            self.screen = self.settled  # the settle is a read of the screen
+        return self.screen
 
     def _read_state(self, element: Element, wanted: str) -> bool | None:
         self.events.append("read")
