@@ -16,6 +16,7 @@ from typing import Any
 from steerai.probes.win_input import ensure_per_monitor_v2
 from steerai.world.address_bar import DocumentUrl, read_address_bar, read_document_url
 from steerai.world.capabilities import Caps, tokens
+from steerai.world.landmarks import PageFacts, nearest_landmarks
 
 _COINIT_MULTITHREADED = 0x0
 _BASE_PROPERTIES: tuple[str, ...] = (
@@ -49,6 +50,8 @@ HEADING_LEVEL_NONE = 80050
 """UIA's HeadingLevel_None; levels 1 to 9 are 80051 to 80059."""
 HEADING_LEVEL_1 = 80051
 HEADING_LEVEL_9 = 80059
+LANDMARK_TYPE_PROPERTY_ID = 30157
+"""UIA_LandmarkTypePropertyId (UIAutomationClient.h); probe #266 read it on Chrome 157."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,31 +305,31 @@ class UiaClient:
             return None
         return DocumentUrl(runtime_id=runtime_id, url=str(value))
 
-    def roles_and_headings(
-        self, hwnd: int
-    ) -> tuple[dict[tuple[int, ...], str], dict[tuple[int, ...], int]]:
-        """V2 step 3b ([V2.5]): the window's AriaRoles and heading levels by RuntimeId, in one
-        cached subtree fetch of three properties of its own, apart from the snapshot fetch, which
-        stays as v1 has it. An element whose AriaRole is empty, or whose HeadingLevel is none
-        (80050), is left out: absent is not observed, never false (probe #266, Chrome 157)."""
+    def page_facts(self, hwnd: int) -> PageFacts:
+        """V2 step 3b ([V2.5], [V2.13]): the window's AriaRoles, heading levels and nearest
+        landmarks by RuntimeId, in one cached subtree fetch of its own, apart from the snapshot
+        fetch, which stays as v1 has it. An empty AriaRole or a HeadingLevel of none (80050) is
+        left out: absent is not observed, never false (probe #266, Chrome 157)."""
         try:
             element = self._uia.ElementFromHandle(hwnd)
             cache_request = self._uia.CreateCacheRequest()
-            for name in (
-                "UIA_RuntimeIdPropertyId",
-                "UIA_AriaRolePropertyId",
-                "UIA_HeadingLevelPropertyId",
+            for prop in (
+                self._uia_module.UIA_RuntimeIdPropertyId,
+                self._uia_module.UIA_AriaRolePropertyId,
+                self._uia_module.UIA_HeadingLevelPropertyId,
+                LANDMARK_TYPE_PROPERTY_ID,
             ):
-                cache_request.AddProperty(getattr(self._uia_module, name))
+                cache_request.AddProperty(prop)
             cache_request.TreeScope = self._uia_module.TreeScope_Subtree
             root = element.BuildUpdatedCache(cache_request)
         except Exception as exc:  # COMError exists only once comtypes is loaded
-            raise OSError(f"roles and headings unreadable for hwnd {hwnd:#x}: {exc}") from exc
+            raise OSError(f"page facts unreadable for hwnd {hwnd:#x}: {exc}") from exc
         roles: dict[tuple[int, ...], str] = {}
         headings: dict[tuple[int, ...], int] = {}
-        pending = [root]
+        nodes: list[tuple[tuple[int, ...], tuple[int, ...] | None, int | None]] = []
+        pending: list[tuple[Any, tuple[int, ...] | None]] = [(root, None)]  # Any: COM node
         while pending:
-            node = pending.pop()
+            node, parent = pending.pop()
             runtime_id = node.GetCachedPropertyValue(self._uia_module.UIA_RuntimeIdPropertyId)
             key = tuple(int(v) for v in runtime_id) if runtime_id else ()
             if key:
@@ -336,13 +339,16 @@ class UiaClient:
                 level = node.GetCachedPropertyValue(self._uia_module.UIA_HeadingLevelPropertyId)
                 if isinstance(level, int) and HEADING_LEVEL_1 <= level <= HEADING_LEVEL_9:
                     headings[key] = level - HEADING_LEVEL_NONE
+                code = node.GetCachedPropertyValue(LANDMARK_TYPE_PROPERTY_ID)
+                nodes.append((key, parent, code if isinstance(code, int) else None))
             try:
                 children = node.GetCachedChildren()
                 count = int(children.Length)
             except ValueError:  # comtypes raises on a NULL pointer: leaf node
                 continue
-            pending.extend(children.GetElement(i) for i in range(count))
-        return roles, headings
+            above = key or parent
+            pending.extend((children.GetElement(i), above) for i in range(count))
+        return PageFacts(roles=roles, headings=headings, landmarks=nearest_landmarks(nodes))
 
     def focused_runtime_id(self) -> tuple[int, ...]:
         """RuntimeId of the element with keyboard focus (`GetFocusedElement`), empty when none."""

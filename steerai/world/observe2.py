@@ -12,7 +12,8 @@ guess.
 - `focus`: the RuntimeId with keyboard focus.
 - `acted_value`: the acted field's value as a `ValueFact` (filled + keyed digest); the text is
   dropped here and never kept. A secure field is never read: the caller passes no reader.
-- `headings`, `aria_roles`: one cached fetch of RuntimeId, AriaRole and HeadingLevel.
+- `headings`, `aria_roles`, `landmarks`: one cached fetch of RuntimeId, AriaRole, HeadingLevel
+  and LandmarkType ([V2.13]: each element's nearest landmark ancestor).
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from typing import Protocol
 
 from steerai.world.address_bar import DocumentUrl
 from steerai.world.effects import Observed, top_document, value_fact
+from steerai.world.landmarks import PageFacts
 from steerai.world.model import Snapshot
 
 
@@ -33,9 +35,7 @@ class FactReader(Protocol):
 
     def focused_runtime_id(self) -> tuple[int, ...]: ...
 
-    def roles_and_headings(
-        self, hwnd: int
-    ) -> tuple[dict[tuple[int, ...], str], dict[tuple[int, ...], int]]: ...
+    def page_facts(self, hwnd: int) -> PageFacts: ...
 
 
 def in_place_url(
@@ -83,14 +83,15 @@ def read_observed(  # noqa: PLR0913 - the snapshot, the reader and each optional
 ) -> Observed:
     """`snapshot` with the facts read now. `page_facts=False` skips the URLs, roles and headings
     (a window without a Document); `acted_value` is None for no acted field or a secure one."""
-    document_url = url = roles = headings = None
+    document_url = url = None
+    facts: PageFacts | None = None
     url_observed = True
     if page_facts:
         document_url, url, url_observed = _urls(snapshot, reader)
         try:
-            roles, headings = reader.roles_and_headings(snapshot.hwnd)
+            facts = reader.page_facts(snapshot.hwnd)
         except OSError:
-            roles = headings = None
+            facts = None
     try:
         focus: tuple[int, ...] | None = reader.focused_runtime_id() or None
     except OSError:
@@ -112,8 +113,9 @@ def read_observed(  # noqa: PLR0913 - the snapshot, the reader and each optional
         windows=listed,
         focus=focus,
         acted_value=value,
-        headings=headings,
-        aria_roles=roles,
+        headings=None if facts is None else facts.headings,
+        aria_roles=None if facts is None else facts.roles,
+        landmarks=None if facts is None else facts.landmarks,
         document_url=document_url,
         url_observed=url_observed,
     )

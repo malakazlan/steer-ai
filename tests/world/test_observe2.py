@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from steerai.world.address_bar import DocumentUrl
 from steerai.world.effects import value_fact
+from steerai.world.landmarks import Landmark, PageFacts
 from steerai.world.observe2 import in_place_url, read_observed
 from tests.world.test_effects_conditions import BASE, _snap
 
@@ -38,14 +39,16 @@ class Reader:
             raise OSError("gone")
         return (9, 2)
 
-    def roles_and_headings(
-        self, hwnd: int
-    ) -> tuple[dict[tuple[int, ...], str], dict[tuple[int, ...], int]]:
+    def page_facts(self, hwnd: int) -> PageFacts:
         self.calls.append("roles")
         self.hwnds.append(hwnd)
         if "roles" in self.fail:
             raise OSError("gone")
-        return {(9, 2): "searchbox"}, {(9, 4): 1}
+        return PageFacts(
+            roles={(9, 2): "searchbox"},
+            headings={(9, 4): 1},
+            landmarks={(9, 2): Landmark("search", (9, 1)), (9, 4): None},
+        )
 
 
 def test_every_fact_is_read_and_the_value_is_only_a_fact() -> None:
@@ -57,6 +60,7 @@ def test_every_fact_is_read_and_the_value_is_only_a_fact() -> None:
     assert seen.windows == (16,)
     assert seen.aria_roles == {(9, 2): "searchbox"}
     assert seen.headings == {(9, 4): 1}
+    assert seen.landmarks == {(9, 2): Landmark("search", (9, 1)), (9, 4): None}
     assert seen.acted_value == value_fact("red shoes", key=KEY)
     assert "red shoes" not in repr(seen)
 
@@ -69,6 +73,7 @@ def test_a_failed_read_is_none_never_a_guess() -> None:
         windows=lambda: (16,),
     )
     assert (seen.url, seen.focus, seen.aria_roles, seen.headings) == (None, None, None, None)
+    assert seen.landmarks is None, "not observed: the query conditions fail closed"
 
 
 def test_no_acted_reader_means_no_value_read() -> None:
