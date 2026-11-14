@@ -19,6 +19,7 @@ stop's own value and the reason records `after_refusal` plus the token.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -35,6 +36,29 @@ from steerai.world.model import Snapshot
 from steerai.world.watch import Watched
 
 Status = Literal["done", "blocked", "asked", "paused", "stopped", "cannot"]
+REASON_TOKEN = re.compile(r"[a-z0-9_]{1,64}")
+
+
+@dataclass(frozen=True)
+class Reason:
+    """Why a task ended, held as a pair ([V2.13] decision 5): a closed code token, and whether it
+    is a model fault recorded after a refusal ([V2.12]). `render_reason` is its only rendering."""
+
+    token: str
+    after_refusal: bool = False
+
+    def __post_init__(self) -> None:
+        if REASON_TOKEN.fullmatch(self.token) is None:
+            raise ValueError("reason_token")
+
+
+def render_reason(reason: Reason | None) -> str | None:
+    """`<token>`, or `after_refusal:<token>` for a model fault; None for no reason."""
+    if reason is None:
+        return None
+    return f"after_refusal:{reason.token}" if reason.after_refusal else reason.token
+
+
 Provenance = Literal["goal_span", "generated"]
 
 
@@ -77,12 +101,17 @@ class Ports:
 @dataclass(frozen=True)
 class TaskOutcome:
     status: Status
-    reason: str | None
-    """A closed token: `commit_not_in_step`, `max_actions`, `takeover` and so on."""
+    cause: Reason | None
+    """Why the task ended, as a pair ([V2.13] decision 5); `reason` is its one rendering."""
     dispatched: tuple[Dispatch, ...]
     model_calls: int
     strikes: tuple[tuple[StrikeReason, ...], ...]
-    """One entry per strike, with every reason that held in that turn."""
+    """The evidence: one entry per strike, with every reason that held in that turn."""
+
+    @property
+    def reason(self) -> str | None:
+        """The closed token: `commit_not_in_step`, `no_progress`, `after_refusal:<token>`..."""
+        return render_reason(self.cause)
 
 
 @stub

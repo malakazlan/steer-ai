@@ -159,6 +159,9 @@ class World:
     interrupt_after: int | None = None
     """Report a takeover once this many actions were dispatched."""
     after: Observed | None = None
+    later: Observed | None = None
+    """The screen once `later_after_acts` actions were dispatched (results that arrive late)."""
+    later_after_acts: int = 1
     """What each watch returns as its after snapshot; None: the current screen."""
     watch_s: float = 0.0
     """How far the clock moves during each watch."""
@@ -179,8 +182,13 @@ class World:
             return self.decisions.pop(0)
         return Decision(stop="cannot")
 
+    def _arrive(self) -> None:
+        if self.later is not None and len(self.dispatched) >= self.later_after_acts:
+            self.screen = self.later
+
     def _observe(self) -> Observed:
         self.events.append("observe")
+        self._arrive()
         return self.screen
 
     def _act(self, sent: Dispatch) -> None:
@@ -190,6 +198,7 @@ class World:
     def _watch(self, before: Observed, sent: Dispatch) -> Watched:  # noqa: ARG002 - the Ports shape; scripted
         self.events.append("watch")
         self.now += self.watch_s
+        self._arrive()
         effect = self.effects.pop(0) if self.effects else report("none")
         after = self.after if self.after is not None else self.screen
         return Watched(
