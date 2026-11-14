@@ -10,6 +10,7 @@ page ([V2.30] (1): counted, not narrowed).
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping
 from functools import lru_cache
 from typing import Final
@@ -37,6 +38,14 @@ ENTER_FIELDS: Final = frozenset({"Edit", "ComboBox"})
 RISKY_MEMO: Final = 4096
 """How many (role, name, automation id, group) readings the risky pass remembers (#314): the
 type-time and the dispatch-time scans of one form read the same elements."""
+MAX_FORM_MEMBERS: Final = 3000
+"""[V2.35] (1): a form with more members than this is not scanned; both its facts read true (the
+budget is approved for pages up to 3000 elements). Counted, never timed, so CI is deterministic."""
+MAX_RISKY_READS: Final = 300
+"""[V2.35] (1): more members than this past the prefilter (10% of the cap, the budget's worst
+measured case) makes the form risky without running the gate on the rest."""
+GROUPED_CHOICES: Final = frozenset({"RadioButton", "CheckBox"})
+"""The roles whose group name the deny classes read ([v2.77], W3-03)."""
 ACTING_ROLES: Final = frozenset({"Button", "Hyperlink", "MenuItem", "SplitButton"})
 """[V2.26] (3): Enter by the role it goes to: a field is classified, an acting role is a click
 (deny words and the pending-text rule), a state-set role is (1), anything else is R2."""
@@ -120,24 +129,46 @@ def form_facts(observed: Observed, field: tuple[int, ...]) -> tuple[bool, bool]:
         for e in snapshot.elements
         if e.runtime_id != field and _beside(observed, by_id, typed, e) is not False
     ]
+    if len(members) > MAX_FORM_MEMBERS:
+        return True, True  # [V2.35] (1): over budget means true, never a fact left unread
     secure = any(e.secure or e.id in snapshot.unread_secure for e in members)
-    risky = any(_risky(observed, e) for e in members)
-    return secure, risky
+    return secure, _any_risky(observed, by_id, members)
 
 
-def _risky(observed: Observed, element: Element) -> bool:
-    group = group_name(observed.snapshot, element) or ""
-    return _reads_risky(element.role, element.name, element.automation_id, group)
+def _any_risky(observed: Observed, by_id: Mapping[int, Element], members: list[Element]) -> bool:
+    """The risky pass: the first risky member decides it. A choice whose group is not in the
+    snapshot is risky (#319 review S1-07: its group name is unread, never "no group"). More
+    than `MAX_RISKY_READS` members past the prefilter is risky ([V2.35] (1))."""
+    reads = 0
+    for element in members:
+        orphan = element.parent_id is not None and element.parent_id not in by_id
+        if element.role in GROUPED_CHOICES and orphan:
+            return True
+        group = group_name(observed.snapshot, element) or ""
+        passed, risky = _reads_risky(element.role, element.name, element.automation_id, group)
+        if risky:
+            return True
+        reads += passed
+        if reads > MAX_RISKY_READS:
+            return True
+    return False
 
 
 @lru_cache(maxsize=RISKY_MEMO)
-def _reads_risky(role: str, name: str, automation_id: str, group: str) -> bool:
-    if not may_read([name, group], [automation_id]):
-        return False
+def _reads_risky(role: str, name: str, automation_id: str, group: str) -> tuple[bool, bool]:
+    """(the prefilter let it through, it is risky) for one reading of an element."""
+    texts = DenyFacts(
+        verb="click", role=role, name=name, automation_id=automation_id, group_name=group or None
+    )
+    if not may_read(texts):
+        return False, False
     for verb in fitting_verbs(role):
-        facts = DenyFacts(
-            verb=verb, role=role, name=name, automation_id=automation_id, group_name=group or None
-        )
+        facts = dataclasses.replace(texts, verb=verb)
         if billing_reads(facts) or deny_tier_of(facts) == "R3":
-            return True
-    return False
+            return True, True
+    return True, False
+
+
+def clear_memo() -> None:
+    """Forget every remembered reading (tests start cold)."""
+    _reads_risky.cache_clear()
