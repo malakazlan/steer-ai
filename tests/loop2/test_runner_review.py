@@ -10,7 +10,6 @@ import pytest
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2 import runner
-from steerai.loop2._stub import PENDING
 from steerai.loop2.controller import SYSTEM_RULES
 from steerai.loop2.decision import Claim, Decision, SubgoalDoc
 from steerai.loop2.loop import ActResult, TokenUsage
@@ -85,13 +84,6 @@ def test_rt04_a_dispatch_carries_the_role_and_name_the_act_port_re_checks() -> N
     world = World([decision(act("click", target=GO.id), first=True)])
     run_task(task(), world.ports())
     assert [(d.role, d.name) for d in world.dispatched] == [(GO.role, GO.name)]
-
-
-def test_rt04_rt05_the_staleness_rule_and_the_enter_table_keep_loop2_not_ready() -> None:
-    """PR C's two pieces are stubs, so `ready()` cannot turn True without them."""
-    assert {"steerai.loop2.runner.stale_observation", "steerai.loop2.runner.enter_outcome"} <= (
-        PENDING
-    )
 
 
 def test_rt06_a_commit_subgoal_is_never_ticked_in_step_3(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -170,7 +162,7 @@ def test_rt16_a_port_error_ends_the_task_with_a_token_and_keeps_the_evidence() -
 
     def flaky() -> object:
         calls["n"] += 1
-        if calls["n"] > 1:
+        if calls["n"] > 2:  # the first read and the read after the decision succeed
             raise SteerError(ErrorCode.PERCEPTION_TIMEOUT, "read timed out")
         return world.screen
 

@@ -454,3 +454,14 @@ def test_a_state_claim_without_a_param_on_a_two_param_subgoal_is_param_missing()
 def test_a_carrier_with_no_content_signal_is_no_content() -> None:
     after = page([], url=URL + "?q=red%20shoes")  # the title stays "Shop", no new row
     assert navigated_tokens(SEARCH, before(), after, cited=[], typed=TYPED) == ("no_content",)
+
+
+def test_an_unlisted_state_evidence_is_id_not_listed_never_words_missing() -> None:
+    """`_named` leaves an unlisted handle to the checks that own it: the Decision's validation
+    refuses it (`id_not_listed`) before any claim check, so a missing element never reads as
+    `words_missing`. `_named`'s own None branch is defence in depth behind that."""
+    world = _ticks([ADA], [(999, "name")], {"name": "Ada"})
+    run_task(_fill_task(), world.ports())  # type: ignore[arg-type]  # a Task
+    history = [t for v in world.views for t in v.history]
+    assert "refused:id_not_listed" in history
+    assert not any(t.endswith("words_missing") for t in history)

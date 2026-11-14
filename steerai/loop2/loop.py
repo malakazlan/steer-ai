@@ -87,6 +87,10 @@ class Dispatch:
     """Set by code, never by the model, for a `type` ([V2.11] decision 5): `param` gives
     `goal_span`; free text is always `generated`, even when it matches the request."""
 
+    submit: bool = False
+    """[V2.28] item 1: the action goes through the Enter table (an Enter on a field, or a
+    submit of pending text), so the watch holds it to a conclusive report; set by code."""
+
     def redacted(self) -> Dispatch:
         """The dispatch as the outcome keeps it (RT-18): no typed text, option or name."""
         action = self.action.model_copy(update={"text": None, "option": None})
@@ -199,10 +203,13 @@ class TaskOutcome:
     strikes: tuple[tuple[StrikeReason, ...], ...]
     """The evidence: one entry per strike, with every reason that held in that turn."""
     read_costs: tuple[ReadCost, ...] = ()
-    """[V2.34] the reads each watched action's watch made (count and ms by tier), in dispatch
-    order: the observe layer's share of the wall-time split."""
+    """[V2.34] the reads the loop paid for (count and ms by tier), in order: each post-decision
+    observe that reported its cost, and each watched action's watch. The observe layer's share
+    of the wall-time split."""
     tokens: float = 0.0
     """Input plus output tokens of every call; NaN once a call's usage was missing."""
+    stale_observations: int = 0
+    """[V2.28] item 1: Decisions discarded because the page moved under them (counted)."""
     cost_usd: float | None = None
     """Tokens times the configured price; None when no price is configured ([V2.37] P6): the
     cost budget is then reported "not configured", never as enforced."""

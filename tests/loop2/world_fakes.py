@@ -24,6 +24,7 @@ from steerai.loop2.loop import (
 from steerai.loop2.task import Budgets, Envelope, Task
 from steerai.world.effects import (
     PRECEDENCE,
+    Carrier,
     DialogScope,
     EffectClass,
     EffectReport,
@@ -35,7 +36,7 @@ from steerai.world.effects import (
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
 from steerai.world.reads import ReadCost
-from steerai.world.watch import Watched
+from steerai.world.watch import Watched, conclusive
 
 
 def pending(rule: str) -> pytest.MarkDecorator:
@@ -131,6 +132,7 @@ def report(
     unread: Sequence[Unread] = (),
     primary: EffectClass | None = None,
     dialog_scope: DialogScope | None = None,
+    carriers: Sequence[Carrier] = (),
 ) -> EffectReport:
     chosen = primary if primary is not None else next((c for c in PRECEDENCE if c in classes), None)
     return EffectReport(
@@ -139,7 +141,7 @@ def report(
         unread=frozenset(unread),
         primary=chosen,
         revealed_root=None,
-        carriers=frozenset(),
+        carriers=frozenset(carriers),
         stable_after=True,
         dialog_scope=dialog_scope,
     )
@@ -247,6 +249,8 @@ class World:
     """What `read_state` returns for (RuntimeId, wanted); missing: unread."""
     cleared: dict[tuple[int, ...], int] = field(default_factory=dict)
     """A field that reads empty once this many actions were dispatched (a page that clears it)."""
+    observations: list[Observed] = field(default_factory=list)
+    """Each `observe` takes the next of these as the screen, in order (then the screen holds)."""
     fact_text: bool = False
     """`fact_of` digests the text itself (`d:<text>`), as the session key would; default: the
     typed fact for any text."""
@@ -266,6 +270,9 @@ class World:
     """How long each read takes on the clock ([V2.34]); when set, the watch's after is stamped at
     its completion, `after_age_s` before the clock it returns at."""
     after_age_s: float = 0.0
+    unheld: bool = False
+    """A submit's watch reports no hold facts (neither `timed_out` nor `conclusive_ms`); by
+    default a submit is held as the real watch holds it: conclusive, else to the guard."""
 
     def _decide(self, view: TurnView) -> Decided:
         self.events.append("decide")
@@ -287,6 +294,8 @@ class World:
     def _observe(self) -> Observed:
         self.events.append("observe")
         self._arrive()
+        if self.observations:
+            self.screen = self.observations.pop(0)
         return self.screen
 
     def _act(self, sent: Dispatch) -> ActResult:
@@ -305,7 +314,7 @@ class World:
             return act_result(verb, Delivery.DELIVERED_VERIFIED, read_back=read_back)
         return act_result(verb, Delivery.DELIVERED_UNVERIFIED, read_back=read_back)
 
-    def _watch(self, before: Observed, sent: Dispatch) -> Watched:  # noqa: ARG002 - the Ports shape; scripted
+    def _watch(self, before: Observed, sent: Dispatch) -> Watched:
         self.events.append("watch")
         self.now += self.watch_s
         self._arrive()
@@ -315,12 +324,15 @@ class World:
             self.now += self.read_s
             stamped = dataclasses.replace(after.snapshot, taken_at=self.now - self.after_age_s)
             after = dataclasses.replace(after, snapshot=stamped)
+        held = sent.submit and not self.unheld
+        final = held and conclusive(effect, before, after)
         return Watched(
             report=effect,
             after=after,
             first_change_ms=None,
             settled_ms=None,
-            timed_out=False,
+            timed_out=held and not final,
+            conclusive_ms=0 if final else None,
             read_cost=self.read_cost,
         )
 
@@ -332,7 +344,9 @@ class World:
     def _settle(self, first: Observed, guard_s: float) -> Observed:  # noqa: ARG002 - the Ports shape
         self.events.append("settle")
         self.settle_guards.append(guard_s)
-        return self.settled if self.settled is not None else self.screen
+        if self.settled is not None:
+            self.screen = self.settled  # the settle is a read of the screen
+        return self.screen
 
     def _read_state(self, element: Element, wanted: str) -> bool | None:
         self.events.append("read")
