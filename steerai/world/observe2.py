@@ -43,6 +43,9 @@ is handed over marked `growing`; provisional. Measured (first_observation --meas
 2026-11-14): partial plateaus of 0.75-2.5 s and a page still loading for up to 12.3 s, so no
 hold tells a loading page from a built one; an observation can be partial and the loop handles
 it (re-observe, the load guard), not this wait."""
+YOUNG_S = 12.0
+"""[V2.35] (2) the load guard ([V2.31], from the 12.3 s gh1 reading; provisional): a top Document
+younger than this is `young`. The loop defines no `LOAD_GUARD_S` yet; it should use this one."""
 
 
 def document_nodes(snapshot: Snapshot) -> frozenset[int] | None:
@@ -195,21 +198,28 @@ def first_observation(  # noqa: PLR0913 - the read, the quiet window, the touche
 class DocumentSince:
     """[V2.31] stamps `Observed.document_since`: when this window's current top Document (by
     RuntimeId) was first seen through this stamp, on `clock`. A replaced Document restarts it.
-    For the loop's load guard (give up only on a settled page)."""
+    For the loop's load guard (give up only on a settled page). [V2.35] (2) also stamps
+    `Observed.young`: the Document is younger than `young_s` at the stamp, which runs when the
+    read has completed."""
 
-    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self, *, clock: Callable[[], float] = time.monotonic, young_s: float = YOUNG_S
+    ) -> None:
         self._clock = clock
+        self._young_s = young_s
         self._seen: dict[int, tuple[tuple[int, ...], float]] = {}
 
     def __call__(self, seen: Observed) -> Observed:
         top = top_document(seen.snapshot)
         if top is None:
-            return dataclasses.replace(seen, document_since=None)
+            return dataclasses.replace(seen, document_since=None, young=False)
+        now = self._clock()
         known = self._seen.get(seen.snapshot.hwnd)
         if known is None or known[0] != top.runtime_id:
-            known = (top.runtime_id, self._clock())
+            known = (top.runtime_id, now)
             self._seen[seen.snapshot.hwnd] = known
-        return dataclasses.replace(seen, document_since=known[1])
+        young = now - known[1] < self._young_s
+        return dataclasses.replace(seen, document_since=known[1], young=young)
 
 
 class FactReader(Protocol):
