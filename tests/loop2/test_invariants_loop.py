@@ -111,12 +111,14 @@ def test_an_action_on_an_unlisted_id_is_refused_with_a_token_and_a_strike() -> N
 
 
 def test_a_declared_commit_raises_a_neutral_button_to_r2() -> None:
-    risk = action_risk(act("click", target=GO.id, commit="send"), GO, goal="go", search=None)
+    action = act("click", target=GO.id, commit="send")
+    risk = action_risk(action, GO, goal="go", observed=observed()).risk
     assert risk == "R2"
 
 
 def test_no_model_field_lowers_a_deny_word_button() -> None:
-    risk = action_risk(act("click", target=SEND.id, commit="none"), SEND, goal="go", search=None)
+    action = act("click", target=SEND.id, commit="none")
+    risk = action_risk(action, SEND, goal="go", observed=observed()).risk
     assert risk in {"R2", "R3"}
 
 
@@ -167,15 +169,16 @@ def typed_into(
     return PendingText(field.runtime_id, TYPED, now, search, goal_span=True)
 
 
-def click_risk(target: Element, pending: Sequence[PendingText]) -> str:
+def click_risk(
+    target: Element, pending: Sequence[PendingText], *, seen: Observed = SUBMIT_SCREEN
+) -> str:
     return action_risk(
         act("click", target=target.id),
         target,
         goal=GOAL,
-        search=None,
-        observed=SUBMIT_SCREEN,
+        observed=seen,
         pending=pending,
-    )
+    ).risk
 
 
 def test_an_unnamed_button_beside_a_just_typed_plain_field_is_r2() -> None:
@@ -201,9 +204,21 @@ def test_the_send_icon_three_actions_after_the_type_is_still_r2() -> None:
     assert click_risk(SEND_ICON, [typed_into(COMPOSER, now=TYPED)]) == "R2"
 
 
-@pytest.mark.parametrize("now", [EMPTIED, None], ids=["emptied", "gone"])
-def test_once_the_field_is_emptied_or_gone_the_click_is_plain(now: ValueFact | None) -> None:
-    assert click_risk(SEND_ICON, [typed_into(COMPOSER, now=now)]) == click_risk(SEND_ICON, [])
+def test_once_the_field_is_emptied_the_click_is_plain() -> None:
+    assert click_risk(SEND_ICON, [typed_into(COMPOSER, now=EMPTIED)]) == click_risk(SEND_ICON, [])
+
+
+def test_once_the_field_is_gone_from_the_snapshot_the_click_is_plain() -> None:
+    """Gone means the field left the snapshot; the send icon stays."""
+    without = [e for e in SUBMIT_SHOWN if e.id != COMPOSER.id]
+    seen = dataclasses.replace(observed(without), landmarks={e.runtime_id: None for e in without})
+    pending_gone = [typed_into(COMPOSER, now=None)]
+    assert click_risk(SEND_ICON, pending_gone, seen=seen) == click_risk(SEND_ICON, [], seen=seen)
+
+
+def test_a_field_still_shown_but_unread_fails_closed_to_r2() -> None:
+    """Principal review: `now` unread while the field is in the snapshot is not "gone"."""
+    assert click_risk(SEND_ICON, [typed_into(COMPOSER, now=None)]) == "R2"
 
 
 def test_a_suggestion_list_item_under_the_fields_container_stays_a_plain_click() -> None:

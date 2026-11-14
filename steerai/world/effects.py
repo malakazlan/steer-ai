@@ -106,11 +106,14 @@ class ValueFact:
 
 def value_fact(text: str, *, key: bytes) -> ValueFact:
     """The value fact of `text` under a per-session `key` (HMAC-SHA256): equal texts give equal
-    facts within a session, and the digest says nothing without the key."""
+    facts within a session, and the digest says nothing without the key. [V2.25] addendum: the
+    digest is over `normalise_name`'s fold (NFKC, whitespace collapsed, case kept), so a trimmed
+    space is not a different text; only spaces is not filled."""
     if len(key) < MIN_KEY_BYTES:
         raise ValueError("value digest key is too short")
-    digest = hmac.new(key, text.encode("utf-8"), hashlib.sha256).hexdigest()
-    return ValueFact(filled=bool(text), digest=digest)
+    folded = normalise_name(text)
+    digest = hmac.new(key, folded.encode("utf-8"), hashlib.sha256).hexdigest()
+    return ValueFact(filled=bool(folded), digest=digest)
 
 
 Tier = Literal["poll", "full"]
