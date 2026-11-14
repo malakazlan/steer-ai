@@ -4,10 +4,16 @@ None (not observed), the value is kept only as a `ValueFact`, and a secure field
 from __future__ import annotations
 
 from steerai.world.address_bar import DocumentUrl
-from steerai.world.effects import value_fact
+from steerai.world.effects import Observed, observe, poll_tier, value_fact
 from steerai.world.landmarks import Landmark, PageFacts
-from steerai.world.observe2 import in_place_url, read_observed
-from tests.world.test_effects_conditions import BASE, _snap
+from steerai.world.observe2 import (
+    document_ready,
+    first_observation,
+    in_place_url,
+    poll_observed,
+    read_observed,
+)
+from tests.world.test_effects_conditions import BASE, FIELD, PAGE, _snap
 
 KEY = b"k" * 32
 
@@ -181,3 +187,77 @@ def test_the_value_of_a_secure_field_is_never_read() -> None:
 def test_the_value_of_a_read_non_secure_field_is_still_read() -> None:
     seen = read_observed(_snap(BASE), Reader(), key=KEY, acted=2, acted_value=lambda: "red")
     assert seen.acted_value == value_fact("red", key=KEY)
+
+
+# ---- [V2.27] the first-observation rule: a scope Document with no descendants is not ready ----
+
+EMPTY_PAGE = _snap([PAGE])
+"""A fresh Chrome's first read: the Document exists, its tree is not built yet."""
+
+
+def test_a_document_with_descendants_is_ready() -> None:
+    assert document_ready(_snap(BASE)) is True
+
+
+def test_a_document_with_no_descendants_is_not_ready() -> None:
+    assert document_ready(EMPTY_PAGE) is False
+
+
+def test_a_window_with_no_document_is_ready() -> None:
+    """A native window has no Document: the rule is about a page whose tree is not built."""
+    button = (1, "Button", "Save", (7, 1), None)
+    assert document_ready(_snap([button])) is True
+
+
+def test_the_full_read_of_an_empty_document_is_unstable() -> None:
+    seen = read_observed(EMPTY_PAGE, Reader(), key=KEY)
+    assert seen.snapshot.stable is False
+    assert read_observed(_snap(BASE), Reader(), key=KEY).snapshot.stable is True
+
+
+def test_a_poll_of_an_empty_document_is_unstable_and_reports_unknown() -> None:
+    polled = poll_observed(EMPTY_PAGE)
+    assert polled.tier == "poll"
+    assert polled.snapshot.stable is False
+    assert observe(poll_tier(_snap(BASE)), polled, acted=FIELD[3]).classes == {"unknown"}
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def test_the_first_observation_polls_until_the_document_is_built() -> None:
+    clock = _Clock()
+    reads = iter([EMPTY_PAGE, EMPTY_PAGE, _snap(BASE)])
+    calls: list[int] = []
+
+    def read() -> Observed:
+        calls.append(1)
+        return read_observed(next(reads), Reader(), key=KEY)
+
+    got = first_observation(read, clock=clock.monotonic, sleep=clock.sleep)
+    assert got.snapshot.stable is True
+    assert len(got.snapshot.elements) == len(BASE)
+    assert len(calls) == 3
+
+
+def test_the_first_observation_ends_unstable_at_the_deadline() -> None:
+    clock = _Clock()
+    calls: list[int] = []
+
+    def read() -> Observed:
+        calls.append(1)
+        return read_observed(EMPTY_PAGE, Reader(), key=KEY)
+
+    got = first_observation(
+        read, clock=clock.monotonic, sleep=clock.sleep, deadline_s=2.0, poll_s=0.5
+    )
+    assert got.snapshot.stable is False, "never handed over as a stable, empty listing"
+    assert 3 <= len(calls) <= 6
