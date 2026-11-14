@@ -57,6 +57,9 @@ RefusalKind = Literal["policy", "step", "model", "world"]
 `world` refusal (nothing delivered, the focus not where the press goes) is a token and a strike
 but no model fault: it leaves the status to the stop."""
 STEP_TOKENS: Final = frozenset({"not_in_step"})
+LOAD_GUARD_S: Final = 12.0
+"""[V2.31] the load guard: a task gives up (a `cannot` stop, the strike limit) on a top Document
+younger than this only after one settle and one re-ask; provisional, from the 12.3 s reading."""
 _R2: Final = RISKS.index("R2")
 
 
@@ -89,6 +92,8 @@ class _Turn:
     effect: EffectReport | None = None
     refused: bool = False
     ticked: bool = False
+    neutral: bool = False
+    """Not a strike and not a reset ([V2.31])."""
 
 
 def run_task(task: Task, ports: Ports) -> TaskOutcome:
@@ -117,6 +122,7 @@ class _Run:
         self.last_acted: tuple[int, ...] | None = None
         self.started = ports.clock()
         self.turn = _Turn()
+        self.reasked = False
 
     # ---- the outcome ----------------------------------------------------------------------
 
@@ -156,8 +162,11 @@ class _Run:
             self._check_budgets()
             decision = self._decide(observed)
             self.turn = _Turn()
+            # [V2.31]: a wait chosen while the page grows is not a strike (new elements are new
+            # state anyway); neither is the turn whose stop the load guard held
+            self.turn.neutral = observed.growing and any(a.verb == "wait" for a in decision.actions)
             observed = self._turn(decision, observed)
-            self._record_strike(observed)
+            observed = self._record_strike(observed)
 
     def _decide(self, observed: Observed) -> Decision:
         view = TurnView(observed=observed, history=tuple(self.history), first_turn=not self.frozen)
@@ -192,7 +201,11 @@ class _Run:
         if decision.ask is not None:
             raise _End("asked", Reason("controller_ask"))
         if decision.stop is not None:
-            raise self._stopped(decision.stop)
+            held = self._hold(observed) if decision.stop == "cannot" else None
+            if held is None:
+                raise self._stopped(decision.stop)
+            self.turn.neutral = True
+            return held
         return self._batch(decision.actions, observed)
 
     def _intake(self, decision: Decision) -> None:
@@ -416,7 +429,25 @@ class _Run:
         self.history.append(f"refused:{token}")
         self.turn.refused = True
 
-    def _record_strike(self, observed: Observed) -> None:
+    def _hold(self, observed: Observed) -> Observed | None:
+        """[V2.31] the load guard: giving up rests on a settled observation. Before the task
+        ends on a `cannot` stop or on the strike limit, when the top Document appeared or
+        changed less than `LOAD_GUARD_S` ago, wait (the `settle` port) until its node count holds
+        for a quiet window or the guard expires, then re-observe and re-ask, once per task.
+        None when the guard does not apply."""
+        since = observed.document_since
+        if self.reasked or since is None:
+            return None
+        age = self.ports.clock() - since
+        if age >= LOAD_GUARD_S:
+            return None
+        self.reasked = True
+        self.history.append("load_guard")
+        return self.ports.settle(observed, LOAD_GUARD_S - age)
+
+    def _record_strike(self, observed: Observed) -> Observed:
+        if self.turn.neutral:
+            return observed
         facts = TurnFacts(
             ticked=self.turn.ticked,
             action=self.turn.action,
@@ -430,7 +461,11 @@ class _Run:
         if reasons:
             self.strike_log.append(reasons)
         if self.strikes.paused:
-            raise _End("paused", Reason("no_progress"))
+            held = self._hold(observed)
+            if held is None:
+                raise _End("paused", Reason("no_progress"))
+            return held
+        return observed
 
     def _check_budgets(self) -> None:
         used = Usage(

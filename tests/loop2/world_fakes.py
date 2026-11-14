@@ -220,6 +220,8 @@ class World:
     values: dict[tuple[int, ...], ValueFact | None] = field(default_factory=dict)
     """Each field's value fact as `read_value` returns it (a type that reads back True sets it)."""
     reads: list[tuple[int, ...]] = field(default_factory=list)
+    settle_guards: list[float] = field(default_factory=list)
+    """The guard each `settle` (the [V2.31] load-guard wait) was given."""
     """The RuntimeIds `read_value` was called on, in order."""
 
     def _decide(self, view: TurnView) -> Decision:
@@ -265,6 +267,11 @@ class World:
             report=effect, after=after, first_change_ms=None, settled_ms=None, timed_out=False
         )
 
+    def _settle(self, first: Observed, guard_s: float) -> Observed:  # noqa: ARG002 - the Ports shape
+        self.events.append("settle")
+        self.settle_guards.append(guard_s)
+        return self.screen
+
     def _read_value(self, element: Element) -> ValueFact | None:
         self.events.append("read")
         self.reads.append(element.runtime_id)
@@ -289,4 +296,5 @@ class World:
             interrupted=self._interrupted,
             clock=lambda: self.now,
             read_value=self._read_value,
+            settle=self._settle,
         )

@@ -41,6 +41,7 @@ def prompt(
     log: list[LogEntry] | None = None,
     *,
     unstable: bool = False,
+    growing: bool = False,
     screen_fence: str = FENCE,
     task_fence: str = TASK_FENCE,
     status: list[tuple[str, str]] | None = None,
@@ -56,6 +57,7 @@ def prompt(
         task_fence=task_fence,
         screen_fence=screen_fence,
         unstable=unstable,
+        growing=growing,
     )
 
 

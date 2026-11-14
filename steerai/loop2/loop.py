@@ -137,6 +137,9 @@ class Ports:
     interrupted: Callable[[], str | None]
     """A takeover, the secure desktop or a lock, as a token; None to go on."""
     clock: Callable[[], float]
+    settle: Callable[[Observed, float], Observed]
+    """[V2.31] from this observation, wait until the page's node count holds for the loop's quiet
+    window or the guard (seconds) expires, and return the last read (`observe2.hold_still`)."""
     read_value: Callable[[Element], ValueFact | None]
     """[V2.28] item 3, [V2.29] Q2: one element's value fact, read from the element itself through
     its live handle with the role and name re-check; None when unread. Never called on a field
