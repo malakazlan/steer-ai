@@ -509,3 +509,19 @@ def test_a_step_limit_refusal_stands_through_progress_on_its_subgoal() -> None:
     outcome = run_task(task(), world.ports())
     assert [d.runtime_id for d in world.dispatched] == [GO.runtime_id]
     assert (outcome.status, outcome.reason) == ("blocked", "not_in_step")
+
+
+def test_standing_refusals_take_the_rt29_order_before_the_latest() -> None:
+    """[V2.42] RT-30: with several standing refusals, the RT-29 order first, then the latest: a
+    policy refusal still decides after a later step-limit refusal on the same subgoal."""
+    open_it = Decision.model_validate({"actions": [{"verb": "open", "subgoal": "s1"}]})
+    world = World(
+        [
+            decision(act("type", target=PASSWORD.id, text="x"), first=True),
+            open_it,
+            Decision(stop="cannot"),
+        ]
+    )
+    outcome = run_task(task(), world.ports())
+    assert "refused:not_in_step" in world.views[-1].history
+    assert (outcome.status, outcome.reason) == ("blocked", "secure_field")
