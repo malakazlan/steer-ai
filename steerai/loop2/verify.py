@@ -3,6 +3,8 @@ be inside the scope Document; a tab name, the address bar or another Document ne
 
 from __future__ import annotations
 
+import re
+import unicodedata
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -11,6 +13,7 @@ from typing import Final, Literal
 from steerai.loop2.decision import Claim
 from steerai.loop2.owned import field_owned
 from steerai.loop2.task import Subgoal
+from steerai.orchestrator.gate import group_name
 from steerai.world.effects import Observed, ValueFact, observe, result_elements, top_document
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot, normalise_name
@@ -277,6 +280,19 @@ def _rows_for(
         for name, text in found.texts.items()
         if any(e.id == eid for e in result_elements(baseline, now, acted=acted, text=text))
     }
+
+
+def holds_words(snapshot: Snapshot, element: Element, text: str) -> bool:
+    """[V2.40] Q7: the element's name, or its group name as v1 computes it, holds every word of
+    `text` in one name: casefolded NFKC whole tokens, in any order, the rule content uses
+    ([V2.15] amendment 1; contiguity adds no safety). No word holds nothing."""
+    wanted = set(_words(text))
+    names = (element.name, group_name(snapshot, element) or "")
+    return bool(wanted) and any(wanted <= set(_words(name)) for name in names)
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"\w+", unicodedata.normalize("NFKC", text).casefold())
 
 
 def _excluded(
