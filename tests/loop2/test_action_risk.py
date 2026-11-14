@@ -17,7 +17,7 @@ from steerai.loop2.query import SearchFacts
 from steerai.world.effects import Observed, ValueFact
 from steerai.world.elements import Element
 from steerai.world.landmarks import Landmark
-from tests.loop2.world_fakes import DOC, GOAL, PAGE, act, element, observed
+from tests.loop2.world_fakes import DOC, FIELD, GOAL, PAGE, act, element, observed
 
 TYPED = ValueFact(filled=True, digest="typed")
 PLAIN = SearchFacts(
@@ -59,12 +59,15 @@ SHOWN = [
     ICON,
 ]
 IN_SEARCH = Landmark(kind="search", runtime_id=FORM.runtime_id)
+ROLES = {FIELD.runtime_id: "searchbox", BOX.runtime_id: "searchbox"}
+"""The AriaRoles read: the page's search field and BOX are searchboxes (#307 re-review: the role
+is re-read at the submit, so the screen must say it)."""
 
 
 def screen(shown: Sequence[Element] = SHOWN) -> Observed:
     marks: dict[tuple[int, ...], Landmark | None] = {e.runtime_id: None for e in shown}
     marks |= {BOX.runtime_id: IN_SEARCH, BOX_GO.runtime_id: IN_SEARCH}
-    return dataclasses.replace(observed(shown), landmarks=marks)
+    return dataclasses.replace(observed(shown), landmarks=marks, aria_roles=ROLES)
 
 
 def pending(
@@ -468,7 +471,8 @@ ONLY_SEARCHBOX = SearchFacts(
 
 
 def test_a_click_beside_a_searchbox_holding_a_goal_span_is_a_query() -> None:
-    seen = screen([*SHOWN, LONE_BOX])
+    roles = ROLES | {LONE_BOX.runtime_id: "searchbox"}
+    seen = dataclasses.replace(screen([*SHOWN, LONE_BOX]), aria_roles=roles)
     assert risk("click", ICON, pend=pending(LONE_BOX, ONLY_SEARCHBOX), seen=seen) == "R1"
 
 
@@ -504,7 +508,7 @@ LM_ONLY = SearchFacts(
 
 def _no_search_landmark() -> Observed:
     marks: dict[tuple[int, ...], Landmark | None] = {e.runtime_id: None for e in SHOWN}
-    return dataclasses.replace(observed(SHOWN), landmarks=marks)
+    return dataclasses.replace(observed(SHOWN), landmarks=marks, aria_roles=ROLES)
 
 
 def test_a_click_with_the_landmark_map_unread_is_never_a_query() -> None:
@@ -533,3 +537,26 @@ def test_a_searchbox_still_qualifies_by_its_role_alone() -> None:
         )
         == "R1"
     )
+
+
+# ---- #307 re-review: the searchbox fact is re-read from the observation too ----------------
+
+
+def _roles_unread() -> Observed:
+    """The AriaRole map unread; the landmark map read (it says no landmark)."""
+    return dataclasses.replace(_no_search_landmark(), aria_roles=None)
+
+
+def test_a_click_with_the_aria_roles_unread_is_never_a_query() -> None:
+    seen = _roles_unread()
+    assert risk("click", BOX_GO, pend=pending(BOX, ONLY_SEARCHBOX), seen=seen) == "R2"
+
+
+def test_an_enter_with_the_aria_roles_unread_is_never_a_query() -> None:
+    seen = _roles_unread()
+    assert risk("press", BOX, key="Enter", pend=pending(BOX, ONLY_SEARCHBOX), seen=seen) == "R2"
+
+
+def test_an_enter_when_the_field_is_no_longer_a_searchbox_is_a_commit() -> None:
+    seen = dataclasses.replace(_no_search_landmark(), aria_roles={BOX.runtime_id: "textbox"})
+    assert risk("press", BOX, key="Enter", pend=pending(BOX, ONLY_SEARCHBOX), seen=seen) == "R2"
