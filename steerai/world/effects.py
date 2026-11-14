@@ -35,6 +35,7 @@ from steerai.verify.url_query import carries
 from steerai.world.elements import Element
 from steerai.world.landmarks import Landmark
 from steerai.world.model import TRANSIENT_ROLES, Snapshot, normalise_name
+from steerai.world.reads import ReadCost
 
 EffectClass = Literal[
     "none",
@@ -150,6 +151,13 @@ class Observed:
     """[V2.31] when the top Document (by RuntimeId) of this window was first seen, on the
     caller's monotonic clock (`observe2.DocumentSince`); None when not stamped or no Document.
     Never read by `observe`."""
+    young: bool = False
+    """[V2.35] (2) the top Document is younger than the load guard (`observe2.YOUNG_S`) at this
+    read's completion (stamped with `document_since`): more may arrive. Separate from
+    `growing`: a Document's appearance is not growth. Never read by `observe`."""
+    read_cost: ReadCost | None = None
+    """[V2.34] the reads `observe2.first_observation` or `hold_still` made for this observation,
+    by tier; None for a single read. Never read by `observe`."""
 
 
 def poll_tier(snapshot: Snapshot) -> Observed:
