@@ -28,6 +28,7 @@ BUY = element(63, "Button", "Buy", (9, 63), 60)
 LATE_PASSWORD = element(64, "Edit", "Password", (9, 64), 60, secure=True)
 PLAN = element(65, "RadioButton", "Pro $10/mo", (9, 65), 60)
 FAR_DELETE = element(66, "Button", "Delete", (9, 66), 1)
+DELETE_FIELD = element(70, "Edit", "Delete account", (9, 70), 60)
 SEARCH = Landmark(kind="search", runtime_id=FORM.runtime_id)
 PLAIN = [*PAGE, FORM, BOX, SEARCH_BUTTON]
 
@@ -343,3 +344,21 @@ def test_the_dispatch_rescan_of_an_unchanged_form_runs_no_prefilter(
     prefilter = _count(monkeypatch, "may_read")
     assert form.form_facts(seen, box) == (False, False)
     assert prefilter == []
+
+
+# ---- the sweep's gaps (mutants 2v, 2O, 2V) ---------------------------------------------------
+
+
+def test_a_buy_button_appearing_after_the_type_makes_the_enter_r2() -> None:
+    """The risky fact is read again on the dispatch's observation, not only the recorded one."""
+    assert enter_risk(screen(), screen([*PLAIN, BUY])) == "R2"
+
+
+def test_a_field_that_is_not_in_the_snapshot_is_secure_and_risky_in_form() -> None:
+    assert form.form_facts(screen(), (9, 12345)) == (True, True)
+
+
+def test_an_edit_the_deny_list_raises_to_r3_in_the_form_makes_the_enter_r2() -> None:
+    """An Edit is read as typed into: its deny words count though it is not a button."""
+    both = screen([*PLAIN, DELETE_FIELD])
+    assert enter_risk(both, both) == "R2"

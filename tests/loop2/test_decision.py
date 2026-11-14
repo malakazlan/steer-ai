@@ -284,6 +284,12 @@ def test_desc_without_a_fence_passes_with_fences_given() -> None:
     )
 
 
+def test_exactly_five_subgoals_are_accepted() -> None:
+    subs = [SubgoalDoc(id=f"s{i}", desc="d") for i in range(5)]
+    d = Decision(subgoals=subs, actions=[action("click", target=1)])
+    assert "too_many_subgoals" not in check(d, first_turn=True, known_subgoals={"s1": frozenset()})
+
+
 @pytest.mark.parametrize(
     "first", [Decision(stop="cannot"), Decision(ask="may I?")], ids=["stop", "ask"]
 )

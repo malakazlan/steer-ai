@@ -12,6 +12,7 @@ observer code:
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 
 from steerai.world.effects import Observed, observe
 from steerai.world.elements import Element
@@ -170,3 +171,9 @@ def test_a_url_not_observed_on_either_side_is_never_unread() -> None:
     report = observe(_read(_snap(BASE)), after, acted=FIELD[3], url_fact=True)
     assert "url" not in report.unread
     assert report.classes == frozenset({"none"})
+
+
+def test_a_minimized_after_window_is_unknown_alone() -> None:
+    minimized = replace(_snap(BASE), minimized=True)
+    report = observe(_read(_snap(BASE)), _read(minimized), acted=FIELD[3])
+    assert report.classes == frozenset({"unknown"})
