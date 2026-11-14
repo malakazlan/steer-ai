@@ -272,6 +272,13 @@ def test_a_task_started_on_the_web_never_closes_on_a_file_page() -> None:
 # ---- #334 review: one element proves at most one param; a value subgoal needs a param --------
 
 
+def test_a_value_subgoal_without_a_param_is_refused_into_the_repair_turn() -> None:
+    bare = Decision(subgoals=[SubgoalDoc(id="s1", desc="fill", closes="value")], stop="cannot")
+    assert "value_without_param" in validate(
+        bare, listed_ids=frozenset(), goal=GOAL, first_turn=True
+    )
+
+
 def test_one_element_never_proves_two_state_params() -> None:
     """The principal's repro: params red and shoes, only the "Red" CheckBox on, cited for a and
     then for b. One handle proves at most one param."""
