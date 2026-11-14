@@ -57,9 +57,17 @@ Token = Literal[
     "windows_changed",
     "frame_changed",
     "scrolled",
+    "unknown:window_changed",
+    "unknown:unstable",
+    "unknown:minimized",
+    "unknown:top_doc_missing_before",
+    "unknown:top_doc_missing_after",
 ]
 """`scrolled` ([V2.18]): the viewport moved inside the scope. Not emitted by the observer until
-a probe shows how Chrome exposes it (unmeasured); never a proof signal, never `none`."""
+a probe shows how Chrome exposes it (unmeasured); never a proof signal, never `none`.
+[V2.42] (B): every `unknown` carries its cause, `unknown:<branch>`, in the normal report: another
+window, an unstable or a minimized after, or a top Document on one side only (every one that
+holds). The class stays `unknown`."""
 DialogScope = Literal["inside", "outside"]
 Unread = Literal["url", "windows", "caps"]
 Carrier = Literal["url_param", "url_path", "title", "results", "heading"]
@@ -198,11 +206,10 @@ def observe(  # noqa: PLR0913 - keyword-only facts the caller read, each with a 
         raise ValueError("tier_mismatch")
     b, a = before.snapshot, after.snapshot
     unread = _unread(before, after, url_fact=url_fact)
-    if b.hwnd != a.hwnd or not a.stable or a.minimized:
-        return _report({"unknown"}, set(), unread, None, set(), a.stable)
+    causes = _unknown_causes(b, a)
+    if causes:
+        return _report({"unknown"}, causes, unread, None, set(), a.stable)
     top_b, top_a = _top_document(b), _top_document(a)
-    if (top_b is None) != (top_a is None):
-        return _report({"unknown"}, set(), unread, None, set(), a.stable)
     tokens: set[Token] = set()
     windows_read = before.windows is not None and after.windows is not None
     if windows_read and set(before.windows or ()) != set(after.windows or ()):
@@ -721,6 +728,26 @@ def _result_elements(
         elif anonymous_before[(element.role, normalise_name(element.name))] == 0:
             found.append(element)
     return found
+
+
+def _unknown_causes(b: Snapshot, a: Snapshot) -> set[Token]:
+    """[V2.42] (B): why a report is `unknown`, every cause that holds: another window, an
+    unstable or a minimized after; else a top Document on one side only. Empty: not unknown."""
+    causes: set[Token] = set()
+    if b.hwnd != a.hwnd:
+        causes.add("unknown:window_changed")
+    if not a.stable:
+        causes.add("unknown:unstable")
+    if a.minimized:
+        causes.add("unknown:minimized")
+    if causes:
+        return causes
+    top_b, top_a = _top_document(b), _top_document(a)
+    if top_b is None and top_a is not None:
+        causes.add("unknown:top_doc_missing_before")
+    if top_a is None and top_b is not None:
+        causes.add("unknown:top_doc_missing_after")
+    return causes
 
 
 def _report(  # noqa: PLR0913, PLR0917 - the report's fields, one each
