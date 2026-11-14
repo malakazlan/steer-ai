@@ -386,8 +386,8 @@ def test_the_echo_guard_folds_the_subgoals_words_too(monkeypatch: pytest.MonkeyP
     """s1 typed "red shoes"; s2's words are "Red Shoes": the option rule applies to s2."""
     echoes = _spied(monkeypatch, "echo")
     subs = [
-        SubgoalDoc(id="s1", desc="a", params={"text": "red shoes"}),
-        SubgoalDoc(id="s2", desc="b", params={"text": "Red Shoes"}),
+        SubgoalDoc(id="s1", desc="a", params={"text": "red shoes"}, closes="page"),
+        SubgoalDoc(id="s2", desc="b", params={"text": "Red Shoes"}, closes="page"),
     ]
     first = Decision(subgoals=subs, actions=[act("type", target=FIELD.id, param="text")])
     second = Decision(actions=[act("click", target=MENU.id, subgoal="s2")])
