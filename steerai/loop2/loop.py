@@ -432,14 +432,17 @@ def _classified(  # noqa: PLR0913 - one submit: the tally, the action, its text 
     *,
     denied: bool,
 ) -> Risk:
-    """One submit of `held`'s text, like its Enter. The search landmark recorded at typing time
-    counts only while the current observation still reads the field in a Search landmark: an
-    unread map or another kind fails closed (#307 review)."""
+    """One submit of `held`'s text, like its Enter. The query facts recorded at typing time count
+    only while the current observation still reads them (#307 reviews): the field is a searchbox
+    only while the AriaRole map was read and still names it `searchbox`, and in a Search landmark
+    only while the landmark map still reads one. An unread map or another value fails closed."""
     _text_checked(tally, action, state)
-    in_landmark = held.search.in_search_landmark
-    still = in_landmark and search_landmark_of(observed, held.field) is not None
+    recorded = held.search
+    roles = observed.aria_roles
+    box = recorded.searchbox and roles is not None and roles.get(held.field) == "searchbox"
+    still = recorded.in_search_landmark and search_landmark_of(observed, held.field) is not None
     return classify(
-        field=dataclasses.replace(held.search, in_search_landmark=still),
+        field=dataclasses.replace(recorded, searchbox=box, in_search_landmark=still),
         goal_span=held.goal_span and state == "held",
         commit=action.commit,
         deny_word=denied,
