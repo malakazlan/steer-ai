@@ -42,7 +42,7 @@ from steerai.probes.chrome_a11y import (
 from steerai.probes.layer_b import _free_port
 from steerai.probes.layer_b_pages import PageServer
 from steerai.world.address_bar import DocumentUrl
-from steerai.world.effects import EffectReport, Observed, _top_document, observe
+from steerai.world.effects import EffectReport, Observed, _top_document, observe, poll_tier
 from steerai.world.model import Snapshot, WorldModel, snapshot_to_json
 from steerai.world.observe2 import read_observed
 from steerai.world.watch import watch
@@ -298,7 +298,7 @@ class _Browser:
         snapshot = self.timed(
             "snapshot", lambda: self._model.observe(self.hwnd, cap_s=1.0, stable_window=1)
         )
-        return Observed(snapshot=snapshot)
+        return poll_tier(snapshot)
 
     def read_full(self, seen: Observed) -> Observed:
         """[V2.7] the full tier on a settled snapshot: every fact, the whole read timed."""
@@ -515,6 +515,7 @@ def watch_run(base: str, pair: Pair) -> dict[str, Any]:
         "first_change_ms": result.first_change_ms,
         "settled_ms": result.settled_ms,
         "timed_out": result.timed_out,
+        "seen_by": result.seen_by,
         "report": _report_dict(result.report),
         "read_ms": costs,
         "url_read": [before.url is not None, result.after.url is not None],
@@ -601,9 +602,9 @@ SITE_READY_S = 8.0
 
 def site_run(start: str, target: str) -> dict[str, Any]:
     """[V2.7] one real-site sample: open `start`, then navigate to `target` (the task's own
-    results page) through DevTools, and watch it on the two-tier v2 read. Records the first
-    change, the settle, the report and the address bar's shape as closed tokens; never the
-    URL or the page's text."""
+    results page) through DevTools, and watch it on the two-tier v2 read as a trigger action
+    ([V2.8]). Records the first change, the settle, the weak quiet-window reads, the report and
+    the address bar's shape as closed tokens; never the URL or the page's text."""
     browser = _Browser(start)
     try:
         time.sleep(SITE_READY_S)
@@ -618,6 +619,7 @@ def site_run(start: str, target: str) -> dict[str, Any]:
             settle_s=WATCH_SETTLE_S,
             deadline_s=SITE_DEADLINE_S,
             full=browser.read_full,
+            trigger=True,
         )
         href = str(browser.run("location.href"))
         bar = browser.client.address_bar(browser.hwnd)
@@ -627,6 +629,8 @@ def site_run(start: str, target: str) -> dict[str, Any]:
         "first_change_ms": result.first_change_ms,
         "settled_ms": result.settled_ms,
         "timed_out": result.timed_out,
+        "seen_by": result.seen_by,
+        "weak_reads": result.weak_reads,
         "classes": sorted(result.report.classes),
         "tokens": sorted(result.report.tokens),
         "bar_shape": None if bar is None else _shape(bar, href),
