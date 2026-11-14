@@ -23,6 +23,7 @@ import json
 import sys
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Literal
 
@@ -74,6 +75,71 @@ def candidate(f: FieldFacts) -> tuple[bool, str]:
     if any(_has(b, COMMIT_WORDS) for b in f.buttons):
         return False, "commit_word"
     return True, "search_word"
+
+
+NEGATIVE_PAGES: dict[str, str] = {
+    "sw1": (
+        "<!doctype html><title>Tasks</title><main><form aria-label='Tasks'>"
+        "<input type='text' aria-label='Search or add a task'>"
+        "<ul><li>Buy milk</li><li>Call Sam</li></ul></form></main>"
+    ),
+    "sw2": (
+        "<!doctype html><title>Notes</title><main><section aria-label='Notes'>"
+        "<input type='text' aria-label='Search notes'>"
+        "<button type='button'>Delete</button><ul><li>Draft</li><li>Ideas</li></ul>"
+        "</section></main>"
+    ),
+    "sw3": (
+        "<!doctype html><title>Thread</title><main><section aria-label='Thread'>"
+        "<p>Anyone seen the build log?</p>"
+        "<input type='text' aria-label='Reply (find in thread)'>"
+        "<button type='button'>Go</button></section></main>"
+    ),
+}
+"""[V2.28] item 4: local negatives with a search word in a field that is not a query: a
+single-line field where Enter adds an item and no commit word sits nearby (the candidate is
+expected to accept it, which refutes the rule); a search field beside a Delete button; a
+single-line reply box whose name holds a search word. Generic markup, no site or app names."""
+
+
+class _Fields(HTMLParser):
+    """The `FieldFacts` a UIA read of a generic page would give: each text input's name, the
+    enclosing section or form's label as its group, and the group's button names."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._group: list[tuple[str, list[str]]] = []
+        self._button = False
+        self.rows: list[tuple[str, str, list[str]]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        a = dict(attrs)
+        if tag in ("section", "form"):
+            self._group.append((a.get("aria-label") or "", []))
+        elif tag == "input" and a.get("type") == "text" and self._group:
+            self.rows.append((a.get("aria-label") or "", self._group[-1][0], self._group[-1][1]))
+        elif tag == "button":
+            self._button = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("section", "form") and self._group:
+            self._group.pop()
+        elif tag == "button":
+            self._button = False
+
+    def handle_data(self, data: str) -> None:
+        if self._button and self._group:
+            self._group[-1][1].append(data.strip())
+
+
+def negative_facts(task: str) -> list[FieldFacts]:
+    """The fields `NEGATIVE_PAGES[task]` holds, as the live read would score them."""
+    parser = _Fields()
+    parser.feed(NEGATIVE_PAGES[task])
+    return [
+        FieldFacts("negative", task, "textbox", name, "", False, group, tuple(buttons))
+        for name, group, buttons in parser.rows
+    ]
 
 
 def evaluate(rows: Sequence[FieldFacts]) -> dict[str, Any]:  # Any: JSON values
@@ -213,6 +279,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live
             with PageServer(_pages_for(task)) as server:
                 url = f"http://127.0.0.1:{server.port}/page.html"
                 rows += _collected(url, task.task_id, "negative", errors)
+    for name, html in NEGATIVE_PAGES.items():
+        with PageServer({"/page.html": html}) as server:
+            url = f"http://127.0.0.1:{server.port}/page.html"
+            rows += _collected(url, name, "negative", errors)
     args.out.write_text("\n".join(json.dumps(asdict(r)) for r in rows) + "\n", encoding="utf-8")
     for error in errors:
         sys.stdout.write(json.dumps(error) + "\n")

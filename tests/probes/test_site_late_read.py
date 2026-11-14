@@ -1,6 +1,8 @@
 """[V2.27] B: the site-sample probe takes one more full read about `LATE_S` after `watch` returns
 and records its classes against the before, with a flag when they differ from the watch's final
-report (a page that navigated after an early, small change). Fakes only: no browser."""
+report (a page that navigated after an early, small change). [V2.28] 1: the watch is a submit,
+held to the guard unless a conclusive report arrives, and the row says when one did. Fakes
+only: no browser."""
 
 from __future__ import annotations
 
@@ -8,8 +10,9 @@ from collections.abc import Callable
 from typing import Any
 
 from steerai.errors import ErrorCode, SteerError
-from steerai.probes.effect_pages import LATE_S, site_sample
+from steerai.probes.effect_pages import LATE_S, SITE_READY_S, site_sample
 from steerai.world.effects import Observed
+from steerai.world.watch import SUBMIT_GUARD_S
 from tests.world.test_effects_conditions import BASE, Row, _snap
 
 URL = "https://shop.test/"
@@ -117,3 +120,39 @@ def test_the_row_keeps_its_closed_tokens_and_no_url() -> None:
     row, _ = _sample(CONTENT, lambda: NAVIGATED)
     assert row["bar_shape"] == "no_scheme"
     assert "shop.test" not in str(row)
+
+
+class LateNavigation(FakeBrowser):
+    """A small change at once, then the navigation `after_s` into the watch."""
+
+    def __init__(self, clock: Clock, after_s: float) -> None:
+        super().__init__(clock, CONTENT, lambda: NAVIGATED)
+        self._at = SITE_READY_S + after_s
+
+    def read_cheap(self) -> Observed:
+        return NAVIGATED if self._clock.t >= self._at else CONTENT
+
+
+def test_a_small_early_change_holds_to_the_guard() -> None:
+    """Live run 2: 13 of 24 samples ended here at 47-109 ms and navigated later."""
+    row, browser = _sample(CONTENT, lambda: NAVIGATED)
+    assert row["timed_out"] is True
+    assert row["conclusive_ms"] is None
+    assert row["weak_reads"] >= 1
+    assert browser.v2_reads[1] - browser.v2_reads[0] >= SUBMIT_GUARD_S + LATE_S
+
+
+def test_a_navigation_after_a_small_change_is_waited_for_and_its_arrival_logged() -> None:
+    clock = Clock()
+    browser = LateNavigation(clock, after_s=3.0)
+    row = site_sample(browser, RESULTS_URL, sleep=clock.sleep, clock=clock.now)
+    assert row["classes"] == ["navigated"]
+    assert row["timed_out"] is False
+    assert 3000 <= row["conclusive_ms"] <= 3100
+    assert row["late_changed"] is False
+
+
+def test_an_immediate_navigation_arrives_at_the_first_poll() -> None:
+    row, _ = _sample(NAVIGATED, lambda: NAVIGATED)
+    assert row["conclusive_ms"] == 0
+    assert row["timed_out"] is False
