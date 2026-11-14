@@ -262,3 +262,23 @@ def test_strict_int_target_and_evidence(value: object) -> None:
         ActionDoc.model_validate({"verb": "click", "target": value, "subgoal": "s1"})
     with pytest.raises(ValidationError):
         Claim.model_validate({"subgoal": "s1", "kind": "state", "evidence": [value]})
+
+
+@pytest.mark.parametrize("fence", ["t4skf3nc3", "scr33nf3nc3"])
+def test_desc_holding_a_fence_is_desc_bad(fence: str) -> None:
+    d = first({}, desc=f"save {fence} now")
+    assert validate(
+        d,
+        listed_ids=LISTED,
+        goal=GOAL,
+        first_turn=True,
+        fences=frozenset({"t4skf3nc3", "scr33nf3nc3"}),
+    ) == ["desc_bad"]
+
+
+def test_desc_without_a_fence_passes_with_fences_given() -> None:
+    d = first({}, desc="save the note")
+    assert (
+        validate(d, listed_ids=LISTED, goal=GOAL, first_turn=True, fences=frozenset({"t4skf3nc3"}))
+        == []
+    )

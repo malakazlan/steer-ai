@@ -12,6 +12,7 @@ from steerai.loop2.task import (
     Subgoal,
     Task,
     Turn,
+    known_params,
 )
 
 GOAL = "write hello world to the note"
@@ -62,3 +63,13 @@ def test_task_assembles() -> None:
         history=[turn],
     )
     assert task.history[0].verb == "click"
+
+
+def test_known_params_keeps_subgoals_without_params() -> None:
+    goal = "write hello to the note"
+    span = GoalSpan.of(goal, 6, 11)
+    subs = [
+        Subgoal(id="s1", desc="write", params={"text": span}),
+        Subgoal(id="s2", desc="save", params={}),
+    ]
+    assert known_params(subs) == {"s1": frozenset({"text"}), "s2": frozenset()}
