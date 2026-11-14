@@ -18,6 +18,7 @@ import urllib.parse
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
 from steerai.action.launch import SITES, LaunchError, expected_title, site_url
@@ -34,87 +35,95 @@ from steerai.orchestrator.contracts import (
     verbatim_in,
 )
 from steerai.orchestrator.identity import Binding, CandidateLine, lines_for
-from steerai.verify.deny_skeleton import camel_split, holds
+from steerai.verify.deny_skeleton import camel_split, holds, may_hold
 from steerai.verify.predicates import Appeared, Predicate, Present, Within, comparable, presents
 from steerai.verify.strength import Params, strength, strengthen, template_for
 from steerai.verify.t1 import redact
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot, normalise_name
 
-DENY_PATTERNS: Mapping[str, Risk] = {
-    "delete": "R3",
-    "remove": "R3",
-    "pay": "R3",
-    "purchase": "R3",
-    "buy": "R3",
-    "transfer": "R3",
-    "wipe": "R3",
-    "send": "R2",
-    "submit": "R2",
-    "post": "R2",
-    "publish": "R2",
-    "share": "R2",
-    "reply": "R2",
-    "forward": "R2",
-    "confirm": "R2",
-    "sign out": "R2",
-    "signout": "R2",
-    "install": "R3",
-    "uninstall": "R3",
-    "format": "R3",
-    "reset": "R3",
-    # Phase 3 classes (5.13 1a [v2.17], deny-classes gate): every role, raise only
-    "checkout": "R3",
-    "discard": "R3",
-    "don t save": "R3",  # "Don't Save", any apostrophe, as the word matcher splits it
-    "clear history": "R3",
-    "log out": "R2",
-    "log off": "R2",
-    "sign off": "R2",
-    "logout": "R2",
-    "logoff": "R2",
-    "signoff": "R2",
-    "unsubscribe": "R2",  # every role: an email Unsubscribe link acts (DC-07)
-}
+DENY_PATTERNS: Mapping[str, Risk] = MappingProxyType(
+    {
+        "delete": "R3",
+        "remove": "R3",
+        "pay": "R3",
+        "purchase": "R3",
+        "buy": "R3",
+        "transfer": "R3",
+        "wipe": "R3",
+        "send": "R2",
+        "submit": "R2",
+        "post": "R2",
+        "publish": "R2",
+        "share": "R2",
+        "reply": "R2",
+        "forward": "R2",
+        "confirm": "R2",
+        "sign out": "R2",
+        "signout": "R2",
+        "install": "R3",
+        "uninstall": "R3",
+        "format": "R3",
+        "reset": "R3",
+        # Phase 3 classes (5.13 1a [v2.17], deny-classes gate): every role, raise only
+        "checkout": "R3",
+        "discard": "R3",
+        "don t save": "R3",  # "Don't Save", any apostrophe, as the word matcher splits it
+        "clear history": "R3",
+        "log out": "R2",
+        "log off": "R2",
+        "sign off": "R2",
+        "logout": "R2",
+        "logoff": "R2",
+        "signoff": "R2",
+        "unsubscribe": "R2",  # every role: an email Unsubscribe link acts (DC-07)
+    }
+)
 """5.13 1a: words (or word sequences) in a target's name or automation id that raise the step's
 tier. Matched on whole words of the comparable form (NFKC, format characters removed,
 case-folded), so punctuation or a zero-width character never hides a word (RN-04)."""
-CONTROL_PATTERNS: Mapping[str, Risk] = {
-    "check out": "R2",
-    "subscribe": "R2",
-    "join": "R2",
-    "like": "R2",
-    "follow": "R2",
-    "report": "R2",
-    "block": "R2",
-    "leave": "R2",
-    "accept": "R2",
-    "allow": "R2",
-}
+CONTROL_PATTERNS: Mapping[str, Risk] = MappingProxyType(
+    {
+        "check out": "R2",
+        "subscribe": "R2",
+        "join": "R2",
+        "like": "R2",
+        "follow": "R2",
+        "report": "R2",
+        "block": "R2",
+        "leave": "R2",
+        "accept": "R2",
+        "allow": "R2",
+    }
+)
 """5.13 1a [v2.17], ruling (a): words that are also common in titles ("Like That", "Check out
 this video") raise a target's name only on a control role, and its automation id on any role. A
 raised click has no strength template and blocks `weak_predicate` (DC-19/20), so a title hit
 would fail a navigation click outright."""
-CONSENT_PATTERNS: Mapping[str, Risk] = {
-    "agree": "R2",
-    "consent": "R2",
-    "authorize": "R2",
-    "authorise": "R2",
-    "acknowledge": "R2",
-    "certify": "R2",
-}
+CONSENT_PATTERNS: Mapping[str, Risk] = MappingProxyType(
+    {
+        "agree": "R2",
+        "consent": "R2",
+        "authorize": "R2",
+        "authorise": "R2",
+        "acknowledge": "R2",
+        "certify": "R2",
+    }
+)
 """5.13 [v2.58] the consent class (widget-verbs WV-08): words that make setting a value a
 statement the person signs, read on the name and automation id of a CheckBox or a RadioButton
 under any verb and, since [v2.77], of every `check`/`uncheck`/`select` target but a TabItem (a
 switch Button, a grid row): W3 verdict ruling (a) "I agree / I do not agree" radios; a tab
 changes the view and sets nothing."""
 CONSENT_ROLES: frozenset[str] = frozenset({"CheckBox", "RadioButton"})
-BILLING_PATTERNS: Mapping[str, Risk] = {
-    "per month": "R2",
-    "per year": "R2",
-    "subscription": "R2",
-    "billing": "R2",
-}
+BILLING_PATTERNS: Mapping[str, Risk] = MappingProxyType(
+    {
+        "per month": "R2",
+        "per year": "R2",
+        "subscription": "R2",
+        "billing": "R2",
+    }
+)
 """W3-02: whole words that make a value a billing choice, read on the name and the group name of
 a CheckBox, a RadioButton and, since [v2.77], every `check`/`uncheck`/`select` target but a
 TabItem (a switch "Auto-renew" in a "Subscription" fieldset is a CheckBox's case). "plan" alone
@@ -307,11 +316,13 @@ def deny_tier_of(facts: DenyFacts) -> Risk:
     billed = _billed_names(facts)
     if any(_BILLED.search(comparable(name)) for name in billed):
         risk = "R2"
-    classes: tuple[tuple[Mapping[str, Risk], list[str], list[str]], ...] = (
-        (DENY_PATTERNS, names, ids),
-        (CONTROL_PATTERNS, controlled, ids),
-        (CONSENT_PATTERNS, names if consenting else [], ids if consenting else []),
-        (BILLING_PATTERNS, billed, []),
+    classes: tuple[tuple[Mapping[str, Risk], list[str], list[str]], ...] = tuple(
+        zip(
+            PATTERN_CLASSES,
+            (names, controlled, names if consenting else [], billed),
+            (ids, ids, ids if consenting else [], []),
+            strict=True,
+        )
     )
     for patterns, scope, scope_ids in classes:
         for pattern, tier in patterns.items():
@@ -348,6 +359,51 @@ def billing_reads(facts: DenyFacts) -> bool:
     return any(_reads(name, pattern) for pattern in BILLING_PATTERNS for name in names)
 
 
+PATTERN_CLASSES: tuple[Mapping[str, Risk], ...] = (
+    DENY_PATTERNS,
+    CONTROL_PATTERNS,
+    CONSENT_PATTERNS,
+    BILLING_PATTERNS,
+)
+"""The pattern classes, in the order `deny_tier_of` and `_every_class` read them; the prefilter's
+first words are built from the same table (#319 review S1-01). Each map is read-only (S1-04),
+so no cache built on them can go stale."""
+_FIRST_WORDS: frozenset[str] = frozenset(
+    pattern.split()[0] for patterns in PATTERN_CLASSES for pattern in patterns
+)
+"""The first word of every pattern `deny_tier_of` reads: no pattern reads a text unless its first
+word does (`_contains` needs it among the words; `holds` needs its expression to match)."""
+
+
+def may_read(facts: DenyFacts) -> bool:
+    """A cheap, one-sided prefilter (#314, [V2.32], [V2.35] (1)): False only when no deny,
+    control, consent or billing pattern and no price can read any text of `facts` (its name,
+    option, bound name and group name; its automation id and element ids), so `deny_tier_of`
+    and `billing_reads` read nothing on them. It may say "check" when it need not, never "no"
+    where they would read. One normalisation and one combined search per text, instead of one
+    per pattern. Locked by the deny grid, a seeded fuzz and a structural test
+    (`tests/orchestrator/test_may_read.py`)."""
+    names = [facts.name, facts.option, facts.bound_name, facts.group_name]
+    automation_ids = [facts.automation_id, *facts.element_ids]
+    for name in names:
+        if not name:
+            continue
+        if _BILLED.search(comparable(name)) or _FIRST_WORDS.intersection(_words(name)):
+            return True
+        if may_hold(name, _FIRST_WORDS):
+            return True
+    for automation_id in automation_ids:
+        if not automation_id:
+            continue
+        if _FIRST_WORDS.intersection(_id_words(automation_id)):
+            return True
+        if may_hold(camel_split(automation_id), _FIRST_WORDS) or may_hold(
+            automation_id, _FIRST_WORDS
+        ):
+            return True
+    return False
+
+
 def _listed_tier(facts: DenyFacts) -> Risk:
     """A select on a listbox option is the option it picks (#206 review, as W4-03 for a
     choose): deny, control, consent and billing read the option's name, the bound name and the
@@ -367,11 +423,8 @@ def _every_class(names: list[str], ids: list[str]) -> Risk:
     """Every pattern class on `names`, the ids through every class but billing, the price
     regex on the comparable names; raise-only from R0."""
     risk: Risk = "R2" if any(_BILLED.search(comparable(name)) for name in names) else "R0"
-    classes: tuple[tuple[Mapping[str, Risk], list[str]], ...] = (
-        (DENY_PATTERNS, ids),
-        (CONTROL_PATTERNS, ids),
-        (CONSENT_PATTERNS, ids),
-        (BILLING_PATTERNS, []),
+    classes: tuple[tuple[Mapping[str, Risk], list[str]], ...] = tuple(
+        zip(PATTERN_CLASSES, (ids, ids, ids, []), strict=True)
     )
     for patterns, scope_ids in classes:
         for pattern, tier in patterns.items():

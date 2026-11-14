@@ -78,24 +78,33 @@ def _rest(ch: str) -> str:
 
 
 def _cells_of(text: str, *, fold_first: bool) -> str:
+    return "".join(_cells_of_char(raw, fold_first) for raw in text)
+
+
+CELL_CACHE = 8192
+"""How many (character, fold order) cells are kept (#319 review: an unbounded cache keyed from
+page text could grow to every code point, ~280 MB measured); a page's alphabet fits easily."""
+
+
+@lru_cache(maxsize=CELL_CACHE)
+def _cells_of_char(raw: str, fold_first: bool) -> str:
+    """One character's cells: they depend on the character and the fold order alone, so they
+    are computed once per character (#314: the per-character tables dominated the cost)."""
+    if _blank(raw):
+        return BLANK
+    if fold_first and raw in CONFUSABLE_TO_LATIN:
+        # the raw character's own line first: NFKC can move it to another prototype
+        # (lunate sigma reads c, its NFKC final sigma reads o)
+        return _known(raw, capital_i=True) or HARD
     out: list[str] = []
-    for raw in text:
-        if _blank(raw):
-            out.append(BLANK)
+    for ch in unicodedata.normalize("NFKC", raw):
+        cell = _known(ch, capital_i=True) if fold_first else None
+        if cell is not None:
+            out.append(cell)
             continue
-        if fold_first and raw in CONFUSABLE_TO_LATIN:
-            # the raw character's own line first: NFKC can move it to another prototype
-            # (lunate sigma reads c, its NFKC final sigma reads o)
-            out.append(_known(raw, capital_i=True) or HARD)
-            continue
-        for ch in unicodedata.normalize("NFKC", raw):
-            cell = _known(ch, capital_i=True) if fold_first else None
-            if cell is not None:
-                out.append(cell)
-                continue
-            for small in ch.casefold():
-                known = _known(small, capital_i=False)
-                out.append(_rest(small) if known is None else known)
+        for small in ch.casefold():
+            known = _known(small, capital_i=False)
+            out.append(_rest(small) if known is None else known)
     return "".join(out)
 
 
@@ -156,6 +165,30 @@ def holds(text: str, pattern: str) -> bool:
     """Whether the text reads as the pattern in either case order."""
     words = _compiled(pattern)
     return any(_chained(words, form) for form in cells(text))
+
+
+_BEFORE = "(?<![a-z#%])"
+
+
+@cache
+def _first_words(words: frozenset[str]) -> re.Pattern[str]:
+    """One expression for every word's own: the shared lookbehind hoisted out of the
+    alternation, so it is tried once per position instead of once per word."""
+    bodies = []
+    for word in sorted(words):
+        own = _compiled(word)[0].pattern
+        if not own.startswith(_BEFORE):
+            raise ValueError("a word expression starts with its boundary")
+        bodies.append(own.removeprefix(_BEFORE))
+    return re.compile(_BEFORE + "(?:" + "|".join(bodies) + ")")
+
+
+def may_hold(text: str, first_words: frozenset[str]) -> bool:
+    """A necessary condition for `holds(text, pattern)` for every pattern whose first word is in
+    `first_words`: `holds` needs the first word's own expression to match a cell form, so when
+    none of them does in one combined search, no such pattern holds (#314 prefilter)."""
+    expression = _first_words(first_words)
+    return any(expression.search(form) is not None for form in cells(text))
 
 
 def camel_split(identifier: str) -> str:
