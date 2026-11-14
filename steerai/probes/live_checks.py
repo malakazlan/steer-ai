@@ -49,7 +49,12 @@ class Check:
 
 
 CHECKS: tuple[Check, ...] = (
-    Check("working_set", "the memory floor and the task cap", 15, None),
+    Check(
+        "working_set",
+        "the memory floor and the task cap",
+        15,
+        ("steerai.probes.working_set", "--tasks", "g21,g22,g23"),
+    ),
     Check(
         "shadow_gallery",
         "the 2a shadow table (3c switch-on)",
@@ -84,7 +89,12 @@ CHECKS: tuple[Check, ...] = (
             "{dir}/shadow_dev.jsonl",
         ),
     ),
-    Check("landmarks", "the query classifier's landmark fact (3c switch-on)", 10, None),
+    Check(
+        "landmarks",
+        "the query classifier's landmark fact (3c switch-on)",
+        10,
+        ("steerai.probes.landmark_sites",),
+    ),
     Check(
         "instant_search_controls",
         "the 3d fixture (3c switch-on)",
@@ -97,16 +107,31 @@ CHECKS: tuple[Check, ...] = (
         30,
         ("steerai.probes.effect_pages", "--section", "sites", "--runs", "1"),
     ),
-    Check("multiline", "whether the query-field rule can recover anything", 10, None),
+    Check(
+        "multiline",
+        "whether the query-field rule can recover anything",
+        10,
+        ("steerai.probes.multiline",),
+    ),
     Check(
         "query_fields",
         "the query-class analysis ([V2.14] 2)",
         20,
         ("steerai.probes.query_fields", "--out", "{dir}/query_fields.jsonl"),
     ),
-    Check("scrolled", "the scrolled token ([V2.18])", 10, None),
-    Check("controller_for", "the field-owned rule's read cost ([V2.15] Q4)", 10, None),
-    Check("comparability", "chunked against in-process ([V2.16])", 20, None),
+    Check("scrolled", "the scrolled token ([V2.18])", 10, ("steerai.probes.scrolled",)),
+    Check(
+        "controller_for",
+        "the field-owned rule's read cost ([V2.15] Q4)",
+        10,
+        ("steerai.probes.controller_for",),
+    ),
+    Check(
+        "comparability",
+        "chunked against in-process ([V2.16])",
+        20,
+        ("steerai.probes.comparability", "--tasks", "g21,g22,g23"),
+    ),
 )
 
 
