@@ -22,7 +22,9 @@ from steerai.loop2.task import Budgets
 from steerai.world.effects import EffectClass, Token
 from tests.loop2.world_fakes import report
 
-BUDGETS = Budgets(max_actions=10, max_model_calls=5, max_cost_usd=0.5, max_wall_s=60.0)
+BUDGETS = Budgets(
+    max_actions=10, max_model_calls=5, max_tokens=10_000, max_cost_usd=0.5, max_wall_s=60.0
+)
 GO_RID, MENU_RID, GO_AGAIN_RID = (9, 3), (9, 6), (9, 33)
 CLICK = ActionKey(verb="click", params=(), runtime_id=GO_RID, identity=("Button", "go", ""))
 OTHER = ActionKey(verb="click", params=(), runtime_id=MENU_RID, identity=("Button", "options", ""))

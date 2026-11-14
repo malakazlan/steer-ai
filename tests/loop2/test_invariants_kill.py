@@ -5,15 +5,14 @@ the record in flight is in `test_invariants_record.py`."""
 
 from __future__ import annotations
 
-from steerai.loop2.loop import run_task
-from tests.loop2.world_fakes import GO, MENU, World, act, decision, pending, report, task
+from steerai.loop2.runner import run_task
+from tests.loop2.world_fakes import GO, MENU, World, act, decision, report, task
 
 CLICK_GO = act("click", target=GO.id)
 CLICK_MENU = act("click", target=MENU.id)
 WAIT = act("wait")
 
 
-@pending("[V2.17].5: a kill before the first action dispatches nothing")
 def test_a_kill_before_the_first_action_dispatches_nothing() -> None:
     world = World([decision(CLICK_GO, first=True)], interrupt_after=0, interruption="killed")
     outcome = run_task(task(), world.ports())
@@ -21,7 +20,6 @@ def test_a_kill_before_the_first_action_dispatches_nothing() -> None:
     assert world.dispatched == []
 
 
-@pending("[V2.17].5: a kill between actions stops the batch")
 def test_a_kill_between_actions_dispatches_nothing_after_it() -> None:
     world = World(
         [decision(CLICK_GO, CLICK_MENU, first=True)],
@@ -34,7 +32,6 @@ def test_a_kill_between_actions_dispatches_nothing_after_it() -> None:
     assert [d.action.target for d in world.dispatched] == [GO.id]
 
 
-@pending("[V2.17].5: a kill during a wait is honoured")
 def test_a_kill_during_a_wait_dispatches_nothing_after_it() -> None:
     world = World(
         [decision(WAIT, first=True), decision(CLICK_GO)],
@@ -46,7 +43,6 @@ def test_a_kill_during_a_wait_dispatches_nothing_after_it() -> None:
     assert [d.action.verb for d in world.dispatched] == ["wait"]
 
 
-@pending("[V2.17].5: a kill is not a policy block")
 def test_a_kill_never_ends_blocked() -> None:
     world = World([decision(CLICK_GO, first=True)], interrupt_after=1, interruption="killed")
     outcome = run_task(task(), world.ports())

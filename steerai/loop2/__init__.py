@@ -12,10 +12,12 @@ def ready() -> bool:
         batch,
         claims,
         consent,
+        form,
         guards,
         loop,
         query,
         record,
+        runner,
         verify,
     )
     from steerai.loop2._stub import PENDING  # noqa: PLC0415 - read after the modules registered

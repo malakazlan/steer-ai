@@ -52,7 +52,9 @@ def test_dataclasses_are_frozen() -> None:
 def test_task_assembles() -> None:
     grant = Grant(commit="send", content=None, object=None)
     env = Envelope(grants=(grant,), mode="bootstrap")
-    budgets = Budgets(max_actions=10, max_model_calls=5, max_cost_usd=1.0, max_wall_s=60.0)
+    budgets = Budgets(
+        max_actions=10, max_model_calls=5, max_tokens=10_000, max_cost_usd=1.0, max_wall_s=60.0
+    )
     turn = Turn(seq=1, subgoal="s1", verb="click", target=3, outcome="ok")
     task = Task(
         id="t1",

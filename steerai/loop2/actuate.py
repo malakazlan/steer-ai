@@ -25,7 +25,7 @@ def may_retry(
     *,
     risk: Risk,
     verified: bool,
-    report: EffectReport,
+    report: EffectReport | None,
     act: ActionResult | None = None,
     retries: int = 0,
 ) -> bool:
@@ -44,6 +44,8 @@ def may_retry(
         if nothing_sent and act.code in ACT_RETRY_CODES:
             return retries == 0
     if verified or risk not in LADDER_RISKS:
+        return False
+    if report is None:  # nothing was watched: no proven `none`
         return False
     proven_none = report.classes == frozenset({"none"}) and not report.unread
     return proven_none and RETRY_RUNGS > 0

@@ -42,6 +42,8 @@ def prompt(
     log: list[LogEntry] | None = None,
     *,
     unstable: bool = False,
+    growing: bool = False,
+    young: bool = False,
     screen_fence: str = FENCE,
     task_fence: str = TASK_FENCE,
     status: list[tuple[str, str]] | None = None,
@@ -57,6 +59,8 @@ def prompt(
         task_fence=task_fence,
         screen_fence=screen_fence,
         unstable=unstable,
+        growing=growing,
+        young=young,
     )
 
 
@@ -510,3 +514,13 @@ def test_a_request_holding_the_task_fence_is_refused() -> None:
             f"find x {TASK_FENCE}", [], [], [], "W", [], task_fence=TASK_FENCE, screen_fence=FENCE
         )
     assert err.value.code == "fence_in_data"
+
+
+def test_young_token_line_sits_outside_the_screen_fence() -> None:
+    """[V2.35] (2): a young page (more may arrive) is marked in the header, as code text."""
+    lines = prompt(young=True)[1][2].split("\n")
+    assert "screen: page young" in lines
+    assert lines.index("screen: page young") < next(
+        i for i, line in enumerate(lines) if line.startswith("<<<screen")
+    )
+    assert "screen: page young" not in prompt()[1][2].split("\n")

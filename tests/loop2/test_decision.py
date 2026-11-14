@@ -288,3 +288,11 @@ def test_exactly_five_subgoals_are_accepted() -> None:
     subs = [SubgoalDoc(id=f"s{i}", desc="d") for i in range(5)]
     d = Decision(subgoals=subs, actions=[action("click", target=1)])
     assert "too_many_subgoals" not in check(d, first_turn=True, known_subgoals={"s1": frozenset()})
+
+
+@pytest.mark.parametrize(
+    "first", [Decision(stop="cannot"), Decision(ask="may I?")], ids=["stop", "ask"]
+)
+def test_a_first_turn_stop_or_ask_needs_no_subgoals(first: Decision) -> None:
+    """V2 §5 intake ([V2.11]): a first Decision may be an ask or a stop with no subgoals."""
+    assert check(first, first_turn=True) == []

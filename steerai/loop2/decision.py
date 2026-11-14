@@ -125,6 +125,8 @@ def _action_tokens(
 
 def _type_tokens(action: ActionDoc, params: set[str]) -> list[str]:
     has_text = bool(action.text)
+    if action.text is not None and has_control(action.text):
+        return ["text_bad"]  # RT-38: free text is one line of printable text
     if has_text and action.param is not None:
         return ["type_text_and_param"]
     if not has_text and action.param is None:
@@ -176,7 +178,8 @@ def _subgoal_tokens(
 ) -> list[str]:
     subs = decision.subgoals
     if subs is None or (first_turn and not subs):
-        return ["subgoals_missing"] if first_turn else []
+        acts = bool(decision.actions or decision.claims)  # V2 §5: a first ask or stop needs none
+        return ["subgoals_missing"] if first_turn and acts else []
     if not first_turn:
         return ["subgoals_after_first"]
     tokens: list[str] = []
@@ -190,6 +193,14 @@ def _subgoal_tokens(
     return tokens
 
 
+def subgoal_tokens(
+    decision: Decision, *, goal: str, fences: frozenset[str] = frozenset()
+) -> list[str]:
+    """[V2.11] decision 1: the rejection tokens of a first decision's subgoals alone, so code can
+    take valid subgoals even when an action or a claim of the same decision is refused."""
+    return _subgoal_tokens(decision, goal, True, {}, fences)
+
+
 def _shape_tokens(decision: Decision) -> list[str]:
     tokens: list[str] = []
     if not (decision.claims or decision.actions) and decision.ask is None and decision.stop is None:
@@ -198,6 +209,8 @@ def _shape_tokens(decision: Decision) -> list[str]:
         tokens.append("ask_empty")
     if decision.actions and decision.ask is not None:
         tokens.append("ask_with_actions")
+    if decision.ask is not None and decision.stop is not None:
+        tokens.append("ask_with_stop")  # RT-43: one ending at a time
     if decision.actions and decision.stop is not None:
         tokens.append("stop_with_actions")
     if len(decision.actions) > MAX_ACTIONS:

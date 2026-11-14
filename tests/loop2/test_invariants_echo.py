@@ -6,9 +6,18 @@ from __future__ import annotations
 
 import pytest
 
-from steerai.loop2.loop import run_task
+from steerai.loop2.runner import run_task
 from steerai.world.effects import EffectReport
-from tests.loop2.world_fakes import FIELD, World, act, decision, observed, pending, report, task
+from tests.loop2.world_fakes import (
+    FIELD,
+    QUERY_PAGE,
+    World,
+    act,
+    decision,
+    observed,
+    report,
+    task,
+)
 
 TYPE = act("type", target=FIELD.id, param="text")
 ENTER = act("press", key="Enter")
@@ -20,13 +29,12 @@ ECHO: dict[str, list[EffectReport]] = {
 }
 
 
-@pending("[V2.15] Q8: nothing above R1 is dispatched on e1 to e3")
 @pytest.mark.parametrize("variant", sorted(ECHO))
 def test_an_echo_page_never_gets_an_action_above_r1(variant: str) -> None:
     world = World(
         [decision(TYPE, ENTER, first=True)],
         effects=list(ECHO[variant]),
-        screen=observed(focus=FIELD.runtime_id),
+        screen=observed(QUERY_PAGE, focus=FIELD.runtime_id),
     )
     run_task(task(), world.ports())
     assert [d.action.verb for d in world.dispatched] == ["type", "press"]
