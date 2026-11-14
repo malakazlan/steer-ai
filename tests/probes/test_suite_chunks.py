@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -94,7 +95,13 @@ class World:
     def read_free(self) -> int:
         return self.free.pop(0) if self.free else 8000
 
-    def run(self, chunks: list[list[Unit]], tmp: Path, cap_s: float = 60.0) -> int:
+    def run(
+        self,
+        chunks: list[list[Unit]],
+        tmp: Path,
+        cap_s: float = 60.0,
+        clock: Callable[[], float] | None = None,
+    ) -> int:
         return run_chunked(
             chunks,
             base_args=BASE,
@@ -106,6 +113,7 @@ class World:
             start=self.start,
             kill_tree=self.kill_tree,
             remove=self.remove,
+            **({} if clock is None else {"clock": clock}),
         )
 
 
@@ -181,3 +189,20 @@ def test_an_interrupt_kills_the_child_cleans_up_and_is_raised(tmp_path: Path) ->
     assert len(world.removed) == 1
     assert [r.get("aborted") for r in world.rows] == ["interrupted", "interrupted"]
     assert len(world.started) == 1
+
+
+def test_every_row_records_its_childs_wall_seconds_and_task_count(tmp_path: Path) -> None:
+    """[V2.27] C: the child's wall time, measured around the child, on each of its rows."""
+    ticks = iter([100.0, 142.54, 200.0, 207.0])
+    world = World()
+    world.run(CHUNKS, tmp_path, clock=lambda: next(ticks))
+    walls = [(r["task"], r["child_wall_s"], r["child_tasks"]) for r in world.rows]
+    assert walls == [("g1", 42.5, 2), ("g2", 42.5, 2), ("g3", 7.0, 1)]
+
+
+def test_an_aborted_childs_rows_carry_its_wall_seconds_too(tmp_path: Path) -> None:
+    ticks = iter([0.0, 600.26, 700.0, 701.0])
+    world = World(behaviour=["hang"])
+    world.run(CHUNKS, tmp_path, clock=lambda: next(ticks))
+    walls = [(r["task"], r.get("aborted"), r["child_wall_s"]) for r in world.rows]
+    assert walls == [("g1", None, 600.3), ("g2", "task_cap", 600.3), ("g3", None, 1.0)]
