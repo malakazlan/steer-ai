@@ -63,7 +63,7 @@ from steerai.loop2.loop import (
 )
 from steerai.loop2.query import SearchFacts, search_facts
 from steerai.loop2.task import GoalSpan, Subgoal, Task, known_params
-from steerai.loop2.verify import Readers, auto_proof, check_claim
+from steerai.loop2.verify import Readers, auto_proof, check_claim, holds_words
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.orchestrator.loop import REUSE_FRESHNESS_S
 from steerai.world.effects import EffectReport, Observed, ValueFact, top_document
@@ -414,23 +414,14 @@ class _Run:
         return self.first
 
     def _claim(self, claim: Claim, observed: Observed) -> None:
-        """One claim: a commit subgoal is never closed in step 3 (RT-06); a claim of another kind
-        than the subgoal's closing kind is `kind_mismatch` ([V2.39]); else checked by code. A
-        page claim closes when it proves every param; a value or state claim records the proof
-        of one param, and the subgoal closes when every param's proof reads true again now."""
+        """One claim: code's refusals first (`_refused`), then the claim check. A page claim
+        closes when it proves every param; a value or state claim records the proof of one param,
+        and the subgoal closes when every param's proof reads true again now."""
         subgoal = self._subgoal(claim.subgoal)
-        if subgoal.commit != "none":
-            self._reject(subgoal, ("standard_only",))
-            return
-        if CLAIM_CLOSES.get(claim.kind) != subgoal.closes:
-            self._reject(subgoal, ("kind_mismatch",))
-            return
         param = _proved_param(claim, subgoal)
-        if subgoal.closes != "page" and param is None:
-            self._reject(subgoal, ("param_missing",))
-            return
-        if subgoal.closes != "page" and self._reused(subgoal, param or "", claim.evidence[0]):
-            self._reject(subgoal, ("evidence_reused",))
+        refused = self._refused(claim, subgoal, param, observed)
+        if refused is not None:
+            self._reject(subgoal, (refused,))
             return
         rejected = check_claim(
             self._cited(claim, observed),
@@ -451,9 +442,38 @@ class _Run:
             return
         proofs = self.proofs.setdefault(subgoal.id, {})
         proofs[param or ""] = _Proof(claim.evidence[0], claim.kind, claim.wanted)
-        wanted = set(subgoal.params) or {""}  # a subgoal with no param needs one proof
-        if set(proofs) >= wanted and self._still(subgoal, observed):
+        if set(proofs) >= set(subgoal.params) and self._still(subgoal, observed):
             self._tick(subgoal, how="claim")
+
+    def _refused(
+        self, claim: Claim, subgoal: Subgoal, param: str | None, observed: Observed
+    ) -> str | None:
+        """Code's refusals before the claim check, first match wins: a commit subgoal is never
+        closed in step 3 (RT-06); the claim's kind must prove the subgoal's closing kind
+        ([V2.39]); a value or state claim must name one param, by an element that proves no
+        other param (#334 review), and a state claim's element must hold the param's words
+        ([V2.40] Q7)."""
+        if subgoal.commit != "none":
+            return "standard_only"
+        if CLAIM_CLOSES.get(claim.kind) != subgoal.closes:
+            return "kind_mismatch"
+        if subgoal.closes == "page":
+            return None
+        if param is None:
+            return "param_missing"
+        if self._reused(subgoal, param, claim.evidence[0]):
+            return "evidence_reused"
+        named = claim.kind != "state" or self._named(subgoal, param, claim.evidence[0], observed)
+        return None if named else "words_missing"
+
+    def _named(self, subgoal: Subgoal, param: str, handle: int, observed: Observed) -> bool:
+        """[V2.40] Q7: a state claim proves a param only when the cited element's name, or its
+        group name as v1 computes it, holds every word of the param. An unlisted handle is left
+        to the claim check (`id_not_listed`)."""
+        element = self.handles.element(handle, observed)
+        return element is None or holds_words(
+            observed.snapshot, element, subgoal.params[param].text
+        )
 
     def _reused(self, subgoal: Subgoal, param: str, handle: int) -> bool:
         """#334 review: one element proves at most one param of a subgoal; the model's param is
@@ -470,7 +490,10 @@ class _Run:
             if element is None:
                 return False
             if proof.kind == "state":
-                if proof.wanted is None or readers.read_state(element, proof.wanted) is not True:
+                words = holds_words(observed.snapshot, element, subgoal.params[param].text)
+                if not words or proof.wanted is None:
+                    return False
+                if readers.read_state(element, proof.wanted) is not True:
                     return False
                 continue
             want = readers.fact_of(subgoal.params[param].text)
@@ -919,13 +942,11 @@ def _folded(text: str) -> str:
 
 def _proved_param(claim: Claim, subgoal: Subgoal) -> str | None:
     """[V2.39] (2): which param a value or state claim proves. The claim's param is only a hint
-    for that; with none, a subgoal with one param (or none) takes it."""
+    for that; with none, a subgoal with exactly one param takes it."""
     if claim.param is not None:
         return claim.param if claim.param in subgoal.params else None
     names = list(subgoal.params)
-    if len(names) <= 1:
-        return names[0] if names else ""
-    return None
+    return names[0] if len(names) == 1 else None
 
 
 def _complete(observed: Observed) -> bool:

@@ -433,7 +433,9 @@ def test_decide_returns_the_ask_sanitised() -> None:
 def test_decide_rejects_a_subgoal_desc_holding_the_task_fence() -> None:
     raw = json.dumps(
         {
-            "subgoals": [{"id": "s1", "desc": f"x {TASK_FENCE}", "closes": "state"}],
+            "subgoals": [
+                {"id": "s1", "desc": f"x {TASK_FENCE}", "params": {"t": "hello"}, "closes": "state"}
+            ],
             "actions": [{"verb": "click", "target": 1, "subgoal": "s1"}],
         }
     )
@@ -477,7 +479,7 @@ def test_a_reply_at_the_byte_cap_is_parsed_and_one_byte_over_is_not_json() -> No
 def _decide_with_desc(desc: str) -> None:
     raw = json.dumps(
         {
-            "subgoals": [{"id": "s1", "desc": desc, "closes": "state"}],
+            "subgoals": [{"id": "s1", "desc": desc, "params": {"t": "hello"}, "closes": "state"}],
             "actions": [{"verb": "click", "target": 1, "subgoal": "s1"}],
         }
     )

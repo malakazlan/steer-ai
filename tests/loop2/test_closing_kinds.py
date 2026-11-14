@@ -18,6 +18,7 @@ from steerai.loop2.runner import run_task
 from steerai.loop2.task import GoalSpan, Subgoal
 from steerai.loop2.verify import auto_proof, navigated_tokens
 from steerai.world.effects import ValueFact
+from steerai.world.elements import Element
 from tests.loop2.test_navigated import TYPED, before, page
 from tests.loop2.world_fakes import (
     FIELD,
@@ -192,29 +193,18 @@ def test_a_two_field_fill_never_closes_when_a_proven_field_is_gone() -> None:
     assert outcome.status != "done"
 
 
-def _tick_world(name_later: bool) -> World:
-    spans = {"name": "Ada", "city": "Rome"}
-    subs = [SubgoalDoc(id="s1", desc="tick", params=spans, closes="state")]
-    on: Literal["on"] = "on"
-    world = World(
-        [
-            Decision(
-                subgoals=subs,
-                claims=[
-                    Claim(subgoal="s1", kind="state", evidence=[NAME.id], param="name", wanted=on)
-                ],
-            ),
-            Decision(
-                claims=[
-                    Claim(subgoal="s1", kind="state", evidence=[CITY.id], param="city", wanted=on)
-                ]
-            ),
-        ],
-        screen=observed([*PAGE, NAME, CITY]),
+ADA = element(46, "CheckBox", "Ada", (9, 46), 1)
+ROME = element(47, "CheckBox", "Rome", (9, 47), 1)
+
+
+def _tick_world(name_later: bool | None) -> World:
+    """Two state params, each named by its own element; the first one's state may turn back
+    (None: it reads unread at closing)."""
+    ada, rome = ADA, ROME
+    world = _ticks(
+        [ada, rome], [(ada.id, "name"), (rome.id, "city")], {"name": "Ada", "city": "Rome"}
     )
-    world.states[(NAME.runtime_id, on)] = True
-    world.states[(CITY.runtime_id, on)] = True
-    world.later_states = {(NAME.runtime_id, on): name_later}
+    world.later_states = {(ada.runtime_id, "on"): name_later}
     return world
 
 
@@ -279,25 +269,105 @@ def test_a_value_subgoal_without_a_param_is_refused_into_the_repair_turn() -> No
     )
 
 
-def test_one_element_never_proves_two_state_params() -> None:
-    """The principal's repro: params red and shoes, only the "Red" CheckBox on, cited for a and
-    then for b. One handle proves at most one param."""
-    box = element(42, "CheckBox", "Red", (9, 42), 1)
+def _ticks(boxes: list[Element], cites: list[tuple[int, str]], spans: dict[str, str]) -> World:
+    """A state subgoal over `spans`; each turn cites one (element id, param) as on."""
     on: Literal["on"] = "on"
+    subs = [SubgoalDoc(id="s1", desc="tick", params=spans, closes="state")]
+    claims = [
+        Claim(subgoal="s1", kind="state", evidence=[eid], param=param, wanted=on)
+        for eid, param in cites
+    ]
+    turns = [Decision(subgoals=subs, claims=claims[:1])]
+    turns += [Decision(claims=[claim]) for claim in claims[1:]]
+    world = World(turns, screen=observed([*PAGE, *boxes]))
+    for box in boxes:
+        world.states[(box.runtime_id, on)] = True
+    return world
+
+
+def test_one_element_never_proves_two_state_params() -> None:
+    """The principal's repro, with an element whose name holds both params' words: cited for a
+    and then for b, it proves only one. One handle proves at most one param."""
+    box = element(42, "CheckBox", "Red shoes", (9, 42), 1)
+    world = _ticks([box], [(box.id, "a"), (box.id, "b")], {"a": "red", "b": "shoes"})
+    outcome = run_task(task(), world.ports())
+    assert outcome.status != "done"
+    assert "claim:s1:evidence_reused" in world.views[-1].history
+
+
+def test_each_state_param_proven_by_its_own_element_closes() -> None:
+    red = element(42, "CheckBox", "Red", (9, 42), 1)
+    shoes = element(43, "CheckBox", "Shoes", (9, 43), 1)
+    world = _ticks([red, shoes], [(red.id, "a"), (shoes.id, "b")], {"a": "red", "b": "shoes"})
+    assert run_task(task(), world.ports()).status == "done"
+
+
+def test_a_state_claim_on_an_element_without_the_words_is_words_missing() -> None:
+    """[V2.40] Q7: the principal's repro as it was: only "Red" is on, cited for shoes."""
+    box = element(42, "CheckBox", "Red", (9, 42), 1)
+    world = _ticks([box], [(box.id, "b")], {"a": "red", "b": "shoes"})
+    outcome = run_task(task(), world.ports())
+    assert outcome.status != "done"
+    assert "claim:s1:words_missing" in world.views[-1].history
+
+
+def test_a_state_claim_proves_through_its_group_name() -> None:
+    """[V2.40] Q7: the words may be in the group name as v1 computes it (a named Group parent)."""
+    group = element(44, "Group", "Red shoes", (9, 44), 1)
+    yes = element(45, "RadioButton", "Yes", (9, 45), group.id)
+    world = _ticks([group, yes], [(yes.id, "a")], {"a": "red shoes"})
+    assert run_task(task(), world.ports()).status == "done"
+
+
+def test_words_split_over_name_and_group_name_are_words_missing() -> None:
+    """Every word in one name, as content: "red" in the group and "shoes" on the element is not
+    enough."""
+    group = element(44, "Group", "Red", (9, 44), 1)
+    box = element(45, "CheckBox", "Shoes", (9, 45), group.id)
+    world = _ticks([group, box], [(box.id, "a")], {"a": "red shoes"})
+    assert run_task(task(), world.ports()).status != "done"
+
+
+def _renamed_world(*, renamed: bool) -> World:
+    """Red proven, then a click (the page may rename it), then Shoes claimed."""
+    on: Literal["on"] = "on"
+    red = element(42, "CheckBox", "Red", (9, 42), 1)
+    shoes = element(43, "CheckBox", "Shoes", (9, 43), 1)
     subs = [SubgoalDoc(id="s1", desc="tick", params={"a": "red", "b": "shoes"}, closes="state")]
+    after = [dataclasses.replace(red, name="Blue") if renamed else red, shoes]
     world = World(
         [
             Decision(
                 subgoals=subs,
-                claims=[Claim(subgoal="s1", kind="state", evidence=[box.id], param="a", wanted=on)],
+                claims=[Claim(subgoal="s1", kind="state", evidence=[red.id], param="a", wanted=on)],
             ),
+            Decision(actions=[act("click", target=MENU.id)]),
             Decision(
-                claims=[Claim(subgoal="s1", kind="state", evidence=[box.id], param="b", wanted=on)]
+                claims=[
+                    Claim(subgoal="s1", kind="state", evidence=[shoes.id], param="b", wanted=on)
+                ]
             ),
         ],
-        screen=observed([*PAGE, box]),
+        effects=[report("content_changed")],
+        screen=observed([*PAGE, red, shoes]),
+        later=observed([*PAGE, *after]),
     )
-    world.states[(box.runtime_id, on)] = True
-    outcome = run_task(task(), world.ports())
-    assert outcome.status != "done"
-    assert "claim:s1:evidence_reused" in world.views[-1].history
+    world.states[(red.runtime_id, on)] = True
+    world.states[(shoes.runtime_id, on)] = True
+    return world
+
+
+def test_two_state_params_close_when_both_still_hold_their_words() -> None:
+    assert run_task(task(), _renamed_world(renamed=False).ports()).status == "done"
+
+
+def test_a_proven_element_renamed_away_from_its_words_does_not_close() -> None:
+    """[V2.40] Q7, all re-read at closing: the words are checked again with the state."""
+    assert run_task(task(), _renamed_world(renamed=True).ports()).status != "done"
+
+
+def test_a_state_subgoal_without_a_param_is_refused_into_the_repair_turn() -> None:
+    bare = Decision(subgoals=[SubgoalDoc(id="s1", desc="tick", closes="state")], stop="cannot")
+    assert "state_without_param" in validate(
+        bare, listed_ids=frozenset(), goal=GOAL, first_turn=True
+    )

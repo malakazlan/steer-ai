@@ -254,7 +254,7 @@ def test_p2_pending_text_belongs_to_the_field_whatever_subgoal_typed_it() -> Non
     """A click beside a field typed under s1 is a submit even when s2 clicks."""
     two = [
         SubgoalDoc(id="s1", desc="type", params={"text": "red shoes"}, closes="page"),
-        SubgoalDoc(id="s2", desc="go", closes="state"),
+        SubgoalDoc(id="s2", desc="go", params={"text": "shop"}, closes="state"),
     ]
     plain = observed(list(QUERY_PAGE), focus=FIELD.runtime_id, searchbox=False)
     world = World(

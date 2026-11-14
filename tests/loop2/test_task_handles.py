@@ -129,11 +129,14 @@ def test_claim_evidence_is_read_through_the_handles(monkeypatch: pytest.MonkeyPa
         return ("value_mismatch",)
 
     monkeypatch.setattr(runner, "check_claim", spy)
+    monkeypatch.setattr(runner, "holds_words", lambda *_a: True)  # names are not this test's point
     claim = Claim(subgoal="s1", kind="state", evidence=[GO.id], wanted="on")
     world = World(
         [
             Decision(
-                subgoals=[SubgoalDoc(id="s1", desc="tick", closes="state")],
+                subgoals=[
+                    SubgoalDoc(id="s1", desc="tick", params={"text": "shop"}, closes="state")
+                ],
                 actions=[act("click", target=MENU.id)],
             ),
             decision(claims=[claim]),
