@@ -27,7 +27,7 @@ from steerai.loop2._stub import stub
 from steerai.loop2.actuate import may_retry, press_allowed
 from steerai.loop2.batch import batch_continues
 from steerai.loop2.controller import ControllerError
-from steerai.loop2.decision import ActionDoc, Decision, subgoal_tokens, validate
+from steerai.loop2.decision import ActionDoc, Claim, Decision, subgoal_tokens, validate
 from steerai.loop2.guards import (
     ActionKey,
     StrikeReason,
@@ -52,7 +52,6 @@ from steerai.loop2.loop import (
     TokenUsage,
     TurnView,
     action_risk,
-    resolve,
     type_refusal,
 )
 from steerai.loop2.query import SearchFacts, search_facts
@@ -127,6 +126,39 @@ class _Turn:
     """The actions this turn dispatched."""
 
 
+class _Handles:
+    """[V2.38] RT-17: task-scoped listing handles. Each is bound to one RuntimeId for the whole
+    task and never reassigned; a new RuntimeId (a re-rendered element) gets a new one. A handle
+    takes the element's snapshot ordinal when that number was never used, else the next free
+    number, so the numbers stay small. An element with no RuntimeId gets none."""
+
+    def __init__(self) -> None:
+        self.by_rid: dict[tuple[int, ...], int] = {}
+        self.by_handle: dict[int, tuple[int, ...]] = {}
+
+    def bind(self, observed: Observed) -> dict[int, int]:
+        """Each element's handle, by its snapshot id, binding the RuntimeIds seen first now."""
+        out: dict[int, int] = {}
+        for element in observed.snapshot.elements:
+            rid = element.runtime_id
+            if not rid:
+                continue
+            if rid not in self.by_rid:
+                handle = element.id
+                if handle in self.by_handle:
+                    handle = max(self.by_handle) + 1
+                self.by_rid[rid] = handle
+                self.by_handle[handle] = rid
+            out[element.id] = self.by_rid[rid]
+        return out
+
+    def element(self, handle: int, observed: Observed) -> Element | None:
+        rid = self.by_handle.get(handle)
+        if rid is None:
+            return None
+        return next((e for e in observed.snapshot.elements if e.runtime_id == rid), None)
+
+
 @dataclass(frozen=True)
 class _Acted:
     """The last element acted on, for a press (§8.1: re-checked by role and name, P4)."""
@@ -181,6 +213,7 @@ class _Run:
         self.turn = _Turn()
         self.read_costs: list[ReadCost] = []
         self.reasked: set[tuple[int, ...]] = set()
+        self.handles = _Handles()
         """[V2.38] RT-12: the top Documents already re-asked on (once per Document)."""
 
     # ---- the outcome ----------------------------------------------------------------------
@@ -264,14 +297,19 @@ class _Run:
         return observed
 
     def _decide(self, observed: Observed) -> Decision:
-        view = TurnView(observed=observed, history=tuple(self.history), first_turn=not self.frozen)
+        view = TurnView(
+            observed=observed,
+            history=tuple(self.history),
+            first_turn=not self.frozen,
+            handles=self.handles.bind(observed),
+        )
         decided = self.ports.decide(view)
         self.model_calls += 1
         self.tokens += _tokens(decided.usage)
         return decided.decision
 
     def _turn(self, decision: Decision, observed: Observed) -> Observed:
-        listed = frozenset(e.id for e in observed.snapshot.elements)
+        listed = frozenset(self.handles.bind(observed).values())
         first = not self.frozen
         goal = self.task.goal
         if first and decision.subgoals and not subgoal_tokens(decision, goal=goal):
@@ -289,7 +327,8 @@ class _Run:
             return observed
         for claim in decision.claims:
             subgoal = self._subgoal(claim.subgoal)
-            rejected = check_claim(claim, subgoal, self._baseline(subgoal.id), observed)
+            cited = self._cited(claim, observed)
+            rejected = check_claim(cited, subgoal, self._baseline(subgoal.id), observed)
             self.history.extend(f"claim:{claim.subgoal}:{t}" for t in rejected)
             if rejected:
                 self.turn.claim_rejected = True
@@ -305,6 +344,15 @@ class _Run:
             self.turn.neutral = True
             return held
         return self._batch(decision.actions, observed)
+
+    def _cited(self, claim: Claim, observed: Observed) -> Claim:
+        """The claim with its handles read as this snapshot's elements; a handle with no element
+        here reads as an id no snapshot holds (`id_not_listed`)."""
+        ids = []
+        for handle in claim.evidence:
+            element = self.handles.element(handle, observed)
+            ids.append(-1 if element is None else element.id)
+        return claim.model_copy(update={"evidence": ids})
 
     def _intake(self, decision: Decision) -> None:
         """[V2.11] decision 1: the first valid Decision fills the subgoals once; code freezes
@@ -379,7 +427,7 @@ class _Run:
             return False  # a state already as wanted sent nothing, and continues
         if act.action.verb in READ_BACK_VERBS and act.read_back is not True:
             return False
-        same = nxt.target is None or _resolved(nxt.target, listed, now) is not None
+        same = nxt.target is None or self._listed(nxt.target, listed, now) is not None
         return batch_continues(report, verified_type=act.read_back is True, same_target=same)
 
     def _one(
@@ -436,10 +484,21 @@ class _Run:
             return self._press_target(observed)
         if action.target is None:  # validate refuses this shape first
             raise AssertionError("target_missing")
-        element = _resolved(action.target, listed, observed)
+        element = self._listed(action.target, listed, observed)
         if element is None:
             self._refuse("model", "id_not_listed")
         return element
+
+    def _listed(self, handle: int, listed: Observed, now: Observed) -> Element | None:
+        """§8.1, [V2.38] RT-17: the element the handle names, only when its RuntimeId is in the
+        listing the decision saw and still in `now` with the same role and name."""
+        if listed.snapshot.hwnd != now.snapshot.hwnd:
+            return None  # another window: nothing listed there (RT-13)
+        then = self.handles.element(handle, listed)
+        element = self.handles.element(handle, now)
+        if then is None or element is None:
+            return None
+        return element if (element.role, element.name) == (then.role, then.name) else None
 
     def _press_target(self, observed: Observed) -> Element | None:
         acted = self.last_acted
@@ -678,15 +737,6 @@ def _tokens(usage: TokenUsage | None) -> float:
     if any(isinstance(c, bool) or not isinstance(c, int) or c < 0 for c in counts):
         return math.nan
     return float(sum(counts))
-
-
-def _resolved(target: int, listed: Observed, now: Observed) -> Element | None:
-    """§8.1 through `resolve`; another window or an older read is no element (RT-13), never an
-    error out of the loop."""
-    try:
-        return resolve(target, listed.snapshot, now.snapshot)
-    except ValueError:
-        return None
 
 
 def _complete(observed: Observed) -> bool:

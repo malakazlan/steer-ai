@@ -99,8 +99,11 @@ class TurnView:
 
     observed: Observed
     history: tuple[str, ...]
-    """Code-written tokens only (§8.6): never screen text or model text."""
+    """Code-written tokens only (§8.6): never screen text, model text or ids ([V2.38] RT-17)."""
     first_turn: bool
+    handles: Mapping[int, int]
+    """[V2.38] RT-17: each listed element's task handle, by its snapshot id. The listing shows
+    these, and the model names elements by them; an element with no RuntimeId has none."""
 
 
 READ_BACK_VERBS = frozenset({"type", "choose", "check", "uncheck", "select", "expand", "collapse"})
