@@ -318,3 +318,90 @@ def test_the_echo_guard_matches_words_case_folded_and_normalised(
     world.later_after_acts = 2
     run_task(dataclasses.replace(task(), goal=goal), world.ports())
     assert echoes.get("s2") is True
+
+
+# ---- the tester's #331 kill tests ----------------------------------------------------------------
+
+
+def test_the_verifier_exempts_the_acted_fields_own_list() -> None:
+    child = element(94, "ListItem", "red shoes", (9, 94), FIELD.id)
+    assert auto_proof(SUB, before(), page([child]), typed=TYPED, acted=FIELD.runtime_id) is None
+
+
+def test_an_option_is_evidence_only_when_steer_did_not_type_the_words() -> None:
+    option = dataclasses.replace(RESULT, caps=("selectable",))
+    after = page([option])
+    proof = auto_proof(SUB, before(), after, typed=TYPED, acted=FIELD.runtime_id, echo=False)
+    assert proof == "results_with_url"
+    assert auto_proof(SUB, before(), after, typed=TYPED, acted=FIELD.runtime_id, echo=True) is None
+
+
+def _moved(extra: list[Element]) -> Observed:
+    shown = observed([*QUERY_PAGE, *extra])
+    return dataclasses.replace(shown, url=URL + "?q=x", document_url=URL + "?q=x")
+
+
+def _spied(monkeypatch: pytest.MonkeyPatch, key: str) -> dict[str, object]:
+    """Replace the auto proof with a spy recording `key` of its keyword arguments per subgoal."""
+    seen: dict[str, object] = {}
+
+    def spy(subgoal: object, *_a: object, **k: object) -> None:
+        seen[getattr(subgoal, "id", "?")] = k.get(key)
+
+    monkeypatch.setattr(runner, "auto_proof", spy)
+    return seen
+
+
+def test_the_acted_field_is_the_last_one_typed_under_the_subgoal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    other = element(12, "Edit", "Other", (9, 12), 1)
+    acted = _spied(monkeypatch, "acted")
+    first = Decision(subgoals=_subgoals(), actions=[act("type", target=FIELD.id, param="text")])
+    second = Decision(actions=[act("type", target=other.id, param="text")])
+    world = World(
+        [first, second],
+        screen=observed([*QUERY_PAGE, other]),
+        later=_moved([other]),
+        later_after_acts=2,
+    )
+    run_task(task(), world.ports())
+    assert acted["s1"] == other.runtime_id
+
+
+def test_a_subgoal_with_nothing_typed_under_it_takes_the_tasks_last_typed_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    acted = _spied(monkeypatch, "acted")
+    first = Decision(subgoals=_subgoals(), actions=[act("type", target=FIELD.id, param="text")])
+    second = Decision(actions=[act("click", target=GO.id, subgoal="s2")])
+    world = World(
+        [first, second], screen=observed(QUERY_PAGE), later=_moved([]), later_after_acts=2
+    )
+    run_task(task(), world.ports())
+    assert acted["s2"] == FIELD.runtime_id
+
+
+def test_the_echo_guard_folds_the_subgoals_words_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """s1 typed "red shoes"; s2's words are "Red Shoes": the option rule applies to s2."""
+    echoes = _spied(monkeypatch, "echo")
+    subs = [
+        SubgoalDoc(id="s1", desc="a", params={"text": "red shoes"}),
+        SubgoalDoc(id="s2", desc="b", params={"text": "Red Shoes"}),
+    ]
+    first = Decision(subgoals=subs, actions=[act("type", target=FIELD.id, param="text")])
+    second = Decision(actions=[act("click", target=MENU.id, subgoal="s2")])
+    world = World(
+        [first, second], screen=observed(QUERY_PAGE), later=_moved([]), later_after_acts=2
+    )
+    run_task(dataclasses.replace(task(), goal="search red shoes then Red Shoes"), world.ports())
+    assert echoes["s2"] is True
+
+
+def test_generated_text_counts_as_an_echo(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Steer keeps no words for generated text, so any of it may echo the subgoal's."""
+    echoes = _spied(monkeypatch, "echo")
+    first = Decision(subgoals=_subgoals(), actions=[act("type", target=FIELD.id, text="anything")])
+    world = World([first], screen=observed(QUERY_PAGE), later=_moved([]), later_after_acts=1)
+    run_task(task(), world.ports())
+    assert echoes["s1"] is True
