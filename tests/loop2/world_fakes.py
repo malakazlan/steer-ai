@@ -21,6 +21,7 @@ from steerai.world.effects import (
     Observed,
     Token,
     Unread,
+    ValueFact,
 )
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
@@ -75,6 +76,13 @@ BAR = element(9, "Edit", "Address and search bar", (9, 9), None)
 RESULT = element(10, "ListItem", "Red shoes", (9, 10), 1)
 
 PAGE = [DOC, FIELD, GO, SEND, PASSWORD, MENU, TAB, BAR]
+QUERY_PAGE = [DOC, FIELD, GO, MENU, TAB, BAR]
+"""[V2.30] the search page without a password field or a Send button: FIELD sits directly under
+the Document, so its form is the whole page, and on `PAGE` the password and Send make its Enter
+a commit (R2). The query-class cases (an R1 Enter or search click) run on this page."""
+EMPTY = ValueFact(filled=False, digest="empty")
+TYPED_VALUE = ValueFact(filled=True, digest="typed")
+"""What `World.read_value` returns: a field is empty until a type into it reads back True."""
 
 
 def snapshot(elements: Sequence[Element], *, stable: bool = True) -> Snapshot:
@@ -209,6 +217,10 @@ class World:
     """How many actions had been dispatched when each controller call was made."""
     dispatched: list[Dispatch] = field(default_factory=list)
     write_aheads: list[Dispatch] = field(default_factory=list)
+    values: dict[tuple[int, ...], ValueFact | None] = field(default_factory=dict)
+    """Each field's value fact as `read_value` returns it (a type that reads back True sets it)."""
+    reads: list[tuple[int, ...]] = field(default_factory=list)
+    """The RuntimeIds `read_value` was called on, in order."""
 
     def _decide(self, view: TurnView) -> Decision:
         self.events.append("decide")
@@ -233,8 +245,12 @@ class World:
         verb = sent.action.verb
         reads = verb in READ_BACK_VERBS
         read_back = (self.read_backs.pop(0) if self.read_backs else True) if reads else None
+        if verb == "type" and read_back:
+            self.values[sent.runtime_id] = TYPED_VALUE
         if self.results:
             return self.results.pop(0)
+        if reads and read_back is None:  # an unread read-back: sent, never verified
+            return act_result(verb, Delivery.DELIVERED_UNVERIFIED)
         if read_back is None or read_back:
             return act_result(verb, Delivery.DELIVERED_VERIFIED, read_back=read_back)
         return act_result(verb, Delivery.DELIVERED_UNVERIFIED, read_back=read_back)
@@ -248,6 +264,11 @@ class World:
         return Watched(
             report=effect, after=after, first_change_ms=None, settled_ms=None, timed_out=False
         )
+
+    def _read_value(self, element: Element) -> ValueFact | None:
+        self.events.append("read")
+        self.reads.append(element.runtime_id)
+        return self.values.get(element.runtime_id, EMPTY)
 
     def _write_ahead(self, sent: Dispatch) -> str:
         self.write_aheads.append(sent)
@@ -267,4 +288,5 @@ class World:
             write_ahead=self._write_ahead,
             interrupted=self._interrupted,
             clock=lambda: self.now,
+            read_value=self._read_value,
         )

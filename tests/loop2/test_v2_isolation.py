@@ -83,8 +83,9 @@ def test_an_unknown_loop_is_a_usage_error(capsys: pytest.CaptureFixture[str]) ->
 
 
 def test_loop2_is_not_ready_while_any_stub_is_left() -> None:
+    """[V2.29] Q3: `--loop v2` refuses until PR A, B and C are in; PR B's verifier is a stub."""
     assert ready() is False
-    assert "steerai.loop2.loop.run_task" in PENDING
+    assert {"steerai.loop2.verify.check_claim", "steerai.loop2.verify.auto_proof"} <= PENDING
 
 
 def test_the_step_4_interfaces_keep_loop2_not_ready() -> None:

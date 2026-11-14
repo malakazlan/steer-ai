@@ -1,9 +1,6 @@
-"""The v2 loop for step 3 (V2 §5), behind `--loop v2`: ports, the resolver, the action risk and
-`run_task`.
-
-Interface stub for step 3c. The §8 invariant tests in `tests/loop2/test_invariants_loop.py` are
-written first against these shapes and fail with `NotImplementedError` until 3c implements them.
-Every outside effect goes through `Ports`, so the tests drive the loop with fakes.
+"""The v2 loop's shapes for step 3 (V2 §5), behind `--loop v2`: ports, the resolver and the
+action risk. `run_task` itself is in `steerai.loop2.runner`. Every outside effect goes through
+`Ports`, so the tests drive the loop with fakes.
 
 [V2.11]: the Task is built before the first call (goal, budgets, no subgoals); the first valid
 Decision fills the subgoals once and code freezes them. When nothing was dispatched the loop
@@ -28,7 +25,6 @@ from typing import Final, Literal
 
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.errors import ErrorCode, SteerError
-from steerai.loop2._stub import stub
 from steerai.loop2.decision import ActionDoc, Decision
 from steerai.loop2.form import (
     ACTING_ROLES,
@@ -39,7 +35,7 @@ from steerai.loop2.form import (
 )
 from steerai.loop2.guards import StrikeReason
 from steerai.loop2.query import SearchFacts, classify, search_landmark_of
-from steerai.loop2.task import Commit, Task
+from steerai.loop2.task import Commit
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.orchestrator.gate import DenyFacts, deny_tier_of, group_name
 from steerai.verify.predicates import FIELD_ROLES
@@ -141,6 +137,10 @@ class Ports:
     interrupted: Callable[[], str | None]
     """A takeover, the secure desktop or a lock, as a token; None to go on."""
     clock: Callable[[], float]
+    read_value: Callable[[Element], ValueFact | None]
+    """[V2.28] item 3, [V2.29] Q2: one element's value fact, read from the element itself through
+    its live handle with the role and name re-check; None when unread. Never called on a field
+    whose secure flag is set or unread."""
 
 
 @dataclass(frozen=True)
@@ -190,7 +190,8 @@ class PendingText:
     typed and the field's live value now; the text is pending while `now` still holds it."""
 
     field: tuple[int, ...]
-    typed: ValueFact
+    typed: ValueFact | None
+    """What the field read right after the verified type; None when that read was unread."""
     now: ValueFact | None
     """The live read of the field now; None when it is gone or unread."""
     search: SearchFacts
@@ -393,7 +394,7 @@ def _states(observed: Observed, pending: Sequence[PendingText]) -> list[tuple[Pe
     for held in pending:
         if held.field not in shown:
             continue
-        if held.now is None:
+        if held.now is None or held.typed is None:
             states.append((held, "unread"))
         elif held.now.filled:
             same = held.now.digest == held.typed.digest
@@ -512,12 +513,3 @@ def _parent_kind(observed: Observed, field: tuple[int, ...]) -> ParentKind:
     if nearest is not None and nearest.kind == "main" and nearest.runtime_id == parent.runtime_id:
         return "main"
     return "narrower"
-
-
-@stub
-def run_task(task: Task, ports: Ports) -> TaskOutcome:
-    """Run `task` to an outcome. Between batch actions the watch's after snapshot is reused only
-    when it is a full-tier read, stable and within v1's R0/R1 freshness limit
-    (`REUSE_FRESHNESS_S`, its age `clock() - snapshot.taken_at`); otherwise the loop
-    re-observes ([V2.11] decision 6)."""
-    raise NotImplementedError("3c: the v2 loop")

@@ -176,7 +176,8 @@ def _subgoal_tokens(
 ) -> list[str]:
     subs = decision.subgoals
     if subs is None or (first_turn and not subs):
-        return ["subgoals_missing"] if first_turn else []
+        acts = bool(decision.actions or decision.claims)  # V2 §5: a first ask or stop needs none
+        return ["subgoals_missing"] if first_turn and acts else []
     if not first_turn:
         return ["subgoals_after_first"]
     tokens: list[str] = []
@@ -188,6 +189,14 @@ def _subgoal_tokens(
         known.setdefault(sub.id, set()).update(sub.params)
         tokens.extend(_subgoal_doc_tokens(sub, goal, fences))
     return tokens
+
+
+def subgoal_tokens(
+    decision: Decision, *, goal: str, fences: frozenset[str] = frozenset()
+) -> list[str]:
+    """[V2.11] decision 1: the rejection tokens of a first decision's subgoals alone, so code can
+    take valid subgoals even when an action or a claim of the same decision is refused."""
+    return _subgoal_tokens(decision, goal, True, {}, fences)
 
 
 def _shape_tokens(decision: Decision) -> list[str]:
