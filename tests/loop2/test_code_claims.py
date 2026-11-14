@@ -29,7 +29,10 @@ BOX = element(30, "CheckBox", "Gift wrap", (9, 30), 1)
 SHOWN = observed([*PAGE, BOX])
 START = GOAL.index("red shoes")
 SUB = Subgoal(
-    id="s1", desc="search", params={"text": GoalSpan.of(GOAL, START, START + len("red shoes"))}
+    id="s1",
+    desc="search",
+    closes="page",
+    params={"text": GoalSpan.of(GOAL, START, START + len("red shoes"))},
 )
 TYPED = ValueFact(filled=True, digest="d:red shoes")
 

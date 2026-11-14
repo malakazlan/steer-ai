@@ -13,6 +13,8 @@ from typing import Literal
 Commit = Literal["none", "send", "submit", "delete", "pay"]
 Status = Literal["open", "done", "blocked"]
 Mode = Literal["bootstrap", "envelope"]
+Closes = Literal["value", "state", "page"]
+"""[V2.39]: the kind of fact that closes a subgoal."""
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,8 @@ class Subgoal:
     id: str
     desc: str
     params: Mapping[str, GoalSpan]
+    closes: Closes
+    """[V2.39] the kind of fact that closes it, frozen at intake."""
     commit: Commit = "none"
     status: Status = "open"
     baseline_seq: int | None = None

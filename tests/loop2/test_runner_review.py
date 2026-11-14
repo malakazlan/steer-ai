@@ -97,7 +97,9 @@ def test_rt04_rt05_the_staleness_rule_and_the_enter_table_keep_loop2_not_ready()
 def test_rt06_a_commit_subgoal_is_never_ticked_in_step_3(monkeypatch: pytest.MonkeyPatch) -> None:
     """§8.8: a standard proof never closes a commit subgoal; in step 3 nothing does."""
     monkeypatch.setattr(runner, "check_claim", lambda *_a, **_k: ())
-    send = [SubgoalDoc(id="s1", desc="send", params={"text": "red shoes"}, commit="send")]
+    send = [
+        SubgoalDoc(id="s1", desc="send", params={"text": "red shoes"}, commit="send", closes="page")
+    ]
     claim = Claim(subgoal="s1", kind="state", evidence=[GO.id], wanted="on")
     world = World([Decision(subgoals=send, claims=[claim])])
     outcome = run_task(task(), world.ports())
@@ -251,8 +253,8 @@ def test_p5_world_then_policy_then_stop_ends_blocked() -> None:
 def test_p2_pending_text_belongs_to_the_field_whatever_subgoal_typed_it() -> None:
     """A click beside a field typed under s1 is a submit even when s2 clicks."""
     two = [
-        SubgoalDoc(id="s1", desc="type", params={"text": "red shoes"}),
-        SubgoalDoc(id="s2", desc="go"),
+        SubgoalDoc(id="s1", desc="type", params={"text": "red shoes"}, closes="page"),
+        SubgoalDoc(id="s2", desc="go", params={"text": "shop"}, closes="state"),
     ]
     plain = observed(list(QUERY_PAGE), focus=FIELD.runtime_id, searchbox=False)
     world = World(
@@ -391,7 +393,9 @@ def test_rt39_a_subgoal_with_no_action_yet_is_judged_from_the_first_observation(
     monkeypatch.setattr(runner, "check_claim", spy)
     claim = Claim(subgoal="s1", kind="value", evidence=[FIELD.id], param="text")
     first = observed(QUERY_PAGE)
-    world = World([decision(act("wait"), first=True), decision(claims=[claim])], screen=first)
+    fill = [SubgoalDoc(id="s1", desc="fill", params={"text": "red shoes"}, closes="value")]
+    opening = Decision(subgoals=fill, actions=[act("wait")])  # [V2.39]: a value subgoal
+    world = World([opening, decision(claims=[claim])], screen=first)
     world.later = observed([*QUERY_PAGE, PAGE[3]])
     run_task(task(), world.ports())
     assert seen

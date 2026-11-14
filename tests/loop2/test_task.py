@@ -41,7 +41,7 @@ def test_goal_span_check_accepts_match() -> None:
 
 
 def test_dataclasses_are_frozen() -> None:
-    sub = Subgoal(id="s1", desc="d", params={})
+    sub = Subgoal(id="s1", desc="d", params={}, closes="state")
     assert sub.commit == "none"
     assert sub.status == "open"
     assert sub.baseline_seq is None
@@ -59,7 +59,7 @@ def test_task_assembles() -> None:
     task = Task(
         id="t1",
         goal=GOAL,
-        subgoals=(Subgoal(id="s1", desc="d", params={}),),
+        subgoals=(Subgoal(id="s1", desc="d", params={}, closes="state"),),
         envelope=env,
         budgets=budgets,
         history=[turn],
@@ -71,8 +71,8 @@ def test_known_params_keeps_subgoals_without_params() -> None:
     goal = "write hello to the note"
     span = GoalSpan.of(goal, 6, 11)
     subs = [
-        Subgoal(id="s1", desc="write", params={"text": span}),
-        Subgoal(id="s2", desc="save", params={}),
+        Subgoal(id="s1", desc="write", params={"text": span}, closes="value"),
+        Subgoal(id="s2", desc="save", params={}, closes="state"),
     ]
     assert known_params(subs) == {"s1": frozenset({"text"}), "s2": frozenset()}
 

@@ -12,7 +12,7 @@ import pytest
 
 from steerai.loop2 import runner
 from steerai.loop2.controller import v2_listing
-from steerai.loop2.decision import Claim
+from steerai.loop2.decision import Claim, Decision, SubgoalDoc
 from steerai.loop2.runner import run_task
 from steerai.world.elements import Element
 from tests.loop2.world_fakes import (
@@ -129,9 +129,18 @@ def test_claim_evidence_is_read_through_the_handles(monkeypatch: pytest.MonkeyPa
         return ("value_mismatch",)
 
     monkeypatch.setattr(runner, "check_claim", spy)
+    monkeypatch.setattr(runner, "holds_words", lambda *_a: True)  # names are not this test's point
     claim = Claim(subgoal="s1", kind="state", evidence=[GO.id], wanted="on")
     world = World(
-        [decision(act("click", target=MENU.id), first=True), decision(claims=[claim])],
+        [
+            Decision(
+                subgoals=[
+                    SubgoalDoc(id="s1", desc="tick", params={"text": "shop"}, closes="state")
+                ],
+                actions=[act("click", target=MENU.id)],
+            ),
+            decision(claims=[claim]),
+        ],
         effects=[report("content_changed")],
         later=observed(_shuffled()),
     )

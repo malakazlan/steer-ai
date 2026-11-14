@@ -165,7 +165,7 @@ def task(budgets: Budgets | None = None) -> Task:
     )
 
 
-SUBGOALS = [SubgoalDoc(id="s1", desc="search", params={"text": "red shoes"})]
+SUBGOALS = [SubgoalDoc(id="s1", desc="search", params={"text": "red shoes"}, closes="page")]
 
 
 def act(verb: str, **kw: object) -> ActionDoc:
@@ -242,11 +242,18 @@ class World:
     values: dict[tuple[int, ...], ValueFact | None] = field(default_factory=dict)
     """Each field's value fact as `read_value` returns it (a type that reads back True sets it)."""
     reads: list[tuple[int, ...]] = field(default_factory=list)
+    """The RuntimeIds `read_value` was called on, in order."""
     states: dict[tuple[tuple[int, ...], str], bool | None] = field(default_factory=dict)
+    """What `read_state` returns for (RuntimeId, wanted); missing: unread."""
     cleared: dict[tuple[int, ...], int] = field(default_factory=dict)
     """A field that reads empty once this many actions were dispatched (a page that clears it)."""
-    """What `read_state` returns for (RuntimeId, wanted); missing: unread."""
-    """The RuntimeIds `read_value` was called on, in order."""
+    fact_text: bool = False
+    """`fact_of` digests the text itself (`d:<text>`), as the session key would; default: the
+    typed fact for any text."""
+    later_values: dict[tuple[int, ...], ValueFact | None] = field(default_factory=dict)
+    """Field values the page sets before the second decision."""
+    later_states: dict[tuple[tuple[int, ...], str], bool | None] = field(default_factory=dict)
+    """States the page sets before the second decision."""
     settle_guards: list[float] = field(default_factory=list)
     """The guard each `settle` (the [V2.31] load-guard wait) was given."""
     settled: Observed | None = None
@@ -263,6 +270,9 @@ class World:
     def _decide(self, view: TurnView) -> Decided:
         self.events.append("decide")
         self.views.append(view)
+        if len(self.views) == 2:
+            self.values.update(self.later_values)
+            self.states.update(self.later_states)
         self.sent_at_call.append(len(self.dispatched))
         decision = self.decisions.pop(0) if self.decisions else Decision(stop="cannot")
         return Decided(decision, self.usage)
@@ -328,8 +338,9 @@ class World:
         self.events.append("read")
         return self.states.get((element.runtime_id, wanted))
 
-    @staticmethod
-    def _fact_of(text: str) -> ValueFact:
+    def _fact_of(self, text: str) -> ValueFact:
+        if self.fact_text:
+            return ValueFact(filled=bool(text.strip()), digest=f"d:{text}")
         return TYPED_VALUE if text else EMPTY
 
     def _read_value(self, element: Element) -> ValueFact | None:

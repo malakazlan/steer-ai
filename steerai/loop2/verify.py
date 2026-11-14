@@ -3,14 +3,17 @@ be inside the scope Document; a tab name, the address bar or another Document ne
 
 from __future__ import annotations
 
+import re
+import unicodedata
 import urllib.parse
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal
 
 from steerai.loop2.decision import Claim
 from steerai.loop2.owned import field_owned
 from steerai.loop2.task import Subgoal
+from steerai.orchestrator.gate import group_name
 from steerai.world.effects import Observed, ValueFact, observe, result_elements, top_document
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot, normalise_name
@@ -71,6 +74,7 @@ def check_claim(  # noqa: PLR0911, PLR0913 - one return per outcome; keyword-onl
     typed: Sequence[tuple[int, ...]] = (),
     acted: tuple[int, ...] | None = None,
     echo: bool = False,
+    allow_file: bool = False,
 ) -> tuple[str, ...]:
     """A `state`, `value` or `navigated` claim checked by code (§7.1): the reject tokens, empty
     when it is proven. `state` and `value` cite exactly one element in the scope Document (the
@@ -79,7 +83,14 @@ def check_claim(  # noqa: PLR0911, PLR0913 - one return per outcome; keyword-onl
     read. `navigated` is measured since the subgoal's `baseline`."""
     if claim.kind == "navigated":
         return navigated_tokens(
-            subgoal, baseline, now, cited=claim.evidence, typed=typed, acted=acted, echo=echo
+            subgoal,
+            baseline,
+            now,
+            cited=claim.evidence,
+            typed=typed,
+            acted=acted,
+            echo=echo,
+            allow_file=allow_file,
         )
     if not claim.evidence:
         return ("evidence_missing",)
@@ -111,11 +122,11 @@ def check_claim(  # noqa: PLR0911, PLR0913 - one return per outcome; keyword-onl
     return () if read == readers.fact_of(subgoal.params[claim.param].text) else ("value_mismatch",)
 
 
-NAVIGATED_SCHEMES: Final = frozenset({"http", "https", "file"})
-"""§7.1 ([V2.3]): `navigated` is an allow-list; `file` for the local fixtures ([V2.39] narrows it
-to a task whose start URL is `file:`, in the PR after this one). An error page (`chrome-error:`)
-or an unread URL is never navigated."""
+WEB_SCHEMES: Final = frozenset({"http", "https"})
+"""§7.1 ([V2.3]): `navigated` is an allow-list; `file:` is added only when the task's start URL
+is `file:` ([V2.39]). An error page (`chrome-error:`) or an unread URL is never navigated."""
 URL_CARRIERS: Final = frozenset({"url_param", "url_path"})
+PAGE_CARRIERS: Final = frozenset({"title", "heading"})
 CHANGE: Final = frozenset({"navigated", "url_changed_in_place"})
 OWNING_ROLES: Final = frozenset({"Menu", "ToolTip"})
 OPTION_CAPS: Final = frozenset({"selectable", "selected"})
@@ -126,10 +137,18 @@ ProofToken = Literal["title", "heading", "results_with_url"]
 
 @dataclass(frozen=True)
 class _Found:
+    """What the page shows since the baseline, measured once for the subgoal ([V2.39] (2))."""
+
     page: ProofToken | None
-    """A title or heading carrier: a page-content signal by itself."""
+    """A title or heading carrier of some param: a page-content signal by itself."""
     url: bool
+    """Some param has a URL carrier."""
     results: bool
+    """Some param's words are on a result that passes `_excluded`."""
+    carried: frozenset[str]
+    """The params with an accepted carrier (URL parameter or path, title, heading)."""
+    texts: Mapping[str, str]
+    """Each param's words."""
 
 
 def navigated_tokens(  # noqa: PLR0913 - the subgoal, both reads and keyword-only facts
@@ -141,24 +160,35 @@ def navigated_tokens(  # noqa: PLR0913 - the subgoal, both reads and keyword-onl
     typed: Sequence[tuple[int, ...]] = (),
     acted: tuple[int, ...] | None = None,
     echo: bool = False,
+    allow_file: bool = False,
 ) -> tuple[str, ...]:
     """§7.1 `navigated` since the subgoal's baseline, for a claim citing `cited`: the reject
-    tokens, empty when proven. The content signal is a title or heading carrier, or the cited
-    elements, each absent before the baseline, inside the scope Document, and passing the same
-    exclusions as the auto proof's results (`_excluded`). `typed` is every field Steer typed in
-    the task, `echo` whether the subgoal's words are text Steer typed ([V2.38] RT-39), `acted`
-    the field typed under this subgoal (its Document scopes the carriers)."""
-    found = _navigated(subgoal, baseline, now, typed=typed, acted=acted, echo=echo)
+    tokens, empty when proven. [V2.39] (2): every param is proven on this observation, each by an
+    accepted carrier or by a cited row holding its words that the observer counts as new (absent
+    before, in scope) and that passes `_excluded`; the change and the content signal are met
+    once. `typed`, `echo` and `acted` as for `auto_proof`."""
+    found = _navigated(subgoal, baseline, now, acted=acted, allow_file=allow_file)
     if isinstance(found, tuple):
         return found
-    if found.page is not None:
-        return ()
-    if not cited:
-        return ("no_content",)
     rejected: list[str] = []
+    rows: set[str] = set()
     for eid in cited:
-        rejected.extend(_cited_tokens(eid, baseline, now, typed=typed, echo=echo))
-    return tuple(dict.fromkeys(rejected))
+        tokens = _cited_tokens(eid, baseline, now, typed=typed, echo=echo)
+        rejected.extend(tokens)
+        if not tokens:
+            rows |= _rows_for(eid, found, baseline, now, acted=acted)
+    if rejected:
+        return tuple(dict.fromkeys(rejected))
+    content = (
+        found.page is not None
+        or bool(rows)
+        or (found.url and _results(found, baseline, now, typed=typed, acted=acted, echo=echo))
+    )
+    if not content:
+        return ("no_content",)
+    if set(found.texts) - found.carried - rows:
+        return ("param_unproven",)
+    return ()
 
 
 def auto_proof(  # noqa: PLR0913 - the subgoal, both reads and keyword-only facts
@@ -169,64 +199,100 @@ def auto_proof(  # noqa: PLR0913 - the subgoal, both reads and keyword-only fact
     typed: Sequence[tuple[int, ...]] = (),
     acted: tuple[int, ...] | None = None,
     echo: bool = False,
+    allow_file: bool = False,
 ) -> ProofToken | None:
-    """§7.1, [V2.29] Q1: the token of the code-only `navigated` proof of `subgoal` since its
-    baseline, or None. The content signal is a title or heading carrier, or the `results`
-    carrier together with a URL carrier: an element the observer counts as a result (§6.4: in
-    the scope Document, the words absent before) that passes `_excluded`."""
-    found = _navigated(subgoal, baseline, now, typed=typed, acted=acted, echo=echo)
-    if isinstance(found, tuple):
+    """§7.1, [V2.29] Q1, [V2.39] (2): the token of the code-only `navigated` proof of `subgoal`
+    since its baseline, or None. Every param has an accepted carrier; the content signal is a
+    title or heading carrier, or a result (the observer's rule, passing `_excluded`) beside a URL
+    carrier. `typed` is every field Steer typed in the task, `echo` whether the subgoal's words
+    are text Steer typed ([V2.38] RT-39), `acted` the field typed under this subgoal."""
+    found = _navigated(subgoal, baseline, now, acted=acted, allow_file=allow_file)
+    if isinstance(found, tuple) or set(found.texts) - found.carried:
         return None
     if found.page is not None:
         return found.page
-    # past a page carrier, `_navigated` only returns a change that has a URL carrier
-    return "results_with_url" if found.results else None
+    if found.url and _results(found, baseline, now, typed=typed, acted=acted, echo=echo):
+        return "results_with_url"
+    return None
 
 
-def _navigated(  # noqa: PLR0911, PLR0913 - one return per closed outcome; keyword-only facts
+def _navigated(  # noqa: PLR0911 - one return per closed outcome
     subgoal: Subgoal,
+    baseline: Observed,
+    now: Observed,
+    *,
+    acted: tuple[int, ...] | None,
+    allow_file: bool,
+) -> _Found | tuple[str, ...]:
+    """The carriers since the baseline, per param, or the reject tokens when it is no navigation
+    at all. The change signal is met once, by the URL or the top Document."""
+    if baseline.tier != now.tier:
+        return ("tier_mismatch",)
+    address = now.document_url
+    if address is None:
+        return ("url_unread",)
+    schemes = WEB_SCHEMES | ({"file"} if allow_file else set())
+    if urllib.parse.urlsplit(address).scheme.lower() not in schemes:
+        return ("not_a_page",)
+    texts = {name: span.text for name, span in subgoal.params.items()}
+    if not texts:
+        return ("param_missing",)
+    reports = {name: observe(baseline, now, acted=acted, text=text) for name, text in texts.items()}
+    if not any(r.classes & CHANGE for r in reports.values()):
+        return ("no_change",)
+    carried = frozenset(
+        name for name, r in reports.items() if r.carriers & (URL_CARRIERS | PAGE_CARRIERS)
+    )
+    page: ProofToken | None = None
+    if any("title" in r.carriers for r in reports.values()):
+        page = "title"
+    elif any("heading" in r.carriers for r in reports.values()):
+        page = "heading"
+    url = any(r.carriers & URL_CARRIERS for r in reports.values())
+    if not carried and not url:
+        return ("no_carrier",)
+    return _Found(page=page, url=url, results=False, carried=carried, texts=texts)
+
+
+def _results(  # noqa: PLR0913 - the measured page, both reads and keyword-only facts
+    found: _Found,
     baseline: Observed,
     now: Observed,
     *,
     typed: Sequence[tuple[int, ...]],
     acted: tuple[int, ...] | None,
     echo: bool,
-) -> _Found | tuple[str, ...]:
-    """The carriers since the baseline, or the reject tokens when it is no navigation at all."""
-    if baseline.tier != now.tier:
-        return ("tier_mismatch",)
-    address = now.document_url
-    if address is None:
-        return ("url_unread",)
-    if urllib.parse.urlsplit(address).scheme.lower() not in NAVIGATED_SCHEMES:
-        return ("not_a_page",)
-    texts = [span.text for span in subgoal.params.values()]
-    if not texts:
-        return ("param_missing",)
-    best: _Found | None = None
-    for text in texts:
-        report = observe(baseline, now, acted=acted, text=text)
-        if not report.classes & CHANGE:
-            continue
-        carriers = report.carriers
-        page: ProofToken | None = None
-        if "title" in carriers:
-            page = "title"
-        elif "heading" in carriers:
-            page = "heading"
-        results = any(
-            not _excluded(e, now, typed=typed, echo=echo)
-            for e in result_elements(baseline, now, acted=acted, text=text)
-        )
-        found = _Found(page=page, url=bool(carriers & URL_CARRIERS), results=results)
-        if found.page is not None or (found.url and found.results):
-            return found
-        best = best or found
-    if best is None:
-        return ("no_change",)
-    if not best.url:
-        return ("no_carrier",)
-    return best
+) -> bool:
+    """Some param's words on a result the observer counts (§6.4) that passes `_excluded`."""
+    return any(
+        not _excluded(e, now, typed=typed, echo=echo)
+        for text in found.texts.values()
+        for e in result_elements(baseline, now, acted=acted, text=text)
+    )
+
+
+def _rows_for(
+    eid: int, found: _Found, baseline: Observed, now: Observed, *, acted: tuple[int, ...] | None
+) -> set[str]:
+    """The params whose words a cited row holds, as the observer counts a result for them."""
+    return {
+        name
+        for name, text in found.texts.items()
+        if any(e.id == eid for e in result_elements(baseline, now, acted=acted, text=text))
+    }
+
+
+def holds_words(snapshot: Snapshot, element: Element, text: str) -> bool:
+    """[V2.40] Q7: the element's name, or its group name as v1 computes it, holds every word of
+    `text` in one name: casefolded NFKC whole tokens, in any order, the rule content uses
+    ([V2.15] amendment 1; contiguity adds no safety). No word holds nothing."""
+    wanted = set(_words(text))
+    names = (element.name, group_name(snapshot, element) or "")
+    return bool(wanted) and any(wanted <= set(_words(name)) for name in names)
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"\w+", unicodedata.normalize("NFKC", text).casefold())
 
 
 def _excluded(

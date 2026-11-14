@@ -39,7 +39,8 @@ def act(verb: str, **kw: object) -> Decision:
 
 
 def first(params: dict[str, str], **sub: object) -> Decision:
-    doc = {"id": "s1", "desc": "d", "params": params} | sub
+    params = params or {"text": "hello"}  # [V2.39], [V2.40] Q7: every subgoal proves a param
+    doc = {"id": "s1", "desc": "d", "params": params, "closes": "value"} | sub
     return Decision(
         subgoals=[SubgoalDoc.model_validate(doc)],
         actions=[action("click", target=1)],
@@ -98,7 +99,10 @@ def test_param_name_bad() -> None:
 
 
 def test_subgoals_after_first() -> None:
-    d = Decision(subgoals=[SubgoalDoc(id="s1", desc="d")], actions=[action("click", target=1)])
+    d = Decision(
+        subgoals=[SubgoalDoc(id="s1", desc="d", params={"text": "hello"}, closes="state")],
+        actions=[action("click", target=1)],
+    )
     assert check(d, first_turn=False) == ["subgoals_after_first"]
 
 
@@ -144,7 +148,7 @@ def test_type_param_ok_known_subgoal() -> None:
 
 def test_type_param_ok_declared_on_first_turn() -> None:
     d = Decision(
-        subgoals=[SubgoalDoc(id="s1", desc="d", params={"text": "hello world"})],
+        subgoals=[SubgoalDoc(id="s1", desc="d", params={"text": "hello world"}, closes="page")],
         actions=[action("type", target=1, param="text")],
     )
     assert check(d, first_turn=True, known_subgoals={}) == []
@@ -208,13 +212,18 @@ def test_too_many_actions() -> None:
 
 
 def test_too_many_subgoals() -> None:
-    subs = [SubgoalDoc(id=f"s{i}", desc="d") for i in range(6)]
+    subs = [
+        SubgoalDoc(id=f"s{i}", desc="d", params={"text": "hello"}, closes="state") for i in range(6)
+    ]
     d = Decision(subgoals=subs, actions=[action("click", target=1)])
     assert check(d, first_turn=True, known_subgoals={"s1": frozenset()}) == ["too_many_subgoals"]
 
 
 def test_subgoal_duplicate() -> None:
-    subs = [SubgoalDoc(id="s1", desc="a"), SubgoalDoc(id="s1", desc="b")]
+    subs = [
+        SubgoalDoc(id="s1", desc="a", params={"text": "hello"}, closes="state"),
+        SubgoalDoc(id="s1", desc="b", params={"text": "hello"}, closes="state"),
+    ]
     d = Decision(subgoals=subs, actions=[action("click", target=1)])
     assert check(d, first_turn=True) == ["subgoal_duplicate"]
 
@@ -222,7 +231,8 @@ def test_subgoal_duplicate() -> None:
 @pytest.mark.parametrize("bad", ["", "S1", "a b", "x" * 17, "s1\n", "s-1"])
 def test_subgoal_id_bad(bad: str) -> None:
     d = Decision(
-        subgoals=[SubgoalDoc(id=bad, desc="d")], claims=[Claim(subgoal="s1", kind="navigated")]
+        subgoals=[SubgoalDoc(id=bad, desc="d", params={"text": "hello"}, closes="state")],
+        claims=[Claim(subgoal="s1", kind="navigated")],
     )
     assert check(d, first_turn=True) == ["subgoal_id_bad"]
 
@@ -285,7 +295,9 @@ def test_desc_without_a_fence_passes_with_fences_given() -> None:
 
 
 def test_exactly_five_subgoals_are_accepted() -> None:
-    subs = [SubgoalDoc(id=f"s{i}", desc="d") for i in range(5)]
+    subs = [
+        SubgoalDoc(id=f"s{i}", desc="d", params={"text": "hello"}, closes="state") for i in range(5)
+    ]
     d = Decision(subgoals=subs, actions=[action("click", target=1)])
     assert "too_many_subgoals" not in check(d, first_turn=True, known_subgoals={"s1": frozenset()})
 
