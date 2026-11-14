@@ -41,6 +41,14 @@ from steerai.probes.chrome_a11y import (
 )
 from steerai.probes.layer_b import _free_port
 from steerai.probes.layer_b_pages import PageServer
+from steerai.probes.memory_guard import (
+    EXIT_LOW_MEMORY,
+    FLOOR_MB,
+    LowMemory,
+    guarded_launch,
+    guarded_stop,
+    refusal_row,
+)
 from steerai.world.address_bar import DocumentUrl
 from steerai.world.effects import EffectReport, Observed, _top_document, observe, poll_tier
 from steerai.world.landmarks import PageFacts
@@ -239,6 +247,25 @@ class _TimedReader:
         return self._browser.timed("page_facts", lambda: client.page_facts(hwnd))
 
 
+_RUN = {"floor_mb": FLOOR_MB}
+"""The run's free-memory floor, set by `main` from `--min-free-mb` ([V2.14] 4)."""
+
+
+def _launch(*args: Any, **kwargs: Any) -> Any:  # Any: launch_chrome's arguments and Popen
+    """`launch_chrome` after the pre-flight, holding the process's one browser slot."""
+    return guarded_launch(launch_chrome, *args, floor_mb=_RUN["floor_mb"], **kwargs)
+
+
+def _stop(proc: Any, profile: Path) -> None:  # Any: the Popen `_launch` returned
+    guarded_stop(stop_chrome, proc, profile)
+
+
+def _refused(refused: LowMemory) -> int:
+    sys.stdout.write(json.dumps(refusal_row(refused, [])) + "\n")
+    sys.stderr.write(f"{refused}\n")
+    return EXIT_LOW_MEMORY
+
+
 class _Browser:
     """One throwaway Chrome on one local page, driven through DevTools."""
 
@@ -248,9 +275,13 @@ class _Browser:
 
         self._tmp = Path(tempfile.mkdtemp(prefix="steer-effects-"))
         port = _free_port()
-        self._proc = launch_chrome(
-            CHROME_DEFAULT, self._tmp / "profile", port, url, window_size=WINDOW
-        )
+        try:
+            self._proc = _launch(
+                CHROME_DEFAULT, self._tmp / "profile", port, url, window_size=WINDOW
+            )
+        except BaseException:
+            shutil.rmtree(self._tmp, ignore_errors=True)  # refused or failed: nothing to stop
+            raise
         try:
             self.hwnd = wait_window_for_pid(
                 self._proc.pid, image="chrome.exe", process=self._proc
@@ -325,7 +356,7 @@ class _Browser:
     def close(self) -> None:
         if hasattr(self, "_cdp"):
             self._cdp.close()
-        stop_chrome(self._proc, self._tmp / "profile")
+        _stop(self._proc, self._tmp / "profile")
         shutil.rmtree(self._tmp, ignore_errors=True)
 
 
@@ -670,7 +701,7 @@ def _sites(number: int) -> None:
         _emit({"run": number, "task": task.task_id, **row})
 
 
-def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0912 - one branch per section
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--section",
@@ -680,10 +711,25 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0912 - one branc
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--case", action="append", default=None)
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument(
+        "--min-free-mb",
+        type=int,
+        default=FLOOR_MB,
+        help=f"refuse to launch a browser below this free memory (default {FLOOR_MB}, unmeasured)",
+    )
     args = parser.parse_args(argv)
+    _RUN["floor_mb"] = args.min_free_mb
     if sys.platform != "win32":
         _emit({"skipped": "windows only"})
         return 0
+    try:
+        return _sections(args)
+    except LowMemory as refused:
+        return _refused(refused)
+
+
+def _sections(args: argparse.Namespace) -> int:  # noqa: PLR0912 - one branch per section
+    """Run the chosen section; a browser launch below the floor raises LowMemory."""
     with PageServer(PAGES) as server:
         base = f"http://127.0.0.1:{server.port}"
         for number in range(1, args.runs + 1):

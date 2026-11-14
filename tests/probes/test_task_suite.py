@@ -400,11 +400,20 @@ def test_keep_creates_its_folder_before_the_first_run(
     keep = tmp_path / "new" / "keep"
     seen: list[bool] = []
 
-    def run(task: Any, number: int, planner: Any, kept: Path | None = None) -> dict[str, Any]:
+    def run(
+        task: Any,
+        number: int,
+        planner: Any,
+        kept: Path | None = None,
+        *,
+        tmp_root: Path | None = None,
+    ) -> dict[str, Any]:
+        assert tmp_root is None, "in-process: no chunk folder"
         seen.append(kept is not None and kept.is_dir())
         return {"task": task.task_id, "run": number, "passed": False}
 
     monkeypatch.setattr(suite, "one_run", run)
+    monkeypatch.setattr(suite, "free_physical_mb", lambda: 1_000_000)  # above any floor
     out = tmp_path / "rows.jsonl"
     suite.main(["--tasks", "np1", "--runs", "1", "--keep", str(keep), "--out", str(out)])
     assert seen == [True]
@@ -527,11 +536,20 @@ def test_keep_turns_the_debug_level_on_and_nothing_else_does(
     assert suite._options(tmp_path, 1, task, 1).trace_level == "redacted"
     levels: list[str] = []
 
-    def run(task: Any, number: int, planner: Any, kept: Path | None = None) -> dict[str, Any]:
+    def run(
+        task: Any,
+        number: int,
+        planner: Any,
+        kept: Path | None = None,
+        *,
+        tmp_root: Path | None = None,
+    ) -> dict[str, Any]:
+        assert tmp_root is None, "in-process: no chunk folder"
         levels.append(suite._options(tmp_path, 1, task, number).trace_level)
         return {"task": task.task_id, "run": number, "passed": False}
 
     monkeypatch.setattr(suite, "one_run", run)
+    monkeypatch.setattr(suite, "free_physical_mb", lambda: 1_000_000)  # above any floor
     out = tmp_path / "rows.jsonl"
     suite.main(["--tasks", "np1", "--runs", "1", "--keep", str(tmp_path / "k"), "--out", str(out)])
     assert levels == ["debug"]

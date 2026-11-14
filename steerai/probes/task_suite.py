@@ -57,7 +57,18 @@ from steerai.probes.layer_b_pages import (
     InvalidRun,
     PageServer,
 )
+from steerai.probes.memory_guard import (
+    EXIT_LOW_MEMORY,
+    FLOOR_MB,
+    LowMemory,
+    claim_browser,
+    free_physical_mb,
+    preflight,
+    refusal_row,
+    release_browser,
+)
 from steerai.probes.present_switch import _plan_kinds, _steps, page_html
+from steerai.probes.suite_chunks import Unit, plan_chunks, run_chunked
 from steerai.probes.suite_outcome import (
     OUTCOMES,
     Independent,
@@ -309,7 +320,7 @@ def controls(tasks: Sequence[Task]) -> list[str]:
             continue
         tmp = Path(tempfile.mkdtemp(prefix="steer-ctl-"))
         port = _free_port()
-        proc = launch_chrome(
+        proc = _launch_one(
             CHROME_DEFAULT,
             tmp / "profile",
             port,
@@ -330,9 +341,7 @@ def controls(tasks: Sequence[Task]) -> list[str]:
         except InvalidRun as exc:
             lines.append(f"{task.task_id}: control invalid ({exc})")
         finally:
-            from steerai.probes.chrome_a11y import stop_chrome  # noqa: PLC0415 - with launch
-
-            stop_chrome(proc, tmp / "profile")
+            _stop_one(proc, tmp / "profile")
             shutil.rmtree(tmp, ignore_errors=True)
     return lines
 
@@ -1063,7 +1072,7 @@ def _page_controls(
         with PageServer(_pages_for(task)) as server:
             port = _free_port()
             url = f"http://127.0.0.1:{server.port}/page.html"
-            proc = launch_chrome(
+            proc = _launch_one(
                 CHROME_DEFAULT,
                 tmp / "profile",
                 port,
@@ -1094,9 +1103,7 @@ def _page_controls(
                 )
                 lines.append(f"{task.task_id}: control {'passes' if ok else 'FAILS'}{seen}")
             finally:
-                from steerai.probes.chrome_a11y import stop_chrome  # noqa: PLC0415
-
-                stop_chrome(proc, tmp / "profile")
+                _stop_one(proc, tmp / "profile")
                 shutil.rmtree(tmp, ignore_errors=True)
     return lines
 
@@ -1601,7 +1608,7 @@ def _read(port: int, expression: str, stage: str) -> str:
 
 def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str) -> dict[str, Any]:
     port = _free_port()
-    proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, url, window_size=WINDOW)
+    proc = _launch_one(CHROME_DEFAULT, tmp / "profile", port, url, window_size=WINDOW)
     try:
         window = wait_window_for_pid(proc.pid, image="chrome.exe", process=proc)
         page_ws_url(port)  # the page target exists before Steer looks
@@ -1640,9 +1647,32 @@ def _run_chrome(task: Task, number: int, tmp: Path, planner: _Planner, url: str)
             _read_into(row, lambda: _read_page(port, "page", links=bool(task.result_link)))
         return row
     finally:
-        from steerai.probes.chrome_a11y import stop_chrome  # noqa: PLC0415 - with launch
+        _stop_one(proc, tmp / "profile")
 
-        stop_chrome(proc, tmp / "profile")
+
+TASK_CAP_S = 600.0
+"""UNMEASURED guard: the per-task wall-time cap in chunked mode ([V2.14] 4); a chunk's child is
+killed after `TASK_CAP_S` x its task count. Override with `--task-cap-s`."""
+
+
+def _launch_one(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:  # Any: launch_chrome's
+    """`launch_chrome` holding the process's one browser slot ([V2.14] 4); `_stop_one` frees it."""
+    claim_browser()
+    try:
+        return launch_chrome(*args, **kwargs)
+    except BaseException:
+        release_browser()
+        raise
+
+
+def _stop_one(proc: subprocess.Popen[bytes], profile: Path) -> None:
+    """Stop this run's own Chrome tree and profile, then free the browser slot."""
+    from steerai.probes.chrome_a11y import stop_chrome  # noqa: PLC0415 - with launch
+
+    try:
+        stop_chrome(proc, profile)
+    finally:
+        release_browser()
 
 
 _STOP_OUTCOMES = frozenset({"false_stop", "true_stop", "stop_unread"})
@@ -1681,13 +1711,21 @@ def _read_into(row: dict[str, Any], read: Callable[[], str]) -> None:
         row["unread"] = type(exc).__name__
 
 
-def one_run(task: Task, number: int, planner: _Planner, keep: Path | None = None) -> dict[str, Any]:
+def one_run(
+    task: Task,
+    number: int,
+    planner: _Planner,
+    keep: Path | None = None,
+    *,
+    tmp_root: Path | None = None,
+) -> dict[str, Any]:
+    """One task run; its temp folder sits under `tmp_root` (a chunk's own folder) when given."""
     try:
         wait_until_idle()
     except InvalidRun as exc:
         # the person stayed active: this run measured nothing, the suite goes on
         return _invalid(task, number, exc)
-    tmp = Path(tempfile.mkdtemp(prefix="steer-suite-"))
+    tmp = Path(tempfile.mkdtemp(prefix="steer-suite-", dir=tmp_root))
     empty_before = len(planner.empty)
     try:
         row = _started(task, number, tmp, planner)
@@ -1883,41 +1921,106 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--tasks", default="", help="comma-separated task ids (default: all)")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--keep", type=Path, default=None, help="copy plans and traces here")
+    parser.add_argument(
+        "--min-free-mb",
+        type=int,
+        default=FLOOR_MB,
+        help=f"refuse to start a task below this free memory (default {FLOOR_MB}, unmeasured)",
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=None,
+        help="run this many tasks per child process, one child at a time (1: one per process)",
+    )
+    parser.add_argument(
+        "--task-cap-s",
+        type=float,
+        default=None,
+        help=f"per-task wall-time cap, chunked (default {TASK_CAP_S:g}; implies --chunk-size 1)",
+    )
+    parser.add_argument("--run-number", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--tmp-root", type=Path, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     wanted = set(filter(None, args.tasks.split(",")))
     tasks = task_set(args.set)
     if args.controls:
-        if args.set == "h2":
-            lines = h2_controls()
-        elif args.set == "h3":
-            lines = h3_controls()
-        elif args.set == "h7":
-            lines = h7_controls()
-        elif args.set == "h6":
-            lines = h6_controls()
-        elif args.set == "h5":
-            lines = h5_controls()
-        elif args.set == "h4":
-            lines = h4_controls()
-        else:
-            lines = controls(tasks)
+        lines = _control_lines(args.set, tasks)
         sys.stdout.write("\n".join(lines) + "\n")
         return 0 if all(" control passes" in line for line in lines) else 1
     _LEVEL["trace_level"] = "redacted" if args.keep is None else "debug"
     if args.keep is not None:
         args.keep.mkdir(parents=True, exist_ok=True)  # never a lost row after the run (#249)
+    numbers = [args.run_number] if args.run_number is not None else range(1, args.runs + 1)
+    units = [(n, t) for n in numbers for t in tasks if not wanted or t.task_id in wanted]
+    if args.chunk_size is not None or args.task_cap_s is not None:
+        return _chunked(args, units, tasks)
     planner = _Planner()
     rows: list[dict[str, Any]] = []
     with args.out.open("w", encoding="utf-8") as out:
         out.write(json.dumps(_header()) + "\n")
-        for number in range(1, args.runs + 1):
-            for task in tasks:
-                if wanted and task.task_id not in wanted:
-                    continue
-                row = one_run(task, number, planner, args.keep)
-                rows.append(row)
+        for index, (number, task) in enumerate(units):
+            try:
+                preflight(floor_mb=args.min_free_mb, read=free_physical_mb)
+            except LowMemory as refused:
+                remaining = [f"{t.task_id}:{n}" for n, t in units[index:]]
+                out.write(json.dumps(refusal_row(refused, remaining)) + "\n")
+                sys.stderr.write(f"{refused}\n")
+                return EXIT_LOW_MEMORY
+            row = one_run(task, number, planner, args.keep, tmp_root=args.tmp_root)
+            rows.append(row)
+            out.write(json.dumps(row) + "\n")
+            out.flush()
+    lines, ok = verdict(rows, tasks)
+    lines.append(seconds_line(rows, tasks))
+    sys.stdout.write("\n".join(lines) + f"\nbar {'met' if ok else 'missed'}\n")
+    return 0 if ok else 1
+
+
+def _control_lines(name: str, tasks: Sequence[Task]) -> list[str]:
+    by_set: dict[str, Callable[[], list[str]]] = {
+        "h2": h2_controls,
+        "h3": h3_controls,
+        "h7": h7_controls,
+        "h6": h6_controls,
+        "h5": h5_controls,
+        "h4": h4_controls,
+    }
+    control = by_set.get(name)
+    return control() if control is not None else controls(tasks)
+
+
+def _chunked(
+    args: argparse.Namespace, units: Sequence[tuple[int, Task]], tasks: Sequence[Task]
+) -> int:
+    """[V2.14] 4: each chunk in its own child process, one at a time, with the pre-flight floor
+    and the per-task cap; the rows land in `--out` as they come."""
+    base = ["--set", args.set, *(["--keep", str(args.keep)] if args.keep is not None else [])]
+    chunks = plan_chunks([Unit(t.task_id, n) for n, t in units], args.chunk_size or 1)
+    rows: list[dict[str, Any]] = []
+    tmp_parent = Path(tempfile.mkdtemp(prefix="steer-chunks-"))
+    try:
+        with args.out.open("w", encoding="utf-8") as out:
+            out.write(json.dumps(_header()) + "\n")
+
+            def write_row(row: dict[str, Any]) -> None:
+                if "outcome" in row:
+                    rows.append(row)
                 out.write(json.dumps(row) + "\n")
                 out.flush()
+
+            code = run_chunked(
+                chunks,
+                base_args=base,
+                cap_s=args.task_cap_s if args.task_cap_s is not None else TASK_CAP_S,
+                floor_mb=args.min_free_mb,
+                tmp_parent=tmp_parent,
+                write_row=write_row,
+            )
+    finally:
+        shutil.rmtree(tmp_parent, ignore_errors=True)
+    if code == EXIT_LOW_MEMORY:
+        return EXIT_LOW_MEMORY
     lines, ok = verdict(rows, tasks)
     lines.append(seconds_line(rows, tasks))
     sys.stdout.write("\n".join(lines) + f"\nbar {'met' if ok else 'missed'}\n")
