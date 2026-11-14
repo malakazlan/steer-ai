@@ -56,3 +56,13 @@ def test_words_in_the_scope_before_under_another_runtime_id_leave_no_new_result(
 def test_an_element_renamed_to_the_words_is_a_result() -> None:
     after = _renamed(BROWSER, ITEM, "Red shoes")
     assert _both(BROWSER, after, text=WORDS) == ([ITEM[0]], True)
+
+
+def test_an_element_without_a_runtime_id_is_a_result_only_when_new() -> None:
+    """A RuntimeId-less element holding the words is a result when it appears; shown before, the
+    absent-before rule already leaves no result (which also makes the role-and-name count
+    unreachable for an element holding the words)."""
+    note: Row = (18, "Text", "Red shoes", (), 12)
+    before = [*BROWSER, note]
+    assert _both(before, before, text=WORDS) == ([], False)
+    assert _both(BROWSER, [*BROWSER, note], text=WORDS) == ([note[0]], True)
