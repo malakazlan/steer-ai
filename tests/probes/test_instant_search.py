@@ -267,3 +267,54 @@ def test_the_results_are_not_under_the_search_fields_parent(variant: Variant) ->
     assert stack.ancestry["q"][-1] == "form", "the field's parent container is the search form"
     assert "form" not in stack.ancestry["results"]
     assert stack.ancestry["results"][-1] == "main"
+
+
+# ---- the live run's empty c-variant logs: focus and the page the log is read from -------------
+
+
+class _RecordingCdp:
+    """A DevTools session that records every call; `location` is what the page says it is."""
+
+    def __init__(self, location: str = "http://127.0.0.1:5000/c-button") -> None:
+        self.location = location
+        self.calls: list[str] = []
+
+    def call(self, method: str, params: dict[str, object] | None = None) -> dict[str, object]:
+        self.calls.append(method)
+        expression = str((params or {}).get("expression", ""))
+        if "getBoundingClientRect" in expression:
+            return {"result": {"value": [10, 20]}}
+        if "location.href" in expression:
+            return {"result": {"value": self.location}}
+        return {"result": {"value": "[]"}}
+
+
+@pytest.mark.parametrize("variant", ["c-button", "c-nobutton", "d"])
+def test_the_page_is_made_focused_before_any_key_or_mouse_event(variant: Variant) -> None:
+    """Key and mouse events are not delivered to a page whose window is not in front (an
+    unattended run); `insertText` still is, which is why a, b and d passed and c logged nothing.
+    The control emulates focus and brings the page to front first."""
+    cdp = _RecordingCdp()
+    instant_search._drive(cdp, variant)  # type: ignore[arg-type]  # a recording fake session
+    first_input = min(
+        i
+        for i, m in enumerate(cdp.calls)
+        if m in {"Input.dispatchKeyEvent", "Input.dispatchMouseEvent"}
+    )
+    assert "Emulation.setFocusEmulationEnabled" in cdp.calls[:first_input]
+    assert "Page.bringToFront" in cdp.calls[:first_input]
+
+
+def test_the_log_is_read_only_from_our_page() -> None:
+    base = "http://127.0.0.1:5000"
+    assert instant_search._read_log(_RecordingCdp(f"{base}/c-button"), base) == "[]"  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="page_not_ours"):
+        instant_search._read_log(_RecordingCdp("about:blank"), base)  # type: ignore[arg-type]
+
+
+def test_the_field_is_focused_again_right_before_the_enter() -> None:
+    cdp = _RecordingCdp()
+    instant_search._drive(cdp, "c-nobutton")  # type: ignore[arg-type]  # a recording fake session
+    enter = cdp.calls.index("Input.dispatchKeyEvent")
+    assert cdp.calls[enter - 1] == "Runtime.evaluate", "focus right before the key"
+    assert cdp.calls.count("Input.dispatchKeyEvent") == 2, "keyDown then keyUp"

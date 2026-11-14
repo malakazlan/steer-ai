@@ -18,14 +18,61 @@ guess.
 
 from __future__ import annotations
 
+import dataclasses
+import time
 import urllib.parse
 from collections.abc import Callable
 from typing import Protocol
 
 from steerai.world.address_bar import DocumentUrl
-from steerai.world.effects import Observed, top_document, value_fact
+from steerai.world.effects import Observed, poll_tier, top_document, value_fact
 from steerai.world.landmarks import PageFacts
 from steerai.world.model import Snapshot
+
+FIRST_READY_S = 10.0
+"""[V2.27] how long the first observation of a turn waits for a page's tree to be built; a
+guard, unmeasured."""
+FIRST_POLL_S = 0.25
+
+
+def document_ready(snapshot: Snapshot) -> bool:
+    """[V2.27] the first-observation rule: a snapshot whose top Document has no descendants is
+    NOT READY (a fresh Chrome's first read sees the Document before its tree is built, and an
+    empty tree is otherwise "stable"). A window with no top Document is not under this rule."""
+    top = top_document(snapshot)
+    return top is None or any(e.parent_id == top.id for e in snapshot.elements)
+
+
+def _marked(snapshot: Snapshot) -> Snapshot:
+    """A not-ready snapshot carries the unstable token: the observer reports it `unknown`, and
+    `watch` keeps polling it to its deadline."""
+    if not snapshot.stable or document_ready(snapshot):
+        return snapshot
+    return dataclasses.replace(snapshot, stable=False)
+
+
+def poll_observed(snapshot: Snapshot) -> Observed:
+    """The v2 poll-tier read of `snapshot`, with the first-observation rule applied."""
+    return poll_tier(_marked(snapshot))
+
+
+def first_observation(
+    read: Callable[[], Observed],
+    *,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    deadline_s: float = FIRST_READY_S,
+    poll_s: float = FIRST_POLL_S,
+) -> Observed:
+    """A turn's first observation: `read` (a full v2 read) until its snapshot is stable and
+    ready, within `deadline_s`. At the deadline the last read is returned as it is, unstable,
+    never handed over as a stable, empty listing."""
+    deadline = clock() + deadline_s
+    while True:
+        seen = read()
+        if seen.snapshot.stable or clock() >= deadline:
+            return seen
+        sleep(poll_s)
 
 
 class FactReader(Protocol):
@@ -86,6 +133,7 @@ def read_observed(  # noqa: PLR0913 - the snapshot, the reader and each optional
     (a window without a Document); `acted_value` is None for no acted field or a secure one.
     [V2.26] (2): `acted` is the acted field's id; its value is never read when its secure flag
     is set or was not read (no digest from a field that may be a password)."""
+    snapshot = _marked(snapshot)
     document_url = url = None
     facts: PageFacts | None = None
     url_observed = True

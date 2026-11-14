@@ -80,14 +80,17 @@ def press_row(
 
 def summary(rows: Sequence[Mapping[str, Any]], reason: str | None) -> dict[str, Any]:  # Any: JSON
     """Whether the percent was readable and ever changed, whether flips ever happened, and why
-    the run stopped."""
+    the run stopped. Only press rows count; a row without a press (`{"error": ...}`, e.g. no
+    Document on the page) is reported under `errors`, never read as a press."""
+    presses = [r for r in rows if "press" in r]
     return {
         "report": "scrolled",
-        "presses": len(rows),
-        "percent_readable": any(r["percent_readable"] for r in rows),
-        "percent_ever_changed": any(r["percent_changed"] for r in rows),
-        "flips_ever": any(r["flipped"] > 0 for r in rows),
+        "presses": len(presses),
+        "percent_readable": any(r["percent_readable"] for r in presses),
+        "percent_ever_changed": any(r["percent_changed"] for r in presses),
+        "flips_ever": any(r["flipped"] > 0 for r in presses),
         "stopped": reason,
+        "errors": [str(r["error"]) for r in rows if "error" in r],
     }
 
 
@@ -137,15 +140,7 @@ def rows_live(floor_mb: int) -> tuple[list[dict[str, Any]], str | None]:  # prag
         PageServer({"/tall": PAGE}) as server,
         live_page(f"http://127.0.0.1:{server.port}/tall", floor_mb=floor_mb) as page,
     ):
-        mod = page.mod
-        found = page.uia.ElementFromHandle(page.hwnd).FindFirst(
-            mod.TreeScope_Descendants,
-            page.uia.CreatePropertyCondition(
-                mod.UIA_ControlTypePropertyId, mod.UIA_DocumentControlTypeId
-            ),
-        )
-        if not found:
-            return [{"error": "no_document"}], None
+        found = page.document  # `live_page` waited until it had descendants
         page.cdp.call("Runtime.evaluate", {"expression": "window.focus()"})
         offscreen = _offscreen(page, found)
         previous = _percent(page, found)
@@ -173,9 +168,14 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live
         sys.stdout.write(json.dumps(refusal_row(refused, [])) + "\n")
         sys.stderr.write(f"{refused}\n")
         return EXIT_LOW_MEMORY
+    except RuntimeError as unreadable:  # TreeNotReady: the page never became readable
+        sys.stdout.write(json.dumps({"error": str(unreadable)}) + "\n")
+        return 1
     for row in (*rows, summary(rows, reason)):
         sys.stdout.write(json.dumps(row) + "\n")
-    return 0
+    from steerai.probes.live_browser import exit_code  # noqa: PLC0415
+
+    return exit_code(rows)
 
 
 if __name__ == "__main__":

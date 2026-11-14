@@ -94,8 +94,12 @@ def summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:  # Any: JSON
 
 def rows_live(floor_mb: int) -> list[dict[str, Any]]:  # pragma: no cover - live  # Any: JSON
     from steerai.probes.layer_b_pages import PageServer  # noqa: PLC0415
-    from steerai.probes.live_browser import live_page  # noqa: PLC0415 - Windows only
-    from steerai.probes.uia_props import _IDS, _find  # noqa: PLC0415 - Windows only
+    from steerai.probes.live_browser import (  # noqa: PLC0415 - Windows only
+        TreeNotReady,
+        find_in_document,
+        live_page,
+    )
+    from steerai.probes.uia_props import _IDS  # noqa: PLC0415 - Windows only
 
     rows: list[dict[str, Any]] = []
     with (
@@ -103,8 +107,9 @@ def rows_live(floor_mb: int) -> list[dict[str, Any]]:  # pragma: no cover - live
         live_page(f"http://127.0.0.1:{server.port}/multiline", floor_mb=floor_mb) as page,
     ):
         for element_id in IDS:
-            element = _find(page.uia, page.mod, page.hwnd, element_id)
-            if not element:
+            try:
+                element = find_in_document(page, element_id)
+            except TreeNotReady:
                 rows.append({"id": element_id, "found": False})
                 continue
             rows.append(
@@ -131,9 +136,14 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live
         sys.stdout.write(json.dumps(refusal_row(refused, [])) + "\n")
         sys.stderr.write(f"{refused}\n")
         return EXIT_LOW_MEMORY
+    except RuntimeError as unreadable:  # TreeNotReady: the page never became readable
+        sys.stdout.write(json.dumps({"error": str(unreadable)}) + "\n")
+        return 1
     for row in (*rows, summary(rows)):
         sys.stdout.write(json.dumps(row) + "\n")
-    return 0
+    from steerai.probes.live_browser import exit_code  # noqa: PLC0415
+
+    return exit_code(rows)
 
 
 if __name__ == "__main__":

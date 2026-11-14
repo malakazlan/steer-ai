@@ -145,6 +145,12 @@ CHECKS: tuple[Check, ...] = (
         ("steerai.probes.controller_for",),
     ),
     Check(
+        "first_observation",
+        "the first-observation rule ([V2.27], switch-on stage 1)",
+        5,
+        ("steerai.probes.first_observation", "--check"),
+    ),
+    Check(
         "comparability",
         "chunked against in-process ([V2.16])",
         20,

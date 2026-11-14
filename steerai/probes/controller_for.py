@@ -113,17 +113,21 @@ def _fetch_ms(page: Any, *, with_controller: bool) -> float:  # pragma: no cover
 
 def rows_live(floor_mb: int) -> list[dict[str, Any]]:  # pragma: no cover - live  # Any: JSON
     from steerai.probes.layer_b_pages import PageServer  # noqa: PLC0415
-    from steerai.probes.live_browser import live_page  # noqa: PLC0415 - Windows only
-    from steerai.probes.uia_props import _find  # noqa: PLC0415 - Windows only
+    from steerai.probes.live_browser import (  # noqa: PLC0415 - Windows only
+        TreeNotReady,
+        find_in_document,
+        live_page,
+    )
 
     with (
         PageServer({"/controller": PAGE}) as server,
         live_page(f"http://127.0.0.1:{server.port}/controller", floor_mb=floor_mb) as page,
     ):
-        field = _find(page.uia, page.mod, page.hwnd, "f-combo")
-        listbox = _find(page.uia, page.mod, page.hwnd, "lb")
-        if not field or not listbox:
-            return [{"error": "elements_not_found"}]
+        try:
+            field = find_in_document(page, "f-combo")
+            listbox = find_in_document(page, "lb")
+        except TreeNotReady as missing:
+            return [{"error": str(missing)}]
         listbox_rid = tuple(int(v) for v in listbox.GetRuntimeId())
         controlled = _rids(field.CurrentControllerFor)
         standalone: list[float] = []
@@ -151,9 +155,14 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live
         sys.stdout.write(json.dumps(refusal_row(refused, [])) + "\n")
         sys.stderr.write(f"{refused}\n")
         return EXIT_LOW_MEMORY
+    except RuntimeError as unreadable:  # TreeNotReady: the page never became readable
+        sys.stdout.write(json.dumps({"error": str(unreadable)}) + "\n")
+        return 1
     for row in rows:
         sys.stdout.write(json.dumps(row) + "\n")
-    return 0
+    from steerai.probes.live_browser import exit_code  # noqa: PLC0415
+
+    return exit_code(rows)
 
 
 if __name__ == "__main__":
