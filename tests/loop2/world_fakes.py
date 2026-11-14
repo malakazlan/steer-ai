@@ -25,9 +25,10 @@ from steerai.world.watch import Watched
 
 
 def pending(rule: str) -> pytest.MarkDecorator:
-    """[V2.9] a 3c invariant written before its code: it must fail on the stub's
-    `NotImplementedError` and nothing else, and the mark comes off when 3c implements it."""
-    return pytest.mark.xfail(strict=True, raises=NotImplementedError, reason=f"3c: {rule}")
+    """[V2.9] an invariant written before its code (step 3c or step 4): it must fail on the
+    stub's `NotImplementedError` and nothing else, and the mark comes off when the step
+    implements it. `rule` names the rule it guards (§n or [V2.n])."""
+    return pytest.mark.xfail(strict=True, raises=NotImplementedError, reason=f"stub: {rule}")
 
 
 GOAL = "search the shop for red shoes"
