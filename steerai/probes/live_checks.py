@@ -49,7 +49,12 @@ class Check:
 
 
 CHECKS: tuple[Check, ...] = (
-    Check("working_set", "the memory floor and the task cap", 15, None),
+    Check(
+        "working_set",
+        "the memory floor and the task cap",
+        15,
+        ("steerai.probes.working_set", "--tasks", "g21,g22,g23"),
+    ),
     Check(
         "shadow_gallery",
         "the 2a shadow table (3c switch-on)",
@@ -106,7 +111,12 @@ CHECKS: tuple[Check, ...] = (
     ),
     Check("scrolled", "the scrolled token ([V2.18])", 10, None),
     Check("controller_for", "the field-owned rule's read cost ([V2.15] Q4)", 10, None),
-    Check("comparability", "chunked against in-process ([V2.16])", 20, None),
+    Check(
+        "comparability",
+        "chunked against in-process ([V2.16])",
+        20,
+        ("steerai.probes.comparability", "--tasks", "g21,g22,g23"),
+    ),
 )
 
 
