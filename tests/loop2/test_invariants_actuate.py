@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 
+from steerai.loop2 import actuate
 from steerai.loop2.actuate import may_retry, press_allowed
 from steerai.orchestrator.contracts import Risk
 from tests.loop2.world_fakes import FIELD, GO, report
@@ -37,3 +38,30 @@ def test_a_press_is_refused_when_focus_was_not_read() -> None:
 
 def test_a_press_is_refused_when_nothing_was_acted_on() -> None:
     assert press_allowed(focus=FIELD.runtime_id, last_acted=None) is False
+
+
+# ---- [V2.22] #25: a query click's rung is any R1 click's; a caution click has none -----------
+
+
+def test_a_query_click_with_proven_none_retries_exactly_as_any_r1_click(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In step 3 no click gets a rung (`RETRY_RUNGS = 0`); once the ladder allows one, a query
+    click (R1) with a proven `none` gets it like any R1 click."""
+    assert may_retry(risk="R1", verified=False, report=report("none")) is False
+    monkeypatch.setattr(actuate, "RETRY_RUNGS", 1)
+    assert may_retry(risk="R1", verified=False, report=report("none")) is True
+
+
+def test_a_caution_click_never_gets_a_rung(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A submit click classified R2 (a caution click) is never retried, whatever the ladder."""
+    monkeypatch.setattr(actuate, "RETRY_RUNGS", 1)
+    assert may_retry(risk="R2", verified=False, report=report("none")) is False
+
+
+def test_a_query_click_with_any_effect_but_proven_none_gets_no_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(actuate, "RETRY_RUNGS", 1)
+    for seen in (report("focus"), report("unknown"), report("none", unread=["url"])):
+        assert may_retry(risk="R1", verified=False, report=seen) is False
