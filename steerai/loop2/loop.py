@@ -210,6 +210,9 @@ class TaskOutcome:
     """Input plus output tokens of every call; NaN once a call's usage was missing."""
     stale_observations: int = 0
     """[V2.28] item 1: Decisions discarded because the page moved under them (counted)."""
+    unread_automation_ids: int = 0
+    """[V2.26] (2), V2 §6.1, #301: the elements whose automation id was not read, summed over
+    every observation the loop took in; counted on the pooled set, the decision stays open."""
     cost_usd: float | None = None
     """Tokens times the configured price; None when no price is configured ([V2.37] P6): the
     cost budget is then reported "not configured", never as enforced."""
