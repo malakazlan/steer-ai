@@ -19,6 +19,7 @@ stop's own value and the reason records `after_refusal` plus the token.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -30,7 +31,7 @@ from steerai.errors import ErrorCode, SteerError
 from steerai.loop2._stub import stub
 from steerai.loop2.decision import ActionDoc, Decision
 from steerai.loop2.guards import StrikeReason
-from steerai.loop2.query import SearchFacts, classify
+from steerai.loop2.query import SearchFacts, classify, search_landmark_of
 from steerai.loop2.task import Commit, Task
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.orchestrator.gate import DenyFacts, deny_tier_of, group_name
@@ -325,7 +326,7 @@ def action_risk(
     is_key = action.verb == "press"
     if is_key and action.key == "Enter":
         if element.role in ENTER_FIELDS:
-            _enter(tally, action, element, states, denied=denied)
+            _enter(tally, action, element, observed, states, denied=denied)
         elif element.role in ACTING_ROLES:
             _submit(tally, action, element, observed, states, denied=denied)
         elif element.role not in STATE_SET_VERB:
@@ -411,38 +412,45 @@ def _generated(action: ActionDoc, states: Sequence[tuple[PendingText, Held]]) ->
     return free_text or any(not held.goal_span for held, _ in states)
 
 
-def _classified(  # noqa: PLR0913 - one submit: the tally, the action, its text and facts
-    tally: _Tally,
-    action: ActionDoc,
-    held: PendingText,
-    state: Held,
-    *,
-    verb: Literal["press", "click"],
-    denied: bool,
-    same_landmark: bool = False,
-) -> Risk:
-    """One submit of `held`'s text, like the Enter. A changed or unread text (the field no longer
-    provably holds what Steer typed) is never a query, asks `text_changed` under a commit-none
-    subgoal, and refuses a declared send or submit (principal re-review 2)."""
+def _text_checked(tally: _Tally, action: ActionDoc, state: Held) -> None:
+    """A changed or unread text (the field no longer provably holds what Steer typed) is never a
+    query, asks `text_changed` under a commit-none subgoal, and refuses a declared send or
+    submit (principal re-review 2)."""
     if state in ("changed", "unread"):
         if action.commit in SENT_COMMITS:
             tally.refused = True
         elif action.commit == "none":
             tally.reasons.add("text_changed")
+
+
+def _classified(  # noqa: PLR0913 - one submit: the tally, the action, its text and facts
+    tally: _Tally,
+    action: ActionDoc,
+    observed: Observed,
+    held: PendingText,
+    state: Held,
+    *,
+    denied: bool,
+) -> Risk:
+    """One submit of `held`'s text, like its Enter. The search landmark recorded at typing time
+    counts only while the current observation still reads the field in a Search landmark: an
+    unread map or another kind fails closed (#307 review)."""
+    _text_checked(tally, action, state)
+    in_landmark = held.search.in_search_landmark
+    still = in_landmark and search_landmark_of(observed, held.field) is not None
     return classify(
-        verb=verb,
-        field=held.search,
+        field=dataclasses.replace(held.search, in_search_landmark=still),
         goal_span=held.goal_span and state == "held",
         commit=action.commit,
         deny_word=denied,
-        same_landmark=same_landmark,
     )
 
 
-def _enter(
+def _enter(  # noqa: PLR0913 - the tally, the action, its target and the read facts
     tally: _Tally,
     action: ActionDoc,
     field: Element,
+    observed: Observed,
     states: Sequence[tuple[PendingText, Held]],
     *,
     denied: bool,
@@ -450,17 +458,11 @@ def _enter(
     mine = next(((h, s) for h, s in states if h.field == field.runtime_id), None)
     if mine is None:
         tally.raise_to(
-            classify(
-                verb="press",
-                field=NO_SEARCH,
-                goal_span=False,
-                commit=action.commit,
-                deny_word=denied,
-            )
+            classify(field=NO_SEARCH, goal_span=False, commit=action.commit, deny_word=denied)
         )
         return
     held, state = mine
-    tally.raise_to(_classified(tally, action, held, state, verb="press", denied=denied))
+    tally.raise_to(_classified(tally, action, observed, held, state, denied=denied))
 
 
 def _submit(  # noqa: PLR0913 - the tally, the action, its target and the read facts
@@ -483,12 +485,11 @@ def _submit(  # noqa: PLR0913 - the tally, the action, its target and the read f
             # [V2.28] item 5: decided by the field. A submit click within the [V2.22] scope of a
             # query-class field is classified as that field's Enter; the search landmark only
             # qualifies the field, never the button. A deny word on the target still commits.
-            tier = _classified(tally, action, held, state, verb="press", denied=denied)
+            tier = _classified(tally, action, observed, held, state, denied=denied)
         else:
-            # an unknown relation is still a submit, and never a query
-            tier = _classified(
-                tally, action, held, state, verb="click", denied=denied, same_landmark=False
-            )
+            # an unknown relation (a missing fact) is still a submit, and never a query: R2
+            _text_checked(tally, action, state)
+            tier = "R2"
         if _ORDER[tier] >= _ORDER["R2"]:
             tally.reasons.add("submit_pending_text")
         tally.raise_to(tier)

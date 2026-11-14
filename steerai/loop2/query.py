@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final, Literal
 
+from steerai.loop2._stub import stub
 from steerai.loop2.task import Commit
 from steerai.orchestrator.contracts import Risk
 from steerai.world.effects import EffectReport, Observed, ValueFact, top_document
@@ -80,33 +81,23 @@ def search_landmark_of(observed: Observed, element: tuple[int, ...]) -> tuple[in
     return landmark.runtime_id
 
 
-def shares_search_landmark(
-    observed: Observed, field: tuple[int, ...], button: tuple[int, ...]
-) -> bool:
-    """[V2.13] a button qualifies only when it sits in the field's own search landmark; any
-    missing fact fails closed."""
-    landmark = search_landmark_of(observed, field)
-    return landmark is not None and search_landmark_of(observed, button) == landmark
+@stub
+def search_facts(observed: Observed, field: tuple[int, ...]) -> SearchFacts:
+    """The facts `field` is typed under, read from `observed` when Steer types into it. An unread
+    AriaRole map or a missing entry is never a searchbox, and an unread landmark map is never a
+    search landmark: each missing fact fails closed (#307 review)."""
+    raise NotImplementedError("step 3: the facts recorded with the typed text")
 
 
-def classify(  # noqa: PLR0913 - the closed facts of §7.2, keyword-only
-    *,
-    verb: Literal["press", "click"],
-    field: SearchFacts,
-    goal_span: bool,
-    commit: Commit,
-    deny_word: bool,
-    same_landmark: bool = False,
-) -> Risk:
-    """R1 (a query) only when every §7.2 condition holds: a search field (searchbox or search
-    landmark), goal-span text, commit `none`, no secure or payment field in the form, no deny
-    word; a click counts only on a Button in the field's own search landmark. Otherwise R2."""
+def classify(*, field: SearchFacts, goal_span: bool, commit: Commit, deny_word: bool) -> Risk:
+    """One submit of the field's text, by its Enter or by a submit click beside it ([V2.28] item
+    5: decided by the field). R1 (a query) only when every §7.2 condition holds: a search field
+    (searchbox or search landmark), goal-span text, commit `none`, no secure or payment field in
+    the form, no deny word. Otherwise R2."""
     if not goal_span or commit != "none" or deny_word:
         return "R2"
     if field.secure_in_form or field.payment_in_form:
         return "R2"
-    if verb == "click":
-        return "R1" if field.in_search_landmark and same_landmark else "R2"
     return "R1" if field.searchbox or field.in_search_landmark else "R2"
 
 

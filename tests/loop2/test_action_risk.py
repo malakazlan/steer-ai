@@ -493,3 +493,43 @@ def test_a_composer_is_not_query_class_so_its_send_icon_stays_r2() -> None:
 def test_an_unknown_relation_beside_a_query_field_is_never_a_query() -> None:
     blind = dataclasses.replace(screen(), landmarks=None)
     assert risk("click", UNNAMED, pend=pending(BOX, SEARCHY), seen=blind) == "R2"
+
+
+# ---- #307 review: the field's landmark is re-read from the observation, never trusted -------
+
+LM_ONLY = SearchFacts(
+    searchbox=False, in_search_landmark=True, secure_in_form=False, payment_in_form=False
+)
+
+
+def _no_search_landmark() -> Observed:
+    marks: dict[tuple[int, ...], Landmark | None] = {e.runtime_id: None for e in SHOWN}
+    return dataclasses.replace(observed(SHOWN), landmarks=marks)
+
+
+def test_a_click_with_the_landmark_map_unread_is_never_a_query() -> None:
+    blind = dataclasses.replace(screen(), landmarks=None)
+    assert risk("click", BOX_GO, pend=pending(BOX, LM_ONLY), seen=blind) == "R2"
+
+
+def test_a_click_when_the_map_says_the_field_is_not_in_a_search_landmark_is_a_commit() -> None:
+    assert risk("click", BOX_GO, pend=pending(BOX, LM_ONLY), seen=_no_search_landmark()) == "R2"
+
+
+def test_an_enter_with_the_landmark_map_unread_is_never_a_query() -> None:
+    blind = dataclasses.replace(screen(), landmarks=None)
+    assert risk("press", BOX, key="Enter", pend=pending(BOX, LM_ONLY), seen=blind) == "R2"
+
+
+def test_an_enter_when_the_map_says_the_field_is_not_in_a_search_landmark_is_a_commit() -> None:
+    seen = _no_search_landmark()
+    assert risk("press", BOX, key="Enter", pend=pending(BOX, LM_ONLY), seen=seen) == "R2"
+
+
+def test_a_searchbox_still_qualifies_by_its_role_alone() -> None:
+    assert (
+        risk(
+            "press", BOX, key="Enter", pend=pending(BOX, ONLY_SEARCHBOX), seen=_no_search_landmark()
+        )
+        == "R1"
+    )
