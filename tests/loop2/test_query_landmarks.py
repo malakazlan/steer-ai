@@ -6,12 +6,11 @@ from __future__ import annotations
 import dataclasses
 
 from steerai.loop2.batch import batch_continues
-from steerai.loop2.query import search_landmark_of, shares_search_landmark
+from steerai.loop2.query import search_facts, search_landmark_of
 from steerai.world.landmarks import Landmark
-from tests.loop2.world_fakes import FIELD, GO, SEND, observed, report
+from tests.loop2.world_fakes import FIELD, observed, pending, report
 
 SEARCH = Landmark(kind="search", runtime_id=(9, 50))
-OTHER_SEARCH = Landmark(kind="search", runtime_id=(9, 51))
 MAIN = Landmark(kind="main", runtime_id=(9, 52))
 
 
@@ -23,6 +22,13 @@ def test_a_field_under_a_search_landmark_has_it() -> None:
 def test_another_landmark_kind_is_no_search_landmark() -> None:
     seen = dataclasses.replace(observed(), landmarks={FIELD.runtime_id: MAIN})
     assert search_landmark_of(seen, FIELD.runtime_id) is None
+
+
+@pending("#307 review: an unread AriaRole is never a searchbox")
+def test_an_unread_aria_role_is_never_a_searchbox() -> None:
+    seen = dataclasses.replace(observed(), aria_roles=None, landmarks=None)
+    facts = search_facts(seen, FIELD.runtime_id)
+    assert (facts.searchbox, facts.in_search_landmark) == (False, False)
 
 
 def test_no_landmark_ancestor_is_none() -> None:
@@ -38,33 +44,6 @@ def test_a_missing_map_or_element_fails_closed() -> None:
     assert (
         search_landmark_of(dataclasses.replace(observed(), landmarks={}), FIELD.runtime_id) is None
     )
-
-
-def test_a_button_in_the_fields_own_search_landmark_shares_it() -> None:
-    seen = dataclasses.replace(
-        observed(), landmarks={FIELD.runtime_id: SEARCH, GO.runtime_id: SEARCH}
-    )
-    assert shares_search_landmark(seen, FIELD.runtime_id, GO.runtime_id) is True
-
-
-def test_a_button_in_another_search_landmark_does_not_share_it() -> None:
-    seen = dataclasses.replace(
-        observed(), landmarks={FIELD.runtime_id: SEARCH, GO.runtime_id: OTHER_SEARCH}
-    )
-    assert shares_search_landmark(seen, FIELD.runtime_id, GO.runtime_id) is False
-
-
-def test_a_button_outside_any_landmark_or_unobserved_does_not_share_it() -> None:
-    seen = dataclasses.replace(
-        observed(), landmarks={FIELD.runtime_id: SEARCH, SEND.runtime_id: None}
-    )
-    assert shares_search_landmark(seen, FIELD.runtime_id, SEND.runtime_id) is False
-    assert shares_search_landmark(seen, FIELD.runtime_id, GO.runtime_id) is False
-
-
-def test_a_field_outside_a_search_landmark_shares_nothing() -> None:
-    seen = dataclasses.replace(observed(), landmarks={FIELD.runtime_id: MAIN, GO.runtime_id: MAIN})
-    assert shares_search_landmark(seen, FIELD.runtime_id, GO.runtime_id) is False
 
 
 def test_scrolled_alone_does_not_end_the_batch() -> None:

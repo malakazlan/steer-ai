@@ -29,12 +29,12 @@ WITH_PAYMENT = SearchFacts(
 
 @pytest.mark.parametrize("field", [SEARCHBOX, LANDMARK], ids=["searchbox", "landmark"])
 def test_an_enter_on_a_search_field_with_a_goal_span_is_a_query(field: SearchFacts) -> None:
-    risk = classify(verb="press", field=field, goal_span=True, commit="none", deny_word=False)
+    risk = classify(field=field, goal_span=True, commit="none", deny_word=False)
     assert risk == "R1"
 
 
 def test_an_enter_on_a_plain_field_is_a_commit() -> None:
-    risk = classify(verb="press", field=PLAIN, goal_span=True, commit="none", deny_word=False)
+    risk = classify(field=PLAIN, goal_span=True, commit="none", deny_word=False)
     assert risk == "R2"
 
 
@@ -55,33 +55,7 @@ FAILED: list[tuple[SearchFacts, bool, Commit, bool]] = [
 def test_any_failed_condition_makes_it_a_commit(
     field: SearchFacts, goal_span: bool, commit: Commit, deny_word: bool
 ) -> None:
-    risk = classify(
-        verb="press", field=field, goal_span=goal_span, commit=commit, deny_word=deny_word
-    )
-    assert risk == "R2"
-
-
-def test_a_button_click_in_the_fields_own_search_landmark_is_a_query() -> None:
-    risk = classify(
-        verb="click",
-        field=LANDMARK,
-        goal_span=True,
-        commit="none",
-        deny_word=False,
-        same_landmark=True,
-    )
-    assert risk == "R1"
-
-
-def test_a_button_click_outside_the_search_landmark_is_a_commit() -> None:
-    risk = classify(
-        verb="click",
-        field=LANDMARK,
-        goal_span=True,
-        commit="none",
-        deny_word=False,
-        same_landmark=False,
-    )
+    risk = classify(field=field, goal_span=goal_span, commit=commit, deny_word=deny_word)
     assert risk == "R2"
 
 
