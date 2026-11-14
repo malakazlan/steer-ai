@@ -475,7 +475,7 @@ def test_a_click_beside_a_searchbox_holding_a_goal_span_is_a_query() -> None:
 def test_a_click_beside_a_landmark_field_but_outside_the_landmark_is_a_query() -> None:
     """The search landmark only qualifies the field, never the button."""
     outside = element(91, "Button", "", (9, 91), 40)
-    marks = {e.runtime_id: None for e in [*SHOWN, outside]}
+    marks: dict[tuple[int, ...], Landmark | None] = {e.runtime_id: None for e in [*SHOWN, outside]}
     marks |= {BOX.runtime_id: IN_SEARCH, BOX_GO.runtime_id: IN_SEARCH}
     seen = dataclasses.replace(observed([*SHOWN, outside]), landmarks=marks)
     assert risk("click", outside, pend=pending(BOX, SEARCHY), seen=seen) == "R1"
