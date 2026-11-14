@@ -81,7 +81,12 @@ def _cells_of(text: str, *, fold_first: bool) -> str:
     return "".join(_cells_of_char(raw, fold_first) for raw in text)
 
 
-@cache
+CELL_CACHE = 8192
+"""How many (character, fold order) cells are kept (#319 review: an unbounded cache keyed from
+page text could grow to every code point, ~280 MB measured); a page's alphabet fits easily."""
+
+
+@lru_cache(maxsize=CELL_CACHE)
 def _cells_of_char(raw: str, fold_first: bool) -> str:
     """One character's cells: they depend on the character and the fold order alone, so they
     are computed once per character (#314: the per-character tables dominated the cost)."""
