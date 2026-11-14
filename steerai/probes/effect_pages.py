@@ -43,6 +43,7 @@ from steerai.probes.layer_b import _free_port
 from steerai.probes.layer_b_pages import PageServer
 from steerai.world.address_bar import DocumentUrl
 from steerai.world.effects import EffectReport, Observed, _top_document, observe, poll_tier
+from steerai.world.landmarks import PageFacts
 from steerai.world.model import Snapshot, WorldModel, snapshot_to_json
 from steerai.world.observe2 import read_observed
 from steerai.world.watch import watch
@@ -233,11 +234,9 @@ class _TimedReader:
     def focused_runtime_id(self) -> tuple[int, ...]:
         return self._browser.timed("focus", self._browser.client.focused_runtime_id)
 
-    def roles_and_headings(
-        self, hwnd: int
-    ) -> tuple[dict[tuple[int, ...], str], dict[tuple[int, ...], int]]:
+    def page_facts(self, hwnd: int) -> PageFacts:
         client = self._browser.client
-        return self._browser.timed("roles", lambda: client.roles_and_headings(hwnd))
+        return self._browser.timed("page_facts", lambda: client.page_facts(hwnd))
 
 
 class _Browser:

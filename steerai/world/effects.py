@@ -33,6 +33,7 @@ from typing import Final, Literal
 
 from steerai.verify.url_query import carries
 from steerai.world.elements import Element
+from steerai.world.landmarks import Landmark
 from steerai.world.model import TRANSIENT_ROLES, Snapshot, normalise_name
 
 EffectClass = Literal[
@@ -124,6 +125,9 @@ class Observed:
     url_observed: bool = True
     """[V2.7] False when this window has no address bar: the in-place URL is not observed and
     its absence is never `unread`."""
+    landmarks: Mapping[tuple[int, ...], Landmark | None] | None = None
+    """[V2.13] each element's nearest landmark ancestor, None when it has none; a missing map or
+    element is not observed (the query conditions fail closed)."""
     tier: Tier = "full"
     """[V2.10] which read made it: `poll` (the snapshot only) or `full` (every fact). `observe`
     refuses to compare two reads of different tiers."""
