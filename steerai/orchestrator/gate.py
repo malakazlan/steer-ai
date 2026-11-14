@@ -338,9 +338,9 @@ def billing_reads(facts: DenyFacts) -> bool:
     same names `deny_tier_of` reads it on: the general path's billed names, or every name of a
     choose or a listbox select ([V2.30] (3): `risky_in_form`). Raise-only: no tier."""
     if facts.verb == "choose" and facts.role == CHOOSE_ROLE:
-        names = [facts.name, *(n for n in (facts.option, facts.bound_name, facts.group_name) if n)]
+        names = _chosen_names(facts)
     elif facts.verb == "select" and facts.role == SELECTED_CONTROL_ROLE:
-        names = [facts.name, *(n for n in (facts.bound_name, facts.group_name) if n)]
+        names = _listed_names(facts)
     else:
         names = _billed_names(facts)
     if any(_BILLED.search(comparable(name)) for name in names):
@@ -354,9 +354,13 @@ def _listed_tier(facts: DenyFacts) -> Risk:
     container List's name ("Premium $20/mo" is R2, "Yes" under a List "I agree to pay" R3);
     the automation ids through every class but billing. A clicked ListItem keeps the [v2.17]
     ruling (a)."""
-    names = [facts.name, *(n for n in (facts.bound_name, facts.group_name) if n)]
     ids = [i for i in (facts.automation_id, *facts.element_ids) if i]
-    return _every_class(names, ids)
+    return _every_class(_listed_names(facts), ids)
+
+
+def _listed_names(facts: DenyFacts) -> list[str]:
+    """A listbox select's names: the option, the bound name and the container List's name."""
+    return [facts.name, *(n for n in (facts.bound_name, facts.group_name) if n)]
 
 
 def _every_class(names: list[str], ids: list[str]) -> Risk:
@@ -385,10 +389,13 @@ def _chosen_tier(facts: DenyFacts) -> Risk:
     option, the ComboBox's name and its group's name ("Premium ($20/mo)" is R2, "Delete
     selected" R3, "Yes" under a consent group R2); the automation ids through every class
     but billing. An option's own automation id is invisible before Expand (a 5.13 gap)."""
-    option = facts.option
-    names = [facts.name, *(n for n in (option, facts.bound_name, facts.group_name) if n)]
     ids = [i for i in (facts.automation_id, *facts.element_ids) if i]
-    return _every_class(names, ids)
+    return _every_class(_chosen_names(facts), ids)
+
+
+def _chosen_names(facts: DenyFacts) -> list[str]:
+    """A choose's names: the ComboBox's name, the option, the bound name and the group's name."""
+    return [facts.name, *(n for n in (facts.option, facts.bound_name, facts.group_name) if n)]
 
 
 def group_name(snapshot: Snapshot, element: Element) -> str | None:

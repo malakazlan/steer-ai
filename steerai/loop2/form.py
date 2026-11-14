@@ -32,15 +32,22 @@ ACTING_ROLES: Final = frozenset({"Button", "Hyperlink", "MenuItem", "SplitButton
 (deny words and the pending-text rule), a state-set role is (1), anything else is R2."""
 
 
-def fitting_verb(role: str) -> str | None:
-    """[V2.30] (3): the verb that fits a role, for reading its deny facts without an action: a
-    field is typed into, an acting role is clicked, a state-set role takes its state verb. None
-    for a role no verb acts on (text, an image, a container): it is not read."""
+CHOOSABLE: Final = "ComboBox"
+
+
+def fitting_verbs(role: str) -> tuple[str, ...]:
+    """[V2.30] (3): the verbs that fit a role, for reading its deny facts without an action. A
+    field is typed into (a ComboBox is also chosen from: billing reads it only under `choose`);
+    a state-set role takes its state verb; every other role is read as clicked, since deny
+    words read names and automation ids on every role and a page can make anything clickable
+    (principal review of #312)."""
+    if role == CHOOSABLE:
+        return ("type", "choose")
     if role in ENTER_FIELDS:
-        return "type"
-    if role in ACTING_ROLES:
-        return "click"
-    return STATE_SET_VERB.get(role)
+        return ("type",)
+    if role in STATE_SET_VERB:
+        return (STATE_SET_VERB[role],)
+    return ("click",)
 
 
 def beside(observed: Observed, field: tuple[int, ...], target: Element) -> bool | None:
@@ -49,6 +56,13 @@ def beside(observed: Observed, field: tuple[int, ...], target: Element) -> bool 
     either element in it not read)."""
     by_id = {e.id: e for e in observed.snapshot.elements}
     typed = next(e for e in observed.snapshot.elements if e.runtime_id == field)
+    return _beside(observed, by_id, typed, target)
+
+
+def _beside(
+    observed: Observed, by_id: Mapping[int, Element], typed: Element, target: Element
+) -> bool | None:
+    field = typed.runtime_id
     if typed.parent_id is not None:
         under = _under(target, typed.parent_id, by_id)
         if under is not False:
@@ -83,11 +97,13 @@ def form_facts(observed: Observed, field: tuple[int, ...]) -> tuple[bool, bool]:
     element whose place is unknown counts as inside; a field that is not in the snapshot makes
     both facts true."""
     snapshot = observed.snapshot
-    if all(e.runtime_id != field for e in snapshot.elements):
+    typed = next((e for e in snapshot.elements if e.runtime_id == field), None)
+    if typed is None:
         return True, True
+    by_id = {e.id: e for e in snapshot.elements}
     secure = risky = False
     for element in snapshot.elements:
-        if element.runtime_id == field or beside(observed, field, element) is False:
+        if element.runtime_id == field or _beside(observed, by_id, typed, element) is False:
             continue
         secure = secure or element.secure or element.id in snapshot.unread_secure
         risky = risky or _risky(observed, element)
@@ -95,14 +111,15 @@ def form_facts(observed: Observed, field: tuple[int, ...]) -> tuple[bool, bool]:
 
 
 def _risky(observed: Observed, element: Element) -> bool:
-    verb = fitting_verb(element.role)
-    if verb is None:
-        return False
-    facts = DenyFacts(
-        verb=verb,
-        role=element.role,
-        name=element.name,
-        automation_id=element.automation_id,
-        group_name=group_name(observed.snapshot, element),
-    )
-    return billing_reads(facts) or deny_tier_of(facts) == "R3"
+    group = group_name(observed.snapshot, element)
+    for verb in fitting_verbs(element.role):
+        facts = DenyFacts(
+            verb=verb,
+            role=element.role,
+            name=element.name,
+            automation_id=element.automation_id,
+            group_name=group,
+        )
+        if billing_reads(facts) or deny_tier_of(facts) == "R3":
+            return True
+    return False

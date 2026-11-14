@@ -121,3 +121,24 @@ def test_with_the_landmark_map_unread_a_password_anywhere_counts() -> None:
 def test_a_broken_parent_chain_reads_as_inside_the_form() -> None:
     orphan = element(68, "Button", "Delete", (9, 68), 99)
     assert facts(screen([*PLAIN, orphan])).risky_in_form is True
+
+
+# ---- principal review of #312 -----------------------------------------------------------------
+# 1: a role no verb acts on is read as a click (deny words read names and ids on every role);
+# a ComboBox is read as typed into and as chosen.
+
+
+def test_a_text_reading_delete_in_the_form_makes_the_enter_r2() -> None:
+    shown = screen([*PLAIN, element(70, "Text", "Delete", (9, 70), 60)])
+    assert enter_risk(shown, shown) == "R2"
+
+
+def test_an_image_with_a_delete_automation_id_in_the_form_makes_the_enter_r2() -> None:
+    icon = element(71, "Image", "", (9, 71), 60, automation_id="delete-icon")
+    shown = screen([*PLAIN, icon])
+    assert enter_risk(shown, shown) == "R2"
+
+
+def test_a_combobox_naming_a_price_in_the_form_makes_the_enter_r2() -> None:
+    shown = screen([*PLAIN, element(72, "ComboBox", "Plan $20/mo", (9, 72), 60)])
+    assert enter_risk(shown, shown) == "R2"
