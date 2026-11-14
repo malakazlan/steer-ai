@@ -43,14 +43,15 @@ class Usage:
 
 def budget_hit(budgets: Budgets, used: Usage) -> BudgetToken | None:
     """The first budget reached, as a token (the task pauses and asks), or None."""
-    if used.actions >= budgets.max_actions:
-        return "max_actions"
-    if used.model_calls >= budgets.max_model_calls:
-        return "max_model_calls"
-    if used.cost_usd >= budgets.max_cost_usd:
-        return "max_cost"
-    if used.wall_s >= budgets.max_wall_s:
-        return "max_wall"
+    checks: tuple[tuple[BudgetToken, float, float], ...] = (
+        ("max_actions", used.actions, budgets.max_actions),
+        ("max_model_calls", used.model_calls, budgets.max_model_calls),
+        ("max_cost", used.cost_usd, budgets.max_cost_usd),
+        ("max_wall", used.wall_s, budgets.max_wall_s),
+    )
+    for token, spent, limit in checks:
+        if not spent < limit:  # NaN is never below the limit: a broken reading trips, never runs
+            return token
     return None
 
 
@@ -77,7 +78,9 @@ STRONG = frozenset(
 """[V2.18] the effects after which a click, a type, a choose or a state verb may be sent again."""
 KEY_VERBS = frozenset({"press", "scroll"})
 """[V2.18] these may repeat after any effect but `none`, `unknown` or `frame_changed` alone."""
-NO_PROGRESS_TOKENS = frozenset({"moved", "frame_changed"})
+PROGRESS_TOKENS = frozenset({"scrolled"})
+"""[V2.18] an allow-list: for `press` and `scroll`, only `scrolled` among the tokens is progress;
+`frame_changed`, `title_only` beside it, and any future token are not."""
 
 
 def same_action(earlier: ActionKey, later: ActionKey, present: frozenset[tuple[int, ...]]) -> bool:
@@ -101,7 +104,7 @@ def made_progress(verb: str, effect: EffectReport | None) -> bool:
     if effect is None or "unknown" in effect.classes:
         return False
     if verb in KEY_VERBS:
-        return bool(effect.classes - {"none"}) or bool(effect.tokens - NO_PROGRESS_TOKENS)
+        return bool(effect.classes - {"none", "unknown"}) or bool(effect.tokens & PROGRESS_TOKENS)
     return bool(effect.classes & STRONG)
 
 
@@ -122,7 +125,7 @@ class Strikes:
         if not turn.ticked:
             reasons = self._reasons(turn)
         self._seen.add(turn.state_digest)
-        if turn.action is not None:
+        if turn.action is not None and not turn.refused:  # a refused turn sent nothing
             self._last = (turn.action, turn.effect)
         self._count = self._count + 1 if reasons else 0
         return tuple(reasons)

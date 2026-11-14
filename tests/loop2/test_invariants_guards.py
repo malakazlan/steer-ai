@@ -221,3 +221,33 @@ def test_a_rerendered_target_is_not_sent_again_in_a_row() -> None:
     strikes = Strikes(limit=3)
     strikes.record(turn(action=CLICK, classes=("none",)))
     assert strikes.may_send(RERENDERED, present=frozenset({GO_AGAIN_RID})) is False
+
+
+# ---- review fixes on #288 ---------------------------------------------------------------------
+
+
+def test_a_refused_turn_is_not_the_last_send() -> None:
+    """A refused turn dispatched nothing: it never replaces the last send."""
+    strikes = Strikes(limit=3)
+    strikes.record(turn(action=CLICK, classes=("none",)))
+    strikes.record(dataclasses.replace(turn(action=OTHER, classes=()), refused=True))
+    assert strikes.may_send(CLICK, present=PRESENT) is False
+
+
+def test_a_press_after_a_frame_and_title_change_only_is_not_sent_again() -> None:
+    """[V2.18] allow-list: only a class other than none/unknown, or `scrolled`, is progress."""
+    strikes = Strikes(limit=3)
+    strikes.record(turn(action=DOWN, classes=(), tokens=("frame_changed", "title_only")))
+    assert strikes.may_send(DOWN, present=PRESENT) is False
+
+
+@pytest.mark.parametrize(
+    ("used", "token"),
+    [
+        (Usage(actions=0, model_calls=0, cost_usd=float("nan"), wall_s=0.0), "max_cost"),
+        (Usage(actions=0, model_calls=0, cost_usd=0.0, wall_s=float("nan")), "max_wall"),
+    ],
+    ids=["cost", "wall"],
+)
+def test_a_nan_usage_trips_its_budget(used: Usage, token: BudgetToken) -> None:
+    assert budget_hit(BUDGETS, used) == token

@@ -6,6 +6,8 @@ from __future__ import annotations
 import pytest
 
 from steerai.loop2.batch import batch_continues
+from steerai.loop2.guards import ActionKey, Strikes, TurnFacts
+from steerai.loop2.query import query_outcome
 from steerai.world.effects import EffectClass, EffectReport, Token, Unread
 from tests.loop2.world_fakes import report
 
@@ -42,7 +44,7 @@ def test_effects_beyond_the_acted_element_end_the_batch(classes: tuple[EffectCla
 @pytest.mark.parametrize(
     "token", ["frame_changed", "rerendered", "dismissed", "windows_changed", "title_only"]
 )
-def test_every_token_but_moved_ends_the_batch(token: Token) -> None:
+def test_every_token_but_moved_and_scrolled_ends_the_batch(token: Token) -> None:
     assert batch_continues(report(tokens=[token]), verified_type=True, same_target=True) is False
 
 
@@ -76,8 +78,33 @@ def _swapped(effect: EffectReport) -> EffectReport:
     "classes", [("own_value", "focus"), ("own_value", "content_changed"), ("focus", "revealed")]
 )
 def test_nothing_reads_primary(classes: tuple[EffectClass, ...]) -> None:
+    """[V2.2] condition 3: the batch rule, the query outcomes and the repeat rule read the class
+    set, never `primary`."""
     effect = report(*classes)
-    assert _swapped(effect).primary != effect.primary
+    swapped = _swapped(effect)
+    assert swapped.primary != effect.primary
     assert batch_continues(effect, verified_type=True, same_target=True) == batch_continues(
-        _swapped(effect), verified_type=True, same_target=True
+        swapped, verified_type=True, same_target=True
     )
+    for carried in (True, False):
+        assert query_outcome(effect, text_carried=carried) == query_outcome(
+            swapped, text_carried=carried
+        )
+    present = frozenset({(9, 3)})
+    for verb in ("click", "press"):
+        key = ActionKey(verb=verb, params=(), runtime_id=(9, 3), identity=("Button", "go", ""))
+        sent = []
+        for seen in (effect, swapped):
+            strikes = Strikes(limit=3)
+            strikes.record(
+                TurnFacts(
+                    ticked=False,
+                    action=key,
+                    effect=seen,
+                    state_digest="d1",
+                    claim_rejected=False,
+                    present=present,
+                )
+            )
+            sent.append(strikes.may_send(key, present=present))
+        assert sent[0] == sent[1]

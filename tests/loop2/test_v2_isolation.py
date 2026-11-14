@@ -127,3 +127,14 @@ def test_no_invariant_test_is_xfailed_other_than_by_pending(path: Path) -> None:
     """Only `pending` (strict, raises=NotImplementedError) may mark an invariant test, so none
     is silently weakened to a plain or non-strict xfail."""
     assert "xfail" not in path.read_text(encoding="utf-8")
+
+
+SKIPS = ("pytest.mark.skip", "pytest.skip(")
+
+
+@pytest.mark.parametrize("path", INVARIANT_FILES, ids=lambda p: p.name)
+def test_no_invariant_test_is_skipped(path: Path) -> None:
+    """An invariant test is never skipped (`skip`, `skipif`, `pytest.skip(`): it passes, or it
+    is a strict `pending` xfail."""
+    source = path.read_text(encoding="utf-8")
+    assert [s for s in SKIPS if s in source] == []
