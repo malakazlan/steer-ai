@@ -1,11 +1,13 @@
-"""[V2.27], [V2.28] 2: the first observation of a fresh Chrome page: does it see the page's tree?
+"""[V2.27], [V2.31]: the first observation of a fresh Chrome page: does it see the page's tree?
 
 `--measure` (the lead's inference): launch a local page (or, with `--site`, one pooled H1-H6
 task's start page, never H7) and observe it at once, then at intervals, reporting the elements,
 the window's node count, the top Document's direct children, its nodes and the fields inside it.
 `--check` (the live check): the first v2 observation (`observe2.first_observation`) contains
 the page's fields, counted inside the Document only (Chrome's address bar is an Edit too); each
-read it made is printed with `stable`, the Document's children and its node count.
+read it made is printed with `stable`, the Document's children and its node count, and the
+check row says whether the page was handed over still `growing` ([V2.31]: allowed, not a
+failure; the loop handles a partial page).
 Read-only; one throwaway Chrome behind the memory guard. Windows only.
 """
 
@@ -48,6 +50,9 @@ SCHEDULE_S = tuple(step / 4 for step in range(41))
 """When `--measure` observes, from the moment the window exists: every 0.25 s to the 10 s
 deadline (a read that runs late shifts the next; each row says when it began)."""
 FIELD_ROLES = frozenset({"Edit", "ComboBox"})
+QUIET_S = 0.5
+"""The quiet window `--check` passes to `first_observation`: the probes' watch quiet window
+(`effect_pages.WATCH_SETTLE_S`, unmeasured)."""
 
 
 def pooled_site(task_id: str) -> str:
@@ -85,11 +90,18 @@ def snapshot_row(at_ms: int, snapshot: Snapshot) -> dict[str, Any]:  # Any: JSON
     }
 
 
-def check_row(snapshot: Snapshot, *, expected: int = len(FIELDS)) -> dict[str, Any]:  # Any: JSON
+def check_row(
+    snapshot: Snapshot, *, expected: int = len(FIELDS), growing: bool = False
+) -> dict[str, Any]:  # Any: JSON
     """The live check: the first v2 observation holds every field of the page, inside its
-    Document."""
+    Document; `growing` is reported as read."""
     counts = _counts(snapshot)
-    row = {"check": "first_observation_has_fields", "expected": expected, **counts}
+    row = {
+        "check": "first_observation_has_fields",
+        "expected": expected,
+        "growing": growing,
+        **counts,
+    }
     ok = counts["fields"] >= expected and snapshot.stable
     return row | ({} if ok else {"error": "fields_missing"})
 
@@ -151,12 +163,12 @@ def check_live(floor_mb: int) -> list[dict[str, Any]]:  # pragma: no cover - liv
 
         def read() -> Observed:
             began = time.monotonic()
-            seen = read_observed(model.observe(hwnd), client, key=b"k" * 32, page_facts=False)
+            seen = read_observed(model.observe(hwnd), client, key=b"k" * 32)
             rows.append(snapshot_row(round((began - started) * 1000), seen.snapshot))
             return seen
 
-        seen = first_observation(read)
-        return [*rows, check_row(seen.snapshot)]
+        seen = first_observation(read, quiet_s=QUIET_S)
+        return [*rows, check_row(seen.snapshot, growing=seen.growing)]
 
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live

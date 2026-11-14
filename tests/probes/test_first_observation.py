@@ -59,6 +59,14 @@ def test_the_check_prints_stable_document_children_and_node_count() -> None:
     assert row["document_nodes"] == 5
 
 
+def test_the_check_says_whether_the_page_was_still_growing() -> None:
+    """[V2.31] a growing page may be handed over; the row says so, it does not fail on it."""
+    row = check_row(_snap([*BASE, EDIT, NOTES]), growing=True)
+    assert row["growing"] is True
+    assert "error" not in row
+    assert check_row(_snap([*BASE, EDIT, NOTES]))["growing"] is False
+
+
 def test_a_pooled_site_is_its_task_start() -> None:
     assert pooled_site("gh1") == "https://github.com/"
 
