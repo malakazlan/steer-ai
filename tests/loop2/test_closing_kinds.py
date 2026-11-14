@@ -267,3 +267,30 @@ def test_a_task_started_on_a_file_page_closes_on_a_file_page() -> None:
 
 def test_a_task_started_on_the_web_never_closes_on_a_file_page() -> None:
     assert run_task(task(), _file_world(URL).ports()).status != "done"
+
+
+# ---- #334 review: one element proves at most one param; a value subgoal needs a param --------
+
+
+def test_one_element_never_proves_two_state_params() -> None:
+    """The principal's repro: params red and shoes, only the "Red" CheckBox on, cited for a and
+    then for b. One handle proves at most one param."""
+    box = element(42, "CheckBox", "Red", (9, 42), 1)
+    on: Literal["on"] = "on"
+    subs = [SubgoalDoc(id="s1", desc="tick", params={"a": "red", "b": "shoes"}, closes="state")]
+    world = World(
+        [
+            Decision(
+                subgoals=subs,
+                claims=[Claim(subgoal="s1", kind="state", evidence=[box.id], param="a", wanted=on)],
+            ),
+            Decision(
+                claims=[Claim(subgoal="s1", kind="state", evidence=[box.id], param="b", wanted=on)]
+            ),
+        ],
+        screen=observed([*PAGE, box]),
+    )
+    world.states[(box.runtime_id, on)] = True
+    outcome = run_task(task(), world.ports())
+    assert outcome.status != "done"
+    assert "claim:s1:evidence_reused" in world.views[-1].history

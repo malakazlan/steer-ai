@@ -429,6 +429,9 @@ class _Run:
         if subgoal.closes != "page" and param is None:
             self._reject(subgoal, ("param_missing",))
             return
+        if subgoal.closes != "page" and self._reused(subgoal, param or "", claim.evidence[0]):
+            self._reject(subgoal, ("evidence_reused",))
+            return
         rejected = check_claim(
             self._cited(claim, observed),
             subgoal,
@@ -451,6 +454,12 @@ class _Run:
         wanted = set(subgoal.params) or {""}  # a subgoal with no param needs one proof
         if set(proofs) >= wanted and self._still(subgoal, observed):
             self._tick(subgoal, how="claim")
+
+    def _reused(self, subgoal: Subgoal, param: str, handle: int) -> bool:
+        """#334 review: one element proves at most one param of a subgoal; the model's param is
+        only a hint, so the same handle cited for a second param proves nothing more."""
+        proofs = self.proofs.get(subgoal.id, {})
+        return any(p.handle == handle for name, p in proofs.items() if name != param)
 
     def _still(self, subgoal: Subgoal, observed: Observed) -> bool:
         """[V2.39] (2): every param's proof read again now, on this observation: a subgoal
