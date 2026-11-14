@@ -16,7 +16,7 @@ from steerai.loop2.decision import Claim, Decision, SubgoalDoc
 from steerai.loop2.loop import ActResult, TokenUsage
 from steerai.loop2.runner import run_task
 from steerai.loop2.task import Budgets, TokenPrice
-from steerai.world.effects import ValueFact
+from steerai.world.effects import ValueFact, poll_tier
 from steerai.world.elements import Element
 from tests.loop2.world_fakes import (
     FIELD,
@@ -515,13 +515,15 @@ def test_n1_every_typed_field_stays_pending_not_only_the_latest() -> None:
     assert (outcome.status, outcome.reason) == ("blocked", "commit_not_in_step")
 
 
-@pytest.mark.parametrize("partial", ["unstable", "growing", "young"])
+@pytest.mark.parametrize("partial", ["unstable", "growing", "young", "poll_tier"])
 def test_n2_a_read_that_may_be_partial_never_proves_the_field_gone(partial: str) -> None:
     tab = PAGE[6]
     without = [e for e in WRITING if e.id != COMPOSER.id]
     seen = observed(without, focus=None)
     if partial == "unstable":
         seen = dataclasses.replace(seen, snapshot=snapshot(without, stable=False))
+    elif partial == "poll_tier":  # B2c: a poll read is the snapshot alone, never complete
+        seen = poll_tier(snapshot(without))
     else:
         flags = {"growing": partial == "growing", "young": partial == "young"}
         seen = dataclasses.replace(seen, growing=flags["growing"], young=flags["young"])
