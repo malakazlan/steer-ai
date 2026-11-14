@@ -75,3 +75,9 @@ def test_known_params_keeps_subgoals_without_params() -> None:
         Subgoal(id="s2", desc="save", params={}),
     ]
     assert known_params(subs) == {"s1": frozenset({"text"}), "s2": frozenset()}
+
+
+def test_goal_span_past_the_end_of_the_goal_is_rejected() -> None:
+    with pytest.raises(ValueError, match="goal_span_mismatch"):
+        GoalSpan.check("abc", GoalSpan("abc", 0, 99))
+    GoalSpan.check("abc", GoalSpan("abc", 0, 3))
