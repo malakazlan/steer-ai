@@ -151,6 +151,19 @@ class TaskOutcome:
         return render_reason(self.cause)
 
 
+def type_refusal(
+    element: Element, snapshot: Snapshot
+) -> Literal["secure_field", "secure_unread"] | None:
+    """§8.5, [V2.26] (2): nothing is typed into a secure field, nor into one whose secure flag
+    was not read. Either is a refusal with a token and a strike, never an ask: a yes never
+    unlocks typing into what may be a password field."""
+    if element.secure:
+        return "secure_field"
+    if element.id in snapshot.unread_secure:
+        return "secure_unread"
+    return None
+
+
 def resolve(target: int, listed: Snapshot, latest: Snapshot) -> Element | None:
     """The element `target` named in `listed`, if the latest snapshot still has its RuntimeId
     with the same role and name (§8.1); None when it is gone, changed, or has no RuntimeId.

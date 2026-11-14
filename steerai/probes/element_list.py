@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Literal
 
 from steerai.probes.uia_snapshot import RawNode, UiaClient
 from steerai.world.elements import INTERACTIVE_ROLES, Element, format_lines, prune
@@ -36,6 +37,18 @@ def elements_from_nodes(nodes: Sequence[RawNode]) -> list[Element]:
             )
         )
     return elements
+
+
+def unread_ids(
+    nodes: Sequence[RawNode], fact: Literal["secure", "automation_id"]
+) -> frozenset[int]:
+    """[V2.26] (2): the element ids (index + 1, as `elements_from_nodes` gives) whose secure
+    flag or automation id was not read."""
+    return frozenset(
+        index + 1
+        for index, node in enumerate(nodes)
+        if not (node.secure_read if fact == "secure" else node.automation_id_read)
+    )
 
 
 def element_list_for_window(client: UiaClient, hwnd: int, *, cap: int = 150) -> list[str]:

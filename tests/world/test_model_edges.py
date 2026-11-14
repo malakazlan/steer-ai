@@ -1,6 +1,7 @@
 """World model boundaries: ids without a RuntimeId, duplicates, caps of 0 and 1, same-snapshot
 resolution, and `observe` driven by a fake client with an injected clock."""
 
+import dataclasses
 from types import SimpleNamespace
 from typing import cast
 
@@ -452,3 +453,22 @@ def test_a_fetch_that_keeps_failing_is_perception_timeout_after_the_retries(
         _model(client).observe(HWND)
     assert caught.value.code is ErrorCode.PERCEPTION_TIMEOUT
     assert len(client.calls) == model_module.FETCH_RETRIES + 1
+
+
+# ---- [V2.26] (2): the secure flag and the automation id, read or unread ----------------------
+
+
+def test_observe_records_which_elements_had_an_unread_secure_flag_or_automation_id(
+    clock: _FakeClock,
+) -> None:
+    nodes = [
+        _node("Edit", "Search", (1,)),
+        dataclasses.replace(_node("Edit", "Code", (2,)), secure_read=False),
+        dataclasses.replace(_node("Button", "Go", (3,)), automation_id_read=False),
+    ]
+    tree = TreeSnapshot(nodes=nodes, fetch_ms=1.0, walk_ms=0.1, handles=["a", "b", "c"])
+    snap = _model(_FakeClient([tree, tree])).observe(HWND)
+    assert snap.unread_secure == frozenset({2})
+    assert snap.unread_automation_id == frozenset({3})
+    assert snap.unread_automation_id_count == 1
+    assert [e.secure for e in snap.elements] == [False, False, False], "v1's view is unchanged"

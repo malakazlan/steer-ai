@@ -76,6 +76,24 @@ class RawNode:
     """Password field: its value is never read and the line is tagged `secure` (WM-23)."""
     caps: tuple[str, ...] = ()
     """What the element can do, as closed tokens (`steerai.world.capabilities`)."""
+    secure_read: bool = True
+    """[V2.26] (2): False when IsPassword was not read (the provider does not support it, or
+    raised); `secure` then holds UIA's default False, as v1 always saw it."""
+    automation_id_read: bool = True
+    """[V2.26] (2): False when AutomationId was not read; `automation_id` then holds ""."""
+
+
+def property_read(element: Any, prop: int, not_supported: object) -> bool:  # Any: COM element
+    """Whether a cached property was really read ([V2.26] (2)). `GetCachedPropertyValueEx` with
+    ignoreDefaultValue TRUE returns UIA's reserved not-supported value instead of the property's
+    default (Microsoft Learn, IUIAutomationElement::GetCachedPropertyValueEx;
+    IUIAutomation::ReservedNotSupportedValue), so a default is never mistaken for a read. A
+    provider that raises is unread too."""
+    try:
+        value = element.GetCachedPropertyValueEx(prop, True)
+    except Exception:  # noqa: BLE001 - COMError exists only once comtypes is loaded; unread
+        return False
+    return not (value is not_supported or value == not_supported)
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +123,7 @@ class UiaClient:
         self._uia.ConnectionTimeout = connection_timeout_ms
         self._uia.TransactionTimeout = transaction_timeout_ms
         self._control_type_names = control_type_names(self._uia_module)
+        self._not_supported = self._uia.ReservedNotSupportedValue
 
     @property
     def connection_timeout_ms(self) -> int:
@@ -190,6 +209,12 @@ class UiaClient:
                 runtime_id=tuple(int(v) for v in runtime_id) if runtime_id else (),
                 secure=bool(element.CachedIsPassword),
                 caps=tokens(self._caps(element), role) if caps else (),
+                secure_read=property_read(
+                    element, self._uia_module.UIA_IsPasswordPropertyId, self._not_supported
+                ),
+                automation_id_read=property_read(
+                    element, self._uia_module.UIA_AutomationIdPropertyId, self._not_supported
+                ),
             )
         )
         handles.append(element)

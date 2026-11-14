@@ -89,6 +89,16 @@ def test_cached_tree_handles_align_with_nodes_and_runtime_ids_are_set(client: Ui
     assert all(isinstance(node.enabled, bool) for node in tree.nodes)
 
 
+def test_cached_tree_records_whether_the_secure_flag_and_automation_id_were_read(
+    client: UiaClient,
+) -> None:
+    """[V2.26] (2): every node says whether IsPassword and AutomationId were read, and the
+    read never raises out of the walk."""
+    tree = client.cached_tree(_drivable_hwnd())
+    assert all(isinstance(node.secure_read, bool) for node in tree.nodes)
+    assert all(isinstance(node.automation_id_read, bool) for node in tree.nodes)
+
+
 def test_cached_tree_runtime_ids_are_unique_within_one_snapshot(client: UiaClient) -> None:
     tree = client.cached_tree(_drivable_hwnd())
     ids = [node.runtime_id for node in tree.nodes]
