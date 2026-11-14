@@ -90,6 +90,24 @@ CHECKS: tuple[Check, ...] = (
         ),
     ),
     Check(
+        "shadow_v2_dev",
+        "the v2-path shadow: own_value, focus and the URL after Enter ([V2.27] A)",
+        45,
+        (
+            "steerai.probes.shadow_v2",
+            "--shadow-out",
+            "{dir}/shadow_v2_steps.jsonl",
+            "--set",
+            "dev",
+            "--runs",
+            "1",
+            "--keep",
+            "{dir}/keep_v2",
+            "--out",
+            "{dir}/shadow_v2_dev.jsonl",
+        ),
+    ),
+    Check(
         "landmarks",
         "the query classifier's landmark fact (3c switch-on)",
         10,
@@ -103,7 +121,7 @@ CHECKS: tuple[Check, ...] = (
     ),
     Check(
         "site_samples",
-        "the watch deadlines (25 real-site samples)",
+        "the watch deadlines and the late read (24 real-site samples)",
         30,
         ("steerai.probes.effect_pages", "--section", "sites", "--runs", "1"),
     ),

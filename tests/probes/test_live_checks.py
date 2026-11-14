@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from steerai.probes import live_checks
 from steerai.probes.live_checks import Check, child_env, plan_lines, run_checks
 from steerai.probes.memory_guard import EXIT_LOW_MEMORY
 
@@ -98,3 +99,14 @@ def test_the_plan_never_prints_the_key(tmp_path: Path) -> None:
     )
     assert "sk-test-secret" not in "".join(printed)
     assert "sk-test-secret" not in (tmp_path / "report.jsonl").read_text("utf-8")
+
+
+def test_the_v2_path_shadow_runs_after_the_2a_shadow_on_the_dev_set() -> None:
+    """[V2.27] A: the v2-path shadow diagnostic is a check of its own, right after shadow_dev."""
+    names = [c.name for c in live_checks.CHECKS]
+    assert names.index("shadow_v2_dev") == names.index("shadow_dev") + 1
+    check = live_checks.CHECKS[names.index("shadow_v2_dev")]
+    assert check.args is not None
+    assert check.args[0] == "steerai.probes.shadow_v2"
+    assert "--shadow-out" in check.args
+    assert check.args[check.args.index("--set") + 1] == "dev"
