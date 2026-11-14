@@ -3,17 +3,24 @@ None (not observed), the value is kept only as a `ValueFact`, and a secure field
 
 from __future__ import annotations
 
+import dataclasses
+from typing import Any
+
 from steerai.world.address_bar import DocumentUrl
-from steerai.world.effects import Observed, observe, poll_tier, value_fact
+from steerai.world.effects import Observed, value_fact
 from steerai.world.landmarks import Landmark, PageFacts
 from steerai.world.observe2 import (
-    document_ready,
+    GROW_GUARD_S,
+    GROW_POLL_S,
+    DocumentSince,
+    FirstTouches,
+    document_nodes,
     first_observation,
+    hold_still,
     in_place_url,
-    poll_observed,
     read_observed,
 )
-from tests.world.test_effects_conditions import BASE, FIELD, PAGE, _snap
+from tests.world.test_effects_conditions import BASE, PAGE, Row, _snap
 
 KEY = b"k" * 32
 
@@ -166,7 +173,6 @@ def _never() -> str:
 
 
 def test_the_value_of_a_field_with_an_unread_secure_flag_is_never_read() -> None:
-    import dataclasses  # noqa: PLC0415 - this test only
 
     snap = dataclasses.replace(_snap(BASE), unread_secure=frozenset({2}))
     seen = read_observed(snap, Reader(), key=KEY, acted=2, acted_value=_never)
@@ -174,7 +180,6 @@ def test_the_value_of_a_field_with_an_unread_secure_flag_is_never_read() -> None
 
 
 def test_the_value_of_a_secure_field_is_never_read() -> None:
-    import dataclasses  # noqa: PLC0415 - this test only
 
     snap = _snap(BASE)
     secure = [dataclasses.replace(e, secure=True) if e.id == 2 else e for e in snap.elements]
@@ -189,37 +194,26 @@ def test_the_value_of_a_read_non_secure_field_is_still_read() -> None:
     assert seen.acted_value == value_fact("red", key=KEY)
 
 
-# ---- [V2.27] the first-observation rule: a scope Document with no descendants is not ready ----
+# ---- [V2.31] first-observation readiness: hand over early, hold while the page grows ----------
 
-EMPTY_PAGE = _snap([PAGE])
-"""A fresh Chrome's first read: the Document exists, its tree is not built yet."""
-
-
-def test_a_document_with_descendants_is_ready() -> None:
-    assert document_ready(_snap(BASE)) is True
-
-
-def test_a_document_with_no_descendants_is_not_ready() -> None:
-    assert document_ready(EMPTY_PAGE) is False
+QUIET_S = 0.5
+"""The loop's normal quiet window, as the caller passes it."""
+NO_DOCUMENT: list[Row] = [(1, "Pane", "Chrome", (7, 1), None), (2, "Button", "Back", (7, 2), 1)]
+"""A browser frame before its Document appears, or a native window: no Document either way."""
+PID = 4242
 
 
-def test_a_window_with_no_document_is_ready() -> None:
-    """A native window has no Document: the rule is about a page whose tree is not built."""
-    button = (1, "Button", "Save", (7, 1), None)
-    assert document_ready(_snap([button])) is True
+def _page(nodes: int, *, document: tuple[int, ...] = (9, 1)) -> list[Row]:
+    """A top Document with `nodes` elements under it."""
+    rows: list[Row] = [(1, "Document", "Shop", document, None)]
+    rows += [(i + 2, "ListItem", f"Item {i}", (9, 100 + i), 1) for i in range(nodes)]
+    return rows
 
 
-def test_the_full_read_of_an_empty_document_is_unstable() -> None:
-    seen = read_observed(EMPTY_PAGE, Reader(), key=KEY)
-    assert seen.snapshot.stable is False
-    assert read_observed(_snap(BASE), Reader(), key=KEY).snapshot.stable is True
-
-
-def test_a_poll_of_an_empty_document_is_unstable_and_reports_unknown() -> None:
-    polled = poll_observed(EMPTY_PAGE)
-    assert polled.tier == "poll"
-    assert polled.snapshot.stable is False
-    assert observe(poll_tier(_snap(BASE)), polled, acted=FIELD[3]).classes == {"unknown"}
+def _seen(rows: list[Row], *, bar: bool = True, stable: bool = True, pid: int = PID) -> Observed:
+    """A full read: `bar` is whether the window has an address bar (`url_observed`)."""
+    snapshot = dataclasses.replace(_snap(rows, stable=stable), pid=pid)
+    return Observed(snapshot=snapshot, url_observed=bar)
 
 
 class _Clock:
@@ -233,31 +227,169 @@ class _Clock:
         self.now += seconds
 
 
-def test_the_first_observation_polls_until_the_document_is_built() -> None:
-    clock = _Clock()
-    reads = iter([EMPTY_PAGE, EMPTY_PAGE, _snap(BASE)])
-    calls: list[int] = []
+class _Screen:
+    """Each frame is what a read sees from its time on; counts every read."""
 
-    def read() -> Observed:
-        calls.append(1)
-        return read_observed(next(reads), Reader(), key=KEY)
+    def __init__(self, clock: _Clock, frames: list[tuple[float, Observed]]) -> None:
+        self.clock, self.frames, self.reads = clock, frames, 0
 
-    got = first_observation(read, clock=clock.monotonic, sleep=clock.sleep)
-    assert got.snapshot.stable is True
-    assert len(got.snapshot.elements) == len(BASE)
-    assert len(calls) == 3
+    def read(self) -> Observed:
+        self.reads += 1
+        return [seen for at, seen in self.frames if at <= self.clock.now][-1]
 
 
-def test_the_first_observation_ends_unstable_at_the_deadline() -> None:
-    clock = _Clock()
-    calls: list[int] = []
-
-    def read() -> Observed:
-        calls.append(1)
-        return read_observed(EMPTY_PAGE, Reader(), key=KEY)
-
-    got = first_observation(
-        read, clock=clock.monotonic, sleep=clock.sleep, deadline_s=2.0, poll_s=0.5
+def _first(screen: _Screen, clock: _Clock, **kwargs: Any) -> Observed:  # Any: keyword knobs
+    return first_observation(
+        screen.read, quiet_s=QUIET_S, clock=clock.monotonic, sleep=clock.sleep, **kwargs
     )
-    assert got.snapshot.stable is False, "never handed over as a stable, empty listing"
-    assert 3 <= len(calls) <= 6
+
+
+def test_document_nodes_are_the_descendants_of_the_top_document() -> None:
+    assert document_nodes(_snap(BASE)) == frozenset({2, 3, 4})
+    assert document_nodes(_snap([PAGE])) == frozenset()
+    assert document_nodes(_snap(NO_DOCUMENT)) is None
+
+
+def test_an_observation_is_not_growing_unless_said() -> None:
+    seen = Observed(snapshot=_snap(BASE))
+    assert seen.growing is False
+    assert seen.document_since is None
+
+
+def test_a_settled_page_is_handed_over_after_one_normal_quiet_window() -> None:
+    clock = _Clock()
+    got = _first(_Screen(clock, [(0.0, _seen(_page(5)))]), clock)
+    assert got.snapshot.stable is True
+    assert got.growing is False
+    assert QUIET_S <= clock.now < QUIET_S + 0.1, "the normal quiet window, not a long one"
+
+
+def test_a_page_growing_in_steps_is_handed_over_with_the_token_and_a_later_read_sees_the_rest() -> (
+    None
+):
+    """gh1: partial plateaus of 0.75-2.5 s before the page grew; the 2 s plateau is handed over
+    early, marked growing; the rest arrives in a later observation."""
+    clock = _Clock()
+    screen = _Screen(
+        clock,
+        [
+            (0.0, _seen(_page(3))),
+            (0.2, _seen(_page(5))),
+            (0.4, _seen(_page(8))),
+            (2.4, _seen(_page(20))),
+        ],
+    )
+    got = _first(screen, clock)
+    assert len(document_nodes(got.snapshot) or ()) == 8
+    assert got.growing is True
+    assert got.snapshot.stable is True
+    assert clock.now < 2.4, "handed over on the plateau, not after it"
+    clock.now = 3.0
+    assert len(document_nodes(screen.read().snapshot) or ()) == 20
+
+
+def test_the_hold_polls_about_every_30_ms() -> None:
+    clock = _Clock()
+    screen = _Screen(clock, [(0.0, _seen(_page(3))), (0.1, _seen(_page(5)))])
+    _first(screen, clock)
+    assert screen.reads >= int((0.1 + QUIET_S) / GROW_POLL_S)
+    assert GROW_POLL_S == 0.03
+
+
+def test_a_page_that_never_stops_growing_is_handed_over_at_the_grow_guard() -> None:
+    clock = _Clock()
+    frames = [(step * 0.2, _seen(_page(3 + step))) for step in range(100)]
+    got = _first(_Screen(clock, frames), clock)
+    assert got.growing is True
+    assert got.snapshot.stable is True
+    assert GROW_GUARD_S <= clock.now < GROW_GUARD_S + 0.1
+    assert GROW_GUARD_S == 3.0
+
+
+def test_notepad_is_ready_at_once() -> None:
+    """No Document and no address bar: a native window, handed over on its first stable read."""
+    clock = _Clock()
+    screen = _Screen(clock, [(0.0, _seen(NO_DOCUMENT, bar=False))])
+    got = _first(screen, clock)
+    assert got.snapshot.stable is True
+    assert got.growing is False
+    assert screen.reads == 1
+    assert clock.now == 0.0
+
+
+def test_a_browser_frame_with_no_document_is_not_handed_over() -> None:
+    """No Document but an address bar: the page has not appeared; never a bare frame."""
+    clock = _Clock()
+    screen = _Screen(clock, [(0.0, _seen(NO_DOCUMENT))])
+    got = _first(screen, clock, deadline_s=2.0)
+    assert got.snapshot.stable is False
+    assert clock.now >= 2.0
+
+
+def test_a_browser_frame_waits_for_its_document_then_holds_it() -> None:
+    clock = _Clock()
+    screen = _Screen(clock, [(0.0, _seen(NO_DOCUMENT)), (1.5, _seen(_page(6)))])
+    got = _first(screen, clock)
+    assert len(document_nodes(got.snapshot) or ()) == 6
+    assert got.snapshot.stable is True
+    assert clock.now >= 1.5 + QUIET_S
+
+
+def test_an_empty_document_is_not_handed_over() -> None:
+    clock = _Clock()
+    got = _first(_Screen(clock, [(0.0, _seen([PAGE]))]), clock, deadline_s=2.0)
+    assert got.snapshot.stable is False
+
+
+def test_an_unstable_read_is_not_handed_over_before_the_deadline() -> None:
+    clock = _Clock()
+    got = _first(_Screen(clock, [(0.0, _seen(_page(5), stable=False))]), clock, deadline_s=2.0)
+    assert got.snapshot.stable is False
+    assert clock.now >= 2.0
+
+
+def test_a_ready_process_is_not_held_again_in_the_task() -> None:
+    clock = _Clock()
+    touches = FirstTouches()
+    _first(_Screen(clock, [(0.0, _seen(_page(5)))]), clock, touches=touches)
+    again = _Screen(clock, [(0.0, _seen(_page(9)))])
+    _first(again, clock, touches=touches)
+    assert again.reads == 1
+    other = _Screen(clock, [(0.0, _seen(_page(5), pid=PID + 1))])
+    _first(other, clock, touches=touches)
+    assert other.reads > 1, "another process is its own first touch, whatever its name"
+
+
+def test_hold_still_ends_at_its_guard_while_the_count_keeps_changing() -> None:
+    """The loop's load-guard wait uses the same hold with its own guard."""
+    clock = _Clock()
+    frames = [(step * 0.2, _seen(_page(3 + step))) for step in range(100)]
+    screen = _Screen(clock, frames)
+    got = hold_still(
+        screen.read,
+        screen.read(),
+        quiet_s=QUIET_S,
+        guard_s=1.0,
+        clock=clock.monotonic,
+        sleep=clock.sleep,
+    )
+    assert got.growing is True
+    assert 1.0 <= clock.now < 1.1
+
+
+def test_document_since_is_when_the_top_document_was_first_seen() -> None:
+    clock = _Clock()
+    since = DocumentSince(clock=clock.monotonic)
+    clock.now = 1.0
+    assert since(_seen(_page(3))).document_since == 1.0
+    clock.now = 4.0
+    assert since(_seen(_page(9))).document_since == 1.0, "the same Document, grown"
+    clock.now = 6.0
+    replaced = since(_seen(_page(2, document=(9, 77))))
+    assert replaced.document_since == 6.0
+    assert since(_seen(NO_DOCUMENT, bar=False)).document_since is None
+
+
+def test_reads_do_not_apply_the_readiness_rule() -> None:
+    """Readiness is the first observation's alone: a read never changes `stable`."""
+    assert read_observed(_snap([PAGE]), Reader(), key=KEY).snapshot.stable is True
