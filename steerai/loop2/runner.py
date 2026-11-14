@@ -247,11 +247,11 @@ class _Run:
         self.turn = _Turn()
         self.read_costs: list[ReadCost] = []
         self.reasked: set[tuple[int, ...]] = set()
+        """[V2.38] RT-12: the top Documents already re-asked on (once per Document)."""
         self.handles = _Handles()
         self.ever: list[_Ever] = []
         self.proofs: dict[str, dict[str, _Proof]] = {}
         """[V2.39] (2): per value or state subgoal, the accepted proof of each param."""
-        """[V2.38] RT-12: the top Documents already re-asked on (once per Document)."""
 
     # ---- the outcome ----------------------------------------------------------------------
 
