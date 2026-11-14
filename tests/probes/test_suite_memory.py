@@ -291,3 +291,40 @@ def test_a_second_browser_in_the_process_is_refused_before_launch(
     finally:
         release_browser()
     assert launched == []
+
+
+# ---- live run 1: a `--tasks` subset is scored on the requested tasks only ----------------------
+
+
+class _Verdicts:
+    def __init__(self) -> None:
+        self.scored: list[list[str]] = []
+
+    def __call__(self, rows: Any, tasks: Any) -> tuple[list[str], bool]:  # noqa: ARG002 - Any: as main passes
+        self.scored.append([t.task_id for t in tasks])
+        return [], True
+
+
+def test_a_task_subset_is_scored_on_the_requested_tasks_in_process(
+    runs: Runs, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    verdicts = _Verdicts()
+    monkeypatch.setattr(suite, "verdict", verdicts)
+    monkeypatch.setattr(suite, "free_physical_mb", _free())
+    out = tmp_path / "rows.jsonl"
+    code = suite.main(
+        ["--set", "gallery", "--runs", "1", "--tasks", "g21,g22", "--in-process", "--out", str(out)]
+    )
+    assert verdicts.scored == [["g21", "g22"]], "never the other 22 gallery tasks at 0/0"
+    assert code == 0
+
+
+def test_a_task_subset_is_scored_on_the_requested_tasks_when_chunked(
+    runs: Runs, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    verdicts = _Verdicts()
+    monkeypatch.setattr(suite, "verdict", verdicts)
+    monkeypatch.setattr(suite, "run_chunked", Chunked())
+    out = tmp_path / "rows.jsonl"
+    suite.main(["--set", "gallery", "--runs", "1", "--tasks", "g21", "--out", str(out)])
+    assert verdicts.scored == [["g21"]]

@@ -20,10 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sys
-import tempfile
-import time
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -98,30 +95,30 @@ def evaluate(rows: Sequence[FieldFacts]) -> dict[str, Any]:  # Any: JSON values
 
 
 def collect(url: str, *, task: str, source: Source) -> list[FieldFacts]:  # pragma: no cover
-    """Read every visible field on `url` in one throwaway Chrome. Windows only, read-only."""
-    from steerai.probes.chrome_a11y import (  # noqa: PLC0415
-        CHROME_DEFAULT,
-        launch_chrome,
-        stop_chrome,
-    )
-    from steerai.probes.layer_b import _free_port  # noqa: PLC0415
-    from steerai.probes.uia_props import _IDS, _uia  # noqa: PLC0415
-    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
+    """Read every visible field inside the page's top Document on `url`, in one throwaway Chrome
+    (guarded launch). Windows only, read-only.
 
-    tmp = Path(tempfile.mkdtemp(prefix="steer-qfields-"))
-    proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", _free_port(), url)
-    try:
-        hwnd = wait_window_for_pid(proc.pid, image="chrome.exe", process=proc).hwnd
-        time.sleep(6.0)  # the page settles its first layout
-        uia, mod = _uia()
-        found = uia.ElementFromHandle(hwnd).FindAll(
-            mod.TreeScope_Descendants, uia.CreateTrueCondition()
-        )
+    Live run 1: the window-wide search read only Chrome's omnibox ("Address and search bar") on
+    every page. The search is now scoped to the Document `live_page` waited for, and a page with
+    no field in it fails loudly (`no_page_fields`) instead of scoring an empty list."""
+    from steerai.probes.live_browser import live_page, retry_until  # noqa: PLC0415
+    from steerai.probes.memory_guard import FLOOR_MB  # noqa: PLC0415
+    from steerai.probes.uia_props import _IDS  # noqa: PLC0415
+
+    with live_page(url, floor_mb=FLOOR_MB, settle_s=6.0) as page:
+        uia, mod = page.uia, page.mod
+
+        def fields() -> list[Any]:  # Any: COM elements
+            found = page.document.FindAll(mod.TreeScope_Descendants, uia.CreateTrueCondition())
+            return [
+                e
+                for e in (found.GetElement(i) for i in range(found.Length))
+                if e.CurrentControlType in FIELD_TYPES and not e.CurrentIsOffscreen
+            ]
+
+        elements = retry_until(fields, what="no_page_fields")
         rows = []
-        for i in range(found.Length):
-            element = found.GetElement(i)
-            if element.CurrentControlType not in FIELD_TYPES or element.CurrentIsOffscreen:
-                continue
+        for element in elements:
             props = str(element.GetCurrentPropertyValue(_IDS["AriaProperties"]) or "")
             group = _group(uia, element, _IDS["LandmarkType"])
             rows.append(
@@ -137,9 +134,17 @@ def collect(url: str, *, task: str, source: Source) -> list[FieldFacts]:  # prag
                 )
             )
         return rows
-    finally:
-        stop_chrome(proc, tmp / "profile")
-        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _collected(  # pragma: no cover - live
+    url: str, task: str, source: Source, errors: list[dict[str, Any]]
+) -> list[FieldFacts]:
+    """`collect`, with a page that never became readable recorded as an error row."""
+    try:
+        return collect(url, task=task, source=source)
+    except RuntimeError as unreadable:  # TreeNotReady: no Document, or no field in it
+        errors.append({"task": task, "error": str(unreadable)})
+        return []
 
 
 def _multiline(props: str) -> bool | None:
@@ -194,6 +199,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live
     from steerai.probes.uia_props import site_fields  # noqa: PLC0415
 
     rows: list[FieldFacts] = []
+    errors: list[dict[str, Any]] = []
     seen: set[str] = set()
     for task in (*TASKS, *HELD_OUT, *H2, *H3, *H4, *H5, *H6):
         if task.start in seen or task.start == "h7":
@@ -202,14 +208,18 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live
         if task.start.startswith("https://"):
             if site_fields(task.start)["query_class_possible"]:
                 continue  # already a query field under §7.2: not a positive
-            rows += collect(task.start, task=task.task_id, source="positive")
+            rows += _collected(task.start, task.task_id, "positive", errors)
         elif task.start in PAGE_SETS:  # local pages only; "h7" (sealed) is skipped above
             with PageServer(_pages_for(task)) as server:
                 url = f"http://127.0.0.1:{server.port}/page.html"
-                rows += collect(url, task=task.task_id, source="negative")
+                rows += _collected(url, task.task_id, "negative", errors)
     args.out.write_text("\n".join(json.dumps(asdict(r)) for r in rows) + "\n", encoding="utf-8")
+    for error in errors:
+        sys.stdout.write(json.dumps(error) + "\n")
     sys.stdout.write(json.dumps(evaluate(rows)) + "\n")
-    return 0
+    from steerai.probes.live_browser import exit_code  # noqa: PLC0415
+
+    return exit_code(errors)
 
 
 if __name__ == "__main__":
