@@ -11,9 +11,16 @@ page ([V2.30] (1): counted, not narrowed).
 from __future__ import annotations
 
 from collections.abc import Mapping
+from functools import lru_cache
 from typing import Final
 
-from steerai.orchestrator.gate import DenyFacts, billing_reads, deny_tier_of, group_name
+from steerai.orchestrator.gate import (
+    DenyFacts,
+    billing_reads,
+    deny_tier_of,
+    group_name,
+    may_read,
+)
 from steerai.world.effects import Observed
 from steerai.world.elements import Element
 
@@ -27,6 +34,9 @@ STATE_SET_VERB: Final[Mapping[str, str]] = {
 """[V2.26] (1): the state verb a Space or an Enter performs on each state-set role; the press
 takes that verb's deny scoping (consent and billing read a selected option, as `select` does)."""
 ENTER_FIELDS: Final = frozenset({"Edit", "ComboBox"})
+RISKY_MEMO: Final = 4096
+"""How many (role, name, automation id, group) readings the risky pass remembers (#314): the
+type-time and the dispatch-time scans of one form read the same elements."""
 ACTING_ROLES: Final = frozenset({"Button", "Hyperlink", "MenuItem", "SplitButton"})
 """[V2.26] (3): Enter by the role it goes to: a field is classified, an acting role is a click
 (deny words and the pending-text rule), a state-set role is (1), anything else is R2."""
@@ -95,30 +105,38 @@ def form_facts(observed: Observed, field: tuple[int, ...]) -> tuple[bool, bool]:
     `observed`. Secure: an element's secure flag is set or was not read. Risky: an element gets
     the billing class, or `deny_tier_of` raises it to R3, for the verb that fits its role. An
     element whose place is unknown counts as inside; a field that is not in the snapshot makes
-    both facts true."""
+    both facts true.
+
+    Cost (#314, [V2.32]): the secure pass is a flag read per member; the risky pass stops at the
+    first risky member, skips a member no pattern can read (`gate.may_read`, locked against
+    `deny_tier_of`), and remembers each (role, name, automation id, group) it decided."""
     snapshot = observed.snapshot
     typed = next((e for e in snapshot.elements if e.runtime_id == field), None)
     if typed is None:
         return True, True
     by_id = {e.id: e for e in snapshot.elements}
-    secure = risky = False
-    for element in snapshot.elements:
-        if element.runtime_id == field or _beside(observed, by_id, typed, element) is False:
-            continue
-        secure = secure or element.secure or element.id in snapshot.unread_secure
-        risky = risky or _risky(observed, element)
+    members = [
+        e
+        for e in snapshot.elements
+        if e.runtime_id != field and _beside(observed, by_id, typed, e) is not False
+    ]
+    secure = any(e.secure or e.id in snapshot.unread_secure for e in members)
+    risky = any(_risky(observed, e) for e in members)
     return secure, risky
 
 
 def _risky(observed: Observed, element: Element) -> bool:
-    group = group_name(observed.snapshot, element)
-    for verb in fitting_verbs(element.role):
+    group = group_name(observed.snapshot, element) or ""
+    return _reads_risky(element.role, element.name, element.automation_id, group)
+
+
+@lru_cache(maxsize=RISKY_MEMO)
+def _reads_risky(role: str, name: str, automation_id: str, group: str) -> bool:
+    if not may_read([name, group], [automation_id]):
+        return False
+    for verb in fitting_verbs(role):
         facts = DenyFacts(
-            verb=verb,
-            role=element.role,
-            name=element.name,
-            automation_id=element.automation_id,
-            group_name=group,
+            verb=verb, role=role, name=name, automation_id=automation_id, group_name=group or None
         )
         if billing_reads(facts) or deny_tier_of(facts) == "R3":
             return True

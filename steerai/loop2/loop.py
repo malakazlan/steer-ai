@@ -437,7 +437,11 @@ def _classified(  # noqa: PLR0913 - one submit: the tally, the action, its text 
     roles = observed.aria_roles
     box = recorded.searchbox and roles is not None and roles.get(held.field) == "searchbox"
     still = recorded.in_search_landmark and search_landmark_of(observed, held.field) is not None
-    secure, risky = form_facts(observed, held.field)
+    goal_span = held.goal_span and state == "held"
+    # #314, [V2.32]: the form is scanned only when every other condition still allows a query;
+    # otherwise `classify` gives R2 whatever the form holds
+    may_query = (box or still) and goal_span and action.commit == "none" and not denied
+    secure, risky = form_facts(observed, held.field) if may_query else (False, False)
     now = dataclasses.replace(
         recorded,
         searchbox=box,
@@ -445,12 +449,7 @@ def _classified(  # noqa: PLR0913 - one submit: the tally, the action, its text 
         secure_in_form=recorded.secure_in_form or secure,
         risky_in_form=recorded.risky_in_form or risky,
     )
-    return classify(
-        field=now,
-        goal_span=held.goal_span and state == "held",
-        commit=action.commit,
-        deny_word=denied,
-    )
+    return classify(field=now, goal_span=goal_span, commit=action.commit, deny_word=denied)
 
 
 def _enter(  # noqa: PLR0913 - the tally, the action, its target and the read facts

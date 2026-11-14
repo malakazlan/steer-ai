@@ -9,6 +9,9 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Sequence
 
+import pytest
+
+from steerai.loop2 import form, loop, query
 from steerai.loop2.loop import PendingText, action_risk
 from steerai.loop2.query import SearchFacts, search_facts
 from steerai.world.effects import Observed, ValueFact
@@ -142,3 +145,45 @@ def test_an_image_with_a_delete_automation_id_in_the_form_makes_the_enter_r2() -
 def test_a_combobox_naming_a_price_in_the_form_makes_the_enter_r2() -> None:
     shown = screen([*PLAIN, element(72, "ComboBox", "Plan $20/mo", (9, 72), 60)])
     assert enter_risk(shown, shown) == "R2"
+
+
+# ---- #314: the form is scanned only where its facts can change a risk -------------------------
+
+
+def _counting(monkeypatch: pytest.MonkeyPatch, module: object) -> list[int]:
+    calls: list[int] = []
+    real = form.form_facts
+
+    def counted(seen: Observed, field: tuple[int, ...]) -> tuple[bool, bool]:
+        calls.append(1)
+        return real(seen, field)
+
+    monkeypatch.setattr(module, "form_facts", counted)
+    return calls
+
+
+def test_a_field_that_is_not_query_class_is_not_scanned_and_reads_as_risky(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _counting(monkeypatch, query)
+    found = facts(screen(searchbox=False, marks_read=False))
+    assert calls == []
+    assert (found.secure_in_form, found.risky_in_form) == (True, True)
+
+
+def test_a_submit_that_cannot_be_a_query_does_not_scan_the_form(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    held = PendingText(BOX.runtime_id, TYPED, TYPED, facts(screen()), True)
+    calls = _counting(monkeypatch, loop)
+    declared = act("press", key="Enter", commit="send")
+    risk = action_risk(declared, BOX, goal=GOAL, observed=screen(), pending=[held]).risk
+    assert (risk, calls) == ("R2", [])
+
+
+def test_a_submit_that_may_be_a_query_scans_the_form(monkeypatch: pytest.MonkeyPatch) -> None:
+    held = PendingText(BOX.runtime_id, TYPED, TYPED, facts(screen()), True)
+    calls = _counting(monkeypatch, loop)
+    enter = act("press", key="Enter")
+    assert action_risk(enter, BOX, goal=GOAL, observed=screen(), pending=[held]).risk == "R1"
+    assert calls == [1]

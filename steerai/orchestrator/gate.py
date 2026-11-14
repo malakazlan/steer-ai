@@ -34,7 +34,7 @@ from steerai.orchestrator.contracts import (
     verbatim_in,
 )
 from steerai.orchestrator.identity import Binding, CandidateLine, lines_for
-from steerai.verify.deny_skeleton import camel_split, holds
+from steerai.verify.deny_skeleton import camel_split, holds, may_hold
 from steerai.verify.predicates import Appeared, Predicate, Present, Within, comparable, presents
 from steerai.verify.strength import Params, strength, strengthen, template_for
 from steerai.verify.t1 import redact
@@ -346,6 +346,40 @@ def billing_reads(facts: DenyFacts) -> bool:
     if any(_BILLED.search(comparable(name)) for name in names):
         return True
     return any(_reads(name, pattern) for pattern in BILLING_PATTERNS for name in names)
+
+
+_FIRST_WORDS: frozenset[str] = frozenset(
+    pattern.split()[0]
+    for patterns in (DENY_PATTERNS, CONTROL_PATTERNS, CONSENT_PATTERNS, BILLING_PATTERNS)
+    for pattern in patterns
+)
+"""The first word of every pattern `deny_tier_of` reads: no pattern reads a text unless its first
+word does (`_contains` needs it among the words; `holds` needs its expression to match)."""
+
+
+def may_read(names: Sequence[str], automation_ids: Sequence[str]) -> bool:
+    """A cheap, conservative prefilter (#314, [V2.32]): False only when no deny, control, consent
+    or billing pattern and no price can read any of `names` or `automation_ids`, so
+    `deny_tier_of` and `billing_reads` would read nothing on facts built from them alone. One
+    normalisation and one combined search per text, instead of one per pattern. Locked against
+    `deny_tier_of` on the deny grid (`tests/orchestrator/test_may_read.py`)."""
+    for name in names:
+        if not name:
+            continue
+        if _BILLED.search(comparable(name)) or _FIRST_WORDS.intersection(_words(name)):
+            return True
+        if may_hold(name, _FIRST_WORDS):
+            return True
+    for automation_id in automation_ids:
+        if not automation_id:
+            continue
+        if _FIRST_WORDS.intersection(_id_words(automation_id)):
+            return True
+        if may_hold(camel_split(automation_id), _FIRST_WORDS) or may_hold(
+            automation_id, _FIRST_WORDS
+        ):
+            return True
+    return False
 
 
 def _listed_tier(facts: DenyFacts) -> Risk:

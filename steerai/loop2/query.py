@@ -88,12 +88,16 @@ def search_facts(observed: Observed, field: tuple[int, ...]) -> SearchFacts:
     """The facts `field` is typed under, read from `observed` when Steer types into it. An unread
     AriaRole map or a missing entry is never a searchbox, and an unread landmark map is never a
     search landmark (#307 review, [V2.30] (4)); the form facts read a missing fact as inside the
-    form ([V2.30] (1))."""
+    form ([V2.30] (1)). The form is scanned only for a query-class field (#314, [V2.32]): for any
+    other field no submit of its text can be a query, so its form facts are not read and read as
+    true."""
     roles = observed.aria_roles
-    secure, risky = form_facts(observed, field)
+    searchbox = roles is not None and roles.get(field) == "searchbox"
+    in_landmark = search_landmark_of(observed, field) is not None
+    secure, risky = form_facts(observed, field) if searchbox or in_landmark else (True, True)
     return SearchFacts(
-        searchbox=roles is not None and roles.get(field) == "searchbox",
-        in_search_landmark=search_landmark_of(observed, field) is not None,
+        searchbox=searchbox,
+        in_search_landmark=in_landmark,
         secure_in_form=secure,
         risky_in_form=risky,
     )
