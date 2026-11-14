@@ -20,18 +20,21 @@ stop's own value and the reason records `after_refusal` plus the token.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from dataclasses import field as dataclass_field
+from typing import Final, Literal
 
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2._stub import stub
 from steerai.loop2.decision import ActionDoc, Decision
 from steerai.loop2.guards import StrikeReason
-from steerai.loop2.query import SearchFacts
-from steerai.loop2.task import Task
-from steerai.orchestrator.contracts import Risk
+from steerai.loop2.query import SearchFacts, classify, shares_search_landmark
+from steerai.loop2.task import Commit, Task
+from steerai.orchestrator.contracts import RISKS, Risk
+from steerai.orchestrator.gate import DenyFacts, deny_tier_of, group_name
+from steerai.verify.predicates import FIELD_ROLES
 from steerai.world.effects import Observed, ValueFact
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot, resolve_in
@@ -174,27 +177,298 @@ class PendingText:
     """The typed text was a goal span (by param)."""
 
 
-@stub
-def action_risk(  # noqa: PLR0913 - the action, its target and keyword-only facts
+COMMIT_RISK: Final[Mapping[Commit, Risk]] = {
+    "none": "R0",
+    "send": "R2",
+    "submit": "R2",
+    "delete": "R3",
+    "pay": "R3",
+}
+"""A declared commit's tier: v1's verb floors (send and submit R2, delete R3) and its deny list
+(`pay` R3)."""
+STATE_FLOOR: Final = frozenset({"check", "uncheck", "select", "choose", "expand", "collapse"})
+"""v1's R1 floor for the state verbs and `choose` (contracts `_RISK_FLOOR`)."""
+NO_DENY_VERBS: Final = frozenset({"scroll", "wait"})
+"""A scroll moves the view and a wait sends nothing: no deny word on them raises the tier; a
+declared commit still does."""
+ACTIVATING_VERBS: Final = frozenset(
+    {"click", "focus", "expand", "collapse", "check", "uncheck", "select"}
+)
+"""Every verb that can activate an element: the [V2.22] submit rule applies to each (principal
+review 2); the role exclusion keeps real state targets out."""
+SUBMIT_KEYS: Final = frozenset({"Enter", "Space"})
+"""Keys that activate a non-field element the way a click does ([V2.22])."""
+NOT_A_SUBMIT: Final = FIELD_ROLES | frozenset(
+    {"CheckBox", "RadioButton", "ListItem", "TabItem", "TreeItem"}
+)
+"""[V2.22] addendum: a field or a state-set role is never a submit of a field's text."""
+SENT_COMMITS: Final = frozenset({"send", "submit"})
+NO_SEARCH = SearchFacts(
+    searchbox=False, in_search_landmark=False, secure_in_form=False, payment_in_form=False
+)
+_ORDER: Final = {risk: index for index, risk in enumerate(RISKS)}
+AskReason = Literal["generated_text", "text_changed", "submit_pending_text"]
+"""[V2.25]: `generated_text` and `text_changed` are asks no grant covers; `submit_pending_text`
+marks a tier the submit rule raised, so its blocks are counted on their own."""
+ParentKind = Literal["document", "main", "narrower"]
+Held = Literal["held", "changed", "unread"]
+"""A typed field still in the snapshot and not empty: what Steer typed (same digest), something
+else (a reformat or an autocomplete), or a value that could not be read."""
+
+
+@dataclass(frozen=True)
+class RiskVerdict:
+    """What `action_risk` decides: the tier, the ask reasons beside it, the kind of the field's
+    parent when the submit rule fired (for the per-kind count), and a refusal: a declared send
+    or submit of text that changed since Steer typed it is refused (`text_changed`), so the
+    controller clears and retypes ([V2.25] addendum)."""
+
+    risk: Risk
+    reasons: frozenset[AskReason] = frozenset()
+    submit_parent: ParentKind | None = None
+    refusal: Literal["text_changed"] | None = None
+
+
+@dataclass
+class _Tally:
+    risk: Risk = "R0"
+    reasons: set[AskReason] = dataclass_field(default_factory=set)
+    submit_parent: ParentKind | None = None
+    refused: bool = False
+
+    def raise_to(self, tier: Risk) -> None:
+        self.risk = _highest(self.risk, tier)
+
+
+def _highest(*tiers: Risk) -> Risk:
+    return max(tiers, key=_ORDER.__getitem__)
+
+
+def action_risk(
     action: ActionDoc,
     element: Element,
     *,
     goal: str,
-    search: SearchFacts | None,
-    observed: Observed | None = None,
+    observed: Observed,
     pending: Sequence[PendingText] = (),
-) -> Risk:
-    """§7.2: the max of the declared commit, deny words, a secure field and text provenance;
-    raise-only, so no model field lowers it (§8.2). `search` is the field's facts for an Enter
-    or a click that may be a query.
+) -> RiskVerdict:
+    """§7.2, §8.2: raise-only, so no model field lowers it. The tier is the max of:
 
-    [V2.22] the submit-button hole: a click is a submit of a field whose text is still pending
-    (`pending`, read on `observed`) when the target sits under that field's parent container or
-    shares its nearest landmark and is not itself a field or a state-set role (Edit, ComboBox,
-    CheckBox, RadioButton, ListItem, TabItem, TreeItem). It is then classified like the Enter:
-    R1 query when every §7.2 condition holds, else R2. Once the field is emptied or gone the
-    click is a plain click."""
-    raise NotImplementedError("3c: action risk")
+    - the declared commit (`COMMIT_RISK`) and v1's R1 floor for the state verbs and `choose`;
+    - v1's deny, control, consent and billing patterns on `element` (`gate.deny_tier_of`), with
+      its group name read on `observed`. `element` is the element the action goes to: for a
+      press, the last acted element, so a press takes that element's deny scoping. A scroll and
+      a wait read no deny words;
+    - a `type` into a secure field: R3 (the loop also refuses it);
+    - an Enter on a field: `query.classify` with the field's own pending text (its search facts
+      and goal span); no pending text, an unread value or a changed one is never a query;
+    - [V2.22] the submit rule, for every activating verb and an Enter or Space on a non-field:
+      a target that is not a field or a state-set role, while a field typed under this subgoal
+      is non-empty, sitting under that field's parent container or sharing its nearest
+      landmark, is classified like the Enter. No Document or Main exception ([V2.25] (b)). A
+      missing fact (an unread value or landmark map, a broken parent chain) fails closed to R2.
+
+    Reasons ([V2.25]): `generated_text` on any action at R2 or above that types free text or
+    while a field holds generated text; `text_changed` on a caution submit of text that changed
+    since Steer typed it (a declared send or submit of it is refused instead);
+    `submit_pending_text` when the submit rule raised the tier. Below R2 nothing is added: free
+    text stays at its tier and the dispatch's provenance marks it in the trace.
+
+    An empty name raises nothing by itself; an unnamed target is still raised by its automation
+    id, its group name and the submit rule. `goal` is kept for the step-4 goal check."""
+    del goal  # the per-action goal check is step 4
+    tally = _Tally(COMMIT_RISK[action.commit])
+    tally.raise_to("R1" if action.verb in STATE_FLOOR else "R0")
+    deny: Risk = "R0"
+    if action.verb not in NO_DENY_VERBS:
+        deny = deny_tier_of(_deny_facts(action, element, observed))
+        tally.raise_to(deny)
+        if _parent_unread(element, observed):
+            tally.raise_to("R2")  # its group name cannot be read: never read as "no group"
+    if action.verb == "type" and element.secure:
+        tally.raise_to("R3")
+    states = _states(observed, pending)
+    denied = _ORDER[deny] >= _ORDER["R2"]
+    is_key = action.verb == "press"
+    if is_key and action.key == "Enter" and element.role in FIELD_ROLES:
+        _enter(tally, action, element, states, denied=denied)
+    elif action.verb in ACTIVATING_VERBS or (is_key and action.key in SUBMIT_KEYS):
+        _submit(tally, action, element, observed, states, denied=denied)
+    if _ORDER[tally.risk] >= _ORDER["R2"] and _generated(action, states):
+        tally.reasons.add("generated_text")
+    return RiskVerdict(
+        tally.risk,
+        frozenset(tally.reasons),
+        tally.submit_parent,
+        "text_changed" if tally.refused else None,
+    )
+
+
+def _parent_unread(element: Element, observed: Observed) -> bool:
+    """The element names a parent the snapshot does not hold, so `gate.group_name` would read
+    "no group" for a fact that was simply not observed."""
+    return element.parent_id is not None and all(
+        e.id != element.parent_id for e in observed.snapshot.elements
+    )
+
+
+def _deny_facts(action: ActionDoc, element: Element, observed: Observed) -> DenyFacts:
+    return DenyFacts(
+        verb=action.verb,
+        role=element.role,
+        name=element.name,
+        automation_id=element.automation_id,
+        option=action.option,
+        group_name=group_name(observed.snapshot, element),
+    )
+
+
+def _states(observed: Observed, pending: Sequence[PendingText]) -> list[tuple[PendingText, Held]]:
+    """The typed fields the submit rule is on for: still in the snapshot (else gone) and not
+    emptied ([V2.25] addendum: a changed digest keeps it on)."""
+    shown = {e.runtime_id for e in observed.snapshot.elements}
+    states: list[tuple[PendingText, Held]] = []
+    for held in pending:
+        if held.field not in shown:
+            continue
+        if held.now is None:
+            states.append((held, "unread"))
+        elif held.now.filled:
+            same = held.now.digest == held.typed.digest
+            states.append((held, "held" if same else "changed"))
+    return states
+
+
+def _generated(action: ActionDoc, states: Sequence[tuple[PendingText, Held]]) -> bool:
+    free_text = action.verb == "type" and action.param is None
+    return free_text or any(not held.goal_span for held, _ in states)
+
+
+def _classified(  # noqa: PLR0913 - one submit: the tally, the action, its text and facts
+    tally: _Tally,
+    action: ActionDoc,
+    held: PendingText,
+    state: Held,
+    *,
+    verb: Literal["press", "click"],
+    denied: bool,
+    same_landmark: bool = False,
+) -> Risk:
+    """One submit of `held`'s text, like the Enter. Unread fails closed; a changed text is never
+    a query, asks `text_changed` under a commit-none subgoal, and refuses a declared send."""
+    if state == "unread":
+        return "R2"
+    if state == "changed":
+        if action.commit in SENT_COMMITS:
+            tally.refused = True
+        elif action.commit == "none":
+            tally.reasons.add("text_changed")
+    return classify(
+        verb=verb,
+        field=held.search,
+        goal_span=held.goal_span and state == "held",
+        commit=action.commit,
+        deny_word=denied,
+        same_landmark=same_landmark,
+    )
+
+
+def _enter(
+    tally: _Tally,
+    action: ActionDoc,
+    field: Element,
+    states: Sequence[tuple[PendingText, Held]],
+    *,
+    denied: bool,
+) -> None:
+    mine = next(((h, s) for h, s in states if h.field == field.runtime_id), None)
+    if mine is None:
+        tally.raise_to(
+            classify(
+                verb="press",
+                field=NO_SEARCH,
+                goal_span=False,
+                commit=action.commit,
+                deny_word=denied,
+            )
+        )
+        return
+    held, state = mine
+    tally.raise_to(_classified(tally, action, held, state, verb="press", denied=denied))
+
+
+def _submit(  # noqa: PLR0913 - the tally, the action, its target and the read facts
+    tally: _Tally,
+    action: ActionDoc,
+    target: Element,
+    observed: Observed,
+    states: Sequence[tuple[PendingText, Held]],
+    *,
+    denied: bool,
+) -> None:
+    if not states or target.role in NOT_A_SUBMIT:
+        return
+    for held, state in states:
+        beside = _beside(observed, held.field, target)
+        if beside is False:
+            continue
+        tally.submit_parent = tally.submit_parent or _parent_kind(observed, held.field)
+        if beside is None:
+            tier: Risk = "R2"
+        else:
+            same = shares_search_landmark(observed, held.field, target.runtime_id)
+            tier = _classified(
+                tally, action, held, state, verb="click", denied=denied, same_landmark=same
+            )
+        if _ORDER[tier] >= _ORDER["R2"]:
+            tally.reasons.add("submit_pending_text")
+        tally.raise_to(tier)
+
+
+def _beside(observed: Observed, field: tuple[int, ...], target: Element) -> bool | None:
+    """[V2.22] the target is under the field's parent container, or shares its nearest landmark;
+    None when a fact needed to tell is missing (a broken parent chain, or the landmark map or
+    either element in it not read)."""
+    by_id = {e.id: e for e in observed.snapshot.elements}
+    typed = next(e for e in observed.snapshot.elements if e.runtime_id == field)
+    if typed.parent_id is not None:
+        under = _under(target, typed.parent_id, by_id)
+        if under is not False:
+            return under
+    marks = observed.landmarks
+    if marks is None or field not in marks or target.runtime_id not in marks:
+        return None
+    mine, theirs = marks[field], marks[target.runtime_id]
+    return mine is not None and theirs is not None and mine.runtime_id == theirs.runtime_id
+
+
+def _under(element: Element, ancestor: int, by_id: Mapping[int, Element]) -> bool | None:
+    """True when `ancestor` is above `element`; None when the chain breaks (a parent id that is
+    not in the snapshot): unknown, never "elsewhere" (principal review 3)."""
+    seen: set[int] = set()
+    parent = element.parent_id
+    while parent is not None and parent not in seen:
+        if parent == ancestor:
+            return True
+        current = by_id.get(parent)
+        if current is None:
+            return None
+        seen.add(parent)
+        parent = current.parent_id
+    return False
+
+
+def _parent_kind(observed: Observed, field: tuple[int, ...]) -> ParentKind:
+    """[V2.25] (b): the field's parent is the Document, a Main landmark, or narrower."""
+    by_id = {e.id: e for e in observed.snapshot.elements}
+    typed = next(e for e in observed.snapshot.elements if e.runtime_id == field)
+    parent = None if typed.parent_id is None else by_id.get(typed.parent_id)
+    if parent is None or parent.role == "Document":
+        return "document"
+    nearest = None if observed.landmarks is None else observed.landmarks.get(field)
+    if nearest is not None and nearest.kind == "main" and nearest.runtime_id == parent.runtime_id:
+        return "main"
+    return "narrower"
 
 
 @stub

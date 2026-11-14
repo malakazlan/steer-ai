@@ -3,8 +3,12 @@ retried, no ladder on R2/R3, and a press goes to the last acted element. Red on 
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
+from steerai.action.dispositions import ActionResult, Delivery, Step
+from steerai.errors import ErrorCode
 from steerai.loop2 import actuate
 from steerai.loop2.actuate import may_retry, press_allowed
 from steerai.orchestrator.contracts import Risk
@@ -65,3 +69,43 @@ def test_a_query_click_with_any_effect_but_proven_none_gets_no_rung(
     monkeypatch.setattr(actuate, "RETRY_RUNGS", 1)
     for seen in (report("focus"), report("unknown"), report("none", unread=["url"])):
         assert may_retry(risk="R1", verified=False, report=seen) is False
+
+
+# ---- [V2.25] (c): nothing sent gets v1's one local retry; uncertain is unknown, no retry -------
+
+LEFT = ActionResult(verb="click", delivery=Delivery.NOT_DELIVERED, code=ErrorCode.ELEMENT_NOT_FOUND)
+
+
+@pytest.mark.parametrize("risk", ["R0", "R1", "R2", "R3"])
+def test_nothing_sent_gets_v1s_one_local_retry_under_the_same_decision(risk: Risk) -> None:
+    assert may_retry(risk=risk, verified=False, report=report("none"), act=LEFT) is True
+
+
+def test_v1s_local_retry_is_once() -> None:
+    assert may_retry(risk="R1", verified=False, report=report("none"), act=LEFT, retries=1) is False
+
+
+def test_a_not_delivered_act_that_sent_steps_is_not_retried() -> None:
+    tried = dataclasses.replace(
+        LEFT, steps=[Step(label="Invoke", mechanism="semantic", outcome="failed")]
+    )
+    assert may_retry(risk="R1", verified=False, report=report("none"), act=tried) is False
+
+
+def test_a_not_delivered_act_with_another_code_is_not_retried() -> None:
+    other = dataclasses.replace(LEFT, code=ErrorCode.ELEMENT_NOT_ACTIONABLE)
+    assert may_retry(risk="R1", verified=False, report=report("none"), act=other) is False
+
+
+def test_an_uncertain_delivery_is_never_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(actuate, "RETRY_RUNGS", 1)
+    uncertain = ActionResult(
+        verb="click", delivery=Delivery.DELIVERY_UNCERTAIN, code=ErrorCode.VERIFY_TIMEOUT
+    )
+    assert may_retry(risk="R0", verified=False, report=report("none"), act=uncertain) is False
+
+
+def test_the_local_retry_codes_are_v1s() -> None:
+    from steerai.orchestrator import loop as v1_loop  # noqa: PLC0415 - the v1 constant, locked
+
+    assert actuate.ACT_RETRY_CODES == v1_loop._ACT_RETRY_CODES
