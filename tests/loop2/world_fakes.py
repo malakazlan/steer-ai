@@ -25,9 +25,10 @@ from steerai.world.watch import Watched
 
 
 def pending(rule: str) -> pytest.MarkDecorator:
-    """[V2.9] a 3c invariant written before its code: it must fail on the stub's
-    `NotImplementedError` and nothing else, and the mark comes off when 3c implements it."""
-    return pytest.mark.xfail(strict=True, raises=NotImplementedError, reason=f"3c: {rule}")
+    """[V2.9] an invariant written before its code (step 3c or step 4): it must fail on the
+    stub's `NotImplementedError` and nothing else, and the mark comes off when the step
+    implements it. `rule` names the rule it guards (§n or [V2.n])."""
+    return pytest.mark.xfail(strict=True, raises=NotImplementedError, reason=f"stub: {rule}")
 
 
 GOAL = "search the shop for red shoes"
@@ -157,7 +158,9 @@ class World:
     screen: Observed = field(default_factory=observed)
     read_backs: list[bool | None] = field(default_factory=list)
     interrupt_after: int | None = None
-    """Report a takeover once this many actions were dispatched."""
+    """Report `interruption` once this many actions were dispatched."""
+    interruption: str = "takeover"
+    """What the interruption is: a takeover, or the person's kill (`killed`)."""
     after: Observed | None = None
     later: Observed | None = None
     """The screen once `later_after_acts` actions were dispatched (results that arrive late)."""
@@ -214,7 +217,7 @@ class World:
 
     def _interrupted(self) -> str | None:
         if self.interrupt_after is not None and len(self.dispatched) >= self.interrupt_after:
-            return "takeover"
+            return self.interruption
         return None
 
     def ports(self) -> Ports:

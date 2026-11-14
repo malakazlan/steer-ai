@@ -87,6 +87,17 @@ def test_loop2_is_not_ready_while_any_stub_is_left() -> None:
     assert "steerai.loop2.loop.run_task" in PENDING
 
 
+def test_the_step_4_interfaces_keep_loop2_not_ready() -> None:
+    ready()
+    step4 = {
+        "steerai.loop2.claims.check_content",
+        "steerai.loop2.consent.gate_pass",
+        "steerai.loop2.consent.Consents.grant",
+        "steerai.loop2.record.key_for",
+    }
+    assert step4 <= PENDING
+
+
 def test_loop_v2_refuses_to_start_while_it_is_not_built(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
