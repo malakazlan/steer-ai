@@ -13,7 +13,7 @@ from steerai.loop2 import runner
 from steerai.loop2._stub import PENDING
 from steerai.loop2.decision import Decision
 from steerai.loop2.query import query_outcome
-from steerai.loop2.runner import run_task, stale_observation
+from steerai.loop2.runner import enter_outcome, run_task, stale_observation
 from steerai.world.effects import Observed
 from steerai.world.elements import Element
 from steerai.world.landmarks import Landmark
@@ -362,3 +362,97 @@ def test_the_post_decision_observe_is_logged_in_read_costs() -> None:
     )
     outcome = run_task(task(), world.ports())
     assert cost in outcome.read_costs
+
+
+# ---- the tester's #335 kill tests ---------------------------------------------------------------
+
+
+def test_the_outcome_counts_the_stale_observations() -> None:
+    world = World(
+        [decision(act("click", target=GO.id), first=True), Decision(stop="cannot")],
+        observations=[observed(), _moved(URL + "next")],
+    )
+    assert run_task(task(), world.ports()).stale_observations == 1
+
+
+def test_a_fresh_turn_resets_the_stale_streak() -> None:
+    """Stale, fresh (dispatched), stale: two stale turns, not in a row: no strike."""
+    a, b = _moved(URL + "a"), _moved(URL + "b")
+    world = World(
+        [decision(act("click", target=GO.id), first=True)] * 3,
+        observations=[observed(), a, a, b],
+        effects=[report("own_state")],
+    )
+    outcome = run_task(task(), world.ports())
+    assert len(world.dispatched) == 1
+    assert outcome.stale_observations == 2
+    assert outcome.strikes == ()
+
+
+def test_the_batch_resolves_on_the_decided_listing_so_a_renamed_element_is_refused() -> None:
+    """RT-17: the ids are the listing the Decision was made on; the fresh read renamed the
+    target, so the role-and-name re-check refuses it."""
+    renamed = element(GO.id, "Button", "Find", GO.runtime_id, 1)
+    fresh = observed([renamed if e.id == GO.id else e for e in PAGE])
+    world = World(
+        [decision(act("click", target=GO.id), first=True)], observations=[observed(), fresh]
+    )
+    run_task(task(), world.ports())
+    assert world.dispatched == []
+
+
+def test_a_results_carrier_without_a_url_carrier_carries_nothing() -> None:
+    outcome = enter_outcome(
+        report("content_changed", carriers=["results"]),
+        before=observed(),
+        after=observed(),
+        typed_field="kept",
+    )
+    assert (outcome.outcome, outcome.row) == ("unexpected_effect", "4")
+
+
+def test_a_rerender_of_the_same_top_document_is_not_row_3() -> None:
+    same = enter_outcome(
+        report("content_changed", tokens=["rerendered"], carriers=["title"]),
+        before=observed(),
+        after=observed(),
+        typed_field="kept",
+    )
+    assert same.row != "3"
+    replaced = dataclasses.replace(PAGE[0], runtime_id=(9, 501))
+    other = enter_outcome(
+        report("content_changed", tokens=["rerendered"], carriers=["title"]),
+        before=observed(),
+        after=observed([replaced, *PAGE[1:]]),
+        typed_field="kept",
+    )
+    assert (other.outcome, other.row) == ("unexpected_effect", "3")
+
+
+def test_the_worst_pending_field_wins_emptied_over_kept() -> None:
+    second = element(50, "Edit", "Find", (9, 50), 1)
+    shown = [*QUERY_PAGE, second]
+    screen = dataclasses.replace(
+        observed(shown, focus=FIELD.runtime_id),
+        aria_roles={FIELD.runtime_id: "searchbox", second.runtime_id: "searchbox"},
+    )
+    world = World(
+        [
+            decision(
+                act("type", target=FIELD.id, param="text"),
+                act("type", target=second.id, param="text"),
+                act("click", target=GO.id),
+                first=True,
+            )
+        ],
+        effects=[
+            report("own_value"),
+            report("own_value"),
+            report("content_changed", carriers=["title"]),
+        ],
+        screen=screen,
+        cleared={FIELD.runtime_id: 3},
+    )
+    outcome = run_task(task(), world.ports())
+    assert [d.action.verb for d in world.dispatched] == ["type", "type", "click"]
+    assert (outcome.status, outcome.reason) == ("stopped", "unexpected_effect")
