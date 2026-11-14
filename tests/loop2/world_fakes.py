@@ -250,7 +250,7 @@ class World:
     fact_text: bool = False
     """`fact_of` digests the text itself (`d:<text>`), as the session key would; default: the
     typed fact for any text."""
-    later_values: dict[tuple[int, ...], ValueFact] = field(default_factory=dict)
+    later_values: dict[tuple[int, ...], ValueFact | None] = field(default_factory=dict)
     """Field values the page sets before the second decision."""
     later_states: dict[tuple[tuple[int, ...], str], bool | None] = field(default_factory=dict)
     """States the page sets before the second decision."""

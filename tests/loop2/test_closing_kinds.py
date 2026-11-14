@@ -371,3 +371,86 @@ def test_a_state_subgoal_without_a_param_is_refused_into_the_repair_turn() -> No
     assert "state_without_param" in validate(
         bare, listed_ids=frozenset(), goal=GOAL, first_turn=True
     )
+
+
+# ---- the tester's #334 kill tests ---------------------------------------------------------------
+
+TRIP_GOAL = "fly from Paris to Rome"
+
+
+def test_a_page_claim_naming_one_param_still_needs_every_param() -> None:
+    """The claim's param is only a hint: a navigated claim naming a, with only Paris carried,
+    leaves b unproven."""
+    subs = [SubgoalDoc(id="s1", desc="trip", params={"a": "Paris", "b": "Rome"}, closes="page")]
+    world = World(
+        [
+            Decision(subgoals=subs, actions=[act("click", target=GO.id)]),
+            Decision(claims=[Claim(subgoal="s1", kind="navigated", evidence=[], param="a")]),
+        ],
+        effects=[report("navigated")],
+        later=page([], url=URL + "?from=Paris", title="Paris - Shop"),
+    )
+    outcome = run_task(dataclasses.replace(task(), goal=TRIP_GOAL), world.ports())
+    assert outcome.status != "done"
+    assert "claim:s1:param_unproven" in world.views[-1].history
+
+
+def _file_start(url: str, document_url: str) -> World:
+    first = dataclasses.replace(before(), url=url, document_url=document_url)
+    return World(
+        [decision(act("click", target=GO.id), first=True)],
+        effects=[report("navigated")],
+        screen=first,
+        later=page([], url=FILE + "?q=red%20shoes", title="red shoes"),
+    )
+
+
+def test_the_file_start_is_the_documents_address_not_the_bar() -> None:
+    assert run_task(task(), _file_start(URL, FILE).ports()).status == "done"
+    assert run_task(task(), _file_start(FILE, URL).ports()).status != "done"
+
+
+def test_the_auto_proof_never_closes_a_commit_subgoal() -> None:
+    """An undeclared action on a commit subgoal sets its baseline, so the auto proof reaches it;
+    `_tick` refuses (RT-06)."""
+    subs = [
+        SubgoalDoc(
+            id="s1", desc="search", params={"text": "red shoes"}, closes="page", commit="submit"
+        )
+    ]
+    world = World(
+        [Decision(subgoals=subs, actions=[act("click", target=GO.id)])],
+        effects=[report("navigated")],
+        later=page([], url=URL + "?q=red%20shoes", title="red shoes"),
+    )
+    outcome = run_task(task(), world.ports())
+    assert outcome.status != "done"
+    assert "claim:s1:standard_only" in [t for v in world.views for t in v.history]
+
+
+def test_a_proven_value_that_now_reads_unread_is_not_true() -> None:
+    world = _fill_world(ValueFact(filled=True, digest="d:Ada"))
+    world.later_values = {NAME.runtime_id: None}
+    outcome = run_task(_fill_task(), world.ports())  # type: ignore[arg-type]  # a Task
+    assert outcome.status != "done"
+
+
+def test_a_proven_state_that_now_reads_unread_is_not_true() -> None:
+    outcome = run_task(_fill_task(), _tick_world(None).ports())  # type: ignore[arg-type]  # a Task
+    assert outcome.status != "done"
+
+
+def test_a_state_claim_without_a_param_on_a_two_param_subgoal_is_param_missing() -> None:
+    """[V2.40] Q7: no first-param guess; the claim must name its param."""
+    spans = {"name": "Ada", "city": "Rome"}
+    subs = [SubgoalDoc(id="s1", desc="tick", params=spans, closes="state")]
+    claim = Claim(subgoal="s1", kind="state", evidence=[ADA.id], wanted="on")
+    world = World([Decision(subgoals=subs, claims=[claim])], screen=observed([*PAGE, ADA, ROME]))
+    world.states[(ADA.runtime_id, "on")] = True
+    run_task(_fill_task(), world.ports())  # type: ignore[arg-type]  # a Task
+    assert "claim:s1:param_missing" in [t for v in world.views for t in v.history]
+
+
+def test_a_carrier_with_no_content_signal_is_no_content() -> None:
+    after = page([], url=URL + "?q=red%20shoes")  # the title stays "Shop", no new row
+    assert navigated_tokens(SEARCH, before(), after, cited=[], typed=TYPED) == ("no_content",)
