@@ -56,15 +56,13 @@ from steerai.world.effects import EffectReport, Observed, _top_document, observe
 from steerai.world.landmarks import PageFacts
 from steerai.world.model import Snapshot, WorldModel, snapshot_to_json
 from steerai.world.observe2 import read_observed
-from steerai.world.watch import watch
+from steerai.world.watch import SUBMIT_GUARD_S, watch
 
 WINDOW = (1100, 800)
 WATCH_POLL_S = 0.1
 WATCH_SETTLE_S = 0.5
 """Unmeasured starting values for `watch`; this section measures what they should be."""
 WATCH_DEADLINE_S = 5.0
-SITE_DEADLINE_S = 15.0
-"""A real site's guard deadline (unmeasured until this probe's samples)."""
 KEY = secrets.token_bytes(32)
 """The run's own value-digest key: never stored."""
 T = TypeVar("T")
@@ -673,10 +671,12 @@ def site_sample(
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """[V2.7] navigate to `target` (the task's own results page) through DevTools and watch it on
-    the two-tier v2 read as a trigger action ([V2.8]). Records the first change, the settle, the
-    weak quiet-window reads, the report and the address bar's shape as closed tokens; never the
-    URL or the page's text. [V2.27] B: then one full read `LATE_S` later, its classes against
-    the before, and whether they differ from the watch's final report."""
+    the two-tier v2 read as a submit action ([V2.28] 1): it holds to `SUBMIT_GUARD_S` unless a
+    conclusive report arrives, and `conclusive_ms` says when one did (the navigation's arrival).
+    Records the first change, the settle, the weak quiet-window reads, the report and the
+    address bar's shape as closed tokens; never the URL or the page's text. [V2.27] B: then one
+    full read `LATE_S` later, its classes against the before, and whether they differ from the
+    watch's final report."""
     sleep(SITE_READY_S)
     before = browser.read_v2()
     browser.run(f"location.href={json.dumps(target)}")
@@ -687,9 +687,9 @@ def site_sample(
         sleep=sleep,
         poll_s=WATCH_POLL_S,
         settle_s=WATCH_SETTLE_S,
-        deadline_s=SITE_DEADLINE_S,
+        deadline_s=SUBMIT_GUARD_S,
         full=browser.read_full,
-        trigger=True,
+        submit=True,
     )
     bar_now, bar_error = read_bar(browser.client, browser.hwnd)
     late = _late_read(browser, before, result.report, sleep=sleep)
@@ -701,6 +701,7 @@ def site_sample(
         "timed_out": result.timed_out,
         "seen_by": result.seen_by,
         "weak_reads": result.weak_reads,
+        "conclusive_ms": result.conclusive_ms,
         "classes": sorted(result.report.classes),
         "tokens": sorted(result.report.tokens),
         "bar_shape": None if bar is None else _shape(bar, href),
