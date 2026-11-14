@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
+import pytest
+
 from steerai.world.effects import Observed
 from steerai.world.watch import watch
 from tests.world.test_effects_conditions import BASE, FIELD, Row, _snap
@@ -39,7 +41,8 @@ def _reader(frames: list[Observed], clock: Clock, at: list[float]) -> Callable[[
     return read
 
 
-def test_nothing_changes_until_the_deadline_is_none_and_timed_out() -> None:
+def test_nothing_changes_and_a_non_trigger_ends_none_at_the_quiet_window() -> None:
+    """[V2.10]: a non-trigger verb's quiet-window read is final, change or none."""
     clock = Clock()
     before = _obs(BASE)
     result = watch(
@@ -54,7 +57,8 @@ def test_nothing_changes_until_the_deadline_is_none_and_timed_out() -> None:
     )
     assert result.report.classes == frozenset({"none"})
     assert result.first_change_ms is None
-    assert result.timed_out is True
+    assert result.timed_out is False
+    assert clock.t == pytest.approx(0.3), "it ends at the quiet window, not the deadline"
 
 
 def test_a_change_then_quiet_ends_after_the_settle_window() -> None:
