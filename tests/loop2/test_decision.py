@@ -282,3 +282,11 @@ def test_desc_without_a_fence_passes_with_fences_given() -> None:
         validate(d, listed_ids=LISTED, goal=GOAL, first_turn=True, fences=frozenset({"t4skf3nc3"}))
         == []
     )
+
+
+@pytest.mark.parametrize(
+    "first", [Decision(stop="cannot"), Decision(ask="may I?")], ids=["stop", "ask"]
+)
+def test_a_first_turn_stop_or_ask_needs_no_subgoals(first: Decision) -> None:
+    """V2 §5 intake ([V2.11]): a first Decision may be an ask or a stop with no subgoals."""
+    assert check(first, first_turn=True) == []
