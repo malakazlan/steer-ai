@@ -15,6 +15,8 @@ from steerai.loop2.guards import (
     TurnFacts,
     Usage,
     budget_hit,
+    made_progress,
+    same_action,
 )
 from steerai.loop2.task import Budgets
 from steerai.world.effects import EffectClass, Token
@@ -251,3 +253,41 @@ def test_a_press_after_a_frame_and_title_change_only_is_not_sent_again() -> None
 )
 def test_a_nan_usage_trips_its_budget(used: Usage, token: BudgetToken) -> None:
     assert budget_hit(BUDGETS, used) == token
+
+
+# ---- the sweep's gaps (mutants 9d, 9e, 9r, 9y, 9z) --------------------------------------------
+
+STOP = ActionKey(verb="click", params=(), runtime_id=GO_AGAIN_RID, identity=("Button", "stop", ""))
+
+
+def test_a_new_runtime_id_with_another_identity_is_another_action_when_the_old_one_is_gone() -> (
+    None
+):
+    assert same_action(CLICK, STOP, frozenset({GO_AGAIN_RID})) is False
+    assert same_action(CLICK, RERENDERED, frozenset({GO_AGAIN_RID})) is True
+
+
+def test_an_unknown_effect_beside_a_strong_class_is_no_progress() -> None:
+    assert made_progress("click", report("unknown", "content_changed")) is False
+    assert made_progress("click", report("content_changed")) is True
+
+
+def test_a_ticked_turn_is_never_a_strike_even_with_a_none_effect() -> None:
+    strikes = Strikes(limit=3)
+    assert strikes.record(turn(ticked=True, classes=("none",), digest="d1")) == ()
+    assert strikes.count == 0
+
+
+def test_the_same_action_with_another_effect_is_not_same_action_same_effect() -> None:
+    strikes = Strikes(limit=3)
+    strikes.record(turn(classes=("content_changed",), digest="d1"))
+    assert strikes.record(turn(classes=("navigated",), digest="d2")) == ()
+
+
+def test_an_unread_fact_makes_the_effect_another_effect() -> None:
+    strikes = Strikes(limit=3)
+    strikes.record(turn(classes=("content_changed",), digest="d1"))
+    unread = dataclasses.replace(
+        turn(digest="d2"), effect=report("content_changed", unread=("url",))
+    )
+    assert strikes.record(unread) == ()

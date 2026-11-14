@@ -16,6 +16,7 @@ from steerai.orchestrator.gate import (
     Ask,
     Gate,
     GateResult,
+    ask_reasons,
     effective_risk,
 )
 from steerai.verify.predicates import Appeared, Focused, ValueEquals, Within
@@ -247,3 +248,16 @@ def test_type_template_takes_the_resolved_element_id() -> None:
     approved = gate.decide(step, action_key="k", expect=None, target_pid=777, target_id=12)
     assert approved.outcome == "approve"
     assert approved.expect == ValueEquals(target_id=12, text="hello there")
+
+
+# ---- the sweep's gaps (mutant G8) ------------------------------------------------------------
+
+
+def test_text_labelled_verbatim_but_absent_from_the_goal_asks_generated_text() -> None:
+    step = _step(verb="type", text="wire the money", text_provenance="verbatim")
+    assert ask_reasons(step, "write hello world to the note") == ("generated_text",)
+
+
+def test_text_labelled_verbatim_and_found_in_the_goal_asks_nothing() -> None:
+    step = _step(verb="type", text="hello world", text_provenance="verbatim")
+    assert ask_reasons(step, "write hello world to the note") == ()

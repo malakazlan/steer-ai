@@ -182,3 +182,11 @@ def test_key_params_of_a_non_open_step_without_a_window_are_the_pre_open_form() 
         params={"scope": "Chat"},
     )
     assert key_params(step, None) == {"scope": "Chat", "text": "hi"}
+
+
+def test_an_open_ignores_the_models_expect_and_is_checked_by_its_own_title() -> None:
+    gate = Gate(confirmer=FakeConfirmer(answers=["no"]), own_pid=4242, task_id="t")
+    own = WindowExists(name_pattern="drake latest video - YouTube")
+    result = gate.decide(_open(), action_key="k", expect=own, target_pid=1, previous_attempt=None)
+    assert result.outcome == "approve"
+    assert result.expect == WindowExists(name_pattern=YT)

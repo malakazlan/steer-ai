@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from steerai.loop2.controller import (
+    MAX_REPLY_BYTES,
     PROMPT_VERSION,
     SYSTEM_RULES,
     ControllerError,
@@ -23,7 +24,7 @@ from steerai.loop2.controller import (
 from steerai.loop2.decision import Decision
 
 FENCE = "f3nc3"
-TASK_FENCE = "t4skf3nc3"
+TASK_FENCE = "t4sk9x7q"
 GOAL = "write hello world to the note"
 GOOD = json.dumps({"actions": [{"verb": "click", "target": 1, "subgoal": "s1"}]})
 BAD_TARGET = json.dumps({"actions": [{"verb": "click", "target": 77, "subgoal": "s1"}]})
@@ -448,3 +449,64 @@ def test_decide_rejects_a_subgoal_desc_holding_the_task_fence() -> None:
             screen_fence=FENCE,
         )
     assert err.value.tokens == ("desc_bad",)
+
+
+# ---- the sweep's gaps (mutants 6w, 6F, 6I, 6J, 6M) --------------------------------------------
+
+
+def test_a_fence_with_a_zero_width_character_is_bad() -> None:
+    with pytest.raises(ControllerError) as e:
+        prompt(screen_fence="ab\u200bcd")
+    assert e.value.code == "fence_bad"
+
+
+def test_a_reply_at_the_byte_cap_is_parsed_and_one_byte_over_is_not_json() -> None:
+    body = '{"ask":"hi"}'
+    at_cap = body + " " * (MAX_REPLY_BYTES - len(body))
+    assert len(at_cap.encode()) == MAX_REPLY_BYTES
+    assert parse(at_cap).ask == "hi"
+    with pytest.raises(ControllerError) as e:
+        parse(at_cap + " ")
+    assert e.value.code == "not_json"
+
+
+def _decide_with_desc(desc: str) -> None:
+    raw = json.dumps(
+        {
+            "subgoals": [{"id": "s1", "desc": desc}],
+            "actions": [{"verb": "click", "target": 1, "subgoal": "s1"}],
+        }
+    )
+    ask, _ = make_model([raw, raw])
+    decide(
+        ask,
+        task_goal=GOAL,
+        subgoal_lines=[],
+        action_log=[],
+        subgoal_status=[],
+        window_title="Notes",
+        listing_rows=[ListingRow(0, "1 button Save")],
+        listed_ids=frozenset({1}),
+        first_turn=True,
+        task_fence=TASK_FENCE,
+        screen_fence=FENCE,
+    )
+
+
+def test_fixture_fences_do_not_contain_one_another() -> None:
+    assert FENCE not in TASK_FENCE
+    assert TASK_FENCE not in FENCE
+
+
+def test_decide_rejects_a_subgoal_desc_holding_only_the_screen_fence() -> None:
+    with pytest.raises(ControllerError) as err:
+        _decide_with_desc(f"x {FENCE}")
+    assert err.value.tokens == ("desc_bad",)
+
+
+def test_a_request_holding_the_task_fence_is_refused() -> None:
+    with pytest.raises(ControllerError) as err:
+        build_prompt(
+            f"find x {TASK_FENCE}", [], [], [], "W", [], task_fence=TASK_FENCE, screen_fence=FENCE
+        )
+    assert err.value.code == "fence_in_data"

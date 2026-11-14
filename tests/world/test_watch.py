@@ -263,3 +263,17 @@ def test_a_trigger_with_only_weak_changes_is_final_at_the_deadline() -> None:
     )
     assert result.report.classes == frozenset({"focus"})
     assert result.timed_out is True
+
+
+def test_a_watch_needs_a_positive_poll_interval() -> None:
+    clock = Clock()
+    with pytest.raises(ValueError, match="positive poll"):
+        watch(
+            lambda: _obs(BASE),
+            _obs(BASE),
+            clock=clock.now,
+            sleep=clock.sleep,
+            poll_s=0.0,
+            settle_s=0.5,
+            deadline_s=1.0,
+        )

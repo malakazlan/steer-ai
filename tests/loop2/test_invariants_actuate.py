@@ -109,3 +109,10 @@ def test_the_local_retry_codes_are_v1s() -> None:
     from steerai.orchestrator import loop as v1_loop  # noqa: PLC0415 - the v1 constant, locked
 
     assert actuate.ACT_RETRY_CODES == v1_loop._ACT_RETRY_CODES
+
+
+def test_a_verified_actuation_is_never_retried_even_with_a_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(actuate, "RETRY_RUNGS", 1)
+    assert may_retry(risk="R0", verified=True, report=report("none")) is False
