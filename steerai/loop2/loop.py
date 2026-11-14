@@ -181,6 +181,12 @@ class Ports:
     """[V2.28] item 3, [V2.29] Q2: one element's value fact, read from the element itself through
     its live handle with the role and name re-check; None when unread. Never called on a field
     whose secure flag is set or unread."""
+    read_state: Callable[[Element, str], bool | None]
+    """[V2.29] Q2: whether the element is in the wanted state (on, off, selected, expanded,
+    collapsed), read live through its handle with the role and name re-check; None when unread."""
+    fact_of: Callable[[str], ValueFact]
+    """The value fact a field holding exactly this text reads as (the session key and the
+    normalisation `read_value` uses), so a value claim compares digests, never text."""
 
 
 @dataclass(frozen=True)

@@ -56,7 +56,7 @@ from steerai.loop2.loop import (
 )
 from steerai.loop2.query import SearchFacts, search_facts
 from steerai.loop2.task import GoalSpan, Subgoal, Task, known_params
-from steerai.loop2.verify import auto_proof, check_claim
+from steerai.loop2.verify import Readers, auto_proof, check_claim
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.orchestrator.loop import REUSE_FRESHNESS_S
 from steerai.world.effects import EffectReport, Observed, ValueFact, top_document
@@ -166,6 +166,17 @@ class _Handles:
 
 
 @dataclass(frozen=True)
+class _Ever:
+    """[V2.38] RT-39: one type Steer sent in this task, never pruned (unlike pending text): the
+    field, the subgoal it was typed under, and the words when typed by param (None: generated
+    text, whose words are not kept)."""
+
+    field: tuple[int, ...]
+    subgoal: str
+    words: str | None
+
+
+@dataclass(frozen=True)
 class _Acted:
     """The last element acted on, for a press (§8.1: re-checked by role and name, P4)."""
 
@@ -220,6 +231,7 @@ class _Run:
         self.read_costs: list[ReadCost] = []
         self.reasked: set[tuple[int, ...]] = set()
         self.handles = _Handles()
+        self.ever: list[_Ever] = []
         """[V2.38] RT-12: the top Documents already re-asked on (once per Document)."""
 
     # ---- the outcome ----------------------------------------------------------------------
@@ -334,7 +346,16 @@ class _Run:
         for claim in decision.claims:
             subgoal = self._subgoal(claim.subgoal)
             cited = self._cited(claim, observed)
-            rejected = check_claim(cited, subgoal, self._baseline(subgoal.id), observed)
+            rejected = check_claim(
+                cited,
+                subgoal,
+                self._baseline(subgoal.id),
+                observed,
+                readers=self._readers(observed),
+                typed=self._typed_fields(),
+                acted=self._acted(subgoal),
+                echo=self._echo(subgoal),
+            )
             self.history.extend(f"claim:{claim.subgoal}:{t}" for t in rejected)
             if rejected:
                 self.turn.claim_rejected = True
@@ -564,6 +585,39 @@ class _Run:
         self.typed = kept
         return out
 
+    def _readers(self, observed: Observed) -> Readers:
+        """[V2.29] Q2: the claim checks' live reads, bound to the ports, taken at the claim and
+        never served from an earlier read (#331 review); a secure or secure-unread field is
+        never read."""
+
+        def read_value(element: Element) -> ValueFact | None:
+            if element.secure or element.id in observed.snapshot.unread_secure:
+                return None
+            return self.ports.read_value(element)
+
+        return Readers(
+            read_state=self.ports.read_state, read_value=read_value, fact_of=self.ports.fact_of
+        )
+
+    def _typed_fields(self) -> tuple[tuple[int, ...], ...]:
+        """[V2.38] RT-39: the echo guards are task-wide: every field Steer typed into in the
+        task, whether its text is still pending or not."""
+        return tuple(dict.fromkeys(e.field for e in self.ever))
+
+    def _acted(self, subgoal: Subgoal) -> tuple[int, ...] | None:
+        """The field whose Document scopes a subgoal's carriers: the last one typed under it,
+        else the last one typed in the task, else none (#331 review B8b)."""
+        mine = [e.field for e in self.ever if e.subgoal == subgoal.id]
+        if mine:
+            return mine[-1]
+        return self.ever[-1].field if self.ever else None
+
+    def _echo(self, subgoal: Subgoal) -> bool:
+        """[V2.38] RT-39: the subgoal's words are text Steer typed anywhere in the task; any
+        generated text counts, since its words are not kept."""
+        words = {_folded(span.text) for span in subgoal.params.values()}
+        return any(e.words is None or _folded(e.words) in words for e in self.ever)
+
     def _read_value(self, element: Element, observed: Observed) -> ValueFact | None:
         """[V2.29] Q2: never read a field whose secure flag is set or unread; one read per
         element per action."""
@@ -631,6 +685,12 @@ class _Run:
         )
         self.typed = [t for t in self.typed if t.field != typed.field]
         self.typed.append(typed)
+        param = sent.action.param
+        subgoal = self._subgoal(sent.action.subgoal)
+        words = (
+            subgoal.params[param].text if param is not None and param in subgoal.params else None
+        )
+        self.ever.append(_Ever(element.runtime_id, subgoal.id, words))
 
     def _after(self, after: Observed) -> Observed:
         """[V2.11] decision 6: reuse the watch's after only when it is full, stable and fresh."""
@@ -647,8 +707,18 @@ class _Run:
             if subgoal.id in self.proven or subgoal.id not in self.baselines:
                 continue
             baseline = self.baselines[subgoal.id]
-            if _changed_since(baseline, observed) and auto_proof(subgoal, baseline, observed):
-                self._tick(subgoal, how="auto")
+            if not _changed_since(baseline, observed):
+                continue
+            proof = auto_proof(
+                subgoal,
+                baseline,
+                observed,
+                typed=self._typed_fields(),
+                acted=self._acted(subgoal),
+                echo=self._echo(subgoal),
+            )
+            if proof is not None:
+                self._tick(subgoal, how=proof)
         self._check_done()
 
     # ---- refusals, guards -----------------------------------------------------------------
@@ -758,6 +828,11 @@ def _shared_rids(observed: Observed) -> frozenset[tuple[int, ...]]:
         if rid:
             (shared if rid in seen else seen).add(rid)
     return frozenset(shared)
+
+
+def _folded(text: str) -> str:
+    """Words as the echo guard compares them: NFKC, collapsed whitespace, case-folded."""
+    return normalise_name(text).casefold()
 
 
 def _complete(observed: Observed) -> bool:

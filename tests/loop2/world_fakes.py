@@ -118,6 +118,7 @@ def observed(
     return Observed(
         snapshot=snapshot(elements),
         url=URL,
+        document_url=URL,
         windows=(16,),
         focus=focus,
         aria_roles=roles,
@@ -241,6 +242,10 @@ class World:
     values: dict[tuple[int, ...], ValueFact | None] = field(default_factory=dict)
     """Each field's value fact as `read_value` returns it (a type that reads back True sets it)."""
     reads: list[tuple[int, ...]] = field(default_factory=list)
+    states: dict[tuple[tuple[int, ...], str], bool | None] = field(default_factory=dict)
+    cleared: dict[tuple[int, ...], int] = field(default_factory=dict)
+    """A field that reads empty once this many actions were dispatched (a page that clears it)."""
+    """What `read_state` returns for (RuntimeId, wanted); missing: unread."""
     """The RuntimeIds `read_value` was called on, in order."""
     settle_guards: list[float] = field(default_factory=list)
     """The guard each `settle` (the [V2.31] load-guard wait) was given."""
@@ -319,9 +324,20 @@ class World:
         self.settle_guards.append(guard_s)
         return self.settled if self.settled is not None else self.screen
 
+    def _read_state(self, element: Element, wanted: str) -> bool | None:
+        self.events.append("read")
+        return self.states.get((element.runtime_id, wanted))
+
+    @staticmethod
+    def _fact_of(text: str) -> ValueFact:
+        return TYPED_VALUE if text else EMPTY
+
     def _read_value(self, element: Element) -> ValueFact | None:
         self.events.append("read")
         self.reads.append(element.runtime_id)
+        after = self.cleared.get(element.runtime_id)
+        if after is not None and len(self.dispatched) >= after:
+            return EMPTY
         return self.values.get(element.runtime_id, EMPTY)
 
     def _write_ahead(self, sent: Dispatch) -> str:
@@ -345,6 +361,8 @@ class World:
             interrupted=self._interrupted,
             clock=lambda: self.now,
             read_value=self._read_value,
+            read_state=self._read_state,
+            fact_of=self._fact_of,
             settle=self._settle,
             stamp=self._stamp,
         )
