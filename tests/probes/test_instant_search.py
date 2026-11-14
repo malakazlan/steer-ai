@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from steerai.probes import instant_search
+from steerai.probes.effect_pages import WATCH_DEADLINE_S, WATCH_SETTLE_S
 from steerai.probes.instant_search import (
     CATALOG,
     LOG_KEY,
@@ -31,6 +32,10 @@ from steerai.probes.instant_search import (
 from steerai.probes.layer_b_pages import outside_links
 
 SOURCE = Path(instant_search.__file__)
+D_DELAY_MS = round(WATCH_SETTLE_S * 1000 * 3)
+"""[V2.13].1 (d)'s delay, from the single source of the watch quiet window
+(`effect_pages.WATCH_SETTLE_S`): three quiet windows, so the results land after the type's
+quiet window has expired."""
 
 
 class _Tags(HTMLParser):
@@ -85,6 +90,15 @@ def test_every_value_goes_into_the_page_script_as_json(variant: Variant) -> None
 def test_only_d_has_a_delay_and_it_is_a_page_parameter() -> None:
     assert [spec(v).delay_ms for v in VARIANTS] == [0, 0, 0, 0, SLOW_DELAY_MS]
     assert "var INSTANT = true, URL_QUERY = true, DELAY = 2200" in render(PageSpec("d", 2200))
+
+
+def test_d_delay_is_derived_from_the_watch_quiet_window() -> None:
+    """[V2.13].1: (d) lands after the quiet window whatever `WATCH_SETTLE_S` is, and before the
+    watch deadline."""
+    quiet_ms = WATCH_SETTLE_S * 1000
+    assert quiet_ms < D_DELAY_MS < WATCH_DEADLINE_S * 1000
+    page = spec("d", slow_delay_ms=D_DELAY_MS)
+    assert f"DELAY = {D_DELAY_MS}" in render(page)
 
 
 @pytest.mark.parametrize(
@@ -217,5 +231,5 @@ def test_the_fixture_shares_no_code_with_the_loop_the_verifier_or_h7() -> None:
 @pytest.mark.timeout(120)
 @pytest.mark.parametrize("variant", VARIANTS)
 def test_the_positive_control_reaches_the_variants_end_state(variant: Variant) -> None:
-    entries = run_control(variant)
+    entries = run_control(variant, slow_delay_ms=D_DELAY_MS)
     assert passes(variant, entries), entries

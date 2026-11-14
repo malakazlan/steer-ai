@@ -7,7 +7,7 @@ import dataclasses
 import re
 
 from steerai.loop2.decision import Claim, Decision, SubgoalDoc
-from steerai.loop2.loop import TaskOutcome, action_risk, resolve, run_task
+from steerai.loop2.loop import Reason, TaskOutcome, action_risk, resolve, run_task
 from steerai.loop2.task import Budgets
 from steerai.orchestrator.loop import REUSE_FRESHNESS_S
 from steerai.world.effects import Observed, poll_tier
@@ -45,10 +45,10 @@ def _struck(outcome: TaskOutcome, reason: str) -> bool:
 
 
 def _assert_after_refusal(outcome: TaskOutcome, token: str) -> None:
-    """[V2.12] a model fault: the reason records `after_refusal` plus the refusal's token."""
-    assert outcome.reason is not None
-    assert "after_refusal" in outcome.reason
-    assert token in outcome.reason
+    """[V2.12], [V2.13] a model fault: the pair (token, after_refusal), rendered exactly
+    `after_refusal:<token>`."""
+    assert outcome.cause == Reason(token, after_refusal=True)
+    assert outcome.reason == f"after_refusal:{token}"
 
 
 # ---- §8.1 no action on an element that is not in the latest snapshot --------------------------
