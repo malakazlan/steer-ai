@@ -76,6 +76,42 @@ class RawNode:
     """Password field: its value is never read and the line is tagged `secure` (WM-23)."""
     caps: tuple[str, ...] = ()
     """What the element can do, as closed tokens (`steerai.world.capabilities`)."""
+    secure_read: bool = True
+    """[V2.26] (2): False when IsPassword was not read (the provider does not support it, or
+    raised); `secure` then holds UIA's default False, as v1 always saw it."""
+    automation_id_read: bool = True
+    """[V2.26] (2): False when AutomationId was not read; `automation_id` then holds ""."""
+
+
+def read_cached[T](
+    element: Any,  # Any: a cached comtypes element
+    prop: int,
+    expected: type[T],
+    not_supported: object,
+) -> T | None:
+    """One cached property, read once with `GetCachedPropertyValueEx(prop, TRUE)`: the value
+    when it is of `expected` type, else None (unread).
+
+    ignoreDefaultValue TRUE makes UIA return its reserved not-supported value instead of the
+    property's default (Microsoft Learn, IUIAutomationElement::GetCachedPropertyValueEx;
+    IUIAutomation::ReservedNotSupportedValue), so a default is never mistaken for a read. Only a
+    value of the expected type is a read: the sentinel, None or anything else is not, and a
+    bool is never a read int. A provider error is NOT caught: it propagates as v1's
+    `CachedIsPassword` did, so `observe` fails instead of v1 seeing a possible password field
+    as a plain one."""
+    value = element.GetCachedPropertyValueEx(prop, True)
+    if value is not_supported or not isinstance(value, expected):
+        return None
+    if isinstance(value, bool) and expected is not bool:
+        return None
+    return value
+
+
+def property_read(
+    element: Any, prop: int, not_supported: object, expected: type
+) -> bool:  # Any: COM element
+    """Whether a cached property holds a value of `expected` type ([V2.26] (2))."""
+    return read_cached(element, prop, expected, not_supported) is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +141,7 @@ class UiaClient:
         self._uia.ConnectionTimeout = connection_timeout_ms
         self._uia.TransactionTimeout = transaction_timeout_ms
         self._control_type_names = control_type_names(self._uia_module)
+        self._not_supported = self._uia.ReservedNotSupportedValue
 
     @property
     def connection_timeout_ms(self) -> int:
@@ -178,18 +215,27 @@ class UiaClient:
         type_id = int(element.CachedControlType)
         runtime_id = element.GetCachedPropertyValue(self._uia_module.UIA_RuntimeIdPropertyId)
         role = self._control_type_names.get(type_id, str(type_id))
+        # [V2.26] (2): IsPassword and AutomationId are each read once, in place of the Cached*
+        # accessors, so knowing read from unread costs no extra call per node
+        mod = self._uia_module
+        password = read_cached(element, mod.UIA_IsPasswordPropertyId, bool, self._not_supported)
+        automation_id = read_cached(
+            element, mod.UIA_AutomationIdPropertyId, str, self._not_supported
+        )
         out.append(
             RawNode(
                 depth=depth,
                 role=role,
                 name=str(element.CachedName or ""),
-                automation_id=str(element.CachedAutomationId or ""),
+                automation_id=automation_id or "",
                 box=(int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)),
                 offscreen=bool(element.CachedIsOffscreen),
                 enabled=bool(element.CachedIsEnabled),
                 runtime_id=tuple(int(v) for v in runtime_id) if runtime_id else (),
-                secure=bool(element.CachedIsPassword),
+                secure=bool(password),
                 caps=tokens(self._caps(element), role) if caps else (),
+                secure_read=password is not None,
+                automation_id_read=automation_id is not None,
             )
         )
         handles.append(element)

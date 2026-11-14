@@ -697,3 +697,16 @@ def test_a_state_already_wanted_continues_the_batch_like_a_verified_one() -> Non
     )
     run_task(task(), world.ports())
     assert world.sent_at_call[:2] == [0, 2]
+
+
+@pending("[V2.26] (2): a type into a field with an unread secure flag is refused, never asked")
+def test_a_type_into_a_field_with_an_unread_secure_flag_is_refused_with_a_strike() -> None:
+    unread = dataclasses.replace(
+        observed(),
+        snapshot=dataclasses.replace(snapshot(PAGE), unread_secure=frozenset({FIELD.id})),
+    )
+    world = World([decision(act("type", target=FIELD.id, param="text"), first=True)], screen=unread)
+    outcome = run_task(task(), world.ports())
+    assert world.dispatched == []
+    assert any("secure_unread" in t for t in _tokens_after_first_call(world))
+    assert _struck(outcome, "refused")

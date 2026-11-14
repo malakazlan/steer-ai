@@ -150,3 +150,34 @@ def test_the_reverse_www_difference_is_unread() -> None:
 def test_a_unicode_bar_host_against_a_punycode_document_fails_closed() -> None:
     document = "https://xn--bcher-kva.test/"
     assert in_place_url(document, "bücher.test/?q=red", bar_read=True) == (None, True)
+
+
+# ---- [V2.26] (2): no 2b value read on a field whose secure flag is unread or set --------------
+
+
+def _never() -> str:
+    raise AssertionError("the value of this field must not be read")
+
+
+def test_the_value_of_a_field_with_an_unread_secure_flag_is_never_read() -> None:
+    import dataclasses  # noqa: PLC0415 - this test only
+
+    snap = dataclasses.replace(_snap(BASE), unread_secure=frozenset({2}))
+    seen = read_observed(snap, Reader(), key=KEY, acted=2, acted_value=_never)
+    assert seen.acted_value is None
+
+
+def test_the_value_of_a_secure_field_is_never_read() -> None:
+    import dataclasses  # noqa: PLC0415 - this test only
+
+    snap = _snap(BASE)
+    secure = [dataclasses.replace(e, secure=True) if e.id == 2 else e for e in snap.elements]
+    seen = read_observed(
+        dataclasses.replace(snap, elements=secure), Reader(), key=KEY, acted=2, acted_value=_never
+    )
+    assert seen.acted_value is None
+
+
+def test_the_value_of_a_read_non_secure_field_is_still_read() -> None:
+    seen = read_observed(_snap(BASE), Reader(), key=KEY, acted=2, acted_value=lambda: "red")
+    assert seen.acted_value == value_fact("red", key=KEY)

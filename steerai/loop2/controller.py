@@ -19,6 +19,8 @@ from pydantic import ValidationError
 from steerai.loop2.decision import SUBGOAL_ID, Decision, Verb, validate
 from steerai.loop2.task import Status
 from steerai.loop2.text import clean_line, has_control
+from steerai.world.elements import format_lines
+from steerai.world.model import Snapshot
 
 PROMPT_VERSION = "controller-2"
 ASK_PREFIX = "Steer asks: "
@@ -96,6 +98,21 @@ class ListingRow:
 
     depth: int
     text: str
+
+
+SECURE_UNREAD = "secure_unread"
+"""[V2.26] (2): the listing token for a field whose secure flag was not read, so the model does
+not keep targeting it with a type."""
+
+
+def v2_listing(snapshot: Snapshot) -> list[ListingRow]:
+    """The v2 listing of `snapshot`: v1's line for every element, with `secure_unread` added to
+    a field whose secure flag was not read."""
+    lines = format_lines(snapshot.elements)
+    return [
+        ListingRow(e.depth, line + (f" {SECURE_UNREAD}" if e.id in snapshot.unread_secure else ""))
+        for e, line in zip(snapshot.elements, lines, strict=True)
+    ]
 
 
 @dataclass(frozen=True)

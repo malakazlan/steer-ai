@@ -80,9 +80,12 @@ def read_observed(  # noqa: PLR0913 - the snapshot, the reader and each optional
     windows: Callable[[], tuple[int, ...]] | None = None,
     acted_value: Callable[[], str | None] | None = None,
     page_facts: bool = True,
+    acted: int | None = None,
 ) -> Observed:
     """`snapshot` with the facts read now. `page_facts=False` skips the URLs, roles and headings
-    (a window without a Document); `acted_value` is None for no acted field or a secure one."""
+    (a window without a Document); `acted_value` is None for no acted field or a secure one.
+    [V2.26] (2): `acted` is the acted field's id; its value is never read when its secure flag
+    is set or was not read (no digest from a field that may be a password)."""
     document_url = url = None
     facts: PageFacts | None = None
     url_observed = True
@@ -101,7 +104,7 @@ def read_observed(  # noqa: PLR0913 - the snapshot, the reader and each optional
     except OSError:
         listed = None
     value = None
-    if acted_value is not None:
+    if acted_value is not None and not _maybe_secure(snapshot, acted):
         try:
             text = acted_value()
         except OSError:
@@ -119,6 +122,14 @@ def read_observed(  # noqa: PLR0913 - the snapshot, the reader and each optional
         document_url=document_url,
         url_observed=url_observed,
     )
+
+
+def _maybe_secure(snapshot: Snapshot, acted: int | None) -> bool:
+    if acted is None:
+        return False
+    if acted in snapshot.unread_secure:
+        return True
+    return any(e.id == acted and e.secure for e in snapshot.elements)
 
 
 def _urls(snapshot: Snapshot, reader: FactReader) -> tuple[str | None, str | None, bool]:

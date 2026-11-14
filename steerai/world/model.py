@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from steerai.errors import ErrorCode, SteerError
-from steerai.probes.element_list import elements_from_nodes
+from steerai.probes.element_list import elements_from_nodes, unread_ids
 from steerai.probes.uia_snapshot import TreeSnapshot, UiaClient
 from steerai.probes.windows import (
     is_cloaked,
@@ -68,6 +68,16 @@ class Snapshot:
     caps_read: bool = True
     """False: the capability tokens could not be read for this snapshot (a provider raised on
     them); a missing token is then unread, never absent."""
+    unread_secure: frozenset[int] = frozenset()
+    """[V2.26] (2): ids of the elements whose secure flag was not read. Beside the elements, so
+    v1's view of each element (and the write-ahead JSON) is unchanged."""
+    unread_automation_id: frozenset[int] = frozenset()
+    """[V2.26] (2): ids of the elements whose automation id was not read (recorded and counted;
+    not acted on, issue #301)."""
+
+    @property
+    def unread_automation_id_count(self) -> int:
+        return len(self.unread_automation_id)
 
     @property
     def lines(self) -> list[str]:
@@ -159,7 +169,11 @@ def _caps_of(raw: object) -> tuple[str, ...]:
 
 
 def snapshot_from_json(text: str) -> Snapshot:
-    """The inverse of `snapshot_to_json`; a handle-less snapshot for diffing and resume."""
+    """The inverse of `snapshot_to_json`; a handle-less snapshot for diffing and resume.
+
+    The unread sets ([V2.26] (2)) are not in the record, so they come back empty: the JSON is
+    v1's write-ahead format and stays byte-identical, and v2 decides only on live snapshots
+    (a v2 task never resumes, [V2.15] Q9)."""
     try:
         payload = json.loads(text)
     except ValueError as exc:
@@ -359,6 +373,8 @@ class WorldModel:
             handles=tree.handles,
             cap=cap,
             caps_read=tree.caps_read,
+            unread_secure=unread_ids(tree.nodes, "secure"),
+            unread_automation_id=unread_ids(tree.nodes, "automation_id"),
         )
 
     def _fetch(self, hwnd: int) -> TreeSnapshot:
