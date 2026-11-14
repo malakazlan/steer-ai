@@ -50,6 +50,7 @@ from steerai.probes.memory_guard import (
     guarded_stop,
     refusal_row,
 )
+from steerai.probes.url_unread import read_bar, url_fields
 from steerai.world.address_bar import DocumentUrl
 from steerai.world.effects import EffectReport, Observed, _top_document, observe, poll_tier
 from steerai.world.landmarks import PageFacts
@@ -690,6 +691,7 @@ def site_sample(
         full=browser.read_full,
         trigger=True,
     )
+    bar_now, bar_error = read_bar(browser.client, browser.hwnd)
     late = _late_read(browser, before, result.report, sleep=sleep)
     href = str(browser.run("location.href"))
     bar = browser.client.address_bar(browser.hwnd)
@@ -705,6 +707,7 @@ def site_sample(
         "bar_www_elided": bar is not None and "://www." in href and "www." not in bar,
         "url_read": result.after.url is not None,
         "url_observed": result.after.url_observed,
+        **url_fields(result.after, bar_now, bar_error=bar_error),
         **late,
     }
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 from pathlib import Path
 
@@ -110,3 +111,11 @@ def test_the_v2_path_shadow_runs_after_the_2a_shadow_on_the_dev_set() -> None:
     assert check.args[0] == "steerai.probes.shadow_v2"
     assert "--shadow-out" in check.args
     assert check.args[check.args.index("--set") + 1] == "dev"
+
+
+def test_the_read_cost_probe_is_a_built_live_check_with_its_output_in_the_report_folder() -> None:
+    (check,) = [c for c in live_checks.CHECKS if c.name == "read_cost"]
+    assert check.args is not None
+    assert check.args[0] == "steerai.probes.read_cost"
+    assert "{dir}/read_cost.jsonl" in check.args
+    assert importlib.import_module(check.args[0]).main
