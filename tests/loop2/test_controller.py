@@ -405,11 +405,15 @@ def test_ask_text_plain() -> None:
 
 
 def test_nothing_outside_loop2_imports_loop2() -> None:
+    """`steerai/run.py` is the one exception ([V2.11] decision 8): its `--loop v2` branch imports
+    `loop2.ready` inside a function, which `test_v2_isolation.py` checks by AST."""
     root = Path(__file__).resolve().parents[2] / "steerai"
     offenders = [
         str(p)
         for p in root.rglob("*.py")
-        if "loop2" not in p.relative_to(root).parts and "steerai.loop2" in p.read_text("utf-8")
+        if "loop2" not in p.relative_to(root).parts
+        and p != root / "run.py"
+        and "steerai.loop2" in p.read_text("utf-8")
     ]
     assert offenders == []
 
