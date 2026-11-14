@@ -62,7 +62,10 @@ CLAIM_CLOSES: Mapping[str, Closes] = {
 """[V2.39]: the closing kind each claim kind proves; a claim of another kind is `kind_mismatch`."""
 
 UNTARGETED = frozenset({"press", "wait"})
-NOT_IN_STEP_VERBS = frozenset({"open", "switch"})
+NOT_IN_STEP_VERBS = frozenset({"open", "switch", "scroll"})
+"""Verbs step 3 refuses as a step limit (`not_in_step`): window switching is step 7; scroll is
+refused in stage 1 ([V2.41] (2), #299): no stage 1 row needs it and `ScrollPattern.Scroll()`
+is unprobed (a step 5 probe task)."""
 MAX_ACTIONS = 4
 MAX_SUBGOALS = 5
 MAX_DESC_CHARS = 120

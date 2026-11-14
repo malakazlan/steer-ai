@@ -70,6 +70,13 @@ def test_open_and_switch_not_in_step(verb: str) -> None:
     assert check(act(verb)) == ["not_in_step"]
 
 
+def test_scroll_is_not_in_step_3() -> None:
+    """[V2.41] (2), #299: scroll is refused in stage 1 as a step limit (the wheel can change a
+    focused field's value; `ScrollPattern.Scroll()` is unprobed). Refused by `validate`, so it
+    is a `step` refusal and nothing is sent, never a world `not_delivered`."""
+    assert check(act("scroll", target=1)) == ["not_in_step"]
+
+
 def test_target_missing() -> None:
     assert check(act("click")) == ["target_missing"]
 
