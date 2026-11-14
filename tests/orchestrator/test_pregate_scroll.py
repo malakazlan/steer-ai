@@ -380,6 +380,34 @@ def test_a_target_a_lazy_load_pushes_back_is_scrolled_once_more() -> None:
     assert result.evidence["scrolls"] == 2
 
 
+def test_a_scroll_whose_readback_timed_out_still_clicks_once_the_quiet_look_sees_it() -> None:
+    """#311: the executor's 400 ms readback is a delivery fact, not the step's proof. A scroll
+    whose readback missed the landing (a slow runner, or a lazy load that pushed the target down
+    first) goes on to the quiet look; the target on screen there is clicked and verified."""
+    page = Page()
+    h = _harness(page)
+    timed_out = ActionResult(
+        verb="scroll_into_view",
+        delivery=Delivery.DELIVERED_UNVERIFIED,
+        code=ErrorCode.VERIFY_TIMEOUT,
+    )
+    original = h.semantic.execute
+
+    def execute(action: Any, snapshot: Snapshot) -> ActionResult:
+        if action.verb == "scroll_into_view":
+            page.log.append("scroll_into_view")
+            page.scrolled = True
+            page.scrolls += 1
+            return timed_out
+        return original(action, snapshot)
+
+    h.semantic.execute = execute  # type: ignore[method-assign]  # the timed-out readback
+    result = h.session.run_step(_click())
+    assert result.ok is True, result.to_dict()
+    assert page.log == ["scroll_into_view", "click"]
+    assert result.evidence["scrolled"] == Delivery.DELIVERED_UNVERIFIED.value
+
+
 def test_a_target_pushed_back_twice_is_refused_with_nothing_sent() -> None:
     """An endless feed keeps loading below: two scrolls, then the refusal stands."""
     page = Page(pushed_back=2)
