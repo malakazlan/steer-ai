@@ -3,8 +3,6 @@ be inside the scope Document; a tab name, the address bar or another Document ne
 
 from __future__ import annotations
 
-import re
-import unicodedata
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -14,7 +12,14 @@ from steerai.loop2.decision import Claim
 from steerai.loop2.owned import field_owned
 from steerai.loop2.task import Subgoal
 from steerai.orchestrator.gate import group_name
-from steerai.world.effects import Observed, ValueFact, observe, result_elements, top_document
+from steerai.world.effects import (
+    Observed,
+    ValueFact,
+    _tokens,  # the observer's own token rule: one definition of a word (#334 review)
+    observe,
+    result_elements,
+    top_document,
+)
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot, normalise_name
 
@@ -286,13 +291,9 @@ def holds_words(snapshot: Snapshot, element: Element, text: str) -> bool:
     """[V2.40] Q7: the element's name, or its group name as v1 computes it, holds every word of
     `text` in one name: casefolded NFKC whole tokens, in any order, the rule content uses
     ([V2.15] amendment 1; contiguity adds no safety). No word holds nothing."""
-    wanted = set(_words(text))
+    wanted = set(_tokens(text))
     names = (element.name, group_name(snapshot, element) or "")
-    return bool(wanted) and any(wanted <= set(_words(name)) for name in names)
-
-
-def _words(text: str) -> list[str]:
-    return re.findall(r"\w+", unicodedata.normalize("NFKC", text).casefold())
+    return bool(wanted) and any(wanted <= set(_tokens(name)) for name in names)
 
 
 def _excluded(
