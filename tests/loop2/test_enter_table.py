@@ -491,3 +491,18 @@ def test_a_pending_field_unmatched_on_a_partial_read_is_unread_on_row_2() -> Non
     run_task(task(), world.ports())
     assert [d.action.verb for d in world.dispatched] == ["type", "type", "click"]
     assert "enter:unknown:2" in _history(world)
+
+
+def test_an_unheld_content_change_with_no_carrier_is_row_5_never_row_4() -> None:
+    """Row 4 (content changed, no carrier, URL unchanged) depends on timing: [V2.28] reaches it
+    only after the hold. Unheld, it is `unknown` (row 5), never a stop. Rows 1, 2, 3 and 3b rest
+    on facts that do not depend on timing, so their stops stand."""
+    world = World(
+        [decision(TYPE, ENTER, first=True)],
+        effects=[report("own_value"), report("content_changed")],
+        screen=FOCUSED,
+        unheld=True,
+    )
+    outcome = run_task(task(), world.ports())
+    assert "enter:unknown:5" in _history(world)
+    assert outcome.reason != "unexpected_effect"

@@ -847,8 +847,10 @@ class _Run:
     ) -> None:
         """[V2.28] item 1: the Enter table once, on the final report. `unexpected_effect` stops
         the task; any other row is a closed token for the controller. A report the watch did not
-        hold (neither conclusive nor to the guard) is not final: a stop stays a stop, anything
-        else is `unknown`, row 5 (#335 review)."""
+        hold (neither conclusive nor to the guard) is not final (#335 review): the stops of rows
+        1, 2, 3 and 3b rest on facts that do not depend on timing and stand; row 4 depends on
+        timing, reached only after the hold ([V2.28]), so it and every row that does not stop
+        are `unknown`, row 5."""
         outcome = enter_outcome(
             watched.report,
             before=before,
@@ -856,7 +858,7 @@ class _Run:
             typed_field=self._submitted_field(element, watched.after, pending),
         )
         held = watched.timed_out or watched.conclusive_ms is not None
-        if not held and outcome.outcome != "unexpected_effect":
+        if not held and (outcome.outcome != "unexpected_effect" or outcome.row == "4"):
             outcome = EnterOutcome("back_to_controller", "unknown", "5")
         self.history.append(f"enter:{outcome.token}:{outcome.row}")
         if outcome.outcome == "unexpected_effect":
