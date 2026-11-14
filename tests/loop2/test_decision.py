@@ -39,7 +39,8 @@ def act(verb: str, **kw: object) -> Decision:
 
 
 def first(params: dict[str, str], **sub: object) -> Decision:
-    doc = {"id": "s1", "desc": "d", "params": params, "closes": "value"} | sub
+    closes = "value" if params else "state"  # [V2.39]: a value subgoal needs a param
+    doc = {"id": "s1", "desc": "d", "params": params, "closes": closes} | sub
     return Decision(
         subgoals=[SubgoalDoc.model_validate(doc)],
         actions=[action("click", target=1)],

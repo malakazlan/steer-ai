@@ -181,6 +181,8 @@ def _subgoal_doc_tokens(sub: SubgoalDoc, goal: str, fences: frozenset[str]) -> l
         tokens.append("param_not_span")
     if sub.closes == "page" and not sub.params:
         tokens.append("page_without_param")  # [V2.39]: what would the page have to show?
+    if sub.closes == "value" and not sub.params:
+        tokens.append("value_without_param")  # no text to compare: it could never close
     return tokens
 
 
