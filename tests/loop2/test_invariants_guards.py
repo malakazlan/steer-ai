@@ -17,7 +17,7 @@ from steerai.loop2.guards import (
     budget_hit,
 )
 from steerai.loop2.task import Budgets
-from steerai.world.effects import EffectClass
+from steerai.world.effects import EffectClass, Token
 from tests.loop2.world_fakes import pending, report
 
 BUDGETS = Budgets(max_actions=10, max_model_calls=5, max_cost_usd=0.5, max_wall_s=60.0)
@@ -36,11 +36,12 @@ def turn(
     ticked: bool = False,
     action: ActionKey | None = CLICK,
     classes: tuple[EffectClass, ...] = ("content_changed",),
+    tokens: tuple[Token, ...] = (),
     digest: str = "d1",
     rejected: bool = False,
     present: frozenset[tuple[int, ...]] = PRESENT,
 ) -> TurnFacts:
-    effect = report(*classes) if classes else None
+    effect = report(*classes, tokens=tokens) if classes or tokens else None
     return TurnFacts(
         ticked=ticked,
         action=action,
@@ -168,16 +169,75 @@ def test_the_limit_pauses_the_task() -> None:
     assert strikes.paused is True
 
 
-@pending("[V2.4] never the same action twice in a row")
-def test_the_same_action_is_never_sent_twice_in_a_row() -> None:
+# ---- [V2.18] a repeat is allowed after progress, by the kind of action ----------------------
+
+DOWN = ActionKey(
+    verb="press", params=("Down",), runtime_id=MENU_RID, identity=("List", "sizes", "")
+)
+PAGE_DOWN = ActionKey(
+    verb="press", params=("PageDown",), runtime_id=MENU_RID, identity=("Document", "shop", "")
+)
+
+
+@pending("[V2.18] a click that did nothing is not sent again")
+def test_a_click_that_did_nothing_is_not_sent_again() -> None:
     strikes = Strikes(limit=3)
-    strikes.record(turn(action=CLICK))
+    strikes.record(turn(action=CLICK, classes=("none",)))
     assert strikes.may_send(CLICK, present=PRESENT) is False
     assert strikes.may_send(OTHER, present=PRESENT) is True
+
+
+@pending("[V2.18] a click repeats only after a strong effect")
+def test_next_twice_with_in_place_paging_is_sent() -> None:
+    strikes = Strikes(limit=3)
+    strikes.record(turn(action=CLICK, classes=("content_changed",), digest="page1"))
+    assert strikes.may_send(CLICK, present=PRESENT) is True
+
+
+@pending("[V2.18] a click repeats only after a strong effect")
+@pytest.mark.parametrize(
+    ("classes", "tokens"),
+    [(("focus",), ()), (("own_state",), ()), ((), ("frame_changed",)), (("unknown",), ())],
+)
+def test_a_click_after_a_weak_or_unknown_effect_is_not_sent_again(
+    classes: tuple[EffectClass, ...], tokens: tuple[Token, ...]
+) -> None:
+    strikes = Strikes(limit=3)
+    strikes.record(turn(action=CLICK, classes=classes, tokens=tokens))
+    assert strikes.may_send(CLICK, present=PRESENT) is False
+
+
+@pending("[V2.18] a press repeats after any effect but none, unknown or frame_changed alone")
+def test_arrow_down_three_times_in_a_listbox_is_sent() -> None:
+    strikes = Strikes(limit=3)
+    for digest in ("sel1", "sel2"):
+        strikes.record(turn(action=DOWN, classes=("focus",), digest=digest))
+        assert strikes.may_send(DOWN, present=PRESENT) is True
+
+
+@pending("[V2.18] a press repeats after any effect but none, unknown or frame_changed alone")
+def test_page_down_repeats_until_the_bottom_then_stops() -> None:
+    strikes = Strikes(limit=3)
+    strikes.record(turn(action=PAGE_DOWN, classes=(), tokens=("scrolled",), digest="y1"))
+    assert strikes.may_send(PAGE_DOWN, present=PRESENT) is True
+    strikes.record(turn(action=PAGE_DOWN, classes=("none",), digest="y1"))
+    assert strikes.may_send(PAGE_DOWN, present=PRESENT) is False, "the bottom: none ends it"
+
+
+@pending("[V2.18] a press repeats after any effect but none, unknown or frame_changed alone")
+@pytest.mark.parametrize(
+    ("classes", "tokens"), [(("none",), ()), (("unknown",), ()), ((), ("frame_changed",))]
+)
+def test_a_press_after_no_progress_is_not_sent_again(
+    classes: tuple[EffectClass, ...], tokens: tuple[Token, ...]
+) -> None:
+    strikes = Strikes(limit=3)
+    strikes.record(turn(action=DOWN, classes=classes, tokens=tokens))
+    assert strikes.may_send(DOWN, present=PRESENT) is False
 
 
 @pending("[V2.11].3 never the same action twice, by ledger identity after a re-render")
 def test_a_rerendered_target_is_not_sent_again_in_a_row() -> None:
     strikes = Strikes(limit=3)
-    strikes.record(turn(action=CLICK))
+    strikes.record(turn(action=CLICK, classes=("none",)))
     assert strikes.may_send(RERENDERED, present=frozenset({GO_AGAIN_RID})) is False

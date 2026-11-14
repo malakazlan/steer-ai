@@ -93,5 +93,7 @@ class Strikes:
 
     @stub
     def may_send(self, action: ActionKey, *, present: frozenset[tuple[int, ...]]) -> bool:
-        """False for the same action as the last one sent: never twice in a row."""
+        """[V2.18] False for the same action as the last one sent, unless that send made
+        progress: for `click`, `type`, `choose` and the state verbs a strong effect; for `press`
+        and `scroll` any effect but `none`, `unknown` or `frame_changed` alone."""
         raise NotImplementedError("3c: strikes")
