@@ -127,7 +127,7 @@ class LateNavigation(FakeBrowser):
 
     def __init__(self, clock: Clock, after_s: float) -> None:
         super().__init__(clock, CONTENT, lambda: NAVIGATED)
-        self._at = SITE_READY_S + after_s
+        self._at = after_s  # the before is ready on its first read: no wait before it
 
     def read_cheap(self) -> Observed:
         return NAVIGATED if self._clock.t >= self._at else CONTENT
@@ -156,3 +156,54 @@ def test_an_immediate_navigation_arrives_at_the_first_poll() -> None:
     row, _ = _sample(NAVIGATED, lambda: NAVIGATED)
     assert row["conclusive_ms"] == 0
     assert row["timed_out"] is False
+
+
+# ---- [V2.42] (B), mdn1: the before is read only once the start page is ready -------------------
+
+FRAME_ONLY = _obs([(8, "Pane", "Tabs", (9, 88), None)])
+"""A browser frame with no Document: the start page has not loaded yet (mdn1's before)."""
+
+
+class SlowStart(FakeBrowser):
+    """`read_v2` gives a frame with no Document `unready` times, then the ready start page."""
+
+    def __init__(self, clock: Clock, unready: int) -> None:
+        super().__init__(clock, NAVIGATED, lambda: NAVIGATED)
+        self._unready = unready
+
+    def read_v2(self) -> Observed:
+        self.v2_reads.append(self._clock.t)
+        if len(self.v2_reads) <= self._unready:
+            return FRAME_ONLY
+        return BEFORE if len(self.v2_reads) == self._unready + 1 else self._late()
+
+
+def test_the_before_is_read_again_until_the_start_page_has_a_document() -> None:
+    clock = Clock()
+    browser = SlowStart(clock, unready=2)
+    row = site_sample(browser, RESULTS_URL, sleep=clock.sleep, clock=clock.now)
+    assert row["before_unready"] is False
+    assert row["before_top_document"] is True
+    assert row["before_stable"] is True
+    assert row["classes"] == ["navigated"]
+    assert browser.v2_reads[2] > 0.0  # waited between the reads, never a fixed sleep first
+
+
+def test_a_start_page_that_never_gets_a_document_is_before_unready_never_a_verdict() -> None:
+    clock = Clock()
+    browser = SlowStart(clock, unready=10_000)
+    row = site_sample(browser, RESULTS_URL, sleep=clock.sleep, clock=clock.now)
+    assert row == {"before_unready": True, "before_top_document": False, "before_stable": True}
+    assert browser.scripts == []  # never navigated, never watched
+    assert clock.t <= SITE_READY_S + 1.0  # bounded by the guard
+
+
+def test_the_row_records_the_before_and_after_facts() -> None:
+    row, browser = _sample(NAVIGATED, lambda: NAVIGATED)
+    assert (row["before_unready"], row["before_top_document"], row["before_stable"]) == (
+        False,
+        True,
+        True,
+    )
+    assert row["after_minimized"] is False
+    assert browser.v2_reads[0] == 0.0  # a ready start page is read at once

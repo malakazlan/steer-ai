@@ -627,7 +627,10 @@ def noise_run(base: str, seconds: float = 4.0) -> list[dict[str, Any]]:
 
 
 SITE_READY_S = 8.0
-"""How long a real site is given to load and settle before the timed navigation (a guard)."""
+"""The most a real site is given to be ready before the timed navigation (a guard): its start
+page read with a top Document on a stable read ([V2.42] (B)); never a fixed sleep."""
+READY_POLL_S = 0.25
+"""How often the start page is read again while it is not ready (`observe2.FIRST_POLL_S`)."""
 LATE_S = 5.0
 """[V2.27] B: one more full read this long after `watch` returns (a guard, unmeasured)."""
 
@@ -676,9 +679,19 @@ def site_sample(
     Records the first change, the settle, the weak quiet-window reads, the report and the
     address bar's shape as closed tokens; never the URL or the page's text. [V2.27] B: then one
     full read `LATE_S` later, its classes against the before, and whether they differ from the
-    watch's final report."""
-    sleep(SITE_READY_S)
-    before = browser.read_v2()
+    watch's final report.
+
+    [V2.42] (B), mdn1: the before is read once the start page is ready (a top Document on a
+    stable read), retried every `READY_POLL_S` up to `SITE_READY_S`; a start page that never
+    gets ready gives a `before_unready` row and no observer verdict (a before with no Document
+    makes every report `unknown`)."""
+    before, ready = _ready_before(browser, sleep=sleep, clock=clock)
+    facts = {
+        "before_top_document": _top_document(before.snapshot) is not None,
+        "before_stable": before.snapshot.stable,
+    }
+    if not ready:
+        return {"before_unready": True, **facts}
     browser.run(f"location.href={json.dumps(target)}")
     result = watch(
         browser.read_cheap,
@@ -710,7 +723,25 @@ def site_sample(
         "url_observed": result.after.url_observed,
         **url_fields(result.after, bar_now, bar_error=bar_error),
         **late,
+        "before_unready": False,
+        **facts,
+        "after_minimized": result.after.snapshot.minimized,
     }
+
+
+def _ready_before(
+    browser: _SiteBrowser, *, sleep: Callable[[float], None], clock: Callable[[], float]
+) -> tuple[Observed, bool]:
+    """The start page's v2 read once it has a top Document and the read is stable, re-read
+    every `READY_POLL_S`, bounded by `SITE_READY_S`; the last read and whether it got ready."""
+    deadline = clock() + SITE_READY_S
+    while True:
+        seen = browser.read_v2()
+        if seen.snapshot.stable and _top_document(seen.snapshot) is not None:
+            return seen, True
+        if clock() >= deadline:
+            return seen, False
+        sleep(READY_POLL_S)
 
 
 def _late_read(
