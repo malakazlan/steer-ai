@@ -189,3 +189,21 @@ def test_each_new_check_runs_its_module_and_names_the_folder_free(name: str) -> 
     (check,) = [c for c in CHECKS if c.name == name]
     assert check.args is not None
     assert check.args[0].startswith("steerai.probes.")
+
+
+def test_the_scrolled_summary_skips_rows_that_are_not_presses() -> None:
+    """Live run: `rows_live` returns `{"error": "no_document"}` when the page has no Document;
+    the summary must not raise KeyError on it, and it reports the error."""
+    out = scrolled.summary([{"error": "no_document"}], None)
+    assert out["presses"] == 0
+    assert out["percent_readable"] is False
+    assert out["errors"] == ["no_document"]
+
+
+def test_the_scrolled_summary_counts_only_press_rows_beside_an_error() -> None:
+    rows = [
+        scrolled.press_row(1, None, scrolled.Press(10.0, 0), elements=5),
+        {"error": "no_document"},
+    ]
+    out = scrolled.summary(rows, "cap")
+    assert (out["presses"], out["percent_readable"], out["errors"]) == (1, True, ["no_document"])

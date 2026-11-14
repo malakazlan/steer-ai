@@ -80,14 +80,17 @@ def press_row(
 
 def summary(rows: Sequence[Mapping[str, Any]], reason: str | None) -> dict[str, Any]:  # Any: JSON
     """Whether the percent was readable and ever changed, whether flips ever happened, and why
-    the run stopped."""
+    the run stopped. Only press rows count; a row without a press (`{"error": ...}`, e.g. no
+    Document on the page) is reported under `errors`, never read as a press."""
+    presses = [r for r in rows if "press" in r]
     return {
         "report": "scrolled",
-        "presses": len(rows),
-        "percent_readable": any(r["percent_readable"] for r in rows),
-        "percent_ever_changed": any(r["percent_changed"] for r in rows),
-        "flips_ever": any(r["flipped"] > 0 for r in rows),
+        "presses": len(presses),
+        "percent_readable": any(r["percent_readable"] for r in presses),
+        "percent_ever_changed": any(r["percent_changed"] for r in presses),
+        "flips_ever": any(r["flipped"] > 0 for r in presses),
         "stopped": reason,
+        "errors": [str(r["error"]) for r in rows if "error" in r],
     }
 
 
