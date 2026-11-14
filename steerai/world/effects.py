@@ -49,8 +49,16 @@ EffectClass = Literal[
     "dialog_opened",
 ]
 Token = Literal[
-    "rerendered", "dismissed", "moved", "title_only", "windows_changed", "frame_changed"
+    "rerendered",
+    "dismissed",
+    "moved",
+    "title_only",
+    "windows_changed",
+    "frame_changed",
+    "scrolled",
 ]
+"""`scrolled` ([V2.18]): the viewport moved inside the scope. Not emitted by the observer until
+a probe shows how Chrome exposes it (unmeasured); never a proof signal, never `none`."""
 Unread = Literal["url", "windows", "caps"]
 Carrier = Literal["url_param", "url_path", "title", "results", "heading"]
 
