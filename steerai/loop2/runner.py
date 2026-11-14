@@ -10,7 +10,7 @@ The claim checks and the `navigated` auto proof are step 3c PR B (`verify.check_
 `verify.auto_proof`); the auto proof is tried only when there is a change signal since a
 subgoal's baseline (the URL changed, or the top Document was replaced), which §7.1 requires
 before anything else. The Enter table on the watch's final report and the staleness rule are
-PR C (`enter_outcome`, `stale_observation`, stubs here so `loop2.ready()` stays False).
+PR C (`enter_outcome`, `stale_observation`).
 """
 
 from __future__ import annotations
