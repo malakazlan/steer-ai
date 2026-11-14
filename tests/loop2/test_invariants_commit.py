@@ -142,23 +142,19 @@ def test_a_plain_click_has_no_post_check() -> None:
     assert post_check(risk="R0", subgoal_commit="none", classified=False) == "none"
 
 
-@pending("[V2.15] Q2: after a caution-R2 Enter, a navigation is expected")
 def test_a_navigation_after_a_caution_enter_is_expected() -> None:
     assert query_outcome(report("navigated"), text_carried=True) == "expected"
 
 
-@pending("[V2.15] Q2: after a caution-R2 Enter, results carrying the text are expected")
 def test_results_carrying_the_text_after_a_caution_enter_are_expected() -> None:
     assert query_outcome(report("content_changed"), text_carried=True) == "expected"
 
 
-@pending("[V2.15] Q2: anything but a navigation or results is unexpected_effect")
 @pytest.mark.parametrize("effect", ["dialog_opened", "revealed"])
 def test_anything_else_after_a_caution_enter_is_unexpected(effect: EffectClass) -> None:
     assert query_outcome(report(effect), text_carried=True) == "unexpected_effect"
 
 
-@pending("[V2.15] Q2: results without the text are not results")
 def test_a_change_without_the_text_after_a_caution_enter_is_unexpected() -> None:
     assert query_outcome(report("content_changed"), text_carried=False) == "unexpected_effect"
 
@@ -171,7 +167,6 @@ WEAK: list[tuple[tuple[EffectClass, ...], tuple[Token, ...]]] = [
 ]
 
 
-@pending("[V2.17].4: weak only at the deadline goes back to the controller, never unexpected")
 @pytest.mark.parametrize(("classes", "tokens"), WEAK, ids=["focus", "own_state", "frame", "all"])
 def test_weak_only_after_a_caution_enter_goes_back_to_the_controller(
     classes: tuple[EffectClass, ...], tokens: tuple[Token, ...]
@@ -180,6 +175,5 @@ def test_weak_only_after_a_caution_enter_goes_back_to_the_controller(
     assert query_outcome(effect, text_carried=False) == "back_to_controller"
 
 
-@pending("[V2.17].4: unknown after a caution Enter goes back to the controller")
 def test_unknown_after_a_caution_enter_goes_back_to_the_controller() -> None:
     assert query_outcome(report("unknown"), text_carried=False) == "back_to_controller"

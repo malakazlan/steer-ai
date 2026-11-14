@@ -18,7 +18,7 @@ from steerai.loop2.guards import (
 )
 from steerai.loop2.task import Budgets
 from steerai.world.effects import EffectClass, Token
-from tests.loop2.world_fakes import pending, report
+from tests.loop2.world_fakes import report
 
 BUDGETS = Budgets(max_actions=10, max_model_calls=5, max_cost_usd=0.5, max_wall_s=60.0)
 GO_RID, MENU_RID, GO_AGAIN_RID = (9, 3), (9, 6), (9, 33)
@@ -55,12 +55,10 @@ def turn(
 # ---- budgets (§8.9) ---------------------------------------------------------------------------
 
 
-@pending("§8.9 budgets")
 def test_within_every_budget_nothing_is_hit() -> None:
     assert budget_hit(BUDGETS, Usage(actions=9, model_calls=4, cost_usd=0.4, wall_s=59.0)) is None
 
 
-@pending("§8.9 budgets")
 @pytest.mark.parametrize(
     ("used", "token"),
     [
@@ -78,7 +76,6 @@ def test_each_budget_reached_is_its_token(used: Usage, token: BudgetToken) -> No
 # ---- strikes ([V2.4], [V2.11].3) --------------------------------------------------------------
 
 
-@pending("[V2.4] strikes")
 @pytest.mark.parametrize(
     ("classes", "reason"), [(("none",), "effect_none"), (("unknown",), "effect_unknown")]
 )
@@ -88,14 +85,12 @@ def test_a_none_or_unknown_effect_is_a_strike(
     assert reason in Strikes(limit=3).record(turn(classes=classes))
 
 
-@pending("[V2.4] strikes")
 def test_the_same_action_with_the_same_effect_is_a_strike() -> None:
     strikes = Strikes(limit=3)
     strikes.record(turn(digest="d1"))
     assert "same_action_same_effect" in strikes.record(turn(digest="d2"))
 
 
-@pending("[V2.11].3 strikes: same action by ledger identity after a re-render")
 def test_a_rerendered_target_is_the_same_action_by_its_ledger_identity() -> None:
     strikes = Strikes(limit=3)
     strikes.record(turn(action=CLICK, digest="d1"))
@@ -104,7 +99,6 @@ def test_a_rerendered_target_is_the_same_action_by_its_ledger_identity() -> None
     assert "same_action_same_effect" in reasons
 
 
-@pending("[V2.11].3 strikes: same action is verb + params + RuntimeId")
 def test_a_new_runtime_id_while_the_old_one_is_still_present_is_another_action() -> None:
     strikes = Strikes(limit=3)
     strikes.record(turn(action=CLICK, digest="d1"))
@@ -113,7 +107,6 @@ def test_a_new_runtime_id_while_the_old_one_is_still_present_is_another_action()
     assert "same_action_same_effect" not in reasons
 
 
-@pending("[V2.11].3 strikes: same action is verb + params + RuntimeId")
 def test_other_params_on_the_same_element_are_another_action() -> None:
     strikes = Strikes(limit=3)
     enter = ActionKey(verb="press", params=("Enter",), runtime_id=GO_RID, identity=CLICK.identity)
@@ -122,7 +115,6 @@ def test_other_params_on_the_same_element_are_another_action() -> None:
     assert "same_action_same_effect" not in strikes.record(turn(action=tab, digest="d2"))
 
 
-@pending("[V2.4] strikes")
 def test_a_state_already_seen_is_a_strike() -> None:
     strikes = Strikes(limit=3)
     strikes.record(turn(action=CLICK, digest="d1"))
@@ -130,19 +122,16 @@ def test_a_state_already_seen_is_a_strike() -> None:
     assert "state_seen" in strikes.record(turn(action=None, classes=(), digest="d1"))
 
 
-@pending("[V2.4] strikes")
 def test_a_rejected_claim_is_a_strike() -> None:
     reasons = Strikes(limit=3).record(turn(action=None, classes=(), rejected=True))
     assert "claim_rejected" in reasons
 
 
-@pending("[V2.11].4 a refusal is a strike")
 def test_a_refused_turn_is_a_strike() -> None:
     refused = dataclasses.replace(turn(action=None, classes=()), refused=True)
     assert "refused" in Strikes(limit=3).record(refused)
 
 
-@pending("[V2.11].3 one strike per turn, every reason recorded")
 def test_several_reasons_in_one_turn_are_one_strike_with_every_reason() -> None:
     strikes = Strikes(limit=3)
     strikes.record(turn(action=OTHER, digest="d1", classes=("revealed",)))
@@ -151,7 +140,6 @@ def test_several_reasons_in_one_turn_are_one_strike_with_every_reason() -> None:
     assert strikes.count == 1
 
 
-@pending("[V2.4] strikes")
 def test_a_tick_resets_the_count() -> None:
     strikes = Strikes(limit=2)
     strikes.record(turn(classes=("none",), digest="d1"))
@@ -161,7 +149,6 @@ def test_a_tick_resets_the_count() -> None:
     assert strikes.paused is False
 
 
-@pending("[V2.4] strikes")
 def test_the_limit_pauses_the_task() -> None:
     strikes = Strikes(limit=3)
     for digest in ("d1", "d2", "d3"):
@@ -179,7 +166,6 @@ PAGE_DOWN = ActionKey(
 )
 
 
-@pending("[V2.18] a click that did nothing is not sent again")
 def test_a_click_that_did_nothing_is_not_sent_again() -> None:
     strikes = Strikes(limit=3)
     strikes.record(turn(action=CLICK, classes=("none",)))
@@ -187,14 +173,12 @@ def test_a_click_that_did_nothing_is_not_sent_again() -> None:
     assert strikes.may_send(OTHER, present=PRESENT) is True
 
 
-@pending("[V2.18] a click repeats only after a strong effect")
 def test_next_twice_with_in_place_paging_is_sent() -> None:
     strikes = Strikes(limit=3)
     strikes.record(turn(action=CLICK, classes=("content_changed",), digest="page1"))
     assert strikes.may_send(CLICK, present=PRESENT) is True
 
 
-@pending("[V2.18] a click repeats only after a strong effect")
 @pytest.mark.parametrize(
     ("classes", "tokens"),
     [(("focus",), ()), (("own_state",), ()), ((), ("frame_changed",)), (("unknown",), ())],
@@ -207,7 +191,6 @@ def test_a_click_after_a_weak_or_unknown_effect_is_not_sent_again(
     assert strikes.may_send(CLICK, present=PRESENT) is False
 
 
-@pending("[V2.18] a press repeats after any effect but none, unknown or frame_changed alone")
 def test_arrow_down_three_times_in_a_listbox_is_sent() -> None:
     strikes = Strikes(limit=3)
     for digest in ("sel1", "sel2"):
@@ -215,7 +198,6 @@ def test_arrow_down_three_times_in_a_listbox_is_sent() -> None:
         assert strikes.may_send(DOWN, present=PRESENT) is True
 
 
-@pending("[V2.18] a press repeats after any effect but none, unknown or frame_changed alone")
 def test_page_down_repeats_until_the_bottom_then_stops() -> None:
     strikes = Strikes(limit=3)
     strikes.record(turn(action=PAGE_DOWN, classes=(), tokens=("scrolled",), digest="y1"))
@@ -224,7 +206,6 @@ def test_page_down_repeats_until_the_bottom_then_stops() -> None:
     assert strikes.may_send(PAGE_DOWN, present=PRESENT) is False, "the bottom: none ends it"
 
 
-@pending("[V2.18] a press repeats after any effect but none, unknown or frame_changed alone")
 @pytest.mark.parametrize(
     ("classes", "tokens"), [(("none",), ()), (("unknown",), ()), ((), ("frame_changed",))]
 )
@@ -236,8 +217,37 @@ def test_a_press_after_no_progress_is_not_sent_again(
     assert strikes.may_send(DOWN, present=PRESENT) is False
 
 
-@pending("[V2.11].3 never the same action twice, by ledger identity after a re-render")
 def test_a_rerendered_target_is_not_sent_again_in_a_row() -> None:
     strikes = Strikes(limit=3)
     strikes.record(turn(action=CLICK, classes=("none",)))
     assert strikes.may_send(RERENDERED, present=frozenset({GO_AGAIN_RID})) is False
+
+
+# ---- review fixes on #288 ---------------------------------------------------------------------
+
+
+def test_a_refused_turn_is_not_the_last_send() -> None:
+    """A refused turn dispatched nothing: it never replaces the last send."""
+    strikes = Strikes(limit=3)
+    strikes.record(turn(action=CLICK, classes=("none",)))
+    strikes.record(dataclasses.replace(turn(action=OTHER, classes=()), refused=True))
+    assert strikes.may_send(CLICK, present=PRESENT) is False
+
+
+def test_a_press_after_a_frame_and_title_change_only_is_not_sent_again() -> None:
+    """[V2.18] allow-list: only a class other than none/unknown, or `scrolled`, is progress."""
+    strikes = Strikes(limit=3)
+    strikes.record(turn(action=DOWN, classes=(), tokens=("frame_changed", "title_only")))
+    assert strikes.may_send(DOWN, present=PRESENT) is False
+
+
+@pytest.mark.parametrize(
+    ("used", "token"),
+    [
+        (Usage(actions=0, model_calls=0, cost_usd=float("nan"), wall_s=0.0), "max_cost"),
+        (Usage(actions=0, model_calls=0, cost_usd=0.0, wall_s=float("nan")), "max_wall"),
+    ],
+    ids=["cost", "wall"],
+)
+def test_a_nan_usage_trips_its_budget(used: Usage, token: BudgetToken) -> None:
+    assert budget_hit(BUDGETS, used) == token

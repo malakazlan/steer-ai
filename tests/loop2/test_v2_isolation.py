@@ -107,13 +107,34 @@ def test_loop_v2_refuses_to_start_while_it_is_not_built(
     assert '"status": "error"' in captured.out
 
 
-PENDING_MARK = re.compile(r'@pending\("([^"]*)"\)')
+PENDING_MARK = re.compile(r'@pending\(\s*"([^"]*)"\s*,?\s*\)')
 NAMES_INVARIANT = re.compile(r"§\d|\[V2\.\d+\]")
+INVARIANT_FILES = sorted(TESTS.glob("test_invariants_*.py"))
 
 
-@pytest.mark.parametrize("path", sorted(TESTS.glob("test_invariants_*.py")), ids=lambda p: p.name)
-def test_every_pending_test_names_its_invariant(path: Path) -> None:
+@pytest.mark.parametrize("path", INVARIANT_FILES, ids=lambda p: p.name)
+def test_every_remaining_pending_mark_names_its_invariant(path: Path) -> None:
+    """[V2.11].8, [V2.19]: marks come off as each part lands; every mark still on names the
+    invariant it guards (a mark split over lines is read too)."""
     source = path.read_text(encoding="utf-8")
     reasons = PENDING_MARK.findall(source)
-    assert len(reasons) == source.count("\ndef test_"), "every test carries a pending mark"
+    assert len(reasons) == source.count("@pending("), "every pending mark is read"
     assert [r for r in reasons if not NAMES_INVARIANT.search(r)] == []
+
+
+@pytest.mark.parametrize("path", INVARIANT_FILES, ids=lambda p: p.name)
+def test_no_invariant_test_is_xfailed_other_than_by_pending(path: Path) -> None:
+    """Only `pending` (strict, raises=NotImplementedError) may mark an invariant test, so none
+    is silently weakened to a plain or non-strict xfail."""
+    assert "xfail" not in path.read_text(encoding="utf-8")
+
+
+SKIPS = ("pytest.mark.skip", "pytest.skip(")
+
+
+@pytest.mark.parametrize("path", INVARIANT_FILES, ids=lambda p: p.name)
+def test_no_invariant_test_is_skipped(path: Path) -> None:
+    """An invariant test is never skipped (`skip`, `skipif`, `pytest.skip(`): it passes, or it
+    is a strict `pending` xfail."""
+    source = path.read_text(encoding="utf-8")
+    assert [s for s in SKIPS if s in source] == []
