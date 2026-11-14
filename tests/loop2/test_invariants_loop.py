@@ -69,21 +69,28 @@ def _assert_after_refusal(outcome: TaskOutcome, token: str) -> None:
 # ---- §8.1 no action on an element that is not in the latest snapshot --------------------------
 
 
-@pending("§8.1 resolver")
 def test_resolve_returns_the_element_still_there_with_its_role_and_name() -> None:
     assert resolve(GO.id, snapshot(PAGE), snapshot(PAGE)) == GO
 
 
-@pending("§8.1 resolver")
 def test_resolve_refuses_an_id_missing_from_the_latest_snapshot() -> None:
     latest = snapshot([e for e in PAGE if e.id != GO.id])
     assert resolve(GO.id, snapshot(PAGE), latest) is None
 
 
-@pending("§8.1 resolver")
 def test_resolve_refuses_the_same_runtime_id_under_another_name() -> None:
     renamed = [e if e.id != GO.id else dataclasses.replace(GO, name="Delete") for e in PAGE]
     assert resolve(GO.id, snapshot(PAGE), snapshot(renamed)) is None
+
+
+def test_resolve_refuses_an_id_the_listing_never_had() -> None:
+    assert resolve(99, snapshot(PAGE), snapshot(PAGE)) is None
+
+
+def test_resolve_against_another_window_is_misuse_and_raises() -> None:
+    other = dataclasses.replace(snapshot(PAGE), hwnd=0x20)
+    with pytest.raises(ValueError, match="window"):
+        resolve(GO.id, snapshot(PAGE), other)
 
 
 @pending("§8.1, [V2.11].4 and [V2.12] an unlisted id is a model-fault refusal")
