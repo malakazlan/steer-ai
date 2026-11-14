@@ -456,3 +456,38 @@ def test_the_worst_pending_field_wins_emptied_over_kept() -> None:
     outcome = run_task(task(), world.ports())
     assert [d.action.verb for d in world.dispatched] == ["type", "type", "click"]
     assert (outcome.status, outcome.reason) == ("stopped", "unexpected_effect")
+
+
+def test_a_pending_field_unmatched_on_a_partial_read_is_unread_on_row_2() -> None:
+    """Two fields typed; the page is still growing and the first one is not in it (gone is not
+    proven on a partial read, so it stays pending, unmatched). A submit for the second: the first
+    is `unread`, never `gone`, so row 2 gives `unknown`."""
+    second = element(50, "Edit", "Find", (9, 50), 1)
+    roles = {FIELD.runtime_id: "searchbox", second.runtime_id: "searchbox"}
+    screen = dataclasses.replace(observed([*QUERY_PAGE, second]), aria_roles=roles)
+    partial = dataclasses.replace(
+        observed([e for e in QUERY_PAGE if e.id != FIELD.id] + [second]),
+        aria_roles=roles,
+        growing=True,
+    )
+    world = World(
+        [
+            decision(
+                act("type", target=FIELD.id, param="text"),
+                act("type", target=second.id, param="text"),
+                first=True,
+            ),
+            decision(act("click", target=GO.id)),
+        ],
+        effects=[
+            report("own_value"),
+            report("own_value"),
+            report("content_changed", carriers=["title"]),
+        ],
+        screen=screen,
+        later=partial,
+        later_after_acts=2,
+    )
+    run_task(task(), world.ports())
+    assert [d.action.verb for d in world.dispatched] == ["type", "type", "click"]
+    assert "enter:unknown:2" in _history(world)
