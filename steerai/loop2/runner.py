@@ -358,6 +358,7 @@ class _Run:
             self._check_interrupt()
             self._check_budgets()
             decision = self._decide(observed)
+            self._check_interrupt()  # #326, [V2.40] Q4: a Decision after the kill is discarded
             self.turn = _Turn()
             fresh = self._observe()
             if fresh.read_cost is not None:
@@ -641,7 +642,9 @@ class _Run:
         risk, submit = rated
         if RISKS.index(risk) >= _R2:
             raise _End("blocked", Reason("commit_not_in_step"))
-        key = None if element is None else _key(action, element)
+        text = self._text(action)
+        digest = None if action.text is None else self.ports.fact_of(action.text).digest
+        key = None if element is None else _key(action, element, text_digest=digest)
         if key is not None and not self._may_send(key, observed):
             self._refuse("model", "repeat_send")
             return None
@@ -654,8 +657,17 @@ class _Run:
             risk=risk,
             provenance=_provenance(action),
             submit=submit,
+            text=text,
         )
         return self._dispatch(sent, element, observed, key)
+
+    def _text(self, action: ActionDoc) -> str | None:
+        """RT-36: the text a `type` sends: its param's goal span, or its free text."""
+        if action.verb != "type":
+            return None
+        if action.param is None:
+            return action.text
+        return self._subgoal(action.subgoal).params[action.param].text
 
     def _may_send(self, key: ActionKey, observed: Observed) -> bool:
         """[V2.18]: the same send again only after progress, against the previous turn's last
@@ -679,7 +691,9 @@ class _Run:
         if action.target is None:  # validate refuses this shape first
             raise AssertionError("target_missing")
         element = self._listed(action.target, listed, observed)
-        if element is None:
+        if element is None and self.handles.element(action.target, listed) is not None:
+            self._refuse("world", "target_changed")  # RT-27: listed, then the page moved
+        elif element is None:
             self._refuse("model", "id_not_listed")
         return element
 
@@ -919,7 +933,7 @@ class _Run:
             field=element.runtime_id,
             identity=_identity(element),
             scope=None if top is None else top.runtime_id,
-            typed=self._read_value(element, observed) if verified else None,
+            typed=self.ports.fact_of(sent.text) if verified and sent.text else None,
             search=search_facts(observed, element.runtime_id),
             goal_span=sent.provenance == "goal_span",
         )
@@ -1024,7 +1038,7 @@ class _Run:
             state_digest=_digest(observed),
             claim_rejected=self.turn.claim_rejected,
             present=frozenset(e.runtime_id for e in observed.snapshot.elements),
-            refused=self.turn.refused,
+            refused=self.turn.refused and self.turn.sent == 0,  # RT-25/26: nothing dispatched
         )
         reasons = self.strikes.record(facts)
         if reasons:
@@ -1136,8 +1150,11 @@ def _provenance(action: ActionDoc) -> Provenance | None:
     return "goal_span" if action.param is not None else "generated"
 
 
-def _key(action: ActionDoc, element: Element) -> ActionKey:
-    params = tuple(p for p in (action.key, action.param, action.option) if p is not None)
+def _key(action: ActionDoc, element: Element, *, text_digest: str | None) -> ActionKey:
+    """[V2.11] decision 3: the action's own closed fields; a free-text type adds its text's
+    digest (RT-34), never the text."""
+    fields = (action.key, action.param, action.option, text_digest)
+    params = tuple(p for p in fields if p is not None)
     return ActionKey(
         verb=action.verb, params=params, runtime_id=element.runtime_id, identity=_identity(element)
     )

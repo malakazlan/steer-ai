@@ -90,11 +90,14 @@ class Dispatch:
     submit: bool = False
     """[V2.28] item 1: the action goes through the Enter table (an Enter on a field, or a
     submit of pending text), so the watch holds it to a conclusive report; set by code."""
+    text: str | None = dataclasses.field(default=None, repr=False)
+    """RT-36: the text a `type` sends, resolved by code (the param's goal span, or the free
+    text); the act port types it. Never in a repr, a trace or the outcome."""
 
     def redacted(self) -> Dispatch:
         """The dispatch as the outcome keeps it (RT-18): no typed text, option or name."""
         action = self.action.model_copy(update={"text": None, "option": None})
-        return dataclasses.replace(self, action=action, name="")
+        return dataclasses.replace(self, action=action, name="", text=None)
 
 
 @dataclass(frozen=True)

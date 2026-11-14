@@ -6,6 +6,7 @@ history holds closed tokens written by code.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Literal
@@ -75,6 +76,12 @@ class TokenPrice:
     usd_per_input_token: float
     usd_per_output_token: float
 
+    def __post_init__(self) -> None:
+        """RT-32: a price is a finite positive number; 0 would read as free, never enforced."""
+        for rate in (self.usd_per_input_token, self.usd_per_output_token):
+            if not _positive(rate, integer=False):
+                raise ValueError("a token price must be finite and positive")
+
 
 @dataclass(frozen=True)
 class Budgets:
@@ -87,6 +94,21 @@ class Budgets:
     max_cost_usd: float
     max_wall_s: float
     price: TokenPrice | None = None
+
+    def __post_init__(self) -> None:
+        """RT-32: every cap is finite, the counts are positive whole numbers and the wall time is
+        positive: an inf or NaN cap would never trip, so the budget would only look enforced.
+        The cost cap may be 0 (spend nothing once a price is set)."""
+        for name in ("max_actions", "max_model_calls", "max_tokens"):
+            if not _positive(getattr(self, name), integer=True):
+                raise ValueError(f"{name} must be a positive whole number")
+        if not _positive(self.max_wall_s, integer=False):
+            raise ValueError("max_wall_s must be finite and positive")
+        cost = self.max_cost_usd
+        if isinstance(cost, bool) or not isinstance(cost, int | float):
+            raise ValueError("max_cost_usd must be a finite number, zero or more")
+        if not (math.isfinite(cost) and cost >= 0):  # 0 spends nothing once a price is set
+            raise ValueError("max_cost_usd must be a finite number, zero or more")
 
 
 @dataclass(frozen=True)
@@ -108,3 +130,12 @@ class Task:
     envelope: Envelope
     budgets: Budgets
     history: list[Turn]
+
+
+def _positive(value: object, *, integer: bool) -> bool:
+    """A finite number above zero; a bool is never a number here, and an integer cap is an int."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    if integer and not isinstance(value, int):
+        return False
+    return math.isfinite(value) and value > 0

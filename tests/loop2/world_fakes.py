@@ -263,6 +263,12 @@ class World:
     settled: Observed | None = None
     """What `settle` returns; None: the current screen."""
     interrupt_after_settle: bool = False
+    interrupt_in_decide: int | None = None
+    """Report `interruption` from this controller call on (1-based): the kill arrives while
+    that call is waiting on the model, so its Decision comes back after the kill (#326)."""
+    autocomplete: dict[tuple[int, ...], ValueFact] = field(default_factory=dict)
+    """The value a field holds once the watch after a type has run (the page completed what Steer
+    typed, RT-33)."""
     """Report `interruption` once a settle has run (the person's kill during the wait)."""
     read_cost: ReadCost = field(default_factory=ReadCost)
     """What each watch reports it read ([V2.34])."""
@@ -316,6 +322,8 @@ class World:
 
     def _watch(self, before: Observed, sent: Dispatch) -> Watched:
         self.events.append("watch")
+        if sent.action.verb == "type" and sent.runtime_id in self.autocomplete:
+            self.values[sent.runtime_id] = self.autocomplete[sent.runtime_id]
         self.now += self.watch_s
         self._arrive()
         effect = self.effects.pop(0) if self.effects else report("none")
@@ -372,6 +380,8 @@ class World:
     def _interrupted(self) -> str | None:
         if self.interrupt_after_settle:
             return self.interruption if "settle" in self.events else None
+        if self.interrupt_in_decide is not None and len(self.views) >= self.interrupt_in_decide:
+            return self.interruption
         if self.interrupt_after is not None and len(self.dispatched) >= self.interrupt_after:
             return self.interruption
         return None
