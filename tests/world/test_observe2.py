@@ -12,6 +12,7 @@ from steerai.world.landmarks import Landmark, PageFacts
 from steerai.world.observe2 import (
     GROW_GUARD_S,
     GROW_POLL_S,
+    YOUNG_S,
     DocumentSince,
     FirstTouches,
     document_nodes,
@@ -393,3 +394,54 @@ def test_document_since_is_when_the_top_document_was_first_seen() -> None:
 def test_reads_do_not_apply_the_readiness_rule() -> None:
     """Readiness is the first observation's alone: a read never changes `stable`."""
     assert read_observed(_snap([PAGE]), Reader(), key=KEY).snapshot.stable is True
+
+
+# ---- [V2.35] (2) the young page: a separate fact from `growing` ------------------------------
+
+
+def test_the_load_guard_is_twelve_seconds() -> None:
+    assert YOUNG_S == 12.0
+
+
+def test_a_document_younger_than_the_load_guard_is_young() -> None:
+    """Measured from the read's completion (when the stamp runs), on `document_since`."""
+    clock = _Clock()
+    since = DocumentSince(clock=clock.monotonic)
+    clock.now = 1.0
+    assert since(_seen(_page(3))).young is True
+    clock.now = 1.0 + YOUNG_S - 0.01
+    assert since(_seen(_page(3))).young is True
+    clock.now = 1.0 + YOUNG_S
+    assert since(_seen(_page(3))).young is False
+    replaced = since(_seen(_page(3, document=(9, 77))))
+    assert replaced.young is True, "a replaced Document is young again"
+    assert since(_seen(NO_DOCUMENT, bar=False)).young is False
+
+
+def test_young_is_not_growing() -> None:
+    seen = Observed(snapshot=_snap(BASE))
+    assert seen.young is False
+    assert seen.growing is False
+
+
+def test_gh1_partial_page_is_handed_over_young_not_growing_and_a_later_read_sees_rest() -> None:
+    """[V2.35] (2), the gh1 case (live, 2026-11-14): the Document appeared with 101 nodes, held
+    through the quiet window, and grew to 303 seconds later. Its appearance is not growth: the
+    observation is handed over partial, `young`, not `growing`; a later read sees the rest."""
+    clock = _Clock()
+    since = DocumentSince(clock=clock.monotonic)
+    screen = _Screen(
+        clock, [(0.0, _seen(NO_DOCUMENT)), (1.4, _seen(_page(101))), (8.0, _seen(_page(303)))]
+    )
+    got = first_observation(
+        lambda: since(screen.read()), quiet_s=QUIET_S, clock=clock.monotonic, sleep=clock.sleep
+    )
+    assert len(document_nodes(got.snapshot) or ()) == 101
+    assert got.young is True
+    assert got.growing is False
+    assert clock.now < 8.0
+    clock.now = 9.0
+    later = since(screen.read())
+    assert len(document_nodes(later.snapshot) or ()) == 303
+    assert later.young is True
+    assert later.document_since == got.document_since
