@@ -44,6 +44,13 @@ def _struck(outcome: TaskOutcome, reason: str) -> bool:
     return any(reason in strike for strike in outcome.strikes)
 
 
+def _assert_after_refusal(outcome: TaskOutcome, token: str) -> None:
+    """[V2.12] a model fault: the reason records `after_refusal` plus the refusal's token."""
+    assert outcome.reason is not None
+    assert "after_refusal" in outcome.reason
+    assert token in outcome.reason
+
+
 # ---- §8.1 no action on an element that is not in the latest snapshot --------------------------
 
 
@@ -64,14 +71,15 @@ def test_resolve_refuses_the_same_runtime_id_under_another_name() -> None:
     assert resolve(GO.id, snapshot(PAGE), snapshot(renamed)) is None
 
 
-@pending("§8.1 and [V2.11].4 an unlisted id is refused with a token and a strike")
+@pending("§8.1, [V2.11].4 and [V2.12] an unlisted id is a model-fault refusal")
 def test_an_action_on_an_unlisted_id_is_refused_with_a_token_and_a_strike() -> None:
     world = World([decision(act("click", target=99), first=True)])
     outcome = run_task(task(), world.ports())
     assert world.dispatched == []
     assert any("id_not_listed" in t for t in _tokens_after_first_call(world))
     assert _struck(outcome, "refused")
-    assert outcome.status == "cannot", "ended by the controller's stop, not by the refusal"
+    assert outcome.status == "cannot", "a model fault: the status follows the stop's own value"
+    _assert_after_refusal(outcome, "id_not_listed")
 
 
 # ---- §8.2 risk only rises ---------------------------------------------------------------------
@@ -143,14 +151,15 @@ def test_an_enter_on_a_field_that_is_not_a_search_field_is_a_commit_and_blocked(
 # ---- §8.5 typed text: provenance by code; never into a secure field ---------------------------
 
 
-@pending("§8.5 and [V2.11].4 a secure-field type is refused with a token and a strike")
-def test_a_secure_field_type_is_refused_with_a_token_and_a_strike_not_a_task_end() -> None:
+@pending("§8.5, [V2.11].4 and [V2.12] a secure-field type is a policy refusal")
+def test_a_secure_field_type_is_refused_and_a_following_stop_ends_blocked() -> None:
     world = World([decision(act("type", target=PASSWORD.id, param="text"), first=True)])
     outcome = run_task(task(), world.ports())
     assert world.dispatched == []
+    assert len(world.views) >= 2, "the refusal goes back to the controller, not a task end"
     assert any("secure_field" in t for t in _tokens_after_first_call(world))
     assert _struck(outcome, "refused")
-    assert outcome.status == "cannot", "ended by the controller's stop, not by the refusal"
+    assert (outcome.status, outcome.reason) == ("blocked", "secure_field")
 
 
 @pending("§8.5 and [V2.11].5 provenance set by code")
@@ -454,3 +463,63 @@ def test_an_after_older_than_the_reuse_limit_is_read_again() -> None:
     world = _two_clicks(after=observed(), watch_s=REUSE_FRESHNESS_S + 1.0)
     run_task(task(), world.ports())
     assert "observe" in _between_first_two_acts(world)
+
+
+# ---- [V2.12] the status after a refusal: code decides it from the refusal reason ---------------
+
+SECURE_TYPE = act("type", target=PASSWORD.id, param="text")
+UNLISTED_CLICK = act("click", target=99)
+
+
+@pending("[V2.12] step-limit refusal ends blocked not_in_step")
+def test_a_claim_kind_not_in_step_then_a_stop_ends_blocked_not_in_step() -> None:
+    claim = Claim(subgoal="s1", kind="content_present", evidence=[GO.id])
+    world = World([decision(first=True, claims=[claim])])
+    outcome = run_task(task(), world.ports())
+    assert (outcome.status, outcome.reason) == ("blocked", "not_in_step")
+
+
+@pending("[V2.12] model-fault refusal: the status follows the stop's value")
+def test_a_model_fault_then_a_blocked_stop_ends_blocked_after_refusal() -> None:
+    world = World([decision(UNLISTED_CLICK, first=True), Decision(stop="blocked")])
+    outcome = run_task(task(), world.ports())
+    assert outcome.status == "blocked"
+    _assert_after_refusal(outcome, "id_not_listed")
+
+
+@pending("[V2.12] model-fault refusal: a wrong target shape")
+def test_a_wrong_target_shape_is_a_model_fault() -> None:
+    world = World([decision(act("press", key="Enter", target=GO.id), first=True)])
+    outcome = run_task(task(), world.ports())
+    assert world.dispatched == []
+    assert outcome.status == "cannot"
+    _assert_after_refusal(outcome, "target_on_untargeted_verb")
+
+
+@pending("[V2.12] the latest refusal since the last progress decides")
+def test_a_policy_refusal_after_a_model_fault_decides_the_status() -> None:
+    world = World([decision(UNLISTED_CLICK, first=True), decision(SECURE_TYPE)])
+    outcome = run_task(task(), world.ports())
+    assert (outcome.status, outcome.reason) == ("blocked", "secure_field")
+
+
+@pending("[V2.12] the latest refusal since the last progress decides")
+def test_a_model_fault_after_a_policy_refusal_decides_the_status() -> None:
+    world = World([decision(SECURE_TYPE, first=True), decision(UNLISTED_CLICK)])
+    outcome = run_task(task(), world.ports())
+    assert outcome.status == "cannot"
+    _assert_after_refusal(outcome, "id_not_listed")
+
+
+@pending("[V2.12] progress after a refusal resets it")
+def test_progress_after_a_refusal_resets_the_status_mapping() -> None:
+    world = World(
+        [decision(SECURE_TYPE, first=True), decision(act("click", target=GO.id))],
+        effects=[report("content_changed")],
+    )
+    outcome = run_task(task(), world.ports())
+    assert [d.runtime_id for d in world.dispatched] == [GO.runtime_id]
+    assert outcome.status == "cannot", "the stop's own value: no refusal since the progress"
+    reason = outcome.reason or ""
+    assert "secure_field" not in reason
+    assert "after_refusal" not in reason
