@@ -143,20 +143,24 @@ def test_a_plain_click_has_no_post_check() -> None:
 
 
 def test_a_navigation_after_a_caution_enter_is_expected() -> None:
-    assert query_outcome(report("navigated"), text_carried=True) == "expected"
+    assert query_outcome(report("navigated"), text_carried=True).outcome == "expected"
 
 
 def test_results_carrying_the_text_after_a_caution_enter_are_expected() -> None:
-    assert query_outcome(report("content_changed"), text_carried=True) == "expected"
+    assert query_outcome(report("content_changed"), text_carried=True).outcome == "expected"
 
 
 @pytest.mark.parametrize("effect", ["dialog_opened", "revealed"])
-def test_anything_else_after_a_caution_enter_is_unexpected(effect: EffectClass) -> None:
-    assert query_outcome(report(effect), text_carried=True) == "unexpected_effect"
+def test_a_dialog_or_reveal_with_no_carrier_after_a_caution_enter_is_unexpected(
+    effect: EffectClass,
+) -> None:
+    """[V2.21] row 4 (a revealed list carrying the text is row 6, expected)."""
+    assert query_outcome(report(effect), text_carried=False).outcome == "unexpected_effect"
 
 
 def test_a_change_without_the_text_after_a_caution_enter_is_unexpected() -> None:
-    assert query_outcome(report("content_changed"), text_carried=False) == "unexpected_effect"
+    outcome = query_outcome(report("content_changed"), text_carried=False)
+    assert outcome.outcome == "unexpected_effect"
 
 
 WEAK: list[tuple[tuple[EffectClass, ...], tuple[Token, ...]]] = [
@@ -168,12 +172,17 @@ WEAK: list[tuple[tuple[EffectClass, ...], tuple[Token, ...]]] = [
 
 
 @pytest.mark.parametrize(("classes", "tokens"), WEAK, ids=["focus", "own_state", "frame", "all"])
-def test_weak_only_after_a_caution_enter_goes_back_to_the_controller(
+def test_weak_only_after_a_caution_enter_goes_back_as_weak(
     classes: tuple[EffectClass, ...], tokens: tuple[Token, ...]
 ) -> None:
-    effect = report(*classes, tokens=tokens)
-    assert query_outcome(effect, text_carried=False) == "back_to_controller"
+    """[V2.21] row 8: back to the controller with its own token, and the key stays consumed."""
+    outcome = query_outcome(report(*classes, tokens=tokens), text_carried=False)
+    assert (outcome.outcome, outcome.token) == ("back_to_controller", "weak")
+    assert outcome.releases_key is False
 
 
-def test_unknown_after_a_caution_enter_goes_back_to_the_controller() -> None:
-    assert query_outcome(report("unknown"), text_carried=False) == "back_to_controller"
+def test_unknown_after_a_caution_enter_goes_back_as_unknown() -> None:
+    """[V2.21] row 5: unknown is its own token now, never weak; the key stays consumed."""
+    outcome = query_outcome(report("unknown"), text_carried=False)
+    assert (outcome.outcome, outcome.token) == ("back_to_controller", "unknown")
+    assert outcome.releases_key is False

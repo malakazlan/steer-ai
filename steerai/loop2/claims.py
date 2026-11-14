@@ -14,6 +14,7 @@ from typing import Final, Literal
 from steerai.loop2._stub import stub
 from steerai.loop2.decision import Claim
 from steerai.loop2.task import Commit, GoalSpan
+from steerai.world.landmarks import Landmark
 from steerai.world.model import Snapshot
 
 RuntimeId = tuple[int, ...]
@@ -28,6 +29,11 @@ ClaimToken = Literal[
     "not_in_delta",
     "inside_field",
     "under_suggestions",
+    "owned_by_combobox",
+    "owned_by_controller_for",
+    "owned_by_search_landmark",
+    "owned_by_parent",
+    "landmarks_unread",
     "option_evidence",
     "words_missing",
     "too_short",
@@ -140,10 +146,26 @@ def check_content(  # noqa: PLR0913 - the claim, its screens, and keyword-only f
     records: Sequence[CommitRecord] = (),
     sent: Sent | None = None,
     field_filled: bool | None = None,
+    landmarks: Mapping[RuntimeId, Landmark | None] | None = None,
 ) -> Checked:
     """`content_present` on `after`: the standard rules (§3.1, §3.2) when the subgoal's commit is
     `none`, the strict rules (§3.3) otherwise. `records` are this task's write-ahead records;
-    `field_filled` is the live read of `sent.field` (None: unread)."""
+    `field_filled` is the live read of `sent.field` (None: unread); `landmarks` each element's
+    nearest landmark ancestor on `after` ([V2.13]).
+
+    [V2.21] #9 field-owned: after the option rule ([V2.17] item 2, on top), a cited element is
+    field-owned (`under_suggestions`) when any holds, each adding the token of the rule that
+    fired: under a typed field's ComboBox ancestor (`owned_by_combobox`); named by its
+    ControllerFor when read (`owned_by_controller_for`); sharing its nearest Search landmark
+    (`owned_by_search_landmark`); under its parent container unless that parent is the scope
+    Document or a Main landmark (`owned_by_parent`). Anything merely below the Document is not.
+
+    [V2.23] B, C: every rule that fires is emitted, in that order; the false-stop count on the
+    pooled set reports per rule both "fired" and "fired alone" (rule 4's real cost is where it
+    is the only reason). With no landmark map while a field was typed under the subgoal, the
+    check fails closed with `landmarks_unread` (never "owned": it was not read); with no typed
+    field there is nothing to own. A ControllerFor that was not read is not observed by design
+    (it is not in the fetch yet) and never fails closed."""
     raise NotImplementedError("step 4: content_present")
 
 

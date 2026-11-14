@@ -4,12 +4,13 @@ and amendment 1). Red on the step 4 stub."""
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from steerai.loop2.claims import Checked, RuntimeId, SubgoalFacts, check_content
 from steerai.loop2.decision import Claim
 from steerai.loop2.task import GoalSpan
 from steerai.world.elements import Element
+from steerai.world.landmarks import Landmark
 from steerai.world.model import Snapshot
 from tests.loop2.world_fakes import DOC, FIELD, GOAL, PAGE, element, pending, snapshot
 
@@ -45,12 +46,23 @@ def claim(*ids: int, param: str | None = "text") -> Claim:
     return Claim(subgoal="s1", kind="content_present", evidence=list(ids), param=param)
 
 
-def check(cited: Claim, extra: Sequence[Element], subgoal: SubgoalFacts | None = None) -> Checked:
+def check(
+    cited: Claim,
+    extra: Sequence[Element],
+    subgoal: SubgoalFacts | None = None,
+    *,
+    landmarks: Mapping[RuntimeId, Landmark | None] | None = None,
+    landmarks_read: bool = True,
+) -> Checked:
+    """`landmarks` overrides the read map, in which every shown element has no landmark."""
+    shown = [*PAGE, *extra]
+    read = {e.runtime_id: None for e in shown} | dict(landmarks or {})
     return check_content(
         cited,
-        snapshot([*PAGE, *extra]),
+        snapshot(shown),
         subgoal or facts(),
         scope_document=DOC.runtime_id,
+        landmarks=read if landmarks_read else None,
     )
 
 
@@ -182,22 +194,27 @@ COMBO_LIST = element(62, "List", "", (9, 62), 60)
 COMBO_ITEM = element(63, "Text", "red shoes", (9, 63), 62)
 
 
-@pending("[V2.15] Q4: a list under the field's ComboBox ancestor is field-owned")
+@pending("[V2.21] #9 rule 1: a list under the field's ComboBox ancestor is field-owned")
 def test_a_list_under_the_fields_combobox_ancestor_is_under_suggestions() -> None:
     subgoal = facts(typed_fields=(COMBO_FIELD.runtime_id,))
     shown = [COMBO, COMBO_FIELD, COMBO_LIST, COMBO_ITEM]
-    assert "under_suggestions" in check(claim(COMBO_ITEM.id), shown, subgoal).tokens
+    tokens = check(claim(COMBO_ITEM.id), shown, subgoal).tokens
+    assert "under_suggestions" in tokens
+    assert "owned_by_combobox" in tokens
 
 
-@pending("[V2.15] Q4: a list named by the field's ControllerFor is field-owned")
+@pending("[V2.21] #9 rule 2: a list named by the field's ControllerFor is field-owned")
 def test_a_list_named_by_controller_for_is_under_suggestions() -> None:
     popup = element(64, "List", "", (9, 64), 1)
     line = element(65, "Text", "red shoes", (9, 65), 64)
     subgoal = facts(typed_fields=(FIELD.runtime_id,), controlled=(popup.runtime_id,))
-    assert "under_suggestions" in check(claim(line.id), [popup, line], subgoal).tokens
+    tokens = check(claim(line.id), [popup, line], subgoal).tokens
+    assert "under_suggestions" in tokens
+    assert "owned_by_controller_for" in tokens
+    assert "owned_by_parent" not in tokens, "the field's parent is the scope Document"
 
 
-@pending("[V2.15] Q4: field-owned is decided by ancestry, not by the effect class")
+@pending("[V2.21] #9: field-owned is decided by these rules, not by the effect class")
 def test_a_field_owned_list_is_rejected_even_when_not_a_revealed_root() -> None:
     subgoal = facts(typed_fields=(COMBO_FIELD.runtime_id,), revealed_roots=())
     shown = [COMBO, COMBO_FIELD, COMBO_LIST, COMBO_ITEM]
@@ -224,12 +241,154 @@ FORM_FIELD = element(72, "Edit", "Search", (9, 72), 71)
 FORM_LIST = element(73, "List", "", (9, 73), 70)
 
 
-@pending("[V2.15] Q4: a shared container does not make a list field-owned")
+@pending("[V2.21] #9 rule 4: a list under the field's grandparent only is not field-owned")
 def test_a_list_that_only_shares_a_container_with_the_field_is_not_field_owned() -> None:
+    """The list sits under the field's grandparent, not its parent container."""
     row = element(74, "ListItem", "Red shoes", (9, 74), 73)
     subgoal = facts(typed_fields=(FORM_FIELD.runtime_id,))
     result = check(claim(row.id), [FORM, INNER, FORM_FIELD, FORM_LIST, row], subgoal)
     assert result.proof is not None
+
+
+OWNED = (
+    "owned_by_combobox",
+    "owned_by_controller_for",
+    "owned_by_search_landmark",
+    "owned_by_parent",
+)
+
+
+def fired(tokens: Sequence[str]) -> set[str]:
+    return {t for t in tokens if t in OWNED}
+
+
+SEARCH_AREA = element(110, "Group", "Search", (9, 110), 1)
+SEARCH_INNER = element(111, "Group", "", (9, 111), 110)
+SEARCH_INPUT = element(112, "Edit", "Search", (9, 112), 111)
+SEARCH_HINTS = element(113, "List", "", (9, 113), 110)
+SEARCH_HINT = element(114, "Text", "red shoes", (9, 114), 113)
+IN_SEARCH = Landmark(kind="search", runtime_id=SEARCH_AREA.runtime_id)
+
+
+@pending("[V2.21] #9 rule 3: sharing the field's nearest Search landmark is field-owned")
+def test_a_list_sharing_the_fields_search_landmark_is_field_owned() -> None:
+    subgoal = facts(typed_fields=(SEARCH_INPUT.runtime_id,))
+    shown = [SEARCH_AREA, SEARCH_INNER, SEARCH_INPUT, SEARCH_HINTS, SEARCH_HINT]
+    marks = {e.runtime_id: IN_SEARCH for e in shown[1:]}
+    tokens = check(claim(SEARCH_HINT.id), shown, subgoal, landmarks=marks).tokens
+    assert "under_suggestions" in tokens
+    assert fired(tokens) == {"owned_by_search_landmark"}
+
+
+@pending("[V2.21] #9 rule 4: under the field's parent container is field-owned")
+def test_a_list_under_the_fields_parent_container_is_field_owned() -> None:
+    box = element(120, "Group", "", (9, 120), 1)
+    typed = element(121, "Edit", "Search", (9, 121), 120)
+    hints = element(122, "List", "", (9, 122), 120)
+    hint = element(123, "Text", "red shoes", (9, 123), 122)
+    subgoal = facts(typed_fields=(typed.runtime_id,))
+    tokens = check(claim(hint.id), [box, typed, hints, hint], subgoal).tokens
+    assert "under_suggestions" in tokens
+    assert fired(tokens) == {"owned_by_parent"}
+
+
+@pending("[V2.21] #9: anything merely below the Document is not field-owned")
+def test_a_result_under_the_scope_document_beside_the_field_is_not_field_owned() -> None:
+    subgoal = facts(typed_fields=(FIELD.runtime_id,))
+    result = check(claim(RESULT.id), [RESULT], subgoal)
+    assert result.proof is not None
+    assert fired(result.tokens) == set()
+
+
+@pending("[V2.21] #9 rule 4: a parent that is a Main landmark is not a field's container")
+def test_a_result_under_the_main_landmark_beside_the_field_is_not_field_owned() -> None:
+    main = element(130, "Group", "", (9, 130), 1)
+    typed = element(131, "Edit", "Search", (9, 131), 130)
+    found = element(132, "Text", "Red shoes in stock", (9, 132), 130)
+    in_main = Landmark(kind="main", runtime_id=main.runtime_id)
+    marks = {typed.runtime_id: in_main, found.runtime_id: in_main}
+    subgoal = facts(typed_fields=(typed.runtime_id,))
+    result = check(claim(found.id), [main, typed, found], subgoal, landmarks=marks)
+    assert result.proof is not None
+
+
+@pending("[V2.21] #9 sample: the suggestion list under the field's search Group hits rules 2-4")
+def test_the_suggestion_sample_hits_controller_for_landmark_and_parent() -> None:
+    group = element(140, "Group", "Search", (9, 140), 1)
+    typed = element(141, "Edit", "Search", (9, 141), 140)
+    hints = element(142, "List", "", (9, 142), 140)
+    hint = element(143, "Text", "red shoes", (9, 143), 142)
+    in_search = Landmark(kind="search", runtime_id=group.runtime_id)
+    marks = {e.runtime_id: in_search for e in (typed, hints, hint)}
+    subgoal = facts(typed_fields=(typed.runtime_id,), controlled=(hints.runtime_id,))
+    tokens = check(claim(hint.id), [group, typed, hints, hint], subgoal, landmarks=marks).tokens
+    assert "under_suggestions" in tokens
+    assert [t for t in tokens if t in OWNED] == [
+        "owned_by_controller_for",
+        "owned_by_search_landmark",
+        "owned_by_parent",
+    ], "[V2.23] C: every rule that fires, in a stable order"
+
+
+@pending("[V2.21] #9 sample: results directly under the Document (cp1) hit no rule")
+def test_the_results_under_the_document_sample_hits_no_rule() -> None:
+    form = element(150, "Group", "Search", (9, 150), 1)
+    typed = element(151, "Edit", "Search", (9, 151), 150)
+    listing = element(152, "List", "Results", (9, 152), 1)
+    found = element(153, "Text", "Red shoes in stock", (9, 153), 152)
+    in_search = Landmark(kind="search", runtime_id=form.runtime_id)
+    marks: dict[RuntimeId, Landmark | None] = {
+        typed.runtime_id: in_search,
+        listing.runtime_id: None,
+        found.runtime_id: None,
+    }
+    subgoal = facts(typed_fields=(typed.runtime_id,))
+    result = check(claim(found.id), [form, typed, listing, found], subgoal, landmarks=marks)
+    assert result.proof is not None
+    assert fired(result.tokens) == set()
+
+
+@pending("[V2.23] B: no landmark map with a typed field fails closed, landmarks_unread")
+def test_a_missing_landmark_map_with_a_typed_field_fails_closed() -> None:
+    subgoal = facts(typed_fields=(FIELD.runtime_id,))
+    result = check(claim(RESULT.id), [RESULT], subgoal, landmarks_read=False)
+    assert result.proof is None
+    assert "landmarks_unread" in result.tokens
+    assert fired(result.tokens) == set(), "not read is never owned"
+
+
+@pending("[V2.23] B: with no typed field there is nothing to own")
+def test_a_missing_landmark_map_without_a_typed_field_is_no_reject() -> None:
+    result = check(claim(RESULT.id), [RESULT], facts(), landmarks_read=False)
+    assert result.proof is not None
+    assert "landmarks_unread" not in result.tokens
+
+
+@pending("[V2.23] B: an unread ControllerFor is not observed by design and never fails closed")
+def test_an_unread_controller_for_never_fails_closed() -> None:
+    subgoal = facts(typed_fields=(FIELD.runtime_id,), controlled=())
+    result = check(claim(RESULT.id), [RESULT], subgoal)
+    assert result.proof is not None
+    assert "landmarks_unread" not in result.tokens
+
+
+@pending("[V2.21] #9: the option rule stays on top of the field-owned rules")
+def test_the_option_rule_comes_before_the_field_owned_rules() -> None:
+    box = element(160, "Group", "", (9, 160), 1)
+    typed = element(161, "Edit", "Search", (9, 161), 160)
+    option = Element(
+        id=162,
+        depth=2,
+        role="ListItem",
+        name="Red shoes",
+        box=(0, 1620, 100, 1628),
+        runtime_id=(9, 162),
+        parent_id=160,
+        caps=("selectable",),
+    )
+    subgoal = facts(typed_fields=(typed.runtime_id,), typed_params=frozenset({"text"}))
+    tokens = check(claim(option.id), [box, typed, option], subgoal).tokens
+    assert tokens[0] == "option_evidence"
 
 
 @pending("[V2.17].2: a selectable ListItem is never evidence for text Steer typed")

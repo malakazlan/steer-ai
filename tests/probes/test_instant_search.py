@@ -233,3 +233,37 @@ def test_the_fixture_shares_no_code_with_the_loop_the_verifier_or_h7() -> None:
 def test_the_positive_control_reaches_the_variants_end_state(variant: Variant) -> None:
     entries = run_control(variant, slow_delay_ms=D_DELAY_MS)
     assert passes(variant, entries), entries
+
+
+class _Stack(HTMLParser):
+    """The open-tag ancestry of every element with an id."""
+
+    VOID = frozenset({"input", "meta", "br", "img", "hr", "link"})
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.open: list[str] = []
+        self.ancestry: dict[str, list[str]] = {}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        found = dict(attrs).get("id")
+        if found:
+            self.ancestry[found] = list(self.open)
+        if tag not in self.VOID:
+            self.open.append(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self.open:
+            while self.open.pop() != tag:
+                pass
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_the_results_are_not_under_the_search_fields_parent(variant: Variant) -> None:
+    """[V2.21] #9: the results must not sit under the field's parent container (the search
+    form), or rule 4 makes them field-owned and (a) and (d) end blocked for the wrong reason."""
+    stack = _Stack()
+    stack.feed(render(spec(variant)))
+    assert stack.ancestry["q"][-1] == "form", "the field's parent container is the search form"
+    assert "form" not in stack.ancestry["results"]
+    assert stack.ancestry["results"][-1] == "main"

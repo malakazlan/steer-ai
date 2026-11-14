@@ -5,15 +5,29 @@ from __future__ import annotations
 
 import dataclasses
 import re
+from collections.abc import Sequence
+
+import pytest
 
 from steerai.loop2.decision import Claim, Decision, SubgoalDoc
-from steerai.loop2.loop import Reason, TaskOutcome, action_risk, resolve, run_task
+from steerai.loop2.loop import (
+    PendingText,
+    Reason,
+    TaskOutcome,
+    action_risk,
+    resolve,
+    run_task,
+)
+from steerai.loop2.query import SearchFacts
 from steerai.loop2.task import Budgets
 from steerai.orchestrator.loop import REUSE_FRESHNESS_S
-from steerai.world.effects import Observed, poll_tier
+from steerai.world.effects import Observed, ValueFact, poll_tier
+from steerai.world.elements import Element
+from steerai.world.landmarks import Landmark
 from tests.loop2.world_fakes import (
     FIELD,
     GO,
+    GOAL,
     MENU,
     PAGE,
     PASSWORD,
@@ -22,6 +36,7 @@ from tests.loop2.world_fakes import (
     World,
     act,
     decision,
+    element,
     observed,
     pending,
     report,
@@ -95,6 +110,104 @@ def test_a_declared_commit_raises_a_neutral_button_to_r2() -> None:
 def test_no_model_field_lowers_a_deny_word_button() -> None:
     risk = action_risk(act("click", target=SEND.id, commit="none"), SEND, goal="go", search=None)
     assert risk in {"R2", "R3"}
+
+
+# ---- [V2.22] the submit-button hole: a click beside a field whose text is still pending -----
+
+COMPOSE = element(90, "Group", "", (9, 90), 1)
+COMPOSER = element(91, "Edit", "Message", (9, 91), 90)
+SEND_ICON = element(92, "Image", "", (9, 92), 90)
+ICON_BUTTON = element(93, "Button", "", (9, 93), 90)
+SUGGESTION = element(94, "ListItem", "red shoes", (9, 94), 90)
+ELSEWHERE = element(95, "Button", "", (9, 95), 1)
+SEARCH_FORM = element(96, "Group", "Search", (9, 96), 1)
+SEARCHBOX = element(97, "Edit", "Search", (9, 97), 96)
+SEARCH_BUTTON = element(98, "Button", "", (9, 98), 96)
+SEARCH_LANDMARK = Landmark(kind="search", runtime_id=SEARCH_FORM.runtime_id)
+SUBMIT_SCREEN = dataclasses.replace(
+    observed(
+        [
+            *PAGE,
+            COMPOSE,
+            COMPOSER,
+            SEND_ICON,
+            ICON_BUTTON,
+            SUGGESTION,
+            ELSEWHERE,
+            SEARCH_FORM,
+            SEARCHBOX,
+            SEARCH_BUTTON,
+        ]
+    ),
+    landmarks={
+        SEARCHBOX.runtime_id: SEARCH_LANDMARK,
+        SEARCH_BUTTON.runtime_id: SEARCH_LANDMARK,
+    },
+)
+TYPED = ValueFact(filled=True, digest="typed")
+EMPTIED = ValueFact(filled=False, digest="empty")
+PLAIN_FIELD = SearchFacts(
+    searchbox=False, in_search_landmark=False, secure_in_form=False, payment_in_form=False
+)
+SEARCH_FIELD = SearchFacts(
+    searchbox=True, in_search_landmark=True, secure_in_form=False, payment_in_form=False
+)
+
+
+def typed_into(
+    field: Element, *, now: ValueFact | None = TYPED, search: SearchFacts = PLAIN_FIELD
+) -> PendingText:
+    return PendingText(field.runtime_id, TYPED, now, search, goal_span=True)
+
+
+def click_risk(target: Element, pending: Sequence[PendingText]) -> str:
+    return action_risk(
+        act("click", target=target.id),
+        target,
+        goal=GOAL,
+        search=None,
+        observed=SUBMIT_SCREEN,
+        pending=pending,
+    )
+
+
+@pending("[V2.22] an unnamed button beside a just-typed plain field is R2")
+def test_an_unnamed_button_beside_a_just_typed_plain_field_is_r2() -> None:
+    assert click_risk(ICON_BUTTON, [typed_into(COMPOSER)]) == "R2"
+
+
+@pending("[V2.22] the same button beside a searchbox in a search landmark is a query")
+def test_a_button_in_the_searchboxs_landmark_is_a_query() -> None:
+    pending_search = [typed_into(SEARCHBOX, search=SEARCH_FIELD)]
+    assert click_risk(SEARCH_BUTTON, pending_search) == "R1"
+
+
+@pending("[V2.22] a button elsewhere on the page stays a plain click")
+def test_a_button_elsewhere_on_the_page_stays_a_plain_click() -> None:
+    assert click_risk(ELSEWHERE, [typed_into(COMPOSER)]) == click_risk(ELSEWHERE, [])
+
+
+@pending("[V2.22] addendum 2: any click target counts; an unnamed Image beside a filled composer")
+def test_an_unnamed_image_beside_a_filled_composer_is_r2() -> None:
+    assert click_risk(SEND_ICON, [typed_into(COMPOSER)]) == "R2"
+
+
+@pending("[V2.22] addendum 1: bound to pending text, not to the action right after the type")
+def test_the_send_icon_three_actions_after_the_type_is_still_r2() -> None:
+    """The rule reads state, not order: three actions later the composer still holds the typed
+    digest, so the click is still a submit."""
+    assert click_risk(SEND_ICON, [typed_into(COMPOSER, now=TYPED)]) == "R2"
+
+
+@pending("[V2.22] addendum 1: once the field is emptied or gone, a plain click")
+@pytest.mark.parametrize("now", [EMPTIED, None], ids=["emptied", "gone"])
+def test_once_the_field_is_emptied_or_gone_the_click_is_plain(now: ValueFact | None) -> None:
+    assert click_risk(SEND_ICON, [typed_into(COMPOSER, now=now)]) == click_risk(SEND_ICON, [])
+
+
+@pending("[V2.22] addendum 2: a state-set role under the field's container stays a plain click")
+def test_a_suggestion_list_item_under_the_fields_container_stays_a_plain_click() -> None:
+    assert click_risk(SUGGESTION, [typed_into(COMPOSER)]) == click_risk(SUGGESTION, [])
 
 
 # ---- §8.3-4: no dispatch at R2 or above in step 3, blocked before the write-ahead -------------

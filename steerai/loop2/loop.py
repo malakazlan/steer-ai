@@ -20,7 +20,7 @@ stop's own value and the reason records `after_refusal` plus the token.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -30,7 +30,7 @@ from steerai.loop2.guards import StrikeReason
 from steerai.loop2.query import SearchFacts
 from steerai.loop2.task import Task
 from steerai.orchestrator.contracts import Risk
-from steerai.world.effects import Observed
+from steerai.world.effects import Observed, ValueFact
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
 from steerai.world.watch import Watched
@@ -121,13 +121,40 @@ def resolve(target: int, listed: Snapshot, latest: Snapshot) -> Element | None:
     raise NotImplementedError("3c: resolver")
 
 
+@dataclass(frozen=True)
+class PendingText:
+    """[V2.22] a field Steer typed into under the action's subgoal, with the digest of what it
+    typed and the field's live value now; the text is pending while `now` still holds it."""
+
+    field: tuple[int, ...]
+    typed: ValueFact
+    now: ValueFact | None
+    """The live read of the field now; None when it is gone or unread."""
+    search: SearchFacts
+    goal_span: bool
+    """The typed text was a goal span (by param)."""
+
+
 @stub
-def action_risk(
-    action: ActionDoc, element: Element, *, goal: str, search: SearchFacts | None
+def action_risk(  # noqa: PLR0913 - the action, its target and keyword-only facts
+    action: ActionDoc,
+    element: Element,
+    *,
+    goal: str,
+    search: SearchFacts | None,
+    observed: Observed | None = None,
+    pending: Sequence[PendingText] = (),
 ) -> Risk:
     """§7.2: the max of the declared commit, deny words, a secure field and text provenance;
     raise-only, so no model field lowers it (§8.2). `search` is the field's facts for an Enter
-    or a click that may be a query."""
+    or a click that may be a query.
+
+    [V2.22] the submit-button hole: a click is a submit of a field whose text is still pending
+    (`pending`, read on `observed`) when the target sits under that field's parent container or
+    shares its nearest landmark and is not itself a field or a state-set role (Edit, ComboBox,
+    CheckBox, RadioButton, ListItem, TabItem, TreeItem). It is then classified like the Enter:
+    R1 query when every §7.2 condition holds, else R2. Once the field is emptied or gone the
+    click is a plain click."""
     raise NotImplementedError("3c: action risk")
 
 
