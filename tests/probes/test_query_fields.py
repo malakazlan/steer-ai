@@ -4,7 +4,14 @@ No rule is merged into the classifier; the second number must be 0."""
 
 from __future__ import annotations
 
-from steerai.probes.query_fields import FieldFacts, candidate, evaluate
+from steerai.probes.query_fields import (
+    COMMIT_WORDS,
+    NEGATIVE_PAGES,
+    FieldFacts,
+    candidate,
+    evaluate,
+    negative_facts,
+)
 
 
 def field(**kw: object) -> FieldFacts:
@@ -73,3 +80,35 @@ def test_evaluate_counts_recovered_positives_and_false_accepts() -> None:
     assert report["recovered"] == ["p1"]
     assert report["negatives"] == 2
     assert report["false_accepts"] == ["n1"]
+
+
+def test_each_search_worded_negative_page_builds_and_holds_its_one_field() -> None:
+    assert sorted(NEGATIVE_PAGES) == ["sw1", "sw2", "sw3"]
+    names = {task: [f.name for f in negative_facts(task)] for task in NEGATIVE_PAGES}
+    assert names == {
+        "sw1": ["Search or add a task"],
+        "sw2": ["Search notes"],
+        "sw3": ["Reply (find in thread)"],
+    }
+    assert all(f.source == "negative" for t in NEGATIVE_PAGES for f in negative_facts(t))
+
+
+def test_the_search_notes_field_sits_beside_a_delete_button() -> None:
+    (notes,) = negative_facts("sw2")
+    assert notes.buttons == ("Delete",)
+
+
+def test_the_add_a_task_field_has_no_commit_word_nearby() -> None:
+    (task_field,) = negative_facts("sw1")
+    assert task_field.buttons == ()
+    assert not any(w in task_field.name.lower() for w in COMMIT_WORDS)
+
+
+def test_the_search_worded_negatives_expose_the_rule_where_it_accepts() -> None:
+    """The candidate rule accepts the add-a-task field (the expected failure, V2.28 item 4) and
+    rejects the other two on a commit word."""
+    outcome = {t: candidate(f)[0] for t in sorted(NEGATIVE_PAGES) for f in negative_facts(t)}
+    assert outcome == {"sw1": True, "sw2": False, "sw3": False}
+    assert evaluate([f for t in NEGATIVE_PAGES for f in negative_facts(t)])["false_accepts"] == [
+        "sw1"
+    ]

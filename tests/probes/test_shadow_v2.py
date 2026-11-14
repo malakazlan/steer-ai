@@ -28,7 +28,7 @@ from steerai.world.model import Snapshot
 from tests.orchestrator.fakes import FakeConfirmer, FakeLive
 from tests.orchestrator.test_loop import Harness, _send, _type
 from tests.orchestrator.test_run import _options, _plan
-from tests.world.test_effects_conditions import BASE, FIELD, Row, _snap
+from tests.world.test_effects_conditions import BASE, FIELD, ITEM, LIST, PAGE, Row, _snap
 
 KEY = b"k" * 32
 URL = "https://shop.test/"
@@ -358,3 +358,50 @@ def test_installed_shadows_each_session_the_runner_builds_then_restores_the_runn
     assert len(made) == 1
     seen.trace.write({"kind": "task"})
     assert trace.lines == ['{"kind": "task"}']
+
+
+COMBO: Row = (2, "ComboBox", "Search", (9, 2), 1)
+
+
+def test_the_acted_edit_is_in_the_before_map_with_its_position_and_focus_ids() -> None:
+    row, _ = _run(
+        [
+            Frame(_page(), values={2: ""}, focus=(9, 1)),
+            Frame(_page(), values={2: "red"}, focus=FIELD[3]),
+        ],
+        FIELD[3],
+        "type",
+    )
+    acted = row["acted_field"]
+    assert (acted["role"], acted["caps"], acted["value_pattern"]) == ("Edit", ["editable"], True)
+    assert acted["in_before_map"] is True
+    assert (acted["editable_position"], acted["editable_count"]) == (0, 1)
+    assert acted["before_value_probe"] == "kept"
+    assert acted["focus_id"] == [[9, 1], list(FIELD[3])]
+    assert acted["focus_is_acted"] == [False, True]
+
+
+def test_an_acted_combobox_without_the_editable_cap_is_missing_from_the_before_map() -> None:
+    page = _snap([PAGE, COMBO, LIST, ITEM])
+    row, _ = _run(
+        [Frame(page, values={2: ""}), Frame(page, values={2: "crimson"})], COMBO[3], "type"
+    )
+    acted = row["acted_field"]
+    assert (acted["role"], acted["caps"], acted["value_pattern"]) == ("ComboBox", [], False)
+    assert acted["in_before_snapshot"] is True
+    assert acted["in_before_map"] is False
+    assert acted["editable_position"] is None
+    assert acted["before_value_probe"] == "readable", "the value is there; the cap filter hid it"
+    assert row["own_value"] is False
+    assert "crimson" not in json.dumps(row)
+
+
+def test_an_unreadable_combobox_value_is_told_apart_from_a_missing_cap() -> None:
+    page = _snap([PAGE, COMBO, LIST, ITEM])
+    row, _ = _run([Frame(page), Frame(page)], COMBO[3], "type")
+    assert row["acted_field"]["before_value_probe"] == "unreadable"
+
+
+def test_no_acted_field_means_no_acted_field_diagnostic() -> None:
+    row, _ = _run([Frame(_page()), Frame(_page())], (), "press")
+    assert "acted_field" not in row
