@@ -262,6 +262,8 @@ class World:
     """The guard each `settle` (the [V2.31] load-guard wait) was given."""
     settled: Observed | None = None
     """What `settle` returns; None: the current screen."""
+    settle_advance_s: float = 0.0
+    """How far the clock moves during each settle (a hold that takes time)."""
     interrupt_after_settle: bool = False
     """Report `interruption` once a settle has run (the person's kill during the wait)."""
     interrupt_in_decide: int | None = None
@@ -359,6 +361,7 @@ class World:
     def _settle(self, first: Observed, guard_s: float) -> Observed:  # noqa: ARG002 - the Ports shape
         self.events.append("settle")
         self.settle_guards.append(guard_s)
+        self.now += self.settle_advance_s
         if self.settled is not None:
             self.screen = self.settled  # the settle is a read of the screen
         return self.screen

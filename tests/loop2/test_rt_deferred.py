@@ -19,6 +19,7 @@ from steerai.orchestrator.loop import REUSE_FRESHNESS_S
 from steerai.world.effects import Observed, ValueFact
 from steerai.world.elements import Element
 from tests.loop2.world_fakes import (
+    BAR,
     FIELD,
     GO,
     MENU,
@@ -26,6 +27,7 @@ from tests.loop2.world_fakes import (
     PASSWORD,
     QUERY_PAGE,
     SEND,
+    TAB,
     URL,
     World,
     act,
@@ -567,3 +569,70 @@ def test_a_move_after_a_send_in_the_batch_is_scored_and_the_send_remembered() ->
     assert "focus_lost" in world.views[1].history
     assert "refused:repeat_send" in world.views[-1].history
     assert outcome.focus_losses == 1
+
+
+# ---- [V2.44] (2): a browser frame with no page content ends page_not_ready ---------------------
+
+FRAME_ONLY = observed([TAB, BAR])
+"""A browser window whose page has not appeared: the frame (tabs, address bar), no Document."""
+
+
+def test_a_frame_with_no_document_ends_page_not_ready_never_reaching_the_model() -> None:
+    """The first observation already waited out the first-ready deadline ([V2.31])."""
+    world = World([Decision(stop="cannot")], screen=FRAME_ONLY)
+    outcome = run_task(task(), world.ports())
+    assert outcome.model_calls == 0
+    assert "settle" not in world.events  # no second wait on top of the first-ready one
+    assert (outcome.status, outcome.reason) == ("cannot", "page_not_ready")
+
+
+def test_an_empty_document_ends_page_not_ready() -> None:
+    world = World([Decision(stop="cannot")], screen=observed([PAGE[0], TAB, BAR]))
+    outcome = run_task(task(), world.ports())
+    assert outcome.model_calls == 0
+    assert (outcome.status, outcome.reason) == ("cannot", "page_not_ready")
+
+
+def test_a_native_window_with_no_document_is_a_normal_page() -> None:
+    """No address bar (`url_observed` false): a native window, never a page not ready."""
+    note = element(30, "Edit", "Text editor", (9, 30), None)
+    native = dataclasses.replace(observed([note]), url_observed=False, url=None)
+    world = World([Decision(stop="cannot")], screen=native)
+    outcome = run_task(task(), world.ports())
+    assert outcome.model_calls == 1
+
+
+def test_a_page_that_blanks_mid_task_is_waited_for_until_it_returns() -> None:
+    """Later in the task the page goes blank (a navigation under way): held, not ended, while
+    the first-ready deadline lasts; the model is called again only on the page with content."""
+    world = World(
+        [decision(act("click", target=GO.id), first=True), Decision(stop="cannot")],
+        effects=[report("navigated")],
+        after=FRAME_ONLY,  # the watch's after is blank; the page then returns
+    )
+    world.settle_advance_s = 1.0
+    outcome = run_task(task(), world.ports())
+    assert "settle" in world.events
+    assert outcome.model_calls == 2
+    assert outcome.reason == "controller_stop"
+
+
+def test_a_page_that_stays_blank_mid_task_ends_page_not_ready() -> None:
+    world = World(
+        [decision(act("click", target=GO.id), first=True), Decision(stop="cannot")],
+        effects=[report("navigated")],
+        after=FRAME_ONLY,
+        settled=FRAME_ONLY,  # every hold reads the blank page again
+    )
+    world.settle_advance_s = 1.0
+    outcome = run_task(task(), world.ports())
+    assert outcome.model_calls == 1
+    assert (outcome.status, outcome.reason) == ("cannot", "page_not_ready")
+
+
+def test_a_blank_page_whose_window_is_gone_is_infrastructure() -> None:
+    gone = dataclasses.replace(FRAME_ONLY, windows=(99,))  # the task's window is not listed
+    world = World([Decision(stop="cannot")], screen=gone)
+    outcome = run_task(task(), world.ports())
+    assert outcome.model_calls == 0
+    assert (outcome.status, outcome.reason) == ("stopped", "window_gone")
