@@ -59,6 +59,7 @@ Token = Literal[
 ]
 """`scrolled` ([V2.18]): the viewport moved inside the scope. Not emitted by the observer until
 a probe shows how Chrome exposes it (unmeasured); never a proof signal, never `none`."""
+DialogScope = Literal["inside", "outside"]
 Unread = Literal["url", "windows", "caps"]
 Carrier = Literal["url_param", "url_path", "title", "results", "heading"]
 
@@ -157,6 +158,10 @@ class EffectReport:
     revealed_root: int | None
     carriers: frozenset[Carrier]
     stable_after: bool
+    dialog_scope: DialogScope | None = None
+    """[V2.24] where a dialog that opened sits: `inside` the scope Document (anywhere in it, not
+    only under the acted element; the whole window when there is no scope Document, [V2.11]
+    item 7), `outside` when any dialog is outside it; None when no dialog opened."""
 
 
 def observe(  # noqa: PLR0913 - keyword-only facts the caller read, each with a safe default
@@ -196,14 +201,23 @@ def observe(  # noqa: PLR0913 - keyword-only facts the caller read, each with a 
         classes.add("url_changed_in_place")
     changes = _changes(b, a, acted, (in_b, in_a), caps_read="caps" not in unread)
     classes |= changes.classes
-    classes |= _dialogs(changes.appeared, after.aria_roles, in_a)
+    dialog_classes, dialog_scope = _dialogs(changes.appeared, after.aria_roles, in_a)
+    classes |= dialog_classes
     tokens |= changes.tokens
     classes |= _own_facts(before, after, acted)
     if b.title != a.title and not classes and not changes.tokens - {"moved", "frame_changed"}:
         tokens.add("title_only")
     if not classes and not (tokens - {"moved"}) and not unread:
         classes.add("none")
-    return _report(classes, tokens, unread, changes.revealed_root, carriers, a.stable)
+    return _report(
+        classes,
+        tokens,
+        unread,
+        changes.revealed_root,
+        carriers,
+        a.stable,
+        dialog_scope=dialog_scope,
+    )
 
 
 # ---- element changes ---------------------------------------------------------------------------
@@ -235,19 +249,21 @@ def _dialogs(
     appeared: Sequence[Element],
     aria: Mapping[tuple[int, ...], str] | None,
     scope: set[int] | None,
-) -> set[EffectClass]:
+) -> tuple[set[EffectClass], DialogScope | None]:
     """`dialog_opened` on a new Window control or an AriaRole of dialog or alertdialog, anywhere
-    in the window; inside the scope it comes with `revealed` ([V2.5])."""
+    in the window; inside the scope it comes with `revealed` ([V2.5]). With it, where the
+    dialogs sit ([V2.24]): `outside` when any is outside the scope, else `inside`."""
     dialogs = [
         e
         for e in appeared
         if e.role == "Window" or (aria is not None and aria.get(e.runtime_id) in DIALOG_ROLES)
     ]
     if not dialogs:
-        return set()
+        return set(), None
+    where: DialogScope = "inside" if all(_inside(e, scope) for e in dialogs) else "outside"
     if any(_inside(e, scope) for e in dialogs):
-        return {"dialog_opened", "revealed"}
-    return {"dialog_opened"}
+        return {"dialog_opened", "revealed"}, where
+    return {"dialog_opened"}, where
 
 
 def _changes(
@@ -672,6 +688,8 @@ def _report(  # noqa: PLR0913, PLR0917 - the report's fields, one each
     revealed_root: int | None,
     carriers: set[Carrier],
     stable_after: bool,
+    *,
+    dialog_scope: DialogScope | None = None,
 ) -> EffectReport:
     primary = next((c for c in PRECEDENCE if c in classes), None)
     return EffectReport(
@@ -682,4 +700,5 @@ def _report(  # noqa: PLR0913, PLR0917 - the report's fields, one each
         revealed_root=revealed_root,
         carriers=frozenset(carriers),
         stable_after=stable_after,
+        dialog_scope=dialog_scope,
     )

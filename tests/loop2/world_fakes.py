@@ -13,6 +13,7 @@ from steerai.loop2.loop import Dispatch, Ports, TurnView
 from steerai.loop2.task import Budgets, Envelope, Task
 from steerai.world.effects import (
     PRECEDENCE,
+    DialogScope,
     EffectClass,
     EffectReport,
     Observed,
@@ -106,6 +107,7 @@ def report(
     tokens: Sequence[Token] = (),
     unread: Sequence[Unread] = (),
     primary: EffectClass | None = None,
+    dialog_scope: DialogScope | None = None,
 ) -> EffectReport:
     chosen = primary if primary is not None else next((c for c in PRECEDENCE if c in classes), None)
     return EffectReport(
@@ -116,6 +118,7 @@ def report(
         revealed_root=None,
         carriers=frozenset(),
         stable_after=True,
+        dialog_scope=dialog_scope,
     )
 
 
