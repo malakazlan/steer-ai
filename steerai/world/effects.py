@@ -143,6 +143,13 @@ class Observed:
     tier: Tier = "full"
     """[V2.10] which read made it: `poll` (the snapshot only) or `full` (every fact). `observe`
     refuses to compare two reads of different tiers."""
+    growing: bool = False
+    """[V2.31] the page grew while this observation was held (`observe2.hold_still`): it may be
+    partial, and the listing header says so. Never read by `observe`."""
+    document_since: float | None = None
+    """[V2.31] when the top Document (by RuntimeId) of this window was first seen, on the
+    caller's monotonic clock (`observe2.DocumentSince`); None when not stamped or no Document.
+    Never read by `observe`."""
 
 
 def poll_tier(snapshot: Snapshot) -> Observed:

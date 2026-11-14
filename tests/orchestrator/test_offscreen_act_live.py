@@ -122,4 +122,9 @@ def test_an_offscreen_button_on_a_lazy_feed_is_scrolled_waited_clicked_and_verif
     result, was_offscreen = run_load_more(tmp_path)
     assert was_offscreen, "the premise: the button starts below the fold"
     assert result.ok is True, result.to_dict()
-    assert result.evidence["scrolled"] == "delivered_verified"
+    assert result.evidence["scrolls"] >= 1, "scrolled before the gate"
+    # #311: the scroll's 400 ms readback is a delivery fact, not the step's proof. Here the
+    # button reads on screen from about 16 ms after ScrollIntoView until the lazy rows land
+    # about 300 ms later and push it down; a loaded runner can miss that window. The quiet look
+    # re-checks the target before the gate, and `expect` verifies the click.
+    assert result.evidence["scrolled"] in {"delivered_verified", "delivered_unverified"}
