@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
 
 from steerai.probes import controller_for, landmark_sites, multiline, scrolled
@@ -227,7 +229,7 @@ def test_retry_until_returns_the_first_ready_read() -> None:
     from steerai.probes.live_browser import retry_until  # noqa: PLC0415 - this section
 
     clock = _Clock()
-    reads = iter([None, [], {"doc": 1}])
+    reads: Iterator[object] = iter([None, [], {"doc": 1}])
     got = retry_until(lambda: next(reads), what="doc", clock=clock.monotonic, sleep=clock.sleep)
     assert got == {"doc": 1}
 

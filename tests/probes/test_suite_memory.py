@@ -300,7 +300,7 @@ class _Verdicts:
     def __init__(self) -> None:
         self.scored: list[list[str]] = []
 
-    def __call__(self, rows: Any, tasks: Any) -> tuple[list[str], bool]:  # Any: as main passes
+    def __call__(self, rows: Any, tasks: Any) -> tuple[list[str], bool]:  # noqa: ARG002 - Any: as main passes
         self.scored.append([t.task_id for t in tasks])
         return [], True
 
