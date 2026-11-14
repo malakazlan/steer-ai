@@ -20,7 +20,10 @@ from tests.loop2.world_fakes import DOC, FIELD, GOAL, QUERY_PAGE, RESULT, URL, e
 
 START = GOAL.index("red shoes")
 SUB = Subgoal(
-    id="s1", desc="search", params={"text": GoalSpan.of(GOAL, START, START + len("red shoes"))}
+    id="s1",
+    desc="search",
+    closes="page",
+    params={"text": GoalSpan.of(GOAL, START, START + len("red shoes"))},
 )
 QUERY_URL = URL + "?q=red%20shoes"
 BEFORE = dataclasses.replace(observed(QUERY_PAGE), document_url=URL)

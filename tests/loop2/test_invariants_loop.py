@@ -399,7 +399,7 @@ def test_a_first_turn_action_on_a_declared_subgoal_is_dispatched() -> None:
 
 def test_the_subgoals_are_frozen_after_the_first_decision() -> None:
     again = Decision(
-        subgoals=[*SUBGOALS, SubgoalDoc(id="s2", desc="more")],
+        subgoals=[*SUBGOALS, SubgoalDoc(id="s2", desc="more", closes="state")],
         actions=[act("click", target=MENU.id)],
     )
     world = World([decision(act("click", target=GO.id), first=True), again])

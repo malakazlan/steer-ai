@@ -50,6 +50,17 @@ ClaimKind = Literal[
     "state", "value", "navigated", "content_present", "content_gone", "window", "file", "answer"
 ]
 
+Closes = Literal["value", "state", "page"]
+"""[V2.39]: value (a field holds the text), state (an element is in a state), page (the page
+shows it: navigated, and content_present from step 4)."""
+CLAIM_CLOSES: Mapping[str, Closes] = {
+    "value": "value",
+    "state": "state",
+    "navigated": "page",
+    "content_present": "page",
+}
+"""[V2.39]: the closing kind each claim kind proves; a claim of another kind is `kind_mismatch`."""
+
 UNTARGETED = frozenset({"press", "wait"})
 NOT_IN_STEP_VERBS = frozenset({"open", "switch"})
 MAX_ACTIONS = 4
@@ -67,6 +78,8 @@ class _Strict(BaseModel):
 class SubgoalDoc(_Strict):
     id: str
     desc: str
+    closes: Closes
+    """[V2.39] the kind of fact that closes it, declared at intake and frozen with it."""
     params: dict[str, str] = Field(default_factory=dict)
     commit: Commit = "none"
 
@@ -166,6 +179,8 @@ def _subgoal_doc_tokens(sub: SubgoalDoc, goal: str, fences: frozenset[str]) -> l
         tokens.append("param_name_bad")
     if any(not value or value not in goal for value in sub.params.values()):
         tokens.append("param_not_span")
+    if sub.closes == "page" and not sub.params:
+        tokens.append("page_without_param")  # [V2.39]: what would the page have to show?
     return tokens
 
 
