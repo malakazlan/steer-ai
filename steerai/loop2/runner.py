@@ -137,11 +137,14 @@ class _Handles:
         self.by_handle: dict[int, tuple[int, ...]] = {}
 
     def bind(self, observed: Observed) -> dict[int, int]:
-        """Each element's handle, by its snapshot id, binding the RuntimeIds seen first now."""
+        """Each element's handle, by its snapshot id, binding the RuntimeIds seen first now. A
+        RuntimeId held by more than one element of the snapshot gets no handle there: the number
+        could land on either (#330 review)."""
         out: dict[int, int] = {}
+        shared = _shared_rids(observed)
         for element in observed.snapshot.elements:
             rid = element.runtime_id
-            if not rid:
+            if not rid or rid in shared:
                 continue
             if rid not in self.by_rid:
                 handle = element.id
@@ -153,10 +156,13 @@ class _Handles:
         return out
 
     def element(self, handle: int, observed: Observed) -> Element | None:
+        """The one element the handle names in `observed`; None when it is gone or its RuntimeId
+        is held by more than one element there."""
         rid = self.by_handle.get(handle)
         if rid is None:
             return None
-        return next((e for e in observed.snapshot.elements if e.runtime_id == rid), None)
+        matches = [e for e in observed.snapshot.elements if e.runtime_id == rid]
+        return matches[0] if len(matches) == 1 else None
 
 
 @dataclass(frozen=True)
@@ -498,7 +504,11 @@ class _Run:
         element = self.handles.element(handle, now)
         if then is None or element is None:
             return None
-        return element if (element.role, element.name) == (then.role, then.name) else None
+        same = (element.role, normalise_name(element.name)) == (
+            then.role,
+            normalise_name(then.name),
+        )
+        return element if same else None
 
     def _press_target(self, observed: Observed) -> Element | None:
         acted = self.last_acted
@@ -737,6 +747,17 @@ def _tokens(usage: TokenUsage | None) -> float:
     if any(isinstance(c, bool) or not isinstance(c, int) or c < 0 for c in counts):
         return math.nan
     return float(sum(counts))
+
+
+def _shared_rids(observed: Observed) -> frozenset[tuple[int, ...]]:
+    """The RuntimeIds more than one element of the snapshot holds."""
+    seen: set[tuple[int, ...]] = set()
+    shared: set[tuple[int, ...]] = set()
+    for element in observed.snapshot.elements:
+        rid = element.runtime_id
+        if rid:
+            (shared if rid in seen else seen).add(rid)
+    return frozenset(shared)
 
 
 def _complete(observed: Observed) -> bool:

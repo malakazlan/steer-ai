@@ -146,3 +146,81 @@ def test_the_listing_shows_handles_and_no_ordinal_for_an_element_without_one() -
     rows = [row.text for row in v2_listing(shown, handles=handles)]
     assert rows[1].startswith("102 ")
     assert rows[3].startswith("- ")
+
+
+# ---- principal review of #330 ------------------------------------------------------------------
+
+
+def test_a_runtime_id_shared_by_two_elements_gets_no_handle_and_is_never_dispatched() -> None:
+    """An "Archive" button carrying GO's RuntimeId, listed first: neither gets a handle in this
+    snapshot, and the old handle of GO lands on nothing."""
+    dup = element(11, "Button", "Archive", GO.runtime_id, 1)
+    screen = observed([PAGE[0], dup, *PAGE[1:]])
+    world = World(
+        [decision(act("click", target=11), first=True), decision(act("click", target=GO.id))],
+        screen=screen,
+    )
+    run_task(task(), world.ports())
+    assert dup.id not in world.views[0].handles
+    assert GO.id not in world.views[0].handles
+    assert world.dispatched == []
+
+
+def test_evidence_naming_a_shared_runtime_id_reads_as_unlisted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cited: list[list[int]] = []
+
+    def spy(claim: Claim, *_a: object, **_k: object) -> tuple[str, ...]:
+        cited.append(list(claim.evidence))
+        return ("value_mismatch",)
+
+    monkeypatch.setattr(runner, "check_claim", spy)
+    dup = element(11, "Button", "Archive", GO.runtime_id, 1)
+    claim = Claim(subgoal="s1", kind="state", evidence=[GO.id], wanted="on")
+    world = World(
+        [decision(act("click", target=MENU.id), first=True), decision(claims=[claim])],
+        effects=[report("content_changed")],
+        later=observed([PAGE[0], dup, *PAGE[1:]]),
+    )
+    run_task(task(), world.ports())
+    assert cited == [], "never checked: the evidence handle is not listed"
+    assert "refused:id_not_listed" in world.views[-1].history
+
+
+def test_the_name_re_check_reads_names_as_v1_does() -> None:
+    """Only the normalised name counts (NFKC, collapsed whitespace), as v1's re-check."""
+    spaced = dataclasses.replace(MENU, name="  Options ")
+    world = World(
+        [decision(act("click", target=GO.id), act("click", target=MENU.id), first=True)],
+        effects=[report("own_state"), report("own_state")],
+        after=observed([e if e.id != MENU.id else spaced for e in PAGE]),
+    )
+    run_task(task(), world.ports())
+    assert [d.runtime_id for d in world.dispatched] == [GO.runtime_id, MENU.runtime_id]
+
+
+def test_a_next_target_whose_runtime_id_is_doubled_mid_batch_is_not_dispatched() -> None:
+    """The read after the first action shows the next target's RuntimeId on two elements with
+    the same role and name: the handle names neither (the name re-check cannot tell them apart)."""
+    twin = dataclasses.replace(MENU, id=12, box=(0, 900, 100, 908))
+    world = World(
+        [decision(act("click", target=GO.id), act("click", target=MENU.id), first=True)],
+        effects=[report("own_state")],
+        after=observed([*PAGE[:5], twin, *PAGE[5:]]),
+    )
+    run_task(task(), world.ports())
+    assert [d.runtime_id for d in world.dispatched] == [GO.runtime_id]
+
+
+def test_h6_a_next_target_gone_mid_batch_is_not_dispatched() -> None:
+    """The tester's H6: a stale handle is never served from the listing the decision saw."""
+    gone = observed([e for e in PAGE if e.id != MENU.id])
+    world = World(
+        [decision(act("click", target=GO.id), act("click", target=MENU.id), first=True)],
+        effects=[report("own_state")],
+        after=gone,
+    )
+    run_task(task(), world.ports())
+    assert [d.action.target for d in world.dispatched] == [GO.id]
+    assert not any(t.startswith("refused:") for v in world.views for t in v.history)
