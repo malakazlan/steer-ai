@@ -5,10 +5,17 @@ from __future__ import annotations
 
 import pytest
 
-from steerai.loop2.query import FieldState, SearchFacts, classify, query_outcome
+from steerai.loop2.query import (
+    FieldState,
+    SearchFacts,
+    classify,
+    field_state,
+    query_outcome,
+    top_document_replaced,
+)
 from steerai.loop2.task import Commit
-from steerai.world.effects import EffectClass, EffectReport, Token
-from tests.loop2.world_fakes import report
+from steerai.world.effects import EffectClass, EffectReport, Token, ValueFact
+from tests.loop2.world_fakes import observed, report
 
 SEARCHBOX = SearchFacts(
     searchbox=True, in_search_landmark=False, secure_in_form=False, risky_in_form=False
@@ -292,3 +299,41 @@ def test_content_without_a_carrier_and_no_url_change_still_stops() -> None:
 
 def test_own_value_with_no_typed_field_is_weak() -> None:
     assert outcome(report("own_value"), field="not_typed") == ("back_to_controller", "weak", "8")
+
+
+# ---- the sweep's gaps (mutants Q6, Q7, Q9, Q10, Q11, Q21) -------------------------------------
+
+
+def test_row_5_a_weak_class_beside_an_unread_fact_is_unknown_not_weak() -> None:
+    out = query_outcome(report("focus", unread=("url",)), text_carried=False)
+    assert (out.outcome, out.token, out.row) == ("back_to_controller", "unknown", "5")
+
+
+def test_row_9_none_with_an_unread_fact_never_releases_the_key() -> None:
+    out = query_outcome(report("none", unread=("url",)), text_carried=False)
+    assert out.row == "5"
+    assert out.releases_key is False
+
+
+def test_a_field_with_an_unread_side_is_unread_not_kept() -> None:
+    filled = ValueFact(True, "a")
+    assert field_state(None, filled, present=True) == "unread"
+    assert field_state(filled, None, present=True) == "unread"
+
+
+def test_a_field_that_left_the_screen_is_gone_not_kept() -> None:
+    filled = ValueFact(True, "a")
+    assert field_state(filled, filled, present=False) == "gone"
+
+
+def test_a_field_is_emptied_only_when_it_went_from_filled_to_empty() -> None:
+    filled, empty = ValueFact(True, "a"), ValueFact(False, "b")
+    assert field_state(filled, empty, present=True) == "emptied"
+    assert field_state(empty, filled, present=True) == "kept"
+    assert field_state(filled, filled, present=True) == "kept"
+    assert field_state(empty, empty, present=True) == "kept"
+
+
+def test_the_top_document_is_unknown_when_neither_side_has_one() -> None:
+    bare = observed([])
+    assert top_document_replaced(bare, bare) is None

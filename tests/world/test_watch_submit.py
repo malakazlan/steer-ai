@@ -14,6 +14,7 @@ import pytest
 from steerai.loop2.query import STRONG, query_outcome
 from steerai.world.effects import Observed, ValueFact, observe, poll_tier
 from steerai.world.watch import CARRIED, SUBMIT_GUARD_S, Watched, conclusive, watch
+from tests.loop2.world_fakes import report
 from tests.world.test_effects_conditions import BASE, FIELD, URL, Row, _snap
 from tests.world.test_watch import Clock
 
@@ -263,3 +264,9 @@ def test_a_watch_that_is_not_a_submit_has_no_conclusive_time() -> None:
     result = _watch(page, _full(BASE), clock, submit=False, trigger=True)
     assert "navigated" in result.report.classes
     assert result.conclusive_ms is None
+
+
+def test_a_field_that_goes_from_empty_to_filled_is_not_conclusive() -> None:
+    before = _full(BASE, acted_value=EMPTY)
+    after = _full(BASE, acted_value=FILLED)
+    assert conclusive(report("none"), before, after) is False

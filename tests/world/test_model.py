@@ -1,5 +1,6 @@
 """World model: observe until stable, resolve ids only against their snapshot, diff by RuntimeId."""
 
+import dataclasses
 import subprocess
 import time
 
@@ -83,3 +84,15 @@ def test_observe_notepad_until_stable_and_resolve_live() -> None:
         assert model.diff(snapshot, fresh).appeared == []
     finally:
         proc.terminate()
+
+
+def test_resolve_in_against_an_older_fresh_snapshot_is_misuse_and_raises() -> None:
+    snapshot = dataclasses.replace(_snap(_el(1, "Button", "Send", (5, 1))), taken_at=5.0)
+    older = dataclasses.replace(_snap(_el(1, "Button", "Send", (5, 1))), taken_at=1.0)
+    with pytest.raises(ValueError, match="older"):
+        resolve_in(snapshot, 1, older)
+
+
+def test_resolve_in_against_a_fresh_snapshot_taken_at_the_same_instant_resolves() -> None:
+    snapshot = dataclasses.replace(_snap(_el(1, "Button", "Send", (5, 1))), taken_at=5.0)
+    assert resolve_in(snapshot, 1, snapshot).runtime_id == (5, 1)
