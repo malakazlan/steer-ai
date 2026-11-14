@@ -20,18 +20,20 @@ stop's own value and the reason records `after_refusal` plus the token.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Final, Literal
 
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2._stub import stub
 from steerai.loop2.decision import ActionDoc, Decision
 from steerai.loop2.guards import StrikeReason
-from steerai.loop2.query import SearchFacts
-from steerai.loop2.task import Task
-from steerai.orchestrator.contracts import Risk
+from steerai.loop2.query import SearchFacts, classify, shares_search_landmark
+from steerai.loop2.task import Commit, Task
+from steerai.orchestrator.contracts import RISKS, Risk
+from steerai.orchestrator.gate import DenyFacts, deny_tier_of, group_name
+from steerai.verify.predicates import FIELD_ROLES
 from steerai.world.effects import Observed, ValueFact
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot, resolve_in
@@ -174,7 +176,36 @@ class PendingText:
     """The typed text was a goal span (by param)."""
 
 
-@stub
+COMMIT_RISK: Final[Mapping[Commit, Risk]] = {
+    "none": "R0",
+    "send": "R2",
+    "submit": "R2",
+    "delete": "R3",
+    "pay": "R3",
+}
+"""A declared commit's tier: v1's verb floors (send and submit R2, delete R3) and its deny list
+(`pay` R3)."""
+STATE_FLOOR: Final = frozenset({"check", "uncheck", "select", "choose", "expand", "collapse"})
+"""v1's R1 floor for the state verbs and `choose` (contracts `_RISK_FLOOR`)."""
+NO_DENY_VERBS: Final = frozenset({"scroll", "wait"})
+"""A scroll moves the view and a wait sends nothing: no deny word on them raises the tier; a
+declared commit still does."""
+SUBMIT_KEYS: Final = frozenset({"Enter", "Space"})
+"""Keys that activate a non-field element the way a click does ([V2.22])."""
+NOT_A_SUBMIT: Final = FIELD_ROLES | frozenset(
+    {"CheckBox", "RadioButton", "ListItem", "TabItem", "TreeItem"}
+)
+"""[V2.22] addendum: a field or a state-set role is never a submit of a field's text."""
+NO_SEARCH = SearchFacts(
+    searchbox=False, in_search_landmark=False, secure_in_form=False, payment_in_form=False
+)
+_ORDER: Final = {risk: index for index, risk in enumerate(RISKS)}
+
+
+def _highest(*tiers: Risk) -> Risk:
+    return max(tiers, key=_ORDER.__getitem__)
+
+
 def action_risk(  # noqa: PLR0913 - the action, its target and keyword-only facts
     action: ActionDoc,
     element: Element,
@@ -184,17 +215,138 @@ def action_risk(  # noqa: PLR0913 - the action, its target and keyword-only fact
     observed: Observed | None = None,
     pending: Sequence[PendingText] = (),
 ) -> Risk:
-    """§7.2: the max of the declared commit, deny words, a secure field and text provenance;
-    raise-only, so no model field lowers it (§8.2). `search` is the field's facts for an Enter
-    or a click that may be a query.
+    """§7.2, §8.2: raise-only, so no model field lowers it. The max of:
 
-    [V2.22] the submit-button hole: a click is a submit of a field whose text is still pending
-    (`pending`, read on `observed`) when the target sits under that field's parent container or
-    shares its nearest landmark and is not itself a field or a state-set role (Edit, ComboBox,
-    CheckBox, RadioButton, ListItem, TabItem, TreeItem). It is then classified like the Enter:
-    R1 query when every §7.2 condition holds, else R2. Once the field is emptied or gone the
-    click is a plain click."""
-    raise NotImplementedError("3c: action risk")
+    - the declared commit (`COMMIT_RISK`) and v1's R1 floor for the state verbs and `choose`;
+    - v1's deny, control, consent and billing patterns on `element` (`gate.deny_tier_of`), with
+      its group name read on `observed`. `element` is the element the action goes to: for a
+      press, the last acted element, so a press takes that element's deny scoping. A scroll and
+      a wait read no deny words;
+    - a `type` into a secure field: R3 (the loop also refuses it);
+    - an Enter on a field: `query.classify`, with `search` the field's facts (None fails closed
+      to a commit) and the goal span from the field's pending text;
+    - [V2.22] the submit rule: a click, or an Enter or Space on a non-field, on a target that is
+      not a field or a state-set role, while a field typed under this subgoal still holds its
+      digest (`pending`), when the target sits under that field's parent container or shares
+      its nearest landmark: classified like the Enter. A missing fact fails closed (R2);
+    - text provenance: free text (not a param) at R2 or above is raised to R3, never covered by
+      an envelope grant (§8.5). Below R2 it does not change the tier.
+
+    An empty name raises nothing by itself; an unnamed target is still raised by its automation
+    id, its group name and the submit rule. `goal` is kept for the step-4 goal check."""
+    del goal  # the per-action goal check is step 4
+    tier = _highest(COMMIT_RISK[action.commit], "R1" if action.verb in STATE_FLOOR else "R0")
+    deny: Risk = "R0"
+    if action.verb not in NO_DENY_VERBS:
+        deny = deny_tier_of(_deny_facts(action, element, observed))
+        tier = _highest(tier, deny)
+    if action.verb == "type" and element.secure:
+        tier = "R3"
+    denied = _ORDER[deny] >= _ORDER["R2"]
+    if action.verb == "press" and action.key == "Enter" and element.role in FIELD_ROLES:
+        tier = _highest(tier, _enter_tier(action, element, search, pending, denied=denied))
+    elif action.verb == "click" or (action.verb == "press" and action.key in SUBMIT_KEYS):
+        tier = _highest(tier, _submit_tier(action, element, observed, pending, denied=denied))
+    if action.verb == "type" and action.param is None and _ORDER[tier] >= _ORDER["R2"]:
+        tier = "R3"
+    return tier
+
+
+def _deny_facts(action: ActionDoc, element: Element, observed: Observed | None) -> DenyFacts:
+    group = None if observed is None else group_name(observed.snapshot, element)
+    return DenyFacts(
+        verb=action.verb,
+        role=element.role,
+        name=element.name,
+        automation_id=element.automation_id,
+        option=action.option,
+        group_name=group,
+    )
+
+
+def _holding(pending: Sequence[PendingText]) -> list[PendingText]:
+    """The typed fields that still hold exactly what Steer typed (same digest, filled)."""
+    return [
+        p for p in pending if p.now is not None and p.now.filled and p.now.digest == p.typed.digest
+    ]
+
+
+def _enter_tier(
+    action: ActionDoc,
+    field: Element,
+    search: SearchFacts | None,
+    pending: Sequence[PendingText],
+    *,
+    denied: bool,
+) -> Risk:
+    held = next((p for p in _holding(pending) if p.field == field.runtime_id), None)
+    return classify(
+        verb="press",
+        field=search if search is not None else NO_SEARCH,
+        goal_span=held is not None and held.goal_span,
+        commit=action.commit,
+        deny_word=denied,
+    )
+
+
+def _submit_tier(
+    action: ActionDoc,
+    target: Element,
+    observed: Observed | None,
+    pending: Sequence[PendingText],
+    *,
+    denied: bool,
+) -> Risk:
+    live = _holding(pending)
+    if not live or target.role in NOT_A_SUBMIT:
+        return "R0"
+    if observed is None:
+        return "R2"
+    tier: Risk = "R0"
+    for held in live:
+        beside = _beside(observed, held.field, target)
+        if beside is None:
+            return "R2"
+        if beside:
+            same = shares_search_landmark(observed, held.field, target.runtime_id)
+            classified = classify(
+                verb="click",
+                field=held.search,
+                goal_span=held.goal_span,
+                commit=action.commit,
+                deny_word=denied,
+                same_landmark=same,
+            )
+            tier = _highest(tier, classified)
+    return tier
+
+
+def _beside(observed: Observed, field: tuple[int, ...], target: Element) -> bool | None:
+    """[V2.22] the target is under the field's parent container, or shares its nearest landmark;
+    None when a fact needed to tell is missing (the field is not in the snapshot, or the
+    landmark map or either element in it was not read)."""
+    by_id = {e.id: e for e in observed.snapshot.elements}
+    typed = next((e for e in observed.snapshot.elements if e.runtime_id == field), None)
+    if typed is None:
+        return None
+    if typed.parent_id is not None and _under(target, typed.parent_id, by_id):
+        return True
+    marks = observed.landmarks
+    if marks is None or field not in marks or target.runtime_id not in marks:
+        return None
+    mine, theirs = marks[field], marks[target.runtime_id]
+    return mine is not None and theirs is not None and mine.runtime_id == theirs.runtime_id
+
+
+def _under(element: Element, ancestor: int, by_id: Mapping[int, Element]) -> bool:
+    seen: set[int] = set()
+    current = None if element.parent_id is None else by_id.get(element.parent_id)
+    while current is not None and current.id not in seen:
+        if current.id == ancestor:
+            return True
+        seen.add(current.id)
+        current = None if current.parent_id is None else by_id.get(current.parent_id)
+    return False
 
 
 @stub
