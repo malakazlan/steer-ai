@@ -36,16 +36,16 @@ STATE_SET_VERB: Final[Mapping[str, str]] = {
 takes that verb's deny scoping (consent and billing read a selected option, as `select` does)."""
 ENTER_FIELDS: Final = frozenset({"Edit", "ComboBox"})
 RISKY_MEMO: Final = 4096
-MAX_FORM_MEMBERS = 3000
+"""How many (role, name, automation id, group) readings the risky pass remembers (#314): the
+type-time and the dispatch-time scans of one form read the same elements."""
+MAX_FORM_MEMBERS: Final = 3000
 """[V2.35] (1): a form with more members than this is not scanned; both its facts read true (the
 budget is approved for pages up to 3000 elements). Counted, never timed, so CI is deterministic."""
-MAX_RISKY_READS = 300
+MAX_RISKY_READS: Final = 300
 """[V2.35] (1): more members than this past the prefilter (10% of the cap, the budget's worst
 measured case) makes the form risky without running the gate on the rest."""
 GROUPED_CHOICES: Final = frozenset({"RadioButton", "CheckBox"})
 """The roles whose group name the deny classes read ([v2.77], W3-03)."""
-"""How many (role, name, automation id, group) readings the risky pass remembers (#314): the
-type-time and the dispatch-time scans of one form read the same elements."""
 ACTING_ROLES: Final = frozenset({"Button", "Hyperlink", "MenuItem", "SplitButton"})
 """[V2.26] (3): Enter by the role it goes to: a field is classified, an acting role is a click
 (deny words and the pending-text rule), a state-set role is (1), anything else is R2."""
