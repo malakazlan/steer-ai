@@ -238,36 +238,73 @@ def deny_tier(
     group_name: str | None = None,
 ) -> Risk:
     """The tier the deny, control, consent and billing patterns alone raise the step to,
-    without the plan's tier or the verb floor: R0 when nothing reads. `group_name` is the name
-    of the resolved element's nearest ancestor when that is a Group: read for a RadioButton
-    through every class (W3-03), for a CheckBox and every other value-setting target but a tab
-    through billing only (W3-02, [v2.77]). Consent and billing read every `check`/`uncheck`/
-    `select` target but a TabItem, by name and automation id ([v2.77]). A choose reads
-    every class on its option, its ComboBox's name and that group's name (W4-03). A select on a
-    listbox option reads every class on the option's name and its List's name too (W3b, #206
-    review: a `<select size>` is the same control as a `<select>`, so an option's tier never
-    depends on the verb the planner picked)."""
-    risk: Risk = "R0"
+    without the plan's tier or the verb floor: R0 when nothing reads (`deny_tier_of` over the
+    step's facts)."""
     if step.target is None:
-        return risk
-    if step.verb == "choose" and step.target.role == CHOOSE_ROLE:
-        return _chosen_tier(step, bound_name, element_ids, group_name)
-    if step.verb == "select" and step.target.role == SELECTED_CONTROL_ROLE:
-        return _listed_tier(step, bound_name, element_ids, group_name)
-    role = step.target.role
+        return "R0"
+    return deny_tier_of(
+        DenyFacts(
+            verb=step.verb,
+            role=step.target.role,
+            name=step.target.name,
+            automation_id=step.target.automation_id,
+            option=step.params.get(OPTION_PARAM),
+            bound_name=bound_name,
+            element_ids=tuple(element_ids),
+            group_name=group_name,
+        )
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class DenyFacts:
+    """What the deny patterns read, as plain facts ([V2.24] item 2): the verb, the target's role,
+    name and automation id, a choose's option (`params.option`), the bound name of a person
+    target, the automation ids of the elements it resolves to, and its group's name. Nothing is
+    checked: an empty name is taken as given."""
+
+    verb: str
+    role: str
+    name: str = field(repr=False)
+    automation_id: str = field(default="", repr=False)
+    option: str | None = field(default=None, repr=False)
+    bound_name: str | None = field(default=None, repr=False)
+    element_ids: tuple[str, ...] = field(default=(), repr=False)
+    group_name: str | None = field(default=None, repr=False)
+
+
+def deny_tier_of(facts: DenyFacts) -> Risk:
+    """The tier the deny, control, consent and billing patterns alone raise these facts to,
+    without the plan's tier or the verb floor: R0 when nothing reads. Raise-only: the caller
+    takes the maximum with its own tier. `group_name` is the name of the resolved element's
+    nearest ancestor when that is a Group: read for a RadioButton through every class (W3-03),
+    for a CheckBox and every other value-setting target but a tab through billing only (W3-02,
+    [v2.77]). Consent and billing read every `check`/`uncheck`/`select` target but a TabItem, by
+    name and automation id ([v2.77]). A choose reads every class on its option, its ComboBox's
+    name and that group's name (W4-03). A select on a listbox option reads every class on the
+    option's name and its List's name too (W3b, #206 review: a `<select size>` is the same
+    control as a `<select>`, so an option's tier never depends on the verb the planner
+    picked)."""
+    risk: Risk = "R0"
+    if facts.verb == "choose" and facts.role == CHOOSE_ROLE:
+        return _chosen_tier(facts)
+    if facts.verb == "select" and facts.role == SELECTED_CONTROL_ROLE:
+        return _listed_tier(facts)
+    role = facts.role
+    group_name = facts.group_name
     # a value the person sets is a statement on every role but a tab ([v2.77]; WAI-ARIA 1.2:
     # a switch is a checkbox): consent and billing read a switch Button under check/uncheck and
     # a grid row under select as they read a CheckBox or a RadioButton, and billing reads their
     # group name as W3-02 reads a CheckBox's; a tab and expand/collapse change the view (W3
     # ruling (a), W5); the group name goes through every class for a RadioButton only (W3-03)
-    stated = step.verb in STATED_VERBS and role != TAB_ROLE
+    stated = facts.verb in STATED_VERBS and role != TAB_ROLE
     group = [group_name] if group_name and (role in BILLING_ROLES or stated) else []
     grouped = group if role == GROUPED_ROLE else []
-    names = [step.target.name, *([bound_name] if bound_name else []), *grouped]
-    ids = [i for i in (step.target.automation_id, *element_ids) if i]
-    controlled = [step.target.name, *grouped] if role in CONTROL_ROLES else []
+    names = [facts.name, *([facts.bound_name] if facts.bound_name else []), *grouped]
+    ids = [i for i in (facts.automation_id, *facts.element_ids) if i]
+    controlled = [facts.name, *grouped] if role in CONTROL_ROLES else []
     consenting = role in CONSENT_ROLES or stated
-    billed = [step.target.name, *group] if role in BILLING_ROLES or stated else []
+    billed = [facts.name, *group] if role in BILLING_ROLES or stated else []
     if any(_BILLED.search(comparable(name)) for name in billed):
         risk = "R2"
     classes: tuple[tuple[Mapping[str, Risk], list[str], list[str]], ...] = (
@@ -287,19 +324,14 @@ def deny_tier(
     return risk
 
 
-def _listed_tier(
-    step: Step, bound_name: str | None, element_ids: Sequence[str], group: str | None
-) -> Risk:
+def _listed_tier(facts: DenyFacts) -> Risk:
     """A select on a listbox option is the option it picks (#206 review, as W4-03 for a
     choose): deny, control, consent and billing read the option's name, the bound name and the
     container List's name ("Premium $20/mo" is R2, "Yes" under a List "I agree to pay" R3);
     the automation ids through every class but billing. A clicked ListItem keeps the [v2.17]
     ruling (a)."""
-    target = step.target
-    if target is None:  # the caller checked it; kept for the type checker
-        return "R0"
-    names = [target.name, *(n for n in (bound_name, group) if n)]
-    ids = [i for i in (target.automation_id, *element_ids) if i]
+    names = [facts.name, *(n for n in (facts.bound_name, facts.group_name) if n)]
+    ids = [i for i in (facts.automation_id, *facts.element_ids) if i]
     return _every_class(names, ids)
 
 
@@ -324,19 +356,14 @@ def _every_class(names: list[str], ids: list[str]) -> Risk:
     return risk
 
 
-def _chosen_tier(
-    step: Step, bound_name: str | None, element_ids: Sequence[str], group: str | None
-) -> Risk:
+def _chosen_tier(facts: DenyFacts) -> Risk:
     """W4-03: a choose is the option it picks. Deny, control, consent and billing read the
     option, the ComboBox's name and its group's name ("Premium ($20/mo)" is R2, "Delete
     selected" R3, "Yes" under a consent group R2); the automation ids through every class
     but billing. An option's own automation id is invisible before Expand (a 5.13 gap)."""
-    target = step.target
-    if target is None:  # the caller checked it; kept for the type checker
-        return "R0"
-    option = step.params.get(OPTION_PARAM)
-    names = [target.name, *(n for n in (option, bound_name, group) if n)]
-    ids = [i for i in (target.automation_id, *element_ids) if i]
+    option = facts.option
+    names = [facts.name, *(n for n in (option, facts.bound_name, facts.group_name) if n)]
+    ids = [i for i in (facts.automation_id, *facts.element_ids) if i]
     return _every_class(names, ids)
 
 
