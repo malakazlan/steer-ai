@@ -22,8 +22,7 @@ import dataclasses
 import time
 import urllib.parse
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from steerai.world.address_bar import DocumentUrl
 from steerai.world.effects import Observed, top_document, value_fact
@@ -31,22 +30,22 @@ from steerai.world.landmarks import PageFacts
 from steerai.world.model import Snapshot
 
 FIRST_READY_S = 10.0
-"""[V2.27] how long the first observation of a process's window waits for its tree to be built;
-a guard, unmeasured. Past it the last read carries the unstable token."""
+"""[V2.27] how long a first observation waits for a page to appear (a browser frame with no
+Document, or a Document with no children); a guard, unmeasured. Past it the last read carries
+the unstable token."""
 FIRST_POLL_S = 0.25
-FIRST_QUIET_S = 3.0
-"""[V2.28] 2: how long the node count must hold, after the first touch, before a first
-observation is ready; provisional. Measured (first_observation --measure, 2026-11-14, Chrome 157,
-a read every 0.25 s to 10 s): on gh1 a partial Document (156 of 303 nodes) held 0.75-1.0 s,
-1.25-1.5 s and 2.0-2.5 s in three loads before it grew; a window with no Document yet held its
-node count up to 1.25-1.75 s (gh1, mdn1). 3 s is above each of those. Not covered: a page still
-loading over the network. Read every 0.25 s to 15 s beside DevTools' readyState, gh1 held a
-partial tree for up to 12.3 s (readyState `loading` or `interactive`); no quiet window under
-`FIRST_READY_S` tells that from a built page."""
+GROW_POLL_S = 0.03
+"""[V2.31] the hold's poll: about 30 ms between reads (a read on a real page takes longer)."""
+GROW_GUARD_S = 3.0
+"""[V2.31] how long a first observation holds a page whose node count keeps changing before it
+is handed over marked `growing`; provisional. Measured (first_observation --measure, gh1,
+2026-11-14): partial plateaus of 0.75-2.5 s and a page still loading for up to 12.3 s, so no
+hold tells a loading page from a built one; an observation can be partial and the loop handles
+it (re-observe, the load guard), not this wait."""
 
 
 def document_nodes(snapshot: Snapshot) -> frozenset[int] | None:
-    """[V2.28] 2: the ids of every element under the top Document (the Document itself not
+    """[V2.31] the ids of every element under the top Document (the Document itself not
     counted); None when the window has no top Document."""
     top = top_document(snapshot)
     if top is None:
@@ -64,79 +63,135 @@ def document_nodes(snapshot: Snapshot) -> frozenset[int] | None:
     return frozenset(found)
 
 
-def _size(snapshot: Snapshot) -> tuple[bool, int]:
-    """What must hold across the quiet window: the scope Document's node count, or the whole
-    window's when it has no Document (a native window, or Chrome before its Document appears)."""
+def _count(snapshot: Snapshot) -> int:
+    """What the hold watches: the top Document's node count, or the whole window's when it has
+    no Document."""
     inside = document_nodes(snapshot)
-    return (False, snapshot.node_count) if inside is None else (True, len(inside))
+    return snapshot.node_count if inside is None else len(inside)
 
 
-@dataclass(slots=True)
-class _Touch:
-    size: tuple[bool, int]
-    since: float
-    ready: bool = False
+def _shape(seen: Observed) -> Literal["page", "native", "waiting"]:
+    """[V2.31] `page`: a Document with children; `native`: no Document and no address bar;
+    `waiting`: a Document with no children, or no Document in a window with an address bar
+    (`url_observed`), whose page has not appeared yet."""
+    inside = document_nodes(seen.snapshot)
+    if inside is None:
+        return "waiting" if seen.url_observed else "native"
+    return "page" if inside else "waiting"
+
+
+def hold_still(  # noqa: PLR0913 - the read, the first read and the injected clock, keyword-only
+    read: Callable[[], Observed],
+    first: Observed,
+    *,
+    quiet_s: float,
+    guard_s: float,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    poll_s: float = GROW_POLL_S,
+) -> Observed:
+    """[V2.31] from `first`, read every `poll_s` until the node count (`_count`) has held for
+    `quiet_s` on stable reads, or `guard_s` has passed. The last read is returned, `growing`
+    when the count rose at any point. The first observation holds with `GROW_GUARD_S`; the
+    loop's load-guard wait may hold with its own guard."""
+    if quiet_s <= 0 or guard_s < 0 or poll_s <= 0:
+        raise ValueError("hold_still needs a positive quiet window and poll and a guard >= 0")
+    start = clock()
+    seen, count, quiet_from, grew = first, _count(first.snapshot), start, False
+    while True:
+        now = clock()
+        quiet = seen.snapshot.stable and now - quiet_from >= quiet_s
+        if quiet or now - start >= guard_s:
+            return dataclasses.replace(seen, growing=grew)
+        sleep(poll_s)
+        seen = read()
+        current = _count(seen.snapshot)
+        if current != count or not seen.snapshot.stable:
+            grew = grew or current > count
+            count, quiet_from = current, clock()
 
 
 class FirstTouches:
-    """[V2.28] 2: first-observation readiness, one per task. Keyed on the first touch of a
-    process (its pid; the window handle when the pid was not read), never the browser's name:
-    Chrome builds its tree lazily from the first UIA touch.
+    """[V2.31] the processes whose first observation in this task was handed over, keyed on the
+    pid (the window handle when the pid was not read), never the browser's name. One per
+    task."""
 
-    A process's window is ready when the snapshot is stable, its scope Document has children,
-    and the Document's node count has not changed for `quiet_s`; the quiet window starts at the
-    first touch, so one read is never enough. A window with no Document is judged on its whole
-    node count. Once ready, the process stays ready for the task."""
+    def __init__(self) -> None:
+        self._ready: set[tuple[str, int]] = set()
 
-    def __init__(
-        self, *, clock: Callable[[], float] = time.monotonic, quiet_s: float = FIRST_QUIET_S
-    ) -> None:
-        if quiet_s <= 0:
-            raise ValueError("the quiet window must be positive")
-        self._clock = clock
-        self._quiet_s = quiet_s
-        self._touches: dict[tuple[str, int], _Touch] = {}
+    @staticmethod
+    def _key(snapshot: Snapshot) -> tuple[str, int]:
+        return ("pid", snapshot.pid) if snapshot.pid else ("hwnd", snapshot.hwnd)
 
     def ready(self, snapshot: Snapshot) -> bool:
-        """Whether this read of `snapshot`'s process is ready; the first call is its first touch."""
-        now = self._clock()
-        key = ("pid", snapshot.pid) if snapshot.pid else ("hwnd", snapshot.hwnd)
-        size = _size(snapshot)
-        touch = self._touches.setdefault(key, _Touch(size, now))
-        if touch.ready:
-            return True
-        if size != touch.size:
-            touch.size, touch.since = size, now
-        has_document, count = size
-        built = count > 0 or not has_document
-        touch.ready = snapshot.stable and built and now - touch.since >= self._quiet_s
-        return touch.ready
+        return self._key(snapshot) in self._ready
+
+    def mark(self, snapshot: Snapshot) -> None:
+        self._ready.add(self._key(snapshot))
 
 
-def first_observation(  # noqa: PLR0913 - the read, the task's touches and the injected clock
+def first_observation(  # noqa: PLR0913 - the read, the quiet window, the touches and the clock
     read: Callable[[], Observed],
     *,
+    quiet_s: float,
     touches: FirstTouches | None = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     deadline_s: float = FIRST_READY_S,
     poll_s: float = FIRST_POLL_S,
+    grow_guard_s: float = GROW_GUARD_S,
 ) -> Observed:
-    """A turn's observation of a window: `read` (a full v2 read) until `touches` says its
-    process is ready ([V2.28] 2), within `deadline_s`. A process already ready in this task
-    returns its first read. At the deadline the last read is returned with the unstable token,
-    never handed over as a stable, partial listing. Without `touches` this call is the
-    process's first touch."""
-    touches = FirstTouches(clock=clock) if touches is None else touches
+    """[V2.31] the first observation of a process's window in a task; `read` is a full v2 read
+    and `quiet_s` the loop's normal quiet window. A process already handed over in this task
+    gets its first read.
+
+    - A native window (no Document, no address bar) is handed over on its first stable read.
+    - A page (a Document with children) is held (`hold_still`) for one quiet window, longer
+      while it grows, at most `grow_guard_s`; it may be handed over partial, marked `growing`.
+    - Anything else (a Document with no children, a browser frame with no Document, an unstable
+      read) is polled until `deadline_s`, then returned with the unstable token: never a bare
+      browser frame. A hold that starts before the deadline may end up to `grow_guard_s` past it.
+
+    Without `touches` this call is the process's first touch."""
+    touches = FirstTouches() if touches is None else touches
     deadline = clock() + deadline_s
     while True:
         seen = read()
         if touches.ready(seen.snapshot):
             return seen
+        shape = _shape(seen) if seen.snapshot.stable else "waiting"
+        if shape == "page":
+            seen = hold_still(
+                read, seen, quiet_s=quiet_s, guard_s=grow_guard_s, clock=clock, sleep=sleep
+            )
+            shape = _shape(seen) if seen.snapshot.stable else "waiting"
+        if shape != "waiting":
+            touches.mark(seen.snapshot)
+            return seen
         if clock() >= deadline:
             unstable = dataclasses.replace(seen.snapshot, stable=False)
             return dataclasses.replace(seen, snapshot=unstable)
         sleep(poll_s)
+
+
+class DocumentSince:
+    """[V2.31] stamps `Observed.document_since`: when this window's current top Document (by
+    RuntimeId) was first seen through this stamp, on `clock`. A replaced Document restarts it.
+    For the loop's load guard (give up only on a settled page)."""
+
+    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._seen: dict[int, tuple[tuple[int, ...], float]] = {}
+
+    def __call__(self, seen: Observed) -> Observed:
+        top = top_document(seen.snapshot)
+        if top is None:
+            return dataclasses.replace(seen, document_since=None)
+        known = self._seen.get(seen.snapshot.hwnd)
+        if known is None or known[0] != top.runtime_id:
+            known = (top.runtime_id, self._clock())
+            self._seen[seen.snapshot.hwnd] = known
+        return dataclasses.replace(seen, document_since=known[1])
 
 
 class FactReader(Protocol):
