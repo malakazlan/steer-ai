@@ -266,48 +266,70 @@ def _press_enter(cdp: CdpSession) -> None:
 def run_control(variant: Variant, *, slow_delay_ms: int = SLOW_DELAY_MS) -> tuple[Entry, ...]:
     """Drive one variant to its intended end state over DevTools in a throwaway profile, and
     return the page's log. (a), (b): type. (c): type, Enter, then the button when there is one.
-    (d): type, Enter at once, then wait past the delay."""
+    (d): type, Enter at once, then wait past the delay. The session is on our own tab with its
+    navigation committed (`layer_b._ours`, LB-03), and the log is read only from our page."""
     from steerai.probes.chrome_a11y import (  # noqa: PLC0415 - live probes only
         CHROME_DEFAULT,
-        CdpSession,
         launch_chrome,
-        page_ws_url,
         stop_chrome,
     )
-    from steerai.probes.layer_b_pages import PageServer, log_value  # noqa: PLC0415
+    from steerai.probes.layer_b import _ours  # noqa: PLC0415 - live probes only
+    from steerai.probes.layer_b_pages import PageServer  # noqa: PLC0415
 
     page = spec(variant, slow_delay_ms=slow_delay_ms)
     tmp = Path(tempfile.mkdtemp(prefix="steer-instant-"))
     with PageServer(pages(slow_delay_ms=slow_delay_ms)) as server:
         port = _free_port()
-        url = f"http://127.0.0.1:{server.port}{path_of(variant)}"
-        proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, url)
+        base = f"http://127.0.0.1:{server.port}"
+        proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, base + path_of(variant))
         try:
-            cdp = CdpSession(page_ws_url(port))
+            cdp, _ = _ours(port, server.port)
             try:
                 _wait_ready(cdp)
-                cdp.call("Runtime.evaluate", {"expression": "document.getElementById('q').focus()"})
-                cdp.call("Input.insertText", {"text": QUERY})
-                if variant in {"c-button", "c-nobutton", "d"}:
-                    _press_enter(cdp)
-                if variant == "c-button":
-                    _click_button(cdp)
+                _drive(cdp, variant)
                 time.sleep(page.delay_ms / 1000 + SETTLE_S)
-                raw = log_value(
-                    cdp.call(
-                        "Runtime.evaluate",
-                        {
-                            "expression": f"localStorage.getItem({json.dumps(LOG_KEY)}) || '[]'",
-                            "returnByValue": True,
-                        },
-                    )
-                )
+                raw = _read_log(cdp, base)
             finally:
                 cdp.close()
         finally:
             stop_chrome(proc, tmp / "profile")
             shutil.rmtree(tmp, ignore_errors=True)
     return parse_log(raw)
+
+
+def _drive(cdp: CdpSession, variant: Variant) -> None:
+    """The control's input. Key and mouse events are not delivered to a page whose window is not
+    in front (the live run's c variants logged nothing while a, b and d, which need only
+    `insertText`, passed), so the page is brought to front and made to act focused first."""
+    cdp.call("Page.bringToFront")
+    cdp.call("Emulation.setFocusEmulationEnabled", {"enabled": True})
+    cdp.call("Runtime.evaluate", {"expression": "document.getElementById('q').focus()"})
+    cdp.call("Input.insertText", {"text": QUERY})
+    if variant in {"c-button", "c-nobutton", "d"}:
+        # the field holds focus for the Enter (keyDown + keyUp, key and code Enter)
+        cdp.call("Runtime.evaluate", {"expression": "document.getElementById('q').focus()"})
+        _press_enter(cdp)
+    if variant == "c-button":
+        _click_button(cdp)
+
+
+def _read_log(cdp: CdpSession, base: str) -> str:
+    """The page's log, read only from our page: another document (a tab's initial about:blank,
+    a tab that is not ours) would read as an empty log, which looks like a result."""
+    from steerai.probes.layer_b_pages import log_value  # noqa: PLC0415 - live probes only
+
+    where = cdp.call("Runtime.evaluate", {"expression": "location.href", "returnByValue": True})
+    if not str(where.get("result", {}).get("value", "")).startswith(base + "/"):
+        raise RuntimeError("page_not_ours")
+    return log_value(
+        cdp.call(
+            "Runtime.evaluate",
+            {
+                "expression": f"localStorage.getItem({json.dumps(LOG_KEY)}) || '[]'",
+                "returnByValue": True,
+            },
+        )
+    )
 
 
 def _wait_ready(cdp: CdpSession, timeout_s: float = 15.0) -> None:
