@@ -7,6 +7,7 @@ import dataclasses
 
 from steerai.loop2.controller import v2_listing
 from steerai.loop2.loop import type_refusal
+from steerai.world.model import Snapshot
 from tests.loop2.world_fakes import FIELD, GO, PAGE, PASSWORD, snapshot
 
 UNREAD = dataclasses.replace(snapshot(PAGE), unread_secure=frozenset({FIELD.id}))
@@ -24,8 +25,15 @@ def test_a_type_into_a_read_plain_field_is_not_refused() -> None:
     assert type_refusal(FIELD, snapshot(PAGE)) is None
 
 
+def _ordinals(shown: Snapshot) -> dict[int, int]:
+    """Handles equal to the snapshot ordinals, so v1's line is unchanged."""
+    return {e.id: e.id for e in shown.elements}
+
+
 def test_the_listing_shows_secure_unread_on_that_field_only() -> None:
-    rows = {row.text.split(" ", 1)[0]: row.text for row in v2_listing(UNREAD)}
+    rows = {
+        row.text.split(" ", 1)[0]: row.text for row in v2_listing(UNREAD, handles=_ordinals(UNREAD))
+    }
     assert rows[str(FIELD.id)].endswith(" secure_unread")
     assert "secure_unread" not in rows[str(GO.id)]
 
@@ -34,4 +42,6 @@ def test_the_listing_keeps_v1s_line_for_every_read_element() -> None:
     from steerai.world.elements import format_lines  # noqa: PLC0415 - v1's own formatter
 
     plain = snapshot(PAGE)
-    assert [row.text for row in v2_listing(plain)] == format_lines(plain.elements)
+    assert [row.text for row in v2_listing(plain, handles=_ordinals(plain))] == format_lines(
+        plain.elements
+    )

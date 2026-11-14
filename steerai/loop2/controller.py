@@ -106,14 +106,18 @@ SECURE_UNREAD = "secure_unread"
 not keep targeting it with a type."""
 
 
-def v2_listing(snapshot: Snapshot) -> list[ListingRow]:
-    """The v2 listing of `snapshot`: v1's line for every element, with `secure_unread` added to
-    a field whose secure flag was not read."""
-    lines = format_lines(snapshot.elements)
-    return [
-        ListingRow(e.depth, line + (f" {SECURE_UNREAD}" if e.id in snapshot.unread_secure else ""))
-        for e, line in zip(snapshot.elements, lines, strict=True)
-    ]
+def v2_listing(snapshot: Snapshot, *, handles: Mapping[int, int]) -> list[ListingRow]:
+    """The v2 listing of `snapshot`: v1's line for every element, numbered by its task handle
+    ([V2.38] RT-17: never the snapshot's ordinal), `-` for an element with no handle (it has no
+    RuntimeId and cannot be acted on), with `secure_unread` added to a field whose secure flag
+    was not read."""
+    rows: list[ListingRow] = []
+    for e, line in zip(snapshot.elements, format_lines(snapshot.elements), strict=True):
+        handle = handles.get(e.id)
+        body = line[len(f"{e.id} ") :]
+        unread = f" {SECURE_UNREAD}" if e.id in snapshot.unread_secure else ""
+        rows.append(ListingRow(e.depth, f"{'-' if handle is None else handle} {body}{unread}"))
+    return rows
 
 
 @dataclass(frozen=True)
