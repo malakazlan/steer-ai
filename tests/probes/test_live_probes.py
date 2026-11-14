@@ -207,3 +207,55 @@ def test_the_scrolled_summary_counts_only_press_rows_beside_an_error() -> None:
     ]
     out = scrolled.summary(rows, "cap")
     assert (out["presses"], out["percent_readable"], out["errors"]) == (1, True, ["no_document"])
+
+
+# ---- live run 1: the first touch of a fresh Chrome, and failing loudly -------------------------
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def test_retry_until_returns_the_first_ready_read() -> None:
+    from steerai.probes.live_browser import retry_until  # noqa: PLC0415 - this section
+
+    clock = _Clock()
+    reads = iter([None, [], {"doc": 1}])
+    got = retry_until(lambda: next(reads), what="doc", clock=clock.monotonic, sleep=clock.sleep)
+    assert got == {"doc": 1}
+
+
+def test_retry_until_fails_loudly_at_the_deadline() -> None:
+    from steerai.probes.live_browser import TreeNotReady, retry_until  # noqa: PLC0415
+
+    clock = _Clock()
+    calls: list[int] = []
+
+    def never() -> None:
+        calls.append(1)
+
+    with pytest.raises(TreeNotReady, match="no_document"):
+        retry_until(
+            never,
+            what="no_document",
+            deadline_s=2.0,
+            poll_s=0.5,
+            clock=clock.monotonic,
+            sleep=clock.sleep,
+        )
+    assert 3 <= len(calls) <= 6, "bounded by the deadline"
+
+
+def test_any_error_row_makes_the_probe_exit_non_zero() -> None:
+    from steerai.probes.live_browser import exit_code  # noqa: PLC0415
+
+    assert exit_code([{"press": 1}, {"report": "x"}]) == 0
+    assert exit_code([{"press": 1}, {"error": "no_document"}]) == 1
+    assert exit_code([{"id": "f-text", "found": False}]) == 1, "a missing element is an error"

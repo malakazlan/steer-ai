@@ -310,3 +310,11 @@ def test_the_log_is_read_only_from_our_page() -> None:
     assert instant_search._read_log(_RecordingCdp(f"{base}/c-button"), base) == "[]"  # type: ignore[arg-type]
     with pytest.raises(RuntimeError, match="page_not_ours"):
         instant_search._read_log(_RecordingCdp("about:blank"), base)  # type: ignore[arg-type]
+
+
+def test_the_field_is_focused_again_right_before_the_enter() -> None:
+    cdp = _RecordingCdp()
+    instant_search._drive(cdp, "c-nobutton")  # type: ignore[arg-type]  # a recording fake session
+    enter = cdp.calls.index("Input.dispatchKeyEvent")
+    assert cdp.calls[enter - 1] == "Runtime.evaluate", "focus right before the key"
+    assert cdp.calls.count("Input.dispatchKeyEvent") == 2, "keyDown then keyUp"

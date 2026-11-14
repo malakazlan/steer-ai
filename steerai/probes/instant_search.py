@@ -306,6 +306,8 @@ def _drive(cdp: CdpSession, variant: Variant) -> None:
     cdp.call("Runtime.evaluate", {"expression": "document.getElementById('q').focus()"})
     cdp.call("Input.insertText", {"text": QUERY})
     if variant in {"c-button", "c-nobutton", "d"}:
+        # the field holds focus for the Enter (keyDown + keyUp, key and code Enter)
+        cdp.call("Runtime.evaluate", {"expression": "document.getElementById('q').focus()"})
         _press_enter(cdp)
     if variant == "c-button":
         _click_button(cdp)

@@ -62,36 +62,35 @@ def landmark_rows(
 
 
 def _elements(page: Any) -> list[Element]:  # pragma: no cover - live
-    """Every element in the page's Documents, as (RuntimeId, ControlType, IsOffscreen)."""
+    """Every element in the page's top Document (never the browser frame), as (RuntimeId,
+    ControlType, IsOffscreen). `live_page` waited until that Document had descendants."""
     uia, mod = page.uia, page.mod
-    documents = uia.ElementFromHandle(page.hwnd).FindAll(
-        mod.TreeScope_Descendants,
-        uia.CreatePropertyCondition(mod.UIA_ControlTypePropertyId, mod.UIA_DocumentControlTypeId),
-    )
+    found = page.document.FindAll(mod.TreeScope_Descendants, uia.CreateTrueCondition())
     out: list[Element] = []
-    for d in range(documents.Length):
-        found = documents.GetElement(d).FindAll(
-            mod.TreeScope_Descendants, uia.CreateTrueCondition()
-        )
-        for i in range(found.Length):
-            element = found.GetElement(i)
-            rid = element.GetRuntimeId()
-            if rid:
-                out.append(
-                    (
-                        tuple(int(v) for v in rid),
-                        int(element.CurrentControlType),
-                        bool(element.CurrentIsOffscreen),
-                    )
+    for i in range(found.Length):
+        element = found.GetElement(i)
+        rid = element.GetRuntimeId()
+        if rid:
+            out.append(
+                (
+                    tuple(int(v) for v in rid),
+                    int(element.CurrentControlType),
+                    bool(element.CurrentIsOffscreen),
                 )
+            )
     return out
 
 
 def site_row(url: str, *, floor_mb: int) -> dict[str, Any]:  # pragma: no cover - live  # Any: JSON
-    from steerai.probes.live_browser import live_page  # noqa: PLC0415 - Windows only
+    from steerai.probes.live_browser import live_page, retry_until  # noqa: PLC0415 - Windows only
 
     with live_page(url, floor_mb=floor_mb, settle_s=6.0) as page:
-        facts = page.client.page_facts(page.hwnd)
+        # live run 1: a first read of a fresh page had no roles or landmarks at all
+        def read() -> Any:  # Any: PageFacts, or None while the tree is still empty
+            facts = page.client.page_facts(page.hwnd)
+            return facts if facts.landmarks else None
+
+        facts = retry_until(read, what="page_facts_empty")
         return {"fields": landmark_rows(_elements(page), facts)}
 
 
@@ -102,9 +101,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live
     if sys.platform != "win32":
         sys.stdout.write(json.dumps({"skipped": "windows only"}) + "\n")
         return 0
+    from steerai.probes.live_browser import TreeNotReady, exit_code  # noqa: PLC0415
     from steerai.probes.task_suite import H2, H3, H4, H5, H6, HELD_OUT, TASKS  # noqa: PLC0415
 
     seen: set[str] = set()
+    rows: list[dict[str, Any]] = []
     for task in (*TASKS, *HELD_OUT, *H2, *H3, *H4, *H5, *H6):
         if not task.start.startswith("https://") or task.start in seen:
             continue
@@ -115,11 +116,14 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live
             sys.stdout.write(json.dumps(refusal_row(refused, [task.task_id])) + "\n")
             sys.stderr.write(f"{refused}\n")
             return EXIT_LOW_MEMORY
+        except TreeNotReady as exc:
+            row = {"error": str(exc)}
         except (OSError, TimeoutError, RuntimeError) as exc:
             row = {"error": type(exc).__name__}
+        rows.append(row)
         sys.stdout.write(json.dumps({"task": task.task_id, **row}) + "\n")
         sys.stdout.flush()
-    return 0
+    return exit_code(rows)
 
 
 if __name__ == "__main__":

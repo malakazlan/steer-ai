@@ -1949,6 +1949,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     wanted = set(filter(None, args.tasks.split(",")))
     tasks = task_set(args.set)
+    # live run 1: a `--tasks` subset is scored on the requested tasks only, never the rest of
+    # the set at 0/0 (which printed "bar missed" for a run where every task passed)
+    scored = tuple(t for t in tasks if not wanted or t.task_id in wanted)
     if args.controls:
         lines = _control_lines(args.set, tasks)
         sys.stdout.write("\n".join(lines) + "\n")
@@ -1962,7 +1965,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--in-process takes no --chunk-size or --task-cap-s")
     if not args.in_process and args.run_number is None:
         args.chunk_size = 1 if args.chunk_size is None else args.chunk_size  # [V2.16] default
-        return _chunked(args, units, tasks)
+        return _chunked(args, units, scored)
     planner = _Planner()
     rows: list[dict[str, Any]] = []
     with args.out.open("w", encoding="utf-8") as out:
@@ -1981,8 +1984,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             rows.append(row)
             out.write(json.dumps(row) + "\n")
             out.flush()
-    lines, ok = verdict(rows, tasks)
-    lines.append(seconds_line(rows, tasks))
+    lines, ok = verdict(rows, scored)
+    lines.append(seconds_line(rows, scored))
     sys.stdout.write("\n".join(lines) + f"\nbar {'met' if ok else 'missed'}\n")
     return 0 if ok else 1
 

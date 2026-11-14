@@ -140,15 +140,7 @@ def rows_live(floor_mb: int) -> tuple[list[dict[str, Any]], str | None]:  # prag
         PageServer({"/tall": PAGE}) as server,
         live_page(f"http://127.0.0.1:{server.port}/tall", floor_mb=floor_mb) as page,
     ):
-        mod = page.mod
-        found = page.uia.ElementFromHandle(page.hwnd).FindFirst(
-            mod.TreeScope_Descendants,
-            page.uia.CreatePropertyCondition(
-                mod.UIA_ControlTypePropertyId, mod.UIA_DocumentControlTypeId
-            ),
-        )
-        if not found:
-            return [{"error": "no_document"}], None
+        found = page.document  # `live_page` waited until it had descendants
         page.cdp.call("Runtime.evaluate", {"expression": "window.focus()"})
         offscreen = _offscreen(page, found)
         previous = _percent(page, found)
@@ -176,9 +168,14 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live
         sys.stdout.write(json.dumps(refusal_row(refused, [])) + "\n")
         sys.stderr.write(f"{refused}\n")
         return EXIT_LOW_MEMORY
+    except RuntimeError as unreadable:  # TreeNotReady: the page never became readable
+        sys.stdout.write(json.dumps({"error": str(unreadable)}) + "\n")
+        return 1
     for row in (*rows, summary(rows, reason)):
         sys.stdout.write(json.dumps(row) + "\n")
-    return 0
+    from steerai.probes.live_browser import exit_code  # noqa: PLC0415
+
+    return exit_code(rows)
 
 
 if __name__ == "__main__":
