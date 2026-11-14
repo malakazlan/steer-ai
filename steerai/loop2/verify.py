@@ -232,12 +232,19 @@ def _navigated(  # noqa: PLR0911, PLR0913 - one return per closed outcome; keywo
 def _excluded(
     element: Element, now: Observed, *, typed: Sequence[tuple[int, ...]], echo: bool
 ) -> list[str]:
-    """[V2.29] Q1: why an element proves nothing, for the auto proof and a cited claim alike: a
-    typed field itself; under a Menu or ToolTip; a selectable option when the subgoal's words are
-    text Steer typed (the option rule, task-wide); owned by any field Steer typed in the task."""
+    """[V2.29] Q1: why an element proves nothing, for the auto proof and a cited claim alike:
+    outside the single top Document (§7.1: a tab name or the address bar is never evidence), or
+    no single top Document at all (fail closed: never the whole window); a typed field itself;
+    under a Menu or ToolTip; a selectable option when the subgoal's words are text Steer typed
+    (the option rule, task-wide); owned by any field Steer typed in the task."""
+    by_id = {e.id: e for e in now.snapshot.elements}
+    top = top_document(now.snapshot)
+    if top is None:
+        return ["no_scope"]
+    if not _inside(element, by_id, top.runtime_id):
+        return ["outside_scope"]
     if element.runtime_id in typed:
         return ["inside_field"]
-    by_id = {e.id: e for e in now.snapshot.elements}
     tokens: list[str] = []
     if _under_role(element, by_id, OWNING_ROLES):
         tokens.append("under_suggestions")

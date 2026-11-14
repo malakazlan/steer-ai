@@ -615,8 +615,8 @@ class _Run:
     def _echo(self, subgoal: Subgoal) -> bool:
         """[V2.38] RT-39: the subgoal's words are text Steer typed anywhere in the task; any
         generated text counts, since its words are not kept."""
-        words = {span.text for span in subgoal.params.values()}
-        return any(e.words is None or e.words in words for e in self.ever)
+        words = {_folded(span.text) for span in subgoal.params.values()}
+        return any(e.words is None or _folded(e.words) in words for e in self.ever)
 
     def _read_value(self, element: Element, observed: Observed) -> ValueFact | None:
         """[V2.29] Q2: never read a field whose secure flag is set or unread; one read per
@@ -828,6 +828,11 @@ def _shared_rids(observed: Observed) -> frozenset[tuple[int, ...]]:
         if rid:
             (shared if rid in seen else seen).add(rid)
     return frozenset(shared)
+
+
+def _folded(text: str) -> str:
+    """Words as the echo guard compares them: NFKC, collapsed whitespace, case-folded."""
+    return normalise_name(text).casefold()
 
 
 def _complete(observed: Observed) -> bool:

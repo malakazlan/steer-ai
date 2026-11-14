@@ -27,6 +27,7 @@ from tests.loop2.world_fakes import (
     PAGE,
     QUERY_PAGE,
     RESULT,
+    TAB,
     URL,
     World,
     act,
@@ -261,3 +262,59 @@ def test_p2_a_field_typed_then_emptied_still_owns_its_search_landmark() -> None:
     )
     outcome = run_task(task(), world.ports())
     assert outcome.status != "done"
+
+
+# ---- principal re-review of #331: a browser-frame element is never a result ----------------------
+
+
+def test_a_renamed_tab_is_never_a_result() -> None:
+    """§7.1: a tab name is never evidence; the result must be inside the scope Document."""
+    renamed = dataclasses.replace(TAB, name="red shoes - Shop")
+    base = page(url=URL)
+    after = page(base=[e if e.id != TAB.id else renamed for e in QUERY_PAGE])
+    assert auto_proof(SUB, base, after) is None
+
+
+def test_a_renamed_tab_is_no_result_when_the_acted_field_is_not_in_the_baseline() -> None:
+    renamed = dataclasses.replace(TAB, name="red shoes - Shop")
+    base = page(url=URL)
+    after = page(base=[e if e.id != TAB.id else renamed for e in QUERY_PAGE])
+    assert auto_proof(SUB, base, after, typed=((9, 777),), acted=(9, 777), echo=True) is None
+
+
+def test_with_no_single_top_document_nothing_is_a_result() -> None:
+    """Fail closed: with no single top Document (none, or several roots) there is no scope, and
+    the whole window is never one."""
+    second = element(90, "Document", "Other", (9, 900), None)
+    base = page([second], url=URL)
+    after = page([second, RESULT])
+    assert auto_proof(SUB, base, after, typed=TYPED, acted=FIELD.runtime_id) is None
+
+
+def test_the_echo_guard_matches_words_case_folded_and_normalised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """s1 typed "Red  Shoes"; s2's words are "red shoes": the option rule applies to s2."""
+    echoes: dict[str, object] = {}
+
+    def spy(subgoal: object, *_a: object, **k: object) -> None:
+        echoes[getattr(subgoal, "id", "?")] = k.get("echo")
+
+    monkeypatch.setattr(runner, "auto_proof", spy)
+    goal = "type Red  Shoes then find red shoes"
+    subs = [
+        SubgoalDoc(id="s1", desc="a", params={"text": "Red  Shoes"}),
+        SubgoalDoc(id="s2", desc="b", params={"text": "red shoes"}),
+    ]
+    first = Decision(subgoals=subs, actions=[act("type", target=FIELD.id, param="text")])
+    second = Decision(actions=[act("click", target=GO.id, subgoal="s2")])
+    moved = dataclasses.replace(observed(QUERY_PAGE), url=URL + "?q=x", document_url=URL + "?q=x")
+    world = World(
+        [first, second],
+        effects=[report("own_value"), report("url_changed_in_place")],
+        screen=observed(QUERY_PAGE),
+    )
+    world.later = moved
+    world.later_after_acts = 2
+    run_task(dataclasses.replace(task(), goal=goal), world.ports())
+    assert echoes.get("s2") is True
