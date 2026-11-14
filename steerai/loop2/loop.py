@@ -440,9 +440,10 @@ def _classified(  # noqa: PLR0913 - one submit: the tally, the action, its text 
     still = recorded.in_search_landmark and search_landmark_of(observed, held.field) is not None
     goal_span = held.goal_span and state == "held"
     # #314, [V2.32]: the form is scanned only when every other condition still allows a query;
-    # otherwise `classify` gives R2 whatever the form holds
+    # otherwise `classify` gives R2 whatever the form holds, and the unscanned facts read true
+    # (#319 review S1-05: fail closed, as `search_facts` does)
     may_query = (box or still) and goal_span and action.commit == "none" and not denied
-    secure, risky = form_facts(observed, held.field) if may_query else (False, False)
+    secure, risky = form_facts(observed, held.field) if may_query else (True, True)
     now = dataclasses.replace(
         recorded,
         searchbox=box,

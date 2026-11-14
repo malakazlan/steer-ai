@@ -7,6 +7,7 @@ Steer types and computed again at the submit's dispatch, combined by OR."""
 from __future__ import annotations
 
 import dataclasses
+import itertools
 from collections.abc import Sequence
 
 import pytest
@@ -187,3 +188,158 @@ def test_a_submit_that_may_be_a_query_scans_the_form(monkeypatch: pytest.MonkeyP
     enter = act("press", key="Enter")
     assert action_risk(enter, BOX, goal=GOAL, observed=screen(), pending=[held]).risk == "R1"
     assert calls == [1]
+
+
+# ---- #319 reviews ----------------------------------------------------------------------------
+
+
+def test_a_risky_element_appearing_after_the_type_is_seen_through_a_warm_memo() -> None:
+    """S3-20, [V2.35] (1): the dispatch-time scan is real, not the type-time one replayed."""
+    typed_on = screen()
+    search_facts(typed_on, BOX.runtime_id)  # warms the memo on the plain form
+    assert enter_risk(typed_on, screen([*PLAIN, BUY])) == "R2"
+
+
+def test_a_password_appearing_after_the_type_is_seen_through_a_warm_memo() -> None:
+    typed_on = screen()
+    search_facts(typed_on, BOX.runtime_id)
+    assert enter_risk(typed_on, screen([*PLAIN, LATE_PASSWORD])) == "R2"
+
+
+def test_a_choice_whose_group_is_not_in_the_snapshot_is_risky() -> None:
+    """S1-07: its group name cannot be read, so it is never read as "no group" (as
+    `action_risk`'s parent rule)."""
+    orphan = element(73, "RadioButton", "Yearly", (9, 73), 99)
+    marks_shared = dataclasses.replace(
+        screen([*PLAIN, orphan]),
+        landmarks={**screen([*PLAIN, orphan]).landmarks, orphan.runtime_id: SEARCH},  # type: ignore[dict-item]  # read in `screen`
+    )
+    assert facts(marks_shared).risky_in_form is True
+
+
+def test_a_form_over_the_member_cap_reads_both_facts_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[V2.35] (1): over budget means true; a fact is never left unread to meet a budget."""
+    monkeypatch.setattr(form, "MAX_FORM_MEMBERS", 1)  # the form has 2 members
+    found = facts(screen([*PLAIN, element(74, "Text", "One", (9, 74), 60)]))
+    assert (found.secure_in_form, found.risky_in_form) == (True, True)
+
+
+def test_a_form_over_the_reading_cap_reads_risky(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(form, "MAX_RISKY_READS", 1)
+    plans = [element(80 + i, "Button", f"Subscribe {i}", (9, 80 + i), 60) for i in range(3)]
+    assert facts(screen([*PLAIN, *plans])).risky_in_form is True
+
+
+def test_within_the_caps_the_same_form_is_not_risky() -> None:
+    plans = [element(80 + i, "Button", f"Subscribe {i}", (9, 80 + i), 60) for i in range(3)]
+    assert facts(screen([*PLAIN, *plans])).risky_in_form is False
+
+
+# ---- S1-05: when no query can follow, the skipped scan reads as true ---------------------------
+
+STATES = {"held": TYPED, "changed": ValueFact(filled=True, digest="other"), "unread": None}
+
+
+@pytest.mark.parametrize(
+    ("searchbox", "landmark", "goal_span", "state", "commit", "denied"),
+    list(
+        itertools.product(
+            (False, True),
+            (False, True),
+            (False, True),
+            sorted(STATES),
+            ("none", "send"),
+            (False, True),
+        )
+    ),
+)
+def test_no_query_possible_is_always_r2_and_reads_the_form_as_true(  # noqa: PLR0917 - the axes
+    monkeypatch: pytest.MonkeyPatch,
+    searchbox: bool,
+    landmark: bool,
+    goal_span: bool,
+    state: str,
+    commit: str,
+    denied: bool,
+) -> None:
+    seen: list[SearchFacts] = []
+    real = query.classify
+
+    def spy(**kw: object) -> str:
+        seen.append(kw["field"])  # type: ignore[arg-type]  # the keyword `classify` takes
+        return real(**kw)  # type: ignore[arg-type]  # passed through unchanged
+
+    monkeypatch.setattr(loop, "classify", spy)
+    field = dataclasses.replace(BOX, name="Delete search") if denied else BOX
+    shown = [*PAGE, FORM, field, SEARCH_BUTTON]
+    live = screen(shown, searchbox=searchbox, marks_read=True)
+    if not landmark:
+        live = dataclasses.replace(live, landmarks={e.runtime_id: None for e in shown})
+    recorded = SearchFacts(
+        searchbox=searchbox, in_search_landmark=landmark, secure_in_form=False, risky_in_form=False
+    )
+    held = PendingText(field.runtime_id, TYPED, STATES[state], recorded, goal_span)
+    enter = act("press", key="Enter", commit=commit)
+    risk = action_risk(enter, field, goal=GOAL, observed=live, pending=[held]).risk
+    may_query = (searchbox or landmark) and goal_span and state == "held"
+    may_query = may_query and commit == "none" and not denied
+    if not may_query:
+        assert risk in {"R2", "R3"}
+        assert all(f.secure_in_form and f.risky_in_form for f in seen)
+
+
+# ---- [V2.35] (1): the budget in CI is counted in operations, never in milliseconds -----------
+
+
+def _big_page(n: int, hits: int) -> tuple[Observed, tuple[int, ...]]:
+    """A searchbox directly under the Document (the whole page is its form): `hits` names hold
+    a pattern's first word without being risky ("Subscribe" is the control class, R2)."""
+    doc = element(1, "Document", "Page", (8, 1), None)
+    rows = [
+        element(i, "Button", f"Subscribe {i}" if i < hits + 2 else f"Result {i}", (8, i), 1)
+        for i in range(2, n)
+    ]
+    box = element(n, "Edit", "Search", (8, n), 1)
+    shown = [doc, *rows, box]
+    seen = dataclasses.replace(
+        observed(shown),
+        aria_roles={box.runtime_id: "searchbox"},
+        landmarks={e.runtime_id: None for e in shown},
+    )
+    return seen, box.runtime_id
+
+
+def _count(monkeypatch: pytest.MonkeyPatch, name: str) -> list[int]:
+    calls: list[int] = []
+    real = getattr(form, name)
+
+    def counted(*args: object, **kw: object) -> object:
+        calls.append(1)
+        return real(*args, **kw)
+
+    monkeypatch.setattr(form, name, counted)
+    return calls
+
+
+def test_a_3000_element_form_reads_each_member_once_and_runs_the_gate_on_hits_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen, box = _big_page(3000, hits=300)
+    prefilter = _count(monkeypatch, "may_read")
+    gate_runs = _count(monkeypatch, "deny_tier_of")
+    assert form.form_facts(seen, box) == (False, False)
+    members = 3000 - 1
+    assert len(prefilter) <= members
+    assert len(gate_runs) <= 300 * max(len(form.fitting_verbs(r)) for r in ("Button",))
+
+
+def test_the_dispatch_rescan_of_an_unchanged_form_runs_no_prefilter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen, box = _big_page(3000, hits=300)
+    form.form_facts(seen, box)
+    prefilter = _count(monkeypatch, "may_read")
+    assert form.form_facts(seen, box) == (False, False)
+    assert prefilter == []
