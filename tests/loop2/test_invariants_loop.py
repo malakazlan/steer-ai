@@ -9,8 +9,10 @@ from collections.abc import Sequence
 
 import pytest
 
+from steerai.action.dispositions import ActionResult, Delivery
 from steerai.loop2.decision import Claim, Decision, SubgoalDoc
 from steerai.loop2.loop import (
+    ActResult,
     PendingText,
     Reason,
     TaskOutcome,
@@ -35,6 +37,7 @@ from tests.loop2.world_fakes import (
     SUBGOALS,
     World,
     act,
+    act_result,
     decision,
     element,
     observed,
@@ -643,3 +646,49 @@ def test_progress_after_a_refusal_resets_the_status_mapping() -> None:
     reason = outcome.reason or ""
     assert "secure_field" not in reason
     assert "after_refusal" not in reason
+
+
+# ---- [V2.24] item 3: each delivery maps to the loop's handling --------------------------------
+
+BOX = element(30, "CheckBox", "Gift wrap", (9, 30), 1)
+
+
+@pending("[V2.24].3 and [V2.11].4: nothing delivered is a refusal with a token and a strike")
+def test_a_not_delivered_act_is_a_refusal_with_a_token_and_a_strike() -> None:
+    world = World(
+        [decision(act("click", target=GO.id), act("click", target=MENU.id), first=True)],
+        results=[act_result("click", Delivery.NOT_DELIVERED)],
+    )
+    outcome = run_task(task(), world.ports())
+    assert world.sent_at_call[:2] == [0, 1], "the batch ends: nothing was delivered"
+    assert any("not_delivered" in t for t in _tokens_after_first_call(world))
+    assert _struck(outcome, "refused")
+
+
+@pending("[V2.24].3 and [V2.17].4: an uncertain delivery ends the batch, never re-sent")
+def test_an_uncertain_delivery_ends_the_batch_and_goes_back_to_the_controller() -> None:
+    world = World(
+        [
+            decision(act("click", target=GO.id), act("click", target=MENU.id), first=True),
+            decision(act("click", target=GO.id)),
+        ],
+        effects=[report("own_state")],
+        results=[act_result("click", Delivery.DELIVERY_UNCERTAIN)],
+    )
+    run_task(task(), world.ports())
+    assert world.sent_at_call[:2] == [0, 1]
+    assert any("delivery_uncertain" in t for t in _tokens_after_first_call(world))
+    sent_go = [d for d in world.dispatched if d.runtime_id == GO.runtime_id]
+    assert len(sent_go) == 1, "the uncertain send is never re-sent"
+
+
+@pending("[V2.24].3: a state already wanted (nothing sent) counts as a verified read-back")
+def test_a_state_already_wanted_continues_the_batch_like_a_verified_one() -> None:
+    world = World(
+        [decision(act("check", target=BOX.id), act("click", target=GO.id), first=True)],
+        effects=[report("none")],
+        results=[ActResult(ActionResult.already_satisfied("check"), read_back=True)],
+        screen=observed([*PAGE, BOX]),
+    )
+    run_task(task(), world.ports())
+    assert world.sent_at_call[:2] == [0, 2]

@@ -24,6 +24,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from steerai.action.dispositions import ActionResult, Delivery
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2._stub import stub
 from steerai.loop2.decision import ActionDoc, Decision
@@ -85,14 +86,46 @@ class TurnView:
     first_turn: bool
 
 
+READ_BACK_VERBS = frozenset({"type", "choose", "check", "uncheck", "select", "expand", "collapse"})
+"""The verbs whose actuation reads its result back ([V2.11] item 2, [V2.5]): type, choose and the
+state verbs."""
+
+
+@dataclass(frozen=True)
+class ActResult:
+    """[V2.24] item 3: what one dispatch returns to the loop. `action` is v1's `ActionResult`
+    (its delivery, its code, and the method steps, label and mechanism, kept for step 5);
+    `read_back` is the three-valued read-back of a read-back verb: True verified, False a
+    mismatch, None unread. The read-back belongs to the actuation (§7.3: type, then read back),
+    so it travels here and no separate port reads it."""
+
+    action: ActionResult
+    read_back: bool | None
+
+    def __post_init__(self) -> None:
+        if self.read_back is None:
+            return
+        if self.action.verb not in READ_BACK_VERBS:
+            raise ValueError("read_back is only for type, choose and the state verbs")
+        sent_nothing = self.action.delivery is Delivery.NOT_DELIVERED and not self.action.skipped
+        if sent_nothing:
+            raise ValueError("read_back needs a delivery: nothing was sent")
+        verified = self.action.delivery is Delivery.DELIVERED_VERIFIED or self.action.skipped
+        if self.read_back and not verified:
+            raise ValueError("a True read_back needs a verified or already-wanted delivery")
+
+    @property
+    def delivery(self) -> Delivery:
+        return self.action.delivery
+
+
 @dataclass(frozen=True)
 class Ports:
     decide: Callable[[TurnView], Decision]
     observe: Callable[[], Observed]
-    act: Callable[[Dispatch], None]
+    act: Callable[[Dispatch], ActResult]
+    """Send one action and read it back where the verb has a read-back ([V2.24] item 3)."""
     watch: Callable[[Observed, Dispatch], Watched]
-    read_back: Callable[[Dispatch], bool | None]
-    """A `type` or a state verb's read-back: True verified, False a mismatch, None unread."""
     write_ahead: Callable[[Dispatch], str]
     interrupted: Callable[[], str | None]
     """A takeover, the secure desktop or a lock, as a token; None to go on."""
