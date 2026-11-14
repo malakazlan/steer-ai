@@ -12,6 +12,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from steerai.action.dispositions import ActionResult
 from steerai.goal_match import Verdict
 from steerai.loop2._stub import stub
 from steerai.loop2.decision import ActionDoc
@@ -169,8 +170,10 @@ class GateSteps:
     """Step 9: the fresh observe, the asked element, the foreground, the value digest again."""
     write_ahead: Callable[[GateDecision], bool]
     """Step 10: False when the record could not be written."""
-    dispatch: Callable[[GateDecision], None]
-    """Step 11."""
+    dispatch: Callable[[GateDecision], ActionResult]
+    """Step 11, returning v1's result. [V2.25] (c): a `not_delivered` with v1's retry codes and
+    no step tried gets v1's one local retry under the SAME decision: one ask, one write-ahead,
+    a second dispatch only (v1 `orchestrator/loop.py` `_act`); an uncertain one is never re-sent."""
 
 
 @dataclass(frozen=True)

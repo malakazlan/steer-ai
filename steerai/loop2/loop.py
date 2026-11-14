@@ -354,11 +354,10 @@ def _classified(  # noqa: PLR0913 - one submit: the tally, the action, its text 
     denied: bool,
     same_landmark: bool = False,
 ) -> Risk:
-    """One submit of `held`'s text, like the Enter. Unread fails closed; a changed text is never
-    a query, asks `text_changed` under a commit-none subgoal, and refuses a declared send."""
-    if state == "unread":
-        return "R2"
-    if state == "changed":
+    """One submit of `held`'s text, like the Enter. A changed or unread text (the field no longer
+    provably holds what Steer typed) is never a query, asks `text_changed` under a commit-none
+    subgoal, and refuses a declared send or submit (principal re-review 2)."""
+    if state in ("changed", "unread"):
         if action.commit in SENT_COMMITS:
             tally.refused = True
         elif action.commit == "none":
@@ -413,13 +412,11 @@ def _submit(  # noqa: PLR0913 - the tally, the action, its target and the read f
         if beside is False:
             continue
         tally.submit_parent = tally.submit_parent or _parent_kind(observed, held.field)
-        if beside is None:
-            tier: Risk = "R2"
-        else:
-            same = shares_search_landmark(observed, held.field, target.runtime_id)
-            tier = _classified(
-                tally, action, held, state, verb="click", denied=denied, same_landmark=same
-            )
+        # an unknown relation is still a submit: classified, never a query without the landmark
+        same = beside is True and shares_search_landmark(observed, held.field, target.runtime_id)
+        tier = _classified(
+            tally, action, held, state, verb="click", denied=denied, same_landmark=same
+        )
         if _ORDER[tier] >= _ORDER["R2"]:
             tally.reasons.add("submit_pending_text")
         tally.raise_to(tier)

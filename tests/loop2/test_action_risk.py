@@ -323,3 +323,30 @@ def test_a_target_whose_parent_is_not_in_the_snapshot_fails_closed() -> None:
     """[V2.25] addendum 6: the group name cannot be read, so it is not read as "no group"."""
     orphan = element(60, "RadioButton", "", (9, 60), 61)
     assert risk("click", orphan, seen=screen([*SHOWN, orphan])) == "R2"
+
+
+# ---- principal re-review: unread is changed, and an unknown relation is still classified -----
+
+
+def test_an_unread_value_under_a_declared_send_is_refused() -> None:
+    seen = verdict("click", ICON, pend=pending(COMPOSER, now=None), commit="send")
+    assert seen.refusal == "text_changed"
+
+
+def test_an_unread_value_under_commit_none_asks_text_changed() -> None:
+    seen = verdict("click", ICON, pend=pending(COMPOSER, now=None))
+    assert seen.risk == "R2"
+    assert "text_changed" in seen.reasons
+
+
+def test_landmarks_unread_and_changed_text_under_a_declared_send_is_refused() -> None:
+    blind = dataclasses.replace(screen(), landmarks=None)
+    seen = verdict("click", UNNAMED, pend=pending(COMPOSER, now=CHANGED), seen=blind, commit="send")
+    assert seen.refusal == "text_changed"
+
+
+def test_landmarks_unread_and_changed_text_under_commit_none_asks_text_changed() -> None:
+    blind = dataclasses.replace(screen(), landmarks=None)
+    seen = verdict("click", UNNAMED, pend=pending(COMPOSER, now=CHANGED), seen=blind)
+    assert seen.risk == "R2"
+    assert "text_changed" in seen.reasons
