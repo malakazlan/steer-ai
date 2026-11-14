@@ -4,7 +4,7 @@ import ctypes
 
 import pytest
 
-from steerai.probes.uia_snapshot import Snapshot, UiaClient
+from steerai.probes.uia_snapshot import Snapshot, UiaClient, property_read
 from steerai.probes.win_input import window_rect
 from steerai.probes.windows import list_top_windows
 
@@ -97,6 +97,35 @@ def test_cached_tree_records_whether_the_secure_flag_and_automation_id_were_read
     tree = client.cached_tree(_drivable_hwnd())
     assert all(isinstance(node.secure_read, bool) for node in tree.nodes)
     assert all(isinstance(node.automation_id_read, bool) for node in tree.nodes)
+
+
+def test_the_derived_secure_flag_and_automation_id_equal_the_cached_accessors(
+    client: UiaClient,
+) -> None:
+    """[V2.26] (2): one typed `GetCachedPropertyValueEx` read per property gives the same
+    values as v1's `CachedIsPassword` / `CachedAutomationId`."""
+    tree = client.cached_tree(_drivable_hwnd())
+    for node, handle in zip(tree.nodes, tree.handles, strict=True):
+        assert node.secure == bool(handle.CachedIsPassword)
+        assert node.automation_id == str(handle.CachedAutomationId or "")
+
+
+def test_property_read_follows_the_toggle_patterns_availability(client: UiaClient) -> None:
+    """ToggleState is read (True) only on an element with the Toggle pattern; elsewhere UIA
+    returns the not-supported value and it is unread (False), never the default Off."""
+    tree = client.cached_tree(_drivable_hwnd())
+    module = client._uia_module  # the comtypes module of this client
+    seen: set[bool] = set()
+    for handle in tree.handles:
+        available = bool(
+            handle.GetCachedPropertyValue(module.UIA_IsTogglePatternAvailablePropertyId)
+        )
+        read = property_read(
+            handle, module.UIA_ToggleToggleStatePropertyId, client._not_supported, int
+        )
+        assert read == available
+        seen.add(available)
+    assert False in seen, "the window has elements without the Toggle pattern"
 
 
 def test_cached_tree_runtime_ids_are_unique_within_one_snapshot(client: UiaClient) -> None:

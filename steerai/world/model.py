@@ -169,7 +169,11 @@ def _caps_of(raw: object) -> tuple[str, ...]:
 
 
 def snapshot_from_json(text: str) -> Snapshot:
-    """The inverse of `snapshot_to_json`; a handle-less snapshot for diffing and resume."""
+    """The inverse of `snapshot_to_json`; a handle-less snapshot for diffing and resume.
+
+    The unread sets ([V2.26] (2)) are not in the record, so they come back empty: the JSON is
+    v1's write-ahead format and stays byte-identical, and v2 decides only on live snapshots
+    (a v2 task never resumes, [V2.15] Q9)."""
     try:
         payload = json.loads(text)
     except ValueError as exc:

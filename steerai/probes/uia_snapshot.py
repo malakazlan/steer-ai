@@ -83,17 +83,33 @@ class RawNode:
     """[V2.26] (2): False when AutomationId was not read; `automation_id` then holds ""."""
 
 
-def property_read(element: Any, prop: int, not_supported: object) -> bool:  # Any: COM element
-    """Whether a cached property was really read ([V2.26] (2)). `GetCachedPropertyValueEx` with
-    ignoreDefaultValue TRUE returns UIA's reserved not-supported value instead of the property's
-    default (Microsoft Learn, IUIAutomationElement::GetCachedPropertyValueEx;
-    IUIAutomation::ReservedNotSupportedValue), so a default is never mistaken for a read. A
-    provider that raises is unread too."""
+def read_cached[T](
+    element: Any,  # Any: a cached comtypes element
+    prop: int,
+    expected: type[T],
+    not_supported: object,
+) -> tuple[T | None, bool]:
+    """One cached property, read once with `GetCachedPropertyValueEx(prop, TRUE)`: the value
+    when it is of `expected` type, else None (unread); and whether the read raised.
+
+    ignoreDefaultValue TRUE makes UIA return its reserved not-supported value instead of the
+    property's default (Microsoft Learn, IUIAutomationElement::GetCachedPropertyValueEx;
+    IUIAutomation::ReservedNotSupportedValue), so a default is never mistaken for a read. Only a
+    value of the expected type is a read: the sentinel, None or anything else is not."""
     try:
         value = element.GetCachedPropertyValueEx(prop, True)
-    except Exception:  # noqa: BLE001 - COMError exists only once comtypes is loaded; unread
-        return False
-    return not (value is not_supported or value == not_supported)
+    except Exception:  # noqa: BLE001 - COMError exists only once comtypes is loaded; counted
+        return None, True
+    if value is not_supported or not isinstance(value, expected):
+        return None, False
+    return value, False
+
+
+def property_read(
+    element: Any, prop: int, not_supported: object, expected: type
+) -> bool:  # Any: COM element
+    """Whether a cached property holds a value of `expected` type ([V2.26] (2))."""
+    return read_cached(element, prop, expected, not_supported)[0] is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +123,9 @@ class TreeSnapshot:
     caps_read: bool = True
     """False when the fetch with the capability properties raised and the base fetch served:
     no token then means unread, never absent (the live check at resolve decides)."""
+    read_errors: int = 0
+    """[V2.26] (2): how many IsPassword / AutomationId reads raised in this fetch (each is then
+    unread); counted, never hidden."""
 
 
 class UiaClient:
@@ -159,6 +178,7 @@ class UiaClient:
                 walk_ms=tree.walk_ms,
                 handles=tree.handles,
                 caps_read=False,
+                read_errors=tree.read_errors,
             )
 
     def _cached_tree(self, hwnd: int, properties: Sequence[str], *, caps: bool) -> TreeSnapshot:
@@ -185,36 +205,56 @@ class UiaClient:
         started = time.perf_counter_ns()
         nodes: list[RawNode] = []
         handles: list[Any] = []
-        self._walk_cached(root, 0, nodes, handles, caps=caps)
+        errors = [0]
+        self._walk_cached(root, 0, nodes, handles, errors, caps=caps)
         walk_ms = (time.perf_counter_ns() - started) / 1_000_000
-        return TreeSnapshot(nodes=nodes, fetch_ms=fetch_ms, walk_ms=walk_ms, handles=handles)
+        return TreeSnapshot(
+            nodes=nodes,
+            fetch_ms=fetch_ms,
+            walk_ms=walk_ms,
+            handles=handles,
+            read_errors=errors[0],
+        )
 
-    def _walk_cached(
-        self, element: Any, depth: int, out: list[RawNode], handles: list[Any], *, caps: bool
+    def _walk_cached(  # noqa: PLR0913 - the element, its depth and the walk's accumulators
+        self,
+        element: Any,
+        depth: int,
+        out: list[RawNode],
+        handles: list[Any],
+        errors: list[int],
+        *,
+        caps: bool,
     ) -> None:
         # `element` is a cached COM element; comtypes has no stubs, hence Any.
         rect = element.CachedBoundingRectangle
         type_id = int(element.CachedControlType)
         runtime_id = element.GetCachedPropertyValue(self._uia_module.UIA_RuntimeIdPropertyId)
         role = self._control_type_names.get(type_id, str(type_id))
+        # [V2.26] (2): IsPassword and AutomationId are each read once, in place of the Cached*
+        # accessors, so knowing read from unread costs no extra call per node
+        mod = self._uia_module
+        password, raised_password = read_cached(
+            element, mod.UIA_IsPasswordPropertyId, bool, self._not_supported
+        )
+        automation_id, raised_id = read_cached(
+            element, mod.UIA_AutomationIdPropertyId, str, self._not_supported
+        )
+        errors[0] += int(raised_password) + int(raised_id)
         out.append(
             RawNode(
                 depth=depth,
                 role=role,
                 name=str(element.CachedName or ""),
-                automation_id=str(element.CachedAutomationId or ""),
+                automation_id=automation_id or "",
                 box=(int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)),
                 offscreen=bool(element.CachedIsOffscreen),
                 enabled=bool(element.CachedIsEnabled),
                 runtime_id=tuple(int(v) for v in runtime_id) if runtime_id else (),
-                secure=bool(element.CachedIsPassword),
+                secure=bool(password),
                 caps=tokens(self._caps(element), role) if caps else (),
-                secure_read=property_read(
-                    element, self._uia_module.UIA_IsPasswordPropertyId, self._not_supported
-                ),
-                automation_id_read=property_read(
-                    element, self._uia_module.UIA_AutomationIdPropertyId, self._not_supported
-                ),
+                secure_read=password is not None,
+                automation_id_read=automation_id is not None,
             )
         )
         handles.append(element)
@@ -224,7 +264,9 @@ class UiaClient:
         except ValueError:  # comtypes raises on a NULL pointer: leaf node
             return
         for index in range(count):
-            self._walk_cached(children.GetElement(index), depth + 1, out, handles, caps=caps)
+            self._walk_cached(
+                children.GetElement(index), depth + 1, out, handles, errors, caps=caps
+            )
 
     def _caps(self, element: Any) -> Caps:  # Any: a cached comtypes element
         """The cached pattern facts; a state is read only when its pattern is available: for an

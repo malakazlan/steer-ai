@@ -105,7 +105,7 @@ SECURE_UNREAD = "secure_unread"
 not keep targeting it with a type."""
 
 
-def listing_rows(snapshot: Snapshot) -> list[ListingRow]:
+def v2_listing(snapshot: Snapshot) -> list[ListingRow]:
     """The v2 listing of `snapshot`: v1's line for every element, with `secure_unread` added to
     a field whose secure flag was not read."""
     lines = format_lines(snapshot.elements)

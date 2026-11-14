@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import dataclasses
 
+import pytest
+
 from steerai.probes.element_list import elements_from_nodes, unread_ids
-from steerai.probes.uia_snapshot import RawNode, property_read
+from steerai.probes.uia_snapshot import RawNode, property_read, read_cached
 from steerai.world.elements import Element
 from steerai.world.model import _ELEMENT_FIELDS, Snapshot, snapshot_to_json
 
@@ -74,14 +76,48 @@ class _Cached:
         return self.value
 
 
-def test_a_supported_property_is_read() -> None:
-    assert property_read(_Cached(True), 30019, SENTINEL) is True
-    assert property_read(_Cached(False), 30019, SENTINEL) is True, "False is a read value"
+@pytest.mark.parametrize(
+    ("value", "secure", "read"),
+    [(True, True, True), (False, False, True), (SENTINEL, False, False), (None, False, False)],
+    ids=["password", "not_password", "not_supported", "none"],
+)
+def test_the_secure_flag_is_derived_from_one_typed_read(
+    value: object, secure: bool, read: bool
+) -> None:
+    """One `GetCachedPropertyValueEx` per property, in place of `CachedIsPassword`: a bool is a
+    read; the sentinel, None or any other type is unread and keeps v1's default False."""
+    seen, raised = read_cached(_Cached(value), 30019, bool, SENTINEL)
+    assert (bool(seen) if seen is not None else False, seen is not None) == (secure, read)
+    assert raised is False
 
 
-def test_the_not_supported_sentinel_is_unread() -> None:
-    assert property_read(_Cached(SENTINEL), 30019, SENTINEL) is False
+@pytest.mark.parametrize(
+    ("value", "automation_id", "read"),
+    [
+        ("btnGo", "btnGo", True),
+        ("", "", True),
+        (SENTINEL, "", False),
+        (None, "", False),
+        (5, "", False),
+    ],
+    ids=["named", "empty", "not_supported", "none", "wrong_type"],
+)
+def test_the_automation_id_is_derived_from_one_typed_read(
+    value: object, automation_id: str, read: bool
+) -> None:
+    seen, _ = read_cached(_Cached(value), 30011, str, SENTINEL)
+    assert (seen if seen is not None else "", seen is not None) == (automation_id, read)
 
 
-def test_a_provider_error_is_unread() -> None:
-    assert property_read(_Cached(raises=True), 30019, SENTINEL) is False
+def test_a_wrong_type_is_never_a_read() -> None:
+    assert read_cached(_Cached("yes"), 30019, bool, SENTINEL)[0] is None
+    assert property_read(_Cached("yes"), 30019, SENTINEL, bool) is False
+
+
+def test_a_provider_error_is_unread_and_counted() -> None:
+    assert read_cached(_Cached(raises=True), 30019, bool, SENTINEL) == (None, True)
+
+
+def test_a_supported_typed_property_is_read() -> None:
+    assert property_read(_Cached(1), 30086, SENTINEL, int) is True
+    assert property_read(_Cached(SENTINEL), 30086, SENTINEL, int) is False
