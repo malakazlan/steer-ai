@@ -56,7 +56,7 @@ from steerai.loop2.loop import (
 )
 from steerai.loop2.query import SearchFacts, search_facts
 from steerai.loop2.task import GoalSpan, Subgoal, Task, known_params
-from steerai.loop2.verify import auto_proof, check_claim
+from steerai.loop2.verify import Readers, auto_proof, check_claim
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.orchestrator.loop import REUSE_FRESHNESS_S
 from steerai.world.effects import EffectReport, Observed, ValueFact, top_document
@@ -328,7 +328,14 @@ class _Run:
         for claim in decision.claims:
             subgoal = self._subgoal(claim.subgoal)
             cited = self._cited(claim, observed)
-            rejected = check_claim(cited, subgoal, self._baseline(subgoal.id), observed)
+            rejected = check_claim(
+                cited,
+                subgoal,
+                self._baseline(subgoal.id),
+                observed,
+                readers=self._readers(observed),
+                typed=self._typed_fields(),
+            )
             self.history.extend(f"claim:{claim.subgoal}:{t}" for t in rejected)
             if rejected:
                 self.turn.claim_rejected = True
@@ -554,6 +561,19 @@ class _Run:
         self.typed = kept
         return out
 
+    def _readers(self, observed: Observed) -> Readers:
+        """[V2.29] Q2: the claim checks' live reads, bound to the ports; a value is read only
+        through `_read_value`, which never reads a secure or secure-unread field."""
+        return Readers(
+            read_state=self.ports.read_state,
+            read_value=lambda element: self._read_value(element, observed),
+            fact_of=self.ports.fact_of,
+        )
+
+    def _typed_fields(self) -> tuple[tuple[int, ...], ...]:
+        """[V2.38] RT-39: the echo guards are task-wide: every field Steer typed into."""
+        return tuple(t.field for t in self.typed)
+
     def _read_value(self, element: Element, observed: Observed) -> ValueFact | None:
         """[V2.29] Q2: never read a field whose secure flag is set or unread; one read per
         element per action."""
@@ -637,8 +657,11 @@ class _Run:
             if subgoal.id in self.proven or subgoal.id not in self.baselines:
                 continue
             baseline = self.baselines[subgoal.id]
-            if _changed_since(baseline, observed) and auto_proof(subgoal, baseline, observed):
-                self._tick(subgoal, how="auto")
+            if not _changed_since(baseline, observed):
+                continue
+            proof = auto_proof(subgoal, baseline, observed, typed=self._typed_fields())
+            if proof is not None:
+                self._tick(subgoal, how=proof)
         self._check_done()
 
     # ---- refusals, guards -----------------------------------------------------------------

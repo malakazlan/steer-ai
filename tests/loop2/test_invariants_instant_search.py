@@ -21,26 +21,33 @@ from tests.loop2.world_fakes import (
     act,
     decision,
     observed,
-    pending,
     report,
     task,
 )
 
 TYPE = act("type", target=FIELD.id, param="text")
 ENTER = act("press", key="Enter")
-FOCUSED = observed(QUERY_PAGE, focus=FIELD.runtime_id)
+
+
+def _marked(seen: Observed) -> Observed:
+    """The landmark map read (no landmarks), as a real observation reads it: the field-owned
+    rules fail closed on an unread map once a field was typed ([V2.23])."""
+    return dataclasses.replace(seen, landmarks={e.runtime_id: None for e in seen.snapshot.elements})
+
+
+FOCUSED = _marked(observed(QUERY_PAGE, focus=FIELD.runtime_id))
 
 
 def _results(*, url_query: bool) -> Observed:
     screen = observed([*QUERY_PAGE, RESULT], focus=FIELD.runtime_id)
-    return dataclasses.replace(screen, url=URL + "?q=red%20shoes" if url_query else URL)
+    url = URL + "?q=red%20shoes" if url_query else URL
+    return _marked(dataclasses.replace(screen, url=url, document_url=url))
 
 
 def _verbs(world: World) -> list[str]:
     return [d.action.verb for d in world.dispatched]
 
 
-@pending("3c PR B: the navigated auto proof ([V2.29] Q1)")
 def test_a_results_and_url_while_typing_is_done_without_the_enter() -> None:
     world = World(
         [decision(TYPE, ENTER, first=True)],
@@ -78,7 +85,6 @@ def test_b_results_only_with_a_blocked_stop_is_controller_stop() -> None:
     assert outcome.cause == Reason("controller_stop")
 
 
-@pending("3c PR B: the navigated auto proof ([V2.29] Q1)")
 def test_c_button_is_done_via_the_button_after_one_enter() -> None:
     world = World(
         [decision(TYPE, ENTER, first=True), decision(act("click", target=GO.id))],
@@ -108,7 +114,6 @@ def test_c_nobutton_ends_paused_no_progress_never_the_same_enter_twice() -> None
     assert outcome.reason != "unexpected_effect"
 
 
-@pending("3c PR B: the navigated auto proof ([V2.29] Q1)")
 def test_d_slow_results_are_judged_since_the_baseline() -> None:
     world = World(
         [decision(TYPE, ENTER, first=True)],
