@@ -89,6 +89,8 @@ class Budgets:
     configured. With no price the cost budget is not configured, and never looks enforced."""
 
     max_actions: int
+    """[V2.42] RT-41: attempts: every dispatch counts, delivered or not; v1's one local retry
+    inside an actuation is one attempt."""
     max_model_calls: int
     max_tokens: int
     max_cost_usd: float

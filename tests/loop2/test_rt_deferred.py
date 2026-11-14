@@ -6,14 +6,18 @@ from __future__ import annotations
 
 import dataclasses
 import math
+from typing import Any
 
 import pytest
 
-from steerai.loop2.decision import Claim, Decision, SubgoalDoc
+from steerai.action.dispositions import Delivery
+from steerai.loop2.decision import Claim, Decision, SubgoalDoc, validate
 from steerai.loop2.guards import ActionKey, same_action
-from steerai.loop2.runner import run_task
+from steerai.loop2.runner import refusal_of, run_task
 from steerai.loop2.task import Budgets, TokenPrice
-from steerai.world.effects import ValueFact
+from steerai.orchestrator.loop import REUSE_FRESHNESS_S
+from steerai.world.effects import Observed, ValueFact
+from steerai.world.elements import Element
 from tests.loop2.world_fakes import (
     FIELD,
     GO,
@@ -21,8 +25,11 @@ from tests.loop2.world_fakes import (
     PAGE,
     PASSWORD,
     QUERY_PAGE,
+    SEND,
+    URL,
     World,
     act,
+    act_result,
     decision,
     element,
     observed,
@@ -90,19 +97,105 @@ def test_the_send_before_a_refusal_is_the_last_send_for_the_repeat_rule() -> Non
     assert "refused:repeat_send" in world.views[-1].history
 
 
-def test_a_target_re_rendered_after_the_decision_is_a_world_refusal() -> None:
-    """RT-27: the model named a listed element; it was re-rendered (a new RuntimeId) before the
-    fresh read. That is the world moving, not a model fault."""
-    rebuilt = element(GO.id, "Button", "Go", (9, 333), 1)
-    fresh = observed([rebuilt if e.id == GO.id else e for e in PAGE])
+REBUILT = element(GO.id, "Button", "Go", (9, 333), 1)
+"""GO re-rendered: the same role and name, a new RuntimeId."""
+AGAIN = element(GO.id, "Button", "Go", (9, 334), 1)
+
+
+def _shown(*elements: Element) -> Observed:
+    swap = {e.id: e for e in elements}
+    return observed([swap.get(e.id, e) for e in PAGE])
+
+
+def test_a_target_re_rendered_after_the_decision_is_re_asked_not_refused() -> None:
+    """RT-27, [V2.43] (2): the model named a listed element; it re-rendered before the fresh read.
+    The world moved after what the model saw: re-observe and re-ask, no refusal, no strike."""
     world = World(
-        [decision(act("click", target=GO.id), first=True)], observations=[observed(), fresh]
+        [decision(act("click", target=GO.id), first=True)],
+        observations=[observed(), _shown(REBUILT)],
     )
-    run_task(task(), world.ports())
-    history = world.views[-1].history
+    outcome = run_task(task(), world.ports())
+    history = world.views[1].history
     assert world.dispatched == []
-    assert "refused:target_changed" in history
-    assert "refused:id_not_listed" not in history
+    assert "target_changed" in history
+    assert not any(t.startswith("refused:") for t in history)
+    assert outcome.target_changes == 1
+    assert outcome.stale_observations == 0  # counted apart from page-level staleness
+
+
+def test_one_target_changed_then_a_good_turn_leaves_no_strike() -> None:
+    """[V2.43] (2), the lead's first test."""
+    world = World(
+        [
+            decision(act("click", target=GO.id), first=True),
+            decision(act("click", target=MENU.id)),
+            Decision(stop="cannot"),
+        ],
+        observations=[observed(), _shown(REBUILT), _shown(REBUILT), _shown(REBUILT)],
+        effects=[report("content_changed")],
+        later=observed([e for e in PAGE if e.id != SEND.id]),
+    )
+    outcome = run_task(task(), world.ports())
+    assert [d.runtime_id for d in world.dispatched] == [MENU.runtime_id]
+    assert outcome.strikes == ()
+
+
+def test_two_target_changed_in_a_row_make_one_strike() -> None:
+    """[V2.43] (2), the lead's second test: GO re-renders under both decisions."""
+    world = World(
+        [
+            decision(act("click", target=GO.id), first=True),
+            decision(act("click", target=10)),  # REBUILT's handle: the next free number
+        ],
+        observations=[observed(), _shown(REBUILT), _shown(REBUILT), _shown(AGAIN), _shown(AGAIN)],
+    )
+    outcome = run_task(task(), world.ports())
+    assert world.views[1].handles[GO.id] == 10  # the second decision named the re-rendered GO
+    assert world.dispatched == []
+    assert outcome.target_changes == 2
+    assert len(outcome.strikes) == 1
+
+
+FOCUSED = observed(QUERY_PAGE, focus=FIELD.runtime_id)
+ELSEWHERE = observed(QUERY_PAGE, focus=MENU.runtime_id)
+
+
+def test_a_press_with_focus_listed_elsewhere_strikes_at_once() -> None:
+    """[V2.43] (2), the lead's third test: the listing the model saw showed focus elsewhere."""
+    world = World(
+        [
+            decision(act("type", target=FIELD.id, param="text"), first=True),
+            decision(act("press", key="Enter")),
+        ],
+        effects=[report("own_value")],
+        observations=[
+            FOCUSED,
+            ELSEWHERE,
+            ELSEWHERE,
+        ],  # the 2nd read is what the press's listing shows
+    )
+    outcome = run_task(task(), world.ports())
+    assert "refused:press_not_at_focus" in world.views[-1].history
+    assert any("refused" in reasons for reasons in outcome.strikes)
+    assert outcome.focus_losses == 0
+
+
+def test_focus_lost_after_the_listing_showed_it_on_the_target_is_re_asked() -> None:
+    """[V2.43] (2): the model saw focus on the target; it moved before the press. The world
+    moved: re-observe and re-ask, no strike, counted on its own."""
+    world = World(
+        [
+            decision(act("type", target=FIELD.id, param="text"), first=True),
+            decision(act("press", key="Enter")),
+        ],
+        effects=[report("own_value")],
+        observations=[FOCUSED, FOCUSED, ELSEWHERE, ELSEWHERE],  # listed on the field, then moved
+    )
+    outcome = run_task(task(), world.ports())
+    assert "focus_lost" in world.views[-1].history
+    assert not any("refused:press" in t for t in world.views[-1].history)
+    assert outcome.focus_losses == 1
+    assert all("refused" not in reasons for reasons in outcome.strikes)
 
 
 # ---- #328: identity and digest (RT-33/34/35/36) -----------------------------------------------
@@ -148,6 +241,9 @@ def test_two_unnamed_buttons_are_never_the_same_action() -> None:
     named = ActionKey(verb="click", params=(), runtime_id=(9, 72), identity=("Button", "go", ""))
     again = dataclasses.replace(named, runtime_id=(9, 73))
     assert same_action(named, again, frozenset({(9, 73)}))  # a named re-render still matches
+    by_id = ActionKey(verb="click", params=(), runtime_id=(9, 74), identity=("Button", "", "btnGo"))
+    moved = dataclasses.replace(by_id, runtime_id=(9, 75))
+    assert same_action(by_id, moved, frozenset({(9, 75)}))  # an automation id alone identifies
 
 
 def test_a_type_by_param_carries_its_resolved_text_and_the_outcome_never_does() -> None:
@@ -161,7 +257,7 @@ def test_a_type_by_param_carries_its_resolved_text_and_the_outcome_never_does() 
 
 # ---- #329: budget and price shapes (RT-32) ------------------------------------------------------
 
-GOOD = {
+GOOD: dict[str, Any] = {  # Any: each cap's own type, mixed int and float
     "max_actions": 10,
     "max_model_calls": 5,
     "max_tokens": 10_000,
@@ -185,7 +281,7 @@ GOOD = {
 )
 def test_a_budget_cap_must_be_finite_and_positive(name: str, bad: object) -> None:
     with pytest.raises(ValueError, match=name):
-        Budgets(**(GOOD | {name: bad}))  # type: ignore[arg-type]  # the bad value is the point
+        Budgets(**(GOOD | {name: bad}))
 
 
 @pytest.mark.parametrize("bad", [0.0, -0.01, math.nan, math.inf])
@@ -194,3 +290,222 @@ def test_a_token_price_must_be_finite_and_positive(bad: float) -> None:
         TokenPrice(usd_per_input_token=bad, usd_per_output_token=0.01)
     with pytest.raises(ValueError, match="price"):
         TokenPrice(usd_per_input_token=0.01, usd_per_output_token=bad)
+
+
+def test_a_cost_cap_that_is_a_bool_is_rejected() -> None:
+    with pytest.raises(ValueError, match="max_cost_usd"):
+        Budgets(**(GOOD | {"max_cost_usd": True}))
+
+
+def test_a_priced_cost_cap_of_zero_pauses_before_the_first_call() -> None:
+    price = TokenPrice(usd_per_input_token=0.01, usd_per_output_token=0.01)
+    budgets = Budgets(**(GOOD | {"max_cost_usd": 0.0}), price=price)
+    world = World([decision(act("click", target=GO.id), first=True)])
+    outcome = run_task(task(budgets), world.ports())
+    assert (outcome.status, outcome.reason, outcome.model_calls) == ("paused", "max_cost", 0)
+
+
+# ---- [V2.42] RT-29: the refusal kind by a fixed priority ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("tokens", "kind", "token"),
+    [
+        (["id_not_listed", "not_in_step"], "step", "not_in_step"),
+        (["not_in_step", "id_not_listed"], "step", "not_in_step"),
+        (["id_not_listed", "target_changed"], "world", "target_changed"),
+        (["target_changed", "id_not_listed"], "world", "target_changed"),
+        (["target_changed", "not_in_step", "secure_field"], "policy", "secure_field"),
+        (["repeat_send", "id_not_listed"], "model", "repeat_send"),
+    ],
+)
+def test_the_refusal_kind_is_by_priority_never_token_order(
+    tokens: list[str], kind: str, token: str
+) -> None:
+    """[V2.42] RT-29: policy, then step limit, then world, then model fault."""
+    assert refusal_of(tokens) == (kind, token)
+
+
+def test_a_decision_refused_for_a_step_limit_and_a_model_fault_is_a_step_refusal() -> None:
+    """The unlisted id comes first in `validate`'s tokens; the step limit still decides the
+    status, and both tokens are recorded."""
+    bad = Decision.model_validate(
+        {
+            "subgoals": [{"id": "s1", "desc": "x", "params": {"text": "shop"}, "closes": "state"}],
+            "actions": [
+                {"verb": "click", "target": 999, "subgoal": "s1"},
+                {"verb": "open", "subgoal": "s1"},
+            ],
+        }
+    )
+    world = World([bad, Decision(stop="cannot")])
+    outcome = run_task(task(), world.ports())
+    history = world.views[-1].history
+    assert "refused:id_not_listed" in history
+    assert "refused:not_in_step" in history
+    assert (outcome.status, outcome.reason) == ("blocked", "not_in_step")
+
+
+# ---- [V2.42] RT-30: a policy or step refusal stands until its subgoal is proven ----------------
+
+
+def _refused_then_progress(*later: Decision) -> World:
+    """s1: a type into the password field is refused (policy); then a click makes progress."""
+    return World(
+        [
+            decision(act("type", target=PASSWORD.id, text="x"), first=True),
+            decision(act("click", target=GO.id)),
+            *later,
+        ],
+        effects=[report("content_changed")],
+    )
+
+
+def test_a_policy_refusal_stands_through_progress_elsewhere() -> None:
+    world = _refused_then_progress(Decision(stop="cannot"))
+    outcome = run_task(task(), world.ports())
+    assert (outcome.status, outcome.reason) == ("blocked", "secure_field")
+
+
+def test_a_policy_refusal_ends_when_its_subgoal_is_proven() -> None:
+    """Two subgoals: s1's refusal stands until s1 is proven; then a stop with s2 open is the
+    controller's own."""
+    box = element(42, "CheckBox", "Shop", (9, 42), 1)
+    subs = [
+        SubgoalDoc(id="s1", desc="tick", params={"text": "shop"}, closes="state"),
+        SubgoalDoc(id="s2", desc="find", params={"text": "red shoes"}, closes="page"),
+    ]
+    claim = Claim(subgoal="s1", kind="state", evidence=[box.id], param="text", wanted="on")
+    world = World(
+        [
+            Decision(subgoals=subs, actions=[act("type", target=PASSWORD.id, text="x")]),
+            Decision(claims=[claim]),
+            Decision(stop="cannot"),
+        ],
+        screen=observed([*PAGE, box]),
+    )
+    world.states[(box.runtime_id, "on")] = True
+    outcome = run_task(task(), world.ports())
+    assert "proven:s1:claim" in world.views[-1].history
+    assert (outcome.status, outcome.reason) == ("cannot", "controller_stop")
+
+
+def test_a_world_refusal_still_ends_at_progress() -> None:
+    """World and model faults keep "the latest since the last progress" ([V2.12])."""
+    world = World(
+        [
+            decision(act("click", target=GO.id), first=True),
+            decision(act("click", target=MENU.id)),
+            Decision(stop="cannot"),
+        ],
+        results=[act_result("click", Delivery.NOT_DELIVERED)],
+        effects=[report("content_changed")],
+    )
+    outcome = run_task(task(), world.ports())
+    assert "refused:not_delivered" in world.views[1].history
+    assert (outcome.status, outcome.reason) == ("cannot", "controller_stop")
+
+
+# ---- [V2.42] RT-41: max_actions counts attempts --------------------------------------------------
+
+
+def test_max_actions_counts_an_attempt_that_delivered_nothing() -> None:
+    budgets = Budgets(**(GOOD | {"max_actions": 1}))
+    world = World(
+        [decision(act("click", target=GO.id), first=True), decision(act("click", target=MENU.id))],
+        results=[act_result("click", Delivery.NOT_DELIVERED)],
+    )
+    outcome = run_task(task(budgets), world.ports())
+    assert len(world.dispatched) == 1
+    assert (outcome.status, outcome.reason) == ("paused", "max_actions")
+
+
+# ---- [V2.42] RT-42: a declared commit on a verb that cannot commit -------------------------------
+
+SUB1 = {"id": "s1", "desc": "x", "params": {"text": "shop"}, "closes": "state"}
+
+
+@pytest.mark.parametrize(
+    ("verb", "fields"),
+    [("wait", {}), ("scroll", {"target": 3}), ("focus", {"target": 3})],
+)
+def test_a_commit_on_a_verb_that_cannot_commit_is_a_shape_error(
+    verb: str, fields: dict[str, object]
+) -> None:
+    doc = {"verb": verb, "subgoal": "s1", "commit": "send", **fields}
+    bad = Decision.model_validate({"subgoals": [SUB1], "actions": [doc]})
+    tokens = validate(bad, listed_ids=frozenset({3}), goal="search the shop", first_turn=True)
+    assert "commit_cannot_apply" in tokens
+    assert refusal_of(tokens)[0] in {"model", "step"}
+
+
+def test_a_commit_on_a_click_still_raises() -> None:
+    doc = {"verb": "click", "subgoal": "s1", "commit": "send", "target": 3}
+    ok = Decision.model_validate({"subgoals": [SUB1], "actions": [doc]})
+    assert validate(ok, listed_ids=frozenset({3}), goal="search the shop", first_turn=True) == []
+
+
+# ---- [V2.42] RT-19: an old resolving observation costs one read, never a re-ask ----------------
+
+
+def test_an_old_observation_is_read_again_and_dispatched_when_nothing_moved() -> None:
+    world = World([decision(act("click", target=GO.id), first=True)])
+    world.observe_lag_s = REUSE_FRESHNESS_S + 1.0  # each read is that old by the time it is used
+    outcome = run_task(task(), world.ports())
+    assert [d.runtime_id for d in world.dispatched] == [GO.runtime_id]
+    assert outcome.model_calls == 2  # the first decide, and the stop after the click: no re-ask
+    assert outcome.stale_observations == 0
+
+
+def test_an_old_observation_whose_page_moved_takes_the_staleness_rule() -> None:
+    moved = dataclasses.replace(observed(), url=URL + "next", document_url=URL + "next")
+    world = World(
+        [decision(act("click", target=GO.id), first=True)],
+        observations=[observed(), observed(), moved],
+    )
+    world.observe_lag_s = REUSE_FRESHNESS_S + 1.0
+    outcome = run_task(task(), world.ports())
+    assert world.dispatched == []
+    assert outcome.stale_observations == 1
+
+
+def test_a_fresh_enough_observation_is_not_read_again() -> None:
+    world = World([decision(act("click", target=GO.id), first=True)])
+    run_task(task(), world.ports())
+    assert world.events[: world.events.index("act")].count("observe") == 2
+
+
+# ---- [V2.42] RT-40: never call the model on an empty listing -------------------------------------
+
+
+def test_an_empty_listing_never_reaches_the_model() -> None:
+    world = World([Decision(stop="cannot")], screen=observed([]))
+    outcome = run_task(task(), world.ports())
+    assert outcome.model_calls == 0
+    assert (outcome.status, outcome.reason) == ("cannot", "empty_listing")
+
+
+def test_an_empty_listing_of_a_gone_window_is_infrastructure() -> None:
+    gone = dataclasses.replace(observed([]), windows=(99,))  # the task's window is not listed
+    world = World([Decision(stop="cannot")], screen=gone)
+    outcome = run_task(task(), world.ports())
+    assert outcome.model_calls == 0
+    assert (outcome.status, outcome.reason) == ("stopped", "window_gone")
+
+
+def test_a_step_limit_refusal_stands_through_progress_on_its_subgoal() -> None:
+    """[V2.42] RT-30: the step-limit refusal attaches to the subgoal of the refused action (the
+    `open`), and a later click's progress does not clear it."""
+    first = Decision.model_validate(
+        {
+            "subgoals": [{"id": "s1", "desc": "x", "params": {"text": "shop"}, "closes": "state"}],
+            "actions": [{"verb": "open", "subgoal": "s1"}],
+        }
+    )
+    world = World(
+        [first, decision(act("click", target=GO.id)), Decision(stop="cannot")],
+        effects=[report("content_changed")],
+    )
+    outcome = run_task(task(), world.ports())
+    assert [d.runtime_id for d in world.dispatched] == [GO.runtime_id]
+    assert (outcome.status, outcome.reason) == ("blocked", "not_in_step")

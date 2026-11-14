@@ -263,13 +263,16 @@ class World:
     settled: Observed | None = None
     """What `settle` returns; None: the current screen."""
     interrupt_after_settle: bool = False
+    """Report `interruption` once a settle has run (the person's kill during the wait)."""
     interrupt_in_decide: int | None = None
     """Report `interruption` from this controller call on (1-based): the kill arrives while
     that call is waiting on the model, so its Decision comes back after the kill (#326)."""
     autocomplete: dict[tuple[int, ...], ValueFact] = field(default_factory=dict)
     """The value a field holds once the watch after a type has run (the page completed what Steer
     typed, RT-33)."""
-    """Report `interruption` once a settle has run (the person's kill during the wait)."""
+    observe_lag_s: float = 0.0
+    """When set, each observe is stamped at its completion and the clock then moves on by this
+    much before the read is used (slow processing after a read, RT-19)."""
     read_cost: ReadCost = field(default_factory=ReadCost)
     """What each watch reports it read ([V2.34])."""
     read_s: float = 0.0
@@ -302,7 +305,11 @@ class World:
         self._arrive()
         if self.observations:
             self.screen = self.observations.pop(0)
-        return self.screen
+        if not self.observe_lag_s:
+            return self.screen
+        stamped = dataclasses.replace(self.screen.snapshot, taken_at=self.now)
+        self.now += self.observe_lag_s
+        return dataclasses.replace(self.screen, snapshot=stamped)
 
     def _act(self, sent: Dispatch) -> ActResult:
         self.events.append("act")

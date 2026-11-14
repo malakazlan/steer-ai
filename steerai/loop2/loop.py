@@ -172,6 +172,8 @@ class Ports:
     """Send one action and read it back where the verb has a read-back ([V2.24] item 3)."""
     watch: Callable[[Observed, Dispatch], Watched]
     write_ahead: Callable[[Dispatch], str]
+    """The R2/R3 record before dispatch (closed in step 3). The Dispatch carries the typed text
+    (RT-36): a record written to disk takes `Dispatch.redacted()` or a digest, never the text."""
     interrupted: Callable[[], str | None]
     """A takeover, the secure desktop or a lock, as a token; None to go on."""
     clock: Callable[[], float]
@@ -213,6 +215,12 @@ class TaskOutcome:
     """Input plus output tokens of every call; NaN once a call's usage was missing."""
     stale_observations: int = 0
     """[V2.28] item 1: Decisions discarded because the page moved under them (counted)."""
+    target_changes: int = 0
+    """[V2.43] (2): Decisions discarded because their target re-rendered after the observation
+    the model saw (counted apart from page-level staleness)."""
+    focus_losses: int = 0
+    """[V2.43] (2): Decisions discarded because focus left a press's target after the listing
+    showed it there (counted on its own)."""
     cost_usd: float | None = None
     """Tokens times the configured price; None when no price is configured ([V2.37] P6): the
     cost budget is then reported "not configured", never as enforced."""
@@ -275,8 +283,9 @@ COMMIT_RISK: Final[Mapping[Commit, Risk]] = {
 STATE_FLOOR: Final = frozenset({"check", "uncheck", "select", "choose", "expand", "collapse"})
 """v1's R1 floor for the state verbs and `choose` (contracts `_RISK_FLOOR`)."""
 NO_DENY_VERBS: Final = frozenset({"scroll", "wait"})
-"""A scroll moves the view and a wait sends nothing: no deny word on them raises the tier; a
-declared commit still does."""
+"""A scroll moves the view and a wait sends nothing: no deny word on them raises the tier.
+[V2.42] RT-42 narrows #297: a declared commit on a wait, a scroll or a focus is now a shape error
+refused by `validate` (a model fault), so it never reaches the tier."""
 ACTIVATING_VERBS: Final = frozenset(
     {"click", "focus", "expand", "collapse", "check", "uncheck", "select"}
 )
