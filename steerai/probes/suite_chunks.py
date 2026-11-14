@@ -4,7 +4,9 @@ task; on a cap, an interrupt or a refusal only that child's process tree and its
 are removed, never another process.
 
 The child is `python -m steerai.probes.task_suite` with `--tasks`, `--run-number`, `--out` and
-`--tmp-root` set by this runner; its rows are read back from its own out file and passed on.
+`--tmp-root` set by this runner; its rows are read back from its own out file and passed on,
+each with the child's wall seconds (`child_wall_s`, start to exit or kill) and its task count
+(`child_tasks`): per-task child wall is `child_wall_s / child_tasks` ([V2.27] C).
 """
 
 from __future__ import annotations
@@ -112,10 +114,12 @@ def run_chunked(  # noqa: PLR0913 - the plan, the child's arguments and the inje
     start: Callable[[list[str]], Child] | None = None,
     kill_tree: Callable[[int], None] = kill_tree,
     remove: Callable[[Path], None] = remove_tree,
+    clock: Callable[[], float] = time.monotonic,
 ) -> int:
     """Run every chunk, one child at a time. Returns 0, or EXIT_LOW_MEMORY when a pre-flight
     (here or in a child) refused; a KeyboardInterrupt is raised after the cleanup. `read_free`
-    and `start` default to this module's own at call time, so a test can replace them."""
+    and `start` default to this module's own at call time, so a test can replace them. Every
+    row carries its child's wall seconds and task count ([V2.27] C)."""
     read_free = free_physical_mb if read_free is None else read_free
     start = _start if start is None else start
     for index, chunk in enumerate(chunks):
@@ -137,6 +141,7 @@ def run_chunked(  # noqa: PLR0913 - the plan, the child's arguments and the inje
             start=start,
             kill=kill_tree,
             remove=remove,
+            clock=clock,
         )
         if code == EXIT_LOW_MEMORY:
             return EXIT_LOW_MEMORY
@@ -155,6 +160,7 @@ def _one_chunk(  # noqa: PLR0913 - one chunk of run_chunked, its arguments passe
     start: Callable[[list[str]], Child],
     kill: Callable[[int], None],
     remove: Callable[[Path], None],
+    clock: Callable[[], float],
 ) -> int | None:
     root = tmp_parent / f"chunk-{index + 1}"
     (root / "tmp").mkdir(parents=True, exist_ok=True)
@@ -175,6 +181,7 @@ def _one_chunk(  # noqa: PLR0913 - one chunk of run_chunked, its arguments passe
         "--min-free-mb",
         str(floor_mb),
     ]
+    started = clock()
     child = start(argv)
     aborted: str | None = None
     code: int | None = None
@@ -189,7 +196,8 @@ def _one_chunk(  # noqa: PLR0913 - one chunk of run_chunked, its arguments passe
         if aborted is not None:
             kill(child.pid)
             child.wait()
-        _pass_rows(chunk, _rows(out), aborted, write_row)
+        wall = {"child_wall_s": round(clock() - started, 1), "child_tasks": len(chunk)}
+        _pass_rows(chunk, _rows(out), aborted, lambda row: write_row({**row, **wall}))
         remove(root)
     return code
 
