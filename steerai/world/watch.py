@@ -20,16 +20,23 @@ a change (the final report still keeps unread facts, which bar `none`).
   (`SUBMIT_GUARD_S`, passed as the deadline). The caller evaluates the Enter table once, on the
   final report, so its rows 4, 8 and 9 come only from a read at the guard.
 
-The number of polls is bounded by `deadline_s / poll_s` whatever the clock does.
+Slow reads ([V2.34]): every time is the time a read COMPLETED; a quiet window counts only
+when two reads span it (the read that started it and a later one); the deadline never ends the
+watch on a change no later read has seen (one more read, once). `Watched.read_cost` logs the
+reads by tier.
+
+The number of polls is bounded by `deadline_s / poll_s` (plus that one read) whatever the clock
+does.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from steerai.world.effects import EffectClass, EffectReport, Observed, observe, poll_tier
+from steerai.world.reads import ReadCost, ReadMeter
 
 Signature = tuple[object, ...]
 
@@ -92,6 +99,8 @@ class Watched:
     conclusive_ms: int | None = None
     """[V2.28] 1: for a submit, when a read (a poll or a full read) first saw a conclusive
     report, so a re-run can log when the navigation arrived; None otherwise."""
+    read_cost: ReadCost = field(default_factory=ReadCost)
+    """[V2.34] the polls and full reads this watch made: count and milliseconds by tier."""
 
 
 def _signature(seen: Observed) -> Signature:
@@ -107,6 +116,25 @@ def _ms(seconds: float) -> int:
 
 
 @dataclass(slots=True)
+class _Screen:
+    """What the polls last saw, to tell a change from the last poll (or from `before`)."""
+
+    judge: Callable[[Observed, Observed], EffectReport]
+    last: Signature | None = None
+    previous: Observed | None = None
+
+    def update(self, seen: Observed, baseline: Observed) -> tuple[bool, bool]:
+        """Whether `seen` changed, and whether the change restarts the phase-1 quiet timer (not
+        `frame_changed`-only noise on a stable read)."""
+        signature = _signature(seen)
+        last = _signature(baseline) if self.last is None else self.last
+        moved = signature != last or not seen.snapshot.stable
+        noise = moved and self.previous is not None and _frame_only(self.judge(self.previous, seen))
+        self.last, self.previous = signature, seen
+        return moved, not noise or not seen.snapshot.stable
+
+
+@dataclass(slots=True)
 class _State:
     first: float | None = None
     seen_by: Literal["poll", "full"] | None = None
@@ -115,6 +143,10 @@ class _State:
     probed_at: float | None = None
     weak_reads: int = 0
     conclusive_at: float | None = None
+    since_change: int = 0
+    """Polls since (and including) the one that last saw a change: two span a settle."""
+    since_quiet: int = 0
+    """Reads since (and including) the one that started the phase-1 quiet window."""
 
     def saw(self, report: EffectReport, at: float, tier: Literal["poll", "full"]) -> None:
         if self.first is None and changed(report):
@@ -124,8 +156,30 @@ class _State:
         """The screen changed at `at`; `quiet` restarts the phase-1 quiet timer too (not for
         `frame_changed`-only noise on a stable read)."""
         self.changed_at = at
+        self.since_change = 1
         if quiet:
-            self.quiet_from = at
+            self.quiet_from, self.since_quiet = at, 1
+        else:
+            self.since_quiet += 1
+
+    def still(self) -> None:
+        """A poll that saw no change."""
+        self.since_change += 1
+        self.since_quiet += 1
+
+    def track(self, at: float, *, moved: bool, quiet: bool) -> None:
+        """A poll completed at `at`: `moved` when it saw a change, `quiet` when that change
+        restarts the phase-1 quiet timer."""
+        if moved:
+            self.moved(at, quiet=quiet)
+        else:
+            self.still()
+
+    def probed(self, at: float) -> None:
+        """A quiet-window full read completed at `at` and was not final: the next quiet window
+        starts there, with that read at its start."""
+        self.probed_at, self.since_quiet = at, 1
+        self.weak_reads += 1
 
     def ends(
         self, report: EffectReport, old: Observed, new: Observed, at: float, *, submit: bool
@@ -140,7 +194,9 @@ class _State:
             self.conclusive_at = at
         return True
 
-    def result(self, report: EffectReport, after: Observed, *, timed_out: bool) -> Watched:
+    def result(
+        self, report: EffectReport, after: Observed, cost: ReadCost, *, timed_out: bool
+    ) -> Watched:
         return Watched(
             report,
             after,
@@ -150,6 +206,7 @@ class _State:
             self.seen_by,
             self.weak_reads,
             None if self.conclusive_at is None else _ms(self.conclusive_at),
+            cost,
         )
 
 
@@ -184,52 +241,54 @@ def watch(  # noqa: PLR0913 - the action's facts and the injected clock, keyword
     def baseline(seen: Observed) -> Observed:
         return before if seen.tier == before.tier else poll_tier(before.snapshot)
 
-    def final(seen: Observed) -> tuple[Observed, EffectReport]:
+    meter = ReadMeter(clock)
+
+    def checked_read(seen: Observed) -> Observed:
         if full is None:
-            return seen, judge(baseline(seen), seen)
-        checked = full(seen)
-        return checked, judge(before, checked)
+            return seen
+        return meter.timed(lambda: full(seen))
+
+    def final(seen: Observed) -> tuple[Observed, EffectReport]:
+        checked = checked_read(seen)
+        return checked, judge(baseline(checked), checked)
 
     start = clock()
     state = _State()
+    screen = _Screen(judge)
     seen = before
-    previous: Observed | None = None
-    last_signature: Signature | None = None
-    for _ in range(int(deadline_s / poll_s) + 1):
-        seen = read()
+    reread = False
+    for _ in range(int(deadline_s / poll_s) + 2):
+        seen = meter.timed(read)
         report = judge(baseline(seen), seen)
         elapsed = clock() - start
         state.saw(report, elapsed, "poll")
         polled_ends = holding and state.ends(report, baseline(seen), seen, elapsed, submit=submit)
-        signature = _signature(seen)
-        if last_signature is None:
-            last_signature = _signature(baseline(seen))
-        if signature != last_signature or not seen.snapshot.stable:
-            noise = previous is not None and _frame_only(judge(previous, seen))
-            state.moved(elapsed, quiet=not noise or not seen.snapshot.stable)
-            last_signature = signature
-        previous = seen
+        moved, restarts = screen.update(seen, baseline(seen))
+        state.track(elapsed, moved=moved, quiet=restarts)
         stable = seen.snapshot.stable
-        held = stable and elapsed - (state.changed_at or 0.0) >= settle_s
-        if held and (not holding or (polled_ends and not submit)):
+        settled = elapsed - (state.changed_at or 0.0) >= settle_s and state.since_change >= 2
+        if stable and settled and (not holding or (polled_ends and not submit)):
             seen, report = final(seen)
-            state.saw(report, elapsed, "full")
-            return state.result(report, seen, timed_out=False)
+            state.saw(report, clock() - start, "full")
+            return state.result(report, seen, meter.cost(), timed_out=False)
         quiet_since = max(state.quiet_from, -1.0 if state.probed_at is None else state.probed_at)
-        if holding and full is not None and stable and elapsed - quiet_since >= settle_s:
-            checked = full(seen)
+        quiet = elapsed - quiet_since >= settle_s and state.since_quiet >= 2
+        if holding and full is not None and stable and quiet:
+            checked = checked_read(seen)
+            done = clock() - start
             checked_report = judge(before, checked)
-            state.saw(checked_report, elapsed, "full")
-            if state.ends(checked_report, before, checked, elapsed, submit=submit):
-                return state.result(checked_report, checked, timed_out=False)
-            state.probed_at = elapsed
-            state.weak_reads += 1
+            state.saw(checked_report, done, "full")
+            if state.ends(checked_report, before, checked, done, submit=submit):
+                return state.result(checked_report, checked, meter.cost(), timed_out=False)
+            state.probed(done)
         if elapsed >= deadline_s:
-            break
+            if state.since_change != 1 or reread:
+                break
+            reread = True  # [V2.34] the last poll saw a change: one more read before the guard
         sleep(poll_s)
     seen, report = final(seen)
     at = clock() - start
     state.saw(report, at, "full")
     if submit:
         state.ends(report, before, seen, at, submit=True)
-    return state.result(report, seen, timed_out=True)
+    return state.result(report, seen, meter.cost(), timed_out=True)

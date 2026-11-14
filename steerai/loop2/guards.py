@@ -9,7 +9,7 @@ from typing import Literal
 from steerai.loop2.task import Budgets
 from steerai.world.effects import EffectReport
 
-BudgetToken = Literal["max_actions", "max_model_calls", "max_cost", "max_wall"]
+BudgetToken = Literal["max_actions", "max_model_calls", "max_tokens", "max_cost", "max_wall"]
 StrikeReason = Literal[
     "effect_none",
     "effect_unknown",
@@ -37,16 +37,24 @@ class ActionKey:
 class Usage:
     actions: int
     model_calls: int
-    cost_usd: float
+    cost_usd: float | None
+    """None when no price is configured: the cost budget is not checked ([V2.37] P6)."""
     wall_s: float
+    tokens: float = 0.0
+    """Input plus output tokens; NaN once a call's usage was missing or invalid, so the token
+    budget trips ([V2.37] P6)."""
 
 
 def budget_hit(budgets: Budgets, used: Usage) -> BudgetToken | None:
     """The first budget reached, as a token (the task pauses and asks), or None."""
+    priced: tuple[tuple[BudgetToken, float, float], ...] = ()
+    if used.cost_usd is not None:  # no price configured: the cost budget is not checked
+        priced = (("max_cost", used.cost_usd, budgets.max_cost_usd),)
     checks: tuple[tuple[BudgetToken, float, float], ...] = (
         ("max_actions", used.actions, budgets.max_actions),
         ("max_model_calls", used.model_calls, budgets.max_model_calls),
-        ("max_cost", used.cost_usd, budgets.max_cost_usd),
+        ("max_tokens", used.tokens, budgets.max_tokens),
+        *priced,
         ("max_wall", used.wall_s, budgets.max_wall_s),
     )
     for token, spent, limit in checks:

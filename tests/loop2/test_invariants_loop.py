@@ -329,7 +329,9 @@ def test_history_given_to_the_controller_is_closed_tokens_never_screen_text() ->
 
 
 def test_the_action_budget_pauses_mid_batch() -> None:
-    budgets = Budgets(max_actions=1, max_model_calls=10, max_cost_usd=1.0, max_wall_s=60.0)
+    budgets = Budgets(
+        max_actions=1, max_model_calls=10, max_tokens=100_000, max_cost_usd=1.0, max_wall_s=60.0
+    )
     world = World(
         [decision(act("click", target=GO.id), act("click", target=MENU.id), first=True)],
         effects=[report("own_state")],
@@ -340,7 +342,9 @@ def test_the_action_budget_pauses_mid_batch() -> None:
 
 
 def test_the_model_call_budget_pauses() -> None:
-    budgets = Budgets(max_actions=20, max_model_calls=1, max_cost_usd=1.0, max_wall_s=60.0)
+    budgets = Budgets(
+        max_actions=20, max_model_calls=1, max_tokens=100_000, max_cost_usd=1.0, max_wall_s=60.0
+    )
     world = World(
         [decision(act("click", target=GO.id), first=True), decision(act("click", target=MENU.id))],
         effects=[report("content_changed")],
