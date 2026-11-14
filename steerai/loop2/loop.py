@@ -30,7 +30,7 @@ from steerai.errors import ErrorCode, SteerError
 from steerai.loop2._stub import stub
 from steerai.loop2.decision import ActionDoc, Decision
 from steerai.loop2.guards import StrikeReason
-from steerai.loop2.query import SearchFacts, classify, shares_search_landmark
+from steerai.loop2.query import SearchFacts, classify
 from steerai.loop2.task import Commit, Task
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.orchestrator.gate import DenyFacts, deny_tier_of, group_name
@@ -479,11 +479,16 @@ def _submit(  # noqa: PLR0913 - the tally, the action, its target and the read f
         if beside is False:
             continue
         tally.submit_parent = tally.submit_parent or _parent_kind(observed, held.field)
-        # an unknown relation is still a submit: classified, never a query without the landmark
-        same = beside is True and shares_search_landmark(observed, held.field, target.runtime_id)
-        tier = _classified(
-            tally, action, held, state, verb="click", denied=denied, same_landmark=same
-        )
+        if beside is True:
+            # [V2.28] item 5: decided by the field. A submit click within the [V2.22] scope of a
+            # query-class field is classified as that field's Enter; the search landmark only
+            # qualifies the field, never the button. A deny word on the target still commits.
+            tier = _classified(tally, action, held, state, verb="press", denied=denied)
+        else:
+            # an unknown relation is still a submit, and never a query
+            tier = _classified(
+                tally, action, held, state, verb="click", denied=denied, same_landmark=False
+            )
         if _ORDER[tier] >= _ORDER["R2"]:
             tally.reasons.add("submit_pending_text")
         tally.raise_to(tier)

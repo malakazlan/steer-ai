@@ -456,3 +456,40 @@ def test_tab_escape_and_paging_keys_are_unchanged(key: str) -> None:
 
 def test_space_on_a_neutral_button_is_unchanged() -> None:
     assert press(UNNAMED, "Space") == "R0"
+
+
+# ---- [V2.28] item 5: decided by the field; the button need not share the search landmark ------
+
+LONE_BOX = element(90, "Edit", "Search", (9, 90), 51)
+"""A searchbox with no search landmark, in the composer's wrapper beside the send icon."""
+ONLY_SEARCHBOX = SearchFacts(
+    searchbox=True, in_search_landmark=False, secure_in_form=False, payment_in_form=False
+)
+
+
+def test_a_click_beside_a_searchbox_holding_a_goal_span_is_a_query() -> None:
+    seen = screen([*SHOWN, LONE_BOX])
+    assert risk("click", ICON, pend=pending(LONE_BOX, ONLY_SEARCHBOX), seen=seen) == "R1"
+
+
+def test_a_click_beside_a_landmark_field_but_outside_the_landmark_is_a_query() -> None:
+    """The search landmark only qualifies the field, never the button."""
+    outside = element(91, "Button", "", (9, 91), 40)
+    marks = {e.runtime_id: None for e in [*SHOWN, outside]}
+    marks |= {BOX.runtime_id: IN_SEARCH, BOX_GO.runtime_id: IN_SEARCH}
+    seen = dataclasses.replace(observed([*SHOWN, outside]), landmarks=marks)
+    assert risk("click", outside, pend=pending(BOX, SEARCHY), seen=seen) == "R1"
+
+
+def test_a_deny_word_target_beside_a_query_field_is_not_a_query() -> None:
+    trash = element(92, "Button", "Delete", (9, 92), 40)
+    assert risk("click", trash, pend=pending(BOX, SEARCHY), seen=screen([*SHOWN, trash])) == "R3"
+
+
+def test_a_composer_is_not_query_class_so_its_send_icon_stays_r2() -> None:
+    assert risk("click", ICON, pend=pending(COMPOSER)) == "R2"
+
+
+def test_an_unknown_relation_beside_a_query_field_is_never_a_query() -> None:
+    blind = dataclasses.replace(screen(), landmarks=None)
+    assert risk("click", UNNAMED, pend=pending(BOX, SEARCHY), seen=blind) == "R2"
