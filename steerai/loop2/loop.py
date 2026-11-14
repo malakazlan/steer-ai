@@ -24,6 +24,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from steerai.errors import ErrorCode, SteerError
 from steerai.loop2._stub import stub
 from steerai.loop2.decision import ActionDoc, Decision
 from steerai.loop2.guards import StrikeReason
@@ -32,7 +33,7 @@ from steerai.loop2.task import Task
 from steerai.orchestrator.contracts import Risk
 from steerai.world.effects import Observed, ValueFact
 from steerai.world.elements import Element
-from steerai.world.model import Snapshot
+from steerai.world.model import Snapshot, resolve_in
 from steerai.world.watch import Watched
 
 Status = Literal["done", "blocked", "asked", "paused", "stopped", "cannot"]
@@ -114,11 +115,16 @@ class TaskOutcome:
         return render_reason(self.cause)
 
 
-@stub
 def resolve(target: int, listed: Snapshot, latest: Snapshot) -> Element | None:
     """The element `target` named in `listed`, if the latest snapshot still has its RuntimeId
-    with the same role and name (§8.1); None otherwise."""
-    raise NotImplementedError("3c: resolver")
+    with the same role and name (§8.1); None when it is gone, changed, or has no RuntimeId.
+    v1's `resolve_in` decides it; another window or an older `latest` is misuse and raises."""
+    try:
+        return resolve_in(listed, target, latest)
+    except SteerError as exc:
+        if exc.code is ErrorCode.ELEMENT_NOT_FOUND:
+            return None
+        raise
 
 
 @dataclass(frozen=True)
