@@ -108,13 +108,16 @@ def run_chunked(  # noqa: PLR0913 - the plan, the child's arguments and the inje
     floor_mb: int,
     tmp_parent: Path,
     write_row: Callable[[dict[str, Any]], None],  # Any: the suite's JSON rows
-    read_free: Callable[[], int] = free_physical_mb,
-    start: Callable[[list[str]], Child] = _start,
+    read_free: Callable[[], int] | None = None,
+    start: Callable[[list[str]], Child] | None = None,
     kill_tree: Callable[[int], None] = kill_tree,
     remove: Callable[[Path], None] = remove_tree,
 ) -> int:
     """Run every chunk, one child at a time. Returns 0, or EXIT_LOW_MEMORY when a pre-flight
-    (here or in a child) refused; a KeyboardInterrupt is raised after the cleanup."""
+    (here or in a child) refused; a KeyboardInterrupt is raised after the cleanup. `read_free`
+    and `start` default to this module's own at call time, so a test can replace them."""
+    read_free = free_physical_mb if read_free is None else read_free
+    start = _start if start is None else start
     for index, chunk in enumerate(chunks):
         try:
             preflight(floor_mb=floor_mb, read=read_free)

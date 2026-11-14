@@ -415,7 +415,9 @@ def test_keep_creates_its_folder_before_the_first_run(
     monkeypatch.setattr(suite, "one_run", run)
     monkeypatch.setattr(suite, "free_physical_mb", lambda: 1_000_000)  # above any floor
     out = tmp_path / "rows.jsonl"
-    suite.main(["--tasks", "np1", "--runs", "1", "--keep", str(keep), "--out", str(out)])
+    suite.main(
+        ["--in-process", "--tasks", "np1", "--runs", "1", "--keep", str(keep), "--out", str(out)]
+    )
     assert seen == [True]
     assert '"task": "np1"' in out.read_text("utf-8")
 
@@ -524,6 +526,9 @@ def test_the_verdict_says_none_when_no_row_has_an_outcome() -> None:
     assert "outcomes: none" in lines
 
 
+IN_PROCESS_NP1 = ["--in-process", "--tasks", "np1", "--runs", "1"]
+
+
 def test_keep_turns_the_debug_level_on_and_nothing_else_does(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -551,9 +556,9 @@ def test_keep_turns_the_debug_level_on_and_nothing_else_does(
     monkeypatch.setattr(suite, "one_run", run)
     monkeypatch.setattr(suite, "free_physical_mb", lambda: 1_000_000)  # above any floor
     out = tmp_path / "rows.jsonl"
-    suite.main(["--tasks", "np1", "--runs", "1", "--keep", str(tmp_path / "k"), "--out", str(out)])
+    suite.main([*IN_PROCESS_NP1, "--keep", str(tmp_path / "k"), "--out", str(out)])
     assert levels == ["debug"]
-    suite.main(["--tasks", "np1", "--runs", "1", "--out", str(out)])
+    suite.main(["--in-process", "--tasks", "np1", "--runs", "1", "--out", str(out)])
     assert levels == ["debug", "redacted"]
 
 

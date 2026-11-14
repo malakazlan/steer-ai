@@ -53,6 +53,9 @@ def runs(monkeypatch: pytest.MonkeyPatch) -> Runs:
     return fake
 
 
+IN_PROCESS = ["--in-process", "--set", "gallery", "--runs", "1"]
+
+
 def _rows(out: Path) -> list[dict[str, Any]]:  # Any: JSON rows
     return [json.loads(line) for line in out.read_text("utf-8").splitlines() if line.strip()]
 
@@ -62,7 +65,7 @@ def test_below_the_floor_the_first_task_never_starts(
 ) -> None:
     monkeypatch.setattr(suite, "free_physical_mb", _free(100))
     out = tmp_path / "rows.jsonl"
-    code = suite.main(["--set", "gallery", "--runs", "1", "--tasks", "g01,g02", "--out", str(out)])
+    code = suite.main([*IN_PROCESS, "--tasks", "g01,g02", "--out", str(out)])
     assert code == EXIT_LOW_MEMORY
     assert runs.calls == []
     refusal = _rows(out)[-1]
@@ -71,6 +74,7 @@ def test_below_the_floor_the_first_task_never_starts(
         "free_mb": 100,
         "floor_mb": FLOOR_MB,
         "remaining": ["g01:1", "g02:1"],
+        "mode": "in_process",
     }
 
 
@@ -79,7 +83,7 @@ def test_the_floor_is_checked_before_every_task_and_finished_rows_are_kept(
 ) -> None:
     monkeypatch.setattr(suite, "free_physical_mb", _free(8000, 100))
     out = tmp_path / "rows.jsonl"
-    code = suite.main(["--set", "gallery", "--runs", "1", "--tasks", "g01,g02", "--out", str(out)])
+    code = suite.main([*IN_PROCESS, "--tasks", "g01,g02", "--out", str(out)])
     assert code == EXIT_LOW_MEMORY
     assert [c[0] for c in runs.calls] == ["g01"]
     rows = _rows(out)
@@ -93,6 +97,7 @@ def test_the_floor_is_a_flag(runs: Runs, monkeypatch: pytest.MonkeyPatch, tmp_pa
     out = tmp_path / "rows.jsonl"
     suite.main(
         [
+            "--in-process",
             "--set",
             "gallery",
             "--runs",

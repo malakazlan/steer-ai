@@ -1939,6 +1939,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help=f"per-task wall-time cap, chunked (default {TASK_CAP_S:g}; implies --chunk-size 1)",
     )
+    parser.add_argument(
+        "--in-process",
+        action="store_true",
+        help="run every task in this process, no wall-time cap (debugging only; [V2.16])",
+    )
     parser.add_argument("--run-number", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--tmp-root", type=Path, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
@@ -1953,21 +1958,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.keep.mkdir(parents=True, exist_ok=True)  # never a lost row after the run (#249)
     numbers = [args.run_number] if args.run_number is not None else range(1, args.runs + 1)
     units = [(n, t) for n in numbers for t in tasks if not wanted or t.task_id in wanted]
-    if args.chunk_size is not None or args.task_cap_s is not None:
+    if args.in_process and (args.chunk_size is not None or args.task_cap_s is not None):
+        parser.error("--in-process takes no --chunk-size or --task-cap-s")
+    if not args.in_process and args.run_number is None:
+        args.chunk_size = 1 if args.chunk_size is None else args.chunk_size  # [V2.16] default
         return _chunked(args, units, tasks)
     planner = _Planner()
     rows: list[dict[str, Any]] = []
     with args.out.open("w", encoding="utf-8") as out:
-        out.write(json.dumps(_header()) + "\n")
+        out.write(json.dumps({**_header(), "mode": IN_PROCESS}) + "\n")
         for index, (number, task) in enumerate(units):
             try:
                 preflight(floor_mb=args.min_free_mb, read=free_physical_mb)
             except LowMemory as refused:
                 remaining = [f"{t.task_id}:{n}" for n, t in units[index:]]
-                out.write(json.dumps(refusal_row(refused, remaining)) + "\n")
+                refusal = {**refusal_row(refused, remaining), "mode": IN_PROCESS}
+                out.write(json.dumps(refusal) + "\n")
                 sys.stderr.write(f"{refused}\n")
                 return EXIT_LOW_MEMORY
-            row = one_run(task, number, planner, args.keep, tmp_root=args.tmp_root)
+            row = {**one_run(task, number, planner, args.keep, tmp_root=args.tmp_root)}
+            row["mode"] = IN_PROCESS
             rows.append(row)
             out.write(json.dumps(row) + "\n")
             out.flush()
@@ -1975,6 +1985,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     lines.append(seconds_line(rows, tasks))
     sys.stdout.write("\n".join(lines) + f"\nbar {'met' if ok else 'missed'}\n")
     return 0 if ok else 1
+
+
+IN_PROCESS = "in_process"
+CHUNKED = "chunked"
+"""[V2.16] the run mode every row records, so the two modes are never mixed unseen."""
+
+
+def split_infrastructure(
+    rows: Sequence[dict[str, Any]], *, set_name: str
+) -> tuple[list[dict[str, Any]], str]:  # Any: the suite's JSON rows
+    """[V2.16] the rows the verdict scores, and one line for the infrastructure bucket. Aborted
+    and refused rows never count as a Steer outcome; on the sealed H7 set a task that hit the
+    wall-time cap after it started counts as not done (never re-run), while a task refused
+    before it started may run later."""
+    scored: list[dict[str, Any]] = []
+    aborted: dict[str, int] = {}
+    refused = 0
+    for row in rows:
+        if "refused" in row:
+            refused += 1
+        elif "aborted" in row:
+            reason = str(row["aborted"])
+            aborted[reason] = aborted.get(reason, 0) + 1
+            if set_name == "h7" and reason == "task_cap":
+                scored.append({**row, "passed": False, "outcome": "interrupted"})
+        elif "outcome" in row:
+            scored.append(row)
+    detail = ", ".join(f"{k} {n}" for k, n in sorted(aborted.items()))
+    shown = f"aborted {sum(aborted.values())}" + (f" ({detail})" if detail else "")
+    return scored, f"infrastructure: {shown}, refused {refused}"
 
 
 def _control_lines(name: str, tasks: Sequence[Task]) -> list[str]:
@@ -2001,12 +2041,12 @@ def _chunked(
     tmp_parent = Path(tempfile.mkdtemp(prefix="steer-chunks-"))
     try:
         with args.out.open("w", encoding="utf-8") as out:
-            out.write(json.dumps(_header()) + "\n")
+            out.write(json.dumps({**_header(), "mode": CHUNKED}) + "\n")
 
             def write_row(row: dict[str, Any]) -> None:
-                if "outcome" in row:
-                    rows.append(row)
-                out.write(json.dumps(row) + "\n")
+                marked = {**row, "mode": CHUNKED}
+                rows.append(marked)
+                out.write(json.dumps(marked) + "\n")
                 out.flush()
 
             code = run_chunked(
@@ -2021,8 +2061,10 @@ def _chunked(
         shutil.rmtree(tmp_parent, ignore_errors=True)
     if code == EXIT_LOW_MEMORY:
         return EXIT_LOW_MEMORY
-    lines, ok = verdict(rows, tasks)
-    lines.append(seconds_line(rows, tasks))
+    scored, infrastructure = split_infrastructure(rows, set_name=args.set)
+    lines, ok = verdict(scored, tasks)
+    lines.append(seconds_line(scored, tasks))
+    lines.append(infrastructure)
     sys.stdout.write("\n".join(lines) + f"\nbar {'met' if ok else 'missed'}\n")
     return 0 if ok else 1
 
