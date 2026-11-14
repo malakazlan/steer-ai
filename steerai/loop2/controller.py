@@ -43,6 +43,7 @@ SYSTEM_RULES = (
     "- `screen: unstable` means the window was still changing; `wait` is then an option.\n"
     "Rules:\n"
     "- Act only on ids in the current listing. Never name an element that is not listed.\n"
+    "- A ComboBox can be a text field: `type` is allowed on it.\n"
     "- Never write how an action will be checked. Code checks every effect and every claim.\n"
     "- `type` text must be words from the request exactly, or it is treated as generated text.\n"
     "- Declare `commit` for any action that changes someone else's state (send, submit, delete, "

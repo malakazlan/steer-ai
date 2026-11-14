@@ -35,21 +35,22 @@ def test_a_secure_field_is_never_read() -> None:
     assert PASSWORD.runtime_id not in world.reads
 
 
-def test_a_press_refused_for_the_focus_leaves_the_status_to_the_stop() -> None:
-    """A `world` refusal (the focus, a delivery) is a token and a strike, never a model fault."""
+def test_a_press_refused_for_the_focus_is_recorded_after_the_refusal() -> None:
+    """[V2.37] P5: a `world` refusal replaces the latest refusal; a following stop keeps its own
+    value, with the reason `after_refusal:<token>`."""
     world = World(
         [decision(act("click", target=FIELD.id), act("press", key="Enter"), first=True)],
         effects=[report("focus")],
         screen=observed(QUERY_PAGE, focus=GO.runtime_id),
     )
     outcome = run_task(task(), world.ports())
-    assert (outcome.status, outcome.reason) == ("cannot", "controller_stop")
+    assert (outcome.status, outcome.reason) == ("cannot", "after_refusal:press_not_at_focus")
 
 
-def test_nothing_delivered_leaves_the_status_to_the_stop() -> None:
+def test_nothing_delivered_is_recorded_after_the_refusal() -> None:
     world = World(
         [decision(act("click", target=GO.id), first=True)],
         results=[act_result("click", Delivery.NOT_DELIVERED)],
     )
     outcome = run_task(task(), world.ports())
-    assert (outcome.status, outcome.reason) == ("cannot", "controller_stop")
+    assert (outcome.status, outcome.reason) == ("cannot", "after_refusal:not_delivered")

@@ -125,6 +125,8 @@ def _action_tokens(
 
 def _type_tokens(action: ActionDoc, params: set[str]) -> list[str]:
     has_text = bool(action.text)
+    if action.text is not None and has_control(action.text):
+        return ["text_bad"]  # RT-38: free text is one line of printable text
     if has_text and action.param is not None:
         return ["type_text_and_param"]
     if not has_text and action.param is None:
@@ -207,6 +209,8 @@ def _shape_tokens(decision: Decision) -> list[str]:
         tokens.append("ask_empty")
     if decision.actions and decision.ask is not None:
         tokens.append("ask_with_actions")
+    if decision.ask is not None and decision.stop is not None:
+        tokens.append("ask_with_stop")  # RT-43: one ending at a time
     if decision.actions and decision.stop is not None:
         tokens.append("stop_with_actions")
     if len(decision.actions) > MAX_ACTIONS:

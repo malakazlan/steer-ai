@@ -12,7 +12,15 @@ import pytest
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.errors import ErrorCode
 from steerai.loop2.decision import ActionDoc, Claim, Decision, SubgoalDoc
-from steerai.loop2.loop import READ_BACK_VERBS, ActResult, Dispatch, Ports, TurnView
+from steerai.loop2.loop import (
+    READ_BACK_VERBS,
+    ActResult,
+    Decided,
+    Dispatch,
+    Ports,
+    TokenUsage,
+    TurnView,
+)
 from steerai.loop2.task import Budgets, Envelope, Task
 from steerai.world.effects import (
     PRECEDENCE,
@@ -145,7 +153,13 @@ def task(budgets: Budgets | None = None) -> Task:
         subgoals=(),
         envelope=Envelope(grants=(), mode="bootstrap"),
         budgets=budgets
-        or Budgets(max_actions=20, max_model_calls=10, max_cost_usd=1.0, max_wall_s=60.0),
+        or Budgets(
+            max_actions=20,
+            max_model_calls=10,
+            max_tokens=100_000,
+            max_cost_usd=1.0,
+            max_wall_s=60.0,
+        ),
         history=[],
     )
 
@@ -205,40 +219,46 @@ class World:
     interruption: str = "takeover"
     """What the interruption is: a takeover, or the person's kill (`killed`)."""
     after: Observed | None = None
+    """What each watch returns as its after snapshot; None: the current screen."""
     later: Observed | None = None
     """The screen once `later_after_acts` actions were dispatched (results that arrive late)."""
     later_after_acts: int = 1
-    """What each watch returns as its after snapshot; None: the current screen."""
     watch_s: float = 0.0
     """How far the clock moves during each watch."""
     now: float = 0.0
     events: list[str] = field(default_factory=list)
-    """The order of the loop's calls to the world: `decide`, `observe`, `act`, `watch`."""
+    """The order of the loop's calls to the world: `decide`, `observe`, `act`, `watch`, `read`,
+    `settle`, `stamp`."""
     views: list[TurnView] = field(default_factory=list)
     sent_at_call: list[int] = field(default_factory=list)
     """How many actions had been dispatched when each controller call was made."""
     dispatched: list[Dispatch] = field(default_factory=list)
     write_aheads: list[Dispatch] = field(default_factory=list)
+    usage: TokenUsage | None = field(default_factory=lambda: TokenUsage(100, 10))
+    """What each controller call reports it used ([V2.37] P6); None: not reported."""
     values: dict[tuple[int, ...], ValueFact | None] = field(default_factory=dict)
     """Each field's value fact as `read_value` returns it (a type that reads back True sets it)."""
     reads: list[tuple[int, ...]] = field(default_factory=list)
+    """The RuntimeIds `read_value` was called on, in order."""
     settle_guards: list[float] = field(default_factory=list)
+    """The guard each `settle` (the [V2.31] load-guard wait) was given."""
+    settled: Observed | None = None
+    """What `settle` returns; None: the current screen."""
+    interrupt_after_settle: bool = False
+    """Report `interruption` once a settle has run (the person's kill during the wait)."""
     read_cost: ReadCost = field(default_factory=ReadCost)
     """What each watch reports it read ([V2.34])."""
     read_s: float = 0.0
     """How long each read takes on the clock ([V2.34]); when set, the watch's after is stamped at
     its completion, `after_age_s` before the clock it returns at."""
     after_age_s: float = 0.0
-    """The guard each `settle` (the [V2.31] load-guard wait) was given."""
-    """The RuntimeIds `read_value` was called on, in order."""
 
-    def _decide(self, view: TurnView) -> Decision:
+    def _decide(self, view: TurnView) -> Decided:
         self.events.append("decide")
         self.views.append(view)
         self.sent_at_call.append(len(self.dispatched))
-        if self.decisions:
-            return self.decisions.pop(0)
-        return Decision(stop="cannot")
+        decision = self.decisions.pop(0) if self.decisions else Decision(stop="cannot")
+        return Decided(decision, self.usage)
 
     def _arrive(self) -> None:
         if self.later is not None and len(self.dispatched) >= self.later_after_acts:
@@ -284,10 +304,15 @@ class World:
             read_cost=self.read_cost,
         )
 
+    def _stamp(self, seen: Observed) -> Observed:
+        """The fixtures carry their own Document time and young flag."""
+        self.events.append("stamp")
+        return seen
+
     def _settle(self, first: Observed, guard_s: float) -> Observed:  # noqa: ARG002 - the Ports shape
         self.events.append("settle")
         self.settle_guards.append(guard_s)
-        return self.screen
+        return self.settled if self.settled is not None else self.screen
 
     def _read_value(self, element: Element) -> ValueFact | None:
         self.events.append("read")
@@ -299,6 +324,8 @@ class World:
         return "w-000000000000"
 
     def _interrupted(self) -> str | None:
+        if self.interrupt_after_settle:
+            return self.interruption if "settle" in self.events else None
         if self.interrupt_after is not None and len(self.dispatched) >= self.interrupt_after:
             return self.interruption
         return None
@@ -314,4 +341,5 @@ class World:
             clock=lambda: self.now,
             read_value=self._read_value,
             settle=self._settle,
+            stamp=self._stamp,
         )
