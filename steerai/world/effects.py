@@ -103,6 +103,9 @@ def value_fact(text: str, *, key: bytes) -> ValueFact:
     return ValueFact(filled=bool(text), digest=digest)
 
 
+Tier = Literal["poll", "full"]
+
+
 @dataclass(frozen=True, slots=True)
 class Observed:
     """One observation and the facts read with it: None is not read, never assumed. The 2b facts
@@ -121,6 +124,14 @@ class Observed:
     url_observed: bool = True
     """[V2.7] False when this window has no address bar: the in-place URL is not observed and
     its absence is never `unread`."""
+    tier: Tier = "full"
+    """[V2.10] which read made it: `poll` (the snapshot only) or `full` (every fact). `observe`
+    refuses to compare two reads of different tiers."""
+
+
+def poll_tier(snapshot: Snapshot) -> Observed:
+    """[V2.10] a poll-tier read: the snapshot alone, the URL not observed, no other fact read."""
+    return Observed(snapshot=snapshot, url_observed=False, tier="poll")
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +159,8 @@ def observe(  # noqa: PLR0913 - keyword-only facts the caller read, each with a 
     """What changed from `before` to `after`, the element `acted` on given by RuntimeId; `scope`
     is the last targeted element's RuntimeId, used when nothing was acted on (a key press);
     `url_fact` says a parsable URL was read in this task, so a missing one is unread ([V2.4])."""
+    if before.tier != after.tier:
+        raise ValueError("tier_mismatch")
     b, a = before.snapshot, after.snapshot
     unread = _unread(before, after, url_fact=url_fact)
     if b.hwnd != a.hwnd or not a.stable or a.minimized:
