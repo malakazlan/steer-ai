@@ -21,10 +21,10 @@ from tests.loop2.world_fakes import DOC, FIELD, GOAL, PAGE, act, element, observ
 
 TYPED = ValueFact(filled=True, digest="typed")
 PLAIN = SearchFacts(
-    searchbox=False, in_search_landmark=False, secure_in_form=False, payment_in_form=False
+    searchbox=False, in_search_landmark=False, secure_in_form=False, risky_in_form=False
 )
 SEARCHY = SearchFacts(
-    searchbox=True, in_search_landmark=True, secure_in_form=False, payment_in_form=False
+    searchbox=True, in_search_landmark=True, secure_in_form=False, risky_in_form=False
 )
 
 FORM = element(40, "Group", "", (9, 40), 1)
@@ -466,7 +466,7 @@ def test_space_on_a_neutral_button_is_unchanged() -> None:
 LONE_BOX = element(90, "Edit", "Search", (9, 90), 51)
 """A searchbox with no search landmark, in the composer's wrapper beside the send icon."""
 ONLY_SEARCHBOX = SearchFacts(
-    searchbox=True, in_search_landmark=False, secure_in_form=False, payment_in_form=False
+    searchbox=True, in_search_landmark=False, secure_in_form=False, risky_in_form=False
 )
 
 
@@ -502,7 +502,7 @@ def test_an_unknown_relation_beside_a_query_field_is_never_a_query() -> None:
 # ---- #307 review: the field's landmark is re-read from the observation, never trusted -------
 
 LM_ONLY = SearchFacts(
-    searchbox=False, in_search_landmark=True, secure_in_form=False, payment_in_form=False
+    searchbox=False, in_search_landmark=True, secure_in_form=False, risky_in_form=False
 )
 
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final, Literal
 
-from steerai.loop2._stub import stub
+from steerai.loop2.form import form_facts
 from steerai.loop2.task import Commit
 from steerai.orchestrator.contracts import Risk
 from steerai.world.effects import EffectReport, Observed, ValueFact, top_document
@@ -67,7 +67,10 @@ class SearchFacts:
     in_search_landmark: bool
     """The field sits under a LandmarkType Search ancestor."""
     secure_in_form: bool
-    payment_in_form: bool
+    """[V2.30] (2): an element in the form has its secure flag set or unread."""
+    risky_in_form: bool
+    """[V2.30] (3): an element in the form gets the billing class or is raised to R3 by
+    `deny_tier_of`. It does not detect a card-number input: nothing exposes an input's purpose."""
 
 
 def search_landmark_of(observed: Observed, element: tuple[int, ...]) -> tuple[int, ...] | None:
@@ -81,12 +84,19 @@ def search_landmark_of(observed: Observed, element: tuple[int, ...]) -> tuple[in
     return landmark.runtime_id
 
 
-@stub
 def search_facts(observed: Observed, field: tuple[int, ...]) -> SearchFacts:
     """The facts `field` is typed under, read from `observed` when Steer types into it. An unread
     AriaRole map or a missing entry is never a searchbox, and an unread landmark map is never a
-    search landmark: each missing fact fails closed (#307 review)."""
-    raise NotImplementedError("step 3: the facts recorded with the typed text")
+    search landmark (#307 review, [V2.30] (4)); the form facts read a missing fact as inside the
+    form ([V2.30] (1))."""
+    roles = observed.aria_roles
+    secure, risky = form_facts(observed, field)
+    return SearchFacts(
+        searchbox=roles is not None and roles.get(field) == "searchbox",
+        in_search_landmark=search_landmark_of(observed, field) is not None,
+        secure_in_form=secure,
+        risky_in_form=risky,
+    )
 
 
 def classify(*, field: SearchFacts, goal_span: bool, commit: Commit, deny_word: bool) -> Risk:
@@ -96,7 +106,7 @@ def classify(*, field: SearchFacts, goal_span: bool, commit: Commit, deny_word: 
     the form, no deny word. Otherwise R2."""
     if not goal_span or commit != "none" or deny_word:
         return "R2"
-    if field.secure_in_form or field.payment_in_form:
+    if field.secure_in_form or field.risky_in_form:
         return "R2"
     return "R1" if field.searchbox or field.in_search_landmark else "R2"
 

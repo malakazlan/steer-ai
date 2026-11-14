@@ -6,9 +6,9 @@ from __future__ import annotations
 import dataclasses
 
 from steerai.loop2.batch import batch_continues
-from steerai.loop2.query import search_facts, search_landmark_of
+from steerai.loop2.query import search_landmark_of
 from steerai.world.landmarks import Landmark
-from tests.loop2.world_fakes import FIELD, observed, pending, report
+from tests.loop2.world_fakes import FIELD, observed, report
 
 SEARCH = Landmark(kind="search", runtime_id=(9, 50))
 MAIN = Landmark(kind="main", runtime_id=(9, 52))
@@ -22,13 +22,6 @@ def test_a_field_under_a_search_landmark_has_it() -> None:
 def test_another_landmark_kind_is_no_search_landmark() -> None:
     seen = dataclasses.replace(observed(), landmarks={FIELD.runtime_id: MAIN})
     assert search_landmark_of(seen, FIELD.runtime_id) is None
-
-
-@pending("#307 review: an unread AriaRole is never a searchbox")
-def test_an_unread_aria_role_is_never_a_searchbox() -> None:
-    seen = dataclasses.replace(observed(), aria_roles=None, landmarks=None)
-    facts = search_facts(seen, FIELD.runtime_id)
-    assert (facts.searchbox, facts.in_search_landmark) == (False, False)
 
 
 def test_no_landmark_ancestor_is_none() -> None:

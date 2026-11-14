@@ -156,10 +156,10 @@ element missing from the map would be not observed, and the submit rule fails cl
 TYPED = ValueFact(filled=True, digest="typed")
 EMPTIED = ValueFact(filled=False, digest="empty")
 PLAIN_FIELD = SearchFacts(
-    searchbox=False, in_search_landmark=False, secure_in_form=False, payment_in_form=False
+    searchbox=False, in_search_landmark=False, secure_in_form=False, risky_in_form=False
 )
 SEARCH_FIELD = SearchFacts(
-    searchbox=True, in_search_landmark=True, secure_in_form=False, payment_in_form=False
+    searchbox=True, in_search_landmark=True, secure_in_form=False, risky_in_form=False
 )
 
 
