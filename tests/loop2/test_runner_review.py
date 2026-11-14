@@ -13,7 +13,7 @@ from steerai.loop2 import runner
 from steerai.loop2._stub import PENDING
 from steerai.loop2.controller import SYSTEM_RULES
 from steerai.loop2.decision import Claim, Decision, SubgoalDoc
-from steerai.loop2.loop import ActResult
+from steerai.loop2.loop import ActResult, TokenUsage
 from steerai.loop2.runner import run_task
 from steerai.loop2.task import Budgets, TokenPrice
 from steerai.world.effects import ValueFact
@@ -415,3 +415,187 @@ def test_rt43_an_ask_with_a_stop_is_a_shape_refusal() -> None:
 
     both = Decision(ask="may I?", stop="cannot")
     assert "ask_with_stop" in validate(both, listed_ids=frozenset(), goal="g", first_turn=False)
+
+
+# ---- principal re-review of #321 (2f85dca) -----------------------------------------------------
+
+
+def test_rr1_an_unreadable_top_document_does_not_end_the_pending_text() -> None:
+    """A second root Document makes the scope unknown; that is no proof the page was replaced."""
+    second_root = element(300, "Document", "Other", (9, 300), None)
+    world = _composer_world([*WRITING, second_root], {})
+    world.values[COMPOSER.runtime_id] = TYPED_VALUE
+    outcome = run_task(task(), world.ports())
+    assert [d.action.verb for d in world.dispatched] == ["type"]
+    assert (outcome.status, outcome.reason) == ("blocked", "commit_not_in_step")
+
+
+def test_rr2_a_growing_read_without_the_field_is_no_proof_it_is_gone() -> None:
+    """The composer leaves a stable but still-growing read, then comes back re-rendered holding
+    the text: the submit rule still holds."""
+    tab = PAGE[6]
+    without = [e for e in WRITING if e.id != COMPOSER.id]
+    partial = dataclasses.replace(observed(without, focus=None), growing=True)
+    back = observed(_rerendered(), focus=None)
+    world = World(
+        [
+            decision(act("type", target=COMPOSER.id, param="text"), first=True),
+            decision(act("click", target=tab.id)),
+            decision(act("click", target=ICON.id)),
+        ],
+        effects=[report("own_value"), report("content_changed")],
+        screen=observed(WRITING, focus=COMPOSER.runtime_id),
+        timeline=[(1, partial), (2, back)],
+    )
+    world.values[(9, 191)] = TYPED_VALUE
+    outcome = run_task(task(), world.ports())
+    assert [d.action.verb for d in world.dispatched] == ["type", "click"]
+    assert (outcome.status, outcome.reason) == ("blocked", "commit_not_in_step")
+
+
+def test_rr3_history_holds_no_listing_ordinal() -> None:
+    world = World(
+        [decision(act("click", target=GO.id), first=True), decision(act("click", target=99))],
+        effects=[report("content_changed")],
+    )
+    run_task(task(), world.ports())
+    for token in world.views[-1].history:
+        assert not any(part.isdigit() for part in token.split(":")), token
+
+
+def test_an_act_that_raises_keeps_the_action_that_may_have_landed() -> None:
+    world = World([decision(act("click", target=GO.id), first=True)])
+    ports = world.ports()
+
+    def broken(_sent: object) -> ActResult:
+        raise SteerError(ErrorCode.PERCEPTION_TIMEOUT, "act timed out")
+
+    outcome = run_task(task(), dataclasses.replace(ports, act=broken))
+    assert outcome.status == "stopped"
+    assert len(outcome.dispatched) == 1
+
+
+def test_a_document_first_seen_long_ago_is_no_clock_domain_error() -> None:
+    world = World([decision(act("click", target=GO.id), first=True)])
+    world.now = 10_000.0
+    world.screen = dataclasses.replace(
+        observed(),
+        snapshot=dataclasses.replace(snapshot(PAGE), taken_at=10_000.0),
+        document_since=1.0,
+    )
+    outcome = run_task(task(), world.ports())
+    assert outcome.reason != "clock_domain"
+
+
+# ---- tester's re-check of #321: surviving mutants N1, N2, N3, N5b, N7b ------------------------
+
+
+def test_n1_every_typed_field_stays_pending_not_only_the_latest() -> None:
+    """Type the composer, then a field in its own container; a send click beside the composer
+    still submits. The landmark map is read, so the icon is provably not beside the other field:
+    only the composer's pending text can block it."""
+    notes = element(95, "Group", "", (9, 95), 1)
+    other = element(96, "Edit", "Notes", (9, 96), 95)
+    shown = [*WRITING, notes, other]
+    marked = dataclasses.replace(
+        observed(shown, focus=COMPOSER.runtime_id),
+        landmarks={e.runtime_id: None for e in shown},
+    )
+    world = World(
+        [
+            decision(act("type", target=COMPOSER.id, param="text"), first=True),
+            decision(act("type", target=other.id, param="text")),
+            decision(act("click", target=ICON.id)),
+        ],
+        effects=[report("own_value"), report("own_value")],
+        screen=marked,
+    )
+    outcome = run_task(task(), world.ports())
+    assert [d.action.verb for d in world.dispatched] == ["type", "type"]
+    assert (outcome.status, outcome.reason) == ("blocked", "commit_not_in_step")
+
+
+@pytest.mark.parametrize("partial", ["unstable", "growing", "young"])
+def test_n2_a_read_that_may_be_partial_never_proves_the_field_gone(partial: str) -> None:
+    tab = PAGE[6]
+    without = [e for e in WRITING if e.id != COMPOSER.id]
+    seen = observed(without, focus=None)
+    if partial == "unstable":
+        seen = dataclasses.replace(seen, snapshot=snapshot(without, stable=False))
+    else:
+        flags = {"growing": partial == "growing", "young": partial == "young"}
+        seen = dataclasses.replace(seen, growing=flags["growing"], young=flags["young"])
+    world = World(
+        [
+            decision(act("type", target=COMPOSER.id, param="text"), first=True),
+            decision(act("click", target=tab.id)),
+            decision(act("click", target=ICON.id)),
+        ],
+        effects=[report("own_value"), report("content_changed")],
+        screen=observed(WRITING, focus=COMPOSER.runtime_id),
+        timeline=[(1, seen), (2, observed(_rerendered(), focus=None))],
+    )
+    world.values[(9, 191)] = TYPED_VALUE
+    outcome = run_task(task(), world.ports())
+    assert [d.action.verb for d in world.dispatched] == ["type", "click"]
+    assert (outcome.status, outcome.reason) == ("blocked", "commit_not_in_step")
+
+
+def _searchbox_rerendered(value: ValueFact) -> World:
+    """A searchbox typed by param, re-rendered (new RuntimeId, same identity) and read again:
+    with the same digest a click beside it is a query (R1); with another it is a commit."""
+    again = dataclasses.replace(FIELD, runtime_id=(9, 202))
+    page = [again if e.id == FIELD.id else e for e in QUERY_PAGE]
+    later = dataclasses.replace(
+        observed(page, focus=None), aria_roles={again.runtime_id: "searchbox"}
+    )
+    world = World(
+        [decision(TYPE, first=True), decision(act("click", target=GO.id))],
+        effects=[report("own_value")],
+        screen=observed(QUERY_PAGE, focus=FIELD.runtime_id),
+        later=later,
+    )
+    world.values[again.runtime_id] = value
+    return world
+
+
+def test_n3_a_fallback_match_with_the_same_digest_keeps_the_query() -> None:
+    world = _searchbox_rerendered(TYPED_VALUE)
+    run_task(task(), world.ports())
+    assert [d.action.verb for d in world.dispatched] == ["type", "click"]
+
+
+def test_n3_a_fallback_match_with_another_digest_is_a_commit() -> None:
+    world = _searchbox_rerendered(ValueFact(filled=True, digest="other"))
+    outcome = run_task(task(), world.ports())
+    assert [d.action.verb for d in world.dispatched] == ["type"]
+    assert (outcome.status, outcome.reason) == ("blocked", "commit_not_in_step")
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [TokenUsage(-1, 5), TokenUsage(True, 5), TokenUsage(1.5, 5)],  # type: ignore[arg-type]  # invalid on purpose
+    ids=["negative", "bool", "not_int"],
+)
+def test_n5b_invalid_usage_trips_the_token_budget(usage: TokenUsage) -> None:
+    world = World([decision(act("click", target=GO.id), first=True), decision(act("wait"))])
+    world.usage = usage
+    outcome = run_task(task(), world.ports())
+    assert (outcome.status, outcome.reason) == ("paused", "max_tokens")
+    assert outcome.model_calls == 1
+
+
+@pytest.mark.parametrize("since", [10_000.0 + 2 * 3600.0, float("nan"), float("inf")])
+def test_n7b_a_document_time_far_in_the_future_or_broken_stops_on_clock_domain(
+    since: float,
+) -> None:
+    world = World([decision(act("click", target=GO.id), first=True)])
+    world.now = 10_000.0
+    world.screen = dataclasses.replace(
+        observed(),
+        snapshot=dataclasses.replace(snapshot(PAGE), taken_at=10_000.0),
+        document_since=since,
+    )
+    outcome = run_task(task(), world.ports())
+    assert (outcome.status, outcome.reason) == ("stopped", "clock_domain")
+    assert world.dispatched == []

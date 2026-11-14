@@ -223,6 +223,8 @@ class World:
     later: Observed | None = None
     """The screen once `later_after_acts` actions were dispatched (results that arrive late)."""
     later_after_acts: int = 1
+    timeline: list[tuple[int, Observed]] = field(default_factory=list)
+    """Screens in order, each from the number of dispatched actions given (after `later`)."""
     watch_s: float = 0.0
     """How far the clock moves during each watch."""
     now: float = 0.0
@@ -263,6 +265,9 @@ class World:
     def _arrive(self) -> None:
         if self.later is not None and len(self.dispatched) >= self.later_after_acts:
             self.screen = self.later
+        for after_acts, seen in self.timeline:
+            if len(self.dispatched) >= after_acts:
+                self.screen = seen
 
     def _observe(self) -> Observed:
         self.events.append("observe")

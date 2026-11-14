@@ -249,14 +249,17 @@ class _Run:
         return self._in_domain(self.ports.observe())
 
     def _in_domain(self, observed: Observed) -> Observed:
-        """RT-10, RT-11: every observation is stamped by the one `stamp` port, and its
-        `Snapshot.taken_at` and `document_since` share `Ports.clock`'s domain, or nothing the loop
-        compares means anything."""
+        """RT-10, RT-11: every observation is stamped by the one `stamp` port, on `Ports.clock`.
+        Its `Snapshot.taken_at` must be in that clock's domain, or the reuse age means nothing.
+        A `document_since` far in the past is legitimate (a long-lived stamp); one in the future
+        beyond `CLOCK_DOMAIN_S`, or not finite, is another clock (small skew is clamped by the
+        load guard)."""
         observed = self.ports.stamp(observed)
         now = self.ports.clock()
+        if not abs(now - observed.snapshot.taken_at) <= CLOCK_DOMAIN_S:
+            raise _End("stopped", Reason("clock_domain"))
         since = observed.document_since
-        stamps = (observed.snapshot.taken_at, *(() if since is None else (since,)))
-        if not all(abs(now - stamp) <= CLOCK_DOMAIN_S for stamp in stamps):
+        if since is not None and not since - now <= CLOCK_DOMAIN_S:  # NaN and inf fail it too
             raise _End("stopped", Reason("clock_domain"))
         return observed
 
@@ -474,12 +477,12 @@ class _Run:
         kept: list[_Typed] = []
         out: list[PendingText] = []
         for typed in self.typed:
-            if typed.scope is not None and typed.scope != scope:
-                continue  # a replaced top Document ends it
+            if typed.scope is not None and scope is not None and typed.scope != scope:
+                continue  # a replaced top Document ends it; an unreadable one proves nothing
             matches = _matches(typed, observed)
             if not matches:
-                if not observed.snapshot.stable:
-                    kept.append(typed)  # gone is not proven on an unstable read
+                if not _complete(observed):
+                    kept.append(typed)  # gone is not proven on a read that may be partial
                 continue
             field = matches[0]
             now = None if len(matches) > 1 else self._read_value(field, observed)
@@ -535,8 +538,8 @@ class _Run:
     def _act(self, sent: Dispatch) -> ActResult:
         """[V2.25] (c): one local retry when nothing was sent, under the same decision, unless
         the person stopped the task in between (RT-15)."""
+        self.dispatched.append(sent)  # before the call: an act that raises may still have landed
         act = self.ports.act(sent)
-        self.dispatched.append(sent)
         if may_retry(risk=sent.risk, verified=False, report=None, act=act.action):
             self._check_interrupt()
             act = self.ports.act(sent)
@@ -686,6 +689,13 @@ def _resolved(target: int, listed: Observed, now: Observed) -> Element | None:
         return None
 
 
+def _complete(observed: Observed) -> bool:
+    """[V2.38] RT-03: a read that can prove a field gone: stable, full tier, and the page neither
+    growing nor young (more may still arrive)."""
+    settled = observed.snapshot.stable and observed.tier == "full"
+    return settled and not observed.growing and not observed.young
+
+
 def _identity(element: Element) -> Identity:
     return (element.role, normalise_name(element.name), element.automation_id)
 
@@ -724,13 +734,13 @@ def _key(action: ActionDoc, element: Element) -> ActionKey:
 
 
 def _act_token(sent: Dispatch, act: ActResult, report: EffectReport) -> str:
-    """§8.6: closed tokens only: the verb, the listed id, the delivery and the effect classes."""
-    target = "-" if sent.action.target is None else str(sent.action.target)
+    """§8.6, [V2.38] RT-17 (the minimum): closed tokens only, and no ids: the verb, the delivery
+    and the effect classes."""
     classes = ".".join(sorted(report.classes)) or "empty"
     read = {True: "", False: ":read_back_mismatch", None: ""}[act.read_back]
     if sent.action.verb in READ_BACK_VERBS and act.read_back is None:
         read = ":read_back_unread"
-    return f"act:{sent.action.verb}:{target}:{act.delivery.value}:{classes}{read}"
+    return f"act:{sent.action.verb}:{act.delivery.value}:{classes}{read}"
 
 
 def _changed_since(baseline: Observed, now: Observed) -> bool:
