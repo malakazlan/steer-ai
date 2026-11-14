@@ -23,7 +23,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Protocol, TextIO
+from typing import Any, Literal, Protocol, TextIO
 
 from steerai import model_calls
 from steerai.debug_trace import (
@@ -65,6 +65,8 @@ from steerai.world.elements import safe_name
 from steerai.world.model import Snapshot, normalise_name
 
 EXIT_DONE = 0
+LoopVersion = Literal["v1", "v2"]
+LOOP_VERSIONS: tuple[LoopVersion, ...] = ("v1", "v2")
 EXIT_USAGE = 1
 EXIT_PAUSED = 2
 EXIT_BLOCKED = 3
@@ -134,6 +136,8 @@ class Options:
     trace_level: TraceLevel = "redacted"
     """`debug` adds the DPAPI debug file beside the trace (V2 step 1). Set only by a probe that
     builds `Options` itself: no flag and no environment variable reach it (invariant 4)."""
+    loop: LoopVersion = "v1"
+    """`--loop`: v1 (the default, unchanged) or v2, which refuses to start until it is built."""
 
     def replace(self, **changes: Any) -> Options:
         return dataclasses.replace(self, **changes)
@@ -500,6 +504,12 @@ def parse_args(argv: Sequence[str]) -> Options:
     parser.add_argument("--allow-plan-change", action="store_true")
     parser.add_argument("--allow-window-change", action="store_true")
     parser.add_argument(
+        "--loop",
+        choices=LOOP_VERSIONS,
+        default="v1",
+        help="the loop to run: v1 (default) or v2 (refuses to start until step 3c is built)",
+    )
+    parser.add_argument(
         "--kill-key",
         default=DEFAULT_KILL_KEY,
         help="the global kill chord (at least one modifier; never F12 or a blocked shortcut)",
@@ -531,6 +541,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         allow_window_change=bool(args.allow_window_change),
         kill_key=str(args.kill_key),
         desktop=bool(args.desktop),
+        loop=args.loop,
     )
 
 
@@ -1765,7 +1776,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stderr.write(f"usage error: {exc}\n")
         sys.stdout.write(json.dumps({"status": "error", "code": None, "detail": "usage"}) + "\n")
         return EXIT_USAGE
+    if options.loop == "v2":
+        return _loop_v2_refused()
     return run(options, _real_deps(), stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr)
+
+
+def _loop_v2_refused() -> int:
+    """[V2.11] decision 8: `--loop v2` refuses to start while any step 3c interface is a stub.
+    The only place outside the package that imports `steerai.loop2`, and only on this branch."""
+    from steerai.loop2 import ready  # noqa: PLC0415 - the v1 path never imports loop2
+
+    detail = "loop v2 is not built yet: step 3c" if not ready() else "loop v2 is not wired yet"
+    sys.stderr.write(f"error: {detail}\n")
+    sys.stdout.write(json.dumps({"status": "error", "code": None, "detail": "loop_v2"}) + "\n")
+    return EXIT_USAGE
 
 
 if __name__ == "__main__":

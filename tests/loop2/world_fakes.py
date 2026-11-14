@@ -10,7 +10,7 @@ import pytest
 
 from steerai.loop2.decision import ActionDoc, Claim, Decision, SubgoalDoc
 from steerai.loop2.loop import Dispatch, Ports, TurnView
-from steerai.loop2.task import Budgets, Envelope, GoalSpan, Subgoal, Task
+from steerai.loop2.task import Budgets, Envelope, Task
 from steerai.world.effects import (
     PRECEDENCE,
     EffectClass,
@@ -31,7 +31,6 @@ def pending(rule: str) -> pytest.MarkDecorator:
 
 
 GOAL = "search the shop for red shoes"
-QUERY = GOAL.index("red shoes")
 URL = "https://shop.test/"
 
 
@@ -120,11 +119,12 @@ def report(
 
 
 def task(budgets: Budgets | None = None) -> Task:
-    span = GoalSpan.of(GOAL, QUERY, QUERY + len("red shoes"))
+    """[V2.11] decision 1: built before the first call, with the goal and budgets and no
+    subgoals; the first valid Decision fills them."""
     return Task(
         id="t",
         goal=GOAL,
-        subgoals=(Subgoal(id="s1", desc="search", params={"text": span}),),
+        subgoals=(),
         envelope=Envelope(grants=(), mode="bootstrap"),
         budgets=budgets
         or Budgets(max_actions=20, max_model_calls=10, max_cost_usd=1.0, max_wall_s=60.0),
@@ -158,7 +158,13 @@ class World:
     read_backs: list[bool | None] = field(default_factory=list)
     interrupt_after: int | None = None
     """Report a takeover once this many actions were dispatched."""
+    after: Observed | None = None
+    """What each watch returns as its after snapshot; None: the current screen."""
+    watch_s: float = 0.0
+    """How far the clock moves during each watch."""
     now: float = 0.0
+    events: list[str] = field(default_factory=list)
+    """The order of the loop's calls to the world: `decide`, `observe`, `act`, `watch`."""
     views: list[TurnView] = field(default_factory=list)
     sent_at_call: list[int] = field(default_factory=list)
     """How many actions had been dispatched when each controller call was made."""
@@ -166,19 +172,28 @@ class World:
     write_aheads: list[Dispatch] = field(default_factory=list)
 
     def _decide(self, view: TurnView) -> Decision:
+        self.events.append("decide")
         self.views.append(view)
         self.sent_at_call.append(len(self.dispatched))
         if self.decisions:
             return self.decisions.pop(0)
         return Decision(stop="cannot")
 
+    def _observe(self) -> Observed:
+        self.events.append("observe")
+        return self.screen
+
     def _act(self, sent: Dispatch) -> None:
+        self.events.append("act")
         self.dispatched.append(sent)
 
     def _watch(self, before: Observed, sent: Dispatch) -> Watched:  # noqa: ARG002 - the Ports shape; scripted
+        self.events.append("watch")
+        self.now += self.watch_s
         effect = self.effects.pop(0) if self.effects else report("none")
+        after = self.after if self.after is not None else self.screen
         return Watched(
-            report=effect, after=self.screen, first_change_ms=None, settled_ms=None, timed_out=False
+            report=effect, after=after, first_change_ms=None, settled_ms=None, timed_out=False
         )
 
     def _read_back(self, sent: Dispatch) -> bool | None:  # noqa: ARG002 - the Ports shape; scripted
@@ -196,7 +211,7 @@ class World:
     def ports(self) -> Ports:
         return Ports(
             decide=self._decide,
-            observe=lambda: self.screen,
+            observe=self._observe,
             act=self._act,
             watch=self._watch,
             read_back=self._read_back,

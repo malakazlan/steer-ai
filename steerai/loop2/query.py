@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from steerai.loop2._stub import stub
 from steerai.loop2.task import Commit
 from steerai.orchestrator.contracts import Risk
 from steerai.world.effects import EffectReport
@@ -27,6 +28,7 @@ class SearchFacts:
     payment_in_form: bool
 
 
+@stub
 def classify(  # noqa: PLR0913 - the closed facts of §7.2, keyword-only
     *,
     verb: Literal["press", "click"],
@@ -42,6 +44,7 @@ def classify(  # noqa: PLR0913 - the closed facts of §7.2, keyword-only
     raise NotImplementedError("3c: query classifier")
 
 
+@stub
 def query_outcome(report: EffectReport, *, text_carried: bool) -> QueryOutcome:
     """After a query Enter or click: a navigation or an in-place change carrying the text is
     expected; `none` goes back to the controller; anything else is `unexpected_effect`."""
