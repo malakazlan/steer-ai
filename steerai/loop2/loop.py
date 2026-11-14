@@ -9,6 +9,12 @@ Every outside effect goes through `Ports`, so the tests drive the loop with fake
 Decision fills the subgoals once and code freezes them. When nothing was dispatched the loop
 refuses with a token and a strike; the task ends only through strikes, a stop, the budgets or
 the gate, and in step 3 a commit ends it `blocked` with `commit_not_in_step`.
+
+[V2.12]: code picks the status after a stop from the latest refusal since the last progress,
+never from the model's word. A policy refusal (a secure field, anything the gate would not allow)
+ends `blocked` with its token as the reason; a step limit (a claim kind not in step 3) ends
+`blocked` with `not_in_step`; a model fault (an unlisted id, a wrong target shape) keeps the
+stop's own value and the reason records `after_refusal` plus the token.
 """
 
 from __future__ import annotations
