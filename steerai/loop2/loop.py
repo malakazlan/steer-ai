@@ -77,10 +77,19 @@ class Dispatch:
 
     action: ActionDoc
     runtime_id: tuple[int, ...]
+    role: str
+    name: str
+    """The resolved element's role and name, so the act port re-checks them on the live
+    element at dispatch (§8.1, RT-04); empty for a wait."""
     risk: Risk
     provenance: Provenance | None
     """Set by code, never by the model, for a `type` ([V2.11] decision 5): `param` gives
     `goal_span`; free text is always `generated`, even when it matches the request."""
+
+    def redacted(self) -> Dispatch:
+        """The dispatch as the outcome keeps it (RT-18): no typed text, option or name."""
+        action = self.action.model_copy(update={"text": None, "option": None})
+        return dataclasses.replace(self, action=action, name="")
 
 
 @dataclass(frozen=True)
@@ -127,8 +136,26 @@ class ActResult:
 
 
 @dataclass(frozen=True)
+class TokenUsage:
+    """[V2.37] P6: the tokens one controller call used, as the provider reported them."""
+
+    input_tokens: int
+    output_tokens: int
+
+
+@dataclass(frozen=True)
+class Decided:
+    """What the decide port returns: the Decision and the call's usage; None when the usage was
+    not reported, which trips the token budget."""
+
+    decision: Decision
+    usage: TokenUsage | None
+
+
+@dataclass(frozen=True)
 class Ports:
-    decide: Callable[[TurnView], Decision]
+    decide: Callable[[TurnView], Decided]
+    """One controller call, with the tokens it used ([V2.37] P6)."""
     observe: Callable[[], Observed]
     act: Callable[[Dispatch], ActResult]
     """Send one action and read it back where the verb has a read-back ([V2.24] item 3)."""
@@ -152,6 +179,11 @@ class TaskOutcome:
     model_calls: int
     strikes: tuple[tuple[StrikeReason, ...], ...]
     """The evidence: one entry per strike, with every reason that held in that turn."""
+    tokens: float = 0.0
+    """Input plus output tokens of every call; NaN once a call's usage was missing."""
+    cost_usd: float | None = None
+    """Tokens times the configured price; None when no price is configured ([V2.37] P6): the
+    cost budget is then reported "not configured", never as enforced."""
 
     @property
     def reason(self) -> str | None:

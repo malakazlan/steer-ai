@@ -11,7 +11,15 @@ import pytest
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.errors import ErrorCode
 from steerai.loop2.decision import ActionDoc, Claim, Decision, SubgoalDoc
-from steerai.loop2.loop import READ_BACK_VERBS, ActResult, Dispatch, Ports, TurnView
+from steerai.loop2.loop import (
+    READ_BACK_VERBS,
+    ActResult,
+    Decided,
+    Dispatch,
+    Ports,
+    TokenUsage,
+    TurnView,
+)
 from steerai.loop2.task import Budgets, Envelope, Task
 from steerai.world.effects import (
     PRECEDENCE,
@@ -143,7 +151,13 @@ def task(budgets: Budgets | None = None) -> Task:
         subgoals=(),
         envelope=Envelope(grants=(), mode="bootstrap"),
         budgets=budgets
-        or Budgets(max_actions=20, max_model_calls=10, max_cost_usd=1.0, max_wall_s=60.0),
+        or Budgets(
+            max_actions=20,
+            max_model_calls=10,
+            max_tokens=100_000,
+            max_cost_usd=1.0,
+            max_wall_s=60.0,
+        ),
         history=[],
     )
 
@@ -217,18 +231,19 @@ class World:
     """How many actions had been dispatched when each controller call was made."""
     dispatched: list[Dispatch] = field(default_factory=list)
     write_aheads: list[Dispatch] = field(default_factory=list)
+    usage: TokenUsage | None = field(default_factory=lambda: TokenUsage(100, 10))
+    """What each controller call reports it used ([V2.37] P6); None: not reported."""
     values: dict[tuple[int, ...], ValueFact | None] = field(default_factory=dict)
     """Each field's value fact as `read_value` returns it (a type that reads back True sets it)."""
     reads: list[tuple[int, ...]] = field(default_factory=list)
     """The RuntimeIds `read_value` was called on, in order."""
 
-    def _decide(self, view: TurnView) -> Decision:
+    def _decide(self, view: TurnView) -> Decided:
         self.events.append("decide")
         self.views.append(view)
         self.sent_at_call.append(len(self.dispatched))
-        if self.decisions:
-            return self.decisions.pop(0)
-        return Decision(stop="cannot")
+        decision = self.decisions.pop(0) if self.decisions else Decision(stop="cannot")
+        return Decided(decision, self.usage)
 
     def _arrive(self) -> None:
         if self.later is not None and len(self.dispatched) >= self.later_after_acts:

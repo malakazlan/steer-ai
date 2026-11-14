@@ -65,11 +65,24 @@ class Envelope:
 
 
 @dataclass(frozen=True)
+class TokenPrice:
+    """[V2.37] P6: the configured price of the model's tokens, in dollars per token."""
+
+    usd_per_input_token: float
+    usd_per_output_token: float
+
+
+@dataclass(frozen=True)
 class Budgets:
+    """Invariant 9 ([V2.37] P6): model calls, tokens, wall time, and cost when a price is
+    configured. With no price the cost budget is not configured, and never looks enforced."""
+
     max_actions: int
     max_model_calls: int
+    max_tokens: int
     max_cost_usd: float
     max_wall_s: float
+    price: TokenPrice | None = None
 
 
 @dataclass(frozen=True)
