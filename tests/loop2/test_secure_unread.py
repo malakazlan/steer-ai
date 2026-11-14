@@ -6,9 +6,11 @@ from __future__ import annotations
 import dataclasses
 
 from steerai.loop2.controller import v2_listing
+from steerai.loop2.decision import Decision
 from steerai.loop2.loop import type_refusal
+from steerai.loop2.runner import run_task
 from steerai.world.model import Snapshot
-from tests.loop2.world_fakes import FIELD, GO, PAGE, PASSWORD, snapshot
+from tests.loop2.world_fakes import FIELD, GO, PAGE, PASSWORD, World, observed, snapshot, task
 
 UNREAD = dataclasses.replace(snapshot(PAGE), unread_secure=frozenset({FIELD.id}))
 
@@ -45,3 +47,22 @@ def test_the_listing_keeps_v1s_line_for_every_read_element() -> None:
     assert [row.text for row in v2_listing(plain, handles=_ordinals(plain))] == format_lines(
         plain.elements
     )
+
+
+def test_the_outcome_counts_every_unread_automation_id_it_took_in() -> None:
+    """[V2.26] (2), V2 §6.1, #301: an unread automation id is recorded and its frequency counted
+    on the pooled set; the decision on it stays open. Every observation the loop takes in
+    (each one passes the stamp port) adds its snapshot's unread count."""
+    seen = observed()
+    blind = dataclasses.replace(
+        seen, snapshot=dataclasses.replace(seen.snapshot, unread_automation_id=frozenset({2, 3}))
+    )
+    world = World([Decision(stop="cannot")], screen=blind)
+    outcome = run_task(task(), world.ports())
+    assert world.events.count("stamp") >= 2
+    assert outcome.unread_automation_ids == 2 * world.events.count("stamp")
+
+
+def test_a_read_automation_id_counts_nothing() -> None:
+    world = World([Decision(stop="cannot")])
+    assert run_task(task(), world.ports()).unread_automation_ids == 0

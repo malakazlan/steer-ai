@@ -304,6 +304,8 @@ class _Run:
         """[V2.28] item 1: stale observations in a row; the second is a strike."""
         self.stale_count = 0
         """Stale observations in the task, reported on the outcome."""
+        self.unread_aids = 0
+        """#301: unread automation ids over every observation taken in (`_in_domain`)."""
 
     # ---- the outcome ----------------------------------------------------------------------
 
@@ -328,6 +330,7 @@ class _Run:
             cost_usd=self._cost(),
             read_costs=tuple(self.read_costs),
             stale_observations=self.stale_count,
+            unread_automation_ids=self.unread_aids,
         )
 
     def _cost(self) -> float | None:
@@ -385,6 +388,7 @@ class _Run:
         beyond `CLOCK_DOMAIN_S`, or not finite, is another clock (small skew is clamped by the
         load guard)."""
         observed = self.ports.stamp(observed)
+        self.unread_aids += observed.snapshot.unread_automation_id_count  # #301: counted
         now = self.ports.clock()
         if not abs(now - observed.snapshot.taken_at) <= CLOCK_DOMAIN_S:
             raise _End("stopped", Reason("clock_domain"))
