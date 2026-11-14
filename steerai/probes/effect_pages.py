@@ -30,8 +30,9 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Protocol, TypeVar
 
+from steerai.errors import SteerError
 from steerai.probes.chrome_a11y import (
     CHROME_DEFAULT,
     CdpSession,
@@ -628,33 +629,70 @@ def noise_run(base: str, seconds: float = 4.0) -> list[dict[str, Any]]:
 
 SITE_READY_S = 8.0
 """How long a real site is given to load and settle before the timed navigation (a guard)."""
+LATE_S = 5.0
+"""[V2.27] B: one more full read this long after `watch` returns (a guard, unmeasured)."""
+
+
+class _BarReader(Protocol):
+    def address_bar(self, hwnd: int) -> str | None: ...
+
+
+class _SiteBrowser(Protocol):
+    """What one real-site sample needs of `_Browser` (a fake in tests)."""
+
+    @property
+    def hwnd(self) -> int: ...
+
+    @property
+    def client(self) -> _BarReader: ...
+
+    def run(self, script: str) -> Any: ...  # Any: the JSON value the page script returns
+
+    def read_cheap(self) -> Observed: ...
+
+    def read_full(self, seen: Observed) -> Observed: ...
+
+    def read_v2(self) -> Observed: ...
 
 
 def site_run(start: str, target: str) -> dict[str, Any]:
-    """[V2.7] one real-site sample: open `start`, then navigate to `target` (the task's own
-    results page) through DevTools, and watch it on the two-tier v2 read as a trigger action
-    ([V2.8]). Records the first change, the settle, the weak quiet-window reads, the report and
-    the address bar's shape as closed tokens; never the URL or the page's text."""
+    """[V2.7] one real-site sample in a throwaway Chrome on `start` (see `site_sample`)."""
     browser = _Browser(start)
     try:
-        time.sleep(SITE_READY_S)
-        before = browser.read_v2()
-        browser.run(f"location.href={json.dumps(target)}")
-        result = watch(
-            browser.read_cheap,
-            before,
-            clock=time.monotonic,
-            sleep=time.sleep,
-            poll_s=WATCH_POLL_S,
-            settle_s=WATCH_SETTLE_S,
-            deadline_s=SITE_DEADLINE_S,
-            full=browser.read_full,
-            trigger=True,
-        )
-        href = str(browser.run("location.href"))
-        bar = browser.client.address_bar(browser.hwnd)
+        return site_sample(browser, target)
     finally:
         browser.close()
+
+
+def site_sample(
+    browser: _SiteBrowser,
+    target: str,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> dict[str, Any]:
+    """[V2.7] navigate to `target` (the task's own results page) through DevTools and watch it on
+    the two-tier v2 read as a trigger action ([V2.8]). Records the first change, the settle, the
+    weak quiet-window reads, the report and the address bar's shape as closed tokens; never the
+    URL or the page's text. [V2.27] B: then one full read `LATE_S` later, its classes against
+    the before, and whether they differ from the watch's final report."""
+    sleep(SITE_READY_S)
+    before = browser.read_v2()
+    browser.run(f"location.href={json.dumps(target)}")
+    result = watch(
+        browser.read_cheap,
+        before,
+        clock=clock,
+        sleep=sleep,
+        poll_s=WATCH_POLL_S,
+        settle_s=WATCH_SETTLE_S,
+        deadline_s=SITE_DEADLINE_S,
+        full=browser.read_full,
+        trigger=True,
+    )
+    late = _late_read(browser, before, result.report, sleep=sleep)
+    href = str(browser.run("location.href"))
+    bar = browser.client.address_bar(browser.hwnd)
     return {
         "first_change_ms": result.first_change_ms,
         "settled_ms": result.settled_ms,
@@ -667,7 +705,25 @@ def site_run(start: str, target: str) -> dict[str, Any]:
         "bar_www_elided": bar is not None and "://www." in href and "www." not in bar,
         "url_read": result.after.url is not None,
         "url_observed": result.after.url_observed,
+        **late,
     }
+
+
+def _late_read(
+    browser: _SiteBrowser,
+    before: Observed,
+    final: EffectReport,
+    *,
+    sleep: Callable[[float], None],
+) -> dict[str, Any]:
+    """[V2.27] B: the late full read's classes against the before, and `late_changed` when the
+    class set is not the watch's final one; a failed read is said, never a lost row."""
+    sleep(LATE_S)
+    try:
+        late = observe(before, browser.read_v2())
+    except (OSError, SteerError) as exc:
+        return {"late_classes": None, "late_changed": None, "late_error": type(exc).__name__}
+    return {"late_classes": sorted(late.classes), "late_changed": late.classes != final.classes}
 
 
 def _pcts(values: list[float]) -> dict[str, float]:
