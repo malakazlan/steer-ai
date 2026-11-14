@@ -1,9 +1,6 @@
-"""The v2 loop for step 3 (V2 §5), behind `--loop v2`: ports, the resolver, the action risk and
-`run_task`.
-
-Interface stub for step 3c. The §8 invariant tests in `tests/loop2/test_invariants_loop.py` are
-written first against these shapes and fail with `NotImplementedError` until 3c implements them.
-Every outside effect goes through `Ports`, so the tests drive the loop with fakes.
+"""The v2 loop's shapes for step 3 (V2 §5), behind `--loop v2`: ports, the resolver and the
+action risk. `run_task` itself is in `steerai.loop2.runner`. Every outside effect goes through
+`Ports`, so the tests drive the loop with fakes.
 
 [V2.11]: the Task is built before the first call (goal, budgets, no subgoals); the first valid
 Decision fills the subgoals once and code freezes them. When nothing was dispatched the loop
@@ -28,7 +25,6 @@ from typing import Final, Literal
 
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.errors import ErrorCode, SteerError
-from steerai.loop2._stub import stub
 from steerai.loop2.decision import ActionDoc, Decision
 from steerai.loop2.form import (
     ACTING_ROLES,
@@ -39,13 +35,14 @@ from steerai.loop2.form import (
 )
 from steerai.loop2.guards import StrikeReason
 from steerai.loop2.query import SearchFacts, classify, search_landmark_of
-from steerai.loop2.task import Commit, Task
+from steerai.loop2.task import Commit
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.orchestrator.gate import DenyFacts, deny_tier_of, group_name
 from steerai.verify.predicates import FIELD_ROLES
 from steerai.world.effects import Observed, ValueFact
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot, resolve_in
+from steerai.world.reads import ReadCost
 from steerai.world.watch import Watched
 
 Status = Literal["done", "blocked", "asked", "paused", "stopped", "cannot"]
@@ -81,10 +78,19 @@ class Dispatch:
 
     action: ActionDoc
     runtime_id: tuple[int, ...]
+    role: str
+    name: str
+    """The resolved element's role and name, so the act port re-checks them on the live
+    element at dispatch (§8.1, RT-04); empty for a wait."""
     risk: Risk
     provenance: Provenance | None
     """Set by code, never by the model, for a `type` ([V2.11] decision 5): `param` gives
     `goal_span`; free text is always `generated`, even when it matches the request."""
+
+    def redacted(self) -> Dispatch:
+        """The dispatch as the outcome keeps it (RT-18): no typed text, option or name."""
+        action = self.action.model_copy(update={"text": None, "option": None})
+        return dataclasses.replace(self, action=action, name="")
 
 
 @dataclass(frozen=True)
@@ -131,8 +137,26 @@ class ActResult:
 
 
 @dataclass(frozen=True)
+class TokenUsage:
+    """[V2.37] P6: the tokens one controller call used, as the provider reported them."""
+
+    input_tokens: int
+    output_tokens: int
+
+
+@dataclass(frozen=True)
+class Decided:
+    """What the decide port returns: the Decision and the call's usage; None when the usage was
+    not reported, which trips the token budget."""
+
+    decision: Decision
+    usage: TokenUsage | None
+
+
+@dataclass(frozen=True)
 class Ports:
-    decide: Callable[[TurnView], Decision]
+    decide: Callable[[TurnView], Decided]
+    """One controller call, with the tokens it used ([V2.37] P6)."""
     observe: Callable[[], Observed]
     act: Callable[[Dispatch], ActResult]
     """Send one action and read it back where the verb has a read-back ([V2.24] item 3)."""
@@ -141,6 +165,19 @@ class Ports:
     interrupted: Callable[[], str | None]
     """A takeover, the secure desktop or a lock, as a token; None to go on."""
     clock: Callable[[], float]
+    """The loop's clock, in the domain of `Snapshot.taken_at` (a read's completion): the reuse
+    between batch actions compares the two ([V2.11] decision 6, [V2.34])."""
+    stamp: Callable[[Observed], Observed]
+    """[V2.31], RT-10/RT-11: the adapter's one `observe2.DocumentSince`, on `clock`: the loop
+    passes every observation it uses through it (the watch's after and the settle result
+    included), so `document_since` and `young` come from one stamp in one clock domain."""
+    settle: Callable[[Observed, float], Observed]
+    """[V2.31] from this observation, wait until the page's node count holds for the loop's quiet
+    window or the guard (seconds) expires, and return the last read (`observe2.hold_still`)."""
+    read_value: Callable[[Element], ValueFact | None]
+    """[V2.28] item 3, [V2.29] Q2: one element's value fact, read from the element itself through
+    its live handle with the role and name re-check; None when unread. Never called on a field
+    whose secure flag is set or unread."""
 
 
 @dataclass(frozen=True)
@@ -152,6 +189,14 @@ class TaskOutcome:
     model_calls: int
     strikes: tuple[tuple[StrikeReason, ...], ...]
     """The evidence: one entry per strike, with every reason that held in that turn."""
+    read_costs: tuple[ReadCost, ...] = ()
+    """[V2.34] the reads each watched action's watch made (count and ms by tier), in dispatch
+    order: the observe layer's share of the wall-time split."""
+    tokens: float = 0.0
+    """Input plus output tokens of every call; NaN once a call's usage was missing."""
+    cost_usd: float | None = None
+    """Tokens times the configured price; None when no price is configured ([V2.37] P6): the
+    cost budget is then reported "not configured", never as enforced."""
 
     @property
     def reason(self) -> str | None:
@@ -190,7 +235,8 @@ class PendingText:
     typed and the field's live value now; the text is pending while `now` still holds it."""
 
     field: tuple[int, ...]
-    typed: ValueFact
+    typed: ValueFact | None
+    """What the field read right after the verified type; None when that read was unread."""
     now: ValueFact | None
     """The live read of the field now; None when it is gone or unread."""
     search: SearchFacts
@@ -393,7 +439,7 @@ def _states(observed: Observed, pending: Sequence[PendingText]) -> list[tuple[Pe
     for held in pending:
         if held.field not in shown:
             continue
-        if held.now is None:
+        if held.now is None or held.typed is None:
             states.append((held, "unread"))
         elif held.now.filled:
             same = held.now.digest == held.typed.digest
@@ -513,12 +559,3 @@ def _parent_kind(observed: Observed, field: tuple[int, ...]) -> ParentKind:
     if nearest is not None and nearest.kind == "main" and nearest.runtime_id == parent.runtime_id:
         return "main"
     return "narrower"
-
-
-@stub
-def run_task(task: Task, ports: Ports) -> TaskOutcome:
-    """Run `task` to an outcome. Between batch actions the watch's after snapshot is reused only
-    when it is a full-tier read, stable and within v1's R0/R1 freshness limit
-    (`REUSE_FRESHNESS_S`, its age `clock() - snapshot.taken_at`); otherwise the loop
-    re-observes ([V2.11] decision 6)."""
-    raise NotImplementedError("3c: the v2 loop")

@@ -3,7 +3,10 @@ be inside the scope Document; a tab name, the address bar or another Document ne
 
 from __future__ import annotations
 
+from steerai.loop2._stub import stub
 from steerai.loop2.decision import Claim
+from steerai.loop2.task import Subgoal
+from steerai.world.effects import Observed
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
 
@@ -36,3 +39,21 @@ def evidence_tokens(
         elif scope_document is not None and not _inside(element, by_id, scope_document):
             tokens.append("outside_scope")
     return tuple(dict.fromkeys(tokens))
+
+
+@stub
+def check_claim(
+    claim: Claim, subgoal: Subgoal, baseline: Observed, now: Observed
+) -> tuple[str, ...]:
+    """A `state`, `value` or `navigated` claim checked by code (§7.1): the reject tokens, empty
+    when it is proven. `state` and `value` read the element live ([V2.29] Q2); `navigated` is
+    measured since the subgoal's `baseline`."""
+    raise NotImplementedError("3c PR B: the code claim checks")
+
+
+@stub
+def auto_proof(subgoal: Subgoal, baseline: Observed, now: Observed) -> bool:
+    """§7.1, [V2.29] Q1: whether `subgoal` is proven `navigated` by code alone since its baseline:
+    a change signal, a URL carrier, and a content signal (a title or heading carrier, or the
+    `results` carrier together with the URL carrier, with its own proof token)."""
+    raise NotImplementedError("3c PR B: the navigated auto proof")
