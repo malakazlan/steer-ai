@@ -6,6 +6,7 @@ click and a type, pinned here on the v2 path; the act port's own for a press).""
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 
 import pytest
 
@@ -14,6 +15,11 @@ from steerai.action.execution import UiaBindings
 from steerai.action.physical import PhysicalAction, PhysicalExecutor
 from steerai.errors import ErrorCode
 from steerai.loop2.act_guards import GuardDesk, InputGuard
+from steerai.loop2.loop import WindowCovered, render_reason
+from steerai.loop2.runner import run_task
+from steerai.loop2.world_ports import WorldPorts, WorldTimes
+from steerai.world.effects import Observed
+from steerai.world.observe2 import FirstTouches
 from tests.action.fakes import TYPE_IDS, FakeHandle, FakeWindows
 from tests.action.test_physical import (
     FakeInput,
@@ -22,7 +28,8 @@ from tests.action.test_physical import (
     fast_clock,  # noqa: F401 - the v1 fixture, used by name
 )
 from tests.loop2.test_act_port import Desk, _dispatch, _nothing_executed, _port, _refused
-from tests.loop2.world_fakes import FIELD
+from tests.loop2.test_world_ports import KEY, Clock, Live, Screen
+from tests.loop2.world_fakes import FIELD, World, observed, task
 
 BOUND = 0x10
 OTHER = 0x99
@@ -149,3 +156,83 @@ def test_an_unreadable_root_window_is_never_the_bound_one() -> None:
         _guard(Broken()), last_input=lambda: 0.0, takeover_token=lambda: "t", prove=lambda: None
     )
     assert desk.root_at(3, 4) == 0
+
+
+# ---- [V2.62] the cover check before any wait for a page ----------------------------------------
+
+
+def _world_ports(screen: Screen, clock: Clock, cover: Callable[[], str | None]) -> WorldPorts:
+    traced: list[str] = []
+    ports = WorldPorts(
+        poll_read=screen.poll_read,
+        full_from=screen.full_from,
+        interrupted=lambda: None,
+        clock=clock,
+        pause=clock.pause,
+        touches=FirstTouches(),
+        times=WorldTimes(),
+        live=Live(),
+        key=KEY,
+        trace=traced.append,
+        cover=cover,
+    )
+    ports.traced = traced  # type: ignore[attr-defined]  # the test reads what was traced
+    return ports
+
+
+@pytest.mark.parametrize("token", ["covered", "minimized", "cloaked", "cover_unread"])
+def test_a_covered_window_ends_the_observe_before_any_read(token: str) -> None:
+    clock = Clock()
+    screen = Screen(observed(), clock)
+    ports = _world_ports(screen, clock, lambda: token)
+    with pytest.raises(WindowCovered) as covered:
+        ports.observe()
+    assert covered.value.token == token
+    assert screen.polls == 0
+    assert clock.pauses == []  # never waited for a page
+    assert ports.traced == [f"cover_{token}"]  # type: ignore[attr-defined]
+
+
+def test_an_uncovered_window_is_observed_as_before() -> None:
+    clock = Clock()
+    screen = Screen(observed(), clock)
+    ports = _world_ports(screen, clock, lambda: None)
+    assert ports.observe().snapshot.elements == observed().snapshot.elements
+    assert screen.polls >= 1
+
+
+def test_a_covered_window_ends_the_blank_page_hold_before_it_waits() -> None:
+    clock = Clock()
+    screen = Screen(observed(), clock)
+    ports = _world_ports(screen, clock, lambda: "covered")
+    with pytest.raises(WindowCovered):
+        ports.settle(observed(), 10.0)
+    assert screen.polls == 0
+    assert clock.pauses == []
+
+
+def test_the_task_ends_stopped_window_covered_never_page_not_ready() -> None:
+    world = World(decisions=[])
+
+    def covered() -> Observed:
+        raise WindowCovered("covered")
+
+    ports = dataclasses.replace(world.ports(), observe=covered)
+    outcome = run_task(task(), ports)
+    assert outcome.status == "stopped"
+    assert render_reason(outcome.cause) == "window_covered"
+    assert outcome.model_calls == 0
+
+
+def test_a_cover_found_in_the_act_ports_fresh_look_ends_the_task_not_the_act() -> None:
+    """The act port turns any failure into an uncertain act; a cover found in its look after an
+    idle wait is the task's end, raised before anything is sent."""
+    rig = _port(desk=Desk(last_input=1.0))  # the person was active: the port waits, then looks
+
+    def covered() -> Observed:
+        raise WindowCovered("covered")
+
+    rig.world.observe = covered  # type: ignore[method-assign]  # the fresh look finds a cover
+    with pytest.raises(WindowCovered):
+        rig.port.act(_dispatch("click", FIELD))
+    assert _nothing_executed(rig)

@@ -59,7 +59,7 @@ from steerai.loop2.act_guards import (
     ToggleGuard,
 )
 from steerai.loop2.actuate import key_targets
-from steerai.loop2.loop import ActResult, Dispatch, PortInterrupted
+from steerai.loop2.loop import ActResult, Dispatch, PortInterrupted, WindowCovered
 from steerai.loop2.world_ports import KILL_POLL_S, kill_sleep
 from steerai.orchestrator.loop import IDLE_S, MAX_WAIT_S, WAIT_POLL_S
 from steerai.verify.predicates import FIELD_ROLES
@@ -179,8 +179,8 @@ class ActPort:
             raise PortInterrupted(token)
         try:
             return self._act(dispatch)
-        except PortInterrupted:
-            raise  # raised only by the waits before anything is sent
+        except (PortInterrupted, WindowCovered):
+            raise  # raised only by the waits and the fresh look before anything is sent
         except _Refused as refused:
             return ActResult(_not_sent(verb, refused.code, refused.detail), None)
         except Exception as exc:  # noqa: BLE001 - [V2.51] (2): fail closed, never raise
