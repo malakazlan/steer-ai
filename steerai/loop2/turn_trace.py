@@ -86,7 +86,9 @@ class CarrierFact:
     held: bool
     """This carrier held the param on this read."""
     absent_before: bool | None
-    """Absent on the subgoal's baseline; None when the baseline was unread."""
+    """Absent on the subgoal's baseline; None when the baseline was unread. For `results`,
+    which counts only rows absent before by the observer's own rule, True when it holds and None
+    when it does not (#455 review: there is no before half to report)."""
 
 
 @dataclass(frozen=True)
@@ -115,6 +117,8 @@ class ProofAttempt:
     skipped: Skipped | None
     gate: Gate | None
     change: bool
+    """The verifier measured a change class; False also when it refused the read as no
+    navigation at all (`refused`), where nothing was measured."""
     change_by: tuple[ChangeBy, ...]
     refused: tuple[CheckToken, ...]
     """What the navigation check refused with when it was no navigation at all."""
