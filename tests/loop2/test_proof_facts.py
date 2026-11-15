@@ -15,7 +15,7 @@ from steerai.loop2.decision import Decision, SubgoalDoc
 from steerai.loop2.runner import run_task
 from steerai.loop2.turn_trace import closed
 from tests.loop2.test_auto_proof_every_observation import RESULTS, START
-from tests.loop2.test_navigated import page
+from tests.loop2.test_navigated import QUERY_URL, page
 from tests.loop2.test_turn_trace import _into
 from tests.loop2.world_fakes import FIELD, RESULT, URL, World, act, report, task
 
@@ -49,7 +49,7 @@ def _typed(after: Any = None, *seen: Any) -> World:  # Any: Observed
 
 def test_an_after_action_proof_names_its_read_gate_carriers_and_content() -> None:
     proof = _after_action(_attempts(_typed(RESULTS)))
-    assert (proof["read_kind"], proof["subgoal"]) == ("after_action", 1)
+    assert (proof["read_kind"], proof["subgoal"]) == ("after_action", 0)
     assert proof["read"] == {"tier": "full", "stable": True, "growing": False, "young": False}
     assert (proof["skipped"], proof["gate"]) == (None, "url")
     assert (proof["change"], proof["change_by"]) == (True, ["url_changed_in_place"])
@@ -57,7 +57,7 @@ def test_an_after_action_proof_names_its_read_gate_carriers_and_content() -> Non
     assert (proof["content"], proof["content_by"]) == (True, "results_with_url")
     (param,) = proof["params"]
     held = {c["carrier"]: (c["held"], c["absent_before"]) for c in param["carriers"]}
-    assert param["param"] == 1
+    assert param["param"] == 0
     assert held["url_param"] == (True, True)
     assert held["results"] == (True, True)
 
@@ -110,3 +110,48 @@ def test_the_attempts_carry_no_page_text() -> None:
     written = json.dumps([r["proofs"] for r in records])
     for name in {e.name for e in RESULTS.snapshot.elements if e.name} | {"red shoes", "s1", "text"}:
         assert name not in written
+
+
+# ---- #455 review: positions join the history, the results carrier, once per read --------------
+
+
+def test_positions_are_the_traces_own_zero_based_ones() -> None:
+    """Principal 1: the attempt's subgoal and param positions join the same turn's history and
+    decision (`s0`, `param:0`, `decision_shape`'s rule)."""
+    records: list[dict[str, Any]] = []
+    world = _typed(RESULTS)
+    run_task(task(), dataclasses.replace(world.ports(), turn_trace=_into(records)))
+    written = json.loads(json.dumps(records))
+    (proof,) = [p for r in written for p in r["proofs"] if p["read_kind"] == "after_action"]
+    assert proof["subgoal"] == 0
+    assert [p["param"] for p in proof["params"]] == [0]
+    first = written[0]
+    assert any(line.startswith("act:type:") and ":s0:param:0:" in line for line in first["history"])
+
+
+def test_the_results_carrier_when_not_held_says_unread_before() -> None:
+    """Principal 2: the observer counts only rows absent before, so a results carrier that does
+    not hold has no before half to report (None, documented as such)."""
+    proof = _after_action(_attempts(_typed(dataclasses.replace(page([], url=QUERY_URL),
+                                                               focus=FIELD.runtime_id))))  # fmt: skip
+    (param,) = proof["params"]
+    held = {c["carrier"]: (c["held"], c["absent_before"]) for c in param["carriers"]}
+    assert held["results"] == (False, None)
+
+
+def test_an_unstable_read_is_recorded_as_skipped() -> None:
+    shaky = dataclasses.replace(
+        RESULTS, snapshot=dataclasses.replace(RESULTS.snapshot, stable=False)
+    )
+    attempts = _attempts(_typed(None, shaky))
+    assert any(p["skipped"] == "unstable" for p in attempts)
+
+
+def test_a_read_judged_after_an_action_is_not_attempted_again_at_turn_start() -> None:
+    """The after-action read is the next turn's read: one attempt, not two."""
+    attempts = _attempts(
+        _typed(dataclasses.replace(page([], url=QUERY_URL), focus=FIELD.runtime_id))
+    )
+    kinds = [p["read_kind"] for p in attempts]
+    assert kinds.count("after_action") == 1
+    assert "turn_start" not in kinds
