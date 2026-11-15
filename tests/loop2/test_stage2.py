@@ -338,9 +338,20 @@ def test_a_run_not_started_is_counted_and_re_run() -> None:
         refused = next(answers)
         return refused if refused else SiteRecord(record(t.stage.task_id, n), None)
 
-    got, not_started, _, _ = _run(tasks, attempt)
+    clock = Clock()
+    spacer = Spacer(clock, clock.sleep)
+    got, not_started = run_stage(
+        tasks,
+        runs=3,
+        attempt=attempt,
+        control=lambda _h: "pass",
+        confirm=lambda _t: False,
+        spacer=spacer,
+    )
     assert not_started == 1
     assert sum(c.verdict == "pass" for c in got) == 3
+    # 4 batches each ran a control; the run that never started loaded nothing (#403 blocker)
+    assert spacer.loads == {"a.test": 4 + 3}
 
 
 # ---- the tasks from the committed table ---------------------------------------------------------
@@ -517,8 +528,9 @@ def test_the_loads_per_host_are_counted_and_reported() -> None:
         spacer=spacer,
     )
     summary = summarize(tasks, got, not_started=not_started, runs_per_task=3, loads=spacer.loads)
-    assert summary.report["loads_per_host"] == {"a.test": 6}
-    assert summary.report["loads_per_host_max"] == 6
+    assert summary.report["harness_loads_per_host"] == {"a.test": 6}
+    assert summary.report["harness_loads_per_host_max"] == 6
+    assert summary.report["harness_loads_bound"] == volume_bound(tasks, runs=3) == {"a.test": 12}
 
 
 def test_the_volume_bound_per_host_from_the_task_data() -> None:

@@ -280,11 +280,11 @@ def run_stage(  # noqa: PLR0913 - the tasks, then keyword-only knobs
             else:
                 spacer.wait(task.host)
                 result = attempt(task, run)
-                spacer.loaded(task.host)
-                if isinstance(result, str):
+                if isinstance(result, str):  # never started: nothing was loaded
                     not_started += 1
                     emit({"task": task_id, "run": run, "not_started": result})
                     continue
+                spacer.loaded(task.host)
                 confirmed = False
                 if needs_confirmation(task, result):
                     spacer.wait(task.host)
@@ -332,7 +332,8 @@ def _controls(
 def volume_bound(tasks: Sequence[SiteTask], *, runs: int) -> dict[str, int]:
     """Per host, the most loads the stage can make before any wall confirmation: each task's
     runs and re-runs, and one control in each batch (#403 blocker 6, against the policy's
-    "about 8 loads per host")."""
+    "about 8 loads per host"). Wall confirmations are not in it: at most one per attempt, and
+    only after a wall on the task's own host."""
     batches = runs + MAX_RERUNS
     bound: dict[str, int] = {}
     for task in tasks:
@@ -363,8 +364,9 @@ def summarize(
         min_valid_tasks=MIN_VALID_TASKS,
     )
     summary.report["no_control"] = [t.stage.task_id for t in tasks if not t.controlled]
-    summary.report["loads_per_host"] = dict(loads or {})
-    summary.report["loads_per_host_max"] = max((loads or {}).values(), default=0)
+    summary.report["harness_loads_per_host"] = dict(loads or {})
+    summary.report["harness_loads_per_host_max"] = max((loads or {}).values(), default=0)
+    summary.report["harness_loads_bound"] = volume_bound(tasks, runs=runs_per_task)
     return summary
 
 
