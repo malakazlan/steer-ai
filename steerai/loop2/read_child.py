@@ -650,6 +650,126 @@ def _screensaver() -> bool | None:  # pragma: no cover - live, Windows only
     return bool(running.value)
 
 
+CELLS: Final = (
+    ("runner", "runner"),
+    ("fresh", "runner"),
+    ("runner", "fresh"),
+    ("fresh", "fresh"),
+)
+"""The 2x2 after one input-only child: who launches the Chrome (L) and who reads it (R)."""
+_LAUNCH: Final = (
+    "import sys; from pathlib import Path; "
+    "from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome; "
+    "proc = launch_chrome(CHROME_DEFAULT, Path(sys.argv[1]), int(sys.argv[2]), sys.argv[3]); "
+    "print(proc.pid)"
+)
+"""A fresh helper process that launches the Chrome and exits at once (Chrome keeps running)."""
+
+
+class _Launched:  # pragma: no cover - live
+    """A Chrome launched by a helper that has exited: `stop_chrome` needs a pid and `wait`."""
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        return 0
+
+    def poll(self) -> int | None:
+        return None
+
+
+def run_matrix(out_dir: Path) -> int:  # noqa: PLR0915  # pragma: no cover - live
+    """One input-only child on 3d-a, then the 2x2 on fresh Chromes on 3d-b: launched by this
+    runner or by a fresh helper process (L), read by this runner in-process or by a plain reader
+    in a fresh process (R). Each Chrome's own view of its visibility is read over its DevTools
+    port (read-only). Only this run's Chromes are closed, by PID."""
+    import shutil  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    from steerai.probes import instant_search as fixture  # noqa: PLC0415 - live only
+    from steerai.probes.chrome_a11y import (  # noqa: PLC0415
+        CHROME_DEFAULT,
+        launch_chrome,
+        stop_chrome,
+    )
+    from steerai.probes.layer_b import _ours  # noqa: PLC0415
+    from steerai.probes.layer_b_pages import PageServer  # noqa: PLC0415
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
+
+    def emit(row: Mapping[str, object]) -> None:
+        sys.stdout.write(json.dumps(dict(row)) + "\n")
+        sys.stdout.flush()
+
+    def visibility(cdp: Any) -> dict[str, object]:  # Any: a CdpSession
+        def value(expression: str) -> object:
+            reply = cdp.call("Runtime.evaluate", {"expression": expression, "returnByValue": True})
+            return reply.get("result", {}).get("value")
+
+        metrics = cdp.call("Page.getLayoutMetrics", {})
+        viewport = metrics.get("cssVisualViewport") or metrics.get("visualViewport") or {}
+        return {
+            "visibilityState": value("document.visibilityState"),
+            "hidden": value("document.hidden"),
+            "hasFocus": value("document.hasFocus()"),
+            "viewport": {k: viewport.get(k) for k in ("clientWidth", "clientHeight")},
+        }
+
+    def cell(name: str, variant: str, launcher: str, reader: str, then: Then = "none") -> None:
+        run_dir = out_dir / name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(prefix="steer-readchild-"))
+        with PageServer(fixture.pages()) as server:
+            port = fixture._free_port()
+            url = f"http://127.0.0.1:{server.port}/{variant}"
+            if launcher == "runner":
+                proc: Any = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, url)
+            else:
+                helper = subprocess.run(  # noqa: S603 - our own launcher, a fixed argv
+                    [sys.executable, "-c", _LAUNCH, str(tmp / "profile"), str(port), url],
+                    capture_output=True, text=True, timeout=60, check=True,
+                )  # fmt: skip
+                proc = _Launched(int(helper.stdout.strip().splitlines()[-1]))
+            try:
+                window = wait_window_for_pid(proc.pid, timeout_s=30.0)
+                cdp, _ = _ours(port, server.port)
+                try:
+                    fixture._wait_ready(cdp)
+                    started = time.time()
+                    reads_path = run_dir / "reads.jsonl"
+                    if then != "none":
+                        subprocess.run(  # noqa: S603 - our own module, a fixed argv
+                            [sys.executable, "-m", "steerai.loop2.read_child", "child",
+                             "--hwnd", str(window.hwnd), "--arm", "mta", "--then", then,
+                             "--out", str(reads_path), "--trace", str(run_dir / "trace.jsonl")],
+                            capture_output=True, timeout=CHILD_CAP_S, check=False,
+                        )  # fmt: skip
+                    elif reader == "runner":
+                        run_plain(window.hwnd, out=reads_path)
+                    else:
+                        subprocess.run(  # noqa: S603 - our own module, a fixed argv
+                            [sys.executable, "-m", "steerai.loop2.read_child", "plain",
+                             "--hwnd", str(window.hwnd), "--out", str(reads_path)],
+                            capture_output=True, timeout=CHILD_CAP_S, check=False,
+                        )  # fmt: skip
+                    seen = visibility(cdp)
+                finally:
+                    cdp.close()
+            finally:
+                stop_chrome(proc, tmp / "profile")
+                shutil.rmtree(tmp, ignore_errors=True)
+        emit({"cell": name, "variant": variant, "launched_by": launcher, "read_by": reader,
+              "then": then, "start_wall": round(started, 3),
+              "chrome_view": seen, **_summary(reads_path)})  # fmt: skip
+
+    cell("0-input-only", "a", "runner", "fresh", then="input")
+    for launcher, reader in CELLS:
+        cell(f"L-{launcher}-R-{reader}", "b", launcher, reader)
+    return 0
+
+
 _TEE: Final = (
     "import subprocess, sys; out = open(sys.argv[1], 'w', encoding='utf-8'); "
     "raise SystemExit(subprocess.call(sys.argv[2:], stdout=out, stderr=subprocess.DEVNULL))"
@@ -666,7 +786,7 @@ def _summary(path: Path) -> dict[str, object]:  # pragma: no cover - live
     return rows[-1] if rows and "summary" in rows[-1] else {"summary": None}
 
 
-def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live
+def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911 - one per mode  # pragma: no cover
     parser = argparse.ArgumentParser(prog="python -m steerai.loop2.read_child")
     sub = parser.add_subparsers(dest="mode", required=True)
     child = sub.add_parser("child")
@@ -678,6 +798,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live
     plain = sub.add_parser("plain")
     plain.add_argument("--hwnd", type=int, required=True)
     plain.add_argument("--out", type=Path, required=True)
+    matrix = sub.add_parser("matrix")
+    matrix.add_argument("--out-dir", type=Path, required=True)
     follow = sub.add_parser("follow")
     follow.add_argument("--exp", choices=EXPS, required=True)
     follow.add_argument("--out-dir", type=Path, required=True)
@@ -699,6 +821,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live
         )
     if args.mode == "plain":
         return run_plain(args.hwnd, out=args.out)
+    if args.mode == "matrix":
+        return run_matrix(args.out_dir)
     if args.mode == "follow":
         return run_follow(args.exp, args.out_dir, args.price_file)
     if args.mode == "acting":
