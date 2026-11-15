@@ -17,6 +17,7 @@ from collections.abc import Callable
 
 import pytest
 
+from steerai.errors import SteerError
 from steerai.session.helper_core import EXIT_OK
 from steerai.session.helper_launch import (
     SYNCHRONIZE,
@@ -106,3 +107,39 @@ def test_a_real_helper_starts_inside_its_job_reports_ready_and_quits(
         assert win32.exit_code(watch) == EXIT_OK  # it quit on `quit`, it was not terminated
     finally:
         win32.close(watch)
+
+
+_VK_F11 = 0x7A
+_MOD_NOREPEAT = 0x4000
+
+
+def test_a_chord_already_held_refuses_the_helper_before_it_is_ready() -> None:
+    """#385 HH4-09: ready is published only after `RegisterHotKey` succeeds. With the chord
+    already registered here, the helper fails at the hot key step (`kill_key_unavailable`,
+    only reachable from the failed state), so it never reported ready."""
+    from ctypes import wintypes  # noqa: PLC0415 - Windows only
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.RegisterHotKey.argtypes = (wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT)
+    user32.RegisterHotKey.restype = wintypes.BOOL
+    user32.UnregisterHotKey.argtypes = (wintypes.HWND, ctypes.c_int)
+    user32.UnregisterHotKey.restype = wintypes.BOOL
+    mods = _MOD_CTRL | _MOD_ALT | _MOD_SHIFT
+    assert user32.RegisterHotKey(None, 0x5EED, mods | _MOD_NOREPEAT, _VK_F11)
+    try:
+        interpreter, launcher = this_interpreter()
+        helper = HelperProcess(
+            WindowsLaunch(),
+            interpreter=interpreter,
+            launcher=launcher,
+            system_root=os.environ["SYSTEMROOT"],
+            run_tag=_run_tag(),
+            probe_vk=0x0E,
+            kill_mods=mods,
+            kill_vk=_VK_F11,
+            hook_timeout_ms=1000,
+        )
+        with pytest.raises(SteerError, match="kill_key_unavailable"):
+            helper.start()
+    finally:
+        user32.UnregisterHotKey(None, 0x5EED)
