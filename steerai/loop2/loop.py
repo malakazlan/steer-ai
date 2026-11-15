@@ -236,12 +236,12 @@ class TaskOutcome:
     configured or a used category has no rate ([V2.37] P6): the cost budget is then reported
     "not configured", never as enforced, never 0.0."""
     usage_incomplete: bool = False
-    usage: TokenUsage = TokenUsage(input_tokens=0, output_tokens=0)
-    """[V2.45]: the reported usage summed by category (a lower bound when `usage_incomplete`).
-    Stage 1 runs with caching off and asserts every cache counter here is zero."""
     """[V2.41] (1): some call's usage was missing or invalid: `tokens` and `cost_usd` are then a
     lower bound, never complete. A decide that raises (abandoned on a kill, or failed) is counted
     by the decide port's slice (#326), not here."""
+    usage: TokenUsage = TokenUsage(input_tokens=0, output_tokens=0)
+    """[V2.45]: the reported usage summed by category (a lower bound when `usage_incomplete`).
+    Stage 1 runs with caching off and asserts every cache counter here is zero."""
 
     @property
     def reason(self) -> str | None:
