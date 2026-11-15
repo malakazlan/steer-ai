@@ -288,9 +288,9 @@ class HelperProcess:
         self._w.reset_event(self._wake)
 
     def terminate(self) -> None:
-        """P4 (rev 2): a helper-caused loss ends the helper at once, through its job."""
-        if self._job is not None:
-            self._w.terminate_job(self._job)
+        """P4 (rev 2): a helper-caused loss ends the helper at once: through its job, else its
+        process, then a bounded wait for it to be gone (#375 H5)."""
+        self._end()
 
     # ---- lifecycle ------------------------------------------------------------------------------
 

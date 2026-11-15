@@ -738,3 +738,13 @@ def test_the_job_handle_is_the_helpers_own_job_and_read_only() -> None:
     assert helper.job_handle == job
     with pytest.raises(AttributeError):
         helper.job_handle = 0  # type: ignore[misc]  # a read-only property
+
+
+def test_terminate_ends_the_helper_checked_and_waits_for_it() -> None:
+    """#375 H5 for PR 3's `terminate()`: the same checked end, then a bounded wait."""
+    w = FakeWin32(job_terminate_ok=False)
+    helper = _helper(w)
+    helper.start()
+    helper.terminate()
+    assert w.named("terminate_process")
+    assert w.calls[-1] == ("wait", (w.process,), CLOSE_TIMEOUT_MS)
