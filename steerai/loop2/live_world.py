@@ -43,7 +43,7 @@ from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.act_guards import GuardDesk, InputGuard, ToggleGuard
 from steerai.loop2.act_port import ActPort
 from steerai.loop2.controller import PROMPT_VERSION
-from steerai.loop2.decide_port import Call, DecideCalls, TaskGenerations
+from steerai.loop2.decide_port import Call, Counter, DecideCalls, TaskGenerations
 from steerai.loop2.listing import LISTING_CAP
 from steerai.loop2.loop import ActResult, Dispatch, PortInterrupted, Ports
 from steerai.loop2.prompt_inputs import make_decide
@@ -154,6 +154,7 @@ class Platform(Protocol):
     def inputs(self, client: Any) -> InputPort: ...  # Any: the UiaClient
     def window_state(self) -> WindowState: ...
     def provider(self) -> Call: ...
+    def counter(self) -> Counter: ...
 
 
 @dataclass(frozen=True)
@@ -583,6 +584,7 @@ class LiveWorld:
             interrupted=self.interrupted,
             generations=config.generations,
             late_error=self.late_error,
+            counter=self._platform.counter(),
         )
         world = self.world
         check = self._on_loop_thread
@@ -917,6 +919,18 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
 
         client = anthropic.Anthropic(timeout=DEFAULT_TIMEOUT_S, max_retries=DEFAULT_MAX_RETRIES)
         return anthropic_call(client)
+
+    def counter(self) -> Counter:
+        """[V2.61]: count_tokens with no retry and the count's own timeout: a late count is cut
+        by the bound, so a retry could only arrive after the wait has ended."""
+        import anthropic  # noqa: PLC0415 - the SDK, only when a real task runs
+
+        from steerai.loop2.decide_port import (  # noqa: PLC0415
+            COUNT_TIMEOUT_S,
+            anthropic_count,
+        )
+
+        return anthropic_count(anthropic.Anthropic(timeout=COUNT_TIMEOUT_S, max_retries=0))
 
 
 def _ole32() -> Any:  # pragma: no cover - live, Windows only; Any: the ctypes DLL

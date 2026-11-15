@@ -14,6 +14,7 @@ and a result box, and returns data only (`Reply`). The loop thread waits on the 
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Final, TypeVar
@@ -25,6 +26,10 @@ from steerai.planner.claude_planner import DEFAULT_MAX_TOKENS, DEFAULT_MODEL, EF
 
 POLL_S: Final = 0.05
 """[V2.40] Q4: the loop thread polls `interrupted()` this often while a call runs (packet 5)."""
+COUNT_TIMEOUT_S: Final = 0.889 * 1.25
+"""[V2.61]: the longest wait for an exact count: the measured max, 889 ms, plus a quarter
+(count_tokens on claude-opus-5, 2026-11-15, n=60: p50 310 ms, p95 370 ms, max 889 ms). Later,
+the prompt is cut by the bound instead."""
 
 _COUNTS: Final = (
     "input_tokens",
@@ -49,6 +54,10 @@ class Reply:
     stop_reason: str | None
     usage: TokenUsage | None
 
+
+Counter = Callable[[list[str], list[str]], int | None]
+"""[V2.61]: the provider's exact count of a prompt's input tokens; None on a failure it mapped.
+It runs on a count worker, under the same rules as `Call`."""
 
 Call = Callable[[list[str], list[str]], Reply]
 """One provider call: the system blocks and the user blocks in, a `Reply` out. It runs on the
@@ -160,20 +169,20 @@ def late_token(error: BaseException) -> str:
     return f"late_{name.lower()}" if name in LATE_CLASSES else "late_error"
 
 
-class _Box:
+class _Box[R]:
     """Where the worker leaves its reply or its failure. Written once, under the lock, with
     `done` set inside it, so an abandoned call's failure is reported exactly once: by `finish`
     when it lands after the abandon, or by `abandon` when it landed before and went unread."""
 
     def __init__(self, late_error: LateError) -> None:
         self.done = threading.Event()
-        self.reply: Reply | None = None
+        self.reply: R | None = None
         self.error: BaseException | None = None
         self._late_error = late_error
         self._lock = threading.Lock()
         self._abandoned = False
 
-    def finish(self, reply: Reply | None, error: BaseException | None) -> None:
+    def finish(self, reply: R | None, error: BaseException | None) -> None:
         with self._lock:
             self.reply, self.error = reply, error
             self.done.set()
@@ -188,7 +197,7 @@ class _Box:
         if unread is not None:
             self._late_error(late_token(unread))
 
-    def result(self) -> Reply:
+    def result(self) -> R:
         if self.error is not None:
             raise self.error
         if self.reply is None:
@@ -196,12 +205,14 @@ class _Box:
         return self.reply
 
 
-def _work(call: Call, system: list[str], blocks: list[str], box: _Box) -> None:
+def _work[R](
+    call: Callable[[list[str], list[str]], R], system: list[str], blocks: list[str], box: _Box[R]
+) -> None:
     """The decide worker: one provider call; its reply or its failure, whatever its class, left
     in the box. `finally` finishes the box even if the catch were ever narrowed. A `SystemExit`
     here is kept like any failure and raised on the loop thread; `run_on_loop_thread` re-raises
     it in the caller, so it ends the process (#346 (2))."""
-    reply: Reply | None = None
+    reply: R | None = None
     error: BaseException | None = None
     try:
         reply = call(system, blocks)
@@ -215,7 +226,7 @@ class DecideCalls:
     """The controller's `ask_model` for one task's turns: each call on a daemon worker, the wait
     kill-aware, the usage summed per turn."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the call and its keyword-only knobs
         self,
         call: Call,
         *,
@@ -223,8 +234,12 @@ class DecideCalls:
         generations: TaskGenerations,
         late_error: LateError,
         poll_s: float = POLL_S,
+        counter: Counter | None = None,
+        count_timeout_s: float = COUNT_TIMEOUT_S,
     ) -> None:
         self._call = call
+        self._counter = counter
+        self._count_timeout_s = count_timeout_s
         self._interrupted = interrupted
         self._generations = generations
         self._late_error = late_error
@@ -245,7 +260,7 @@ class DecideCalls:
     def _ask(self, system: list[str], blocks: list[str]) -> str:
         self._check(None)  # nothing is sent after the latch: not even a repair ask
         generation = self._generations.current()
-        box = _Box(self._late_error)
+        box: _Box[Reply] = _Box(self._late_error)
         worker = threading.Thread(
             target=_work,
             args=(self._call, list(system), list(blocks), box),
@@ -265,7 +280,36 @@ class DecideCalls:
             raise SteerError(ErrorCode.MODEL_ERROR, "refusal")
         return reply.text
 
-    def _check(self, box: _Box | None) -> None:
+    def count(self, system: list[str], blocks: list[str]) -> int | None:
+        """[V2.61]: the prompt's exact input tokens, on a daemon worker, the wait kill-aware and
+        cut at `count_timeout_s`. None, so the prompt is cut by the bound, with no counter, on a
+        failure the counter mapped, or late; any other failure is raised here as itself."""
+        counter = self._counter
+        if counter is None:
+            return None
+        self._check(None)
+        generation = self._generations.current()
+        box: _Box[tuple[int | None]] = _Box(self._late_error)
+        worker = threading.Thread(
+            target=_work,
+            args=(lambda s, b: (counter(s, b),), list(system), list(blocks), box),
+            name="steer-count",
+            daemon=True,
+        )
+        deadline = time.monotonic() + self._count_timeout_s
+        worker.start()
+        while not box.done.wait(max(0.0, min(self._poll_s, deadline - time.monotonic()))):
+            self._check(box)
+            if time.monotonic() >= deadline:
+                box.abandon()  # late: its answer is never read
+                return None
+        self._check(box)
+        if self._generations.current() != generation:
+            box.abandon()
+            raise PortInterrupted("generation")
+        return box.result()[0]
+
+    def _check(self, box: _Box[Any] | None) -> None:  # Any: a reply or a count
         """Read the switch: on a token, the generation moves on (any result in flight is stale),
         the call is abandoned, and the wait ends with `PortInterrupted`."""
         token = self._interrupted()
@@ -326,6 +370,34 @@ def anthropic_call(
         )
 
     return call
+
+
+def anthropic_count(
+    client: Any,  # Any: the SDK's `Anthropic` client, or a double with `.messages.count_tokens`
+    *,
+    model: str = DEFAULT_MODEL,
+) -> Counter:
+    """[V2.61]: count_tokens on the blocks `anthropic_call` sends. A failure the SDK maps is None
+    (the prompt is cut by the bound); a count that is not a non-negative int is None; any other
+    error propagates."""
+
+    def count(system: list[str], blocks: list[str]) -> int | None:
+        try:
+            result = client.messages.count_tokens(
+                model=model,
+                system=[{"type": "text", "text": s} for s in system],
+                messages=[
+                    {"role": "user", "content": [{"type": "text", "text": b} for b in blocks]}
+                ],
+            )
+        except Exception as exc:
+            if _sdk_failure(exc) is None:
+                raise
+            return None
+        tokens = getattr(result, "input_tokens", None)
+        return tokens if type(tokens) is int and tokens >= 0 else None
+
+    return count
 
 
 def _sdk_failure(exc: Exception) -> SteerError | None:

@@ -397,6 +397,8 @@ def _result(
         },
         "monitor_lost": reason == "monitor_lost" or bool(report.get("monitor_lost")),
         "rejections": list(outcome.rejections),  # closed tokens: why a turn was rejected
+        "exact_counts": outcome.exact_counts,  # [V2.61]: turns near the ceiling, counted exactly
+        "estimates_low": outcome.estimates_low,  # [V2.61]: turns whose byte bound was low
         "cache_tokens": {  # [V2.45]: stage 1 asserts each is zero (caching is off)
             "write_5m": outcome.usage.cache_write_5m,
             "write_1h": outcome.usage.cache_write_1h,
