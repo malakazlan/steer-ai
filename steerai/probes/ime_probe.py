@@ -18,7 +18,8 @@ still empty, the caret, the IME open status, the layout and the foreground are u
 is not left down, and the hook saw every key-up as Steer's own.
 
 Run (sends real input): `uv run python -m steerai.probes.ime_probe [--batch 20] [--layout HKL]`.
-Exit codes: 0 the probe key passed, 1 it did not, 2 aborted, 3 no IME installed.
+Exit codes: 0 the probe key passed, 1 it did not, 2 aborted, 3 no IME installed, 4 the restore
+failed (the locale or the IME's open status did not read back as before; said, never silent).
 """
 
 from __future__ import annotations
@@ -37,7 +38,17 @@ from typing import Any, Final, Protocol
 from steerai.probes.probe_key import IDLE_S, ROUND_TRIPS, SETTLE_S, Abort, _Desk, _text_reader
 from steerai.session.monitor import PROBE_VK
 
-__all__ = ["NOT_APPLICABLE", "Abort", "Notepad", "ime_layouts", "main", "parse_hkl", "run"]
+__all__ = [
+    "NOT_APPLICABLE",
+    "RESTORE_FAILED",
+    "Abort",
+    "Notepad",
+    "RestoreFailed",
+    "ime_layouts",
+    "main",
+    "parse_hkl",
+    "run",
+]
 
 IME_LANGUAGES: Final = frozenset({0x04, 0x11, 0x12})
 """winnt.h (SDK 10.0.19041.0): LANG_CHINESE 0x04, LANG_JAPANESE 0x11, LANG_KOREAN 0x12."""
@@ -52,7 +63,13 @@ SEND_TIMEOUT_MS: Final = 1000
 SWITCH_S: Final = 0.5
 """The wait after each switch before it is read back; a switch not seen by then aborts."""
 NOT_APPLICABLE: Final = 3
+RESTORE_FAILED: Final = 4
 Row = dict[str, Any]  # Any: JSON values
+
+
+class RestoreFailed(Exception):  # noqa: N818 - the probe's own outcome, said as its name
+    """The input locale or the IME's open status did not read back as it was before the probe.
+    Raised from the restore, so it is what the run ends with even after an abort."""
 
 
 def primary_language(hkl: int) -> int:
@@ -162,6 +179,7 @@ def run(  # noqa: PLR0913 - every side of the desk injected, keyword-only
     up, its input locale and the IME's open status are put back and it is closed, abort or not."""
     target = _target(desk.layouts(), layout)  # first: with no IME the probe never applies
     if desk.idle_s() < IDLE_S:
+        emit({"restored": True, "switched": False})
         raise Abort("not_idle")
     monitor.start()
     accepted: list[int] = []
@@ -176,6 +194,7 @@ def run(  # noqa: PLR0913 - every side of the desk injected, keyword-only
             read_text = read_text_of(edit)
             before = desk.state(notepad.hwnd, read_text)
             if before["foreground"] != notepad.hwnd:
+                emit({"restored": True, "switched": False})
                 raise Abort("notepad_not_foreground")
             try:
                 accepted = _judge(
@@ -195,19 +214,54 @@ def run(  # noqa: PLR0913 - every side of the desk injected, keyword-only
                     monitor.close()
                     emit(echo(PROBE_VK))
             finally:
-                try:
-                    desk.set_ime_open(edit, bool(before["ime_open"]))
-                finally:  # the locale goes back even when the IME would not answer
-                    desk.request_layout(edit, int(before["layout"]))
-                pause(SWITCH_S)
-                after = desk.state(notepad.hwnd, read_text)
-                emit({"restored": after["layout"] == before["layout"]
-                      and after["ime_open"] == before["ime_open"]})  # fmt: skip
+                _restore(
+                    desk,
+                    hwnd=notepad.hwnd,
+                    edit=edit,
+                    before=before,
+                    read_text=read_text,
+                    emit=emit,
+                    pause=pause,
+                )
         finally:
             notepad.close()  # only our own pid
     finally:
         monitor.close()
     return accepted
+
+
+def _restore(  # noqa: PLR0913 - the run's state at the restore
+    desk: ImeDesk,
+    *,
+    hwnd: int,
+    edit: int,
+    before: Row,
+    read_text: Callable[[], str],
+    emit: Callable[[Row], None],
+    pause: Callable[[float], None],
+) -> None:
+    """Close the IME as it was and put the locale back, both always tried; read both back and
+    say the result. Anything short of both as before raises `RestoreFailed` (an abort in flight
+    stays its context)."""
+    errors: list[str] = []
+    try:
+        desk.set_ime_open(edit, bool(before["ime_open"]))
+    except Abort as unanswered:  # said in the row and turned into RestoreFailed below
+        errors.append(str(unanswered))
+    try:
+        desk.request_layout(edit, int(before["layout"]))
+    except OSError:  # PostMessageW refused: said in the row and turned into RestoreFailed
+        errors.append("layout_request_refused")
+    pause(SWITCH_S)
+    after = desk.state(hwnd, read_text)
+    restored = (
+        not errors
+        and after["layout"] == before["layout"]
+        and after["ime_open"] == before["ime_open"]
+    )
+    emit({"restored": restored, "switched": True, "restore_errors": errors})
+    if not restored:
+        raise RestoreFailed
 
 
 def _judge(  # noqa: PLR0913 - the run's state, passed down once
@@ -361,6 +415,9 @@ def main(
 
     try:
         accepted = probe(args.layout, args.batch, emit)
+    except RestoreFailed:
+        emit({"aborted": "restore_failed"})
+        return RESTORE_FAILED
     except Abort as stop:
         emit({"aborted": str(stop)})
         return NOT_APPLICABLE if str(stop) == "no_ime_installed" else 2

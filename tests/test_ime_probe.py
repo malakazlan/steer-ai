@@ -84,6 +84,7 @@ class FakeDesk:
         self.ime_open = 0
         self.opens = True
         self.closing_answers = True
+        self.restores = True
         self.text_empty = True
 
     def idle_s(self) -> float:
@@ -108,7 +109,8 @@ class FakeDesk:
 
     def request_layout(self, edit: int, hkl: int) -> None:
         self.log.append(f"layout {edit} {hkl:#x}")
-        self.layout = hkl
+        if self.restores or hkl != EN_US:
+            self.layout = hkl
 
     def set_ime_open(self, edit: int, open_: bool) -> None:
         self.log.append(f"open {edit} {int(open_)}")
@@ -173,6 +175,7 @@ def test_a_person_at_the_keyboard_stops_the_probe_before_it_starts() -> None:
     with pytest.raises(ime_probe.Abort, match="not_idle"):
         probe.run([PROBE_VK])
     assert (probe.log, probe.sent) == ([], [])
+    assert {"restored": True, "switched": False} in probe.rows  # nothing was switched
 
 
 def test_an_ime_that_will_not_open_aborts_and_still_restores_and_closes() -> None:
@@ -197,7 +200,7 @@ def test_each_key_is_judged_with_the_ime_open_then_everything_is_put_back() -> N
     assert [(r["vk"], r["passes"]) for r in judged] == [("0x0e", True), ("0x0f", True)]
     assert probe.log[-4:] == [f"echo {PROBE_VK:#x}", "open 101 0", f"layout 101 {EN_US:#x}",
                               "close"]  # fmt: skip
-    assert {"restored": True} in probe.rows
+    assert {"restored": True, "switched": True, "restore_errors": []} in probe.rows
     assert (probe.desk.ime_open, probe.desk.layout) == (0, EN_US)
 
 
@@ -219,10 +222,34 @@ def test_a_key_the_open_ime_reacts_to_fails_and_the_rest_are_still_judged() -> N
 def test_an_ime_that_will_not_close_still_gets_its_locale_put_back() -> None:
     probe = Probe()
     probe.desk.closing_answers = False
-    with pytest.raises(ime_probe.Abort, match="ime_control_unanswered"):
+    with pytest.raises(ime_probe.RestoreFailed):
         probe.run([PROBE_VK])
     assert probe.log[-3:] == ["open 101 0", f"layout 101 {EN_US:#x}", "close"]
+    assert {"restored": False, "switched": True,
+            "restore_errors": ["ime_control_unanswered"]} in probe.rows  # fmt: skip
     assert probe.monitor.closed
+
+
+def test_a_locale_that_does_not_come_back_is_its_own_failure() -> None:
+    probe = Probe()
+    probe.desk.restores = False
+    with pytest.raises(ime_probe.RestoreFailed):
+        probe.run([PROBE_VK])
+    assert {"restored": False, "switched": True, "restore_errors": []} in probe.rows
+    assert probe.log[-1] == "close"
+
+
+def test_a_failed_restore_after_an_abort_is_still_the_failure_reported() -> None:
+    probe = Probe()
+    probe.desk.restores = False
+
+    def person(_vk: int) -> None:
+        probe.monitor.events["user"] += 1
+
+    probe.effect = person
+    with pytest.raises(ime_probe.RestoreFailed) as failed:
+        probe.run([PROBE_VK])
+    assert str(failed.value.__context__) == "person_input"
 
 
 def test_the_persons_input_mid_batch_aborts_and_still_restores_and_closes() -> None:
@@ -294,6 +321,15 @@ def test_main_passes_when_the_probe_key_passed() -> None:
     assert rows[-1]["probe_vk_passes"] is True
 
 
+def test_main_exits_with_its_own_code_when_the_restore_failed() -> None:
+    def unrestored() -> list[int]:
+        raise ime_probe.RestoreFailed
+
+    code, rows = _main(unrestored)
+    assert code == ime_probe.RESTORE_FAILED
+    assert rows == [{"probe": "ime_probe", "aborted": "restore_failed"}]
+
+
 def test_main_reports_any_other_abort_as_an_abort() -> None:
     def stopped() -> list[int]:
         raise ime_probe.Abort("person_input")
@@ -317,6 +353,6 @@ def test_the_probe_key_with_an_ime_open_in_our_own_notepad() -> None:
     if code == ime_probe.NOT_APPLICABLE:
         pytest.skip("no Chinese, Japanese or Korean IME installed on this machine")
     assert all(row["probe"] == "ime_probe" for row in rows)
-    assert code in (0, 1, 2)
-    if code in (0, 1):
-        assert {"probe": "ime_probe", "restored": True} in rows
+    assert code in (0, 1, 2, ime_probe.RESTORE_FAILED)
+    restored = [row["restored"] for row in rows if "restored" in row]
+    assert restored == [code != ime_probe.RESTORE_FAILED], rows
