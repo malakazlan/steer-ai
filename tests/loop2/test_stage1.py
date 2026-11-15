@@ -129,12 +129,12 @@ def test_a_void_is_only_what_steer_did_not_cause(changes: dict[str, Any], reason
 
 
 def test_an_unreadable_log_after_steer_acted_is_not_done_never_void() -> None:
-    got = classify(DONE, _record(log_read=False))  # used.max_actions is 1
+    got = classify(DONE, _record(_final("stopped", "no_progress"), log_read=False, check=None))
     assert (got.verdict, got.reason) == ("fail", "log_unreadable_after_act")
 
 
 def test_unknown_actions_count_as_acted_so_never_void() -> None:
-    final = _final(used={"max_actions": None})
+    final = _final("stopped", "no_progress", used={"max_actions": None})
     assert classify(DONE, _record(final, log_read=False)).verdict == "fail"
 
 
@@ -334,3 +334,33 @@ def test_an_internal_failure_rejects_on_its_own_gate_too() -> None:
     runs = [*(_ok(DONE, r) for r in range(1, 10)), _ok(DONE, 10, "fail", reason="internal")]
     gates = accept([DONE], runs, controls=(5, 5)).gates
     assert (gates["internal"], gates["tasks"]) == (False, False)
+
+
+# ---- #366 P2: the order of the rules ---------------------------------------------------------
+
+
+def test_done_with_a_lost_monitor_and_a_failed_check_is_false_done() -> None:
+    final = _final("done", monitor_lost=True)
+    assert classify(DONE, _record(final, check=False)).verdict == "false_done"
+
+
+def test_done_with_an_unread_log_is_a_fail_never_a_void() -> None:
+    final = _final("done", used={"max_actions": 0})
+    got = classify(DONE, _record(final, log_read=False, check=None))
+    assert (got.verdict, got.reason) == ("fail", "done_log_unread")
+
+
+def test_the_enter_count_is_checked_before_a_lost_monitor_when_the_log_was_read() -> None:
+    final = _final("stopped", "monitor_lost", monitor_lost=True)
+    got = classify(NOBUTTON, _record(final, check=False, enters=2))
+    assert (got.verdict, got.reason) == ("fail", "enters:2")
+
+
+def test_a_lost_monitor_comes_before_the_unread_log_void() -> None:
+    final = _final("stopped", "monitor_lost", monitor_lost=True, used={"max_actions": 0})
+    assert classify(DONE, _record(final, log_read=False, check=None)).verdict == "monitor_lost"
+
+
+def test_internal_comes_before_a_refused_start_and_a_lost_monitor() -> None:
+    final = {"status": "error", "code": None, "detail": "internal_error", "monitor_lost": True}
+    assert classify(DONE, _record(final, check=None)).reason == "internal"

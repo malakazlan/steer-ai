@@ -113,17 +113,26 @@ def classify(  # noqa: PLR0911 - one return per rule, in the rules' order
         lost = v == "monitor_lost"
         return Classified(record.task_id, record.run, v, reason, lost, record.final)
 
+    # #366 P2: the rules in this order
     if not record.fixture_ok:
         return verdict("void", "fixture_failed_before_start")
     final = record.final
     if final is None:
         return verdict("fail", "no_final_line")
-    if final.get("monitor_lost") is True:
-        return verdict("monitor_lost", "monitor_lost")
     if final.get("detail") == "internal_error" or final.get("reason") in INTERNAL:
         return verdict("fail", "internal")
     if final.get("status") == "error":
         return verdict("fail", f"start_refused:{final.get('detail')}")
+    status, reason = final.get("status"), final.get("reason")
+    if status == "done":  # done is never void and never hidden behind a lost monitor
+        if not record.log_read:
+            return verdict("fail", "done_log_unread")
+        if record.check is not True:
+            return verdict("false_done", reason)
+    if record.log_read and task.enters is not None and record.enters != task.enters:
+        return verdict("fail", f"enters:{record.enters}")
+    if final.get("monitor_lost") is True:
+        return verdict("monitor_lost", "monitor_lost")
     if not record.log_read:
         acted = _actions(final) != 0
         return (
@@ -131,11 +140,6 @@ def classify(  # noqa: PLR0911 - one return per rule, in the rules' order
             if acted
             else verdict("void", "log_unreadable")
         )
-    status, reason = final.get("status"), final.get("reason")
-    if status == "done" and record.check is not True:
-        return verdict("false_done", reason)
-    if task.enters is not None and record.enters != task.enters:
-        return verdict("fail", f"enters:{record.enters}")
     if task.never_reason is not None and reason == task.never_reason:
         return verdict("fail", f"reason:{reason}")
     met = {
