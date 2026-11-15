@@ -238,8 +238,9 @@ def page_check(task: StageTask, raw: str) -> bool:
 
 
 CHROME_LOST: Final = "chrome_lost"
-"""#459: the run's own Chrome went away under the harness (its DevTools connection closed): an
-infrastructure void, re-run within the bound and counted toward the 1-in-10 void limit. The
+"""#459: the run's own Chrome went away under the harness (its DevTools connection closed). With
+no done claimed it is an infrastructure void, re-run within the bound and counted toward the
+1-in-10 void limit; a done it leaves unread fails closed as `done_log_unread:chrome_lost`. The
 same token as `chrome_a11y.CHROME_LOST`, which a test pins."""
 
 
@@ -289,8 +290,6 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
     # #366 P2: the rules in this order
     if not record.fixture_ok:
         return verdict("void", "fixture_failed_before_start")
-    if record.lost is not None:  # #459: the browser went away under the harness
-        return verdict("void", record.lost)
     if record.killed:
         return verdict("fail", "cap_killed")
     final = record.final
@@ -305,6 +304,12 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
     if final.get("status") == "error":  # #438: an error after the task began stays Steer's
         return verdict("fail", "error_after_start")
     status, reason = final.get("status"), final.get("reason")
+    if record.lost is not None:  # #459: the browser went away under the harness
+        # a done that cannot be checked is where a false done would hide: it fails closed,
+        # its cause kept; anything else is the machine's, a void (the coordinator's ruling)
+        if status == "done":
+            return verdict("fail", f"done_log_unread:{record.lost}")
+        return verdict("void", record.lost)
     if status == "done":  # done is never void and never hidden behind a lost monitor
         if not record.log_read:
             return verdict("fail", "done_log_unread")
@@ -546,6 +551,8 @@ def _closed_reason(reason: str | None) -> str | None:  # noqa: PLR0911 - one ret
         return f"{head}:{kept_code}:{kept_detail}"
     if head == "enters":
         return reason if tail.isdigit() or tail == "None" else f"{head}:other"
+    if head == "done_log_unread":
+        return reason if tail == CHROME_LOST else f"{head}:other"
     if head == "reason":
         return reason if _token(tail) else f"{head}:other"
     if head.startswith("expected_"):
