@@ -954,9 +954,9 @@ class _Run:
         """[V2.64] One: one veto-only call. No port, no call left in the budget, a failed or
         unparsed call: `audit_failed`; a veto: `audit_veto`. Both end `blocked`, never done."""
         audit = self.ports.audit
-        used = Usage(  # #404 principal 3: every budget, with the audit's own call counted
+        used = Usage(  # #404 principal 3: every budget, checked as decide checks it before a call
             actions=len(self.dispatched),
-            model_calls=self.model_calls + 1,
+            model_calls=self.model_calls,  # the guard trips at `not spent < limit`, as decide
             cost_usd=self._cost(),
             wall_s=self.ports.clock() - self.started,
             tokens=self.tokens,

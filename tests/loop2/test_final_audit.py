@@ -274,25 +274,30 @@ def test_an_audit_that_made_no_call_is_not_counted_as_one() -> None:
 # ---- #404 principal 3: every budget is checked before the audit's call ------------------------
 
 
-def test_a_budget_spent_at_the_done_point_stops_the_audit_before_its_call(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The budgets the decide loop checks (here the wall) are checked, with the audit's own call
-    counted, before it is made; spent, the audit is not called and the task is `audit_failed`."""
-    from steerai.loop2.guards import budget_hit as real  # noqa: PLC0415
+DECIDES = 2
+"""`_value_only` spends two decide calls before its done point."""
 
-    seen: list[int] = []
 
-    def hit(budgets: Any, used: Any) -> Any:  # Any: the guard's own types
-        seen.append(used.model_calls)
-        return "max_wall" if used.model_calls >= 3 else real(budgets, used)
+def _calls_budget(limit: int) -> Any:  # Any: a Task
+    return task(dataclasses.replace(task().budgets, max_model_calls=limit))
 
-    monkeypatch.setattr("steerai.loop2.runner.budget_hit", hit)
+
+def test_with_one_model_call_left_the_audit_runs_and_the_task_is_done() -> None:
+    """The real guard, as decide uses it (`not spent < limit` before the call): one call left
+    is enough for the audit."""
     world = _value_only(ALLOW)
-    outcome = run_task(task(), world.ports())
+    outcome = run_task(_calls_budget(DECIDES + 1), world.ports())
+    assert world.events.count("decide") == DECIDES
+    assert len(world.audits) == 1
+    assert (outcome.status, outcome.model_calls) == ("done", DECIDES + 1)
+
+
+def test_with_no_model_call_left_the_audit_is_failed_with_no_call() -> None:
+    world = _value_only(ALLOW)
+    outcome = run_task(_calls_budget(DECIDES), world.ports())
     assert world.audits == []
     assert (outcome.status, outcome.reason) == ("blocked", "audit_failed")
-    assert seen[-1] == world.events.count("decide") + 1  # the audit's own call is counted
+    assert outcome.model_calls == DECIDES
 
 
 # ---- #404 principal 4: a contradictory reply fails closed --------------------------------------
