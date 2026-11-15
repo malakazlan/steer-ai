@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from steerai.loop2.read_child import first_page_s, parse_arms, read_shape
+from steerai.loop2.read_child import first_page_s, leftovers, parse_arms, read_shape
 from tests.loop2.world_fakes import DOC, PAGE, observed, snapshot
 
 
@@ -51,3 +51,19 @@ def test_the_arms_are_parsed_in_order() -> None:
 def test_an_unknown_arm_is_refused(text: str) -> None:
     with pytest.raises(ValueError, match="arms must be"):
         parse_arms(text)
+
+
+def test_leftovers_are_only_this_runs_watched_processes() -> None:
+    table = [
+        (10, 1, "python.exe"),  # launched by this run
+        (11, 10, "python.exe"),  # a child of one it launched (a helper)
+        (12, 10, "notepad.exe"),  # under ours, but not a watched name
+        (20, 2, "chrome.exe"),  # someone else's Chrome
+        (30, 99, "Chrome.exe"),  # a Chrome this run launched, name in another case
+    ]
+    assert leftovers(table, {10, 30}) == [
+        {"name": "python.exe", "pid": 10, "ppid": 1},
+        {"name": "python.exe", "pid": 11, "ppid": 10},
+        {"name": "Chrome.exe", "pid": 30, "ppid": 99},
+    ]
+    assert leftovers(table, set()) == []

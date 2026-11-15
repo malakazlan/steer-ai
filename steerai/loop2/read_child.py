@@ -73,6 +73,23 @@ def parse_arms(text: str) -> tuple[Arm, ...]:
     return arms  # type: ignore[return-value]  # each checked against ARMS above
 
 
+WATCHED: Final = frozenset({"chrome.exe", "python.exe", "pythonw.exe"})
+"""The process names the leftover list reports: Steer's own Python and its Chromes, nothing else."""
+Mode = Literal["mixed", "real"]
+MODES: Final[tuple[Mode, ...]] = get_args(Mode)
+
+
+def leftovers(table: Sequence[tuple[int, int, str]], ours: set[int]) -> list[dict[str, object]]:
+    """The watched processes this run launched (`ours`, every pid it launched or saw under one)
+    or whose parent it launched, still alive in `table` ((pid, parent pid, image name)); never
+    another process's name."""
+    return [
+        {"name": name, "pid": pid, "ppid": ppid}
+        for pid, ppid, name in table
+        if name.lower() in WATCHED and (pid in ours or ppid in ours)
+    ]
+
+
 def _never_called(_system: list[str], _blocks: list[str]) -> NoReturn:
     raise RuntimeError("read_only: this child never calls the model")
 
@@ -259,6 +276,159 @@ def run_sequence(arms: Sequence[Arm], out_dir: Path) -> int:  # pragma: no cover
     return 0
 
 
+def _named_table() -> list[tuple[int, int, str]]:  # pragma: no cover - live, Windows only
+    """Every (pid, parent pid, image name) now, from one Toolhelp32 snapshot."""
+    import ctypes  # noqa: PLC0415 - Windows only
+    from ctypes import wintypes  # noqa: PLC0415
+
+    from steerai.probes.process_tree import TH32CS_SNAPPROCESS, _ProcessEntry  # noqa: PLC0415
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ProcessEntry)]
+    kernel.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(_ProcessEntry)]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    snapshot = kernel.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snapshot is None or snapshot == wintypes.HANDLE(-1).value:
+        raise OSError("CreateToolhelp32Snapshot failed")
+    table: list[tuple[int, int, str]] = []
+    try:
+        entry = _ProcessEntry()
+        entry.dwSize = ctypes.sizeof(_ProcessEntry)
+        more = kernel.Process32FirstW(snapshot, ctypes.byref(entry))
+        while more:
+            table.append(
+                (int(entry.th32ProcessID), int(entry.th32ParentProcessID), str(entry.szExeFile))
+            )
+            more = kernel.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel.CloseHandle(snapshot)
+    return table
+
+
+def _first_record(trace: Path) -> dict[str, object] | None:  # pragma: no cover - live
+    try:
+        lines = trace.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        record = json.loads(line) if line.strip() else {}
+        if record.get("event") == "first_observation":
+            return dict(record)
+    return None
+
+
+def run_acting(mode: Mode, out_dir: Path, price: Path) -> int:  # noqa: PLR0915  # pragma: no cover
+    """The 3d controls and their Chrome's exit, then one child per 3d variant: in `mixed`, the
+    real v2 CLI on the first variant (acting, as the harness runs it) and pure-read children on
+    the rest; in `real`, the real CLI on every variant. Before each child, the processes this run
+    launched that are still alive (`leftovers`); after it, its `first_observation` record."""
+    import shutil  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    from steerai.loop2.stage1 import (  # noqa: PLC0415
+        TASK_CAP_S,
+        THREE_D,
+        _idle_s,
+        _start,
+        child_argv,
+        precheck,
+        run_child,
+        wait_for_exit,
+        wait_until_ready,
+    )
+    from steerai.probes import instant_search as fixture  # noqa: PLC0415 - live only
+    from steerai.probes.chrome_a11y import (  # noqa: PLC0415
+        CHROME_DEFAULT,
+        launch_chrome,
+        stop_chrome,
+    )
+    from steerai.probes.layer_b import _ours  # noqa: PLC0415
+    from steerai.probes.layer_b_pages import PageServer  # noqa: PLC0415
+    from steerai.probes.memory_guard import free_physical_mb  # noqa: PLC0415
+    from steerai.probes.process_tree import process_table, tree_pids  # noqa: PLC0415
+    from steerai.probes.suite_chunks import kill_tree  # noqa: PLC0415
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
+
+    def emit(row: Mapping[str, object]) -> None:
+        sys.stdout.write(json.dumps(dict(row)) + "\n")
+        sys.stdout.flush()
+
+    ours: set[int] = set()
+
+    def record(pid: int) -> None:
+        ours.update(tree_pids(pid, process_table()) or {pid})
+
+    passed = sum(
+        fixture.passes(v, fixture.run_control(v, on_stop=record)) for v in fixture.VARIANTS
+    )
+    left = wait_for_exit(set(ours), alive=lambda: {p for p, _ in process_table()},
+                         sleep=time.sleep, clock=time.monotonic)  # fmt: skip
+    emit({"mode": mode, "controls": passed, "controls_left": len(left)})
+    for index, task in enumerate(THREE_D):
+        variant = task.page.lstrip("/")
+        real = mode == "real" or index == 0
+        emit({"before": variant, "leftovers": leftovers(_named_table(), ours)})
+        refused = wait_until_ready(
+            lambda: precheck(free_mb=free_physical_mb, idle_s=_idle_s),
+            sleep=time.sleep, clock=time.monotonic,
+        )  # fmt: skip
+        if refused is not None:
+            emit({"variant": variant, "not_started": refused})
+            continue
+        run_dir = out_dir / f"{mode}-{variant}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(prefix="steer-readchild-"))
+        with PageServer(fixture.pages()) as server:
+            port = fixture._free_port()
+            proc = launch_chrome(
+                CHROME_DEFAULT, tmp / "profile", port, f"http://127.0.0.1:{server.port}{task.page}"
+            )
+            ours.add(proc.pid)
+            try:
+                window = wait_window_for_pid(proc.pid, timeout_s=30.0, process=proc)
+                cdp, _ = _ours(port, server.port)
+                try:
+                    fixture._wait_ready(cdp)
+                    trace = run_dir / "trace.jsonl"
+                    if real:
+                        argv = child_argv(task, hwnd=window.hwnd, price=price, trace=trace)
+                        out = run_dir / "final.jsonl"
+                    else:
+                        argv = [
+                            sys.executable, "-m", "steerai.loop2.read_child", "child",
+                            "--hwnd", str(window.hwnd), "--arm", "mta",
+                            "--out", str(run_dir / "reads.jsonl"), "--trace", str(trace),
+                        ]  # fmt: skip
+                        out = run_dir / "stdout.txt"
+
+                    def started(command: list[str], target: Path) -> Any:  # Any: a Popen
+                        child = _start(command, target)
+                        ours.add(child.pid)
+                        return child
+
+                    ran = run_child(argv, cap_s=TASK_CAP_S if real else CHILD_CAP_S, out=out,
+                                    start=started, kill=kill_tree)  # fmt: skip
+                    record(proc.pid)
+                finally:
+                    cdp.close()
+            finally:
+                stop_chrome(proc, tmp / "profile")
+                shutil.rmtree(tmp, ignore_errors=True)
+        row: dict[str, object] = {"variant": variant, "child": "real" if real else "read",
+                                  "killed": ran.killed, "code": ran.code,
+                                  "first_observation": _first_record(trace)}  # fmt: skip
+        if real and ran.final is not None:
+            final = ran.final
+            row.update({k: final.get(k) for k in ("status", "reason", "used", "rejections")})
+        if not real:
+            row.update(_summary(run_dir / "reads.jsonl"))
+        emit(row)
+    emit({"after": "all", "leftovers": leftovers(_named_table(), ours)})
+    return 0
+
+
 def _summary(path: Path) -> dict[str, object]:  # pragma: no cover - live
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -279,12 +449,18 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live
     sequence = sub.add_parser("sequence")
     sequence.add_argument("--arms", default="mta,sta")
     sequence.add_argument("--out-dir", type=Path, required=True)
+    acting = sub.add_parser("acting")
+    acting.add_argument("--mode", dest="acting_mode", choices=MODES, required=True)
+    acting.add_argument("--out-dir", type=Path, required=True)
+    acting.add_argument("--price-file", type=Path, required=True)
     args = parser.parse_args(argv)
     if sys.platform != "win32":
         sys.stdout.write("read_child: windows only\n")
         return 0
     if args.mode == "child":
         return run_child_reads(args.hwnd, arm=args.arm, out=args.out, trace=args.trace)
+    if args.mode == "acting":
+        return run_acting(args.acting_mode, args.out_dir, args.price_file)
     return run_sequence(parse_arms(args.arms), args.out_dir)
 
 
