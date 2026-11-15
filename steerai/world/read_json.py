@@ -93,7 +93,9 @@ def _checked(snapshot: Snapshot) -> Snapshot:
     return snapshot
 
 
-def _pairs[V](facts: Mapping[RuntimeId, V] | None, out: Callable[[V], object]) -> list[Any] | None:
+def _pairs[V](
+    facts: Mapping[RuntimeId, V] | None, out: Callable[[V], object]
+) -> list[list[object]] | None:
     if facts is None:
         return None
     return [[list(rid), out(value)] for rid, value in facts.items()]
@@ -112,7 +114,7 @@ def _mapping[V](raw: object, read: Callable[[object], V]) -> dict[RuntimeId, V] 
     return found
 
 
-def _landmark_out(landmark: Landmark | None) -> dict[str, Any] | None:
+def _landmark_out(landmark: Landmark | None) -> dict[str, object] | None:
     if landmark is None:
         return None
     return {"kind": landmark.kind, "runtime_id": list(landmark.runtime_id)}
