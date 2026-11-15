@@ -14,11 +14,23 @@ from typing import Any
 import pytest
 
 from steerai.loop2 import runner
-from steerai.loop2.history import REFUSAL_TOKENS
+from steerai.loop2.decision import ActionDoc, Decision, SubgoalDoc
+from steerai.loop2.history import (
+    DELIVERIES,
+    GRAMMAR,
+    POSITIONAL_GRAMMAR,
+    REFUSAL_TOKENS,
+    VERBS,
+    ClaimResult,
+    LogEntry,
+    Proven,
+    render,
+)
 from steerai.loop2.loop import TokenUsage
 from steerai.loop2.runner import run_task
 from steerai.loop2.turn_trace import (
     KEY_TOKENS,
+    UNKNOWN,
     CarrierFact,
     ParamProof,
     ProofAttempt,
@@ -27,9 +39,10 @@ from steerai.loop2.turn_trace import (
     WatchFacts,
     closed,
     closed_proofs,
+    positional,
     turn_record,
 )
-from tests.loop2.world_fakes import GO, World, act, decision, task
+from tests.loop2.world_fakes import FIELD, GO, World, act, decision, report, task
 
 PAGE_TEXT = "Quarterly results for the Acme account"
 TITLE = "Acme Corp - Dashboard - Browser"
@@ -79,7 +92,7 @@ def full_record() -> dict[str, Any]:  # Any: JSON
             refusals=("id_not_listed", "press_not_at_focus"),
             watch=(WatchFacts("submit", 1.25),),
             tokens=TokenUsage(1200, 80),
-            history=("stale_observation", "load_guard"),
+            history=("stale_observation", "load_guard", "claim:s0:accepted", "proven:s1:claim"),
             proofs=(ATTEMPT,),
         )
     )
@@ -214,3 +227,94 @@ def test_a_dropped_turn_record_is_counted_in_the_runs_outcome(
     outcome = run_task(task(), dataclasses.replace(world.ports(), turn_trace=written.append))
     assert written == []
     assert outcome.turn_trace_dropped == len(clean)
+
+
+# ---- the ruling's (a): model-chosen names are written as positions ------------------------------
+
+SUBGOAL_ID = "acme_q3_results"  # model text that passes the history grammar (lowercase, `_`)
+PARAM_NAME = "account_name"
+SUBGOAL_IDS = ("find_store", SUBGOAL_ID)
+KNOWN = {SUBGOAL_ID: frozenset({PARAM_NAME, "quarter"}), "find_store": frozenset()}
+
+
+def _entry(subgoal: str | None, param: str | None) -> LogEntry:
+    return LogEntry(
+        verb=sorted(VERBS)[0],
+        handle=3,
+        role="edit",
+        subgoal=subgoal,
+        param=param,
+        delivery=sorted(DELIVERIES)[0],
+        classes=(),
+        tokens=(),
+        read_back=None,
+    )
+
+
+RAW = {
+    "act": _entry(SUBGOAL_ID, PARAM_NAME),
+    "claim": ClaimResult(SUBGOAL_ID, "accepted"),
+    "proven": Proven(SUBGOAL_ID, "claim"),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(RAW))
+def test_an_unsubstituted_history_line_fails_the_record(kind: str) -> None:
+    raw = render(RAW[kind])
+    assert GRAMMAR.fullmatch(raw)  # the history itself accepts the model's own id
+    record = full_record()
+    record["history"] = [raw]
+    assert not closed(record)
+
+
+@pytest.mark.parametrize("kind", sorted(RAW))
+def test_a_positional_history_line_passes_and_names_nothing(kind: str) -> None:
+    line = render(positional(RAW[kind], SUBGOAL_IDS, KNOWN))
+    assert POSITIONAL_GRAMMAR.fullmatch(line)
+    assert SUBGOAL_ID not in line
+    assert PARAM_NAME not in line
+    record = full_record()
+    record["history"] = [line]
+    assert closed(record)
+
+
+def test_positions_follow_the_decision_shape_rule() -> None:
+    """A subgoal by its place among the task's subgoals; a param by its place among its
+    subgoal's declared params, sorted (`account_name` before `quarter`)."""
+    entry = positional(_entry(SUBGOAL_ID, "quarter"), SUBGOAL_IDS, KNOWN)
+    assert isinstance(entry, LogEntry)
+    assert (entry.subgoal, entry.param) == ("s1", "param:1")
+    assert positional(Proven("find_store", "claim"), SUBGOAL_IDS, KNOWN) == Proven("s0", "claim")
+
+
+@pytest.mark.parametrize(
+    "record",
+    [_entry("not_a_subgoal", None), _entry(SUBGOAL_ID, "not_a_param"), Proven("gone", "claim")],
+)
+def test_a_name_not_found_is_never_written_raw(record: LogEntry | Proven) -> None:
+    line = render(positional(record, SUBGOAL_IDS, KNOWN))
+    assert UNKNOWN in line
+    assert "not_a" not in line
+    assert "gone" not in line
+    trace = full_record()
+    trace["history"] = [line]
+    assert not closed(trace)
+
+
+def test_the_runner_writes_no_model_chosen_subgoal_id_or_param_name() -> None:
+    subgoals = [
+        SubgoalDoc(id=SUBGOAL_ID, desc="search", params={PARAM_NAME: "red shoes"}, closes="page")
+    ]
+    typed = ActionDoc.model_validate(
+        {"verb": "type", "subgoal": SUBGOAL_ID, "target": FIELD.id, "param": PARAM_NAME}
+    )
+    world = World([Decision(subgoals=subgoals, actions=[typed])], effects=[report("own_value")])
+    records: list[dict[str, Any]] = []  # Any: JSON
+    outcome = run_task(task(), dataclasses.replace(world.ports(), turn_trace=records.append))
+    assert outcome.turn_trace_dropped == 0
+    assert all(closed(r) for r in records)
+    lines = [line for r in records for line in r["history"]]
+    assert any(":edit:s0:param:0:" in line for line in lines), lines
+    written = json.dumps(records)
+    assert SUBGOAL_ID not in written
+    assert PARAM_NAME not in written
