@@ -14,58 +14,58 @@ from tests.loop2.world_fakes import GOAL, pending
 SEARCH = AskFacts(subgoal_commit="none", text_from="request", field_name="Search", text="red shoes")
 
 
-@pending("[V2.15] Q11: every condition holds, so the scripted person says yes")
+@pending("[V2.15] Q11: every condition holds, so the scripted person says yes", step=4)
 def test_a_search_named_in_the_request_with_its_words_gets_a_yes() -> None:
     assert scripted_yes(GOAL, SEARCH) is True
 
 
-@pending("[V2.15] Q11: the subgoal's commit must be none")
+@pending("[V2.15] Q11: the subgoal's commit must be none", step=4)
 def test_a_commit_subgoal_never_gets_the_scripted_yes() -> None:
     assert scripted_yes(GOAL, dataclasses.replace(SEARCH, subgoal_commit="send")) is False
 
 
-@pending("[V2.15] Q11: the text must be a goal span")
+@pending("[V2.15] Q11: the text must be a goal span", step=4)
 def test_generated_text_never_gets_the_scripted_yes() -> None:
     assert scripted_yes(GOAL, dataclasses.replace(SEARCH, text_from="agent")) is False
 
 
-@pending("[V2.15] Q11: the text must be named in the request")
+@pending("[V2.15] Q11: the text must be named in the request", step=4)
 def test_text_not_in_the_request_never_gets_the_scripted_yes() -> None:
     assert scripted_yes(GOAL, dataclasses.replace(SEARCH, text="blue boots")) is False
 
 
-@pending("[V2.15] Q11: the field must be named in the request")
+@pending("[V2.15] Q11: the field must be named in the request", step=4)
 def test_a_field_not_named_in_the_request_never_gets_the_scripted_yes() -> None:
     assert scripted_yes(GOAL, dataclasses.replace(SEARCH, field_name="Message")) is False
 
 
-@pending("[V2.15] Q11: an ask with no text is not a search")
+@pending("[V2.15] Q11: an ask with no text is not a search", step=4)
 def test_an_ask_without_text_never_gets_the_scripted_yes() -> None:
     assert scripted_yes(GOAL, dataclasses.replace(SEARCH, text=None, text_from=None)) is False
 
 
-@pending("[V2.17].3: a stop word is never a shared content word")
+@pending("[V2.17].3: a stop word is never a shared content word", step=4)
 def test_for_does_not_name_a_comment_field() -> None:
     assert shares_content_word("Comment for the author", GOAL) is False
 
 
-@pending("[V2.17].3: a content word of three letters or more names the field")
+@pending("[V2.17].3: a content word of three letters or more names the field", step=4)
 def test_a_shared_content_word_names_the_field() -> None:
     assert shares_content_word("Search products", GOAL) is True
 
 
-@pending("[V2.17].3: whole tokens only")
+@pending("[V2.17].3: whole tokens only", step=4)
 def test_a_word_inside_a_longer_word_does_not_name_the_field() -> None:
     assert shares_content_word("Shopping list", GOAL) is False
 
 
-@pending("[V2.17].3: the text equals a goal span exactly")
+@pending("[V2.17].3: the text equals a goal span exactly", step=4)
 @pytest.mark.parametrize("text", ["Red Shoes", "red  shoes", "red shoes "])
 def test_text_that_is_not_exactly_a_goal_span_never_gets_the_scripted_yes(text: str) -> None:
     assert scripted_yes(GOAL, dataclasses.replace(SEARCH, text=text)) is False
 
 
-@pending("[V2.17].3: the unnamed-field declines are counted and reported")
+@pending("[V2.17].3: the unnamed-field declines are counted and reported", step=4)
 def test_unnamed_field_declines_are_counted() -> None:
     unnamed = dataclasses.replace(SEARCH, field_name="Comment for the author")
     generated = dataclasses.replace(SEARCH, text_from="agent")

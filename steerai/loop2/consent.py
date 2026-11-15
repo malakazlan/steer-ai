@@ -39,7 +39,7 @@ PostCheck = Literal["none", "query_outcome", "strict_claim"]
 TextFrom = Literal["request", "agent"]
 
 
-@stub
+@stub(4)
 def effective_commit(declared: Commit, dispatched: Sequence[Commit]) -> Commit:
     """A subgoal's commit: its declared one, raised by the declared commit of every action
     dispatched for it (§3.3)."""
@@ -51,7 +51,7 @@ WordClass = Literal["deny", "control", "consent", "billing"]
 `BILLING_PATTERNS`."""
 
 
-@stub
+@stub(4)
 def commit_refusal(  # noqa: PLR0913 - the closed facts of §3.3, keyword-only
     *,
     subgoal_commit: Commit,
@@ -70,19 +70,19 @@ def commit_refusal(  # noqa: PLR0913 - the closed facts of §3.3, keyword-only
     raise NotImplementedError("step 4: commit checks")
 
 
-@stub
+@stub(4)
 def tier_for(commit: Commit) -> Literal["standard", "strict"]:
     """[V2.15] Q2: strict for a commit subgoal, standard otherwise."""
     raise NotImplementedError("step 4: the proof tier")
 
 
-@stub
+@stub(4)
 def needs_write_ahead(risk: Risk) -> bool:
     """§8.4: every R2/R3 dispatch has a record first, a caution-R2 Enter included."""
     raise NotImplementedError("step 4: the write-ahead rule")
 
 
-@stub
+@stub(4)
 def post_check(*, risk: Risk, subgoal_commit: Commit, classified: bool) -> PostCheck:
     """What judges a dispatched action's effect. `classified`: an Enter or button click the
     query classifier judged (R1 query or caution R2). [V2.15] Q2: a classified action under a
@@ -95,12 +95,12 @@ class Consents:
     """[V2.15] Q6: the yes answers of one task. A yes is exactly `yes` or `yes:<decision id>` for
     the open ask, the same for R2 and R3; it is bound to one action key and used once."""
 
-    @stub
+    @stub(4)
     def grant(self, *, decision_id: str, action_key: str, answer: str) -> bool:
         """Record `answer` to the open ask `decision_id`; True only for a yes."""
         raise NotImplementedError("step 4: the answer rule")
 
-    @stub
+    @stub(4)
     def spend(self, *, decision_id: str, action_key: str) -> bool:
         """True once for a granted decision and its own key; False after that, for another
         key, or for a decision never granted."""
@@ -120,20 +120,20 @@ class GoalRow:
     text_from: TextFrom | None
 
 
-@stub
+@stub(4)
 def goal_row(
     action: ActionDoc, element: Element, *, text: str | None, text_from: TextFrom | None
 ) -> GoalRow:
     raise NotImplementedError("step 4: the goal row")
 
 
-@stub
+@stub(4)
 def goal_prompt(goal: str, row: GoalRow, *, tag: str) -> tuple[str, str]:
     """(system, user) for one numbered row, with v1's goal-match system prompt unchanged."""
     raise NotImplementedError("step 4: the goal prompt")
 
 
-@stub
+@stub(4)
 def goal_reasons(verdict: Verdict) -> tuple[str, ...]:
     """[V2.15] Q5: reason tokens for the ask. A verdict never approves and never blocks."""
     raise NotImplementedError("step 4: goal reasons")
@@ -186,7 +186,7 @@ class GateEnd:
     status: Literal["blocked", "paused", "stopped"] | None
 
 
-@stub
+@stub(4)
 def gate_pass(
     request: GateRequest, steps: GateSteps, consents: Consents, *, task_id: str, goal: str
 ) -> GateEnd:

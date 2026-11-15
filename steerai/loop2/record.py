@@ -49,7 +49,7 @@ class StartRefusal:
     role: str
 
 
-@stub
+@stub(4)
 def key_for(secret: bytes, action: ActionDoc, element: Element, *, text: str | None) -> str:
     """`ledger.action_key` over the action's verb, the element's identity (role, name,
     automation id) and the params it carries (`text`, `key`, `option`); never the subgoal or the
@@ -59,7 +59,7 @@ def key_for(secret: bytes, action: ActionDoc, element: Element, *, text: str | N
     raise NotImplementedError("step 4: the v2 action key")
 
 
-@stub
+@stub(4)
 def open_record(  # noqa: PLR0913 - the record's facts, keyword-only
     *,
     action_key: str,
@@ -74,7 +74,7 @@ def open_record(  # noqa: PLR0913 - the record's facts, keyword-only
     raise NotImplementedError("step 4: the write-ahead record")
 
 
-@stub
+@stub(4)
 def start_refusal(
     records: Sequence[V2Record], outcomes: Mapping[str, str | None]
 ) -> StartRefusal | None:
@@ -83,7 +83,7 @@ def start_refusal(
     raise NotImplementedError("step 4: no resume")
 
 
-@stub
+@stub(4)
 def close_token(report: EffectReport) -> str:
     """The outcome a dispatched R2/R3 record closes with, from its effect ([V2.17] item 4):
     `no_effect` only for a proven `none`, which releases the key as in v1; `weak_only` for
@@ -92,7 +92,7 @@ def close_token(report: EffectReport) -> str:
     raise NotImplementedError("step 4: closing a record")
 
 
-@stub
+@stub(4)
 def admission(risk: Risk, outcome: str | None, *, recorded: bool) -> Admission:
     """Whether an action may go: R0/R1 are always `fresh` (one dispatch per key is an R2/R3 rule;
     repeats are governed by strikes, [V2.17] item 6). At R2/R3: never recorded or a `RELEASED`
@@ -101,7 +101,7 @@ def admission(risk: Risk, outcome: str | None, *, recorded: bool) -> Admission:
     raise NotImplementedError("step 4: admission")
 
 
-@stub
+@stub(4)
 def on_kill(record: V2Record) -> str:
     """[V2.17] item 5: the outcome a record settles with when the person's kill stops the task.
     A record in flight (`acting`) settles as `unknown`."""

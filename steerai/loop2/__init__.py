@@ -4,22 +4,35 @@ imports it only inside the `--loop v2` branch."""
 from __future__ import annotations
 
 
-def ready() -> bool:
-    """Whether the v2 loop is built: False while any step 3c or step 4 interface is still a
-    stub. Reads the stub registry only; it calls nothing live."""
+def ready(step: int) -> bool:
+    """Whether the v2 loop is built through `step` (packet §7): False while any interface of
+    that step or an earlier one is still a stub. Reads the stub registry only; it calls nothing
+    live."""
     from steerai.loop2 import (  # noqa: F401, PLC0415 - importing registers each module's stubs
+        act_guards,
+        act_port,
         actuate,
         batch,
         claims,
         consent,
+        controller,
+        decide_port,
+        decision,
         form,
         guards,
+        history,
+        live_world,
         loop,
+        owned,
+        prompt_inputs,
         query,
         record,
         runner,
+        task,
+        text,
         verify,
+        world_ports,
     )
-    from steerai.loop2._stub import PENDING  # noqa: PLC0415 - read after the modules registered
+    from steerai.loop2._stub import PENDING_STEP  # noqa: PLC0415 - after the modules registered
 
-    return not PENDING
+    return not any(stub_step <= step for stub_step in PENDING_STEP.values())

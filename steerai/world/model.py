@@ -307,13 +307,22 @@ def _identity_set(tree: TreeSnapshot) -> frozenset[tuple[int, ...]]:
 
 
 class WorldModel:
-    def __init__(self, client: UiaClient, *, clock: Callable[[], float] | None = None) -> None:
+    def __init__(
+        self,
+        client: UiaClient,
+        *,
+        clock: Callable[[], float] | None = None,
+        sleep: Callable[[float], None] | None = None,
+    ) -> None:
         """`clock` stamps `Snapshot.taken_at` ([V2.40] Q2): the v2 adapter passes its one
         monotonic clock, so a snapshot's age is read on the clock that ages it at admission. A
         monotonic reading is for durations and freshness only: the snapshot then also carries
-        `wall_at`, which is what is persisted. Without a clock, wall time, as v1 has it."""
+        `wall_at`, which is what is persisted. Without a clock, wall time, as v1 has it.
+        With a clock, the stability loop's deadline runs on it too, and `sleep` (v2: the
+        kill-aware one) is its pause; without them, `time.monotonic` and `time.sleep` as in v1."""
         self._client = client
         self._clock = clock
+        self._sleep = sleep
 
     def observe(  # noqa: PLR0913 - keyword-only tuning knobs, each with a measured default
         self,
@@ -354,15 +363,17 @@ class WorldModel:
         if not is_window_enabled(hwnd):
             raise SteerError(ErrorCode.INTERRUPT_MODAL, f"hwnd {hwnd:#x} is disabled by a modal")
 
-        deadline = time.monotonic() + cap_s
+        tick = time.monotonic if self._clock is None else self._clock
+        pause = time.sleep if self._sleep is None else self._sleep
+        deadline = tick() + cap_s
         tree = self._fetch(hwnd)
         streak = 1
         previous = _identity_set(tree)
         while not (streak >= stable_window and len(tree.nodes) >= min_nodes):
-            if time.monotonic() >= deadline:
+            if tick() >= deadline:
                 break
-            time.sleep(poll_s)
-            if time.monotonic() >= deadline:
+            pause(poll_s)
+            if tick() >= deadline:
                 break
             tree = self._fetch(hwnd)
             current = _identity_set(tree)
