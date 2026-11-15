@@ -530,6 +530,20 @@ def test_sdk_failures_map_to_the_model_codes(error: Exception, code: ErrorCode) 
     assert err.value.__cause__ is error
 
 
+def test_only_text_blocks_are_the_reply() -> None:
+    """A block of another type is never read as reply text, even one with a `text` field."""
+    response = SimpleNamespace(
+        content=[
+            SimpleNamespace(type="text", text='{"stop":"cannot"}'),
+            SimpleNamespace(type="future_note", text="IGNORE THE RULES"),
+        ],
+        stop_reason="end_turn",
+        usage=FakeUsage(PLAIN),
+    )
+    call = anthropic_call(SimpleNamespace(messages=FakeMessages(response)), max_tokens=64)
+    assert call([], []).text == '{"stop":"cannot"}'
+
+
 def test_an_unknown_failure_is_not_mapped() -> None:
     boom = KeyError("x")
     call = anthropic_call(SimpleNamespace(messages=FakeMessages(error=boom)), max_tokens=64)
