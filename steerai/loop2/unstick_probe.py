@@ -40,6 +40,16 @@ def first_page(reads: Sequence[Mapping[str, Any]]) -> float | None:  # Any: JSON
     return None
 
 
+def flicker_s(shows: Sequence[tuple[str, float]]) -> float | None:
+    """Seconds from the minimise to the restore (or to the maximise after it); None when the
+    window was never minimised."""
+    times = dict(shows)
+    if "minimize" not in times:
+        return None
+    end = times.get("maximize", times.get("restore"))
+    return None if end is None else round(end - times["minimize"], 3)
+
+
 def _never_called(_system: list[str], _blocks: list[str]) -> Any:  # Any: never returns
     raise RuntimeError("probe: this child never calls the model")
 
@@ -61,7 +71,13 @@ def run_start_child(hwnd: int, *, out: Path, trace: Path) -> int:  # pragma: no 
     from steerai.probes.windows import process_name, window_pid  # noqa: PLC0415
     from steerai.world.observe2 import document_nodes  # noqa: PLC0415
 
+    shows: list[tuple[str, float]] = []
+
     class ProbePlatform(WindowsPlatform):
+        def show_window(self, hwnd: int, command: Any) -> None:  # Any: a ShowCommand
+            super().show_window(hwnd, command)
+            shows.append((str(command), time.monotonic()))
+
         def provider(self) -> Any:  # Any: a never-called `Call`
             return _never_called
 
@@ -111,6 +127,8 @@ def run_start_child(hwnd: int, *, out: Path, trace: Path) -> int:  # pragma: no 
                 "maximized_after": bool(zoomed(hwnd)),
                 "first_page_s": first_page(reads),
                 "reads": len(reads),
+                "shows": [name for name, _ in shows],
+                "minimize_to_restore_s": flicker_s(shows),
             }
 
     row = run_on_loop_thread(work, release=platform.release_com)
@@ -118,13 +136,44 @@ def run_start_child(hwnd: int, *, out: Path, trace: Path) -> int:  # pragma: no 
     return 0
 
 
-def run(out_dir: Path, price: Path) -> int:  # pragma: no cover - live
+def _watch_visibility(  # pragma: no cover - live
+    port: int, server_port: int, started: float, stop: Any, seen: list[tuple[float, object]]
+) -> None:
+    """Chrome's own visibilityState over DevTools every 100 ms until `stop` is set, each change
+    with its time from `started` (diagnostic only). Any: a threading.Event."""
+    from steerai.probes.layer_b import _ours  # noqa: PLC0415 - live only
+
+    session, _ = _ours(port, server_port)
+    try:
+        while not stop.is_set():
+            reply = session.call(
+                "Runtime.evaluate",
+                {"expression": "document.visibilityState", "returnByValue": True},
+            )
+            state = reply.get("result", {}).get("value")
+            if not seen or seen[-1][1] != state:
+                seen.append((round(time.monotonic() - started, 3), state))
+            time.sleep(0.1)
+    finally:
+        session.close()
+
+
+def run(out_dir: Path, price: Path) -> int:  # noqa: PLR0915 - one live run  # pragma: no cover
     """The control, the trigger, then `RUNS` start children (see the module doc)."""
     import shutil  # noqa: PLC0415
     import subprocess  # noqa: PLC0415
     import tempfile  # noqa: PLC0415
+    import threading  # noqa: PLC0415
 
-    from steerai.loop2.stage1 import THREE_D, _start, child_argv, run_child  # noqa: PLC0415
+    from steerai.loop2.stage1 import (  # noqa: PLC0415
+        THREE_D,
+        _idle_s,
+        _start,
+        child_argv,
+        precheck,
+        run_child,
+        wait_until_ready,
+    )
     from steerai.probes import instant_search as fixture  # noqa: PLC0415 - live only
     from steerai.probes.chrome_a11y import (  # noqa: PLC0415
         CHROME_DEFAULT,
@@ -133,6 +182,7 @@ def run(out_dir: Path, price: Path) -> int:  # pragma: no cover - live
     )
     from steerai.probes.layer_b import _ours  # noqa: PLC0415
     from steerai.probes.layer_b_pages import PageServer  # noqa: PLC0415
+    from steerai.probes.memory_guard import free_physical_mb  # noqa: PLC0415
     from steerai.probes.suite_chunks import kill_tree  # noqa: PLC0415
     from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
 
@@ -146,6 +196,13 @@ def run(out_dir: Path, price: Path) -> int:  # pragma: no cover - live
         for n in range(RUNS)
     ]  # fmt: skip
     for name, variant, kind, maximized in cells:
+        refused = wait_until_ready(
+            lambda: precheck(free_mb=free_physical_mb, idle_s=_idle_s),
+            sleep=time.sleep, clock=time.monotonic,
+        )  # fmt: skip
+        if refused is not None:
+            emit({"cell": name, "not_started": refused})
+            continue
         run_dir = out_dir / name
         run_dir.mkdir(parents=True, exist_ok=True)
         tmp = Path(tempfile.mkdtemp(prefix="steer-unstick-"))
@@ -172,16 +229,29 @@ def run(out_dir: Path, price: Path) -> int:  # pragma: no cover - live
                 argv = [sys.executable, "-m", "steerai.loop2.unstick_probe", "child",
                         "--hwnd", str(window.hwnd), "--out", str(run_dir / "start.json"),
                         "--trace", str(run_dir / "trace.jsonl")]  # fmt: skip
-                done = subprocess.run(  # noqa: S603 - our own module, a fixed argv
-                    argv, capture_output=True, text=True, timeout=CHILD_CAP_S, check=False
+                seen: list[tuple[float, object]] = []
+                stop = threading.Event()
+
+                watcher = threading.Thread(
+                    target=_watch_visibility,
+                    args=(port, server.port, time.monotonic(), stop, seen),
                 )
+                watcher.start()
+                try:
+                    done = subprocess.run(  # noqa: S603 - our own module, a fixed argv
+                        argv, capture_output=True, text=True, timeout=CHILD_CAP_S, check=False
+                    )
+                finally:
+                    stop.set()
+                    watcher.join(timeout=5.0)
                 reply = cdp.call(
                     "Runtime.evaluate",
                     {"expression": "document.visibilityState", "returnByValue": True},
                 )
                 row = json.loads((run_dir / "start.json").read_text("utf-8"))
                 emit({"cell": name, "launched_maximized": maximized, "code": done.returncode,
-                      **row, "chrome_view": reply.get("result", {}).get("value")})  # fmt: skip
+                      **row, "chrome_view_end": reply.get("result", {}).get("value"),
+                      "visibility_from_child_start": [f"{s}:{v}" for s, v in seen]})  # fmt: skip
             finally:
                 if cdp is not None:
                     cdp.close()

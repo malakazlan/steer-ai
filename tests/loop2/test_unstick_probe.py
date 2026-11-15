@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from steerai.loop2.unstick_probe import first_page
+from steerai.loop2.unstick_probe import first_page, flicker_s
 
 
 def test_the_first_page_is_the_first_read_with_nodes_under_the_document() -> None:
@@ -14,3 +14,8 @@ def test_the_first_page_is_the_first_read_with_nodes_under_the_document() -> Non
     assert first_page(reads) == 0.5
     assert first_page(reads[:2]) is None
     assert first_page([]) is None
+
+def test_the_flicker_runs_from_the_minimise_to_the_restore_or_the_maximise() -> None:
+    assert flicker_s([("minimize", 10.0), ("restore", 10.25)]) == 0.25
+    assert flicker_s([("minimize", 10.0), ("restore", 10.25), ("maximize", 10.4)]) == 0.4
+    assert flicker_s([]) is None
