@@ -24,6 +24,7 @@ from steerai.action.executor import Executor
 from steerai.action.options import UiaOptions
 from steerai.action.physical import PhysicalAction, PhysicalExecutor
 from steerai.errors import ErrorCode, SteerError
+from steerai.loop2 import controller
 from steerai.loop2.act_guards import InputGuard, ToggleGuard
 from steerai.loop2.controller import PROMPT_VERSION
 from steerai.loop2.decide_port import Reply, TaskGenerations
@@ -147,6 +148,8 @@ class Platform:
         self.protected: list[bytes] = []
         self.flush_raises = False
         self.prompts: list[list[str]] = []
+        self.counted = 0
+        self.count_answer: int | None = None
         self.click_named: str | None = None
         self.screen = snapshot(PAGE)
         self.fake_input = FakeInput()
@@ -266,6 +269,13 @@ class Platform:
 
     def provider(self) -> Any:  # Any: the decide port's Call
         return self.reply
+
+    def counter(self) -> Any:  # Any: the decide port's Counter
+        return self.count
+
+    def count(self, _system: list[str], _blocks: list[str]) -> int | None:
+        self.counted += 1
+        return self.count_answer
 
     def reply(self, _system: list[str], blocks: list[str]) -> Reply:
         self.prompts.append(blocks)
@@ -744,6 +754,25 @@ def test_one_task_runs_through_the_ports_on_one_clock() -> None:
     assert go.invoked == 1
     assert outcome.reason not in {"clock_domain", "port_unstable_ui"}
     assert platform.observer_clock is world.clock
+
+
+def test_the_platforms_exact_count_reaches_the_prompt_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[V2.61]: near the ceiling the guard asks the platform's counter; a count that fits sends
+    the prompt, and the outcome says how many turns spent one."""
+    monkeypatch.setattr(controller, "PROMPT_TOKEN_CEILING", 1)
+    monkeypatch.setattr(controller, "EXACT_BAND", 10.0**9)
+    platform = Platform()
+    platform.handles = [
+        _Handle(control_type=TYPE_IDS.get(e.role, TYPE_IDS["Button"]), name=e.name) for e in PAGE
+    ]
+    platform.count_answer = 1
+    world, _ = _world(platform)
+    outcome = run_task(task(), world.ports(task()))
+    world.close()
+    assert platform.counted == len(platform.prompts) >= 1
+    assert outcome.exact_counts == len(platform.prompts)
 
 
 def test_the_desk_reads_the_persons_last_input_from_the_monitor() -> None:

@@ -377,6 +377,9 @@ class _Run:
         self.usage_incomplete = False
         self.watch_counts: dict[WatchKind, list[int]] = {k: [0, 0] for k in get_args(WatchKind)}
         """[V2.48]: per class, the watches and those that ended at their deadline."""
+        self.exact_counts = 0
+        self.estimates_low = 0
+        """[V2.61]: turns with an exact count; turns whose bound was low."""
         self.rejections: tuple[str, ...] = ()
         """The shakedown's #3: the last rejected turn's closed tokens, for the final line."""
         self.strikes = Strikes(STRIKE_LIMIT)
@@ -455,6 +458,8 @@ class _Run:
             watch_deadlines=tuple((k, w, d) for k, (w, d) in self.watch_counts.items()),
             rejections=self.rejections,
             usage=TokenUsage(*self.by_category),
+            exact_counts=self.exact_counts,
+            estimates_low=self.estimates_low,
             read_costs=tuple(self.read_costs),
             stale_observations=self.stale_count,
             target_changes=self.target_changes,
@@ -623,6 +628,8 @@ class _Run:
         except (PortInterrupted, SteerError, ControllerError) as exc:
             if isinstance(exc, ControllerError):
                 self.rejections = tuple(t for t in exc.tokens if TOKEN.fullmatch(t))
+                self.exact_counts += exc.exact_counted
+                self.estimates_low += exc.estimate_low
             if isinstance(exc, ControllerError) and exc.record is None:
                 raise  # no call was made: nothing billed
             self.model_calls += 1
@@ -637,6 +644,8 @@ class _Run:
                 self.by_category = [a + b for a, b in zip(self.by_category, counts, strict=True)]
             raise
         self.model_calls += 1
+        self.exact_counts += decided.exact_counted
+        self.estimates_low += decided.estimate_low
         counts = _counts(decided.usage)
         if counts is None:
             self.tokens = math.nan  # never zero: the token budget trips ([V2.37] P6)

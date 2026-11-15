@@ -39,7 +39,7 @@ from steerai.loop2.loop import TokenUsage
 from steerai.loop2.task import Status
 from steerai.loop2.text import clean_line, has_control
 from steerai.world.capabilities import TOKENS as CAPABILITY_TOKENS
-from steerai.world.elements import format_lines
+from steerai.world.elements import format_lines, safe_name
 from steerai.world.model import Snapshot
 
 PROMPT_VERSION = "controller-7"
@@ -47,10 +47,21 @@ PROMPT_TOKEN_CEILING = 50_000
 """[V2.55] (2): the most input tokens a rendered prompt may hold before any model call. A policy
 limit, six times the largest capped prompt measured (8,339 tokens, count_tokens on claude-opus-5,
 2026-11-15, 20 probe pages and two CJK pages)."""
-CHARS_PER_TOKEN = 2.2
-"""The estimate's divisor, under the worst chars-per-token measured on the rendered prompt: 2.248
-(zh.wikipedia, uncapped); the range was 2.248-2.652 (same probe). A page of names in a script
-denser than that is not covered (#359 review (5))."""
+TOKENS_PER_BYTE = 0.82
+"""[V2.61]: the bound's tokens per UTF-8 byte of the rendered prompt: the worst measured, 0.7388,
+times a 1.1 margin. count_tokens on claude-opus-5, 2026-11-15, the v2 prompt at the structural
+maximum (300 rows, 120-character names): ASCII 0.3942, CJK 0.5597, Hangul 0.6217, emoji 0.6612,
+symbols 0.7388, mixed 0.6701 tokens per byte. With names capped at `MAX_NAME_BYTES` the worst is
+0.7184 (symbols, same day). Bytes, not characters: a character can be four bytes and more than
+one token."""
+EXACT_BAND = 2.1
+"""[V2.61]: a bound over the ceiling by at most this factor gets one exact count before rows are
+cut. The bound is at most 0.82 / 0.3914 = 2.095 times the truth (the lowest ratio measured, the
+prompt with an empty listing), so a prompt whose bound is past the band does not fit."""
+MAX_NAME_BYTES = 240
+"""[V2.61]: a v2 listing name's cap in UTF-8 bytes, after v1's cap of `MAX_NAME_CHARS`
+characters: twice the bytes of an ASCII name at v1's cap. Provisional, unmeasured against
+pages: a policy limit so that one row of four-byte characters cannot hold 480 bytes."""
 ASK_PREFIX = "Steer asks: "
 ASK_MAX_CHARS = 200
 MAX_REPLY_BYTES = 64 * 1024
@@ -152,6 +163,11 @@ class ControllerError(Exception):
         self.usage: TokenUsage | None = None
         """The summed usage of the turn's calls, when each reported one (set by the decide
         port: a rejected turn's calls were billed and reported, so they are never unknown)."""
+        self.exact_counted = False
+        """[V2.61]: the turn spent an exact count (set by the decide port)."""
+        self.estimate_low = False
+        """[V2.61]: the turn's calls held more input tokens than the bound said (set by the
+        decide port)."""
 
 
 @dataclass(frozen=True)
@@ -199,7 +215,9 @@ def v2_listing(  # noqa: PLR0913 - the snapshot and each row fact, keyword-only
     (b)). With a `listing` ([V2.54]), only its rows, each with its class."""
     shown = None if listing is None else dict(zip(listing.ids, listing.priorities, strict=True))
     rows: list[ListingRow] = []
-    for e, line in zip(snapshot.elements, format_lines(snapshot.elements), strict=True):
+    for e, line in zip(
+        snapshot.elements, format_lines(snapshot.elements, name=v2_name), strict=True
+    ):
         if shown is not None and e.id not in shown:
             continue
         handle = handles.get(e.id)
@@ -224,10 +242,42 @@ def focus_state(snapshot: Snapshot, focus: tuple[int, ...] | None) -> FocusState
     return "elsewhere"
 
 
-def prompt_tokens(system: Sequence[str], user: Sequence[str]) -> int:
-    """The prompt's size in tokens, estimated from its characters (`CHARS_PER_TOKEN`)."""
-    chars = sum(len(b) for b in system) + sum(len(b) for b in user)
-    return math.ceil(chars / CHARS_PER_TOKEN)
+def v2_name(name: str) -> str:
+    """v1's escaped and character-capped name, then capped at `MAX_NAME_BYTES` UTF-8 bytes, head
+    and tail, cut on characters with an ellipsis between ([V2.61])."""
+    escaped = safe_name(name)
+    if len(escaped.encode("utf-8")) <= MAX_NAME_BYTES:
+        return escaped
+    budget = MAX_NAME_BYTES - len("…".encode())
+    head = _fill(escaped, budget * 2 // 3)
+    tail = _fill(escaped[len(head) :][::-1], budget - len(head.encode("utf-8")))[::-1]
+    return head + "…" + tail
+
+
+def _fill(text: str, budget: int) -> str:
+    """The longest prefix of `text` within `budget` UTF-8 bytes."""
+    used = 0
+    for i, ch in enumerate(text):
+        used += len(ch.encode("utf-8"))
+        if used > budget:
+            return text[:i]
+    return text
+
+
+def prompt_bytes(system: Sequence[str], user: Sequence[str]) -> int:
+    """The prompt's size in UTF-8 bytes, every block."""
+    return sum(len(b.encode("utf-8")) for b in (*system, *user))
+
+
+def prompt_tokens(
+    system: Sequence[str], user: Sequence[str], per_byte: float = TOKENS_PER_BYTE
+) -> int:
+    """[V2.61]: an upper bound on the prompt's tokens, from its bytes at `per_byte`."""
+    return math.ceil(prompt_bytes(system, user) * per_byte)
+
+
+ExactCount = Callable[[list[str], list[str]], int | None]
+"""[V2.61]: the prompt's exact input tokens, or None when the count failed or came late."""
 
 
 _DROP_ORDER: tuple[RowClass, ...] = ("rest", "goal", "keep")
@@ -237,18 +287,31 @@ def _fit(
     rows: list[ListingRow],
     render: Callable[[Sequence[ListingRow]], tuple[list[str], list[str]]],
     keep_cap: int,
+    *,
+    per_byte: float,
+    exact: ExactCount | None,
 ) -> tuple[list[ListingRow], int]:
     """[V2.55] (2): the rows that fit under the ceiling, cutting by class from the bottom of the
     listing up, and how many were cut. Always-keep rows go only beyond `keep_cap` (#359 review)
     and root-chain rows never (#360); `prompt_too_large` when the rest would still not fit.
     Bottom-up inside a class, after every lower class, keeps the listing closed upward: a row's
-    descendants go before it."""
+    descendants go before it.
+    [V2.61]: the size is the byte bound at `per_byte`. The first time the bound is over the
+    ceiling but within `EXACT_BAND` of it, one exact count decides: at or under the ceiling, the
+    rows are sent; over it, failed or late, rows are cut by the bound (never sent on a hope)."""
     cut = 0
+    counted = False
     while True:
         system, user = render(rows)
-        over = prompt_tokens(system, user) - PROMPT_TOKEN_CEILING
+        bound = prompt_tokens(system, user, per_byte)
+        over = bound - PROMPT_TOKEN_CEILING
         if over <= 0:
             return rows, cut
+        if exact is not None and not counted and bound <= PROMPT_TOKEN_CEILING * EXACT_BAND:
+            counted = True
+            truth = exact(system, user)
+            if _fits(truth):
+                return rows, cut
         kept = [i for i in reversed(range(len(rows))) if rows[i].row_class == "keep"]
         victims = [
             *(i for c in _DROP_ORDER[:-1] for i in reversed(range(len(rows)))
@@ -257,15 +320,20 @@ def _fit(
         ]  # fmt: skip
         if not victims:
             raise ControllerError("prompt_too_large")
-        need = over * CHARS_PER_TOKEN
+        need = over / per_byte
         drop: set[int] = set()
         for i in victims:
             drop.add(i)
-            need -= len(rows[i].text) + 2 * rows[i].depth + 1
+            need -= len(rows[i].text.encode("utf-8")) + 2 * rows[i].depth + 1
             if need <= 0:
                 break
         rows = [r for i, r in enumerate(rows) if i not in drop]
         cut += len(drop)
+
+
+def _fits(truth: int | None) -> bool:
+    """An exact count at or under the ceiling; anything else (None, a bool, a negative) is not."""
+    return type(truth) is int and 0 <= truth <= PROMPT_TOKEN_CEILING
 
 
 def repair_rate(records: Sequence[DecideRecord]) -> float:
@@ -461,6 +529,9 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     on_fit: Callable[[frozenset[int], int], None] | None = None,
     listing_note_after: Callable[[int], str | None] | None = None,
     keep_cap: int = LISTING_CAP,
+    tokens_per_byte: float = TOKENS_PER_BYTE,
+    count_exact: ExactCount | None = None,
+    on_sent: Callable[[int], None] | None = None,
 ) -> tuple[Decision, DecideRecord]:
     """Ask, parse, validate; on failure repair with code tokens only, up to `max_repairs` times.
 
@@ -470,6 +541,8 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     prompt that cannot fit is never sent (`prompt_too_large`, no record: no call was made). With
     `listing_note_after`, the listing note is the one for the rows actually sent (it hears how
     many the guard cut) in place of `listing_note`.
+    [V2.61]: the guard bounds by bytes at `tokens_per_byte` and may spend one `count_exact` near
+    the ceiling (`_fit`); `on_sent` hears each call's prompt bytes.
     A failure raises ControllerError carrying the DecideRecord of the calls spent.
     """
     screen = screen_fence if screen_fence is not None else secrets.token_hex(16)
@@ -497,7 +570,9 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
             changes_note=changes_note,
         )
 
-    rows, cut = _fit(list(listing_rows), render, keep_cap)
+    rows, cut = _fit(
+        list(listing_rows), render, keep_cap, per_byte=tokens_per_byte, exact=count_exact
+    )
     system, user = render(rows)
     sent = frozenset(r.handle for r in rows if r.handle is not None)
     listed_ids = listed_ids & sent if cut else listed_ids
@@ -508,6 +583,8 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
         blocks = user
         if error is not None:
             blocks = [*user, "repair: " + ",".join(error.tokens or (error.code,))]
+        if on_sent is not None:
+            on_sent(prompt_bytes(system, blocks))
         try:
             decision = parse(ask_model(system, blocks))
         except ControllerError as err:

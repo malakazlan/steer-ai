@@ -173,7 +173,7 @@ def test_a_prompt_over_the_ceiling_is_cut_rest_first_before_the_call(
     system, user = build_prompt(
         GOAL, [], [], [], "Shop", [], task_fence="taskfence01", screen_fence="f" * 32
     )
-    ceiling = controller.prompt_tokens(system, user) + 1_500  # room for about 28 rows
+    ceiling = controller.prompt_tokens(system, user) + 2_700  # room for about 28 rows
     calls, fits = _decide_with(rows, ceiling=ceiling, monkeypatch=monkeypatch)
     assert len(calls) == 1
     shown, cut = fits[0]
@@ -366,7 +366,7 @@ def test_the_prompt_sent_after_a_guard_cut_carries_the_post_cut_note(
         GOAL, [], [], [], "Shop", [], task_fence="taskfence01", screen_fence="f" * 32
     )
     monkeypatch.setattr(
-        controller, "PROMPT_TOKEN_CEILING", controller.prompt_tokens(system, user) + 1_000
+        controller, "PROMPT_TOKEN_CEILING", controller.prompt_tokens(system, user) + 2_000
     )
     calls: list[list[str]] = []
     fits: list[tuple[frozenset[int], int]] = []
@@ -382,11 +382,11 @@ def test_the_prompt_sent_after_a_guard_cut_carries_the_post_cut_note(
 
 
 def test_the_estimate_never_undercounts_the_worst_measured_page() -> None:
-    """#359 review (5): count_tokens on claude-opus-5, 2026-11-15, over the 20 probe pages and
-    two CJK pages, capped and uncapped: chars per token from 2.248 (zh.wikipedia, uncapped) to
-    2.652. The divisor is at or under the worst, so the estimate is never low on those pages;
-    the ceiling is far above the largest capped prompt measured (8,339 tokens)."""
-    assert controller.CHARS_PER_TOKEN <= 2.248
+    """[V2.61]: count_tokens on claude-opus-5, 2026-11-15, the v2 prompt at the structural
+    maximum in six scripts: tokens per byte up to 0.7388 (symbols). The bound's ratio is over
+    the worst, so the estimate is never low on those prompts; the ceiling is far above the
+    largest capped prompt measured on pages (8,339 tokens, #359 review (5))."""
+    assert controller.TOKENS_PER_BYTE >= 0.7388
     assert controller.PROMPT_TOKEN_CEILING >= 5 * 8_339
 
 
