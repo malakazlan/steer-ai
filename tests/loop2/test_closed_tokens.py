@@ -26,7 +26,8 @@ from steerai.loop2.loop import Dispatch, action_class, action_risk
 from steerai.loop2.world_ports import watch_kind
 from steerai.world.elements import Element
 from tests.loop2.test_action_risk import BOX, BOX_GO, SEARCHY, pending, screen
-from tests.loop2.world_fakes import GOAL, act
+from tests.loop2.test_action_risk import SHOWN as SHOWN_FOR_RISK
+from tests.loop2.world_fakes import GOAL, act, element
 
 
 def _words(annotation: object) -> set[str]:
@@ -135,8 +136,6 @@ def test_submit_and_trigger_come_from_one_call_with_pending_text(
         pending=pending(BOX, SEARCHY),
     )
     assert len(calls) == 1
-    kind = real(action, element.role)
-    assert seen.submit == (kind == "enter_field" or seen.submit_parent is not None)
     sent = Dispatch(
         action=action,
         runtime_id=element.runtime_id,
@@ -168,3 +167,29 @@ def test_an_enter_on_the_field_is_a_submit() -> None:
         act("press", key="Enter"), BOX, goal=GOAL, observed=screen(), pending=pending(BOX, SEARCHY)
     )
     assert seen.submit
+
+
+PANE = element(77, "Pane", "Panel", (9, 77), 40)
+CHECKBOX = element(78, "CheckBox", "Shop", (9, 78), 40)
+
+
+@pytest.mark.parametrize(
+    ("verb", "key", "target", "submit", "trigger"),
+    [
+        # written from the rulings, not from the code's formula
+        ("press", "Enter", BOX, True, False),  # enter_field: the Enter table (a submit)
+        ("press", "Enter", PANE, False, True),  # enter_other: R2, an Enter (trigger), NOT submit
+        ("press", "Space", CHECKBOX, False, False),  # state_press: neither ([V2.50])
+        ("press", "Enter", CHECKBOX, False, False),  # state_press: neither ([V2.50])
+        ("click", None, BOX_GO, True, True),  # a click beside pending text: the submit rule
+    ],
+)
+def test_submit_and_trigger_by_class_with_pending_text(
+    verb: str, key: str | None, target: Element, submit: bool, trigger: bool
+) -> None:
+    """#351 review (M6): the expected values come from [V2.48] and [V2.50]: an Enter on a
+    non-field, non-acting role is never a submit (it would take the 5 s guard)."""
+    action = act(verb, key=key) if verb == "press" else act(verb, target=target.id)
+    shown = screen([*SHOWN_FOR_RISK, PANE, CHECKBOX])
+    seen = action_risk(action, target, goal=GOAL, observed=shown, pending=pending(BOX, SEARCHY))
+    assert (seen.submit, seen.trigger) == (submit, trigger)
