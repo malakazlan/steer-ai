@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Final
 
 
 class ErrorCode(StrEnum):
@@ -25,6 +26,27 @@ class ErrorCode(StrEnum):
     WINDOW_OTHER_DESKTOP = "window_other_desktop"
     BUDGET_EXCEEDED = "budget_exceeded"
     INVALID_TEXT = "invalid_text"
+
+
+DETAIL_USAGE: Final = "usage"
+DETAIL_LOOP_V2_NOT_READY: Final = "loop_v2_not_ready"
+DETAIL_NO_MATCH: Final = "no_match"
+DETAIL_AMBIGUOUS_TARGET: Final = "ambiguous_target"
+DETAIL_MINIMIZED: Final = "minimized"
+DETAIL_CLOAK_UNREADABLE: Final = "cloak_unreadable"
+START_DETAILS: Final = frozenset(
+    {
+        DETAIL_USAGE,
+        DETAIL_LOOP_V2_NOT_READY,
+        DETAIL_NO_MATCH,
+        DETAIL_AMBIGUOUS_TARGET,
+        DETAIL_MINIMIZED,
+        DETAIL_CLOAK_UNREADABLE,
+    }
+)
+"""The closed details a refused start's line carries (`cli.py`, `run.py`), as the emitters use
+them; a stage report keeps these and drops any other detail (#429). A price-file or IME message
+is free text and stays out."""
 
 
 class SteerError(Exception):

@@ -26,7 +26,16 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Final, TextIO
 
-from steerai.errors import ErrorCode, SteerError
+from steerai.errors import (
+    DETAIL_AMBIGUOUS_TARGET,
+    DETAIL_CLOAK_UNREADABLE,
+    DETAIL_LOOP_V2_NOT_READY,
+    DETAIL_MINIMIZED,
+    DETAIL_NO_MATCH,
+    DETAIL_USAGE,
+    ErrorCode,
+    SteerError,
+)
 from steerai.loop2 import ready as ready_step
 from steerai.loop2.decide_port import TaskGenerations
 from steerai.loop2.live_world import LiveConfig, LiveWorld, Platform, run_on_loop_thread
@@ -200,14 +209,14 @@ def bind_window(
     if hwnd is not None:
         listed = [w for w in windows if w.hwnd == hwnd]
         if not listed:
-            raise RunnerError(ErrorCode.ELEMENT_NOT_FOUND, "no_match", windows)
+            raise RunnerError(ErrorCode.ELEMENT_NOT_FOUND, DETAIL_NO_MATCH, windows)
         window = listed[0]
         if window.hwnd in excluded_hwnds or window.pid in excluded_pids:
             raise UsageError("--hwnd names this runner's own console")
         if window.minimized:
-            raise RunnerError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "minimized", listed)
+            raise RunnerError(ErrorCode.ELEMENT_NOT_ACTIONABLE, DETAIL_MINIMIZED, listed)
         if window.cloak_unreadable:
-            raise RunnerError(ErrorCode.WINDOW_OTHER_DESKTOP, "cloak_unreadable", listed)
+            raise RunnerError(ErrorCode.WINDOW_OTHER_DESKTOP, DETAIL_CLOAK_UNREADABLE, listed)
         return window
     if title is None:
         raise UsageError("--window or --hwnd is required")
@@ -249,11 +258,11 @@ def main(  # noqa: PLR0911 - one return per start refusal, in order
         options = parse_v2(argv)
     except UsageError as exc:
         out.note(f"usage error: {exc}")
-        return out.error(None, "usage", task_id=None)
+        return out.error(None, DETAIL_USAGE, task_id=None)
     deps = real_deps() if deps is None else deps
     if not deps.ready(3):
         out.note("error: loop v2 is not built yet: step 3")
-        return out.error(None, "loop_v2_not_ready", task_id=options.task_id)
+        return out.error(None, DETAIL_LOOP_V2_NOT_READY, task_id=options.task_id)
     try:
         price = load_price(options.price_file, model=DEFAULT_MODEL, today=deps.today())
     except SteerError as exc:
@@ -274,7 +283,7 @@ def main(  # noqa: PLR0911 - one return per start refusal, in order
         return out.error(exc.code, exc.detail, task_id=options.task_id)
     except UsageError as exc:
         out.note(f"usage error: {exc}")
-        return out.error(None, "usage", task_id=options.task_id)
+        return out.error(None, DETAIL_USAGE, task_id=options.task_id)
     return _run(options, deps, out, price, window)
 
 

@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Literal, Protocol, get_args
 
-from steerai.errors import ErrorCode
+from steerai.errors import START_DETAILS, ErrorCode
 from steerai.loop2.guards import StrikeReason
 from steerai.loop2.history import REFUSAL_TOKENS
 from steerai.loop2.loop import PARENT_KINDS, REASON_TOKEN, URL_READS
@@ -475,9 +475,11 @@ def _token(text: str) -> bool:
     return REASON_TOKEN.fullmatch(bare) is not None
 
 
-_START_DETAILS: Final = frozenset({c.value for c in ErrorCode} | {"internal_error", "None"})
-"""The values a refused start's line carries that the report keeps: its code, or the CLI's
-own internal-error token."""
+_START_DETAILS: Final = frozenset(
+    {c.value for c in ErrorCode} | START_DETAILS | {"internal_error", "None"}
+)
+"""The values a refused start's line carries that the report keeps: its code, a closed detail
+the emitters share (`errors.START_DETAILS`, #429), or the CLI's own internal-error token."""
 
 
 def _counts_state(run: Classified) -> str:

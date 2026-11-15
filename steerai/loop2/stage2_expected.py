@@ -343,6 +343,15 @@ def _outermost_ax(
     return [m for m in matches if not inside(m)]
 
 
+def opener_targets(acts: Mapping[str, SiteRow], task_id: str) -> tuple[Act, ...]:
+    """The targets a task's reveal must show, from its committed acts; a task behind an opener
+    with no acts row is refused (#429: fail closed, never any stable reveal)."""
+    row = acts.get(task_id)
+    if row is None:
+        raise OpenerError("no_acts")
+    return reveal_targets(row)
+
+
 def reveal_targets(row: SiteRow) -> tuple[Act, ...]:
     """#424 (4): the acts after the opener that name a target: the reveal must show them."""
     return tuple(a for a in row.acts[1:] if a.verb != "press" and a.role)
@@ -759,11 +768,16 @@ def save_opened(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live,
         opener = OPENERS.get(task.task_id)
         if opener is None:
             continue
+        row: dict[str, object] = {"task": task.task_id}
+        path = fresh_opened(out, task.task_id)
+        try:
+            targets = opener_targets(acted, task.task_id)  # before any load
+        except OpenerError as exc:
+            sys.stdout.write(json.dumps({**row, "opener": str(exc)}) + "\n")
+            continue
         host = urllib.parse.urlsplit(task.start).netloc
         spacer.wait(host)
         spacer.loaded(host)
-        row: dict[str, object] = {"task": task.task_id}
-        path = fresh_opened(out, task.task_id)
         try:
             with live_page(task.start, floor_mb=floor_mb, settle_s=6.0) as page:
                 reply = page.cdp.call(
@@ -778,9 +792,7 @@ def save_opened(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live,
                     before,
                     clock=time.monotonic,
                     sleep=time.sleep,
-                    targets=()
-                    if acted.get(task.task_id) is None
-                    else reveal_targets(acted[task.task_id]),
+                    targets=targets,
                 )
         except LowMemory as refused:
             sys.stdout.write(json.dumps({**row, "refused": str(refused)}) + "\n")

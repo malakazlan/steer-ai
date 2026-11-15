@@ -60,7 +60,7 @@ from steerai.loop2.stage2_expected import (
     load_acts,
     load_table,
     load_unrated,
-    reveal_targets,
+    opener_targets,
     table_from_reads,
     wait_revealed,
 )
@@ -372,8 +372,7 @@ def save_opened(out: Path) -> int:  # pragma: no cover - live, Windows only
             with _opened(task) as (hwnd, port):
                 if port is None:
                     raise InvalidRun("opener_needs_a_page")
-                row_acts = acted.get(task.task_id)
-                targets = () if row_acts is None else reveal_targets(row_acts)
+                targets = opener_targets(acted, task.task_id)  # fails closed (#429)
                 revealed = _revealed(hwnd, port, opener, targets)
         except (InvalidRun, OpenerError) as exc:
             sys.stdout.write(json.dumps({**row, "invalid": str(exc)}) + "\n")
