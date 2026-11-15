@@ -16,7 +16,18 @@ from steerai.loop2.controller import AUDIT_PROMPT_VERSION, ControllerError, buil
 from steerai.loop2.decision import Claim, Decision, SubgoalDoc
 from steerai.loop2.loop import Audited, AuditView, PortInterrupted, TokenUsage
 from steerai.loop2.runner import run_task
-from tests.loop2.world_fakes import FIELD, GO, World, act, report, task
+from tests.loop2.world_fakes import (
+    FIELD,
+    GO,
+    PAGE,
+    TYPED_VALUE,
+    World,
+    act,
+    element,
+    observed,
+    report,
+    task,
+)
 
 ALLOW = Audited(veto=False, reason="outcome_shown", usage=TokenUsage(50, 5))
 VETO = Audited(veto=True, reason="outcome_not_shown", usage=TokenUsage(50, 5))
@@ -94,15 +105,48 @@ def test_a_navigated_page_proof_is_never_audited() -> None:
     assert world.audits == []
 
 
-def test_a_value_proof_on_an_element_steer_never_acted_on_is_not_self_written() -> None:
+def test_a_value_proof_on_an_element_steer_never_acted_on_is_audited_too() -> None:
+    """Principal 1, rev 4.6: every task closed only by value or state claims is audited; a
+    pre-filled field costs one call."""
     subs = [SubgoalDoc(id="s1", desc="it holds it", params={"text": "red shoes"}, closes="value")]
-    world = World([
-        Decision(subgoals=subs, actions=[act("click", target=GO.id)]),
-        Decision(claims=[Claim(subgoal="s1", kind="value", evidence=[FIELD.id], param="text")]),
-    ])  # fmt: skip
+    world = World(
+        [
+            Decision(subgoals=subs, actions=[act("click", target=GO.id)]),
+            Decision(claims=[Claim(subgoal="s1", kind="value", evidence=[FIELD.id], param="text")]),
+        ]
+    )
+    world.values[FIELD.runtime_id] = TYPED_VALUE
     world.audit_reply = VETO
-    run_task(task(), world.ports())
-    assert world.audits == []
+    outcome = run_task(task(), world.ports())
+    assert len(world.audits) == 1
+    assert outcome.status != "done"
+
+
+def _combo_mirror() -> World:
+    """Principal 1: an editable ComboBox exposes the Value of its child Edit. Type into the
+    child, claim the value on the parent: the proof cites an element Steer never acted on."""
+    combo = element(20, "ComboBox", "Search", (9, 20), 1)
+    child = element(21, "Edit", "Search", (9, 21), 20)
+    subs = [SubgoalDoc(id="s1", desc="it holds it", params={"text": "red shoes"}, closes="value")]
+    world = World(
+        [
+            Decision(subgoals=subs, actions=[act("type", target=child.id, param="text")]),
+            Decision(claims=[Claim(subgoal="s1", kind="value", evidence=[combo.id], param="text")]),
+        ],
+        effects=[report("own_value")],
+        screen=observed([*PAGE, combo, child], focus=child.runtime_id),
+    )
+    world.values[combo.runtime_id] = TYPED_VALUE
+    world.values[child.runtime_id] = TYPED_VALUE
+    world.audit_reply = VETO
+    return world
+
+
+def test_a_value_claimed_on_a_mirror_of_the_typed_field_is_still_audited() -> None:
+    world = _combo_mirror()
+    outcome = run_task(task(), world.ports())
+    assert len(world.audits) == 1
+    assert outcome.status != "done"
 
 
 def test_a_task_that_is_not_done_never_calls_the_audit() -> None:
@@ -134,7 +178,7 @@ def test_the_audit_prompt_holds_no_desc_no_param_words_and_nothing_outside_the_f
         "Catalog", rows, task_fence="taskfence01", screen_fence="f" * 32,
     )  # fmt: skip
     text = "\n".join(user)
-    assert "s1 closes=value proven=claim:value self_written" in text
+    assert "s1 closes=value proven=claim:value value_or_state" in text
     assert text.count("red shoes") == 1  # the request only, inside the task fence
     assert "taskfence01" in text
     assert "f" * 32 in text

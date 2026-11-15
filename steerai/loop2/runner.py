@@ -914,7 +914,8 @@ class _Run:
 
     def _check_done(self, observed: Observed) -> None:
         """A task with zero subgoals never ends `done` ([V2.11] decision 1). [V2.64] One: when
-        every proof is self-written, the final audit runs first, and only its pass ends done."""
+        the task is closed only by value or state claims (rev 4.6), the final audit runs
+        first, and only its pass ends done."""
         if self.subgoals and all(s.id in self.proven for s in self.subgoals):
             lines = self._proof_lines()
             if all(line[4] for line in lines):
@@ -922,9 +923,9 @@ class _Run:
             raise _End("done", None)
 
     def _proof_lines(self) -> tuple[ProofLine, ...]:
-        """Each proven subgoal: id, closes, how, kind, and whether its proof is self-written: a
-        value or state claim whose every cited element Steer dispatched an action to."""
-        acted = {d.action.target for d in self.dispatched if d.action.target is not None}
+        """Each proven subgoal: id, closes, how, kind, and whether it was closed only by value or
+        state claims (rev 4.6: on any element, whoever set it; an editable ComboBox exposes its
+        child Edit's Value, so "an element Steer acted on" was a trigger a mirror could skip)."""
         lines: list[ProofLine] = []
         for subgoal in self.subgoals:
             how = self.proven_how.get(subgoal.id, "claim")
@@ -935,12 +936,7 @@ class _Run:
                 if proofs
                 else ("navigated" if how == "claim" else how)
             )
-            own = (
-                how == "claim"
-                and bool(proofs)
-                and kinds <= {"value", "state"}
-                and all(p.handle in acted for p in proofs.values())
-            )
+            own = how == "claim" and bool(proofs) and kinds <= {"value", "state"}
             lines.append((subgoal.id, subgoal.closes, how, kind, own))
         return tuple(lines)
 

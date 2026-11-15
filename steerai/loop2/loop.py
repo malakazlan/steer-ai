@@ -253,7 +253,8 @@ class Decided:
 AuditReason = Literal["outcome_shown", "outcome_not_shown", "outcome_unclear"]
 """[V2.64] One: what the final audit says of the request's outcome (closed)."""
 ProofLine = tuple[str, str, str, str, bool]
-"""One proven subgoal for the audit: (subgoal id, closes, how, kind, self-written)."""
+"""One proven subgoal for the audit: (subgoal id, closes, how, kind, closed only by value or
+state claims)."""
 
 
 @dataclass(frozen=True)

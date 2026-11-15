@@ -462,7 +462,8 @@ AUDIT_PROMPT_VERSION = "audit-1"
 AUDIT_RULES = (
     "You audit a Windows computer-use agent's claim that a request is finished. You see the "
     "request, how each of its subgoals was proven, and a listing of the window's elements now. "
-    "Every proof was written by the agent itself: it set the fields or states it then read. "
+    "Every subgoal was closed by a field's value or an element's state the agent read; the "
+    "agent may have set it itself. "
     "Answer with exactly one JSON object: veto true when the listing does not show the outcome "
     "the request asks for, as the person who asked would check it; veto false only when it does.\n"
     "- outcome_shown: the listing shows the outcome the request asks for.\n"
@@ -495,8 +496,8 @@ def build_audit_prompt(  # noqa: PLR0913 - distinct prompt inputs
     _check_fences(task_fence, screen_fence)
     lines = [
         f"{_data(sid, task_fence)} closes={closes} proven={how}:{kind}"
-        + (" self_written" if self_written else "")
-        for sid, closes, how, kind, self_written in proofs
+        + (" value_or_state" if value_or_state else "")
+        for sid, closes, how, kind, value_or_state in proofs
     ]
     stable = "\n".join(
         [f"request: {_data(task_goal, task_fence)}", "proofs:", f"<<<proofs {task_fence}",
