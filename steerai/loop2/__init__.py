@@ -37,6 +37,7 @@ def ready(step: int) -> bool:
         stage1_expected,
         task,
         text,
+        unstick_probe,
         verify,
         world_ports,
     )
