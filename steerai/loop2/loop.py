@@ -248,6 +248,10 @@ class Decided:
     """[V2.61]: the prompt guard spent an exact count on this turn."""
     estimate_low: bool = False
     """[V2.61]: the turn's calls held more input tokens than the guard's bound said."""
+    calls: int = 1
+    """[V2.67] D: the provider calls this Decision took: more than one is a repair round."""
+    rejections: tuple[str, ...] = ()
+    """[V2.67] D: the closed rejection tokens of each attempt that failed before it, in order."""
 
 
 AuditReason = Literal["outcome_shown", "outcome_not_shown", "outcome_unclear"]
@@ -327,6 +331,44 @@ class Ports:
 
 
 WatchKind = Literal["plain", "trigger", "submit", "wait"]
+PortDetail = Literal[
+    # the act port's own refusals and results
+    "port_error",
+    "screen_changed_during_wait",
+    "target_gone",
+    "expand_needs_click",
+    "not_in_step",
+    "commit_not_in_step",
+    "shape",
+    "text_missing",
+    "focus_needs_field",
+    "key_not_allowed",
+    "not_own_text",
+    "secure_unread",
+    "wall_budget",
+    "press_not_at_focus",
+    # the input guard and the toggle guard
+    "idle_unread",
+    "not_armed",
+    "toggle_limit",
+    "second_toggle_refused",
+    "second_toggle_uncertain",
+    "settled_on_reread",
+    # the tap check, the takeover and the switch (`interrupted`)
+    "hands_on",
+    "foreground_elevated",
+    "tap_unreadable",
+    "takeover",
+    "other_steer_input",
+    "killed",
+    "monitor_lost",
+    "session_locked",
+    "generation",
+]
+"""[V2.67] D: every `detail` the act port, its guards and the switch put on an act result, on
+top of the executors' (`execution.RefusalDetail`). Pinned to its producers by
+`tests/action/test_refusal_details.py`."""
+PORT_DETAILS: Final = frozenset(get_args(PortDetail))
 """[V2.48]: the watch classes, each with its own deadline (`world_ports.WorldTimes`)."""
 
 

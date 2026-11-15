@@ -159,7 +159,7 @@ def make_decide(
             return calls.count(system, user)
 
         try:
-            (decision, _record), usage = calls.turn(
+            (decision, record), usage = calls.turn(
                 lambda ask: decide(
                     ask,
                     task_goal=inputs.task_goal,
@@ -200,7 +200,15 @@ def make_decide(
         listing = (
             None if inputs.listing is None else inputs.listing.turn(listed, cut, tokens, first)
         )
-        return Decided(decision, usage, listing, exact_counted=spent, estimate_low=low)
+        return Decided(
+            decision,
+            usage,
+            listing,
+            exact_counted=spent,
+            estimate_low=low,
+            calls=record.calls,
+            rejections=record.rejections,
+        )
 
     return port
 

@@ -25,7 +25,13 @@ from steerai.action.dispositions import Delivery
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.actuate import may_retry, press_allowed, type_focus_ok
 from steerai.loop2.batch import batch_continues
-from steerai.loop2.controller import TOKEN, ControllerError, decision_shape, focus_state
+from steerai.loop2.controller import (
+    TOKEN,
+    ControllerError,
+    DecideRecord,
+    decision_shape,
+    focus_state,
+)
 from steerai.loop2.decision import (
     CLAIM_CLOSES,
     NOT_IN_STEP_VERBS,
@@ -106,10 +112,13 @@ from steerai.loop2.query import (
 )
 from steerai.loop2.task import GoalSpan, Subgoal, Task, known_params
 from steerai.loop2.turn_trace import (
+    ActFact,
     ProofAttempt,
+    RefusalFact,
     TurnTrace,
     WatchFacts,
     closed,
+    detail_token,
     positional,
     turn_record,
 )
@@ -267,7 +276,12 @@ class _Turn:
     shape: dict[str, Any] | None = None  # Any: JSON values (`decision_shape`)
     listing: ListingTurn | None = None
     usage: TokenUsage | None = None
-    refusals: list[RefusalWord] = field(default_factory=list)
+    refusals: list[RefusalFact] = field(default_factory=list)
+    acts: list[ActFact] = field(default_factory=list)
+    repair: bool = False
+    repair_tokens: tuple[str, ...] = ()
+    traced: bool = False
+    """[V2.67] D: this turn's record went to the trace port (or was dropped): once only."""
     watches: list[WatchFacts] = field(default_factory=list)
     history: list[str] = field(default_factory=list)
     proofs: list[ProofAttempt] = field(default_factory=list)
@@ -424,6 +438,8 @@ class _Run:
         self.started = ports.clock()
         self.turn = _Turn()
         self.last_usage: TokenUsage | None = None
+        self.last_repair: tuple[bool, tuple[str, ...]] = (False, ())
+        """[V2.67] D: the last Decision's repair round and its rejection tokens."""
         self.turn_trace_dropped = 0
         """[V2.67] D: turn records the no-free-text check dropped."""
         self.read_costs: list[ReadCost] = []
@@ -493,6 +509,7 @@ class _Run:
         return self._outcome("stopped", Reason("port_interrupted_unlatched"))
 
     def _outcome(self, status: Status, cause: Reason | None) -> TaskOutcome:
+        self._trace_turn()  # [V2.67] D: the turn the task ended in, before its counts
         return TaskOutcome(
             status=status,
             cause=cause,
@@ -597,6 +614,8 @@ class _Run:
                 ),
                 listing=self.listing.turns[-1] if self.listing.turns else None,
                 usage=self.last_usage,
+                repair=self.last_repair[0],
+                repair_tokens=self.last_repair[1],
             )
             fresh = self._observe()
             if fresh.read_cost is not None:
@@ -705,6 +724,14 @@ class _Run:
             if isinstance(exc, ControllerError) and exc.record is None:
                 raise  # no call was made: nothing billed
             self.model_calls += 1
+            record = exc.record if isinstance(exc, ControllerError) else None
+            record = record if isinstance(record, DecideRecord) else None
+            self.turn = _Turn(  # [V2.67] D: the failed turn is traced too
+                seen=observed,
+                usage=exc.usage if isinstance(exc, ControllerError) else None,
+                repair=record is not None and record.repaired,
+                repair_tokens=() if record is None else record.rejections,
+            )
             self.partial_page_calls += observed.growing or observed.young
             counts = _counts(exc.usage) if isinstance(exc, ControllerError) else None
             if counts is None:
@@ -719,6 +746,7 @@ class _Run:
         self.model_calls += 1
         self.partial_page_calls += observed.growing or observed.young  # [V2.35]: counted
         self.last_usage = decided.usage
+        self.last_repair = (decided.calls > 1, decided.rejections)
         self.exact_counts += decided.exact_counted
         self.estimates_low += decided.estimate_low
         self._spend(decided.usage)
@@ -1054,7 +1082,12 @@ class _Run:
         self.batch_last = None
         for index, action in enumerate(actions):
             self._check_interrupt()
-            result = self._one(action, listed, observed)
+            acts = len(self.turn.acts)
+            try:
+                result = self._one(action, listed, observed)
+            finally:
+                if len(self.turn.acts) == acts:  # [V2.67] D: refused before the port
+                    self.turn.acts.append(ActFact(action.verb, "not_sent"))
             if result is None:
                 return observed
             after, sent = result
@@ -1497,9 +1530,9 @@ class _Run:
             self._check_budgets()
         if detail == "field_not_empty":
             self.counts.fields_not_empty += 1
-            self._refuse("field_not_empty", handle=self._handle_of(element))
+            self._refuse("field_not_empty", handle=self._handle_of(element), detail=detail)
             return
-        self._refuse("not_delivered", handle=self._handle_of(element))
+        self._refuse("not_delivered", handle=self._handle_of(element), detail=detail)
 
     def _judge_submit(
         self,
@@ -1578,6 +1611,8 @@ class _Run:
         if may_retry(risk=sent.risk, verified=False, report=None, act=act.action):
             self._check_interrupt()
             act = self.ports.act(sent)
+        result = "skipped" if act.action.skipped else act.delivery.value
+        self.turn.acts.append(ActFact(sent.action.verb, result))  # [V2.67] D
         return act
 
     def _remember_type(
@@ -1639,7 +1674,11 @@ class _Run:
     # ---- refusals, guards -----------------------------------------------------------------
 
     def _refuse(
-        self, *tokens: RefusalWord, subgoal: str | None = None, handle: int | None = None
+        self,
+        *tokens: RefusalWord,
+        subgoal: str | None = None,
+        handle: int | None = None,
+        detail: object = None,
     ) -> None:
         """[V2.11] decision 4, [V2.37] P5: nothing dispatched is a refusal with a token and a
         strike; it replaces the latest refusal, whatever its kind. [V2.42] RT-29: several tokens
@@ -1647,7 +1686,8 @@ class _Run:
         refusal also attaches to the refused action's subgoal and stands until it is proven."""
         kind, token = refusal_of(tokens)
         self.refusal = (kind, token)
-        self.turn.refusals.extend(tokens)  # [V2.67] D: every token, closed
+        shown = detail_token(detail)  # [V2.67] D: every token, closed, with its detail
+        self.turn.refusals.extend(RefusalFact(word, shown) for word in tokens)
         for word in tokens:  # every token is counted, as every token is recorded (RT-29)
             self.refusal_counts[word] = self.refusal_counts.get(word, 0) + 1
         self._notes(Refused(token, handle) for token in tokens)  # [V2.47]: its element
@@ -1704,8 +1744,9 @@ class _Run:
         sink = self.ports.turn_trace
         turn = self.turn
         seen = turn.seen
-        if sink is None or seen is None:
+        if sink is None or seen is None or turn.traced:
             return
+        turn.traced = True
         listing = turn.listing
         record = turn_record(
             TurnTrace(
@@ -1717,6 +1758,9 @@ class _Run:
                 focus=focus_state(seen.snapshot, seen.focus),
                 decision=turn.shape,
                 refusals=tuple(turn.refusals),
+                acts=tuple(turn.acts),
+                repair=turn.repair,
+                repair_tokens=turn.repair_tokens,
                 watch=tuple(turn.watches),
                 tokens=turn.usage,
                 history=tuple(turn.history),

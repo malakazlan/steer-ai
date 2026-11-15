@@ -21,8 +21,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from typing import Final, Literal, get_args
 
+from steerai.action.dispositions import Delivery
+from steerai.action.execution import REFUSAL_DETAILS
+from steerai.loop2.controller import ErrorCode as ControllerCode
 from steerai.loop2.controller import FocusState
-from steerai.loop2.decision import ClaimKind, Closes, Key, Stop, Verb
+from steerai.loop2.decision import ClaimKind, Closes, Key, Stop, ValidateToken, Verb
 from steerai.loop2.history import (
     MAX_LINE,
     POSITIONAL_GRAMMAR,
@@ -33,7 +36,7 @@ from steerai.loop2.history import (
     Proven,
     RefusalWord,
 )
-from steerai.loop2.loop import TokenUsage, WatchKind
+from steerai.loop2.loop import PORT_DETAILS, TokenUsage, WatchKind
 from steerai.loop2.owned import OwnedToken
 from steerai.loop2.verify import CheckToken, ProofToken
 from steerai.world.effects import Carrier
@@ -49,9 +52,30 @@ Gate = Literal["url", "document"]
 """The runner's own change gate, before the verifier: the address-bar URL changed, or the top
 Document was replaced. None: no change, and the verifier was never called."""
 ChangeBy = Literal["navigated", "url_changed_in_place"]
+ActOutcome = Literal["not_sent", "skipped"]
+"""An act with no delivery of its own: the runner refused it before the port
+(`not_sent`), or the state was already as wanted and nothing was sent (`skipped`)."""
+Unlisted = Literal["unlisted"]
+"""A detail outside the shared closed sets: written as this token, never as itself."""
 GuardToken = CheckToken | OwnedToken
 """A guard that rejected a row: the verifier's check tokens and the field-owned rules' own
 names (`owned_by_*`, standing for [V2.67]'s rule numbers)."""
+
+
+@dataclass(frozen=True)
+class RefusalFact:
+    refusal: RefusalWord
+    detail: str | None
+    """The act result's closed detail (`ACT_DETAILS`) when the refusal came from one."""
+
+
+@dataclass(frozen=True)
+class ActFact:
+    """One act of the turn's batch, in order: its verb and its result token."""
+
+    verb: Verb
+    result: str
+    """A `Delivery` value, or `ActOutcome`."""
 
 
 @dataclass(frozen=True)
@@ -119,8 +143,14 @@ class TurnTrace:
     """The focus state the listing showed: elsewhere, unread, or None (on a listed element)."""
     decision: Mapping[str, object] | None
     """`controller.decision_shape` of the turn's decision; None when the turn made no call."""
-    refusals: tuple[RefusalWord, ...]
-    """Each refusal token, from `history.RefusalWord`: the producers' own closed set."""
+    refusals: tuple[RefusalFact, ...]
+    """Each refusal token, from `history.RefusalWord`: the producers' own closed set, with
+    the act result's detail where one exists."""
+    acts: tuple[ActFact, ...]
+    repair: bool
+    """The Decision took a repair call (more than one provider call)."""
+    repair_tokens: tuple[str, ...]
+    """The closed rejection tokens of each attempt that failed, in order."""
     watch: tuple[WatchFacts, ...]
     tokens: TokenUsage | None
     history: tuple[str, ...]
@@ -168,7 +198,10 @@ def turn_record(facts: TurnTrace) -> dict[str, object]:
         "young": facts.young,
         "focus": facts.focus,
         "decision": None if facts.decision is None else dict(facts.decision),
-        "refusals": list(facts.refusals),
+        "refusals": [asdict(r) for r in facts.refusals],
+        "acts": [asdict(a) for a in facts.acts],
+        "repair": facts.repair,
+        "repair_tokens": list(facts.repair_tokens),
         "watch": [asdict(w) for w in facts.watch],
         "tokens": None if facts.tokens is None else asdict(facts.tokens),
         "history": list(facts.history),
@@ -188,9 +221,17 @@ CLOSED_TOKENS: Final = (
 )
 """Every string a turn record may hold outside its history lines: the code's own closed sets,
 never a hand list (`param_unknown` is a refusal token, `decision.ValidateToken`)."""
+ACT_DETAILS: Final = REFUSAL_DETAILS | PORT_DETAILS | _words(Unlisted)
+"""Every detail a turn record may carry: the executors' and the act port's own closed sets."""
+ACT_RESULTS: Final = frozenset(d.value for d in Delivery) | _words(ActOutcome)
+REPAIR_TOKENS: Final = _words(ValidateToken, ControllerCode)
+"""What a failed attempt is rejected with: `validate`'s tokens and the controller's codes."""
 KEY_TOKENS: Final[Mapping[str, frozenset[str]]] = {
-    "refusals": REFUSAL_TOKENS,
+    "refusal": REFUSAL_TOKENS,
     "rejections": REFUSAL_TOKENS,
+    "detail": ACT_DETAILS,
+    "result": ACT_RESULTS,
+    "repair_tokens": REPAIR_TOKENS,
 }
 """Keys whose strings must come from one closed set, not from any of them: a refusal is a
 refusal token, never a verb or a carrier."""
@@ -199,6 +240,7 @@ KEYS: Final = frozenset(
     {
         "event", "turn", "listed", "cut", "growing", "young", "focus", "decision",
         "refusals", "watch", "tokens", "history", "proofs",
+        "refusal", "detail", "acts", "result", "repair", "repair_tokens",
         # the decision's shape (`decision_shape`)
         "attempt", "rejections", "subgoals", "closes", "params", "actions", "verb",
         "in_step", "param", "text", "key", "claims", "kind", "evidence", "ask", "stop",
@@ -212,6 +254,14 @@ KEYS: Final = frozenset(
     }
 )  # fmt: skip
 """Every key a turn record may hold: fixed names, never data."""
+
+
+def detail_token(detail: object) -> str | None:
+    """An act result's detail as the trace writes it: itself when it is in the shared closed
+    sets, `unlisted` when it is any other value, None when there is none."""
+    if detail is None:
+        return None
+    return detail if isinstance(detail, str) and detail in ACT_DETAILS else "unlisted"
 
 
 def closed(record: Mapping[str, object]) -> bool:
