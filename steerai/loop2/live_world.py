@@ -201,6 +201,9 @@ class LiveConfig:
     """#361 H6: the pid of the window as it was listed; the binding's identity must match."""
     bound_image: str | None = None
     """#361 H6: the image of the listed window's process, lower case."""
+    gap_clock: Callable[[], float] = time.perf_counter
+    """#383 blocker 3: the guard's re-read gap clock, QPC (`perf_counter` on CPython 3.12
+    Windows), not the 15.625 ms world clock."""
 
 
 def enter_mta(co_initialize_ex: Callable[[int], int]) -> None:
@@ -365,6 +368,7 @@ class LiveWorld:
             pause=config.pause,
             last_input=self._monitor.last_user_input,
             takeover_token=self._monitor.takeover_token,
+            gap_clock=config.gap_clock,
         )
         self.desk = GuardDesk(
             guard,

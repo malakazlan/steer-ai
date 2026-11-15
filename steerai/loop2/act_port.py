@@ -126,6 +126,9 @@ class Desk(Protocol):
         ...
 
     def armed(self, focus: frozenset[tuple[int, ...]]) -> AbstractContextManager[None]: ...
+    def idle_checked(self) -> None:
+        """#383 blocker 2: an idle check just passed (the guard's re-read is timed from it)."""
+        ...
 
 
 class Executes(Protocol[A_contra]):
@@ -251,6 +254,7 @@ class ActPort:
             raise PortInterrupted(token)
         if self._clock() - self._desk.last_input() < IDLE_S:
             raise _Refused(ErrorCode.GATE_PENDING_USER, self._desk.takeover_token())
+        self._desk.idle_checked()
 
     def _wait_for_idle(self) -> bool:
         """v1's `wait_for_idle` in kill-aware steps: True when it waited. A person busy past
@@ -264,6 +268,7 @@ class ActPort:
                 raise PortInterrupted(token)
             now = self._clock()
             if now - self._desk.last_input() >= IDLE_S:
+                self._desk.idle_checked()
                 return waited
             if now - started >= cap:
                 detail = self._desk.takeover_token() if cap >= MAX_WAIT_S else "wall_budget"
