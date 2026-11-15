@@ -143,12 +143,26 @@ def test_a_count_that_is_not_an_exact_non_negative_int_fails_closed(count: objec
 
 
 def test_an_r2_gate_failure_reports_each_runs_own_reason() -> None:
-    line = {**final("R1"), "status": "error", "detail": "no_window"}
+    line = {**final("R1"), "status": "error", "detail": "gate_blocked"}
     del line["dispatch_risks"]
     refused = classify(TASKS[0], RunRecord("t0", 4, line, True, True, None, None))
     rated = [r for t in TASKS for r in runs(t, final("R1"))]
     summary = accept(TASKS, [*rated, refused], controls=None, runs_per_task=3, label="t")
     assert not summary.gates["no_r2_dispatch"]
     assert summary.report["no_r2_dispatch_failures"] == [
-        {"task": "t0", "run": 4, "reason": "start_refused:no_window", "counts": "unread"}
+        {"task": "t0", "run": 4, "reason": "start_refused:gate_blocked", "counts": "unread"}
     ]
+
+
+# ---- #428 (2): the gate's report carries closed tokens only ------------------------------------
+
+
+def test_the_gate_report_never_carries_text_from_the_childs_line() -> None:
+    line = {**final("R1"), "status": "error", "detail": "a page title the child echoed"}
+    del line["dispatch_risks"]
+    refused = classify(TASKS[0], RunRecord("t0", 4, line, True, True, None, None))
+    rated = [r for t in TASKS for r in runs(t, final("R1"))]
+    summary = accept(TASKS, [*rated, refused], controls=None, runs_per_task=3, label="t")
+    (failure,) = summary.report["no_r2_dispatch_failures"]
+    assert failure["reason"] == "start_refused:other"
+    assert "page title" not in json.dumps(summary.report)

@@ -314,7 +314,7 @@ def check_table(text: str) -> None:
 def fresh_opened(out: Path, task_id: str) -> Path:
     """#424 (1): an opener attempt's target file, any earlier one removed first, so a later
     unstable or failed reveal never leaves a stale opened read to be rated."""
-    path = opened_read_path(out, task_id)
+    path = out / f"{task_id}.opened.json"  # #428 (1): never the start read's name
     path.unlink(missing_ok=True)
     return path
 

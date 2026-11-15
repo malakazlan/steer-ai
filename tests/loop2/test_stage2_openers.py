@@ -304,3 +304,13 @@ def test_the_reveal_targets_are_the_acts_after_the_opener() -> None:
         "w",
     )
     assert reveal_targets(row) == (Act("type", "Edit", "Find", param="x"),)
+
+
+# ---- #428 (1): only an opened read is ever removed ----------------------------------------------
+
+
+def test_fresh_opened_never_removes_a_start_read(tmp_path: Path) -> None:
+    start = tmp_path / "wk1.json"
+    start.write_text("{}", encoding="utf-8")
+    assert fresh_opened(tmp_path, "wk1") == tmp_path / "wk1.opened.json"
+    assert start.exists()
