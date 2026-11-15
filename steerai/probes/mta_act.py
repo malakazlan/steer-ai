@@ -135,6 +135,7 @@ def _drive(hwnd: int, ledger_dir: Path) -> dict[str, object]:  # pragma: no cove
     from steerai.action.execution import UiaBindings  # noqa: PLC0415
     from steerai.action.executor import Executor  # noqa: PLC0415
     from steerai.action.live_reads import UiaLiveReads  # noqa: PLC0415
+    from steerai.action.options import UiaOptions  # noqa: PLC0415
     from steerai.action.physical import PhysicalExecutor  # noqa: PLC0415
     from steerai.orchestrator.contracts import OPTION_PARAM, Step, Target  # noqa: PLC0415
     from steerai.orchestrator.gate import Ask, Gate  # noqa: PLC0415
@@ -156,7 +157,7 @@ def _drive(hwnd: int, ledger_dir: Path) -> dict[str, object]:  # pragma: no cove
         task_id="mta-act",
         hwnd=hwnd,
         observer=model,
-        semantic=Executor(),
+        semantic=Executor(options=UiaOptions(client)),  # as v1's run builds it (#406)
         physical=PhysicalExecutor(),
         gate=Gate(confirmer=Person(), own_pid=0, task_id="mta-act"),
         ledger=Ledger(ledger_dir, task_id="mta-act", started_at=time.time()),
