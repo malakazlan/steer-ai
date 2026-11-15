@@ -219,7 +219,7 @@ def rate(goal: str, acts: Sequence[Act], read: Observed) -> Risk:
                 raise ValueError("no_acted_element")
             element = last
         else:
-            element = _target(act, read)
+            element = target_in(act, read)
         verdict = action_risk(
             _action(act, element), element, goal=goal, observed=read, pending=pending
         )
@@ -235,7 +235,7 @@ def rate(goal: str, acts: Sequence[Act], read: Observed) -> Risk:
     return highest
 
 
-def _target(act: Act, read: Observed) -> Element:
+def target_in(act: Act, read: Observed) -> Element:
     elements = read.snapshot.elements
     wanted = normalise_name(act.name)
     matches = [e for e in elements if e.role == act.role and normalise_name(e.name) == wanted]
