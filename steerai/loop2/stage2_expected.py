@@ -69,8 +69,10 @@ _RISKS: Final[dict[object, Risk]] = {r: r for r in RISKS}
 SITE_SPACING_S: Final = 60.0
 """§2.3, [V2.63] Q4: the least time between two page loads of one host, controls included."""
 DAILY_CAP: Final = 12
-"""[V2.65] (3): the most loads of one host in one day at the spacing, a hard cap (#419): an
-attempt starts only with its whole budget left today."""
+"""[V2.65] Five (stage 2 volume, the lead's ruling of 2026-11-15: "cap any host at 12 loads a
+day at the 60 s spacing, a host at the cap stops for the day"; introduced in #413): the most
+loads of one host in one day, a hard cap (#419): an attempt starts only with its whole budget
+left today. A policy limit, unmeasured against any site's own rate limit."""
 ATTEMPT_LOADS: Final = 2
 """#419: the loads one attempt can make on its host, before its control: the run's own load and a
 possible wall confirmation."""
