@@ -5,9 +5,7 @@ window and a 52 % covered one both exposed the page, 5 of 5)."""
 
 from __future__ import annotations
 
-import pytest
-
-from steerai.world.cover import CoverFacts, cover_of, covered_fraction
+from steerai.world.cover import CoverFacts, above_counts, cover_of, covered_fraction
 
 TARGET = (0, 0, 100, 100)
 WINDOW = (0, 0, 1200, 900)
@@ -93,10 +91,31 @@ def test_a_minimised_window_is_covered_whatever_is_above() -> None:
     assert cover_of(_facts(minimized=True)) == "minimized"
 
 
-@pytest.mark.parametrize("cloaked", [True, None])
-def test_a_cloaked_or_unread_cloak_is_covered(cloaked: bool | None) -> None:
-    """Unread is never "visible" (fail closed, as v1 reads an unanswered DWM)."""
-    assert cover_of(_facts(cloaked=cloaked)) == "cloaked"
+def test_a_cloaked_window_is_covered() -> None:
+    assert cover_of(_facts(cloaked=True)) == "cloaked"
+
+
+def test_an_unread_cloak_is_its_own_token_never_cloaked() -> None:
+    """[V2.67] C: unread is never "visible" (fail closed) and never reported as cloaked."""
+    assert cover_of(_facts(cloaked=None)) == "unread"
+
+
+# ---- [V2.67] C: closed facts about the windows above ---------------------------------------------
+
+
+def test_the_windows_above_are_counted_ours_or_not() -> None:
+    facts = _facts(above=(WINDOW, WINDOW, WINDOW), above_pids=(7, 9, 7))
+    assert above_counts(facts, ours=frozenset({7})) == {"above": 3, "above_ours": 2}
+
+
+def test_an_unread_owner_is_not_ours() -> None:
+    facts = _facts(above=(WINDOW, WINDOW), above_pids=(0, 7))
+    assert above_counts(facts, ours=frozenset({7})) == {"above": 2, "above_ours": 1}
+
+
+def test_owners_not_aligned_with_the_rects_count_none_as_ours() -> None:
+    facts = _facts(above=(WINDOW, WINDOW), above_pids=(7,))
+    assert above_counts(facts, ours=frozenset({7})) == {"above": 2, "above_ours": 0}
 
 
 def test_an_empty_window_rect_is_covered() -> None:

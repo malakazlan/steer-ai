@@ -516,13 +516,17 @@ def test_the_first_poll_at_construction_flags_a_state_that_is_not_ours(
     assert rig.monitor.session_change() == token  # before any watchdog step
 
 
-def test_a_session_poll_older_than_the_deadline_is_a_stop() -> None:
+def test_a_session_poll_older_than_the_deadline_is_a_loss_not_a_session_fact() -> None:
     """A dead or hung watchdog (HM-03), or a GIL stall (HM-02): the last poll is too old, and
-    what it said can no longer be trusted."""
+    what it said can no longer be trusted. #398: that is the monitor's loss (still a stop, as
+    #383 blocker 5 asks), never a lock it did not see; the world's own lock read goes first."""
     rig = _rig()
+    rig.heartbeat()
     assert rig.monitor.session_change() is None
     rig.at(100.0 + DEADLINE_S + 0.01)
-    assert rig.monitor.session_change() == "session_locked"
+    rig.heartbeat()  # the helper is fine; the watchdog is not
+    assert rig.monitor.session_change() is None
+    assert not rig.monitor.healthy()
 
 
 def test_a_stale_session_poll_loses_the_monitor() -> None:
@@ -729,7 +733,7 @@ _AFTER_CLOSE: dict[str, tuple[tuple[object, ...], object]] = {
     "probe_seen": ((), False),
     "last_user_input": ((), None),  # input "just now" (the clock): every send is refused
     "takeover_token": ((), TAKEOVER),
-    "session_change": ((), "session_locked"),
+    "session_change": ((), None),  # #398: the "closed" loss stops the task
     "latency": ((), (0, None, None)),
     "wait": ((0.0,), None),
     "close": ((), None),

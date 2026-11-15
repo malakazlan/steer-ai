@@ -1,0 +1,602 @@
+{
+  "am1": {
+    "read_sha256": "fd60ae2e18234db94b62e7d1c9fadfaf2ba5bba9aac1369524becab7a32fa0eb",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "searchbox",
+      "search_landmark": true,
+      "button_role": "Button",
+      "button_search_landmark": true,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "am1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "aw1": {
+    "read_sha256": "9bc7f6a09515b51b7ac6ecc4c0656775277ac359c3a2865aa0303bfb96c8c0f9",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "searchbox",
+      "search_landmark": true,
+      "button_role": "Button",
+      "button_search_landmark": true,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "aw1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "bing1": {
+    "read_sha256": "d3ead1e7ecdaf95928f5f209d5ae2368e8df8ae57b83abc79de683e76ba4d642",
+    "facts": {
+      "field_role": "ComboBox",
+      "aria_role": "combobox",
+      "search_landmark": true,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "bing1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "cp1": {
+    "read_sha256": "e3491ef9e604861183943b9ac79eb2991223d3cd723933dd194ee3484e0f1edf",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "searchbox",
+      "search_landmark": false,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R0",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "cp1",
+      "outcome": "never_done",
+      "reason": null,
+      "risk": "R0",
+      "proof": null,
+      "why": "results only, the URL unchanged: never done, like 3d (b) (plan rev 4.4 \u00a71.2)"
+    }
+  },
+  "cr1": {
+    "read_sha256": "fe5c4f6f9b81387be095e3f1f79baceba1c1fde33c562ebb3310b388f190fcaf",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "textbox",
+      "search_landmark": true,
+      "button_role": "Button",
+      "button_search_landmark": true,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "cr1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "ddg1": {
+    "read_sha256": "dac7c8ac34900df48cffa2c3b043f87195d8caa6201e753cd8f65bfe2d77f8f5",
+    "facts": {
+      "field_role": "ComboBox",
+      "aria_role": "combobox",
+      "search_landmark": true,
+      "button_role": "Button",
+      "button_search_landmark": true,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "ddg1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "deb1": {
+    "read_sha256": "19c2189253c82f98c9c7a5a835a29a3841c7a6241e2975cdc2ddfb235a6eeeaf",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "textbox",
+      "search_landmark": false,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R2",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "deb1",
+      "outcome": "blocked",
+      "reason": "commit_not_in_step",
+      "risk": "R2",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "dr1": {
+    "read_sha256": "23f84b055e6ebe12531f01b33473adc46b03df19c2f617190403cf8eb08b91fc",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "textbox",
+      "search_landmark": false,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R2",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "dr1",
+      "outcome": "blocked",
+      "reason": "commit_not_in_step",
+      "risk": "R2",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "fh1": {
+    "read_sha256": "725b41d14f6674a04162593f17f99b6df689134b4241adecad15a01f6462dace",
+    "facts": {
+      "field_role": "ComboBox",
+      "aria_role": "combobox",
+      "search_landmark": true,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "fh1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "g1": {
+    "read_sha256": "4317442934b8eb4903dcf068d6fa696f10e5c607f362b1c760e3b98302dd3ba5",
+    "facts": {
+      "field_role": "ComboBox",
+      "aria_role": "combobox",
+      "search_landmark": true,
+      "button_role": "Button",
+      "button_search_landmark": true,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "g1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "g2": {
+    "read_sha256": "4317442934b8eb4903dcf068d6fa696f10e5c607f362b1c760e3b98302dd3ba5",
+    "facts": {
+      "field_role": "ComboBox",
+      "aria_role": "combobox",
+      "search_landmark": true,
+      "button_role": "Button",
+      "button_search_landmark": true,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "g2",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "gd1": {
+    "read_sha256": "d6de228df38cbefd4aa511dede0a5b50fc35dbd0aaf10280db19854d2c17dae1",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "textbox",
+      "search_landmark": true,
+      "button_role": "Button",
+      "button_search_landmark": true,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "gd1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "gh1": {
+    "read_sha256": "20ed4850ceb87845db97a1507ce498b8bc0fb0cf5c05e16670dc98069a2a470d",
+    "facts": {
+      "field_role": "ComboBox",
+      "aria_role": "combobox",
+      "search_landmark": false,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R2",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "gh1",
+      "outcome": "blocked",
+      "reason": "commit_not_in_step",
+      "risk": "R2",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check); the field shows after its opener ([V2.65] (1))"
+    }
+  },
+  "gut1": {
+    "read_sha256": "b3c708c7b015e4943cfe55e0e9b0dca5f8501d6de78dfbdfe6365b5991e55a8c",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "textbox",
+      "search_landmark": false,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R2",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "gut1",
+      "outcome": "blocked",
+      "reason": "commit_not_in_step",
+      "risk": "R2",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "hx1": {
+    "read_sha256": "357189e72959789c792eec14c53b97a2b694f8a7c2c08ee9b3a2daad187ce8e1",
+    "facts": {
+      "field_role": "ComboBox",
+      "aria_role": "combobox",
+      "search_landmark": true,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "hx1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "mc1": {
+    "read_sha256": "48a9abe98e9e51ba01b418816b118b5dbefa679747211bf13bbc336a28e67eb0",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "textbox",
+      "search_landmark": true,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "mc1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "mdn1": {
+    "read_sha256": "fde090c4f7acbb1ad46928e8e230ac272f80eb35f923726941a5d1d9b7b99e87",
+    "facts": {
+      "field_role": "ComboBox",
+      "aria_role": "combobox",
+      "search_landmark": false,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R2",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "mdn1",
+      "outcome": "blocked",
+      "reason": "commit_not_in_step",
+      "risk": "R2",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check); the field shows after its opener ([V2.65] (1))"
+    }
+  },
+  "ng1": {
+    "read_sha256": "6d76a43a613a4207d436299475e067f3409e08ba47d550a3b95616994c46ffc2",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "textbox",
+      "search_landmark": false,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R2",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "ng1",
+      "outcome": "blocked",
+      "reason": "commit_not_in_step",
+      "risk": "R2",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "npm1": {
+    "read_sha256": "577fa41f0db4ccc0b760daba3c3a9125f52a141b26842a0302587e7288d228c8",
+    "facts": {
+      "field_role": "ComboBox",
+      "aria_role": "combobox",
+      "search_landmark": false,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R2",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "npm1",
+      "outcome": "blocked",
+      "reason": "commit_not_in_step",
+      "risk": "R2",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "pd1": {
+    "read_sha256": "51b6a846ebbdd454649764b45ab61b80187119c58732b078ca92a979cef5da6e",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "searchbox",
+      "search_landmark": false,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R2",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "pd1",
+      "outcome": "blocked",
+      "reason": "commit_not_in_step",
+      "risk": "R2",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "py1": {
+    "read_sha256": "8f8964af277dc462c258b72bc95ba1a64a68ea49fc3bdac413260d59d5ae2695",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "searchbox",
+      "search_landmark": true,
+      "button_role": "Button",
+      "button_search_landmark": true,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "py1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "pypi1": {
+    "read_sha256": "e0aaaee63360e2a0662a9133b9b4c98dd480f99ad4a8e1ea7bd8e7544fb34d44",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "textbox",
+      "search_landmark": true,
+      "button_role": "Button",
+      "button_search_landmark": true,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "pypi1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "rg1": {
+    "read_sha256": "7f1e6575599484ebe4ac4cb4faf45b4c30827d689678b41ed3e9854ca73c6522",
+    "facts": {
+      "field_role": "ComboBox",
+      "aria_role": "combobox",
+      "search_landmark": true,
+      "button_role": "Button",
+      "button_search_landmark": true,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "rg1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "ub1": {
+    "read_sha256": "52857c7b971d2c6ae9da15db507ab25a5c2a64d1292a1d08c4c066d45c6f73cb",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "textbox",
+      "search_landmark": false,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R2",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "ub1",
+      "outcome": "blocked",
+      "reason": "commit_not_in_step",
+      "risk": "R2",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "wk1": {
+    "read_sha256": "7c26ad3b1556eebfe97c5b7480d1299e06ef18680792a22063f1632bac817b0a",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "searchbox",
+      "search_landmark": true,
+      "button_role": "Button",
+      "button_search_landmark": true,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "wk1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "navigated",
+      "why": "the article page is reached (the task's own check)"
+    }
+  },
+  "wk2": {
+    "read_sha256": "7c26ad3b1556eebfe97c5b7480d1299e06ef18680792a22063f1632bac817b0a",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "searchbox",
+      "search_landmark": true,
+      "button_role": "Button",
+      "button_search_landmark": true,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "wk2",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "navigated",
+      "why": "the article page is reached (the task's own check)"
+    }
+  },
+  "wk3": {
+    "read_sha256": "7c26ad3b1556eebfe97c5b7480d1299e06ef18680792a22063f1632bac817b0a",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "searchbox",
+      "search_landmark": true,
+      "button_role": "Button",
+      "button_search_landmark": true,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "wk3",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "navigated",
+      "why": "the article page is reached (the task's own check)"
+    }
+  },
+  "wt1": {
+    "read_sha256": "8c38411a74406294cd44a9a9d6e8d9c37062c03744868965008f9101a9694d63",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "searchbox",
+      "search_landmark": true,
+      "button_role": "Button",
+      "button_search_landmark": true,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "wt1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "navigated",
+      "why": "the article page is reached (the task's own check)"
+    }
+  },
+  "yt1": {
+    "read_sha256": "2529a37b5a378703bc3134bfbb7124d302ab076d7d06f3ab428588ab4b4ae394",
+    "facts": {
+      "field_role": "ComboBox",
+      "aria_role": "combobox",
+      "search_landmark": true,
+      "button_role": "Button",
+      "button_search_landmark": true,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "yt1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "navigated",
+      "why": "the results page's URL carries the words (the task's own check)"
+    }
+  },
+  "yt2": {
+    "read_sha256": "2529a37b5a378703bc3134bfbb7124d302ab076d7d06f3ab428588ab4b4ae394",
+    "facts": {
+      "field_role": "ComboBox",
+      "aria_role": "combobox",
+      "search_landmark": true,
+      "button_role": "Button",
+      "button_search_landmark": true,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "yt2",
+      "outcome": "never_done",
+      "reason": null,
+      "risk": "R1",
+      "proof": null,
+      "why": "a watch URL carries no words: never done (plan rev 4.4 \u00a71.2)"
+    }
+  }
+}

@@ -13,9 +13,11 @@ from steerai.loop2.owned import OwnedToken, field_owned
 from steerai.loop2.task import Subgoal
 from steerai.orchestrator.gate import group_name
 from steerai.world.effects import (
+    CarrierHeld,
     Observed,
     ValueFact,
     _tokens,  # the observer's own token rule: one definition of a word (#334 review)
+    carrier_facts,
     observe,
     result_elements,
     top_document,
@@ -132,7 +134,9 @@ WEB_SCHEMES: Final = frozenset({"http", "https"})
 is `file:` ([V2.39]). An error page (`chrome-error:`) or an unread URL is never navigated."""
 URL_CARRIERS: Final = frozenset({"url_param", "url_path"})
 PAGE_CARRIERS: Final = frozenset({"title", "heading"})
-CHANGE: Final = frozenset({"navigated", "url_changed_in_place"})
+ChangeClass = Literal["navigated", "url_changed_in_place"]
+"""§7.1's change classes: a page proof needs one of them in some param's report."""
+CHANGE: Final[frozenset[ChangeClass]] = frozenset({"navigated", "url_changed_in_place"})
 OWNING_ROLES: Final = frozenset({"Menu", "ToolTip"})
 OPTION_CAPS: Final = frozenset({"selectable", "selected"})
 CheckToken = Literal[
@@ -182,6 +186,28 @@ class _Found:
     """The params with an accepted carrier (URL parameter or path, title, heading)."""
     texts: Mapping[str, str]
     """Each param's words."""
+    change_by: tuple[ChangeClass, ...] = ()
+    """[V2.67] D: the change classes the params' reports hold (`CHANGE`), sorted."""
+
+
+@dataclass(frozen=True)
+class Judged:
+    """[V2.67] A, D: one judgement of a page subgoal on one read: the verdict and every condition
+    it rests on, so a subgoal that did not close says why. In memory: the trace keeps only its
+    closed tokens and positions (param names and words never leave here)."""
+
+    proof: ProofToken | None
+    refused: tuple[CheckToken, ...] = ()
+    """`_navigated`'s no-navigation verdict (tier_mismatch, url_unread, not_a_page,
+    param_missing, no_change, no_carrier); empty when the read was measured."""
+    change_by: tuple[ChangeClass, ...] = ()
+    params: tuple[tuple[str, tuple[CarrierHeld, ...]], ...] = ()
+    """Per param, sorted by name: each carrier's two halves (`effects.carrier_facts`)."""
+    content_by: ProofToken | None = None
+    """The page-content signal and what met it: a title or heading carrier, or a result beside
+    a URL carrier."""
+    guards: tuple[ClaimCheck, ...] = ()
+    """Every rejection a result row met (`_excluded`), de-duplicated."""
 
 
 def navigated_tokens(  # noqa: PLR0913 - the subgoal, both reads and keyword-only facts
@@ -239,14 +265,43 @@ def auto_proof(  # noqa: PLR0913 - the subgoal, both reads and keyword-only fact
     title or heading carrier, or a result (the observer's rule, passing `_excluded`) beside a URL
     carrier. `typed` is every field Steer typed in the task, `echo` whether the subgoal's words
     are text Steer typed ([V2.38] RT-39), `acted` the field typed under this subgoal."""
+    return judge(
+        subgoal, baseline, now, typed=typed, acted=acted, echo=echo, allow_file=allow_file
+    ).proof
+
+
+def judge(  # noqa: PLR0913 - the subgoal, both reads and keyword-only facts
+    subgoal: Subgoal,
+    baseline: Observed,
+    now: Observed,
+    *,
+    typed: Sequence[tuple[int, ...]] = (),
+    acted: tuple[int, ...] | None = None,
+    echo: bool = False,
+    allow_file: bool = False,
+) -> Judged:
+    """[V2.67] A, D: the auto proof's one computation: its verdict (`auto_proof`'s rule: every
+    param has an accepted carrier on this one read, and the content signal holds) and the
+    conditions it rests on, every one measured whether or not an earlier one failed."""
     found = _navigated(subgoal, baseline, now, acted=acted, allow_file=allow_file)
-    if isinstance(found, tuple) or set(found.texts) - found.carried:
-        return None
-    if found.page is not None:
-        return found.page
-    if found.url and _results(found, baseline, now, typed=typed, acted=acted, echo=echo):
-        return "results_with_url"
-    return None
+    if isinstance(found, tuple):
+        return Judged(None, refused=found)
+    params = tuple(
+        (name, carrier_facts(baseline, now, acted=acted, text=text))
+        for name, text in sorted(found.texts.items())
+    )
+    passed, guards = _result_rows(found, baseline, now, typed=typed, acted=acted, echo=echo)
+    content_by: ProofToken | None = found.page
+    if content_by is None and found.url and passed:
+        content_by = "results_with_url"
+    every = not set(found.texts) - found.carried
+    return Judged(
+        content_by if every else None,
+        change_by=found.change_by,
+        params=params,
+        content_by=content_by,
+        guards=guards,
+    )
 
 
 def _navigated(  # noqa: PLR0911 - one return per closed outcome
@@ -256,7 +311,7 @@ def _navigated(  # noqa: PLR0911 - one return per closed outcome
     *,
     acted: tuple[int, ...] | None,
     allow_file: bool,
-) -> _Found | tuple[ClaimCheck, ...]:
+) -> _Found | tuple[CheckToken, ...]:
     """The carriers since the baseline, per param, or the reject tokens when it is no navigation
     at all. The change signal is met once, by the URL or the top Document."""
     if baseline.tier != now.tier:
@@ -284,7 +339,13 @@ def _navigated(  # noqa: PLR0911 - one return per closed outcome
     url = any(r.carriers & URL_CARRIERS for r in reports.values())
     if not carried and not url:
         return ("no_carrier",)
-    return _Found(page=page, url=url, results=False, carried=carried, texts=texts)
+    changed: set[ChangeClass] = set()
+    for report in reports.values():
+        changed.update(c for c in CHANGE if c in report.classes)
+    change_by = tuple(sorted(changed))
+    return _Found(
+        page=page, url=url, results=False, carried=carried, texts=texts, change_by=change_by
+    )
 
 
 def _results(  # noqa: PLR0913 - the measured page, both reads and keyword-only facts
@@ -297,11 +358,28 @@ def _results(  # noqa: PLR0913 - the measured page, both reads and keyword-only 
     echo: bool,
 ) -> bool:
     """Some param's words on a result the observer counts (§6.4) that passes `_excluded`."""
-    return any(
-        not _excluded(e, now, typed=typed, echo=echo)
-        for text in found.texts.values()
-        for e in result_elements(baseline, now, acted=acted, text=text)
-    )
+    return _result_rows(found, baseline, now, typed=typed, acted=acted, echo=echo)[0]
+
+
+def _result_rows(  # noqa: PLR0913 - the measured page, both reads and keyword-only facts
+    found: _Found,
+    baseline: Observed,
+    now: Observed,
+    *,
+    typed: Sequence[tuple[int, ...]],
+    acted: tuple[int, ...] | None,
+    echo: bool,
+) -> tuple[bool, tuple[ClaimCheck, ...]]:
+    """Whether some result passes `_excluded`, and every rejection the others met ([V2.67] D:
+    the guard that rejected a row is named, de-duplicated)."""
+    passed = False
+    guards: list[ClaimCheck] = []
+    for text in found.texts.values():
+        for element in result_elements(baseline, now, acted=acted, text=text):
+            tokens = _excluded(element, now, typed=typed, echo=echo)
+            passed = passed or not tokens
+            guards.extend(tokens)
+    return passed, tuple(dict.fromkeys(guards))
 
 
 def _rows_for(

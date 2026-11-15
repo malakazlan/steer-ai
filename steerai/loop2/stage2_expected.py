@@ -19,6 +19,7 @@ the harness re-reads the start page and compares these facts only (`site_changed
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import datetime
 import hashlib
 import itertools
@@ -30,9 +31,10 @@ import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Final, Literal, get_args
+from typing import Any, Final, Literal, get_args
 
 from steerai.loop2.decision import Key, Verb
+from steerai.loop2.form import beside
 from steerai.loop2.query import search_landmark_of
 from steerai.loop2.stage1_expected import (
     Act,
@@ -41,15 +43,23 @@ from steerai.loop2.stage1_expected import (
     ProofKind,
     outcome_of,
     rate,
+    target_in,
     targets_in,
 )
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.probes.task_suite import H2, H3, H4, H5, H6, HELD_OUT, TASKS, Task
 from steerai.world.effects import Observed
 from steerai.world.elements import Element
+from steerai.world.model import normalise_name
 from steerai.world.read_json import observed_from_json
 
 ACTS: Final = Path(__file__).with_name("stage2_acts.json")
+TABLE: Final = Path(__file__).with_name("stage2_expected.json")
+"""The committed 2b table: each read's SHA-256, its deciding facts and the expected outcome."""
+TABLE_SHA256: Final = "89ceab94e04b2b515c814e61ecc57812d90d52af19daf5cd594494e5424d68e9"
+"""#424 (2): the committed 2b table's pin, as 2a's: a run takes only this table."""
+ACTS_SHA256: Final = "990b7b99ed7a1cff2c74f93cb6cd337a27ab1ed11592f37b2ee561fa3f651927"
+"""#428 (8): the committed 2b acts file's pin: a run takes only these acts."""
 _ACT_FIELDS: Final = frozenset({"verb", "role", "name", "key", "option", "param"})
 _ROW_FIELDS: Final = frozenset({"acts", "proof", "why"})
 _PROOFS: Final = frozenset(get_args(ProofKind))
@@ -57,7 +67,13 @@ _VERBS: Final[dict[object, Verb]] = {v: v for v in get_args(Verb)}
 _KEYS: Final[dict[object, Key]] = {k: k for k in get_args(Key)}
 _RISKS: Final[dict[object, Risk]] = {r: r for r in RISKS}
 SITE_SPACING_S: Final = 60.0
+"""§2.3, [V2.63] Q4: the least time between two page loads of one host, controls included."""
 DAILY_CAP: Final = 12
+"""[V2.65] (3): the most loads of one host in one day at the spacing, a hard cap (#419): an
+attempt starts only with its whole budget left today."""
+ATTEMPT_LOADS: Final = 2
+"""#419: the loads one attempt can make on its host, before its control: the run's own load and a
+possible wall confirmation."""
 DAY_WAIT_CHUNK_S: Final = 3600.0
 """#413 blocker 1: the wait for the day to turn sleeps at most this long at a time."""
 DAY_WAIT_LIMIT_S: Final = 26 * 3600.0
@@ -74,11 +90,6 @@ class DayDidNotTurn(RuntimeError):  # noqa: N818 - a refusal, named for its reas
 def calendar_day() -> int:
     """Today on the local calendar, as an ordinal: the production day source (#413 blocker 1)."""
     return datetime.date.today().toordinal()  # noqa: DTZ011 - the local day the cap counts
-
-
-"""[V2.65] (3): the most loads of one host in one day at the spacing; a host at the cap stops
-for the day."""
-"""§2.3, [V2.63] Q4: the least time between two page loads of one host, controls included."""
 
 
 @dataclass(frozen=True)
@@ -183,7 +194,11 @@ class Spacer:
         """Loads per host so far: the volume the summary reports."""
 
     def at_cap(self, host: str) -> bool:
-        return self._today.get((self.day(), host), 0) >= self._cap
+        return self.remaining(host) <= 0
+
+    def remaining(self, host: str) -> int:
+        """Loads of `host` left today under the cap."""
+        return self._cap - self._today.get((self.day(), host), 0)
 
     def wait_next_day(self) -> None:
         """Every pending host is at its cap: wait, kill-aware, until the day turns, in sleeps of
@@ -205,11 +220,228 @@ class Spacer:
         if left > 0:
             self._sleep(left)
 
-    def loaded(self, host: str) -> None:
+    def loaded(self, host: str, *, day: int | None = None) -> None:
+        """One load of `host`, counted on `day`: the day the load started (#428 (7): a run
+        that crosses midnight counts on its own day, never the next); now when not given."""
         self._last[host] = self._clock()
         self.loads[host] = self.loads.get(host, 0) + 1
-        key = (self.day(), host)
+        key = (self.day() if day is None else day, host)
         self._today[key] = self._today.get(key, 0) + 1
+
+
+# ---- [V2.65] (1) option (b): a target revealed by one scripted click on its opener ---------------
+
+OPENERS_FILE: Final = Path(__file__).with_name("stage2_openers.json")
+OPENER_VERBS: Final = frozenset({"click", "expand"})
+AX_ROLES: Final[Mapping[str, str]] = {
+    "Button": "button",
+    "TreeItem": "treeitem",
+    "MenuItem": "menuitem",
+    "Hyperlink": "link",
+    "TabItem": "tab",
+}
+"""A UIA control type as Chrome's accessibility tree names the same element's role."""
+REVEAL_LIMIT_S: Final = 12.0
+"""How long a revealed state may take to settle after the opener's click (unmeasured)."""
+REVEAL_POLL_S: Final = 0.5
+_CLICK: Final = "function () { this.click(); }"
+
+
+class OpenerError(RuntimeError):
+    """The opener was not found exactly once: it is never clicked, and the task stays unrated."""
+
+
+def load_openers(text: str) -> dict[str, Act]:
+    """`{task_id: {"verb", "role", "name"}}`: one named click or expand each, nothing else; a
+    `ValueError` naming `openers` for anything else."""
+    raw = json.loads(text)
+    if not isinstance(raw, dict):
+        raise ValueError("openers: not an object")
+    openers: dict[str, Act] = {}
+    for task_id, entry in raw.items():
+        if not isinstance(entry, dict) or set(entry) != {"verb", "role", "name"}:
+            raise ValueError(f"openers: {task_id} needs exactly verb, role and name")
+        verb, role, name = entry["verb"], entry["role"], entry["name"]
+        if (
+            verb not in OPENER_VERBS
+            or role not in AX_ROLES
+            or not isinstance(name, str)
+            or not name
+        ):
+            raise ValueError(f"openers: {task_id} is not one named click or expand")
+        openers[str(task_id)] = Act(_VERBS[verb], role, name)
+    return openers
+
+
+OPENERS: Final[Mapping[str, Act]] = load_openers(OPENERS_FILE.read_text(encoding="utf-8"))
+
+
+Cdp = Callable[..., Mapping[str, Any]]
+"""A DevTools call: `(method, params) -> result` (Any: JSON)."""
+
+
+def click_opener(cdp: Cdp, opener: Act) -> None:
+    """The harness's own scripted click (never Steer's input): the one element of the opener's
+    role and name in the page's accessibility tree, clicked through its own `click()`. Not found
+    exactly once is an `OpenerError`; nothing is typed, submitted or answered."""
+    wanted = normalise_name(opener.name)
+    role = AX_ROLES[opener.role]
+    nodes = [
+        n for n in cdp("Accessibility.getFullAXTree", {}).get("nodes", []) if isinstance(n, Mapping)
+    ]
+    matches = [
+        n
+        for n in nodes
+        if not n.get("ignored")
+        and n.get("role", {}).get("value") == role
+        and normalise_name(str(n.get("name", {}).get("value", ""))) == wanted
+        and isinstance(n.get("backendDOMNodeId"), int)
+    ]
+    found = [n["backendDOMNodeId"] for n in _outermost_ax(matches, nodes, role)]
+    if not found:
+        raise OpenerError("opener_not_found")
+    if len(found) > 1:
+        raise OpenerError("opener_ambiguous")
+    target = cdp("DOM.resolveNode", {"backendNodeId": found[0]})
+    object_id = target.get("object", {}).get("objectId")
+    if not isinstance(object_id, str):
+        raise OpenerError("opener_not_resolved")
+    cdp("Runtime.callFunctionOn", {"objectId": object_id, "functionDeclaration": _CLICK})
+
+
+def check_acts(text: str) -> None:
+    """#428 (8): the run's 2b acts are the committed ones, byte for byte."""
+    if hashlib.sha256(text.encode("utf-8")).hexdigest() != ACTS_SHA256:
+        raise ValueError("acts: not the committed 2b acts")
+
+
+def check_table(text: str) -> None:
+    """#424 (2): the run's 2b table is the committed one, byte for byte."""
+    if hashlib.sha256(text.encode("utf-8")).hexdigest() != TABLE_SHA256:
+        raise ValueError("table: not the committed 2b table")
+
+
+def fresh_opened(out: Path, task_id: str) -> Path:
+    """#424 (1): an opener attempt's target file, any earlier one removed first, so a later
+    unstable or failed reveal never leaves a stale opened read to be rated."""
+    path = out / f"{task_id}.opened.json"  # #428 (1): never the start read's name
+    path.unlink(missing_ok=True)
+    return path
+
+
+def _outermost_ax(
+    matches: Sequence[Mapping[str, Any]], nodes: Sequence[Mapping[str, Any]], role: str
+) -> list[Mapping[str, Any]]:
+    """#424 (3): the start check's counting rule (`outermost`) on the accessibility tree: a
+    match inside another match is the same element and folds into it, except a tree item (a
+    folder inside a same-named folder is another item)."""
+    if role == "treeitem":
+        return list(matches)
+    parent = {str(n.get("nodeId")): n.get("parentId") for n in nodes}
+    ids = {str(m.get("nodeId")) for m in matches}
+
+    def inside(node: Mapping[str, Any]) -> bool:
+        seen: set[str] = set()
+        up = parent.get(str(node.get("nodeId")))
+        while up is not None and str(up) not in seen:
+            if str(up) in ids:
+                return True
+            seen.add(str(up))
+            up = parent.get(str(up))
+        return False
+
+    return [m for m in matches if not inside(m)]
+
+
+def opener_targets(acts: Mapping[str, SiteRow], task_id: str) -> tuple[Act, ...]:
+    """The targets a task's reveal must show, from its committed acts; a task behind an opener
+    with no acts row is refused (#429: fail closed, never any stable reveal)."""
+    row = acts.get(task_id)
+    if row is None:
+        raise OpenerError("no_acts")
+    return reveal_targets(row)
+
+
+def reveal_targets(row: SiteRow) -> tuple[Act, ...]:
+    """#424 (4): the acts after the opener that name a target: the reveal must show them."""
+    return tuple(a for a in row.acts[1:] if a.verb != "press" and a.role)
+
+
+def opened_read_path(reads: Path, task_id: str) -> Path:
+    """A task behind an opener is rated on its opened read; every other on its start read."""
+    return reads / (f"{task_id}.opened.json" if task_id in OPENERS else f"{task_id}.json")
+
+
+def opener_start_facts(
+    opener: Act, start: Observed, committed: DecidingFacts
+) -> DecidingFacts | None:
+    """The run's start check for a task behind an opener: its target is not on the start page,
+    so the start page must show the opener exactly once, and the committed facts (read on the
+    opened page) stand; None when it does not (the start page differs)."""
+    try:
+        target_in(opener, start)
+    except ValueError:
+        return None
+    return committed
+
+
+@dataclass(frozen=True)
+class Revealed:
+    read: Observed
+    new_roles: dict[str, int]
+    """How many new elements of each role the opener revealed (closed values, no names)."""
+
+
+def _in_page(read: Observed) -> list[Element]:
+    """The elements under the page's Document: the browser's own frame (a tab's title, a notice
+    button) changes on its own and is never a reveal (the slot's first opener pass)."""
+    elements = read.snapshot.elements
+    children: dict[int, list[Element]] = {}
+    for e in elements:
+        if e.parent_id is not None:
+            children.setdefault(e.parent_id, []).append(e)
+    found: list[Element] = []
+    stack = [e for e in elements if e.role == "Document"]
+    while stack:
+        e = stack.pop()
+        found.append(e)
+        stack.extend(children.get(e.id, []))
+    return found
+
+
+def wait_revealed(  # noqa: PLR0913 - the reads, then keyword-only knobs
+    read: Callable[[], Observed],
+    before: Observed,
+    *,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+    limit_s: float = REVEAL_LIMIT_S,
+    targets: Sequence[Act] = (),
+) -> Revealed | None:
+    """The revealed state once it shows the same new elements in the page (by role and name,
+    against the read before the click) on two reads in a row within `limit_s`; None when it does
+    not: the reveal is not deterministic and the task stays unrated."""
+    seen_before = {(e.role, normalise_name(e.name)) for e in _in_page(before)}
+    deadline = clock() + limit_s
+    last: tuple[tuple[str, str], ...] | None = None
+    while clock() < deadline:
+        now = read()
+        new = tuple(
+            sorted(
+                (e.role, normalise_name(e.name))
+                for e in _in_page(now)
+                if (e.role, normalise_name(e.name)) not in seen_before
+            )
+        )
+        wanted = {(a.role, normalise_name(a.name)) for a in targets if a.role}
+        if new and new == last and wanted <= set(new):  # #424 (4): the row's own target
+            roles: dict[str, int] = {}
+            for role, _name in new:
+                roles[role] = roles.get(role, 0) + 1
+            return Revealed(now, roles)
+        last = new
+        sleep(REVEAL_POLL_S)
+    return None
 
 
 def real_site_tasks() -> tuple[Task, ...]:
@@ -229,16 +461,35 @@ def deciding_facts(row: SiteRow, goal: str, read: Observed) -> DecidingFacts:
     copy Steer picks, and it stands. Otherwise it is `ambiguous_target`, naming the facts that
     differ (the coordinator's ruling, 2026-11-15)."""
     options = [[None] if act.verb == "press" else list(targets_in(act, read)) for act in row.acts]
-    seen = {
-        _facts_for(row, goal, read, dict(enumerate(choice)))
-        for choice in itertools.product(*options)
-    }
+    choices = [dict(enumerate(choice)) for choice in itertools.product(*options)]
+    in_scope = [c for c in choices if _paired(row, read, c)]
+    seen = {_facts_for(row, goal, read, choice) for choice in (in_scope or choices)}
     if len(seen) > 1:
         differ = sorted(
             f.name for f in fields(DecidingFacts) if len({getattr(s, f.name) for s in seen}) > 1
         )
         raise ValueError(f"ambiguous_target: the copies differ on {differ}")
     return seen.pop()
+
+
+def _paired(row: SiteRow, read: Observed, picked: Mapping[int, Element | None]) -> bool:
+    """A click pairs with the copy of the field typed before it only when it is in that field's
+    [V2.22] submit scope (`form.beside`, the gate's own): typing into one copy of a form and
+    clicking another copy's button is no submit of the text. An unknown relation pairs (the gate
+    reads it as a submit too). With no click after a type, every choice pairs."""
+    typed: Element | None = None
+    for index, act in enumerate(row.acts):
+        element = picked.get(index)
+        if act.verb == "type":
+            typed = element
+        elif (
+            act.verb == "click"
+            and typed is not None
+            and element is not None
+            and beside(read, typed.runtime_id, element) is False
+        ):
+            return False
+    return True
 
 
 def _facts_for(
@@ -293,6 +544,28 @@ def table_row(task_id: str, row: SiteRow, goal: str, raw_read: bytes) -> TableRo
     outcome, reason = outcome_of(facts.risk, row.proof)
     expected = Expected(task_id, outcome, reason, facts.risk, row.proof, row.why)
     return TableRow(task_id, hashlib.sha256(raw_read).hexdigest(), facts, expected)
+
+
+def opener_table_row(
+    task_id: str, row: SiteRow, goal: str, raw_start: bytes, raw_opened: bytes
+) -> TableRow:
+    """A row behind an opener ([V2.65] (1)): its first act is the opener, rated on the start
+    read (the opener may vanish once clicked); the rest are rated on the opened read, and the
+    row's risk is the higher of the two. The opened read's digest is committed."""
+    opener = OPENERS.get(task_id)
+    if opener is None or not row.acts or row.acts[0] != opener:
+        raise ValueError(f"opener: {task_id}'s acts must start with its opener")
+    start = observed_from_json(raw_start.decode("utf-8"))
+    opened = observed_from_json(raw_opened.decode("utf-8"))
+    opener_risk = rate(goal, (opener,), start)
+    rest = deciding_facts(SiteRow(row.acts[1:], row.proof, row.why), goal, opened)
+    if rest.unread:
+        raise ValueError(f"unread_facts: {task_id} {list(rest.unread)}")
+    risk = max(opener_risk, rest.risk, key=RISKS.index)
+    facts = dataclasses.replace(rest, risk=risk)
+    outcome, reason = outcome_of(risk, row.proof)
+    expected = Expected(task_id, outcome, reason, risk, row.proof, row.why)
+    return TableRow(task_id, hashlib.sha256(raw_opened).hexdigest(), facts, expected)
 
 
 def dump_table(rows: Sequence[TableRow], *, unrated: Mapping[str, str] | None = None) -> str:
@@ -460,9 +733,92 @@ def table_from_reads(
     if unknown:
         raise ValueError(f"acts: not tasks of this group: {unknown}")
     return [
-        table_row(task_id, row, goals[task_id], (reads / f"{task_id}.json").read_bytes())
+        opener_table_row(
+            task_id,
+            row,
+            goals[task_id],
+            (reads / f"{task_id}.json").read_bytes(),
+            opened_read_path(reads, task_id).read_bytes(),
+        )
+        if task_id in OPENERS
+        else table_row(task_id, row, goals[task_id], (reads / f"{task_id}.json").read_bytes())
         for task_id, row in acts.items()
     ]
+
+
+def full_read(client: Any, hwnd: int) -> Observed:  # pragma: no cover - live; Any: UiaClient
+    """The window's full read as the v2 loop takes it (read-only)."""
+    import secrets  # noqa: PLC0415 - live only
+
+    from steerai.probes.shadow_v2 import _ComFacts  # noqa: PLC0415 - COM failures as OSError
+    from steerai.world.model import WorldModel  # noqa: PLC0415 - Windows only
+    from steerai.world.observe2 import read_observed  # noqa: PLC0415 - Windows only
+
+    return read_observed(
+        WorldModel(client).observe(hwnd, cap_s=5.0),
+        _ComFacts(client),
+        key=secrets.token_bytes(32),
+        windows=lambda: (hwnd,),
+    )
+
+
+def save_opened(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live, Windows only
+    """[V2.65] (1) (b): each real-site task behind an opener, once, in a fresh throwaway
+    profile, spaced and capped per host: the start page read, the opener clicked once by the
+    harness, and the revealed state read when it settles (`<task_id>.opened.json`). Nothing is
+    typed or submitted; a reveal that does not settle leaves the task unrated."""
+    from steerai.probes.live_browser import live_page  # noqa: PLC0415 - Windows only
+    from steerai.probes.memory_guard import EXIT_LOW_MEMORY, LowMemory  # noqa: PLC0415
+    from steerai.world.read_json import observed_to_json  # noqa: PLC0415
+
+    out.mkdir(parents=True, exist_ok=True)
+    spacer = Spacer(time.monotonic, time.sleep)
+    acted = load_acts(ACTS.read_text(encoding="utf-8")) if ACTS.exists() else {}
+    for task in real_site_tasks():
+        opener = OPENERS.get(task.task_id)
+        if opener is None:
+            continue
+        row: dict[str, object] = {"task": task.task_id}
+        path = fresh_opened(out, task.task_id)
+        try:
+            targets = opener_targets(acted, task.task_id)  # before any load
+        except OpenerError as exc:
+            sys.stdout.write(json.dumps({**row, "opener": str(exc)}) + "\n")
+            continue
+        host = urllib.parse.urlsplit(task.start).netloc
+        spacer.wait(host)
+        spacer.loaded(host)
+        try:
+            with live_page(task.start, floor_mb=floor_mb, settle_s=6.0) as page:
+                reply = page.cdp.call(
+                    "Runtime.evaluate", {"expression": START_EXPRESSION, "returnByValue": True}
+                )
+                document = start_document(str(reply.get("result", {}).get("value", "")))
+                row |= {"status": document.status, "error_page": document.error_page}
+                before = full_read(page.client, page.hwnd)
+                click_opener(page.cdp.call, opener)
+                revealed = wait_revealed(
+                    lambda: full_read(page.client, page.hwnd),
+                    before,
+                    clock=time.monotonic,
+                    sleep=time.sleep,
+                    targets=targets,
+                )
+        except LowMemory as refused:
+            sys.stdout.write(json.dumps({**row, "refused": str(refused)}) + "\n")
+            return EXIT_LOW_MEMORY
+        except OpenerError as exc:
+            sys.stdout.write(json.dumps({**row, "opener": str(exc)}) + "\n")
+            continue
+        except (OSError, TimeoutError, RuntimeError) as exc:
+            sys.stdout.write(json.dumps({**row, "error": type(exc).__name__}) + "\n")
+            continue
+        if revealed is None:
+            sys.stdout.write(json.dumps({**row, "revealed": False}) + "\n")
+            continue
+        path.write_bytes((observed_to_json(revealed.read) + "\n").encode("utf-8"))
+        sys.stdout.write(json.dumps({**row, "revealed": True, "new": revealed.new_roles}) + "\n")
+    return 0
 
 
 def save_reads(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live, Windows only
@@ -522,6 +878,7 @@ def save_reads(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live, 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Stage 2's expected outcomes.")
     parser.add_argument("--save-reads", type=Path, help="live: save each start page's read here")
+    parser.add_argument("--save-opened", type=Path, help="live: the reads behind each opener")
     parser.add_argument("--min-free-mb", type=int, default=4096)
     parser.add_argument("--acts", type=Path, default=ACTS)
     parser.add_argument("--reads", type=Path, help="the saved reads' local directory")
@@ -529,14 +886,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.save_reads is not None:  # pragma: no cover - live
         return save_reads(args.save_reads, floor_mb=args.min_free_mb)
+    if args.save_opened is not None:  # pragma: no cover - live
+        return save_opened(args.save_opened, floor_mb=args.min_free_mb)
     if args.reads is None:
         parser.error("--reads is required to compute the table")
-    rows = table_from_reads(load_acts(args.acts.read_text(encoding="utf-8")), args.reads)
+    acts_text = args.acts.read_text(encoding="utf-8")
+    rows = table_from_reads(load_acts(acts_text), args.reads)
     for r in rows:
         e = r.expected
         sys.stdout.write(f"{r.task_id:<6} {e.risk:<3} {e.outcome:<11} {e.reason or '-'}\n")
     if args.out is not None:
-        args.out.write_bytes(dump_table(rows).encode("utf-8"))
+        table = dump_table(rows, unrated=load_unrated(acts_text))
+        args.out.write_bytes(table.encode("utf-8"))
     return 0
 
 

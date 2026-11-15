@@ -33,7 +33,16 @@ OUTCOME = TaskOutcome(
     target_changes=6,
     focus_losses=7,
     history_dropped=8,
+    turn_trace_dropped=10,
     pre_task_draft_clicks=9,
+    audit_calls=3,
+    audit_allowed=1,
+    audit_vetoed=1,
+    audit_failed=1,
+    audit_no_call=1,
+    audit_budget_stops=1,
+    audit_tokens=55,
+    saved_calls=10,
     submit_parents=(("document", 1), ("main", 0), ("narrower", 2)),
 )
 COUNTS = {
@@ -45,7 +54,16 @@ COUNTS = {
     "target_changes": 6,
     "focus_losses": 7,
     "history_dropped": 8,
+    "turn_trace_dropped": 10,
     "pre_task_draft_clicks": 9,
+    "audit_calls": 3,
+    "audit_allowed": 1,
+    "audit_vetoed": 1,
+    "audit_failed": 1,
+    "audit_no_call": 1,
+    "audit_budget_stops": 1,
+    "audit_tokens": 55,
+    "saved_calls": 10,
     "submit_parents": {"document": 1, "main": 0, "narrower": 2},
 }
 
@@ -102,6 +120,7 @@ def test_the_stage_summary_sums_the_counts_and_says_odd_ones() -> None:
     report = accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="t").report
     json.dumps(report, allow_nan=False)
     assert report["counts"]["history_dropped"] == 24
+    assert report["counts"]["turn_trace_dropped"] == 30
     assert report["counts"]["focus_losses"] == 14  # the odd run's is said, not summed
     assert report["counts"]["submit_parents"] == {"document": 3, "main": 0, "narrower": 4}
     assert report["run_facts_incomplete"] == 2  # "x" and "elsewhere"
