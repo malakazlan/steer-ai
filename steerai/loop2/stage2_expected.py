@@ -366,7 +366,9 @@ def save_reads(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live, 
     import secrets  # noqa: PLC0415 - live only
 
     from steerai.probes.live_browser import live_page  # noqa: PLC0415 - Windows only
+    from steerai.probes.memory_guard import EXIT_LOW_MEMORY, LowMemory  # noqa: PLC0415
     from steerai.probes.shadow_v2 import _ComFacts  # noqa: PLC0415 - COM failures as OSError
+    from steerai.probes.task_suite import CHALLENGE_TITLES  # noqa: PLC0415 - live only
     from steerai.world.model import WorldModel  # noqa: PLC0415 - Windows only
     from steerai.world.observe2 import read_observed  # noqa: PLC0415 - Windows only
     from steerai.world.read_json import observed_to_json  # noqa: PLC0415
@@ -380,24 +382,33 @@ def save_reads(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live, 
         host = urllib.parse.urlsplit(start).netloc
         spacer.wait(host)
         spacer.loaded(host)
-        with live_page(start, floor_mb=floor_mb, settle_s=6.0) as page:
-            reply = page.cdp.call(
-                "Runtime.evaluate", {"expression": START_EXPRESSION, "returnByValue": True}
-            )
-            document = start_document(str(reply.get("result", {}).get("value", "")))
-            snapshot = WorldModel(page.client).observe(page.hwnd, cap_s=5.0)
-            read = read_observed(
-                snapshot,
-                _ComFacts(page.client),
-                key=secrets.token_bytes(32),
-                windows=lambda: (page.hwnd,),
-            )
+        try:
+            with live_page(start, floor_mb=floor_mb, settle_s=6.0) as page:
+                reply = page.cdp.call(
+                    "Runtime.evaluate", {"expression": START_EXPRESSION, "returnByValue": True}
+                )
+                document = start_document(str(reply.get("result", {}).get("value", "")))
+                snapshot = WorldModel(page.client).observe(page.hwnd, cap_s=5.0)
+                read = read_observed(
+                    snapshot,
+                    _ComFacts(page.client),
+                    key=secrets.token_bytes(32),
+                    windows=lambda: (page.hwnd,),
+                )
+        except LowMemory as refused:
+            sys.stdout.write(json.dumps({"tasks": task_ids, "refused": str(refused)}) + "\n")
+            return EXIT_LOW_MEMORY
+        except (OSError, TimeoutError, RuntimeError) as exc:
+            sys.stdout.write(json.dumps({"tasks": task_ids, "error": type(exc).__name__}) + "\n")
+            continue
         text = (observed_to_json(read) + "\n").encode("utf-8")
         for task_id in task_ids:
             (out / f"{task_id}.json").write_bytes(text)
         row = {"tasks": task_ids, "elements": len(snapshot.elements)}
-        # stage 2 §2.2 step 3, unmeasured until here: the status reading on each real site
-        row |= {"status": document.status, "error_page": document.error_page}
+        # stage 2 §2.2 step 3, unmeasured until here: the status reading on each real site, and
+        # whether the page is a known wall (a fixed title token, never page text)
+        row |= {"status": document.status, "error_page": document.error_page,
+                "wall": document.title in CHALLENGE_TITLES}  # fmt: skip
         sys.stdout.write(json.dumps(row) + "\n")
     return 0
 
