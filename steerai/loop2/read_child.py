@@ -24,12 +24,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final, Literal, NoReturn, get_args
 
+from steerai.loop2.first_facts import class_token
 from steerai.world.effects import Observed
 from steerai.world.observe2 import document_nodes
 
@@ -770,6 +772,285 @@ def run_matrix(out_dir: Path) -> int:  # noqa: PLR0915  # pragma: no cover - liv
     return 0
 
 
+NAMED_CLASSES: Final = re.compile(
+    r"Chrome_\w+|Intermediate D3D Window|ConsoleWindowClass|PseudoConsoleWindow"
+    r"|OleMainThreadWndClass|IME|MSCTFIME UI|CicMarshalWndClass|GDI\+ Hook Window Class"
+    r"|DDEMLEvent|Default IME|\w*Steer\w*"
+)
+"""Window classes named as themselves in the list: Chrome's, the console's and the system
+helper windows a Python or Chrome process owns. Every other class is `class_other`."""
+
+
+def window_row(  # noqa: PLR0913 - one window's facts, keyword-only
+    *,
+    z: int,
+    hwnd: int,
+    pid: int,
+    relation: str,
+    class_name: str,
+    visible: bool,
+    cloaked: bool | None,
+    ex_style: int,
+    minimized: bool,
+    rect: tuple[int, int, int, int],
+) -> dict[str, object]:
+    """One top-level window as closed facts: its class only when it is Chrome's, the console's
+    or a system helper's (`NAMED_CLASSES`) or the window belongs to this run, else `class_other`;
+    never a title."""
+    named = relation != "other" or NAMED_CLASSES.fullmatch(class_name) is not None
+    return {
+        "z": z,
+        "hwnd": hwnd,
+        "pid": pid,
+        "relation": relation,
+        "class": class_token(class_name) if named else "class_other",
+        "visible": visible,
+        "cloaked": cloaked,
+        "layered": bool(ex_style & 0x80000),
+        "transparent": bool(ex_style & 0x20),
+        "tool": bool(ex_style & 0x80),
+        "topmost": bool(ex_style & 0x8),
+        "noactivate": bool(ex_style & 0x08000000),
+        "minimized": minimized,
+        "rect": list(rect),
+    }
+
+
+def _all_windows(ours: set[int], runner: int) -> list[dict[str, object]]:  # pragma: no cover
+    """Every top-level window, top-down (EnumWindows), as `window_row`s."""
+    import ctypes  # noqa: PLC0415 - Windows only
+    from ctypes import wintypes  # noqa: PLC0415
+
+    from steerai.probes.windows import is_cloaked  # noqa: PLC0415
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = (enum_proc, wintypes.LPARAM)
+    user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+    user32.GetWindowLongW.argtypes = (wintypes.HWND, ctypes.c_int)
+    user32.GetWindowLongW.restype = ctypes.c_long
+    user32.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+    user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+    for name in ("IsWindowVisible", "IsIconic"):
+        getattr(user32, name).argtypes = (wintypes.HWND,)
+    handles: list[int] = []
+
+    def on_window(handle: int, _lparam: int) -> bool:
+        handles.append(int(handle))
+        return True
+
+    user32.EnumWindows(enum_proc(on_window), 0)
+    rows: list[dict[str, object]] = []
+    for z, hwnd in enumerate(handles):
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        buffer = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, buffer, 256)
+        rect = wintypes.RECT()
+        user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        owner = int(pid.value)
+        relation = "runner" if owner == runner else "ours" if owner in ours else "other"
+        rows.append(
+            window_row(
+                z=z,
+                hwnd=hwnd,
+                pid=owner,
+                relation=relation,
+                class_name=buffer.value,
+                visible=bool(user32.IsWindowVisible(hwnd)),
+                cloaked=is_cloaked(hwnd),
+                ex_style=int(user32.GetWindowLongW(hwnd, -20)) & 0xFFFFFFFF,
+                minimized=bool(user32.IsIconic(hwnd)),
+                rect=(rect.left, rect.top, rect.right, rect.bottom),
+            )
+        )
+    return rows
+
+
+def _display_state() -> str:  # pragma: no cover - live, Windows only
+    """GUID_CONSOLE_DISPLAY_STATE as delivered on registration to a message-only window: `off`,
+    `on`, `dimmed`, or `unread`."""
+    import ctypes  # noqa: PLC0415 - Windows only
+    import uuid  # noqa: PLC0415
+    from ctypes import wintypes  # noqa: PLC0415
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    found: list[int] = []
+    wndproc_t = ctypes.WINFUNCTYPE(
+        ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
+    )
+
+    class _Setting(ctypes.Structure):
+        _fields_ = (
+            ("PowerSetting", ctypes.c_byte * 16),
+            ("DataLength", wintypes.DWORD),
+            ("Data", ctypes.c_ubyte * 4),
+        )
+
+    user32.DefWindowProcW.argtypes = (
+        wintypes.HWND,
+        wintypes.UINT,
+        wintypes.WPARAM,
+        wintypes.LPARAM,
+    )
+    user32.DefWindowProcW.restype = ctypes.c_ssize_t
+
+    def proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
+        if msg == 0x0218 and wparam == 0x8013:  # WM_POWERBROADCAST, PBT_POWERSETTINGCHANGE
+            setting = ctypes.cast(lparam, ctypes.POINTER(_Setting)).contents
+            found.append(int(setting.Data[0]))
+            return 1
+        return int(user32.DefWindowProcW(hwnd, msg, wparam, lparam))
+
+    callback = wndproc_t(proc)
+
+    class _WndClass(ctypes.Structure):
+        _fields_ = (
+            ("style", wintypes.UINT), ("lpfnWndProc", wndproc_t), ("cbClsExtra", ctypes.c_int),
+            ("cbWndExtra", ctypes.c_int), ("hInstance", wintypes.HINSTANCE),
+            ("hIcon", wintypes.HICON), ("hCursor", wintypes.HANDLE),
+            ("hbrBackground", wintypes.HBRUSH), ("lpszMenuName", wintypes.LPCWSTR),
+            ("lpszClassName", wintypes.LPCWSTR),
+        )  # fmt: skip
+
+    name = f"SteerDisplayProbe{uuid.uuid4().hex[:8]}"
+    wc = _WndClass(lpfnWndProc=callback, lpszClassName=name)
+    if not user32.RegisterClassW(ctypes.byref(wc)):
+        return "unread"
+    user32.CreateWindowExW.restype = wintypes.HWND
+    hwnd = user32.CreateWindowExW(0, name, None, 0, 0, 0, 0, 0, wintypes.HWND(-3), None, None, None)
+    if not hwnd:
+        return "unread"
+    guid = uuid.UUID("6fe69556-704a-47a0-8f24-c28d936fda47").bytes_le
+    buffer = (ctypes.c_byte * 16).from_buffer_copy(guid)
+    user32.RegisterPowerSettingNotification.restype = ctypes.c_void_p
+    handle = user32.RegisterPowerSettingNotification(hwnd, ctypes.byref(buffer), 0)
+    msg = wintypes.MSG()
+    deadline = time.monotonic() + 2.0
+    while not found and time.monotonic() < deadline:
+        while user32.PeekMessageW(ctypes.byref(msg), hwnd, 0, 0, 1):
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+        time.sleep(0.05)
+    if handle:
+        user32.UnregisterPowerSettingNotification(ctypes.c_void_p(handle))
+    user32.DestroyWindow(hwnd)
+    user32.UnregisterClassW(name, None)
+    if not found:
+        return "unread"
+    return {0: "off", 1: "on", 2: "dimmed"}.get(found[0], "unread")
+
+
+def run_windows(out_dir: Path) -> int:  # noqa: PLR0915  # pragma: no cover - live
+    """One input-only child on 3d-a; then, with a blank-prone Chrome on 3d-b up, the whole
+    top-level window list, the display power state, the lock and the input desktop, and the
+    Chrome's own visibility; then one Chrome on 3d-c-button with Chrome's native occlusion
+    turned off (diagnostic only), its visibility and a plain read. Read-only."""
+    import os  # noqa: PLC0415
+    import shutil  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    from steerai.probes import instant_search as fixture  # noqa: PLC0415 - live only
+    from steerai.probes.chrome_a11y import (  # noqa: PLC0415
+        CHROME_DEFAULT,
+        launch_chrome,
+        stop_chrome,
+    )
+    from steerai.probes.layer_b import _ours  # noqa: PLC0415
+    from steerai.probes.layer_b_pages import PageServer  # noqa: PLC0415
+    from steerai.probes.process_tree import process_table, tree_pids  # noqa: PLC0415
+    from steerai.probes.windows import (  # noqa: PLC0415
+        input_desktop_name,
+        session_locked,
+        wait_window_for_pid,
+    )
+
+    runner = os.getpid()
+
+    def emit(row: Mapping[str, object]) -> None:
+        sys.stdout.write(json.dumps(dict(row)) + "\n")
+        sys.stdout.flush()
+
+    def visibility(cdp: Any) -> dict[str, object]:  # Any: a CdpSession
+        def value(expression: str) -> object:
+            reply = cdp.call("Runtime.evaluate", {"expression": expression, "returnByValue": True})
+            return reply.get("result", {}).get("value")
+
+        return {"visibilityState": value("document.visibilityState"),
+                "hidden": value("document.hidden")}  # fmt: skip
+
+    def chrome(name: str, variant: str, extra: tuple[str, ...], what: Any) -> None:
+        run_dir = out_dir / name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(prefix="steer-readchild-"))
+        with PageServer(fixture.pages()) as server:
+            port = fixture._free_port()
+            proc = launch_chrome(
+                CHROME_DEFAULT, tmp / "profile", port, f"http://127.0.0.1:{server.port}/{variant}",
+                extra_args=extra,
+            )  # fmt: skip
+            try:
+                window = wait_window_for_pid(proc.pid, timeout_s=30.0, process=proc)
+                cdp, _ = _ours(port, server.port)
+                try:
+                    fixture._wait_ready(cdp)
+                    facts = what(window.hwnd, run_dir, proc.pid)
+                    row = {"cell": name, "variant": variant, "flags": list(extra),
+                           "bound_hwnd": window.hwnd, **facts}  # fmt: skip
+                    row["chrome_view"] = visibility(cdp)
+                finally:
+                    cdp.close()
+            finally:
+                stop_chrome(proc, tmp / "profile")
+                shutil.rmtree(tmp, ignore_errors=True)
+        emit(row)
+
+    def input_only(hwnd: int, run_dir: Path, _pid: int) -> dict[str, object]:
+        subprocess.run(  # noqa: S603 - our own module, a fixed argv
+            [sys.executable, "-m", "steerai.loop2.read_child", "child", "--hwnd", str(hwnd),
+             "--arm", "mta", "--then", "input", "--out", str(run_dir / "reads.jsonl"),
+             "--trace", str(run_dir / "trace.jsonl")],
+            capture_output=True, timeout=CHILD_CAP_S, check=False,
+        )  # fmt: skip
+        return dict(_summary(run_dir / "reads.jsonl"))
+
+    def plain(hwnd: int, run_dir: Path) -> dict[str, object]:
+        subprocess.run(  # noqa: S603 - our own module, a fixed argv
+            [sys.executable, "-m", "steerai.loop2.read_child", "plain", "--hwnd", str(hwnd),
+             "--out", str(run_dir / "reads.jsonl")],
+            capture_output=True, timeout=CHILD_CAP_S, check=False,
+        )  # fmt: skip
+        return dict(_summary(run_dir / "reads.jsonl"))
+
+    def survey(hwnd: int, run_dir: Path, chrome_pid: int) -> dict[str, object]:
+        table = process_table()
+        ours = tree_pids(runner, table) | tree_pids(chrome_pid, table)
+        windows = _all_windows(ours, runner)
+        bound = next((w["z"] for w in windows if w["hwnd"] == hwnd), None)
+        above = [w for w in windows if bound is not None and int(str(w["z"])) < int(str(bound))]
+        return {
+            "display": _display_state(),
+            "session_locked": session_locked(),
+            "input_desktop": input_desktop_name(),
+            "bound_z": bound,
+            "windows_total": len(windows),
+            "above_bound": above,
+            "runner_windows": [w for w in windows if w["relation"] == "runner"],
+            "ours_windows": [w for w in windows if w["relation"] == "ours"],
+            **plain(hwnd, run_dir),
+        }
+
+    def flagged(hwnd: int, run_dir: Path, _pid: int) -> dict[str, object]:
+        return {"display": _display_state(), **plain(hwnd, run_dir)}
+
+    chrome("0-input-only", "a", (), input_only)
+    chrome("1-blank-survey", "b", (), survey)
+    chrome("2-occlusion-off", "c-button", ("--disable-features=CalculateNativeWinOcclusion",),
+           flagged)  # fmt: skip
+    return 0
+
+
 _TEE: Final = (
     "import subprocess, sys; out = open(sys.argv[1], 'w', encoding='utf-8'); "
     "raise SystemExit(subprocess.call(sys.argv[2:], stdout=out, stderr=subprocess.DEVNULL))"
@@ -798,6 +1079,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911 - one per m
     plain = sub.add_parser("plain")
     plain.add_argument("--hwnd", type=int, required=True)
     plain.add_argument("--out", type=Path, required=True)
+    windows = sub.add_parser("windows")
+    windows.add_argument("--out-dir", type=Path, required=True)
     matrix = sub.add_parser("matrix")
     matrix.add_argument("--out-dir", type=Path, required=True)
     follow = sub.add_parser("follow")
@@ -821,6 +1104,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911 - one per m
         )
     if args.mode == "plain":
         return run_plain(args.hwnd, out=args.out)
+    if args.mode == "windows":
+        return run_windows(args.out_dir)
     if args.mode == "matrix":
         return run_matrix(args.out_dir)
     if args.mode == "follow":
