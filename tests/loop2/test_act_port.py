@@ -1127,7 +1127,10 @@ class _LoggingDesk(Desk):
         super().prove_hooks()
 
 
-def test_the_proof_comes_after_the_idle_wait_and_just_before_the_send() -> None:
+def test_v2_59_safety_order_echo_then_last_idle_check_then_send() -> None:
+    """[V2.59]: the safety property is this order. The probe's echo, then the last idle check,
+    then the send: low-level hooks deliver in order, so the echo proves every earlier event of
+    the person's already reached the callback, and the idle check after it sees them all."""
     log: list[str] = []
     desk = _LoggingDesk(log)
     physical = Executor(ok("type"))
