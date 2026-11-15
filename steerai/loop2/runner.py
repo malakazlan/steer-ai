@@ -85,7 +85,7 @@ from steerai.orchestrator.loop import REUSE_FRESHNESS_S
 from steerai.world.effects import EffectReport, Observed, ValueFact, top_document
 from steerai.world.elements import Element
 from steerai.world.model import normalise_name
-from steerai.world.observe2 import YOUNG_S
+from steerai.world.observe2 import FIRST_READY_S, YOUNG_S, document_nodes
 from steerai.world.reads import ReadCost
 from steerai.world.watch import Watched
 
@@ -403,6 +403,9 @@ class _Run:
         while True:
             self._check_interrupt()
             self._check_budgets()
+            if _no_page(observed):  # first: a frame-only page is never `empty_listing`
+                observed = self._page_not_ready(observed)
+                continue
             if not self.handles.bind(observed):
                 observed = self._nothing_listed(observed)
                 continue
@@ -432,6 +435,33 @@ class _Run:
     def _observe(self) -> Observed:
         return self._in_domain(self.ports.observe())
 
+    def _page_not_ready(self, observed: Observed) -> Observed:
+        """[V2.44] (2): a browser frame with no Document, or an empty one, is never handed to the
+        model in steps 3 to 6 (step 7 changes this: once `open` exists, a blank page is
+        actionable through the address bar). The task's first observation already waited out
+        the first-ready deadline ([V2.31], through `first_observation`); later in the task the
+        page is held (the settle port) until it has content, ending on the `FIRST_READY_S`
+        deadline after it went blank (or the wall budget), never on a count of holds; a hold
+        the clock did not advance across ends it at once, so a stopped clock never spins.
+        Still blank: `page_not_ready` (a Steer stop, not done); a gone window is infrastructure."""
+        if observed is not self.first:
+            deadline = self.ports.clock() + FIRST_READY_S
+            while (left := min(deadline - self.ports.clock(), self._wall_left())) > 0:
+                started = self.ports.clock()
+                observed = self._in_domain(self.ports.settle(observed, left))
+                self._check_interrupt()
+                if not _no_page(observed):
+                    return observed
+                if self.ports.clock() <= started:
+                    break  # the clock did not move across the hold
+        self._check_budgets()  # a budget that ended the wait is the end, not `page_not_ready`
+        if _window_gone(observed):
+            raise _End("stopped", Reason("window_gone"))
+        raise _End("cannot", Reason("page_not_ready"))
+
+    def _wall_left(self) -> float:
+        return self.task.budgets.max_wall_s - (self.ports.clock() - self.started)
+
     def _nothing_listed(self, observed: Observed) -> Observed:
         """[V2.42] RT-40: the model is never called on an empty listing. The load guard first,
         once per top Document; after it, a live window is `empty_listing` (a perception limit,
@@ -439,8 +469,7 @@ class _Run:
         held = self._hold(observed)
         if held is not None:
             return held
-        windows = observed.windows
-        if windows is not None and observed.snapshot.hwnd not in windows:
+        if _window_gone(observed):
             raise _End("stopped", Reason("window_gone"))
         raise _End("cannot", Reason("empty_listing"))
 
@@ -1215,6 +1244,23 @@ _MOVED_TOKEN: Final[Mapping[Moved, str]] = {
     "focus": "focus_lost",
 }
 """The history token for each kind of world move ([V2.43] (2)): never a `refused:` token."""
+
+
+def _no_page(observed: Observed) -> bool:
+    """[V2.44] (2), the [V2.31] shapes: a browser window (it has an address bar) with no
+    Document at all, or a top Document with nothing in it. A native window is never this, nor
+    a window with several root Documents (unreadable, not blank: the model sees it)."""
+    elements = observed.snapshot.elements
+    if not any(e.role == "Document" for e in elements):
+        return observed.url_observed
+    inside = document_nodes(observed.snapshot)
+    return inside is not None and not inside
+
+
+def _window_gone(observed: Observed) -> bool:
+    """The task's window is no longer among the top-level windows (infrastructure)."""
+    windows = observed.windows
+    return windows is not None and observed.snapshot.hwnd not in windows
 
 
 def refusal_of(tokens: Sequence[str]) -> tuple[RefusalKind, str]:

@@ -168,6 +168,10 @@ class Ports:
     decide: Callable[[TurnView], Decided]
     """One controller call, with the tokens it used ([V2.37] P6)."""
     observe: Callable[[], Observed]
+    """The window's observation. The adapter's first call per process window goes through
+    `observe2.first_observation`, so "the first observation already waited out the first-ready
+    deadline" holds only on that path ([V2.31], [V2.44] (2)); `FirstTouches.ready` hands over an
+    already-touched process on its first read, with no wait."""
     act: Callable[[Dispatch], ActResult]
     """Send one action and read it back where the verb has a read-back ([V2.24] item 3)."""
     watch: Callable[[Observed, Dispatch], Watched]
