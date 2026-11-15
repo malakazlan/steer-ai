@@ -336,7 +336,7 @@ def test_the_header_carries_the_chain_budgets_and_a_budget_change_breaks_the_fre
         "max_cost_usd": 10.0,
         "max_wall_s": 300.0,
     }
-    cheaper = {**head, "budgets": {**head["budgets"], "max_cost_usd": 5.0}}  # type: ignore[dict-item]  # a test copy
+    cheaper = {**head, "budgets": {**head["budgets"], "max_cost_usd": 5.0}}
     with pytest.raises(ValueError, match="wording_not_frozen"):
         check_frozen(cheaper, head)
 
