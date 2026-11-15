@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Final, Literal, get_args
 
@@ -645,13 +645,14 @@ class _Run:
                 self._trace_turn()  # [V2.67] D: one record per rejected turn
                 continue
             self._check_interrupt()  # #326, [V2.40] Q4: a Decision after the kill is discarded
-            self.turn.shape = decision_shape(
-                decision,
-                known_subgoals=known_params(self.subgoals),
-                tokens=(),
-                turn=self.turn.number,
-                attempt=0,
-            )
+            if self.ports.turn_trace is not None:  # #444: no trace work without a sink
+                self.turn.shape = decision_shape(
+                    decision,
+                    known_subgoals=known_params(self.subgoals),
+                    tokens=(),
+                    turn=self.turn.number,
+                    attempt=0,
+                )
             fresh = self._observe()
             if fresh.read_cost is not None:
                 self.read_costs.append(fresh.read_cost)  # [V2.34]: this re-read is paid for too
@@ -1014,8 +1015,9 @@ class _Run:
         vocab = Vocab(known_params(self.subgoals), frozenset(self.handles.by_handle))
         if record_ok(record, vocab):
             self.log.append(record)
-            ids = [s.id for s in self.subgoals]  # [V2.67] D (a): positions, never names
-            self.turn.history.append(render(positional(record, ids, vocab.known)))
+            if self.ports.turn_trace is not None:  # #444: no trace work without a sink
+                ids = [s.id for s in self.subgoals]  # [V2.67] D (a): positions, never names
+                self.turn.history.append(render(positional(record, ids, vocab.known)))
         else:
             self.history_dropped += 1
 
@@ -1752,6 +1754,7 @@ class _Run:
         if observed is self.judged:
             return
         self.judged = observed
+        tracing = self.ports.turn_trace is not None  # #444: no trace work without a sink
         skipped: Skipped | None = None
         if observed.tier != "full":
             skipped = "poll"
@@ -1765,9 +1768,10 @@ class _Run:
             baseline = self.baselines[subgoal.id]
             gate = None if skipped is not None else _change_gate(baseline, observed)
             if gate is None:
-                self.turn.proofs.append(
-                    _attempt(position, read_kind, observed, skipped, gate, None)
-                )
+                if tracing:
+                    self.turn.proofs.append(
+                        _attempt(position, read_kind, observed, skipped, gate, None)
+                    )
                 continue
             judged = judge(
                 subgoal,
@@ -1778,7 +1782,10 @@ class _Run:
                 echo=self._echo(subgoal),
                 allow_file=self._allow_file(),
             )
-            self.turn.proofs.append(_attempt(position, read_kind, observed, None, gate, judged))
+            if tracing:
+                self.turn.proofs.append(
+                    _attempt(position, read_kind, observed, None, gate, judged)
+                )
             if judged.proof is not None:
                 self._tick(subgoal, how=judged.proof)
         if skipped is None:
@@ -1854,13 +1861,23 @@ class _Run:
 
     def _trace_turn(self) -> None:
         """[V2.67] D: the turn's closed record to the trace port; a record that fails the
-        no-free-text check is dropped and counted, never written in part."""
+        no-free-text check is dropped and counted, never written in part. #444: an exception
+        while building or writing it is counted the same way and never raised: the turn is often
+        the one the task ends in (`_outcome`), and its outcome must never be lost."""
         sink = self.ports.turn_trace
         turn = self.turn
-        seen = turn.seen
-        if sink is None or seen is None or turn.traced:
+        if sink is None or turn.seen is None or turn.traced:
             return
         turn.traced = True
+        try:
+            self._write_turn(sink, turn)
+        except Exception:  # noqa: BLE001 - a trace failure never loses the task; it is counted
+            self.turn_trace_dropped += 1
+
+    def _write_turn(self, sink: Callable[[Mapping[str, object]], None], turn: _Turn) -> None:
+        seen = turn.seen
+        if seen is None:  # checked by the caller; kept for the type checker
+            return
         listing = turn.listing
         record = turn_record(
             TurnTrace(
