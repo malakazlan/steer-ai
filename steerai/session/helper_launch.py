@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ctypes
 import ntpath
+import os
 import secrets
 import struct
 import subprocess
@@ -40,6 +41,7 @@ from steerai.session.hook_layout import (
     LAYOUT_VERSION,
     STATE_FAILED,
     STATE_READY,
+    STATES,
     Words,
     config_size,
     config_words,
@@ -85,27 +87,42 @@ def interpreter_and_launcher(
     if ntpath.normcase(prefix) == ntpath.normcase(base_prefix):
         return Path(executable), None
     home = None
-    for line in (pyvenv_cfg or "").splitlines():
+    for line in (pyvenv_cfg or "").removeprefix("\ufeff").splitlines():  # HL-14: a BOM
         key, sep, value = line.partition("=")
         if sep and key.strip().lower() == "home":
             home = value.strip()
     if home is None:
         raise _refuse("the venv's pyvenv.cfg names no home interpreter")
     expected = ntpath.join(home, "python.exe")
-    if ntpath.normcase(expected) != ntpath.normcase(base_executable):
+    if _real(expected) != _real(base_executable):  # HL-13: one real path on both sides
         raise _refuse("the venv's home and the base interpreter disagree")
     return Path(base_executable), Path(executable)
 
 
-def this_interpreter() -> tuple[Path, Path | None]:
-    """`interpreter_and_launcher` for the running Steer."""
-    cfg = Path(sys.prefix) / "pyvenv.cfg"
+def _real(path: str) -> str:
+    return os.path.normcase(os.path.realpath(path))
+
+
+def this_interpreter(
+    *,
+    prefix: str = sys.prefix,
+    base_prefix: str = sys.base_prefix,
+    executable: str = sys.executable,
+    base_executable: str = getattr(sys, "_base_executable", sys.executable),
+) -> tuple[Path, Path | None]:
+    """`interpreter_and_launcher` for the running Steer. HL-04: a `pyvenv.cfg` that cannot be
+    read or decoded is a refusal, never an exception out of the start."""
+    cfg = Path(prefix) / "pyvenv.cfg"
+    try:
+        text = cfg.read_text(encoding="utf-8") if cfg.exists() else None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise _refuse(f"the venv's pyvenv.cfg could not be read ({type(exc).__name__})") from exc
     return interpreter_and_launcher(
-        prefix=sys.prefix,
-        base_prefix=sys.base_prefix,
-        executable=sys.executable,
-        base_executable=getattr(sys, "_base_executable", sys.executable),
-        pyvenv_cfg=cfg.read_text(encoding="utf-8") if cfg.is_file() else None,
+        prefix=prefix,
+        base_prefix=base_prefix,
+        executable=executable,
+        base_executable=base_executable,
+        pyvenv_cfg=text,
     )
 
 
@@ -167,8 +184,8 @@ class LaunchWin32(Protocol):
     def process_id(self, process: int) -> int: ...
     def has_exited(self, process: int) -> bool: ...
     def exit_code(self, process: int) -> int | None: ...
-    def terminate_job(self, job: int) -> None: ...
-    def terminate_process(self, process: int) -> None: ...
+    def terminate_job(self, job: int) -> bool: ...
+    def terminate_process(self, process: int) -> bool: ...
     def close(self, handle: int) -> None: ...
 
 
@@ -218,6 +235,8 @@ class HelperProcess:
         self._config: Words | None = None
         self._status: Words | None = None
         self._closed = False
+        self._close_lock = threading.Lock()
+        """#375 H3 (HL-19): one close at a time; a second waits until the first has released."""
 
     # ---- what Steer reads ---------------------------------------------------------------------
 
@@ -238,6 +257,13 @@ class HelperProcess:
     @property
     def wake_handle(self) -> int:
         return self._wake
+
+    @property
+    def job_handle(self) -> int:
+        """The helper's own job (read-only): for the windows test's `IsProcessInJob` (#375 P6)."""
+        if self._job is None:
+            raise RuntimeError("the helper is not started")
+        return self._job
 
     @property
     def process_handle(self) -> int:
@@ -283,26 +309,29 @@ class HelperProcess:
             raise _refuse("the hook helper runs on native x64 only")
         try:
             self._start()
-        except SteerError:
+        except BaseException as exc:  # #375 P2: whatever went wrong, nothing is left (K16)
             self._abort()
-            raise
-        except OSError as exc:
-            self._abort()
+            if isinstance(exc, SteerError) or not isinstance(exc, Exception):
+                raise  # a refusal already, or an interrupt that must stay one
             raise _refuse(f"{type(exc).__name__} while starting the hook helper") from exc
 
     def close(self) -> None:
-        """Ask the helper to quit, wait a bounded time, then end its job; idempotent."""
-        if self._closed:
-            return
-        self._closed = True
-        w = self._w
-        process = self._process
-        if process is not None and not w.has_exited(process):
-            w.set_event(self._quit)
-            w.wait_any((process,), CLOSE_TIMEOUT_MS)
-            if not w.has_exited(process) and self._job is not None:
-                w.terminate_job(self._job)
-        self._release()
+        """Ask the helper to quit, wait a bounded time, then end its job; idempotent, and a
+        second call returns only once the first has released everything."""
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+            w = self._w
+            process = self._process
+            try:
+                if process is not None and not w.has_exited(process):
+                    w.set_event(self._quit)
+                    w.wait_any((process,), CLOSE_TIMEOUT_MS)
+                    if not w.has_exited(process):
+                        self._end()
+            finally:
+                self._release()  # #375 P3: whatever the wait did
 
     # ---- internals -----------------------------------------------------------------------------
 
@@ -353,9 +382,9 @@ class HelperProcess:
         env = environment_block(system_root=self._system_root, launcher=self._launcher)
         inherit = handles.all()
         with _INHERIT_LOCK:
-            for h in inherit:
-                w.set_inherit(h, True)
             try:
+                for h in inherit:  # #375 H1: inside the try, so a failure part-way is undone
+                    w.set_inherit(h, True)
                 try:
                     process, thread, _pid = w.create_process(
                         app,
@@ -377,8 +406,7 @@ class HelperProcess:
                     )
                     suspended = True
             finally:
-                for h in inherit:
-                    w.set_inherit(h, False)
+                self._no_inherit(inherit)
         self._process = self._own(process)
         self._own(thread)
         if suspended:
@@ -390,6 +418,18 @@ class HelperProcess:
             w.resume(thread)
         self._close(thread)
 
+    def _no_inherit(self, handles: tuple[int, ...]) -> None:
+        """#375 H1: every handle is made non-inheritable again, each attempted even when one
+        fails; the first failure is raised once all were tried."""
+        failure: OSError | None = None
+        for h in handles:
+            try:
+                self._w.set_inherit(h, False)
+            except OSError as exc:
+                failure = failure or exc
+        if failure is not None:
+            raise failure
+
     def _wait_ready(self) -> None:
         w = self._w
         status = self.status
@@ -398,7 +438,11 @@ class HelperProcess:
         while True:
             w.reset_event(self._wake)
             state = status.get("state")
+            if state not in STATES:  # #375 H7 (HL-21): not a state the helper can write
+                raise _refuse(f"the hook helper reported an unknown state ({state})")
             if state == STATE_READY:
+                if w.has_exited(process):  # #375 H2 (HL-12): ready, then gone
+                    raise _refuse("the hook helper exited after reporting ready")
                 self._check_identity()
                 return
             if state == STATE_FAILED:
@@ -419,8 +463,11 @@ class HelperProcess:
     def _check_identity(self) -> None:
         """The words were written by the helper this run: its pid and the run's nonce."""
         status, config = self.status, self.config
+        pid = self._w.process_id(self.process_handle)
+        if pid == 0:  # #375 H8: GetProcessId failed; no identity to compare
+            raise _refuse("the hook helper's process id could not be read")
         same = (
-            status.get("pid") == self._w.process_id(self.process_handle)
+            status.get("pid") == pid
             and status.get("nonce_echo_lo") == config.get("nonce_lo")
             and status.get("nonce_echo_hi") == config.get("nonce_hi")
         )
@@ -428,13 +475,22 @@ class HelperProcess:
             raise _refuse("the hook helper's identity did not match")
 
     def _abort(self) -> None:
-        w = self._w
-        if self._job is not None:
-            w.terminate_job(self._job)
-        elif self._process is not None:
-            w.terminate_process(self._process)
         self._closed = True
-        self._release()
+        try:
+            self._end()
+        finally:
+            self._release()
+
+    def _end(self) -> None:
+        """#375 H5 (HL-09): end the helper through its job, else its process (each result
+        checked), then wait a bounded time for it to be gone, so a restart never meets it still
+        holding the kill chord."""
+        w = self._w
+        ended = self._job is not None and w.terminate_job(self._job)
+        if not ended and self._process is not None:
+            w.terminate_process(self._process)
+        if self._process is not None:
+            w.wait_any((self._process,), CLOSE_TIMEOUT_MS)
 
     def _close(self, handle: int) -> None:
         if handle in self._owned:
@@ -442,6 +498,8 @@ class HelperProcess:
             self._w.close(handle)
 
     def _release(self) -> None:
+        self._status = None  # #375 P4: no `Words` over unmapped memory
+        self._config = None
         while self._views:
             self._w.unmap(self._views.pop())
         while self._owned:
@@ -543,69 +601,100 @@ class WindowsLaunch:  # pragma: no cover - live, Windows only (tests/session win
         self._maps: dict[int, int] = {}
         self._keep: list[object] = []
         self._sa: Any = None  # Any: the ctypes SECURITY_ATTRIBUTES, built once
-        k = self._k
-        k.GetCurrentProcess.restype = wintypes.HANDLE
-        k.CreateJobObjectW.restype = wintypes.HANDLE
-        k.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
-        k.CreateFileMappingW.restype = wintypes.HANDLE
-        k.CreateFileMappingW.argtypes = (
-            wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
-            wintypes.LPCWSTR,
-        )  # fmt: skip
-        k.CreateEventW.restype = wintypes.HANDLE
-        k.CreateEventW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL,
-                                   wintypes.LPCWSTR)  # fmt: skip
+        self._declare()
+
+    def _declare(self) -> None:  # noqa: PLR0915 - one line per foreign function, by design
+        """#375 P1: argtypes and restype for every call (Microsoft Learn signatures; HANDLE is
+        pointer-width), so no handle (the pseudo-handle -1 above all) is converted as a C int."""
+        k, a = self._k, self._a
+        handle, dword, boolean = wintypes.HANDLE, wintypes.DWORD, wintypes.BOOL
+        sa = ctypes.POINTER(SecurityAttributes)
+        k.GetCurrentProcess.argtypes = ()
+        k.GetCurrentProcess.restype = handle
+        if hasattr(k, "IsWow64Process2"):  # Windows 10 1709 and later
+            k.IsWow64Process2.argtypes = (handle, ctypes.POINTER(wintypes.USHORT),
+                                          ctypes.POINTER(wintypes.USHORT))  # fmt: skip
+            k.IsWow64Process2.restype = boolean
+        k.CreateJobObjectW.argtypes = (sa, wintypes.LPCWSTR)
+        k.CreateJobObjectW.restype = handle
+        k.SetInformationJobObject.argtypes = (handle, ctypes.c_int, ctypes.c_void_p, dword)
+        k.SetInformationJobObject.restype = boolean
+        k.CreateFileMappingW.argtypes = (handle, sa, dword, dword, dword, wintypes.LPCWSTR)
+        k.CreateFileMappingW.restype = handle
+        k.MapViewOfFile.argtypes = (handle, dword, dword, dword, ctypes.c_size_t)
         k.MapViewOfFile.restype = ctypes.c_void_p
-        k.MapViewOfFile.argtypes = (wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
-                                    wintypes.DWORD, ctypes.c_size_t)  # fmt: skip
         k.UnmapViewOfFile.argtypes = (ctypes.c_void_p,)
-        k.DuplicateHandle.argtypes = (
-            wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.HANDLE),
-            wintypes.DWORD, wintypes.BOOL, wintypes.DWORD,
-        )  # fmt: skip
-        k.SetHandleInformation.argtypes = (wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD)
-        k.WaitForMultipleObjects.argtypes = (wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE),
-                                             wintypes.BOOL, wintypes.DWORD)  # fmt: skip
-        k.WaitForMultipleObjects.restype = wintypes.DWORD
-        k.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
-        k.WaitForSingleObject.restype = wintypes.DWORD
-        k.GetProcessId.argtypes = (wintypes.HANDLE,)
-        k.GetProcessId.restype = wintypes.DWORD
-        k.CloseHandle.argtypes = (wintypes.HANDLE,)
-        k.ResumeThread.argtypes = (wintypes.HANDLE,)
-        k.ResumeThread.restype = wintypes.DWORD
-        k.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
-        k.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
-        k.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
-        k.SetEvent.argtypes = (wintypes.HANDLE,)
-        k.ResetEvent.argtypes = (wintypes.HANDLE,)
-        k.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
-        k.LocalFree.argtypes = (ctypes.c_void_p,)
-        k.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
-                                              wintypes.DWORD)  # fmt: skip
-        k.InitializeProcThreadAttributeList.argtypes = (
-            ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(ctypes.c_size_t),
-        )  # fmt: skip
-        k.UpdateProcThreadAttribute.argtypes = (
-            ctypes.c_void_p, wintypes.DWORD, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t,
-            ctypes.c_void_p, ctypes.c_void_p,
-        )  # fmt: skip
+        k.UnmapViewOfFile.restype = boolean
+        k.CreateEventW.argtypes = (sa, boolean, boolean, wintypes.LPCWSTR)
+        k.CreateEventW.restype = handle
+        k.DuplicateHandle.argtypes = (handle, handle, handle, ctypes.POINTER(handle), dword,
+                                      boolean, dword)  # fmt: skip
+        k.DuplicateHandle.restype = boolean
+        k.SetHandleInformation.argtypes = (handle, dword, dword)
+        k.SetHandleInformation.restype = boolean
+        size_out = ctypes.POINTER(ctypes.c_size_t)
+        k.InitializeProcThreadAttributeList.argtypes = (ctypes.c_void_p, dword, dword, size_out)
+        k.InitializeProcThreadAttributeList.restype = boolean
+        k.UpdateProcThreadAttribute.argtypes = (ctypes.c_void_p, dword, ctypes.c_size_t,
+                                                ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p,
+                                                ctypes.POINTER(ctypes.c_size_t))  # fmt: skip
+        k.UpdateProcThreadAttribute.restype = boolean
         k.DeleteProcThreadAttributeList.argtypes = (ctypes.c_void_p,)
-        k.CreateProcessW.argtypes = (
-            wintypes.LPCWSTR, ctypes.c_wchar_p, ctypes.c_void_p, ctypes.c_void_p, wintypes.BOOL,
-            wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR, ctypes.c_void_p, ctypes.c_void_p,
-        )  # fmt: skip
+        k.DeleteProcThreadAttributeList.restype = None
+        k.CreateProcessW.argtypes = (wintypes.LPCWSTR, ctypes.c_wchar_p, sa, sa, boolean, dword,
+                                     ctypes.c_void_p, wintypes.LPCWSTR,
+                                     ctypes.POINTER(StartupInfoEx),
+                                     ctypes.POINTER(ProcessInformation))  # fmt: skip
+        k.CreateProcessW.restype = boolean
+        k.AssignProcessToJobObject.argtypes = (handle, handle)
+        k.AssignProcessToJobObject.restype = boolean
+        k.ResumeThread.argtypes = (handle,)
+        k.ResumeThread.restype = dword
+        k.ResetEvent.argtypes = (handle,)
+        k.ResetEvent.restype = boolean
+        k.SetEvent.argtypes = (handle,)
+        k.SetEvent.restype = boolean
+        k.WaitForMultipleObjects.argtypes = (dword, ctypes.POINTER(handle), boolean, dword)
+        k.WaitForMultipleObjects.restype = dword
+        k.WaitForSingleObject.argtypes = (handle, dword)
+        k.WaitForSingleObject.restype = dword
+        k.GetProcessId.argtypes = (handle,)
+        k.GetProcessId.restype = dword
+        k.GetExitCodeProcess.argtypes = (handle, ctypes.POINTER(dword))
+        k.GetExitCodeProcess.restype = boolean
+        k.TerminateJobObject.argtypes = (handle, wintypes.UINT)
+        k.TerminateJobObject.restype = boolean
+        k.TerminateProcess.argtypes = (handle, wintypes.UINT)
+        k.TerminateProcess.restype = boolean
+        k.CloseHandle.argtypes = (handle,)
+        k.CloseHandle.restype = boolean
+        k.LocalFree.argtypes = (ctypes.c_void_p,)
+        k.LocalFree.restype = ctypes.c_void_p
+        a.OpenProcessToken.argtypes = (handle, dword, ctypes.POINTER(handle))
+        a.OpenProcessToken.restype = boolean
+        a.GetTokenInformation.argtypes = (handle, ctypes.c_int, ctypes.c_void_p, dword,
+                                          ctypes.POINTER(dword))  # fmt: skip
+        a.GetTokenInformation.restype = boolean
+        a.ConvertSidToStringSidW.argtypes = (ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR))
+        a.ConvertSidToStringSidW.restype = boolean
+        a.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = (
+            wintypes.LPCWSTR,
+            dword,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(ctypes.c_ulong),
+        )
+        a.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = boolean
 
     def _fail(self, what: str) -> OSError:
         code = ctypes.get_last_error()
         return OSError(code, f"{what} failed ({code})")
 
     def process_machine(self) -> tuple[int, int]:
-        call = getattr(self._k, "IsWow64Process2", None)
-        if call is None:
+        if not hasattr(self._k, "IsWow64Process2"):
             raise OSError(0, "IsWow64Process2 is not available (Windows 10 1709 or later)")
         process, native = wintypes.USHORT(), wintypes.USHORT()
-        if not call(self._k.GetCurrentProcess(), ctypes.byref(process), ctypes.byref(native)):
+        me = self._k.GetCurrentProcess()
+        if not self._k.IsWow64Process2(me, ctypes.byref(process), ctypes.byref(native)):
             raise self._fail("IsWow64Process2")
         return int(process.value), int(native.value)
 
@@ -631,7 +720,7 @@ class WindowsLaunch:  # pragma: no cover - live, Windows only (tests/session win
         if not self._a.ConvertSidToStringSidW(ctypes.c_void_p(sid), ctypes.byref(text)):
             raise self._fail("ConvertSidToStringSidW")
         user = text.value
-        self._k.LocalFree(text)
+        self._k.LocalFree(ctypes.cast(text, ctypes.c_void_p))
         descriptor = ctypes.c_void_p()
         if not self._a.ConvertStringSecurityDescriptorToSecurityDescriptorW(
             f"D:P(A;;GA;;;{user})", SDDL_REVISION_1, ctypes.byref(descriptor), None
@@ -654,12 +743,12 @@ class WindowsLaunch:  # pragma: no cover - live, Windows only (tests/session win
         info = JobExtendedLimits()
         info.Basic.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
         info.Basic.ActiveProcessLimit = 1
-        limits = (ctypes.byref(info), ctypes.sizeof(info))
+        limits = (ctypes.addressof(info), ctypes.sizeof(info))
         if not self._k.SetInformationJobObject(job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, *limits):
             raise self._fail("SetInformationJobObject")
 
     def create_section(self, sa: object, size: int) -> int:
-        invalid = wintypes.HANDLE(-1)
+        invalid = ctypes.c_void_p(-1)  # INVALID_HANDLE_VALUE: a mapping backed by the paging file
         section = self._k.CreateFileMappingW(invalid, ctypes.byref(sa), PAGE_READWRITE, 0,  # type: ignore[arg-type]  # a ctypes struct
                                              size, None)  # fmt: skip
         if not section:
@@ -784,11 +873,11 @@ class WindowsLaunch:  # pragma: no cover - live, Windows only (tests/session win
             return None
         return None if code.value == STILL_ACTIVE else int(code.value)
 
-    def terminate_job(self, job: int) -> None:
-        self._k.TerminateJobObject(job, 1)
+    def terminate_job(self, job: int) -> bool:
+        return bool(self._k.TerminateJobObject(job, 1))
 
-    def terminate_process(self, process: int) -> None:
-        self._k.TerminateProcess(process, 1)
+    def terminate_process(self, process: int) -> bool:
+        return bool(self._k.TerminateProcess(process, 1))
 
     def close(self, handle: int) -> None:
         self._k.CloseHandle(handle)

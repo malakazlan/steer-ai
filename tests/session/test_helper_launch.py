@@ -7,6 +7,8 @@ the windows-marked tests in `test_helper_process.py` (CI only)."""
 from __future__ import annotations
 
 import ast
+import sys
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from steerai.errors import SteerError
 from steerai.session import helper_launch
 from steerai.session.helper_core import HelperHandles, config_error, parse_helper_argv
 from steerai.session.helper_launch import (
+    CLOSE_TIMEOUT_MS,
     CREATE_NO_WINDOW,
     CREATE_SUSPENDED,
     CREATE_UNICODE_ENVIRONMENT,
@@ -28,6 +31,7 @@ from steerai.session.helper_launch import (
     environment_block,
     interpreter_and_launcher,
     machine_ok,
+    this_interpreter,
 )
 from steerai.session.hook_layout import (
     ERROR_HOOKS,
@@ -142,6 +146,13 @@ class FakeWin32:
     """Records every call; on process creation, plays a helper that does `behaviour`."""
 
     behaviour: str = "ready"
+    raise_at: str | None = None
+    enable_fails_at: int = 0
+    job_terminate_ok: bool = True
+    process: int = 0
+    disable_fails_at: int = 0
+    enables: int = 0
+    disables: int = 0
     machine: tuple[int, int] = (UNKNOWN, AMD64)
     job_list_fails: bool = False
     assign_fails: bool = False
@@ -155,6 +166,10 @@ class FakeWin32:
     exited: bool = False
     events: set[int] = field(default_factory=set)
 
+    def _maybe_raise(self, step: str) -> None:
+        if self.raise_at == step:
+            raise RuntimeError(f"an unexpected failure in {step}")
+
     def _new(self) -> int:
         self.next_handle += 4
         self.open_handles.add(self.next_handle)
@@ -167,19 +182,23 @@ class FakeWin32:
         return self.machine
 
     def user_security(self) -> object:
+        self._maybe_raise("user_security")
         self.calls.append(("security",))
         return object()
 
     def create_job(self, sa: object) -> int:
+        self._maybe_raise("create_job")
         del sa
         h = self._new()
         self.calls.append(("job", h))
         return h
 
     def limit_job(self, job: int) -> None:
+        self._maybe_raise("limit_job")
         self.calls.append(("limit", job))
 
     def create_section(self, sa: object, size: int) -> int:
+        self._maybe_raise("create_section")
         del sa
         h = self._new()
         self.buffers[h] = bytearray(size)
@@ -187,6 +206,7 @@ class FakeWin32:
         return h
 
     def map_view(self, section: int, size: int, *, writable: bool) -> memoryview:
+        self._maybe_raise("map_view")
         view = memoryview(self._buf(section))
         assert view.nbytes == size
         return view if writable else view.toreadonly()
@@ -196,6 +216,7 @@ class FakeWin32:
         self.calls.append(("unmap",))
 
     def create_event(self, sa: object, *, manual_reset: bool) -> int:
+        self._maybe_raise("create_event")
         del sa
         h = self._new()
         self.events.add(h)
@@ -203,6 +224,7 @@ class FakeWin32:
         return h
 
     def duplicate(self, handle: int, access: int) -> int:
+        self._maybe_raise("duplicate")
         h = self._new()
         if handle in self.buffers or handle in self.alias:
             self.alias[h] = self.alias.get(handle, handle)
@@ -210,12 +232,23 @@ class FakeWin32:
         return h
 
     def duplicate_self(self, access: int) -> int:
+        self._maybe_raise("duplicate_self")
         h = self._new()
         self.calls.append(("dup_self", access, h))
         return h
 
     def set_inherit(self, handle: int, on: bool) -> None:
-        (self.inheritable.add if on else self.inheritable.discard)(handle)
+        self._maybe_raise("set_inherit")
+        if on:
+            self.enables += 1
+            if self.enables == self.enable_fails_at:
+                raise OSError(5, "SetHandleInformation failed")
+            self.inheritable.add(handle)
+        else:
+            self.disables += 1
+            if self.disables == self.disable_fails_at:
+                raise OSError(5, "SetHandleInformation failed")
+            self.inheritable.discard(handle)
 
     def create_process(
         self,
@@ -227,11 +260,13 @@ class FakeWin32:
         inherit: tuple[int, ...],
         jobs: tuple[int, ...],
     ) -> tuple[int, int, int]:
+        self._maybe_raise("create_process")
         assert set(inherit) <= self.inheritable, "an inherited handle was not inheritable"
         self.calls.append(("create", app, cmdline, env, flags, inherit, jobs))
         if jobs and self.job_list_fails:
             raise OSError(87, "JOB_LIST refused")
         process, thread = self._new(), self._new()
+        self.process = process
         if not flags & CREATE_SUSPENDED:
             self._play(cmdline)
         else:
@@ -265,8 +300,17 @@ class FakeWin32:
         elif self.behaviour == "wrong_pid":
             status.set("pid", self.pid + 1)
             status.set("state", STATE_READY)
+        else:  # #375 review: the ready check's single-fault cases
+            right_pid = self.behaviour in {"wrong_nonce", "ready_then_exit", "pid_zero"}
+            right_nonce = self.behaviour in {"pid_only", "ready_then_exit", "pid_zero"}
+            status.set("pid", 0 if self.behaviour == "pid_zero" else self.pid + (not right_pid))
+            status.set("nonce_echo_lo", config.get("nonce_lo") + (not right_nonce))
+            status.set("nonce_echo_hi", config.get("nonce_hi"))
+            status.set("state", 99 if self.behaviour == "bad_state" else STATE_READY)
+            self.exited = self.behaviour == "ready_then_exit"
 
     def reset_event(self, handle: int) -> None:
+        self._maybe_raise("reset_event")
         self.calls.append(("reset", handle))
 
     def set_event(self, handle: int) -> None:
@@ -284,8 +328,9 @@ class FakeWin32:
         return events[0] if events else None  # the helper set wake; a lone process wait times out
 
     def process_id(self, process: int) -> int:
+        self._maybe_raise("process_id")
         del process
-        return self.pid
+        return 0 if self.behaviour == "pid_zero" else self.pid
 
     def has_exited(self, process: int) -> bool:
         del process
@@ -295,13 +340,15 @@ class FakeWin32:
         del process
         return 3 if self.exited else None
 
-    def terminate_job(self, job: int) -> None:
+    def terminate_job(self, job: int) -> bool:
         self.calls.append(("terminate_job", job))
-        self.exited = True
+        self.exited = self.job_terminate_ok
+        return self.job_terminate_ok
 
-    def terminate_process(self, process: int) -> None:
+    def terminate_process(self, process: int) -> bool:
         self.calls.append(("terminate_process", process))
         self.exited = True
+        return True
 
     def close(self, handle: int) -> None:
         self.open_handles.discard(handle)
@@ -473,3 +520,221 @@ def test_terminating_a_helper_ends_its_job() -> None:
     helper.terminate()
     assert w.named("terminate_job")
     assert helper.has_exited()
+
+
+# ---- #375 review P2: any failure at any start step is a refusal (K16) -----------------------
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        "user_security",
+        "create_job",
+        "limit_job",
+        "create_section",
+        "map_view",
+        "create_event",
+        "duplicate",
+        "duplicate_self",
+        "set_inherit",
+        "create_process",
+        "reset_event",
+        "process_id",
+    ],
+)
+def test_a_non_os_error_at_any_win32_step_is_a_refusal_with_nothing_left(step: str) -> None:
+    w = FakeWin32(raise_at=step)
+    with pytest.raises(SteerError, match="monitor_unavailable"):
+        _helper(w).start()
+    assert w.open_handles == set()
+    if w.named("create"):
+        assert w.named("terminate_job") or w.named("terminate_process")
+
+
+# ---- #375 review P3, P4: close always releases, and nothing reads unmapped memory -------------
+
+
+def test_close_releases_everything_even_when_its_wait_fails() -> None:
+    w = FakeWin32()
+    helper = _helper(w)
+    helper.start()
+
+    def broken_wait(handles: tuple[int, ...], timeout_ms: int) -> int | None:
+        raise OSError(6, "the handle is invalid")
+
+    w.wait_any = broken_wait  # type: ignore[method-assign]  # a wait that fails
+    with pytest.raises(OSError, match="invalid"):
+        helper.close()
+    assert w.open_handles == set()
+
+
+def test_after_close_the_words_cannot_be_read() -> None:
+    """P4: `Words` over unmapped memory would be an access violation."""
+    w = FakeWin32()
+    helper = _helper(w)
+    helper.start()
+    helper.close()
+    with pytest.raises(RuntimeError):
+        _ = helper.status
+    with pytest.raises(RuntimeError):
+        _ = helper.config
+
+
+# ---- #375 review H3 (HL-19): close is serialised ----------------------------------------------
+
+
+def test_a_second_close_waits_until_the_first_has_released_everything() -> None:
+    w = FakeWin32()
+    helper = _helper(w)
+    helper.start()
+    entered, release = threading.Event(), threading.Event()
+    real_wait = w.wait_any
+
+    def held_wait(handles: tuple[int, ...], timeout_ms: int) -> int | None:
+        entered.set()
+        release.wait(5)
+        return real_wait(handles, timeout_ms)
+
+    w.wait_any = held_wait  # type: ignore[method-assign]  # the first close is held inside it
+    first = threading.Thread(target=helper.close)
+    first.start()
+    assert entered.wait(5)
+    seen: list[set[int]] = []
+
+    def second_close() -> None:
+        helper.close()
+        seen.append(set(w.open_handles))
+
+    second = threading.Thread(target=second_close)
+    second.start()
+    second.join(0.2)
+    assert second.is_alive()  # blocked behind the first close, not returned early
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert seen == [set()]
+    assert len(w.named("set")) == 1
+
+
+# ---- #375 review H1 (HL-06): every enabled handle is made non-inheritable again ---------------
+
+
+def test_a_failed_enable_still_disables_the_handles_already_enabled() -> None:
+    w = FakeWin32(enable_fails_at=3)
+    with pytest.raises(SteerError, match="monitor_unavailable"):
+        _helper(w).start()
+    assert w.inheritable == set()
+
+
+def test_one_failing_disable_does_not_stop_the_others() -> None:
+    w = FakeWin32(disable_fails_at=1)
+    with pytest.raises(SteerError, match="monitor_unavailable"):
+        _helper(w).start()
+    assert w.disables == 5  # every disable was attempted
+    assert len(w.inheritable) == 1  # only the one whose disable failed
+
+
+# ---- #375 review: the ready check, one fault at a time (T1/T2, H2, H7, H8) --------------------
+
+
+@pytest.mark.parametrize(
+    "behaviour",
+    ["wrong_nonce", "pid_only", "ready_then_exit", "bad_state", "pid_zero"],
+)
+def test_a_ready_with_any_single_fault_is_a_refusal(behaviour: str) -> None:
+    """T1/T2: the pid and the nonce are each checked alone; H2: ready but exited; H7: a state
+    outside the enum refuses at once; H8: `GetProcessId` returning 0 is no identity."""
+    w = FakeWin32(behaviour=behaviour)
+    with pytest.raises(SteerError, match="monitor_unavailable"):
+        _helper(w).start()
+    assert w.open_handles == set()
+
+
+def test_an_invalid_state_refuses_without_waiting() -> None:
+    w = FakeWin32(behaviour="bad_state")
+    with pytest.raises(SteerError, match="monitor_unavailable"):
+        _helper(w).start()
+    pairs = [c for c in w.named("wait") if isinstance(c[1], tuple) and len(c[1]) == 2]
+    assert not pairs  # never waited for ready
+
+
+# ---- #375 review H5 (HL-09): ending the helper is checked, then waited for, before release ----
+
+
+def _ended_then_waited_then_closed(w: FakeWin32) -> bool:
+    ended = max(i for i, c in enumerate(w.calls) if c[0] in {"terminate_job", "terminate_process"})
+    waited = [i for i, c in enumerate(w.calls) if c == ("wait", (w.process,), CLOSE_TIMEOUT_MS)]
+    closed = [i for i, c in enumerate(w.calls) if c == ("close", w.process)]
+    return bool(waited) and bool(closed) and ended < waited[-1] < closed[0]
+
+
+def test_a_refused_start_waits_for_the_helper_to_exit_before_releasing() -> None:
+    """So a restart never meets the dying helper still holding the kill chord."""
+    w = FakeWin32(behaviour="hang")
+    with pytest.raises(SteerError, match="monitor_unavailable"):
+        _helper(w).start()
+    assert _ended_then_waited_then_closed(w)
+
+
+def test_a_job_that_will_not_terminate_falls_back_to_the_process() -> None:
+    w = FakeWin32(behaviour="hang", job_terminate_ok=False)
+    with pytest.raises(SteerError, match="monitor_unavailable"):
+        _helper(w).start()
+    assert w.named("terminate_job")
+    assert w.named("terminate_process")
+    assert _ended_then_waited_then_closed(w)
+
+
+# ---- #375 review H4 (HL-04, HL-13, HL-14): resolving the interpreter never crashes the start --
+
+
+def test_a_pyvenv_cfg_with_a_bom_is_read() -> None:
+    exe, _launcher = interpreter_and_launcher(
+        prefix=r"D:\w\.venv",
+        base_prefix=r"C:\py",
+        executable=r"D:\w\.venv\Scripts\python.exe",
+        base_executable=r"C:\py\python.exe",
+        pyvenv_cfg="\ufeffhome = C:\\py\n",
+    )
+    assert exe == Path(r"C:\py\python.exe")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows path semantics")
+def test_the_home_is_compared_by_real_path() -> None:
+    exe, _launcher = interpreter_and_launcher(
+        prefix=r"D:\w\.venv",
+        base_prefix=r"C:\py",
+        executable=r"D:\w\.venv\Scripts\python.exe",
+        base_executable=r"C:\py\python.exe",
+        pyvenv_cfg="home = C:\\py\\..\\py\\\n",
+    )
+    assert exe == Path(r"C:\py\python.exe")
+
+
+@pytest.mark.parametrize("content", [b"home = \xff\xfe\x00", None])
+def test_an_unreadable_pyvenv_cfg_is_a_refusal(tmp_path: Path, content: bytes | None) -> None:
+    cfg = tmp_path / "pyvenv.cfg"
+    if content is None:
+        cfg.mkdir()  # a read error, not a missing file
+    else:
+        cfg.write_bytes(content)
+    with pytest.raises(SteerError, match="monitor_unavailable"):
+        this_interpreter(
+            prefix=str(tmp_path),
+            base_prefix=r"C:\py",
+            executable=str(tmp_path / "python.exe"),
+            base_executable=r"C:\py\python.exe",
+        )
+
+
+# ---- #375 review P6: the helper's own job, readable for the windows test ---------------------
+
+
+def test_the_job_handle_is_the_helpers_own_job_and_read_only() -> None:
+    w = FakeWin32()
+    helper = _helper(w)
+    helper.start()
+    (job,) = (c[1] for c in w.named("job"))
+    assert helper.job_handle == job
+    with pytest.raises(AttributeError):
+        helper.job_handle = 0  # type: ignore[misc]  # a read-only property

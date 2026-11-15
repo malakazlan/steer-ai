@@ -58,6 +58,9 @@ KILL_TERMINATE_S: Final = 5.0
 helper ends Steer when the kill is still unacknowledged after this."""
 KILL_EXIT_CODE: Final = 4
 """The exit code of a Steer ended for the kill: v1's `EXIT_STOPPED` (pinned equal by a test)."""
+MAX_ASK_DEPTH: Final = 16
+"""#375 P5: the most nested asks Steer can have open. A larger word is an underflow (or a
+corrupt word): read as no ask, and counted as a callback error, so Steer loses the monitor."""
 WARM_ROUNDS: Final = 1000
 """HH-04: synthetic callbacks run once at start so the first real event finds its code paged in."""
 HELPER_MODULE: Final = "steerai.session.hook_helper"
@@ -181,7 +184,10 @@ class HelperCore:
 
     # ---- lifecycle -----------------------------------------------------------------------------
 
-    def ready(self) -> None:
+    def ready(self, *, qpc: int, unbiased_100ns: int) -> None:
+        """Published once the hooks and the hot key are in place; the loop's gap and sleep
+        baseline starts here (#375 H6), so a stall before the first loop is still a gap."""
+        self._last_loop = (qpc, unbiased_100ns)
         s = self._status
         s.set("pid", self._pid)
         s.set("nonce_echo_lo", self._config.get("nonce_lo"))
@@ -206,7 +212,7 @@ class HelperCore:
     ) -> bool:
         """One keyboard event; True when it delivered a probe (the caller wakes Steer)."""
         self._lag(event_ms, entry_ms)
-        self._classifier.sync_ask_depth(self._config.get("ask_depth"))
+        self._sync_ask()
         before = self._classifier.delivered("keyboard")
         self._classifier.on_keyboard(flags=flags, extra=extra, now=float(entry_qpc), vk=vk)
         return self._publish("keyboard", before)
@@ -224,7 +230,7 @@ class HelperCore:
     ) -> bool:
         """One mouse event; True when it delivered a probe. `pt` reaches only the dead band."""
         self._lag(event_ms, entry_ms)
-        self._classifier.sync_ask_depth(self._config.get("ask_depth"))
+        self._sync_ask()
         before = self._classifier.delivered("mouse")
         self._classifier.on_mouse(
             message=message, flags=flags, extra=extra, pt=pt, now=float(entry_qpc)
@@ -281,6 +287,14 @@ class HelperCore:
         s.set("heartbeat_count", s.get("heartbeat_count") + 1)
 
     # ---- internals -----------------------------------------------------------------------------
+
+    def _sync_ask(self) -> None:
+        """K7: Steer's ask word, read directly; past `MAX_ASK_DEPTH` it is no ask (#375 P5)."""
+        depth = self._config.get("ask_depth")
+        if depth > MAX_ASK_DEPTH:
+            self.callback_error()
+            depth = 0
+        self._classifier.sync_ask_depth(depth)
 
     def _resumed(self, qpc: int) -> None:
         """HH-01: the wake input happened while the hooks were blind: counted as the person's."""

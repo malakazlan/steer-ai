@@ -13,9 +13,11 @@ import os
 import secrets
 import subprocess
 import sys
+from collections.abc import Callable
 
 import pytest
 
+from steerai.session.helper_core import EXIT_OK
 from steerai.session.helper_launch import (
     SYNCHRONIZE,
     HelperProcess,
@@ -30,6 +32,8 @@ pytestmark = pytest.mark.windows
 
 _MOD_ALT, _MOD_CTRL, _MOD_SHIFT = 0x0001, 0x0002, 0x0004
 _VK_F10 = 0x79
+_PROCESS_QUERY_LIMITED = 0x1000
+"""PROCESS_QUERY_LIMITED_INFORMATION: to read the exit code after close."""
 """A chord no Steer run uses, so a test helper never collides with a real one."""
 
 
@@ -63,7 +67,11 @@ def _run_tag() -> int:
             return tag
 
 
-def test_a_real_helper_starts_inside_its_job_reports_ready_and_quits() -> None:
+def test_a_real_helper_starts_inside_its_job_reports_ready_and_quits(
+    record_property: Callable[[str, object], None],
+) -> None:
+    """#375 P6: in the helper's own job (not any job), and the quit path ends it cleanly
+    (`EXIT_OK`), not a terminate."""
     interpreter, launcher = this_interpreter()
     win32 = WindowsLaunch()
     helper = HelperProcess(
@@ -78,18 +86,23 @@ def test_a_real_helper_starts_inside_its_job_reports_ready_and_quits() -> None:
         hook_timeout_ms=1000,
     )
     helper.start()
-    watch = win32.duplicate(helper.process_handle, SYNCHRONIZE)  # outlives close()
+    watch = win32.duplicate(helper.process_handle, SYNCHRONIZE | _PROCESS_QUERY_LIMITED)
     try:
         assert helper.status.get("state") == STATE_READY
         assert helper.status.get("pid") == win32.process_id(helper.process_handle)
+        record_property("ws_floor", helper.status.get("ws_floor"))
         in_job = ctypes.c_int()
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.IsProcessInJob.argtypes = (ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
-        assert kernel32.IsProcessInJob(helper.process_handle, None, ctypes.byref(in_job))
+        kernel32.IsProcessInJob.argtypes = (ctypes.c_void_p, ctypes.c_void_p,
+                                            ctypes.POINTER(ctypes.c_int))  # fmt: skip
+        kernel32.IsProcessInJob.restype = ctypes.c_int
+        assert kernel32.IsProcessInJob(helper.process_handle, helper.job_handle,
+                                       ctypes.byref(in_job))  # fmt: skip
         assert in_job.value
     finally:
         helper.close()
     try:
         assert win32.wait_any((watch,), 3000) == 0  # the helper is gone after close()
+        assert win32.exit_code(watch) == EXIT_OK  # it quit on `quit`, it was not terminated
     finally:
         win32.close(watch)

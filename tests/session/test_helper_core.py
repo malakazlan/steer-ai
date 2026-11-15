@@ -10,6 +10,7 @@ from steerai.session.helper_core import (
     KILL_ACK_S,
     KILL_EXIT_CODE,
     KILL_TERMINATE_S,
+    MAX_ASK_DEPTH,
     SLEEP_DIVERGENCE_MS,
     HelperCore,
     config_error,
@@ -104,7 +105,7 @@ def test_steers_own_mutable_words_are_outside_the_crc() -> None:
 def test_the_helper_starts_then_reports_ready_with_its_pid_and_the_nonce() -> None:
     core, _cfg, status = _core()
     assert status.get("state") == STATE_STARTING
-    core.ready()
+    core.ready(qpc=1_000 * MS, unbiased_100ns=1_000 * 10_000)
     assert status.get("state") == STATE_READY
     assert status.get("pid") == 4242
     assert (status.get("nonce_echo_lo"), status.get("nonce_echo_hi")) == NONCE
@@ -315,3 +316,61 @@ def test_the_bounds_are_ordered_and_the_exit_code_is_steers_stopped() -> None:
 
     assert KILL_TERMINATE_S >= 2 * KILL_ACK_S
     assert KILL_EXIT_CODE == EXIT_STOPPED
+
+
+# ---- #375 review P5: an underflowed ask word never hides a takeover ---------------------------
+
+
+@pytest.mark.parametrize("depth", [MAX_ASK_DEPTH + 1, 2**64 - 1])
+def test_an_ask_depth_past_the_bound_is_no_ask_and_a_callback_error(depth: int) -> None:
+    """2**64-1 is a decrement below zero; read as an open ask it would make every person's
+    input an answer. It is read as no ask, and counted, so Steer loses the monitor."""
+    core, cfg, status = _core()
+    cfg.set("ask_depth", depth)
+    _key(core, extra=0, at_ms=5_000)
+    assert unpack_last_user(status.get("last_user"))[0] == 5_000 * MS  # a takeover, not an answer
+    assert status.get("callback_errors") == 1
+
+
+def test_an_ask_depth_within_the_bound_is_an_ask() -> None:
+    core, cfg, status = _core()
+    cfg.set("ask_depth", MAX_ASK_DEPTH)
+    _key(core, extra=0, at_ms=5_000)
+    assert status.get("last_user") == 0
+    assert status.get("callback_errors") == 0
+
+
+# ---- #375 review T3: the order inside one publish is pinned too ------------------------------
+
+
+def test_inside_one_publish_the_persons_time_is_stored_before_the_delivery() -> None:
+    """A person's event and the probe classified before one publish: the times it vouches for
+    are stored before `delivered` moves (§5.2), even within that single call."""
+    core, _cfg, status = _core()
+    order: list[str] = []
+    real_set = status.set
+
+    def set_spy(name: str, value: int) -> None:
+        order.append(name)
+        real_set(name, value)
+
+    status.set = set_spy  # type: ignore[method-assign]  # a spy on every store, in order
+    classifier = core._classifier
+    before = classifier.delivered("keyboard")
+    classifier.on_keyboard(flags=0, extra=0, now=float(3_000 * MS), vk=0x41)
+    classifier.on_keyboard(flags=LLKHF_UP, extra=RUN_TAG, now=float(3_001 * MS), vk=PROBE)
+    assert core._publish("keyboard", before)
+    delivered = order.index("delivered_keyboard")
+    assert order.index("last_user_qpc_keyboard") < delivered
+    assert order.index("last_user") < delivered
+    assert order.index("last_own_qpc_keyboard") < delivered
+
+
+# ---- #375 review H6 (HL-02): the gap baseline starts at ready ----------------------------------
+
+
+def test_a_stall_between_ready_and_the_first_loop_is_a_gap() -> None:
+    core, _cfg, status = _core()
+    core.ready(qpc=1_100 * MS, unbiased_100ns=1_100 * 10_000)
+    core.loop(qpc=2_300 * MS, unbiased_100ns=2_300 * 10_000)  # 1.2 s after ready
+    assert status.get("gap_events") == 1
