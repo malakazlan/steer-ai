@@ -1104,25 +1104,10 @@ def _front_snapshot(hwnd: int, cdp: Any, label: str) -> dict[str, object]:  # pr
     }
 
 
-def run_front_child(  # pragma: no cover - live
-    hwnd: int, *, cdp_port: int, server_port: int, out: Path, trace: Path
-) -> int:
-    """The real child's setup on `hwnd`, then the start's `bring_to_front` with its own result
-    (and what v1's `acquire_foreground` returned under it), with a snapshot right before, right
-    after, 1 s and 3 s after. No other input; never a model call."""
-    from steerai.errors import SteerError  # noqa: PLC0415
-    from steerai.loop2.decide_port import TaskGenerations  # noqa: PLC0415
-    from steerai.loop2.live_world import (  # noqa: PLC0415
-        LiveConfig,
-        LiveWorld,
-        WindowsPlatform,
-        run_on_loop_thread,
-    )
-    from steerai.orchestrator.trace import JsonLinesTrace  # noqa: PLC0415
-    from steerai.probes.layer_b import _ours  # noqa: PLC0415
-    from steerai.probes.windows import process_name, window_pid  # noqa: PLC0415
-
-    acquired: list[str] = []
+def _recording_platform(acquired: list[str]) -> Any:  # pragma: no cover - live
+    """`WindowsPlatform` whose input port records what `acquire_foreground` returned or raised,
+    and whose model calls refuse. Any: built over the live platform, imported here."""
+    from steerai.loop2.live_world import WindowsPlatform  # noqa: PLC0415 - live only
 
     class Recording:
         """v1's InputPort, with what `acquire_foreground` returned or raised recorded."""
@@ -1152,6 +1137,208 @@ def run_front_child(  # pragma: no cover - live
         def counter(self) -> Any:  # Any: a never-called `Counter`
             return _never_called
 
+    return FrontPlatform()
+
+
+def _live_config(hwnd: int, trace: Path) -> Any:  # pragma: no cover - live; Any: a LiveConfig
+    from steerai.loop2.decide_port import TaskGenerations  # noqa: PLC0415 - live only
+    from steerai.loop2.live_world import LiveConfig  # noqa: PLC0415
+    from steerai.orchestrator.trace import JsonLinesTrace  # noqa: PLC0415
+    from steerai.probes.windows import process_name, window_pid  # noqa: PLC0415
+
+    pid = window_pid(hwnd)
+    return LiveConfig(
+        task_id="diag-child",
+        hwnd=hwnd,
+        kill_key="ctrl+alt+k",
+        trace_level="redacted",
+        trace=JsonLinesTrace(trace),
+        generations=TaskGenerations(),
+        clock=time.monotonic,
+        pause=time.sleep,
+        bound_pid=pid,
+        bound_image=process_name(pid).lower(),
+    )
+
+
+FIRST_READ_S: Final = 10.0
+VISIBLE_POLL_S: Final = 0.05
+
+
+def run_first_read_child(  # noqa: PLR0913 - one live child  # pragma: no cover
+    hwnd: int, *, cdp_port: int, server_port: int, wait_visible: bool, out: Path, trace: Path
+) -> int:
+    """The real child's setup, then `bring_to_front`; from the raise, Chrome's own
+    visibilityState is polled over DevTools on a side thread (diagnostic only). Arm A
+    (`wait_visible` False) reads UIA at once and every `READ_POLL_S` for `FIRST_READ_S`; arm B
+    waits until Chrome reports visible, then reads the same way. Times are from the raise."""
+    import threading  # noqa: PLC0415
+
+    from steerai.errors import SteerError  # noqa: PLC0415
+    from steerai.loop2.live_world import LiveWorld, run_on_loop_thread  # noqa: PLC0415
+    from steerai.probes.layer_b import _ours  # noqa: PLC0415
+
+    acquired: list[str] = []
+    platform = _recording_platform(acquired)
+    config = _live_config(hwnd, trace)
+    visible_at: list[float] = []
+    seen_visible = threading.Event()
+
+    def watch_visibility(raised: float) -> None:
+        cdp, _ = _ours(cdp_port, server_port)
+        try:
+            while time.monotonic() - raised < FIRST_READ_S + 5.0:
+                reply = cdp.call(
+                    "Runtime.evaluate",
+                    {"expression": "document.visibilityState", "returnByValue": True},
+                )
+                if reply.get("result", {}).get("value") == "visible":
+                    visible_at.append(time.monotonic() - raised)
+                    seen_visible.set()
+                    return
+                time.sleep(VISIBLE_POLL_S)
+        finally:
+            cdp.close()
+
+    def work() -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        with LiveWorld(config, platform) as world:
+            try:
+                world.bring_to_front()
+                result = "ok"
+            except SteerError as exc:
+                result = f"refused:{exc.message}"
+            raised = time.monotonic()
+            watcher = threading.Thread(target=watch_visibility, args=(raised,))
+            watcher.start()
+            rows.append({"bring_to_front": result, "acquire_foreground": list(acquired)})
+            if wait_visible:
+                seen_visible.wait(timeout=FIRST_READ_S)
+            started = time.monotonic()
+            while time.monotonic() - started < FIRST_READ_S:
+                shape = read_shape(world._poll_read(), time.monotonic() - raised)
+                rows.append(shape)
+                time.sleep(READ_POLL_S)
+            watcher.join(timeout=FIRST_READ_S + 6.0)
+        reads = [r for r in rows if "doc_nodes" in r]
+        rows.append({
+            "summary": {
+                "arm": "B" if wait_visible else "A",
+                "raise_to_visible_s": round(visible_at[0], 3) if visible_at else None,
+                "first_read_s": reads[0]["t"] if reads else None,
+                "first_page_s": first_page_s(reads),
+                "reads": len(reads),
+            }
+        })  # fmt: skip
+        return rows
+
+    rows = run_on_loop_thread(work, release=platform.release_com)
+    with out.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row) + "\n")
+    return 0
+
+
+def run_first_read(out_dir: Path) -> int:  # pragma: no cover - live
+    """One input-only child on 3d-a; then five fresh Chromes on 3d-b, each raised by a first-read
+    child: arms A, B, A, B, A (three immediate first reads, two after Chrome reports visible,
+    and five raise-to-visible times)."""
+    import shutil  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    from steerai.probes import instant_search as fixture  # noqa: PLC0415 - live only
+    from steerai.probes.chrome_a11y import (  # noqa: PLC0415
+        CHROME_DEFAULT,
+        launch_chrome,
+        stop_chrome,
+    )
+    from steerai.probes.layer_b import _ours  # noqa: PLC0415
+    from steerai.probes.layer_b_pages import PageServer  # noqa: PLC0415
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
+
+    def emit(row: Mapping[str, object]) -> None:
+        sys.stdout.write(json.dumps(dict(row)) + "\n")
+        sys.stdout.flush()
+
+    cells = [("0-input-only", "a", None)] + [
+        (f"{n}-{arm}", "b", arm == "B") for n, arm in enumerate("ABABA", start=1)
+    ]
+    for name, variant, wait_visible in cells:
+        run_dir = out_dir / name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(prefix="steer-readchild-"))
+        with PageServer(fixture.pages()) as server:
+            port = fixture._free_port()
+            proc = launch_chrome(
+                CHROME_DEFAULT, tmp / "profile", port, f"http://127.0.0.1:{server.port}/{variant}"
+            )
+            try:
+                window = wait_window_for_pid(proc.pid, timeout_s=30.0, process=proc)
+                cdp, _ = _ours(port, server.port)
+                try:
+                    fixture._wait_ready(cdp)
+                    if wait_visible is None:
+                        argv = [sys.executable, "-m", "steerai.loop2.read_child", "child",
+                                "--hwnd", str(window.hwnd), "--arm", "mta", "--then", "input",
+                                "--out", str(run_dir / "reads.jsonl"),
+                                "--trace", str(run_dir / "trace.jsonl")]  # fmt: skip
+                        subprocess.run(argv, capture_output=True, timeout=CHILD_CAP_S, check=False)  # noqa: S603
+                        emit({"cell": name, **_summary(run_dir / "reads.jsonl")})
+                        continue
+                    before = _front_snapshot(window.hwnd, cdp, "before_child")
+                    argv = [sys.executable, "-m", "steerai.loop2.read_child", "first-read",
+                            "--hwnd", str(window.hwnd), "--cdp-port", str(port),
+                            "--server-port", str(server.port),
+                            *(["--wait-visible"] if wait_visible else []),
+                            "--out", str(run_dir / "first.jsonl"),
+                            "--trace", str(run_dir / "trace.jsonl")]  # fmt: skip
+                    done = subprocess.run(  # noqa: S603 - our own module, a fixed argv
+                        argv, capture_output=True, text=True, timeout=CHILD_CAP_S, check=False
+                    )
+                    rows = [
+                        json.loads(line)
+                        for line in (run_dir / "first.jsonl").read_text("utf-8").splitlines()
+                    ]
+                    reads = [r for r in rows if "doc_nodes" in r]
+                    emit({
+                        "cell": name,
+                        "code": done.returncode,
+                        "before": {k: before[k] for k in ("foreground", "cover_of")},
+                        **rows[0],
+                        **rows[-1],
+                        "first_reads": [
+                            f"{r['t']}:{r['doc_nodes']}/{r['nodes']}" for r in reads[:6]
+                        ],
+                    })  # fmt: skip
+                finally:
+                    cdp.close()
+            finally:
+                stop_chrome(proc, tmp / "profile")
+                shutil.rmtree(tmp, ignore_errors=True)
+    return 0
+
+
+def run_front_child(  # pragma: no cover - live
+    hwnd: int, *, cdp_port: int, server_port: int, out: Path, trace: Path
+) -> int:
+    """The real child's setup on `hwnd`, then the start's `bring_to_front` with its own result
+    (and what v1's `acquire_foreground` returned under it), with a snapshot right before, right
+    after, 1 s and 3 s after. No other input; never a model call."""
+    from steerai.errors import SteerError  # noqa: PLC0415
+    from steerai.loop2.decide_port import TaskGenerations  # noqa: PLC0415
+    from steerai.loop2.live_world import (  # noqa: PLC0415
+        LiveConfig,
+        LiveWorld,
+        run_on_loop_thread,
+    )
+    from steerai.orchestrator.trace import JsonLinesTrace  # noqa: PLC0415
+    from steerai.probes.layer_b import _ours  # noqa: PLC0415
+    from steerai.probes.windows import process_name, window_pid  # noqa: PLC0415
+
+    acquired: list[str] = []
+    platform = _recording_platform(acquired)
+
     pid = window_pid(hwnd)
     config = LiveConfig(
         task_id="front-child",
@@ -1165,7 +1352,6 @@ def run_front_child(  # pragma: no cover - live
         bound_pid=pid,
         bound_image=process_name(pid).lower(),
     )
-    platform = FrontPlatform()
     cdp, _ = _ours(cdp_port, server_port)
 
     def work() -> list[dict[str, object]]:
@@ -1275,7 +1461,7 @@ def _summary(path: Path) -> dict[str, object]:  # pragma: no cover - live
     return rows[-1] if rows and "summary" in rows[-1] else {"summary": None}
 
 
-def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911 - one per mode  # pragma: no cover
+def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911, PLR0915  # pragma: no cover
     parser = argparse.ArgumentParser(prog="python -m steerai.loop2.read_child")
     sub = parser.add_subparsers(dest="mode", required=True)
     child = sub.add_parser("child")
@@ -1293,6 +1479,15 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911 - one per m
     front.add_argument("--server-port", type=int, required=True)
     front.add_argument("--out", type=Path, required=True)
     front.add_argument("--trace", type=Path, required=True)
+    first = sub.add_parser("first-read")
+    first.add_argument("--hwnd", type=int, required=True)
+    first.add_argument("--cdp-port", type=int, required=True)
+    first.add_argument("--server-port", type=int, required=True)
+    first.add_argument("--wait-visible", action="store_true")
+    first.add_argument("--out", type=Path, required=True)
+    first.add_argument("--trace", type=Path, required=True)
+    first_run = sub.add_parser("first-read-run")
+    first_run.add_argument("--out-dir", type=Path, required=True)
     front_run = sub.add_parser("front-run")
     front_run.add_argument("--out-dir", type=Path, required=True)
     windows = sub.add_parser("windows")
@@ -1328,6 +1523,17 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911 - one per m
             out=args.out,
             trace=args.trace,
         )
+    if args.mode == "first-read":
+        return run_first_read_child(
+            args.hwnd,
+            cdp_port=args.cdp_port,
+            server_port=args.server_port,
+            wait_visible=args.wait_visible,
+            out=args.out,
+            trace=args.trace,
+        )
+    if args.mode == "first-read-run":
+        return run_first_read(args.out_dir)
     if args.mode == "front-run":
         return run_front(args.out_dir)
     if args.mode == "windows":
