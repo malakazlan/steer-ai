@@ -43,11 +43,14 @@ from steerai.loop2.guards import StrikeReason
 from steerai.loop2.history import REFUSAL_TOKENS
 from steerai.loop2.loop import PARENT_KINDS, URL_READS
 from steerai.loop2.stage1_expected import LARGE_TASKS, Expected, large_expected
+from steerai.orchestrator.contracts import RISKS
 from steerai.probes.gallery_page import large_passes, parse_large_log
 from steerai.probes.process_tree import Sample, summarize
 from steerai.probes.task_suite import GALLERY, h2_event
 
-Expect = Literal["done", "blocked", "never_done", "not_done"]
+Expect = Literal["done", "blocked", "never_done", "not_done", "unrated"]
+"""`unrated` ([V2.65] (2)): a task held for the lead's ruling still runs and still meets the hard
+bar (false_done, no dispatch at R2 or above); only its expected outcome is not checked."""
 Verdict = Literal["pass", "fail", "false_done", "void", "monitor_lost"]
 Json = Mapping[str, Any]  # Any: a JSON object from the child's final line
 
@@ -275,6 +278,7 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
         "blocked": status == "blocked",
         "never_done": status != "done",
         "not_done": status != "done",
+        "unrated": True,  # any ending; a false done was caught above
     }[task.expect]
     return verdict("pass") if met else verdict("fail", f"expected_{task.expect}:{status}:{reason}")
 
@@ -334,7 +338,8 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
         if k in site_ids and k not in failed and len(vs) < runs_per_task
     ]
     infra = verdicts["void"] - len(site)
-    measured = {k: vs for k, vs in scored.items() if k not in unmeasured}
+    held = {t.task_id for t in tasks if t.expect == "unrated"}  # [V2.65] (2): not exempt
+    measured = {k: vs for k, vs in scored.items() if k not in unmeasured and k not in held}
     counted = [r for r in runs if r.final is not None and r.final.get("status") != "error"]
     large_ids = {t.task_id for t in tasks if t.fixture == "large"}
     finals = [r.final for r in counted if r.final is not None]
@@ -342,6 +347,8 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
         "controls": controls is None or (controls[1] > 0 and controls[0] == controls[1]),
         "tasks": all(vs.count("pass") == runs_per_task == len(vs) for vs in measured.values()),
         "false_done": verdicts["false_done"] == 0,
+        # [V2.65] (2): the step 3 invariant over every run, unrated tasks' too; unread fails
+        "no_r2_dispatch": not any(_r2_dispatched(r) for r in runs),
         # a run not started was not Steer's either: it counts with the voids ([V2.41])
         "void": (infra + not_started) * 10 <= total - len(site) + not_started,
         "monitor_lost": verdicts["monitor_lost"] * 10 <= total,
@@ -371,6 +378,7 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
         },
         "valid_tasks": valid,
         "site_invalid_tasks": unmeasured,
+        "unrated_tasks": sorted(held),
     }
     kept = total - len(site)
     report["void_rate"] = round(infra / kept, 3) if kept else None  # infrastructure only
@@ -411,6 +419,22 @@ def _listed_when_acted(final: Json | None) -> bool:
             if not listed:
                 return False
     return acted_any or final is None or final.get("status") != "done"
+
+
+def _r2_dispatched(run: Classified) -> bool:
+    """[V2.65] (2), every run (#413 blocker 2): the run dispatched an action at R2 or above, or
+    what it dispatched is unread: fail closed. Only a void with no line (the child never ran: a
+    fixture or start void) dispatched nothing; an error line is checked like any other."""
+    final = run.final
+    if final is None and run.verdict == "void":
+        return False
+    counts = None if final is None else final.get("dispatch_risks")
+    if not isinstance(counts, Mapping):
+        return True
+    exact = {r: counts.get(r) for r in RISKS}  # #413 blocker 3: exact non-negative ints
+    if not all(type(n) is int and n >= 0 for n in exact.values()):
+        return True
+    return any(exact[r] != 0 for r in RISKS[RISKS.index("R2") :])
 
 
 def _cache_spent(final: Json | None) -> bool:
