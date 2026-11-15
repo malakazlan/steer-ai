@@ -19,7 +19,7 @@ from steerai.loop2.controller import (
     decide,
 )
 from steerai.loop2.decide_port import DecideCalls, Reply, TaskGenerations
-from steerai.loop2.listing import LISTING_CAP, RowClass
+from steerai.loop2.listing import LISTING_CAP, Listing, RowClass
 from steerai.loop2.loop import Decided, TokenUsage, TurnView
 from steerai.loop2.prompt_inputs import controller_inputs, make_decide
 from steerai.loop2.runner import run_task
@@ -173,7 +173,7 @@ def test_a_prompt_over_the_ceiling_is_cut_rest_first_before_the_call(
     system, user = build_prompt(
         GOAL, [], [], [], "Shop", [], task_fence="taskfence01", screen_fence="f" * 32
     )
-    ceiling = controller.prompt_tokens(system, user) + 1_000  # room for about 25 rows
+    ceiling = controller.prompt_tokens(system, user) + 1_500  # room for about 28 rows
     calls, fits = _decide_with(rows, ceiling=ceiling, monkeypatch=monkeypatch)
     assert len(calls) == 1
     shown, cut = fits[0]
@@ -199,8 +199,11 @@ def test_a_prompt_under_the_ceiling_is_sent_whole(monkeypatch: pytest.MonkeyPatc
 
 def test_a_cut_row_is_no_longer_nameable(monkeypatch: pytest.MonkeyPatch) -> None:
     """The validate set follows the rows actually sent, so a row the guard cut is unlisted."""
-    monkeypatch.setattr(controller, "PROMPT_TOKEN_CEILING", 2_500)
     rows = _long_rows()
+    system, user = build_prompt(
+        GOAL, [], [], [], "Shop", rows[:30], task_fence="taskfence01", screen_fence="f" * 32
+    )
+    monkeypatch.setattr(controller, "PROMPT_TOKEN_CEILING", controller.prompt_tokens(system, user))
 
     def ask(_system: list[str], _blocks: list[str]) -> str:
         return json.dumps({"actions": [{"verb": "click", "target": 100, "subgoal": "s1"}],
@@ -290,3 +293,98 @@ def test_make_decide_reports_the_listing_and_its_prompt_tokens() -> None:
     assert decided.listing.prompt_cut == 0
     assert decided.listing.prompt_tokens == 1234
     assert 499 not in decided.listing.listed
+
+
+# ---- #359 review: the guard keeps always-keep up to the cap; the note counts what was sent ----
+
+
+def _keep_rows(n: int) -> list[ListingRow]:
+    return [ListingRow(1, f'{i} Button "{"x" * 100}"', handle=i, row_class="keep")
+            for i in range(1, n + 1)]  # fmt: skip
+
+
+def test_the_guard_drops_only_always_keep_rows_beyond_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _keep_rows(10)
+    system, user = build_prompt(
+        GOAL, [], [], [], "Shop", [], task_fence="taskfence01", screen_fence="f" * 32
+    )
+    monkeypatch.setattr(controller, "PROMPT_TOKEN_CEILING", controller.prompt_tokens(system, user))
+    with pytest.raises(ControllerError) as refused:
+        decide(
+            _ask_recorder([]), task_goal=GOAL, subgoal_lines=[], action_log=[], subgoal_status=[],
+            window_title="Shop", listing_rows=rows, listed_ids=frozenset(range(1, 11)),
+            first_turn=True, task_fence="taskfence01", keep_cap=6,
+        )  # fmt: skip
+    assert refused.value.code == "prompt_too_large"  # never below the cap's six
+
+
+def test_the_guard_drops_always_keep_from_the_bottom_down_to_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _keep_rows(10)
+    system, user = build_prompt(
+        GOAL, [], [], [], "Shop", rows[:7], task_fence="taskfence01", screen_fence="f" * 32
+    )
+    monkeypatch.setattr(controller, "PROMPT_TOKEN_CEILING", controller.prompt_tokens(system, user))
+    fits: list[tuple[frozenset[int], int]] = []
+    decide(
+        _ask_recorder([]), task_goal=GOAL, subgoal_lines=[], action_log=[], subgoal_status=[],
+        window_title="Shop", listing_rows=rows, listed_ids=frozenset(range(1, 11)),
+        first_turn=True, task_fence="taskfence01", keep_cap=6,
+        on_fit=lambda shown, cut: fits.append((shown, cut)),
+    )  # fmt: skip
+    shown, _cut = fits[0]
+    assert set(range(1, 7)) <= shown
+    assert not {9, 10} & shown
+
+
+def test_the_note_counts_the_rows_left_after_the_guard() -> None:
+    listing = Listing(ids=tuple(range(10)), priorities=("rest",) * 10, eligible=40, cap=150,
+                      keep_at_ceiling=False, goal_at_subcap=False)  # fmt: skip
+    assert listing.note(4) == (
+        "listing: shown 6 of 40 (cap 150, always-keep up to 300, goal words up to 50); "
+        "the prompt size limit cut 4"
+    )
+    whole = dataclasses.replace(listing, eligible=10)
+    assert whole.note() is None
+    assert whole.note(3) == (
+        "listing: shown 7 of 10 (cap 150, always-keep up to 300, goal words up to 50); "
+        "the prompt size limit cut 3"
+    )
+
+
+def test_the_prompt_sent_after_a_guard_cut_carries_the_post_cut_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _long_rows()
+    listing = Listing(ids=tuple(range(1, 101)), priorities=tuple(r.row_class for r in rows),
+                      eligible=100, cap=150, keep_at_ceiling=False,
+                      goal_at_subcap=False)  # fmt: skip
+    system, user = build_prompt(
+        GOAL, [], [], [], "Shop", [], task_fence="taskfence01", screen_fence="f" * 32
+    )
+    monkeypatch.setattr(
+        controller, "PROMPT_TOKEN_CEILING", controller.prompt_tokens(system, user) + 1_000
+    )
+    calls: list[list[str]] = []
+    fits: list[tuple[frozenset[int], int]] = []
+    decide(
+        _ask_recorder(calls), task_goal=GOAL, subgoal_lines=[], action_log=[], subgoal_status=[],
+        window_title="Shop", listing_rows=rows, listed_ids=frozenset(range(1, 101)),
+        first_turn=True, task_fence="taskfence01", listing_note_after=listing.note,
+        on_fit=lambda shown, cut: fits.append((shown, cut)),
+    )  # fmt: skip
+    shown, cut = fits[0]
+    assert cut > 0
+    assert f"listing: shown {len(shown)} of 100" in calls[0][2]
+
+
+def test_the_estimate_never_undercounts_the_worst_measured_page() -> None:
+    """#359 review (5): count_tokens on claude-opus-5, 2026-11-15, over the 20 probe pages and
+    two CJK pages, capped and uncapped: chars per token from 2.248 (zh.wikipedia, uncapped) to
+    2.652. The divisor is at or under the worst, so the estimate is never low on those pages;
+    the ceiling is far above the largest capped prompt measured (8,339 tokens)."""
+    assert controller.CHARS_PER_TOKEN <= 2.248
+    assert controller.PROMPT_TOKEN_CEILING >= 5 * 8_339

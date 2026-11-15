@@ -137,6 +137,8 @@ def make_decide(calls: DecideCalls, *, goal: str, task_fence: str) -> Callable[[
                 listing_note=inputs.listing_note,
                 changes_note=inputs.changes_note,
                 on_fit=lambda shown, cut: fitted.append((shown, cut)),
+                listing_note_after=None if inputs.listing is None else inputs.listing.note,
+                keep_cap=LISTING_CAP if inputs.listing is None else inputs.listing.cap,
             )
         )
         listed, cut = fitted[-1] if fitted else (inputs.listed_ids, 0)

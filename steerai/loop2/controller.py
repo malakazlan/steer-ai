@@ -34,7 +34,7 @@ from steerai.loop2.history import (
     record_ok,
     render,
 )
-from steerai.loop2.listing import Listing, RowClass
+from steerai.loop2.listing import LISTING_CAP, Listing, RowClass
 from steerai.loop2.task import Status
 from steerai.loop2.text import clean_line, has_control
 from steerai.world.capabilities import TOKENS as CAPABILITY_TOKENS
@@ -43,11 +43,13 @@ from steerai.world.model import Snapshot
 
 PROMPT_VERSION = "controller-7"
 PROMPT_TOKEN_CEILING = 50_000
-"""[V2.55] (2): the most input tokens a rendered prompt may hold before any model call. UNMEASURED
-(the model's context is far larger; v1's capped listings measured 3.7k-5.8k a turn)."""
-CHARS_PER_TOKEN = 3.0
-"""The estimate's divisor: conservative for text and markup (UNMEASURED; the listing-size probe's
-count_tokens calibrates it)."""
+"""[V2.55] (2): the most input tokens a rendered prompt may hold before any model call. A policy
+limit, six times the largest capped prompt measured (8,339 tokens, count_tokens on claude-opus-5,
+2026-11-15, 20 probe pages and two CJK pages)."""
+CHARS_PER_TOKEN = 2.2
+"""The estimate's divisor, under the worst chars-per-token measured on the rendered prompt: 2.248
+(zh.wikipedia, uncapped); the range was 2.248-2.652 (same probe). A page of names in a script
+denser than that is not covered (#359 review (5))."""
 ASK_PREFIX = "Steer asks: "
 ASK_MAX_CHARS = 200
 MAX_REPLY_BYTES = 64 * 1024
@@ -228,19 +230,26 @@ _DROP_ORDER: tuple[RowClass, ...] = ("rest", "goal", "keep")
 
 
 def _fit(
-    rows: list[ListingRow], render: Callable[[Sequence[ListingRow]], tuple[list[str], list[str]]]
+    rows: list[ListingRow],
+    render: Callable[[Sequence[ListingRow]], tuple[list[str], list[str]]],
+    keep_cap: int,
 ) -> tuple[list[ListingRow], int]:
     """[V2.55] (2): the rows that fit under the ceiling, cutting by class from the bottom of the
-    listing up, and how many were cut; `prompt_too_large` when even no rows would not fit."""
+    listing up, and how many were cut. Always-keep rows go only beyond `keep_cap` (#359 review);
+    `prompt_too_large` when the rest would still not fit. Bottom-up inside a class, after every
+    lower class, keeps the listing closed upward: a row's descendants go before it."""
     cut = 0
     while True:
         system, user = render(rows)
         over = prompt_tokens(system, user) - PROMPT_TOKEN_CEILING
         if over <= 0:
             return rows, cut
+        kept = [i for i in reversed(range(len(rows))) if rows[i].row_class == "keep"]
         victims = [
-            i for c in _DROP_ORDER for i in reversed(range(len(rows))) if rows[i].row_class == c
-        ]
+            *(i for c in _DROP_ORDER[:-1] for i in reversed(range(len(rows)))
+              if rows[i].row_class == c),
+            *kept[: max(0, len(kept) - keep_cap)],
+        ]  # fmt: skip
         if not victims:
             raise ControllerError("prompt_too_large")
         need = over * CHARS_PER_TOKEN
@@ -445,13 +454,17 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     listing_note: str | None = None,
     changes_note: str | None = None,
     on_fit: Callable[[frozenset[int], int], None] | None = None,
+    listing_note_after: Callable[[int], str | None] | None = None,
+    keep_cap: int = LISTING_CAP,
 ) -> tuple[Decision, DecideRecord]:
     """Ask, parse, validate; on failure repair with code tokens only, up to `max_repairs` times.
 
     [V2.55] (2): before any call the rendered prompt is held under `PROMPT_TOKEN_CEILING`, rows
-    cut by class (`rest`, then `goal`, then `keep`) until it fits; the Decision is validated
-    against the handles actually sent, and `on_fit` hears them and the rows cut. A prompt that
-    cannot fit is never sent (`prompt_too_large`, no record: no call was made).
+    cut by class (`rest`, then `goal`, then `keep` beyond `keep_cap`) until it fits; the Decision
+    is validated against the handles actually sent, and `on_fit` hears them and the rows cut. A
+    prompt that cannot fit is never sent (`prompt_too_large`, no record: no call was made). With
+    `listing_note_after`, the listing note is the one for the rows actually sent (it hears how
+    many the guard cut) in place of `listing_note`.
     A failure raises ControllerError carrying the DecideRecord of the calls spent.
     """
     screen = screen_fence if screen_fence is not None else secrets.token_hex(16)
@@ -471,11 +484,15 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
             young=young,
             vocab=Vocab(dict(known_subgoals or {}), issued),
             focus=focus,
-            listing_note=listing_note,
+            listing_note=(
+                listing_note
+                if listing_note_after is None
+                else listing_note_after(len(listing_rows) - len(rows))
+            ),
             changes_note=changes_note,
         )
 
-    rows, cut = _fit(list(listing_rows), render)
+    rows, cut = _fit(list(listing_rows), render, keep_cap)
     system, user = render(rows)
     sent = frozenset(r.handle for r in rows if r.handle is not None)
     listed_ids = listed_ids & sent if cut else listed_ids
