@@ -121,6 +121,10 @@ class Desk(Protocol):
         ...
 
     def focused(self) -> tuple[int, ...] | None: ...
+    def root_at(self, x: int, y: int) -> int:
+        """[V2.62]: the root window under a screen point; 0 when unread."""
+        ...
+
     def armed(self, focus: frozenset[tuple[int, ...]]) -> AbstractContextManager[None]: ...
 
 
@@ -350,10 +354,21 @@ class ActPort:
         if verb == "type":
             sent = PhysicalAction("type", element.id, text=dispatch.text)
         else:
+            self._hit_test(element, snapshot)
             chord = KEY_CHORDS[dispatch.action.key]  # type: ignore[index]  # checked first
             sent = PhysicalAction("press", element.id, chord=chord)
         with self._desk.armed(allowed):
             return self._executed(self._physical.execute(sent, snapshot))
+
+    def _hit_test(self, element: Element, snapshot: Snapshot) -> None:
+        """[V2.62]: a press goes to the focused target only while the bound window is the root
+        window under the target's centre (v1 hit-tests a click and a type itself, `covered`; a
+        chord has no point in v1). A target with no area has no point: refused the same."""
+        left, top, right, bottom = element.box
+        if right <= left or bottom <= top:
+            raise _Refused(ErrorCode.ELEMENT_NOT_ACTIONABLE, "covered")
+        if self._desk.root_at((left + right) // 2, (top + bottom) // 2) != snapshot.hwnd:
+            raise _Refused(ErrorCode.ELEMENT_NOT_ACTIONABLE, "covered")
 
     # ---- after something was sent --------------------------------------------------------------
 
