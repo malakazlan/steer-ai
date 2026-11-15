@@ -58,6 +58,8 @@ TABLE: Final = Path(__file__).with_name("stage2_expected.json")
 """The committed 2b table: each read's SHA-256, its deciding facts and the expected outcome."""
 TABLE_SHA256: Final = "89ceab94e04b2b515c814e61ecc57812d90d52af19daf5cd594494e5424d68e9"
 """#424 (2): the committed 2b table's pin, as 2a's: a run takes only this table."""
+ACTS_SHA256: Final = "990b7b99ed7a1cff2c74f93cb6cd337a27ab1ed11592f37b2ee561fa3f651927"
+"""#428 (8): the committed 2b acts file's pin: a run takes only these acts."""
 _ACT_FIELDS: Final = frozenset({"verb", "role", "name", "key", "option", "param"})
 _ROW_FIELDS: Final = frozenset({"acts", "proof", "why"})
 _PROOFS: Final = frozenset(get_args(ProofKind))
@@ -218,10 +220,12 @@ class Spacer:
         if left > 0:
             self._sleep(left)
 
-    def loaded(self, host: str) -> None:
+    def loaded(self, host: str, *, day: int | None = None) -> None:
+        """One load of `host`, counted on `day`: the day the load started (#428 (7): a run
+        that crosses midnight counts on its own day, never the next); now when not given."""
         self._last[host] = self._clock()
         self.loads[host] = self.loads.get(host, 0) + 1
-        key = (self.day(), host)
+        key = (self.day() if day is None else day, host)
         self._today[key] = self._today.get(key, 0) + 1
 
 
@@ -303,6 +307,12 @@ def click_opener(cdp: Cdp, opener: Act) -> None:
     if not isinstance(object_id, str):
         raise OpenerError("opener_not_resolved")
     cdp("Runtime.callFunctionOn", {"objectId": object_id, "functionDeclaration": _CLICK})
+
+
+def check_acts(text: str) -> None:
+    """#428 (8): the run's 2b acts are the committed ones, byte for byte."""
+    if hashlib.sha256(text.encode("utf-8")).hexdigest() != ACTS_SHA256:
+        raise ValueError("acts: not the committed 2b acts")
 
 
 def check_table(text: str) -> None:
