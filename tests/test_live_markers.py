@@ -9,7 +9,9 @@ import ast
 from pathlib import Path
 
 TESTS = Path(__file__).resolve().parent
-LIVE_CALLS = frozenset({"UiaClient", "WindowsPlatform", "LiveInput", "LiveWindows", "HookMonitor"})
+LIVE_CALLS = frozenset(
+    {"UiaClient", "WindowsPlatform", "LiveInput", "LiveWindows", "HookMonitor", "window_cover"}
+)
 """Constructors of the real Windows side."""
 LIVE_MODULES = frozenset({"win_input", "probe_key", "stage1"})
 """A call through one of these modules (`win_input.click_at(...)`) is live."""

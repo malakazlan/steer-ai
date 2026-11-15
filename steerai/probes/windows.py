@@ -13,6 +13,8 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from typing import Protocol
 
+from steerai.world.cover import CoverFacts, Rect
+
 
 @dataclass(frozen=True, slots=True)
 class WindowInfo:
@@ -552,6 +554,163 @@ def window_title(hwnd: int) -> str:
     buffer = ctypes.create_unicode_buffer(length + 1)
     user32.GetWindowTextW(hwnd, buffer, length + 1)
     return buffer.value
+
+
+# ---- [V2.62] the cover facts -------------------------------------------------------------------
+
+_GW_HWNDPREV = 3
+_GWL_EXSTYLE = -20
+_GWL_STYLE = -16
+_WS_EX_TRANSPARENT = 0x20
+_WS_EX_TOOLWINDOW = 0x80
+_WS_EX_LAYERED = 0x80000
+_WS_POPUP = 0x80000000
+_LWA_COLORKEY = 0x1
+_LWA_ALPHA = 0x2
+_COMPLEXREGION = 3
+_TASKBAR = "Shell_TrayWnd"
+_CHROME_WIDGET = "Chrome_WidgetWin_"
+_MONITOR_DEFAULTTONEAREST = 2
+
+
+class _MonitorInfo(ctypes.Structure):
+    _fields_ = (
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", wintypes.RECT),
+        ("rcWork", wintypes.RECT),
+        ("dwFlags", wintypes.DWORD),
+    )
+
+
+def window_cover(hwnd: int) -> CoverFacts:  # pragma: no cover - live, Windows only
+    """One read of `hwnd`'s cover facts ([V2.62]): minimised, cloaked (None unread), its window
+    rect, and the rects of the windows above it in z-order that can occlude it. Which windows
+    occlude follows Chromium's own predicate (`ui/gfx/win/hwnd_util.cc`
+    `IsWindowVisibleAndFullyOpaque`, read 2026-11-15): visible, not minimised, not
+    WS_EX_TRANSPARENT, not a tool window (but the taskbar), layered only when fully opaque with
+    no colour key, a simple rectangular region, not cloaked, a non-empty window rect, a popup
+    only for a Chrome widget or the taskbar; a maximised window's rect is clipped to its
+    monitor's work area. Read-only."""
+    user32 = _cover_user32()
+    found: list[Rect] = []
+    current = user32.GetWindow(hwnd, _GW_HWNDPREV)
+    while current:
+        rect = _occluding_rect(user32, int(current))
+        if rect is not None:
+            found.append(rect)
+        current = user32.GetWindow(current, _GW_HWNDPREV)
+    return CoverFacts(
+        minimized=bool(user32.IsIconic(hwnd)),
+        cloaked=is_cloaked(hwnd),
+        rect=_fit(user32, hwnd, _window_rect(user32, hwnd) or (0, 0, 0, 0)),
+        above=tuple(found),
+    )
+
+
+def _occluding_rect(user32: ctypes.WinDLL, hwnd: int) -> Rect | None:  # pragma: no cover - live
+    """The window rect of a window that can occlude another, None for one that cannot."""
+    if not _shown_opaque(user32, hwnd):
+        return None
+    rect = _window_rect(user32, hwnd)
+    if rect is None or rect[2] <= rect[0] or rect[3] <= rect[1]:
+        return None
+    return _fit(user32, hwnd, rect)
+
+
+def _shown_opaque(user32: ctypes.WinDLL, hwnd: int) -> bool:  # pragma: no cover - live
+    if not user32.IsWindow(hwnd) or not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
+        return False
+    ex_style = int(user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)) & 0xFFFFFFFF
+    style = int(user32.GetWindowLongW(hwnd, _GWL_STYLE)) & 0xFFFFFFFF
+    name = _class_name(user32, hwnd)
+    region = wintypes.RECT()
+    return (
+        not ex_style & _WS_EX_TRANSPARENT
+        and (not ex_style & _WS_EX_TOOLWINDOW or name == _TASKBAR)
+        and (not ex_style & _WS_EX_LAYERED or _opaque_layer(user32, hwnd))
+        and user32.GetWindowRgnBox(hwnd, ctypes.byref(region)) != _COMPLEXREGION
+        and is_cloaked(hwnd) is not True
+        and (not style & _WS_POPUP or name.startswith(_CHROME_WIDGET) or name == _TASKBAR)
+    )
+
+
+def _opaque_layer(user32: ctypes.WinDLL, hwnd: int) -> bool:  # pragma: no cover - live
+    """A layered window occludes only when its attributes read, fully opaque, no colour key."""
+    key = wintypes.DWORD()
+    alpha = ctypes.c_ubyte()
+    flags = wintypes.DWORD()
+    if not user32.GetLayeredWindowAttributes(
+        hwnd, ctypes.byref(key), ctypes.byref(alpha), ctypes.byref(flags)
+    ):
+        return False
+    if flags.value & _LWA_ALPHA and alpha.value < 255:
+        return False
+    return not flags.value & _LWA_COLORKEY
+
+
+def _class_name(user32: ctypes.WinDLL, hwnd: int) -> str:  # pragma: no cover - live
+    buffer = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, buffer, 256)
+    return buffer.value
+
+
+def _window_rect(user32: ctypes.WinDLL, hwnd: int) -> Rect | None:  # pragma: no cover - live
+    rect = wintypes.RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return None
+    return (rect.left, rect.top, rect.right, rect.bottom)
+
+
+def _fit(user32: ctypes.WinDLL, hwnd: int, rect: Rect) -> Rect:  # pragma: no cover - live
+    """A maximised window's rect clipped to its monitor's work area (Chromium `AdjustToFit`)."""
+    if not user32.IsZoomed(hwnd):
+        return rect
+    info = _MonitorInfo()
+    info.cbSize = ctypes.sizeof(_MonitorInfo)
+    monitor = user32.MonitorFromWindow(hwnd, _MONITOR_DEFAULTTONEAREST)
+    if not monitor or not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        return rect
+    work = info.rcWork
+    return (
+        max(rect[0], work.left),
+        max(rect[1], work.top),
+        min(rect[2], work.right),
+        min(rect[3], work.bottom),
+    )
+
+
+@functools.cache
+def _cover_user32() -> ctypes.WinDLL:  # pragma: no cover - live, Windows only
+    """user32 with the signatures the cover read needs (its own copy: no shared argtypes)."""
+    if sys.platform != "win32":
+        raise OSError("window helpers require Windows")
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    hwnd = wintypes.HWND
+    user32.GetWindow.argtypes = (hwnd, wintypes.UINT)
+    user32.GetWindow.restype = hwnd
+    for name in ("IsWindow", "IsWindowVisible", "IsIconic", "IsZoomed"):
+        getattr(user32, name).argtypes = (hwnd,)
+        getattr(user32, name).restype = wintypes.BOOL
+    user32.GetWindowLongW.argtypes = (hwnd, ctypes.c_int)
+    user32.GetWindowLongW.restype = ctypes.c_long
+    user32.GetClassNameW.argtypes = (hwnd, wintypes.LPWSTR, ctypes.c_int)
+    user32.GetClassNameW.restype = ctypes.c_int
+    user32.GetLayeredWindowAttributes.argtypes = (
+        hwnd,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.POINTER(ctypes.c_ubyte),
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    user32.GetLayeredWindowAttributes.restype = wintypes.BOOL
+    user32.GetWindowRgnBox.argtypes = (hwnd, ctypes.POINTER(wintypes.RECT))
+    user32.GetWindowRgnBox.restype = ctypes.c_int
+    user32.GetWindowRect.argtypes = (hwnd, ctypes.POINTER(wintypes.RECT))
+    user32.GetWindowRect.restype = wintypes.BOOL
+    user32.MonitorFromWindow.argtypes = (hwnd, wintypes.DWORD)
+    user32.MonitorFromWindow.restype = wintypes.HMONITOR
+    user32.GetMonitorInfoW.argtypes = (wintypes.HMONITOR, ctypes.POINTER(_MonitorInfo))
+    user32.GetMonitorInfoW.restype = wintypes.BOOL
+    return user32
 
 
 # ---- the session's lock state (issue #31) ------------------------------------------------------
