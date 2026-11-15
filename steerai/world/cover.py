@@ -10,7 +10,8 @@ no Document for 10 s; minimised, an empty Document; the same full cover with
 and 52 % covered, the page at once. So the check is narrow:
 
 - minimised (`IsIconic`);
-- cloaked (DWMWA_CLOAKED), or that fact unread (fail closed);
+- cloaked (DWMWA_CLOAKED); that fact unread is its own token, `unread` (fail closed, and
+  never reported as cloaked: [V2.67] C);
 - the union of the window rects of the visible, uncloaked, non-minimised top-level windows above
   it in z-order covers its whole window rect clipped to the virtual screen (as Chromium clips
   it), as an exact area (a few pixels left uncovered keep the page, so the area is never
@@ -30,7 +31,7 @@ from typing import Literal
 
 Rect = tuple[int, int, int, int]
 """(left, top, right, bottom) in physical pixels."""
-CoverToken = Literal["minimized", "cloaked", "covered"]
+CoverToken = Literal["minimized", "cloaked", "covered", "unread"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +47,8 @@ class CoverFacts:
     """The window rects of the visible, uncloaked, non-minimised top-level windows above it."""
     screen: Rect
     """The virtual screen (SM_XVIRTUALSCREEN and its kin): the window is clipped to it."""
+    above_pids: tuple[int, ...] = ()
+    """[V2.67] C: the process of each window in `above`, in order (0 when unread)."""
 
 
 def covered_fraction(target: Rect, above: Sequence[Rect]) -> float:
@@ -87,7 +90,9 @@ def cover_of(facts: CoverFacts) -> CoverToken | None:
     screen is covered."""
     if facts.minimized:
         return "minimized"
-    if facts.cloaked is not False:
+    if facts.cloaked is None:
+        return "unread"
+    if facts.cloaked:
         return "cloaked"
     shown = _clip(facts.rect, facts.screen)
     if shown is None:
@@ -95,3 +100,12 @@ def cover_of(facts: CoverFacts) -> CoverToken | None:
     if covered_fraction(shown, facts.above) >= 1.0:
         return "covered"
     return None
+
+
+def above_counts(facts: CoverFacts, *, ours: frozenset[int]) -> dict[str, int]:
+    """[V2.67] C: closed facts about the windows above: how many, and how many belong to one of
+    `ours` (the bound window's process, Steer's own). Owners that are unread (0) or not aligned
+    with the rects count as not ours."""
+    aligned = len(facts.above_pids) == len(facts.above)
+    owned = sum(1 for pid in facts.above_pids if pid and pid in ours) if aligned else 0
+    return {"above": len(facts.above), "above_ours": owned}
