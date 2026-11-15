@@ -22,7 +22,7 @@ from typing import Any, Final, Literal, Protocol, TypeVar
 
 from steerai.action.execution import code_for
 from steerai.errors import SteerError
-from steerai.loop2.loop import Dispatch, PortInterrupted, watch_kind
+from steerai.loop2.loop import Dispatch, PortInterrupted, WindowCovered, watch_kind
 from steerai.loop2.runner import LOAD_GUARD_S
 from steerai.world.effects import Observed, ValueFact, top_document, value_fact
 from steerai.world.elements import Element
@@ -126,6 +126,7 @@ class WorldPorts:
         live: LiveElements,
         key: bytes,
         trace: Callable[[str], None],
+        cover: Callable[[], str | None] | None = None,
     ) -> None:
         self._poll_read = poll_read
         self._full_from = full_from
@@ -137,6 +138,8 @@ class WorldPorts:
         self._live = live
         self._key = key
         self._trace = trace
+        self._cover = cover
+        """[V2.62] the bound window's cover, read before any wait for a page; None never covered."""
         self.last: Observed | None = None
         """The last observation this adapter handed out, from observe, watch or settle."""
 
@@ -150,9 +153,24 @@ class WorldPorts:
         self.last = seen
         return seen
 
+    def _check_cover(self) -> None:
+        """[V2.62]: a covered window ends the task before anything waits for its page (a
+        covered Chrome exposes no page however long it is waited on). The switch is read first,
+        so a kill (or the lock) is counted as itself, never as a cover."""
+        token = self._interrupted()
+        if token is not None:
+            raise PortInterrupted(token)
+        if self._cover is None:
+            return
+        cover = self._cover()
+        if cover is not None:
+            self._trace(f"cover_{cover}")
+            raise WindowCovered(cover)
+
     def observe(self) -> Observed:
         """[V2.31]: through `first_observation`, which holds a process's first touch in this task
-        and reads once for a process already handed over."""
+        and reads once for a process already handed over; the cover first ([V2.62])."""
+        self._check_cover()
         seen = first_observation(
             self._full,
             quiet_s=self._times.quiet_s,
@@ -195,7 +213,8 @@ class WorldPorts:
 
     def settle(self, observed: Observed, guard_s: float) -> Observed:
         """[V2.31] `hold_still` from `observed`, bounded by `LOAD_GUARD_S` ([V2.38]); a guard
-        that is not a number, or below zero, holds for none."""
+        that is not a number, or below zero, holds for none. The cover first ([V2.62])."""
+        self._check_cover()
         guard = min(guard_s, LOAD_GUARD_S) if guard_s >= 0 else 0.0
         held = hold_still(
             self._full,

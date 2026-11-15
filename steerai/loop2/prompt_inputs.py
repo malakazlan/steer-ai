@@ -179,7 +179,10 @@ def make_decide(calls: DecideCalls, *, goal: str, task_fence: str) -> Callable[[
         per_byte, low = calibrated(per_byte, sent, usage)
         listed, cut = fitted[-1] if fitted else (inputs.listed_ids, 0)
         tokens = None if usage is None else usage.input_tokens
-        listing = None if inputs.listing is None else inputs.listing.turn(listed, cut, tokens)
+        first = sent[0] if sent else None
+        listing = (
+            None if inputs.listing is None else inputs.listing.turn(listed, cut, tokens, first)
+        )
         return Decided(decision, usage, listing, exact_counted=spent, estimate_low=low)
 
     return port

@@ -28,6 +28,7 @@ from steerai.probes.uia_snapshot import UiaClient
 from steerai.probes.win_input import acquire_foreground
 from steerai.probes.windows import wait_window_for_pid
 from steerai.world.model import WorldModel
+from tests.orchestrator.click_evidence import RecordingInput, moved_evidence, record_rects
 from tests.orchestrator.test_capability_verbs_live import Person, _log
 
 pytestmark = pytest.mark.windows
@@ -46,7 +47,10 @@ def _step(step_id: str, verb: str) -> Step:
 
 @pytest.mark.skipif(not CHROME_DEFAULT.is_file(), reason="Chrome is not installed")
 @pytest.mark.usefixtures("warm_chrome")
-def test_a_tree_item_opens_closes_and_opens_through_the_session(tmp_path: Path) -> None:
+def test_a_tree_item_opens_closes_and_opens_through_the_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#377: on a refusal the message carries the click's evidence (`click_evidence`)."""
     profile = Path(tempfile.mkdtemp(prefix="steer-tree-"))
     with PageServer({"/page.html": page_html()}) as server:
         proc = launch_chrome(
@@ -63,6 +67,8 @@ def test_a_tree_item_opens_closes_and_opens_through_the_session(tmp_path: Path) 
             acquire_foreground(window.hwnd)
             client = UiaClient()
             model = WorldModel(client)
+            inputs = RecordingInput(UiaClient())  # its own client, as the default executor
+            record_rects(monkeypatch, inputs.calls)
             deadline = time.monotonic() + 25.0
             while time.monotonic() < deadline:
                 if any(e.name == "Projects" for e in model.observe(window.hwnd).elements):
@@ -73,7 +79,7 @@ def test_a_tree_item_opens_closes_and_opens_through_the_session(tmp_path: Path) 
                 hwnd=window.hwnd,
                 observer=model,
                 semantic=Executor(),
-                physical=PhysicalExecutor(),
+                physical=PhysicalExecutor(inputs=inputs),
                 gate=Gate(confirmer=Person(), own_pid=0, task_id="task-tree"),
                 ledger=Ledger(tmp_path, task_id="task-tree", started_at=time.time()),
                 live=UiaLiveReads(client, UiaBindings.load()),
@@ -81,7 +87,11 @@ def test_a_tree_item_opens_closes_and_opens_through_the_session(tmp_path: Path) 
             )
             for step_id, verb in (("s1", "expand"), ("s2", "collapse"), ("s3", "expand")):
                 result = session.run_step(_step(step_id, verb))
-                assert result.ok is True, (step_id, result.to_dict())
+                assert result.ok is True, (
+                    step_id,
+                    result.to_dict(),
+                    moved_evidence(inputs.calls, window.hwnd),
+                )
                 assert result.evidence["click_fallback"] == "physical", result.to_dict()
                 time.sleep(0.3)
             again = session.run_step(_step("s4", "expand"))
