@@ -387,6 +387,7 @@ RUN_FACTS: Final = (
     "stale_observations",
     "unread_automation_ids",
     "url_reads",
+    "refusals",
     "counts",
 )
 """Stage 2 plan §6 (3), [V2.63]: the run facts the final line carries beside the use and the
@@ -478,6 +479,7 @@ def _result(
         "stale_observations": outcome.stale_observations,
         "unread_automation_ids": outcome.unread_automation_ids,
         "url_reads": dict(outcome.url_reads),
+        "refusals": dict(outcome.refusals),  # [V2.46]: by closed token
         "counts": {  # [V2.63]: every count the rulings asked for, collected before stage 2
             "second_toggles": outcome.second_toggles,
             "second_toggles_refused": outcome.second_toggles_refused,

@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Final, Literal, Protocol, get_args
 
 from steerai.loop2.guards import StrikeReason
+from steerai.loop2.history import REFUSAL_TOKENS
 from steerai.loop2.loop import PARENT_KINDS, URL_READS
 from steerai.loop2.stage1_expected import LARGE_TASKS, Expected, large_expected
 from steerai.probes.gallery_page import large_passes, parse_large_log
@@ -508,6 +509,7 @@ def _run_facts(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures
         if final.get("url_reads") is not None:
             tally(final.get("url_reads"), urls, URL_READS)
     counts, counts_odd = _outcome_counts(finals)
+    refusals, refusals_odd = _refusal_counts(finals)
     return {
         "read_cost": {
             **cost,
@@ -518,9 +520,30 @@ def _run_facts(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures
         "strikes": {"count": strike_count, "by_reason": {k: v for k, v in by_reason.items() if v}},
         **counted,
         "url_reads": urls,
+        "refusals": refusals,
         "counts": counts,
-        "run_facts_incomplete": odd + counts_odd,
+        "run_facts_incomplete": odd + counts_odd + refusals_odd,
     }
+
+
+def _refusal_counts(finals: Sequence[Json]) -> tuple[dict[str, int], int]:
+    """[V2.46], [V2.63] (e): the final lines' `refusals` summed by token, with how many entries
+    were odd (a token that is not a refusal token, or a count that is not a whole number):
+    said, never summed; a missing or null block is skipped."""
+    sums: dict[str, int] = {}
+    odd = 0
+    for final in finals:
+        block = final.get("refusals")
+        if not isinstance(block, Mapping):
+            odd += block is not None
+            continue
+        for token, value in block.items():
+            got = _whole(value)
+            if token not in REFUSAL_TOKENS or got is None:
+                odd += 1
+            else:
+                sums[token] = sums.get(token, 0) + got
+    return {k: v for k, v in sums.items() if v}, odd
 
 
 def _outcome_counts(finals: Sequence[Json]) -> tuple[dict[str, Any], int]:  # Any: JSON figures

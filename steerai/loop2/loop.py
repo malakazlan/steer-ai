@@ -34,7 +34,7 @@ from steerai.loop2.form import (
     form_facts,
 )
 from steerai.loop2.guards import StrikeReason
-from steerai.loop2.history import RECORD_TYPES, HistoryRecord, render
+from steerai.loop2.history import RECORD_TYPES, HistoryRecord, RefusalWord, render
 from steerai.loop2.listing import ListingTurn
 from steerai.loop2.query import SearchFacts, classify, search_landmark_of
 from steerai.loop2.task import Commit, Subgoal
@@ -389,6 +389,9 @@ class TaskOutcome:
     Stage 1 runs with caching off and asserts every cache counter here is zero."""
     exact_counts: int = 0
     """[V2.61]: turns on which the prompt guard spent an exact count (near the ceiling)."""
+    refusals: tuple[tuple[RefusalWord, int], ...] = ()
+    """[V2.46], [V2.63] (e): every refusal counted by its closed token, in the order first seen
+    (the repeat rule is `repeat_send`)."""
     submit_parents: tuple[tuple[ParentKind, int], ...] = ()
     """[V2.25]: the submit rule's firings, counted per kind of the field's parent where each
     action is rated, in `PARENT_KINDS` order."""

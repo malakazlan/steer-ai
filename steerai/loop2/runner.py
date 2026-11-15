@@ -421,6 +421,8 @@ class _Run:
         """[V2.43] (2): focus moved off a press's target after the listing showed it there."""
         self.unread_aids = 0
         """#301: unread automation ids over every observation taken in (`_in_domain`)."""
+        self.refusal_counts: dict[RefusalWord, int] = {}
+        """[V2.46], [V2.63] (e): every refusal by its token (`_refuse`)."""
         self.submit_parents: dict[ParentKind, int] = dict.fromkeys(PARENT_KINDS, 0)
         """[V2.25]: the submit rule's firings by the field's parent kind (`_risk`)."""
         self.url_reads: dict[UrlRead, int] = dict.fromkeys(URL_READS, 0)
@@ -475,6 +477,7 @@ class _Run:
             focus_losses=self.focus_losses,
             unread_automation_ids=self.unread_aids,
             url_reads=tuple(self.url_reads.items()),
+            refusals=tuple(self.refusal_counts.items()),
             submit_parents=tuple(self.submit_parents.items()),
             history_dropped=self.history_dropped,
             listings=tuple(self.listing.turns),
@@ -1473,6 +1476,8 @@ class _Run:
         refusal also attaches to the refused action's subgoal and stands until it is proven."""
         kind, token = refusal_of(tokens)
         self.refusal = (kind, token)
+        for word in tokens:  # every token is counted, as every token is recorded (RT-29)
+            self.refusal_counts[word] = self.refusal_counts.get(word, 0) + 1
         self._notes(Refused(token, handle) for token in tokens)  # [V2.47]: its element
         self.turn.refused = True
         if kind in ("policy", "step") and subgoal is not None:
