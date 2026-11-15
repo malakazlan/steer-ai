@@ -831,7 +831,7 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
 
     def hook_timeout_ms(self) -> int | None:
         raw = _read_hooks_timeout()  # REG_SZ as written by Windows; a DWORD is accepted too
-        if isinstance(raw, str) and raw.strip().isdigit():
+        if isinstance(raw, str) and raw.strip().isascii() and raw.strip().isdigit():  # #364 H7
             value = int(raw.strip())
         elif isinstance(raw, int) and not isinstance(raw, bool):
             value = raw

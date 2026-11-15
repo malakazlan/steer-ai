@@ -1663,7 +1663,10 @@ def test_the_hook_timeout_is_read_from_the_registry_and_capped(
     in ms; Windows 10 1709 and later use 1000 for any value larger."""
     from steerai.loop2 import live_world as live  # noqa: PLC0415 - this test only
 
-    for raw, shown in (("300", 300), (5000, 1000), (None, None), ("x", None)):
+    for raw, shown in (
+        ("300", 300), (5000, 1000), (None, None), ("x", None),
+        (chr(0xB2), None), (chr(0xFF13), None),  # #364 H7: isdigit() but no int() here
+    ):  # fmt: skip
         monkeypatch.setattr(live, "_read_hooks_timeout", lambda raw=raw: raw)
         assert WindowsPlatform().hook_timeout_ms() == shown
 
