@@ -270,8 +270,13 @@ class HelperMonitor:
         if self._kill_seen_at is None:
             self._kill_seen_at = now
         if now - self._kill_seen_at > KILL_ACK_S and not self._ended_steer:
+            try:
+                self._terminate_self()
+            except Exception:  # noqa: BLE001 - #383 HM-08: counted in Steer's word, tried again
+                config = self._helper.config
+                config.set("end_self_failures", config.get("end_self_failures") + 1)
+                return
             self._ended_steer = True
-            self._terminate_self()
 
     def _poll_session(self) -> None:
         reads = {

@@ -592,3 +592,29 @@ def test_close_waits_for_a_watchdog_still_ending_the_helper() -> None:
     helper.release.set()
     closer.join(5)
     assert helper.order == ["terminated", "closed"]
+
+
+# ---- #383 HM-08: a failed self-end (layer 2) is counted and tried again -----------------------
+
+
+def test_a_failed_self_end_is_counted_and_tried_again_on_the_next_step() -> None:
+    rig = _rig()
+    failures = [OSError(5, "denied")]
+
+    def end() -> None:
+        if failures:
+            raise failures.pop()
+        rig.ended.append(1)
+
+    rig.monitor._terminate_self = end
+    rig.helper.status_w.set("kill", 1)
+    rig.monitor.watch_once()
+    rig.at(100.0 + KILL_ACK_S + 0.01)
+    rig.heartbeat()
+    rig.monitor.watch_once()
+    assert rig.ended == []
+    assert rig.helper.config.get("end_self_failures") == 1
+    rig.monitor.watch_once()
+    rig.monitor.watch_once()
+    assert rig.ended == [1]  # tried again, then once only
+    assert rig.helper.config.get("end_self_failures") == 1

@@ -86,7 +86,7 @@ class HelperPlatform(Protocol):
     def wait(self, timeout_ms: int, parent: int, quit_event: int) -> str: ...
     def pump(self) -> Iterator[str]: ...
     def wake(self, handle: int) -> None: ...
-    def terminate_parent(self, handle: int) -> None: ...
+    def terminate_parent(self, handle: int) -> bool: ...
     def release(self) -> None: ...
 
 
@@ -138,6 +138,19 @@ class _Handlers:
             self._core.finished(entry_qpc=entry, exit_qpc=self._platform.qpc())
         except Exception:  # noqa: BLE001 - the hook chain must go on; the count is the report
             self._core.callback_error()
+
+
+def _end_steer_if_overdue(
+    core: HelperCore, platform: HelperPlatform, parent: int, *, now: int
+) -> bool:
+    """[V2.60] Q1 layer 3, the only place the helper ends Steer: True once it has. A failed
+    `TerminateProcess` is counted and tried again on the next pass (#383 HM-08)."""
+    if not core.kill_overdue(qpc=now):
+        return False
+    if platform.terminate_parent(parent):
+        return True
+    core.end_steer_failed()
+    return False
 
 
 def run_helper(args: list[str], platform: HelperPlatform) -> int:  # noqa: PLR0915 - the steps
@@ -192,9 +205,8 @@ def run_helper(args: list[str], platform: HelperPlatform) -> int:  # noqa: PLR09
             step = ERROR_INTERNAL
             now = platform.qpc()
             core.loop(qpc=now, unbiased_100ns=platform.unbiased())
-            if not ended_steer and core.kill_overdue(qpc=now):
-                platform.terminate_parent(handles.parent)  # [V2.60] Q1 layer 3, only here
-                ended_steer = True
+            if not ended_steer:
+                ended_steer = _end_steer_if_overdue(core, platform, handles.parent, now=now)
     except Exception:  # noqa: BLE001 - no stderr: the code in the status words is the report
         failed = True
         status.set("error", step)
@@ -478,9 +490,10 @@ class WindowsHelperPlatform:  # pragma: no cover - live, Windows only (tests/ses
     def wake(self, handle: int) -> None:
         self._k32.SetEvent(handle)
 
-    def terminate_parent(self, handle: int) -> None:
-        """[V2.60] Q1 layer 3: end Steer for the person's unacknowledged kill."""
-        self._k32.TerminateProcess(handle, KILL_EXIT_CODE)
+    def terminate_parent(self, handle: int) -> bool:
+        """[V2.60] Q1 layer 3: end Steer for the person's unacknowledged kill; False when
+        `TerminateProcess` failed (#383 HM-08)."""
+        return bool(self._k32.TerminateProcess(handle, KILL_EXIT_CODE))
 
     def release(self) -> None:
         while self._hooks:
