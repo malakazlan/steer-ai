@@ -520,6 +520,7 @@ def _result(
             "focus_losses": outcome.focus_losses,
             "history_dropped": outcome.history_dropped,
             "pre_task_draft_clicks": outcome.pre_task_draft_clicks,  # [V2.64] Two
+            "saved_calls": outcome.saved_calls,  # [V2.67] A
             "submit_parents": dict(outcome.submit_parents),
         },
         "watch_deadlines": {  # [V2.48]: per class, watches and those ended at the deadline

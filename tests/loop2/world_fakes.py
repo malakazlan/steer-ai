@@ -4,7 +4,7 @@ plays the `Ports` of the v2 loop. No site or app names; nothing here touches the
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -26,6 +26,7 @@ from steerai.loop2.loop import (
     TurnView,
 )
 from steerai.loop2.task import Budgets, Envelope, Task
+from steerai.loop2.verify import Judged
 from steerai.world.effects import (
     PRECEDENCE,
     Carrier,
@@ -291,6 +292,11 @@ class World:
     """Report `interruption` once a settle has run (the person's kill during the wait)."""
     decide_raises: Exception | None = None
     """When set, every controller call raises it (a port failure or `PortInterrupted`)."""
+    decide_errors: list[Exception | None] = field(default_factory=list)
+    """Per controller call, in order: raise this one (None: decide as usual)."""
+    decide_calls: list[int] = field(default_factory=list)
+    """Per answered controller call, in order: how many model calls the turn made (a repaired
+    turn is two); then one."""
     watch_timeouts: list[bool] = field(default_factory=list)
     """Each watch's `timed_out` in turn, when set (else the submit rule's own)."""
     watch_raises: Exception | None = None
@@ -325,8 +331,12 @@ class World:
         self.sent_at_call.append(len(self.dispatched))
         if self.decide_raises is not None:
             raise self.decide_raises
+        error = self.decide_errors.pop(0) if self.decide_errors else None
+        if error is not None:
+            raise error
         decision = self.decisions.pop(0) if self.decisions else Decision(stop="cannot")
-        return Decided(decision, self.usage, self.listing)
+        calls = self.decide_calls.pop(0) if self.decide_calls else 1
+        return Decided(decision, self.usage, self.listing, calls=calls)
 
     def _arrive(self) -> None:
         if self.later is not None and len(self.dispatched) >= self.later_after_acts:
@@ -464,3 +474,14 @@ class World:
             settle=self._settle,
             stamp=self._stamp,
         )
+
+
+def judged_by(proof: Callable[..., object]) -> Callable[..., Judged]:
+    """A test double for `runner.judge` from a proof function's double: the same arguments, its
+    return value as the judgement's verdict ([V2.67] A: the runner reads the verdict off one
+    `Judged`)."""
+
+    def judge(*args: object, **kwargs: object) -> Judged:
+        return Judged(proof(*args, **kwargs))  # type: ignore[arg-type]  # a double's token
+
+    return judge
