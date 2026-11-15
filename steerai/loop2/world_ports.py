@@ -20,6 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, fields
 from typing import Any, Final, Literal, Protocol, TypeVar
 
+from steerai.action.execution import code_for
 from steerai.errors import SteerError
 from steerai.loop2.loop import Dispatch, PortInterrupted
 from steerai.loop2.runner import LOAD_GUARD_S
@@ -312,10 +313,17 @@ class WorldPorts:
         return snapshot.handles[matches[0]]
 
     def _read(self, read: Callable[[], T]) -> T | None:
-        """One live read; a COM failure (a `SteerError` with its taxonomy code) is unread and
-        traced by its code, never its message; any other error is not swallowed."""
+        """One live read; a COM failure (a `SteerError` with its taxonomy code, or a raw COMError
+        mapped by `execution.code_for`, AP-27) is unread and traced by its code, never its
+        message; any other error is not swallowed."""
         try:
             return read()
         except SteerError as exc:
             self._trace(f"read_unread:{exc.code.value}")
+            return None
+        except Exception as exc:  # a raw COMError has no stubs: mapped by code, or re-raised
+            code, _extra = code_for(exc)
+            if code is None:
+                raise
+            self._trace(f"read_unread:{code.value}")
             return None

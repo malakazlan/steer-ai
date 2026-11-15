@@ -26,6 +26,7 @@ from steerai.orchestrator.loop import IDLE_S, MAX_WAIT_S
 from steerai.world.effects import Observed, ValueFact
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
+from tests.action.fakes import UIA_E_ELEMENTNOTAVAILABLE, com_error
 from tests.loop2.world_fakes import FIELD, GO, PAGE, PASSWORD, act, element, observed
 
 BOX = element(42, "CheckBox", "Shop", (9, 42), 1)
@@ -982,3 +983,14 @@ def test_v1s_unchanged_keeps_its_code() -> None:
 def test_the_fallback_records_where_it_aimed() -> None:
     rig = _port(semantic=Executor(NO_INVOKE), physical=Executor(ok("click")))
     assert rig.port.act(_dispatch("click", ROW)).action.evidence["aim"] == "label"
+
+def test_a_raw_com_error_inside_the_port_keeps_its_taxonomy_code() -> None:
+    """AP-27: a COMError the executor did not classify goes through `execution.code_for`."""
+    rig = _port(semantic=Executor(com_error(UIA_E_ELEMENTNOTAVAILABLE)))
+    result = rig.port.act(_dispatch("click", GO))
+    assert result.delivery is Delivery.DELIVERY_UNCERTAIN
+    assert result.action.evidence == {
+        "detail": "port_error",
+        "error": "ComError",
+        "code": "element_not_found",
+    }

@@ -47,6 +47,7 @@ from contextlib import AbstractContextManager
 from typing import Final, Protocol, TypeVar
 
 from steerai.action.dispositions import ActionResult, Delivery, Step
+from steerai.action.execution import code_for
 from steerai.action.executor import Action, aim_of, click_point, physical_click_target
 from steerai.action.physical import PhysicalAction
 from steerai.errors import ErrorCode
@@ -167,7 +168,10 @@ class ActPort:
         except _Refused as refused:
             return ActResult(_not_sent(verb, refused.code, refused.detail), None)
         except Exception as exc:  # noqa: BLE001 - [V2.51] (2): fail closed, never raise
+            code, _extra = code_for(exc)  # AP-27: a raw COMError keeps its taxonomy code
             evidence = {"detail": "port_error", "error": type(exc).__name__}
+            if code is not None:
+                evidence["code"] = code.value
             steps: list[Step] = [] if self._sent is None else list(self._sent.steps)  # v1 sent
             failed = ActionResult(
                 verb,

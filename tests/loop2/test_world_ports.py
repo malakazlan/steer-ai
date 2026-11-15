@@ -31,6 +31,7 @@ from steerai.world.effects import Observed, poll_tier, value_fact
 from steerai.world.elements import Element
 from steerai.world.observe2 import GROW_GUARD_S, FirstTouches
 from steerai.world.watch import SUBMIT_GUARD_S
+from tests.action.fakes import UIA_E_ELEMENTNOTAVAILABLE, com_error
 from tests.loop2.world_fakes import (
     FIELD,
     GO,
@@ -868,3 +869,33 @@ def test_a_wait_in_a_window_with_no_document_sees_the_whole_window() -> None:
     watched = ports.watch(before, _dispatch("wait", None))
     assert "none" not in watched.report.classes
     assert clock.now - start < WAIT_S
+
+
+# ---- AP-27: a raw COMError never reaches the runner -------------------------------------------
+
+
+def test_a_raw_com_error_in_a_live_read_is_unread_by_its_code() -> None:
+    """A COMError the live read did not map itself goes through `execution.code_for`."""
+
+    class Raw(Live):
+        def value(self, handle: object) -> str | None:
+            del handle
+            raise com_error(UIA_E_ELEMENTNOTAVAILABLE)
+
+    live = Raw()
+    live.ids["h2"] = ("Edit", "Search")
+    traced: list[str] = []
+    assert _reader(live, _live_page(), traced).read_value(FIELD) is None
+    assert traced == ["read_unread:element_not_found"]
+
+
+def test_a_programming_error_in_a_live_read_is_not_swallowed() -> None:
+    class Broken(Live):
+        def value(self, handle: object) -> str | None:
+            del handle
+            raise KeyError("bug")
+
+    live = Broken()
+    live.ids["h2"] = ("Edit", "Search")
+    with pytest.raises(KeyError):
+        _reader(live, _live_page()).read_value(FIELD)
