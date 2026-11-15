@@ -18,12 +18,25 @@ stays unmeasured.
 
 Run: `python -m steerai.loop2.unstick_probe run --out-dir D --price-file P` (the trigger needs
 the API key in the environment).
+
+#400 REVISE, two more modes, no trigger and no model call:
+- `docwait`: `doc_plan()` starts, cold (the child starts as soon as the window is listed) and
+  loaded (after the page reports loaded), each on a fresh Chrome on 3d-b with the window in
+  front. The child raises the window as the start does, then reads UIA every `DOC_POLL_S` up to
+  `DOC_READ_S`: when the top Document first appears and when something is first under it. The
+  wait is `wait_from` (the p99 plus `MARGIN_S`). Chrome's own visibility is kept beside each
+  start, so a start that went hidden is told apart from a slow paint.
+- `placement`: one maximised Chrome, the real `minrestore` nudge `PLACEMENT_RUNS` times, the raw
+  WINDOWPLACEMENT (flags included) and the rect before and after each.
+
+Run: `python -m steerai.loop2.unstick_probe docwait --out-dir D` and `... placement --out-dir D`.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from collections.abc import Mapping, Sequence
@@ -33,6 +46,12 @@ from typing import Any, Final, Literal, get_args
 READ_S: Final = 10.0
 READ_POLL_S: Final = 0.25
 RUNS: Final = 5
+DOC_STARTS: Final = 24
+DOC_READ_S: Final = 15.0
+DOC_POLL_S: Final = 0.05
+MARGIN_S: Final = 0.5
+PLACEMENT_RUNS: Final = 5
+StartKind = Literal["cold", "loaded"]
 CHILD_CAP_S: Final = 90.0
 WindowKind = Literal["normal", "maximized", "half"]
 KINDS: Final[tuple[WindowKind, ...]] = get_args(WindowKind)
@@ -50,6 +69,37 @@ def first_page(reads: Sequence[Mapping[str, Any]]) -> float | None:  # Any: JSON
         if isinstance(inside, int) and inside > 0:
             return float(read["t"])
     return None
+
+
+def doc_times(reads: Sequence[Mapping[str, Any]]) -> dict[str, float | None]:  # Any: JSON
+    """When the top Document first appeared (even empty) and when something was first under it;
+    None for either never seen."""
+    document: float | None = None
+    for read in reads:
+        if read.get("doc_nodes") is not None:
+            document = float(read["t"])
+            break
+    return {"first_document_s": document, "first_page_s": first_page(reads)}
+
+
+def p99(values: Sequence[float]) -> float:
+    """The nearest-rank 99th percentile."""
+    ordered = sorted(values)
+    return ordered[math.ceil(0.99 * len(ordered)) - 1]
+
+
+def wait_from(first_pages: Sequence[float], *, margin_s: float) -> float:
+    """#400 REVISE 2: `DOCUMENT_WAIT_S` from the measured times to a page: the p99 plus the
+    margin, rounded up to a tenth of a second."""
+    if not first_pages:
+        raise ValueError("no page was seen: the wait cannot be set")
+    return math.ceil(round((p99(first_pages) + margin_s) * 10, 6)) / 10
+
+
+def doc_plan() -> list[tuple[str, StartKind]]:
+    """`DOC_STARTS` starts, cold and loaded taking turns."""
+    kinds: tuple[StartKind, StartKind] = ("cold", "loaded")
+    return [(f"{kinds[n % 2]}-{n // 2 + 1}", kinds[n % 2]) for n in range(DOC_STARTS)]
 
 
 def nudge_span_s(calls: Sequence[tuple[str, float]]) -> float | None:
@@ -103,9 +153,9 @@ def run_start_child(hwnd: int, *, nudge: str, out: Path, trace: Path) -> int:  #
             super().set_window_placement(hwnd, placement)
             calls.append(("placement", time.monotonic()))
 
-        def move_window_by(self, hwnd: int, dx: int) -> None:
-            calls.append((f"move:{dx:+d}", time.monotonic()))
-            super().move_window_by(hwnd, dx)
+        def set_window_rect(self, hwnd: int, rect: tuple[int, int, int, int]) -> None:
+            calls.append(("rect", time.monotonic()))
+            super().set_window_rect(hwnd, rect)
 
         def provider(self) -> Any:  # Any: a never-called `Call`
             return _never_called
@@ -150,9 +200,8 @@ def run_start_child(hwnd: int, *, nudge: str, out: Path, trace: Path) -> int:  #
                 "nudged": world.front_nudged,
                 "calls": [name for name, _ in calls],
                 "nudge_span_s": nudge_span_s(calls),
-                "show_cmd_before": placement_before[0],
-                "placement_same": placement_after[:2] == placement_before[:2],
-                "min_pos_same": placement_after[2] == placement_before[2],
+                "show_cmd_before": placement_before[1],
+                "placement_same": placement_after == placement_before,
                 "rect_same": rect_after == rect_before,
                 "first_page_s": first_page(reads),
                 "reads": len(reads),
@@ -161,6 +210,210 @@ def run_start_child(hwnd: int, *, nudge: str, out: Path, trace: Path) -> int:  #
     row = run_on_loop_thread(work, release=platform.release_com)
     out.write_text(json.dumps(row) + "\n", encoding="utf-8")
     return 0
+
+
+def _probe_world(hwnd: int, trace: Path) -> tuple[Any, Any]:  # pragma: no cover - live
+    """A LiveWorld config and platform for a probe child on our own `hwnd`: the real session,
+    hooks and tag, and a provider that is never called. Any: LiveConfig, WindowsPlatform."""
+    from steerai.loop2.decide_port import TaskGenerations  # noqa: PLC0415
+    from steerai.loop2.live_world import LiveConfig, WindowsPlatform  # noqa: PLC0415
+    from steerai.orchestrator.trace import JsonLinesTrace  # noqa: PLC0415
+    from steerai.probes.windows import process_name, window_pid  # noqa: PLC0415
+
+    class ProbePlatform(WindowsPlatform):
+        def provider(self) -> Any:  # Any: a never-called `Call`
+            return _never_called
+
+        def counter(self) -> Any:  # Any: a never-called `Counter`
+            return _never_called
+
+    pid = window_pid(hwnd)
+    config = LiveConfig(
+        task_id="unstick-probe",
+        hwnd=hwnd,
+        kill_key="ctrl+alt+k",
+        trace_level="redacted",
+        trace=JsonLinesTrace(trace),
+        generations=TaskGenerations(),
+        clock=time.monotonic,
+        pause=time.sleep,
+        bound_pid=pid,
+        bound_image=process_name(pid).lower(),
+    )
+    return config, ProbePlatform()
+
+
+def run_doc_child(hwnd: int, *, out: Path, trace: Path) -> int:  # pragma: no cover - live
+    """#400 REVISE 2: raise our window as the start does, never nudge, then read UIA every
+    `DOC_POLL_S` until a page has been seen for a second, or `DOC_READ_S`."""
+    from steerai.loop2.live_world import LiveWorld, run_on_loop_thread  # noqa: PLC0415
+    from steerai.probes.win_input import acquire_foreground  # noqa: PLC0415
+    from steerai.world.observe2 import document_nodes  # noqa: PLC0415
+
+    config, platform = _probe_world(hwnd, trace)
+
+    def work() -> dict[str, object]:
+        with LiveWorld(config, platform) as world:
+            how = acquire_foreground(hwnd)
+            started = time.monotonic()
+            reads: list[dict[str, object]] = []
+            seen_at: float | None = None
+            while (now := time.monotonic() - started) < DOC_READ_S:
+                inside = document_nodes(world._poll_read().snapshot)
+                reads.append(
+                    {"t": round(now, 3), "doc_nodes": None if inside is None else len(inside)}
+                )
+                if inside and seen_at is None:
+                    seen_at = now
+                if seen_at is not None and now - seen_at >= 1.0:
+                    break
+                time.sleep(DOC_POLL_S)
+            return {"acquire": how, **doc_times(reads), "reads": len(reads)}
+
+    row = run_on_loop_thread(work, release=platform.release_com)
+    out.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    return 0
+
+
+def run_placement_child(hwnd: int, *, out: Path, trace: Path) -> int:  # pragma: no cover - live
+    """#400 REVISE 3: the real `minrestore` nudge `PLACEMENT_RUNS` times on our own maximised
+    window, the raw placement (flags included) and the rect before and after each."""
+    from steerai.loop2.live_world import LiveWorld, run_on_loop_thread  # noqa: PLC0415
+    from steerai.probes.windows import get_placement, get_window_rect  # noqa: PLC0415
+
+    config, platform = _probe_world(hwnd, trace)
+
+    def work() -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        with LiveWorld(config, platform) as world:
+            for run in range(1, PLACEMENT_RUNS + 1):
+                before, rect_before = get_placement(hwnd), get_window_rect(hwnd)
+                started = time.monotonic()
+                world._nudge(hwnd, "minrestore")
+                span = round(time.monotonic() - started, 3)
+                time.sleep(0.5)
+                after, rect_after = get_placement(hwnd), get_window_rect(hwnd)
+                fields = ("flags", "showCmd", "rcNormalPosition", "ptMinPosition", "ptMaxPosition")
+                rows.append({
+                    "run": run, "span_s": span, "nudged": world.front_nudged,
+                    "before": list(before), "after": list(after),
+                    "differs": [f for f, a, b in zip(fields, before, after, strict=True) if a != b],
+                    "rect_same": rect_before == rect_after,
+                })  # fmt: skip
+                time.sleep(0.5)
+        return rows
+
+    rows = run_on_loop_thread(work, release=platform.release_com)
+    out.write_text(json.dumps(rows) + "\n", encoding="utf-8")
+    return 0
+
+
+def run_docwait(out_dir: Path) -> int:  # noqa: PLR0915 - one live run  # pragma: no cover
+    """The `doc_plan()` starts, each on a fresh Chrome on 3d-b, then the wait from them."""
+    import shutil  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+    import threading  # noqa: PLC0415
+
+    from steerai.loop2.stage1 import _idle_s, precheck, wait_until_ready  # noqa: PLC0415
+    from steerai.probes import instant_search as fixture  # noqa: PLC0415 - live only
+    from steerai.probes.chrome_a11y import stop_chrome  # noqa: PLC0415
+    from steerai.probes.layer_b import _ours  # noqa: PLC0415
+    from steerai.probes.layer_b_pages import PageServer  # noqa: PLC0415
+    from steerai.probes.memory_guard import free_physical_mb  # noqa: PLC0415
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
+
+    pages: list[float] = []
+    for name, kind in doc_plan():
+        refused = wait_until_ready(
+            lambda: precheck(free_mb=free_physical_mb, idle_s=_idle_s),
+            sleep=time.sleep, clock=time.monotonic,
+        )  # fmt: skip
+        if refused is not None:
+            _emit({"start": name, "not_started": refused})
+            continue
+        run_dir = out_dir / name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(prefix="steer-unstick-"))
+        with PageServer(fixture.pages()) as server:
+            port = fixture._free_port()
+            proc = _launch("normal", tmp / "profile", port, f"http://127.0.0.1:{server.port}/b")
+            try:
+                window = wait_window_for_pid(proc.pid, timeout_s=30.0, process=proc)
+                if kind == "loaded":
+                    cdp, _ = _ours(port, server.port)
+                    try:
+                        fixture._wait_ready(cdp)
+                    finally:
+                        cdp.close()
+                seen: list[tuple[float, object]] = []
+                stop = threading.Event()
+                watcher = threading.Thread(
+                    target=_watch_visibility, args=(port, server.port, time.monotonic(), stop, seen)
+                )
+                watcher.start()
+                try:
+                    done = subprocess.run(  # noqa: S603 - our own module, a fixed argv
+                        [sys.executable, "-m", "steerai.loop2.unstick_probe", "docchild",
+                         "--hwnd", str(window.hwnd), "--out", str(run_dir / "doc.json"),
+                         "--trace", str(run_dir / "trace.jsonl")],
+                        capture_output=True, text=True, timeout=CHILD_CAP_S, check=False,
+                    )  # fmt: skip
+                finally:
+                    stop.set()
+                    watcher.join(timeout=5.0)
+                row = json.loads((run_dir / "doc.json").read_text("utf-8"))
+                if isinstance(row.get("first_page_s"), float):
+                    pages.append(row["first_page_s"])
+                _emit({"start": name, "kind": kind, "code": done.returncode, **row,
+                       "visibility": [f"{t}:{v}" for t, v in seen]})  # fmt: skip
+            finally:
+                stop_chrome(proc, tmp / "profile")
+                shutil.rmtree(tmp, ignore_errors=True)
+    summary: dict[str, object] = {"starts": len(pages), "pages": sorted(pages)}
+    if pages:
+        summary |= {"p99": p99(pages), "wait_s": wait_from(pages, margin_s=MARGIN_S)}
+    _emit({"summary": summary})
+    return 0
+
+
+def run_placement(out_dir: Path) -> int:  # pragma: no cover - live
+    """One maximised Chrome on 3d-b, the placement child on it."""
+    import shutil  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    from steerai.probes import instant_search as fixture  # noqa: PLC0415 - live only
+    from steerai.probes.chrome_a11y import stop_chrome  # noqa: PLC0415
+    from steerai.probes.layer_b_pages import PageServer  # noqa: PLC0415
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
+
+    tmp = Path(tempfile.mkdtemp(prefix="steer-unstick-"))
+    with PageServer(fixture.pages()) as server:
+        port = fixture._free_port()
+        proc = _launch("maximized", tmp / "profile", port, f"http://127.0.0.1:{server.port}/b")
+        try:
+            window = wait_window_for_pid(proc.pid, timeout_s=30.0, process=proc)
+            time.sleep(2.0)
+            done = subprocess.run(  # noqa: S603 - our own module, a fixed argv
+                [sys.executable, "-m", "steerai.loop2.unstick_probe", "placementchild",
+                 "--hwnd", str(window.hwnd), "--out", str(out_dir / "placement.json"),
+                 "--trace", str(out_dir / "placement-trace.jsonl")],
+                capture_output=True, text=True, timeout=CHILD_CAP_S, check=False,
+            )  # fmt: skip
+            rows = json.loads((out_dir / "placement.json").read_text("utf-8"))
+            for row in rows:
+                _emit(row)
+            _emit({"code": done.returncode})
+        finally:
+            stop_chrome(proc, tmp / "profile")
+            shutil.rmtree(tmp, ignore_errors=True)
+    return 0
+
+
+def _emit(row: Mapping[str, object]) -> None:  # pragma: no cover - live
+    sys.stdout.write(json.dumps(dict(row)) + "\n")
+    sys.stdout.flush()
 
 
 def _watch_visibility(  # pragma: no cover - live
@@ -319,15 +572,29 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live
     child.add_argument("--nudge", choices=("move1px", "minrestore"), required=True)
     child.add_argument("--out", type=Path, required=True)
     child.add_argument("--trace", type=Path, required=True)
+    for name in ("docchild", "placementchild"):
+        other = sub.add_parser(name)
+        other.add_argument("--hwnd", type=int, required=True)
+        other.add_argument("--out", type=Path, required=True)
+        other.add_argument("--trace", type=Path, required=True)
     whole = sub.add_parser("run")
     whole.add_argument("--out-dir", type=Path, required=True)
     whole.add_argument("--price-file", type=Path, required=True)
+    for name in ("docwait", "placement"):
+        sub.add_parser(name).add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args(argv)
     if sys.platform != "win32":
         sys.stdout.write("unstick_probe: windows only\n")
         return 0
     if args.mode == "child":
         return run_start_child(args.hwnd, nudge=args.nudge, out=args.out, trace=args.trace)
+    if args.mode == "docchild":
+        return run_doc_child(args.hwnd, out=args.out, trace=args.trace)
+    if args.mode == "placementchild":
+        return run_placement_child(args.hwnd, out=args.out, trace=args.trace)
+    if args.mode in ("docwait", "placement"):
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        return run_docwait(args.out_dir) if args.mode == "docwait" else run_placement(args.out_dir)
     return run(args.out_dir, args.price_file)
 
 

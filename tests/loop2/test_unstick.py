@@ -14,11 +14,17 @@ import dataclasses
 import pytest
 
 from steerai.errors import ErrorCode, SteerError
-from steerai.loop2.live_world import DOCUMENT_WAIT_S, LiveWorld, WindowPlacement
+from steerai.loop2.live_world import (
+    DOCUMENT_POLL_S,
+    DOCUMENT_WAIT_S,
+    WPF_SETMINPOSITION,
+    LiveWorld,
+    WindowPlacement,
+)
 from steerai.world.cover import CoverFacts
 from tests.action.test_physical import FakeInput
 from tests.loop2.test_live_world import Platform, _config
-from tests.loop2.world_fakes import BAR, PAGE, TAB, snapshot
+from tests.loop2.world_fakes import BAR, DOC, PAGE, TAB, snapshot
 
 BOUND = 16
 FOREVER = 10**9
@@ -29,8 +35,14 @@ CLEAR = CoverFacts(
 COVERED = dataclasses.replace(CLEAR, above=((0, 0, 1920, 1040),))
 FRAME = snapshot([TAB, BAR])
 """A browser frame with no Document: its address bar is read, its page is not exposed."""
-NORMAL = WindowPlacement(show_cmd=1, normal=(40, 40, 1240, 940), min_pos=(-1, -1), max_pos=(-1, -1))
-MAXIMIZED = dataclasses.replace(NORMAL, show_cmd=3)
+EMPTY_DOCUMENT = snapshot([DOC, TAB, BAR])
+"""A browser frame whose Document is there with nothing under it yet (a slow first paint)."""
+NORMAL = WindowPlacement(
+    flags=0, show_cmd=1, normal=(40, 40, 1240, 940), min_pos=(-1, -1), max_pos=(-1, -1)
+)
+MAXIMIZED = dataclasses.replace(NORMAL, flags=2, show_cmd=3)
+MOVED = (41, 40, 1241, 940)
+SAVED = (40, 40, 1240, 940)
 
 
 def _platform(*, blank_reads: int = 0, page_after_nudge: bool = True) -> Platform:
@@ -78,6 +90,23 @@ def test_a_page_that_appears_within_the_wait_is_never_nudged() -> None:
     assert (platform.nudges, world.front_nudged) == ([], None)
 
 
+def test_a_page_that_appears_late_in_the_wait_is_never_nudged() -> None:
+    """#400 REVISE 2: the page first seen at 1.9 s or later, still inside the wait."""
+    platform = _platform(blank_reads=int(DOCUMENT_WAIT_S / DOCUMENT_POLL_S))
+    world = _start(platform)
+    assert platform.read_times[-1] - platform.read_times[0] >= 1.9
+    assert (platform.nudges, world.front_nudged) == ([], None)
+
+
+def test_an_empty_document_past_the_wait_is_never_nudged() -> None:
+    """#400 REVISE 2: only the frame-only shape (no Document) is the stall; a Document with
+    nothing under it is a slow first paint, left to the task's own first observation."""
+    platform = _platform(blank_reads=FOREVER)
+    platform.frame_screen = EMPTY_DOCUMENT
+    world = _start(platform)
+    assert (platform.nudges, world.front_nudged) == ([], None)
+
+
 def test_a_native_window_with_no_address_bar_is_never_nudged() -> None:
     """No Document and no address bar is a native window, not a hidden page."""
     platform = _platform(blank_reads=FOREVER)
@@ -117,11 +146,14 @@ def test_a_frame_only_window_in_front_is_nudged_once_after_the_wait() -> None:
     assert waited >= DOCUMENT_WAIT_S - 0.5  # the bounded wait came first
 
 
-def test_the_exact_placement_is_put_back() -> None:
+def test_the_exact_placement_is_put_back_with_its_minimised_position() -> None:
+    """#400 REVISE 3: WPF_SETMINPOSITION, so the minimised position is set back too."""
     platform = _platform(blank_reads=FOREVER)
     platform.placement = MAXIMIZED
     _start(platform)
-    assert platform.placements_set == [MAXIMIZED]
+    assert platform.placements_set == [
+        dataclasses.replace(MAXIMIZED, flags=MAXIMIZED.flags | WPF_SETMINPOSITION)
+    ]
 
 
 def test_a_normal_window_moved_by_the_restore_goes_back_to_its_exact_rect() -> None:
@@ -130,7 +162,7 @@ def test_a_normal_window_moved_by_the_restore_goes_back_to_its_exact_rect() -> N
     platform.rect_now = (0, 0, 960, 1040)
     platform.rect_after_placement = (40, 40, 1240, 940)
     _start(platform, nudge="minrestore")
-    assert platform.rects_set == [(0, 0, 960, 1040)]
+    assert platform.rects_set[-1] == (0, 0, 960, 1040)
 
 
 def test_the_page_still_missing_after_the_one_nudge_refuses_the_start() -> None:
@@ -189,9 +221,99 @@ def test_a_kill_during_the_gentle_nudge_still_moves_the_window_back() -> None:
 
 def test_a_gentle_nudge_move_that_fails_refuses_the_start() -> None:
     platform = _platform(blank_reads=FOREVER)
-    platform.move_error = OSError("SetWindowPos failed")
+    platform.rect_errors = [OSError("SetWindowPos failed")]
     refused = _refused(platform)
     assert (refused.code, refused.message) == (ErrorCode.FOCUS_LOST, "nudge_refused")
+    assert platform.rects_set == []
+
+
+def test_the_gentle_nudge_puts_back_the_saved_rect_not_a_shifted_reread() -> None:
+    """#400 REVISE 4: a window moved during the pause goes back to the rect saved before the
+    nudge, never to the moved rect less one pixel."""
+    platform = _platform(blank_reads=FOREVER)
+
+    def moved_by_someone(dx: int) -> None:
+        if dx == 1:
+            platform.rect_now = (300, 300, 1500, 1200)
+
+    platform.on_move = moved_by_someone
+    _start(platform)
+    assert platform.rects_set == [MOVED, SAVED]
+
+
+# ---- a failed restore (#400 REVISE 1) -----------------------------------------------------------
+
+
+def test_a_gentle_restore_that_fails_once_is_retried_once() -> None:
+    platform = _platform(blank_reads=FOREVER)
+    platform.rect_errors = [None, OSError("SetWindowPos failed")]
+    world = _start(platform)
+    assert platform.rect_attempts == [MOVED, SAVED, SAVED]
+    assert platform.rects_set == [MOVED, SAVED]
+    assert world.front_nudged == "move1px"
+
+
+def test_a_gentle_restore_that_fails_twice_refuses_with_restore_failed() -> None:
+    platform = _platform(blank_reads=FOREVER)
+    platform.rect_errors = [None, OSError("SetWindowPos failed"), OSError("SetWindowPos failed")]
+    refused = _refused(platform)
+    assert (refused.code, refused.message) == (ErrorCode.FOCUS_LOST, "restore_failed")
+    assert platform.rect_attempts == [MOVED, SAVED, SAVED]
+
+
+def test_a_placement_restore_that_fails_once_is_retried_once() -> None:
+    platform = _platform(blank_reads=FOREVER)
+    platform.placement = MAXIMIZED
+    platform.placement_errors = [OSError("SetWindowPlacement failed")]
+    world = _start(platform)
+    assert platform.placement_attempts == 2
+    assert len(platform.placements_set) == 1
+    assert world.front_nudged == "minrestore"
+
+
+def test_a_placement_restore_that_fails_twice_refuses_with_restore_failed() -> None:
+    """Never a silent `nudge_refused` with the window left minimised."""
+    platform = _platform(blank_reads=FOREVER)
+    platform.placement = MAXIMIZED
+    platform.placement_errors = [OSError("failed"), OSError("failed")]
+    refused = _refused(platform)
+    assert (refused.code, refused.message) == (ErrorCode.FOCUS_LOST, "restore_failed")
+    assert platform.placement_attempts == 2
+
+
+def test_a_snapped_rect_restore_that_fails_twice_refuses_with_restore_failed() -> None:
+    platform = _platform(blank_reads=FOREVER)
+    platform.rect_now = (0, 0, 960, 1040)
+    platform.rect_after_placement = (40, 40, 1240, 940)
+    platform.rect_errors = [OSError("failed"), OSError("failed")]
+    refused = _refused(platform, nudge="minrestore")
+    assert (refused.code, refused.message) == (ErrorCode.FOCUS_LOST, "restore_failed")
+
+
+# ---- a second monitor, unmeasured (#400 REVISE 3) -----------------------------------------------
+
+
+def test_a_window_off_the_primary_monitor_is_never_nudged() -> None:
+    platform = _platform(blank_reads=FOREVER)
+    platform.primary = False
+    refused = _refused(platform)
+    assert (refused.code, refused.message) == (ErrorCode.FOCUS_LOST, "page_hidden")
+    assert platform.nudges == []
+
+
+def test_a_monitor_read_that_fails_is_not_the_primary_monitor() -> None:
+    platform = _platform(blank_reads=FOREVER)
+    platform.primary_error = OSError("GetMonitorInfo failed")
+    refused = _refused(platform)
+    assert refused.message == "page_hidden"
+    assert platform.nudges == []
+
+
+def test_a_window_off_the_primary_monitor_with_its_page_is_left_alone() -> None:
+    platform = _platform()
+    platform.primary = False
+    world = _start(platform)
+    assert (platform.nudges, world.front_nudged) == ([], None)
 
 
 # ---- the switch and failures ----------------------------------------------------------------

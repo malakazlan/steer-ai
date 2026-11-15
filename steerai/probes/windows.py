@@ -767,14 +767,16 @@ class _WindowPlacement(ctypes.Structure):
 
 def get_placement(  # pragma: no cover - live, Windows only
     hwnd: int,
-) -> tuple[int, Rect, tuple[int, int], tuple[int, int]]:
-    """GetWindowPlacement: (show command, normal rect, minimised position, maximised position)."""
+) -> tuple[int, int, Rect, tuple[int, int], tuple[int, int]]:
+    """GetWindowPlacement: (flags, show command, normal rect, minimised position, maximised
+    position)."""
     placement = _WindowPlacement()
     placement.length = ctypes.sizeof(_WindowPlacement)
     if not ctypes.windll.user32.GetWindowPlacement(hwnd, ctypes.byref(placement)):
         raise OSError("GetWindowPlacement failed")
     normal = placement.rcNormalPosition
     return (
+        int(placement.flags),
         int(placement.showCmd),
         (normal.left, normal.top, normal.right, normal.bottom),
         (placement.ptMinPosition.x, placement.ptMinPosition.y),
@@ -782,18 +784,44 @@ def get_placement(  # pragma: no cover - live, Windows only
     )
 
 
-def set_placement(  # pragma: no cover - live, Windows only
-    hwnd: int, show_cmd: int, normal: Rect, min_pos: tuple[int, int], max_pos: tuple[int, int]
+def set_placement(  # noqa: PLR0913 - one field each  # pragma: no cover - live, Windows only
+    hwnd: int,
+    *,
+    flags: int,
+    show_cmd: int,
+    normal: Rect,
+    min_pos: tuple[int, int],
+    max_pos: tuple[int, int],
 ) -> None:
-    """SetWindowPlacement with the saved values."""
+    """SetWindowPlacement with the saved values and `flags` as given."""
     placement = _WindowPlacement()
     placement.length = ctypes.sizeof(_WindowPlacement)
+    placement.flags = flags
     placement.showCmd = show_cmd
     placement.ptMinPosition = wintypes.POINT(*min_pos)
     placement.ptMaxPosition = wintypes.POINT(*max_pos)
     placement.rcNormalPosition = wintypes.RECT(*normal)
     if not ctypes.windll.user32.SetWindowPlacement(hwnd, ctypes.byref(placement)):
         raise OSError("SetWindowPlacement failed")
+
+
+_MONITORINFOF_PRIMARY = 0x1
+"""winuser.h; MONITORINFO.dwFlags "This is the primary display monitor" (learn.microsoft.com,
+ns-winuser-monitorinfo, read 2026-11-15)."""
+
+
+def on_primary_monitor(hwnd: int) -> bool:  # pragma: no cover - live, Windows only
+    """MonitorFromWindow (nearest) then GetMonitorInfoW: whether that monitor is the primary one;
+    an OSError when either read fails. Read-only."""
+    user32 = _cover_user32()
+    monitor = user32.MonitorFromWindow(hwnd, _MONITOR_DEFAULTTONEAREST)
+    if not monitor:
+        raise OSError("MonitorFromWindow failed")
+    info = _MonitorInfo()
+    info.cbSize = ctypes.sizeof(_MonitorInfo)
+    if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        raise OSError("GetMonitorInfoW failed")
+    return bool(info.dwFlags & _MONITORINFOF_PRIMARY)
 
 
 def get_window_rect(hwnd: int) -> Rect:  # pragma: no cover - live, Windows only

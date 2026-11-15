@@ -3,7 +3,16 @@ cells. Its live paths run only in a slot."""
 
 from __future__ import annotations
 
-from steerai.loop2.unstick_probe import RUNS, first_page, nudge_span_s, plan
+from steerai.loop2.unstick_probe import (
+    RUNS,
+    doc_plan,
+    doc_times,
+    first_page,
+    nudge_span_s,
+    p99,
+    plan,
+    wait_from,
+)
 
 
 def test_the_first_page_is_the_first_read_with_nodes_under_the_document() -> None:
@@ -36,3 +45,40 @@ def test_the_plan_runs_each_kind_and_nudge_at_least_runs_times() -> None:
     for kind, nudge in pairs:
         assert sum(1 for _, k, n in cells if (k, n) == (kind, nudge)) >= RUNS >= 5
     assert len({name for name, _, _ in cells}) == len(cells)
+
+
+# ---- #400 REVISE 2: the measured wait for a Document ---------------------------------------------
+
+
+def test_doc_times_split_the_first_document_from_the_first_page() -> None:
+    reads: list[dict[str, object]] = [
+        {"t": 0.0, "doc_nodes": None},
+        {"t": 0.4, "doc_nodes": 0},
+        {"t": 0.9, "doc_nodes": 12},
+    ]
+    assert doc_times(reads) == {"first_document_s": 0.4, "first_page_s": 0.9}
+    assert doc_times(reads[:1]) == {"first_document_s": None, "first_page_s": None}
+
+
+def test_the_p99_is_the_nearest_rank() -> None:
+    assert p99([0.1 * n for n in range(1, 21)]) == 2.0  # n=20: rank ceil(19.8) = 20
+    assert p99([0.3]) == 0.3
+
+
+def test_the_wait_is_the_p99_plus_the_margin_rounded_up_to_a_tenth() -> None:
+    assert wait_from([0.2, 0.31, 1.04], margin_s=0.5) == 1.6
+    assert wait_from([0.2, 0.3], margin_s=0.5) == 0.8
+
+
+def test_a_start_that_never_showed_a_page_refuses_to_set_the_wait() -> None:
+    import pytest  # noqa: PLC0415 - this test only
+
+    with pytest.raises(ValueError, match="no page"):
+        wait_from([], margin_s=0.5)
+
+
+def test_the_doc_plan_mixes_cold_and_loaded_starts() -> None:
+    starts = doc_plan()
+    assert len(starts) >= 20
+    assert {kind for _, kind in starts} == {"cold", "loaded"}
+    assert abs(sum(k == "cold" for _, k in starts) - sum(k == "loaded" for _, k in starts)) <= 1

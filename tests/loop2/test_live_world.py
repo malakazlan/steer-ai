@@ -170,8 +170,7 @@ class Platform:
         self._init_window_state()
         self.show_error: Exception | None = None
         self.on_show: Any = None  # Any: a test's hook, called with each command
-        self.move_error: Exception | None = None
-        self.on_move: Any = None  # Any: a test's hook, called with each move's dx
+        self.on_move: Any = None  # Any: a test's hook, called with each nudge move's dx
 
     def _init_window_state(self) -> None:
         """[V2.64] the bound window's start: its page, its placement and the nudges seen."""
@@ -186,12 +185,20 @@ class Platform:
         """How many reads came before the first nudge call."""
         self.nudges: list[str] = []
         self.placement = WindowPlacement(
-            show_cmd=1, normal=(40, 40, 1240, 940), min_pos=(-1, -1), max_pos=(-1, -1)
+            flags=0, show_cmd=1, normal=(40, 40, 1240, 940), min_pos=(-1, -1), max_pos=(-1, -1)
         )
         self.placements_set: list[WindowPlacement] = []
+        self.placement_attempts = 0
+        self.placement_errors: list[Exception | None] = []
+        """Each SetWindowPlacement call takes the next: an exception raises, None succeeds."""
         self.rect_now: tuple[int, int, int, int] = (40, 40, 1240, 940)
         self.rect_after_placement: tuple[int, int, int, int] | None = None
         self.rects_set: list[tuple[int, int, int, int]] = []
+        self.rect_attempts: list[tuple[int, int, int, int]] = []
+        self.rect_errors: list[Exception | None] = []
+        """Each SetWindowPos call takes the next: an exception raises, None succeeds."""
+        self.primary = True
+        self.primary_error: Exception | None = None
 
     def dpi_aware(self) -> bool:
         self.calls.append("dpi")
@@ -249,6 +256,10 @@ class Platform:
 
     def set_window_placement(self, hwnd: int, placement: WindowPlacement) -> None:
         assert hwnd == 16
+        self.placement_attempts += 1
+        failed = self.placement_errors.pop(0) if self.placement_errors else None
+        if failed is not None:
+            raise failed
         self._nudged("placement")
         self.placements_set.append(placement)
         if self.rect_after_placement is not None:
@@ -260,19 +271,30 @@ class Platform:
         return self.rect_now
 
     def set_window_rect(self, hwnd: int, rect: tuple[int, int, int, int]) -> None:
+        """A one-pixel step right is the gentle nudge's move (`move:+1`); the next rect set
+        after it is its way back (`move:-1`), whatever rect that is."""
         assert hwnd == 16
+        self.rect_attempts.append(rect)
+        failed = self.rect_errors.pop(0) if self.rect_errors else None
+        if failed is not None:
+            raise failed
+        before = self.rect_now
         self.rects_set.append(rect)
         self.rect_now = rect
+        out = rect == (before[0] + 1, before[1], before[2] + 1, before[3])
+        back = not out and self.nudges[-1:] == ["move:+1"]
+        if out or back:
+            self._nudged("move:+1" if out else "move:-1")
+            if self.on_move is not None:
+                self.on_move(1 if out else -1)
+            if back:
+                self._page_back()
 
-    def move_window_by(self, hwnd: int, dx: int) -> None:
+    def on_primary_monitor(self, hwnd: int) -> bool:
         assert hwnd == 16
-        if self.move_error is not None:
-            raise self.move_error
-        self._nudged(f"move:{dx:+d}")
-        if self.on_move is not None:
-            self.on_move(dx)
-        if dx < 0:
-            self._page_back()
+        if self.primary_error is not None:
+            raise self.primary_error
+        return self.primary
 
     def show_window(self, hwnd: int, command: str) -> None:
         assert hwnd == 16
