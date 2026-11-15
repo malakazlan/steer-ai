@@ -230,15 +230,22 @@ class HelperMonitor:
             self._lose(read.fault)
         self._poll_session()
 
-    def _run(self) -> None:  # pragma: no cover - the thread; `watch_once` is what is tested
+    def _run(self) -> None:
+        """The watchdog thread: one `watch_once` per period. Once the helper has exited its
+        handle is signalled and `wait_exit` returns at once, so the period is then waited on the
+        stop event (#383 blocker 4). The whole body is guarded: a raise is a loss, latched,
+        never a silent death of the watchdog."""
+        period_s = WATCH_PERIOD_MS / 1000
         while not self._stop.is_set():
-            self._helper.wait_exit(WATCH_PERIOD_MS)
-            if self._stop.is_set():
-                return
             try:
+                if self._helper.wait_exit(WATCH_PERIOD_MS):
+                    self._stop.wait(period_s)
+                if self._stop.is_set():
+                    return
                 self.watch_once()
             except Exception:  # noqa: BLE001 - a watchdog that cannot watch is a loss, latched
                 self._lose("watchdog_error")
+                self._stop.wait(period_s)
 
     def _kill_layer(self) -> None:
         """[V2.60] Q1, layer 2: a set kill the loop never acknowledged ends Steer itself."""

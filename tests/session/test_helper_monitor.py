@@ -15,7 +15,7 @@ import pytest
 
 from steerai.session import helper_monitor
 from steerai.session.helper_core import KILL_ACK_S, write_config
-from steerai.session.helper_monitor import HelperMonitor
+from steerai.session.helper_monitor import WATCH_PERIOD_MS, HelperMonitor
 from steerai.session.hook_layout import (
     HISTOGRAMS,
     KIND_OTHER_STEER,
@@ -434,3 +434,45 @@ def test_a_latched_loss_stays_lost_when_the_words_read_well_again() -> None:
     assert not rig.monitor.healthy()  # stale: lost, latched
     rig.heartbeat()
     assert not rig.monitor.healthy()
+
+
+# ---- #383 blocker 4: the watchdog thread's loop -------------------------------------------------
+
+
+def _stop_after(monitor: HelperMonitor, rounds: int) -> list[float | None]:
+    """Replace the stop event's wait: record each timeout, stop after `rounds`."""
+    waits: list[float | None] = []
+    stop = monitor._stop
+
+    def wait(timeout: float | None = None) -> bool:
+        waits.append(timeout)
+        if len(waits) >= rounds:
+            stop.set()
+        return stop.is_set()
+
+    stop.wait = wait  # type: ignore[method-assign]  # a counted wait
+    return waits
+
+
+def test_once_the_helper_is_gone_the_watchdog_waits_its_period_and_never_spins() -> None:
+    """A signalled process handle makes `wait_exit` return at once; the loop then waits on its
+    own stop event for one period instead."""
+    rig = _rig()
+    rig.helper.exited = True
+    waits = _stop_after(rig.monitor, 3)
+    rig.monitor._run()
+    assert waits == [WATCH_PERIOD_MS / 1000] * 3
+    assert rig.helper.terminated == 1  # the dead helper is a loss, latched once
+
+
+def test_a_raise_anywhere_in_the_watchdog_is_a_loss_never_a_silent_death() -> None:
+    rig = _rig()
+
+    def broken(timeout_ms: int) -> bool:
+        raise OSError(6, "the handle is invalid")
+
+    rig.helper.wait_exit = broken  # type: ignore[method-assign]  # the wait itself fails
+    waits = _stop_after(rig.monitor, 2)
+    rig.monitor._run()
+    assert not rig.monitor.healthy()
+    assert waits  # it kept watching, without spinning
