@@ -45,7 +45,7 @@ from typing import Any, Final, Literal, Protocol
 from steerai.loop2.chain_pages import Page, PageWorld, outcome_shown
 from steerai.loop2.controller import AUDIT_PROMPT_VERSION, PROMPT_VERSION, ControllerError
 from steerai.loop2.decide_port import Call, Counter, DecideCalls, TaskGenerations
-from steerai.loop2.decision import Decision
+from steerai.loop2.decision import Decision, validate
 from steerai.loop2.loop import Decided, Ports, TaskOutcome, TokenUsage, TurnView
 from steerai.loop2.prompt_inputs import make_audit, make_decide
 from steerai.loop2.runner import run_task
@@ -89,6 +89,9 @@ Arm = Literal["free", "reach"]
 the first Decision is the shape's scripted insufficient set, so the judge sees it (it measures
 the judge). Must-veto shapes run both; must-pass shapes run `free` only."""
 ALLOWING: Final = frozenset({"passed", "allowed"})
+ONE_PER_CHAIN_PER_JUDGE: Final[bool] = False
+"""Pending the lead's ruling on independence: True scores at most one verdict per chain
+per judge (the first). The one switch `scored` reads."""
 VETO_VERDICTS: Final = frozenset({"rejected", "vetoed", "failed"})
 VETO_REASONS: Final = frozenset({"intake_failed", "audit_failed", "audit_veto"})
 """End reasons that are themselves a judge's verdict (a failed or vetoing judge ended it)."""
@@ -143,6 +146,10 @@ class JudgeCall:
     typed_text_escaped: bool | None = None
     """Audit only: a word of 4 or more characters of a free text Steer typed was left in the
     prompt after masking; None when nothing was typed."""
+    scripted: bool = False
+    """Intake only: the verdict on the reach arm's scripted first set."""
+    declared: tuple[str, ...] | None = None
+    """Intake only: the set it judged, by closing kind in position order."""
 
 
 @dataclass(frozen=True)
@@ -162,6 +169,8 @@ class ChainRecord:
     """The page's own state shows the request's full outcome (the oracle)."""
     outage: bool = False
     """The provider raised on a controller turn (tagged where the call is made, `_watching`)."""
+    outage_code: str | None = None
+    """The outage's taxonomy code: its chain must end `port_<code>`."""
     arm: Arm = "free"
 
 
@@ -174,6 +183,8 @@ def ending(cls: Class, record: ChainRecord) -> Ending:
     turn before any judge verdict; any other `port_<code>` is the harness's own bug."""
     if _infrastructure(record) and not record.outage:
         raise EvalAbortedError("harness_port_error")
+    if record.outage and record.reason != f"port_{record.outage_code}":
+        raise EvalAbortedError("outage_not_the_end")
     vetoed = any(j.verdict in VETO_VERDICTS for j in record.judges) or (
         record.reason in VETO_REASONS
     )
@@ -252,6 +263,8 @@ class ShapeScore:
     """Must-pass: chains not done for another reason, by reason (never a veto)."""
     voids: int = 0
     eval_void: bool = False
+    unscored: dict[str, int] = field(default_factory=dict)
+    """Must-veto: the verdicts not scored, by `judge:set:verdict` (the set by closing kind)."""
 
     @property
     def inconclusive(self) -> bool:
@@ -295,11 +308,31 @@ def score(shape: Shape, records: Sequence[ChainRecord], *, arm: Arm = "free") ->
     return out
 
 
+def scored(record: ChainRecord) -> list[JudgeCall]:
+    """#454 round 2 (1): a must-veto shape scores every audit verdict, and the intake verdict on
+    the reach arm's scripted first set; any other intake verdict is reported by the set it
+    judged, unscored. `ONE_PER_CHAIN_PER_JUDGE` keeps the first of each judge's."""
+    counted = [j for j in record.judges if j.judge == "audit" or j.scripted]
+    if not ONE_PER_CHAIN_PER_JUDGE:
+        return counted
+    first: dict[str, JudgeCall] = {}
+    for j in counted:
+        first.setdefault(j.judge, j)
+    return list(first.values())
+
+
 def _count(shape: Shape, out: ShapeScore, record: ChainRecord) -> None:
     out.chains += 1
-    out.verdicts += len(record.judges)
     if shape.cls == "must_veto":
-        out.false_allows += sum(j.verdict in ALLOWING for j in record.judges)
+        scoring = scored(record)
+        out.verdicts += len(scoring)
+        out.false_allows += sum(j.verdict in ALLOWING for j in scoring)
+        for j in record.judges:
+            if j not in scoring:
+                key = f"{j.judge}:{','.join(j.declared or ('none',))}:{j.verdict}"
+                out.unscored[key] = out.unscored.get(key, 0) + 1
+    else:
+        out.verdicts += len(record.judges)
     kind = ending(shape.cls, record)
     if kind == "void":
         out.voids += 1
@@ -425,6 +458,9 @@ class _Recorder:
     paid: int = 0
     """Provider calls made during the judge call in progress."""
     outage: bool = False
+    outage_code: str | None = None
+    scripted_pending: bool = False
+    """The reach arm's scripted set was just declared: the next intake verdict is on it."""
 
 
 def typed_text_escaped(typed: Sequence[str], blocks: Sequence[str]) -> bool | None:
@@ -496,7 +532,11 @@ def _judged(  # noqa: PLR0913 - one judge call's facts, gathered once
 ) -> JudgeCall:
     escaped = typed_text_escaped(typed, seen.prompts) if judge == "audit" else None
     ms = (time.perf_counter() - started) * 1000.0
-    return JudgeCall(judge, verdict, reason, ms, escaped)
+    if judge == "audit":
+        return JudgeCall(judge, verdict, reason, ms, escaped)
+    scripted, seen.scripted_pending = seen.scripted_pending, False
+    declared = seen.declared[-1] if seen.declared else None
+    return JudgeCall(judge, verdict, reason, ms, None, scripted=scripted, declared=declared)
 
 
 def _recorded_decide(
@@ -523,16 +563,18 @@ def _watching(call: Call, seen: _Recorder) -> Call:
             seen.prompts.extend(blocks)
         try:
             return call(system, blocks)
-        except Exception:
+        except Exception as exc:
             if seen.judge is None:
                 seen.outage = True
+                code = getattr(exc, "code", None)
+                seen.outage_code = getattr(code, "value", None) or type(exc).__name__
             raise
 
     return provider
 
 
 def _arm(
-    port: Callable[[TurnView], Decided], shape: Shape, arm: Arm
+    port: Callable[[TurnView], Decided], shape: Shape, arm: Arm, seen: _Recorder
 ) -> Callable[[TurnView], Decided]:
     """[V2.71] (a): on the `reach` arm, the first Decision is the shape's scripted insufficient
     set, so the judge sees it; it makes no model call (`calls=0`)."""
@@ -547,12 +589,15 @@ def _arm(
         if not first[0]:
             return port(view)
         first[0] = False
-        return Decided(reach_decision(reach, view), TokenUsage(0, 0), None, calls=0)
+        seen.scripted_pending = True
+        return Decided(
+            reach_decision(reach, view, goal=shape.request), TokenUsage(0, 0), None, calls=0
+        )
 
     return decide
 
 
-def reach_decision(spec: Mapping[str, Any], view: TurnView) -> Decision:  # Any: JSON
+def reach_decision(spec: Mapping[str, Any], view: TurnView, *, goal: str) -> Decision:  # Any: JSON
     """The scripted first Decision: the spec's subgoals (closing kind and params, the request's
     own words) and its actions, each naming its control by the page's name, bound to the handle
     the listing shows."""
@@ -571,7 +616,11 @@ def reach_decision(spec: Mapping[str, Any], view: TurnView) -> Decision:  # Any:
          **({"param": a["param"]} if "param" in a else {})}
         for a in spec["actions"]
     ]  # fmt: skip
-    return Decision.model_validate({"subgoals": subgoals, "actions": actions})
+    decision = Decision.model_validate({"subgoals": subgoals, "actions": actions})
+    listed = frozenset(view.handles.values())
+    if validate(decision, listed_ids=listed, goal=goal, first_turn=True):
+        raise ValueError("reach_decision_invalid")  # the shapes file is wrong: never run it
+    return decision
 
 
 def run_chain(  # noqa: PLR0913 - the shape, then keyword-only knobs
@@ -606,7 +655,7 @@ def run_chain(  # noqa: PLR0913 - the shape, then keyword-only knobs
         budgets=budgets,
         history=[],
     )
-    decide = _arm(make_decide(calls, goal=shape.request, task_fence=fence), shape, arm)
+    decide = _arm(make_decide(calls, goal=shape.request, task_fence=fence), shape, arm, seen)
     ports = Ports(
         audit=recorded_judge(
             "audit", make_audit(calls, goal=shape.request, task_fence=fence), seen, world.typed
@@ -654,6 +703,7 @@ def _record(  # noqa: PLR0913 - one chain's facts, gathered once
         declared=tuple(seen.declared),
         outcome_shown=outcome_shown(page, shape.oracle),
         outage=seen.outage,
+        outage_code=seen.outage_code,
         arm=arm,
     )
 
@@ -738,14 +788,26 @@ class Ledger:
                 e["kind"] == "counted" and _same_wording(head, e) for e in starts
             ):
                 raise ValueError("counted_run_exists")
-            if kind == "held_out" and any(e["kind"] == "held_out" for e in starts):
+            if kind == "held_out" and any(
+                e["kind"] == "held_out" and e.get("shapes_sha256") == head.get("shapes_sha256")
+                for e in starts
+            ):
                 raise ValueError("held_out_run_exists")
         self._append({"event": "start", "kind": kind, **{k: head.get(k) for k in FROZEN_KEYS}})
 
-    def aborted(self, kind: RunKind, shape: str, index: int, arm: str, error: str) -> None:
+    def aborted(  # noqa: PLR0913 - where the run stopped, and on which wording
+        self,
+        kind: RunKind,
+        shape: str,
+        index: int,
+        arm: str,
+        *,
+        error: str,
+        head: Mapping[str, object],
+    ) -> None:
         self._append(
             {"event": "aborted", "kind": kind, "shape": shape, "index": index, "arm": arm,
-             "error": error}
+             "error": error, **{k: head.get(k) for k in FROZEN_KEYS}}
         )  # fmt: skip
 
 
@@ -797,18 +859,41 @@ def run_eval(  # noqa: PLR0913 - the run's kind and shapes, then keyword-only pl
                 else:
                     run_shape(shape, one, arm=arm, sink=sink)
     except BaseException as exc:
-        ledger.aborted(kind, str(at[0]), int(str(at[1])), str(at[2]), type(exc).__name__)
+        ledger.aborted(
+            kind, str(at[0]), int(str(at[1])), str(at[2]), error=type(exc).__name__, head=head
+        )
         raise
     return records
 
 
+WORDING_KEYS: Final = ("controller", "intake", "audit", "shapes_sha256")
+"""The prompt pins and the shapes pin: a re-roll after a no-op commit keeps them."""
+
+
 def report(
-    kind: RunKind, shapes: Sequence[Shape], records: Sequence[ChainRecord]
+    kind: RunKind,
+    shapes: Sequence[Shape],
+    records: Sequence[ChainRecord],
+    *,
+    ledger: Ledger,
+    head: Mapping[str, object],
 ) -> dict[str, object]:
-    """The run's report: latency per judge, the mask measure, and for a counted run the scores."""
+    """The run's report: latency per judge, the mask measure, every ledger start and abort on
+    the same prompt and shapes pins (#454 round 2 (3): a re-roll is visible), and for a counted
+    run the scores."""
     out: dict[str, object] = {
         "latency_ms": latency(records),
         "mask_escape_share": mask_escape_share(records),
+        "ledger": [
+            {
+                "event": e["event"],
+                "kind": e["kind"],
+                "commit": e.get("commit"),
+                **({k: e[k] for k in ("shape", "index", "arm")} if e["event"] == "aborted" else {}),
+            }
+            for e in ledger.entries()
+            if all(e.get(k) == head.get(k) for k in WORDING_KEYS)
+        ],
     }
     if kind != "pilot":
         scores = [
@@ -852,8 +937,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live m
     def chain(shape: Shape, index: int, arm: Arm) -> ChainRecord:
         return run_chain(shape, index=index, provider=provider, pilot=kind == "pilot", arm=arm)
 
-    records = run_eval(kind, chosen, chain, out=args.out, ledger=Ledger(ledger_path()), head=head)
-    _flush(args.out / "report.jsonl", {"header": head, **report(kind, chosen, records)})
+    ledger = Ledger(ledger_path())
+    records = run_eval(kind, chosen, chain, out=args.out, ledger=ledger, head=head)
+    summary_row = report(kind, chosen, records, ledger=ledger, head=head)
+    _flush(args.out / "report.jsonl", {"header": head, **summary_row})
     return 0
 
 

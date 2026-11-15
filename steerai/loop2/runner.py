@@ -795,6 +795,8 @@ class _Run:
             raise
         self.model_calls += decided.calls  # invariant 9, [V2.68]: a repaired turn is two calls
         made = decided.calls > 0  # [V2.71] (a): a Decision no model made spends nothing
+        if not made and self.turns != 1:  # #454 round 2 (2): only the task's first turn
+            raise ValueError("no_call_after_the_first_turn")
         self.partial_page_calls += made and (observed.growing or observed.young)  # [V2.35]
         self.turn.usage = decided.usage  # [V2.67] D: this turn's own facts
         self.turn.listing = decided.listing
