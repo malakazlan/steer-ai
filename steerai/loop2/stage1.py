@@ -180,6 +180,32 @@ def tasks_for(name: str, expected: Mapping[str, Expected]) -> tuple[StageTask, .
     raise ValueError(f"unknown set: {name}")
 
 
+MTA_COMPARABILITY: Final[Mapping[str, Any]] = {  # Any: JSON values
+    "status": "closed",
+    "ruling": "[V2.65] Four",
+    "asked_by": "[V2.64] Four",
+    "probe": "probes.mta_act, 2026-11-15: v1's Session on the gallery's 11 widget rows, 3 runs "
+    "per arm, its UIA client in the STA and forced into the MTA",
+    "steps_ok": {"sta": "30/33", "mta": "30/33"},
+    "trusted_in_every_run": 10,
+    "differ": [],
+    "g12": "explained: the probe's executor had no option source (#406, #414)",
+}
+"""[V2.64] Four, closed by [V2.65] Four: v1's executors behave the same in both apartments, so
+the stage 1 report states executor behaviour under the MTA as compared, not as unseparated."""
+
+
+def report_header(name: str, *, runs: int) -> dict[str, Any]:  # Any: JSON values
+    """The stage 1 report's first row: the set (a shakedown below `MIN_RUNS_PER_TASK` says so),
+    the runs per task, the floor the runs start on and the MTA comparability statement."""
+    return {
+        "set": name if runs >= MIN_RUNS_PER_TASK else f"{name}-shakedown",
+        "runs_per_task": runs,
+        "floor_mb": STAGE1_FLOOR_MB,
+        "mta_comparability": dict(MTA_COMPARABILITY),
+    }
+
+
 def page_check(task: StageTask, raw: str) -> bool:
     """The page's own pass check on its log as read over DevTools; shares no code with the v2
     loop or the verifier. Gallery: the one trusted event the row expects (v1's suite check);
@@ -247,8 +273,10 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
         return verdict("fail", "internal")
     if final.get("status") == "error":
         return verdict("fail", f"start_refused:{final.get('detail')}")
-    if not isinstance(final.get("used"), Mapping):  # LiveWorld refused to start: no use at all
-        return verdict("fail", f"start_refused:{final.get('code')}")
+    if not _started(final):  # LiveWorld refused to start: no use at all
+        detail = final.get("detail")
+        named = f":{detail}" if isinstance(detail, str) and detail else ""
+        return verdict("fail", f"start_refused:{final.get('code')}{named}"[:REASON_CAP])
     status, reason = final.get("status"), final.get("reason")
     if status == "done":  # done is never void and never hidden behind a lost monitor
         if not record.log_read:
@@ -277,6 +305,17 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
         "not_done": status != "done",
     }[task.expect]
     return verdict("pass") if met else verdict("fail", f"expected_{task.expect}:{status}:{reason}")
+
+
+REASON_CAP: Final = 80
+"""A start refusal's reason, code and detail, cut to this many characters."""
+
+
+def _started(final: Json | None) -> bool:
+    """The child's line is a task's own (it has a `used` block): its world started. A start
+    refusal ([V2.62]: the session, the window, the page) has none and fails once, under its
+    task, never again under a gate that reads a run's use."""
+    return final is not None and isinstance(final.get("used"), Mapping)
 
 
 def _actions(final: Json) -> int | None:
@@ -335,7 +374,11 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
     ]
     infra = verdicts["void"] - len(site)
     measured = {k: vs for k, vs in scored.items() if k not in unmeasured}
-    counted = [r for r in runs if r.final is not None and r.final.get("status") != "error"]
+    counted = [
+        r
+        for r in runs
+        if r.final is not None and _started(r.final) and r.final.get("status") != "error"
+    ]
     large_ids = {t.task_id for t in tasks if t.fixture == "large"}
     finals = [r.final for r in counted if r.final is not None]
     gates = {
@@ -722,9 +765,36 @@ def _report(
         "void_rate": round(verdicts.get("void", 0) / total, 3) if total else None,
         "monitor_lost_rate": round(verdicts.get("monitor_lost", 0) / total, 3) if total else None,
         "fail_reasons": _counts(r.reason for r in runs if r.verdict == "fail"),
+        "audit": _audits(finals),
         **_watch_deadlines(finals),
         **_run_facts(finals),
     }
+
+
+AUDIT_RESULTS: Final = ("allowed", "vetoed", "failed")
+
+
+def _audits(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures
+    """[V2.64] One: the final audits over the runs: how many ran, by result and by reason. A
+    block that is missing or of another shape is counted in `incomplete`, never guessed."""
+    ran = incomplete = 0
+    results: dict[str, int] = {}
+    reasons: dict[str, int] = {}
+    for final in finals:
+        block = final.get("audit")
+        if not isinstance(block, Mapping) or not isinstance(block.get("ran"), bool):
+            incomplete += 1
+            continue
+        if not block["ran"]:
+            continue
+        result, reason = block.get("result"), block.get("reason")
+        if result not in AUDIT_RESULTS or not isinstance(reason, str):
+            incomplete += 1
+            continue
+        ran += 1
+        results[result] = results.get(result, 0) + 1
+        reasons[reason] = reasons.get(reason, 0) + 1
+    return {"ran": ran, "result": results, "reason": reasons, "incomplete": incomplete}
 
 
 def _number(final: Json, outer: str, key: str) -> float | None:
@@ -1167,6 +1237,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
     expected = gallery_expected(observed_from_json(args.gallery_read.read_text("utf-8")))
     tasks = tasks_for(args.set, expected)
+    header = report_header(args.set, runs=args.runs)
+    _emit({"header": header})
     controls: tuple[int, int] | None = None
     if args.set == "3d":
         ours: set[int] = set()
@@ -1202,7 +1274,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
                                       row={"floor_mb": STAGE1_FLOOR_MB})  # fmt: skip
         classified += runs
         not_started += refused
-    label = args.set if args.runs >= MIN_RUNS_PER_TASK else f"{args.set}-shakedown"
+    label = header["set"]
     summary = accept(tasks, classified, controls=controls,
                      runs_per_task=max(args.runs, MIN_RUNS_PER_TASK), label=label,
                      not_started=not_started, floor_mb=STAGE1_FLOOR_MB)  # fmt: skip
