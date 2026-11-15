@@ -327,6 +327,20 @@ def test_the_header_carries_every_version_pin_and_the_commit() -> None:
     assert closed_record(head)
 
 
+def test_the_header_carries_the_chain_budgets_and_a_budget_change_breaks_the_freeze() -> None:
+    head = header(model="m", effort="high", commit="a" * 40, dirty=False)
+    assert head["budgets"] == {
+        "max_actions": 40,
+        "max_model_calls": 20,
+        "max_tokens": 400_000,
+        "max_cost_usd": 10.0,
+        "max_wall_s": 300.0,
+    }
+    cheaper = {**head, "budgets": {**head["budgets"], "max_cost_usd": 5.0}}  # type: ignore[dict-item]  # a test copy
+    with pytest.raises(ValueError, match="wording_not_frozen"):
+        check_frozen(cheaper, head)
+
+
 # ---- chains through the real controller and audit (a scripted provider) -------------------------
 
 
