@@ -98,9 +98,6 @@ fault and a `world` refusal (nothing delivered, the focus not where the press go
 stop's own value, recorded `after_refusal:<token>`."""
 Moved = Literal["page", "target", "focus"]
 """[V2.43] (2): what moved after the observation the model saw."""
-MAX_READY_HOLDS: Final = 40
-"""[V2.44] (2): the most holds while a blank page is waited for (`FIRST_READY_S` bounds the
-time; this bounds the count, so a clock that does not move can never spin)."""
 REFUSAL_KIND: Final[Mapping[str, RefusalKind]] = {
     "secure_field": "policy",
     "secure_unread": "policy",
@@ -406,11 +403,11 @@ class _Run:
         while True:
             self._check_interrupt()
             self._check_budgets()
+            if _no_page(observed):  # first: a frame-only page is never `empty_listing`
+                observed = self._page_not_ready(observed)
+                continue
             if not self.handles.bind(observed):
                 observed = self._nothing_listed(observed)
-                continue
-            if _no_page(observed):
-                observed = self._page_not_ready(observed)
                 continue
             decision = self._decide(observed)
             self._check_interrupt()  # #326, [V2.40] Q4: a Decision after the kill is discarded
@@ -442,19 +439,21 @@ class _Run:
         """[V2.44] (2): a browser frame with no Document, or an empty one, is never handed to the
         model in steps 3 to 6 (step 7 changes this: once `open` exists, a blank page is
         actionable through the address bar). The task's first observation already waited out
-        the first-ready deadline ([V2.31]); later in the task the page is held (the settle
-        port) until it has content, for at most `FIRST_READY_S` and `MAX_READY_HOLDS` holds.
+        the first-ready deadline ([V2.31], through `first_observation`); later in the task the
+        page is held (the settle port) until it has content, ending on the `FIRST_READY_S`
+        deadline after it went blank (or the wall budget), never on a count of holds; a hold
+        the clock did not advance across ends it at once, so a stopped clock never spins.
         Still blank: `page_not_ready` (a Steer stop, not done); a gone window is infrastructure."""
         if observed is not self.first:
             deadline = self.ports.clock() + FIRST_READY_S
-            for _ in range(MAX_READY_HOLDS):
-                left = min(deadline - self.ports.clock(), self._wall_left())
-                if left <= 0:
-                    break
+            while (left := min(deadline - self.ports.clock(), self._wall_left())) > 0:
+                started = self.ports.clock()
                 observed = self._in_domain(self.ports.settle(observed, left))
                 self._check_interrupt()
                 if not _no_page(observed):
                     return observed
+                if self.ports.clock() <= started:
+                    break  # the clock did not move across the hold
         if _window_gone(observed):
             raise _End("stopped", Reason("window_gone"))
         raise _End("cannot", Reason("page_not_ready"))

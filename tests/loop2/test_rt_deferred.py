@@ -20,6 +20,7 @@ from steerai.loop2.task import Budgets, TokenPrice
 from steerai.orchestrator.loop import REUSE_FRESHNESS_S
 from steerai.world.effects import Observed, ValueFact
 from steerai.world.elements import Element
+from steerai.world.observe2 import FIRST_READY_S
 from tests.loop2.world_fakes import (
     BAR,
     FIELD,
@@ -483,7 +484,10 @@ def test_a_fresh_enough_observation_is_not_read_again() -> None:
 
 
 def test_an_empty_listing_never_reaches_the_model() -> None:
-    world = World([Decision(stop="cannot")], screen=observed([]))
+    """A window with nothing listable at all: a native one (no address bar); a browser frame
+    with nothing listable is a page not ready ([V2.44] (2))."""
+    native = dataclasses.replace(observed([]), url_observed=False, url=None)
+    world = World([Decision(stop="cannot")], screen=native)
     outcome = run_task(task(), world.ports())
     assert outcome.model_calls == 0
     assert (outcome.status, outcome.reason) == ("cannot", "empty_listing")
@@ -719,3 +723,56 @@ def test_a_press_re_read_on_age_rechecks_the_focus_on_the_new_read() -> None:
     outcome = run_task(task(), world.ports())
     assert [d.action.verb for d in world.dispatched] == ["type"]
     assert outcome.focus_losses == 1
+
+
+# ---- #342 review ---------------------------------------------------------------------------------
+
+
+def test_a_blank_page_never_ends_before_the_first_ready_deadline() -> None:
+    """Short holds (0.1 s) never end the wait early: it ends on `FIRST_READY_S` after the page
+    went blank, not on a count of holds."""
+    world = World(
+        [decision(act("click", target=GO.id), first=True)],
+        effects=[report("navigated")],
+        after=FRAME_ONLY,
+        settled=FRAME_ONLY,
+    )
+    world.settle_advance_s = 0.1
+    outcome = run_task(task(), world.ports())
+    assert outcome.reason == "page_not_ready"
+    assert world.now >= FIRST_READY_S - 1e-6
+
+
+def test_a_clock_that_does_not_move_ends_the_wait_after_one_hold() -> None:
+    world = World(
+        [decision(act("click", target=GO.id), first=True)],
+        effects=[report("navigated")],
+        after=FRAME_ONLY,
+        settled=FRAME_ONLY,
+    )
+    outcome = run_task(task(), world.ports())
+    assert outcome.reason == "page_not_ready"
+    assert world.events.count("settle") == 1
+
+
+def test_a_browser_frame_with_nothing_listable_is_a_page_not_ready() -> None:
+    """[V2.44] (2): a frame-only browser page is never `empty_listing`, even with nothing
+    listable at all."""
+    blank = dataclasses.replace(observed([]), url_observed=True)
+    world = World([Decision(stop="cannot")], screen=blank)
+    outcome = run_task(task(), world.ports())
+    assert outcome.model_calls == 0
+    assert (outcome.status, outcome.reason) == ("cannot", "page_not_ready")
+
+
+def test_several_empty_root_documents_are_not_blank() -> None:
+    """Unreadable, not blank: no single top Document, so the page goes to the model as before."""
+    roots = [
+        element(1, "Document", "A", (9, 1), None),
+        element(2, "Document", "B", (9, 2), None),
+        TAB,
+        BAR,
+    ]
+    world = World([Decision(stop="cannot")], screen=observed(roots))
+    outcome = run_task(task(), world.ports())
+    assert outcome.model_calls == 1
