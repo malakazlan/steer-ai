@@ -7,10 +7,11 @@ write-ahead. Every outside effect goes through `Ports`; a port error ends the ta
 a taxonomy token and the evidence kept (RT-16).
 
 The claim checks and the `navigated` auto proof are step 3c PR B (`verify.check_claim`,
-`verify.auto_proof`); the auto proof is tried only when there is a change signal since a
-subgoal's baseline (the URL changed, or the top Document was replaced), which §7.1 requires
-before anything else. The Enter table on the watch's final report and the staleness rule are
-PR C (`enter_outcome`, `stale_observation`).
+`verify.judge`, whose verdict is `verify.auto_proof`'s); the auto proof is tried on every full
+observation ([V2.67] A) when there is a change signal since a subgoal's baseline (the URL
+changed, or the top Document was replaced), which §7.1 requires before anything else. The
+Enter table on the watch's final report and the staleness rule are PR C (`enter_outcome`,
+`stale_observation`).
 """
 
 from __future__ import annotations
@@ -107,9 +108,9 @@ from steerai.loop2.verify import (
     PAGE_CARRIERS,
     URL_CARRIERS,
     Readers,
-    auto_proof,
     check_claim,
     holds_words,
+    judge,
 )
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.orchestrator.loop import REUSE_FRESHNESS_S
@@ -432,6 +433,10 @@ class _Run:
         """[V2.64] Two: the two ComboBox facts of the task, no judgement."""
         """#301: unread automation ids over every observation taken in (`_in_domain`)."""
         self.partial_page_calls = 0
+        self.judged: Observed | None = None
+        """§7.1: the last read the auto proof judged (`_auto_proofs`)."""
+        self.saved_calls = 0
+        """[V2.67] A: turns the turn-start judgement closed the task, so no model call was made."""
         self.pre_task_draft_clicks = 0
         """[V2.64] Two: counted at each non-field click (`_pre_task_draft`)."""
         """[V2.35]: model calls made on a growing or young observation (`_decide`)."""
@@ -496,6 +501,7 @@ class _Run:
             typed_into_combobox=self.typed_into_combobox,
             partial_page_calls=self.partial_page_calls,
             pre_task_draft_clicks=self.pre_task_draft_clicks,
+            saved_calls=self.saved_calls,
             refusals=tuple(self.refusal_counts.items()),
             submit_parents=tuple(self.submit_parents.items()),
             history_dropped=self.history_dropped,
@@ -560,6 +566,7 @@ class _Run:
             if not self.handles.bind(observed):
                 observed = self._nothing_listed(observed)
                 continue
+            self._judge_turn_start(observed)
             decision = self._decide(observed)
             self._check_interrupt()  # #326, [V2.40] Q4: a Decision after the kill is discarded
             self.turn = _Turn()
@@ -1569,18 +1576,35 @@ class _Run:
             return after
         return self._observe()
 
+    def _judge_turn_start(self, observed: Observed) -> None:
+        """[V2.67] A: the read a decision is about to be made on is judged first; when that
+        closes the task, the model call this turn would have made is not made and is counted."""
+        proven = len(self.proven)
+        try:
+            self._auto_proofs(observed)
+        except _End as end:
+            if end.status == "done" and len(self.proven) > proven:
+                self.saved_calls += 1
+            raise
+
     def _auto_proofs(self, observed: Observed) -> None:
-        """§7.1: the code-only proof is tried after every effect, for each open subgoal with a
-        change signal since its baseline."""
+        """§7.1, [V2.67] A: the code-only proof runs on every full observation code takes (the
+        turn-start read, the stale re-read and the after-action read), for each open subgoal
+        with a change signal since its baseline: same rules, guards and baseline, every param on
+        this one read ([V2.39]). Only a stable full-tier read is judged, never a poll (a page
+        still growing is: its evidence is there). The same read is judged once."""
+        if observed is self.judged or observed.tier != "full" or not observed.snapshot.stable:
+            return
+        self.judged = observed
         for subgoal in self.subgoals:
             if subgoal.id in self.proven or subgoal.id not in self.baselines:
                 continue
             if subgoal.closes != "page":
                 continue  # [V2.39]: the navigated auto proof closes only a page subgoal
             baseline = self.baselines[subgoal.id]
-            if not _changed_since(baseline, observed):
+            if _change_gate(baseline, observed) is None:
                 continue
-            proof = auto_proof(
+            judged = judge(
                 subgoal,
                 baseline,
                 observed,
@@ -1589,8 +1613,8 @@ class _Run:
                 echo=self._echo(subgoal),
                 allow_file=self._allow_file(),
             )
-            if proof is not None:
-                self._tick(subgoal, how=proof)
+            if judged.proof is not None:
+                self._tick(subgoal, how=judged.proof)
         self._check_done(observed)
 
     # ---- refusals, guards -----------------------------------------------------------------
@@ -1858,12 +1882,15 @@ def _key(action: ActionDoc, element: Element, *, text_digest: str | None) -> Act
     )
 
 
-def _changed_since(baseline: Observed, now: Observed) -> bool:
-    """§7.1's change signal: the URL changed (both read), or the top Document was replaced."""
+def _change_gate(baseline: Observed, now: Observed) -> Literal["url", "document"] | None:
+    """§7.1's change signal, and which: the URL changed (both read), or the top Document was
+    replaced; None: neither, so the proof is not tried ([V2.67] D names it)."""
     if baseline.url is not None and now.url is not None and baseline.url != now.url:
-        return True
+        return "url"
     old, new = top_document(baseline.snapshot), top_document(now.snapshot)
-    return old is not None and new is not None and old.runtime_id != new.runtime_id
+    if old is not None and new is not None and old.runtime_id != new.runtime_id:
+        return "document"
+    return None
 
 
 def _digest(observed: Observed) -> str:

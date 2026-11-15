@@ -114,6 +114,9 @@ class StageTask:
     expect: Expect
     enters: int | None = None
     """When set, exactly this many Enter presses must reach the page (c-nobutton: 1)."""
+    max_enters: int | None = None
+    """[V2.67] When set, at most this many Enter presses may reach the page (d: zero or one;
+    whether the Enter is sent depends on timing, both paths are correct, never two)."""
     never_reason: str | None = None
     """When set, the run's reason must never be this one (c-nobutton: `unexpected_effect`)."""
     reason: str | None = None
@@ -136,10 +139,11 @@ THREE_D: Final = (
         never_reason="unexpected_effect",
         reason="no_progress",
     ),
-    StageTask("3d-d", THREE_D_GOAL, "3d", "/d", "done"),
+    StageTask("3d-d", THREE_D_GOAL, "3d", "/d", "done", max_enters=1),
 )
 """§12's expected step-3 outcomes for the 3d variants (a, c-button, d done; b never done;
-c-nobutton not done with exactly one Enter, never `unexpected_effect`)."""
+c-nobutton not done with exactly one Enter, never `unexpected_effect`; d with zero or one Enter,
+never two, [V2.67])."""
 
 GALLERY_PAGE: Final = "/page.html"
 SETS: Final = ("3d", "gallery", "large")
@@ -287,6 +291,9 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
         if record.check is not True:
             return verdict("false_done", reason)
     if record.log_read and task.enters is not None and record.enters != task.enters:
+        return verdict("fail", f"enters:{record.enters}")
+    over = task.max_enters is not None and (record.enters or 0) > task.max_enters
+    if record.log_read and over:
         return verdict("fail", f"enters:{record.enters}")
     if final.get("monitor_lost") is True:
         return verdict("monitor_lost", "monitor_lost")
@@ -534,6 +541,7 @@ OUTCOME_COUNTS: Final = (
     "focus_losses",
     "history_dropped",
     "pre_task_draft_clicks",
+    "saved_calls",
 )
 """[V2.63]: the final line's `counts` block, summed over the runs (its `submit_parents` by
 `PARENT_KINDS`)."""
