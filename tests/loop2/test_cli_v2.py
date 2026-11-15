@@ -308,8 +308,10 @@ def test_a_run_reports_use_against_every_limit_and_the_worlds_counts(tmp_path: P
     }  # fmt: skip
     assert set(result["listings"][0]) == {
         "eligible", "shown", "cut", "keep_at_ceiling", "goal_at_subcap", "prompt_cut",
-        "prompt_tokens",
+        "prompt_tokens", "root_depth", "prompt_bytes",
     }  # fmt: skip
+    assert result["listings"][0]["prompt_bytes"] > 0
+    assert set(cli.RUN_FACTS) <= set(result)
     assert result["world"] == {
         "trace_unwritable": 0,
         "late_sink_failures": 0,

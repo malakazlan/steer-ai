@@ -68,6 +68,7 @@ from steerai.loop2.listing import ListingTurn
 from steerai.loop2.loop import (
     COMMIT_RISK,
     READ_BACK_VERBS,
+    URL_READS,
     ActResult,
     Dispatch,
     PendingText,
@@ -79,10 +80,12 @@ from steerai.loop2.loop import (
     TaskOutcome,
     TokenUsage,
     TurnView,
+    UrlRead,
     WatchKind,
     WindowCovered,
     action_risk,
     type_refusal,
+    url_read,
     watch_kind,
 )
 from steerai.loop2.query import (
@@ -416,6 +419,8 @@ class _Run:
         """[V2.43] (2): focus moved off a press's target after the listing showed it there."""
         self.unread_aids = 0
         """#301: unread automation ids over every observation taken in (`_in_domain`)."""
+        self.url_reads: dict[UrlRead, int] = dict.fromkeys(URL_READS, 0)
+        """Stage 2 plan §5: every observation taken in, by why its URL is what it is."""
 
     # ---- the outcome ----------------------------------------------------------------------
 
@@ -465,6 +470,7 @@ class _Run:
             target_changes=self.target_changes,
             focus_losses=self.focus_losses,
             unread_automation_ids=self.unread_aids,
+            url_reads=tuple(self.url_reads.items()),
             history_dropped=self.history_dropped,
             listings=tuple(self.listing.turns),
             focus_moved_after_press=self.counts.focus_moved_after_press,
@@ -599,6 +605,7 @@ class _Run:
         load guard)."""
         observed = self.ports.stamp(observed)
         self.unread_aids += observed.snapshot.unread_automation_id_count  # #301: counted
+        self.url_reads[url_read(observed)] += 1
         focus = focus_state(observed.snapshot, observed.focus)  # [V2.52] (b): counted
         self.counts.observations_focus_unread += focus == "unread"
         self.counts.observations_focus_elsewhere += focus == "elsewhere"
