@@ -220,24 +220,7 @@
     }
   },
   "m1": {
-    "read_sha256": "3482f6ac2656299909cb7091a6ca3004ffdeeaa15a5418a099e90c9e54f3d9d5",
-    "facts": {
-      "field_role": null,
-      "aria_role": null,
-      "search_landmark": null,
-      "button_role": "Button",
-      "button_search_landmark": false,
-      "risk": "R0",
-      "unread": []
-    },
-    "expected": {
-      "task_id": "m1",
-      "outcome": "never_done",
-      "reason": null,
-      "risk": "R0",
-      "proof": null,
-      "why": "About opens from the Help menu (not in the start read); it shows content: step 4"
-    }
+    "unrated": "target_after_opener"
   },
   "n1": {
     "read_sha256": "5a18f54f2ed254cb67ea591c3d28a0a323eda7d507a6eb906e818479c3f35bf1",
@@ -580,24 +563,7 @@
     }
   },
   "r4": {
-    "read_sha256": "8923c3ab032356aff9a6c24f4a167494ff3e30cda7a098087c3043b86790c284",
-    "facts": {
-      "field_role": null,
-      "aria_role": null,
-      "search_landmark": null,
-      "button_role": "Button",
-      "button_search_landmark": false,
-      "risk": "R0",
-      "unread": []
-    },
-    "expected": {
-      "task_id": "r4",
-      "outcome": "never_done",
-      "reason": null,
-      "risk": "R0",
-      "proof": null,
-      "why": "the format is picked in a menu not in the start read; an export is step 4"
-    }
+    "unrated": "target_after_opener"
   },
   "r5": {
     "read_sha256": "8923c3ab032356aff9a6c24f4a167494ff3e30cda7a098087c3043b86790c284",
@@ -660,24 +626,7 @@
     }
   },
   "u1": {
-    "read_sha256": "288d7b957ea254db6c9f79b79c1890ea64898ed08b9b5740134407528edcb6d5",
-    "facts": {
-      "field_role": null,
-      "aria_role": null,
-      "search_landmark": null,
-      "button_role": null,
-      "button_search_landmark": null,
-      "risk": "R1",
-      "unread": []
-    },
-    "expected": {
-      "task_id": "u1",
-      "outcome": "done",
-      "reason": null,
-      "risk": "R1",
-      "proof": "state",
-      "why": "a toggle button: a toggle state read"
-    }
+    "unrated": "pressed_unread"
   },
   "u2": {
     "read_sha256": "288d7b957ea254db6c9f79b79c1890ea64898ed08b9b5740134407528edcb6d5",
@@ -700,24 +649,7 @@
     }
   },
   "u3": {
-    "read_sha256": "288d7b957ea254db6c9f79b79c1890ea64898ed08b9b5740134407528edcb6d5",
-    "facts": {
-      "field_role": null,
-      "aria_role": null,
-      "search_landmark": null,
-      "button_role": null,
-      "button_search_landmark": null,
-      "risk": "R1",
-      "unread": []
-    },
-    "expected": {
-      "task_id": "u3",
-      "outcome": "done",
-      "reason": null,
-      "risk": "R1",
-      "proof": "state",
-      "why": "a tree item's selection (2024 shows once Reports opens; rated on the visible act)"
-    }
+    "unrated": "target_after_opener"
   },
   "u4": {
     "read_sha256": "288d7b957ea254db6c9f79b79c1890ea64898ed08b9b5740134407528edcb6d5",
@@ -740,24 +672,7 @@
     }
   },
   "u5": {
-    "read_sha256": "288d7b957ea254db6c9f79b79c1890ea64898ed08b9b5740134407528edcb6d5",
-    "facts": {
-      "field_role": null,
-      "aria_role": null,
-      "search_landmark": null,
-      "button_role": null,
-      "button_search_landmark": null,
-      "risk": "R1",
-      "unread": []
-    },
-    "expected": {
-      "task_id": "u5",
-      "outcome": "done",
-      "reason": null,
-      "risk": "R1",
-      "proof": "state",
-      "why": "a menu radio's selection (Newest first shows once Sort opens; rated on the visible act)"
-    }
+    "unrated": "target_after_opener"
   },
   "wp1": {
     "read_sha256": "aab5e4a9064fb686ac0bb827ea28b8baedc620b678e0fbea8b1b6f57bcc1bfba",

@@ -206,18 +206,27 @@ def outcome_of(risk: Risk, proof: ProofKind | None) -> tuple[Outcome, str | None
     return "never_done", None
 
 
-def rate(goal: str, acts: Sequence[Act], read: Observed) -> Risk:
+def rate(
+    goal: str,
+    acts: Sequence[Act],
+    read: Observed,
+    *,
+    chosen: Mapping[int, Element] | None = None,
+) -> Risk:
     """The highest tier `action_risk` gives the acts in order on `read`, stopping at the first at
     R2 or above. A target not in the read, or named by more than one outermost element, is a
-    `ValueError`."""
+    `ValueError`; `chosen` names the element for an act by its index instead (stage 2 rates each
+    copy of a target that has several)."""
     highest: Risk = "R0"
     pending: list[PendingText] = []
     last: Element | None = None
-    for act in acts:
+    for index, act in enumerate(acts):
         if act.verb == "press":
             if last is None:
                 raise ValueError("no_acted_element")
             element = last
+        elif chosen is not None and index in chosen:
+            element = chosen[index]
         else:
             element = target_in(act, read)
         verdict = action_risk(
@@ -235,13 +244,19 @@ def rate(goal: str, acts: Sequence[Act], read: Observed) -> Risk:
     return highest
 
 
-def target_in(act: Act, read: Observed) -> Element:
+def targets_in(act: Act, read: Observed) -> list[Element]:
+    """Every outermost element the act's role and name match on `read`; none is `not_in_read`."""
     elements = read.snapshot.elements
     wanted = normalise_name(act.name)
     matches = [e for e in elements if e.role == act.role and normalise_name(e.name) == wanted]
     found = outermost(matches, elements)
     if not found:
         raise ValueError("not_in_read")
+    return found
+
+
+def target_in(act: Act, read: Observed) -> Element:
+    found = targets_in(act, read)
     if len(found) > 1:
         raise ValueError("ambiguous_target")
     return found[0]

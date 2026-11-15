@@ -50,6 +50,7 @@ from steerai.loop2.stage2_expected import (
     dump_table,
     load_acts,
     load_table,
+    load_unrated,
     table_from_reads,
 )
 from steerai.probes.layer_b_pages import REPLY_TEXT
@@ -117,11 +118,16 @@ def read_groups(tasks: Sequence[Task]) -> dict[str, list[str]]:
     return groups
 
 
-def local_stage_tasks(table: Mapping[str, TableRow]) -> tuple[StageTask, ...]:
-    """Each 2a task with its committed expected outcome; an unrated task is a `ValueError`."""
-    unrated = [t.task_id for t in local_tasks() if t.task_id not in table]
-    if unrated:
-        raise ValueError(f"unrated tasks: {unrated}")
+def local_stage_tasks(
+    table: Mapping[str, TableRow], *, unrated: Mapping[str, str] | None = None
+) -> tuple[StageTask, ...]:
+    """Each 2a task with its committed expected outcome, less the tasks held for the lead's
+    ruling (`unrated`: not run, not counted); any other task missing from the table is a
+    `ValueError`."""
+    held = set(unrated or {})
+    missing = [t.task_id for t in local_tasks() if t.task_id not in set(table) | held]
+    if missing:
+        raise ValueError(f"unrated tasks: {missing}")
     return tuple(
         StageTask(
             t.task_id,
@@ -132,13 +138,15 @@ def local_stage_tasks(table: Mapping[str, TableRow]) -> tuple[StageTask, ...]:
             reason=table[t.task_id].expected.reason,
         )
         for t in local_tasks()
+        if t.task_id not in held
     )
 
 
 def rate_2a(acts: Mapping[str, SiteRow], reads: Path) -> list[TableRow]:
-    """The 2a table from the saved reads (`<reads>/<task_id>.json`); every 2a task needs its
-    acts row (`no_acts`)."""
-    missing = [t.task_id for t in local_tasks() if t.task_id not in acts]
+    """The 2a table from the saved reads (`<reads>/<task_id>.json`); every 2a task not held as
+    unrated needs its acts row (`no_acts`)."""
+    held = set(load_unrated(ACTS.read_text(encoding="utf-8")))
+    missing = [t.task_id for t in local_tasks() if t.task_id not in acts and t.task_id not in held]
     if missing:
         raise ValueError(f"no_acts: {missing}")
     return table_from_reads(acts, reads, tasks=local_tasks())
@@ -150,8 +158,10 @@ def summarize(
     *,
     not_started: int,
     runs_per_task: int,
+    unrated: Mapping[str, str] | None = None,
 ) -> Summary:
-    """Stage 1's `accept` on stage 2's floor, labelled 2a; the tasks out of step are listed."""
+    """Stage 1's `accept` on stage 2's floor, labelled 2a; the tasks out of step, and those held
+    unrated for the lead, are listed."""
     summary = accept(
         tasks,
         classified,
@@ -162,6 +172,7 @@ def summarize(
         floor_mb=FLOOR_MB,
     )
     summary.report["out_of_step"] = dict(OUT_OF_STEP)
+    summary.report["unrated"] = dict(unrated or {})
     return summary
 
 
@@ -365,12 +376,15 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
     if args.save_reads is not None:
         return save_reads(args.save_reads)
     if args.rate is not None:
-        rows = rate_2a(load_acts(ACTS.read_text(encoding="utf-8")), args.rate)
-        TABLE.write_bytes(dump_table(rows).encode("utf-8"))
+        text = ACTS.read_text(encoding="utf-8")
+        rows = rate_2a(load_acts(text), args.rate)
+        TABLE.write_bytes(dump_table(rows, unrated=load_unrated(text)).encode("utf-8"))
         return 0
     if args.table is None or args.out is None or args.price_file is None:
         parser.error("--table, --out and --price-file are required for a run")
-    stages = local_stage_tasks(load_table(args.table.read_text(encoding="utf-8")))
+    table_text = args.table.read_text(encoding="utf-8")
+    unrated = load_unrated(table_text)
+    stages = local_stage_tasks(load_table(table_text), unrated=unrated)
     suites = {t.task_id: t for t in local_tasks()}
     classified: list[Classified] = []
     not_started = 0
@@ -394,7 +408,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
         classified += runs
         not_started += refused
     summary = summarize(
-        stages, classified, not_started=not_started, runs_per_task=max(args.runs, 3)
+        stages,
+        classified,
+        not_started=not_started,
+        runs_per_task=max(args.runs, 3),
+        unrated=unrated,
     )
     _emit({"summary": {"accepted": summary.accepted, "gates": summary.gates, **summary.report}})
     return 0 if summary.accepted else 1

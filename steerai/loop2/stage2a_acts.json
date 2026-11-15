@@ -184,15 +184,7 @@
     "why": "a removed item shows only as content: step 4"
   },
   "m1": {
-    "acts": [
-      {
-        "verb": "click",
-        "role": "Button",
-        "name": "Help"
-      }
-    ],
-    "proof": null,
-    "why": "About opens from the Help menu (not in the start read); it shows content: step 4"
+    "unrated": "target_after_opener"
   },
   "b1": {
     "acts": [
@@ -422,15 +414,7 @@
     "why": "a select with groups: its value"
   },
   "r4": {
-    "acts": [
-      {
-        "verb": "click",
-        "role": "Button",
-        "name": "Export"
-      }
-    ],
-    "proof": null,
-    "why": "the format is picked in a menu not in the start read; an export is step 4"
+    "unrated": "target_after_opener"
   },
   "r5": {
     "acts": [
@@ -444,15 +428,7 @@
     "why": "a checkbox: a toggle state read"
   },
   "u1": {
-    "acts": [
-      {
-        "verb": "check",
-        "role": "Button",
-        "name": "Mute notifications"
-      }
-    ],
-    "proof": "state",
-    "why": "a toggle button: a toggle state read"
+    "unrated": "pressed_unread"
   },
   "u2": {
     "acts": [
@@ -466,15 +442,7 @@
     "why": "a switch: a toggle state read"
   },
   "u3": {
-    "acts": [
-      {
-        "verb": "expand",
-        "role": "TreeItem",
-        "name": "Reports"
-      }
-    ],
-    "proof": "state",
-    "why": "a tree item's selection (2024 shows once Reports opens; rated on the visible act)"
+    "unrated": "target_after_opener"
   },
   "u4": {
     "acts": [
@@ -488,14 +456,6 @@
     "why": "a grid row: a selection state read"
   },
   "u5": {
-    "acts": [
-      {
-        "verb": "expand",
-        "role": "Button",
-        "name": "Sort"
-      }
-    ],
-    "proof": "state",
-    "why": "a menu radio's selection (Newest first shows once Sort opens; rated on the visible act)"
+    "unrated": "target_after_opener"
   }
 }

@@ -19,6 +19,7 @@ from steerai.loop2.stage2_expected import (
     TableRow,
     load_acts,
     load_table,
+    load_unrated,
     table_from_reads,
 )
 from steerai.loop2.stage2a import (
@@ -150,9 +151,9 @@ def test_the_2a_table_is_built_by_stage_2s_own_table_builder(tmp_path: Path) -> 
         table_from_reads({"no-such-task": TYPE_ENTER}, tmp_path, tasks=local_tasks())
 
 
-def test_the_committed_acts_cover_every_2a_task() -> None:
-    acts = load_acts(stage2a.ACTS.read_text(encoding="utf-8"))
-    assert set(acts) == {t.task_id for t in local_tasks()}
+def test_the_committed_acts_cover_every_2a_task_rated_or_not() -> None:
+    text = stage2a.ACTS.read_text(encoding="utf-8")
+    assert set(load_acts(text)) | set(load_unrated(text)) == {t.task_id for t in local_tasks()}
 
 
 def test_rating_refuses_a_2a_task_with_no_acts(tmp_path: Path) -> None:
@@ -162,7 +163,19 @@ def test_rating_refuses_a_2a_task_with_no_acts(tmp_path: Path) -> None:
         rate_2a(acts, tmp_path)
 
 
-def test_the_committed_table_loads_and_rates_every_2a_task() -> None:
-    table = load_table(stage2a.TABLE.read_text(encoding="utf-8"))
-    assert set(table) == {t.task_id for t in local_tasks()}
-    assert local_stage_tasks(table)
+def test_the_committed_table_loads_and_rates_every_rated_2a_task() -> None:
+    text = stage2a.TABLE.read_text(encoding="utf-8")
+    table = load_table(text)
+    assert set(table) == {t.task_id for t in local_tasks()} - set(load_unrated(text))
+    assert local_stage_tasks(table, unrated=load_unrated(text))
+
+
+def test_the_unrated_2a_tasks_are_kept_out_of_the_table_and_the_run() -> None:
+    text = stage2a.TABLE.read_text(encoding="utf-8")
+    unrated = load_unrated(text)
+    assert unrated == load_unrated(stage2a.ACTS.read_text(encoding="utf-8"))
+    assert set(load_table(text)) | set(unrated) == {t.task_id for t in local_tasks()}
+    stages = local_stage_tasks(load_table(text), unrated=unrated)
+    assert not {s.task_id for s in stages} & set(unrated)
+    summary = summarize(stages, [], not_started=0, runs_per_task=3, unrated=unrated)
+    assert summary.report["unrated"] == unrated

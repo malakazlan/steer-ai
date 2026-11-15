@@ -539,3 +539,21 @@ def test_the_volume_bound_per_host_from_the_task_data() -> None:
     bound = volume_bound(site_tasks(_table()), runs=3)
     assert set(bound) == {t.host for t in site_tasks(_table())}
     assert all(n >= 3 + MAX_RERUNS for n in bound.values())
+
+
+def test_an_unrated_task_is_not_run_and_not_counted() -> None:
+    """The coordinator's ruling (2026-11-15): out of the tables and out of acceptance until the
+    lead rules, and listed with its reason."""
+    table = _table()
+    gone = next(iter(table))
+    table.pop(gone)
+    tasks = site_tasks(table, unrated={gone: "target_after_opener"})
+    assert gone not in {t.stage.task_id for t in tasks}
+    summary = summarize(
+        tasks,
+        [],
+        not_started=0,
+        runs_per_task=3,
+        unrated={gone: "target_after_opener"},
+    )
+    assert summary.report["unrated"] == {gone: "target_after_opener"}

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import re
 import sys
@@ -39,11 +40,12 @@ from steerai.loop2.stage1_expected import (
     ProofKind,
     outcome_of,
     rate,
-    target_in,
+    targets_in,
 )
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.probes.task_suite import H2, H3, H4, H5, H6, HELD_OUT, TASKS, Task
 from steerai.world.effects import Observed
+from steerai.world.elements import Element
 from steerai.world.read_json import observed_from_json
 
 ACTS: Final = Path(__file__).with_name("stage2_acts.json")
@@ -175,12 +177,32 @@ def real_site_tasks() -> tuple[Task, ...]:
 
 def deciding_facts(row: SiteRow, goal: str, read: Observed) -> DecidingFacts:
     """The deciding facts of `row`'s acts on `read`. A target missing from the read is a
-    `ValueError` (`not_in_read`), as `rate` raises it: the start page differs."""
-    risk = rate(goal, row.acts, read)
-    typed = next((a for a in row.acts if a.verb == "type"), None)
-    clicked = next((a for a in reversed(row.acts) if a.verb == "click"), None)
-    field = None if typed is None else target_in(typed, read)
-    button = None if clicked is None else target_in(clicked, read)
+    `ValueError` (`not_in_read`): the start page differs. A target with several copies is rated
+    on each; when every choice gives the same deciding facts the rating does not depend on the
+    copy Steer picks, and it stands. Otherwise it is `ambiguous_target`, naming the facts that
+    differ (the coordinator's ruling, 2026-11-15)."""
+    options = [[None] if act.verb == "press" else list(targets_in(act, read)) for act in row.acts]
+    seen = {
+        _facts_for(row, goal, read, dict(enumerate(choice)))
+        for choice in itertools.product(*options)
+    }
+    if len(seen) > 1:
+        differ = sorted(
+            f.name for f in fields(DecidingFacts) if len({getattr(s, f.name) for s in seen}) > 1
+        )
+        raise ValueError(f"ambiguous_target: the copies differ on {differ}")
+    return seen.pop()
+
+
+def _facts_for(
+    row: SiteRow, goal: str, read: Observed, picked: Mapping[int, Element | None]
+) -> DecidingFacts:
+    chosen = {i: e for i, e in picked.items() if e is not None}
+    risk = rate(goal, row.acts, read, chosen=chosen)
+    typed = next((i for i, a in enumerate(row.acts) if a.verb == "type"), None)
+    clicked = next((i for i in reversed(range(len(row.acts))) if row.acts[i].verb == "click"), None)
+    field = None if typed is None else chosen[typed]
+    button = None if clicked is None else chosen[clicked]
     roles = read.aria_roles
     unread = []
     if field is not None and roles is None:
@@ -226,17 +248,53 @@ def table_row(task_id: str, row: SiteRow, goal: str, raw_read: bytes) -> TableRo
     return TableRow(task_id, hashlib.sha256(raw_read).hexdigest(), facts, expected)
 
 
-def dump_table(rows: Sequence[TableRow]) -> str:
-    """The committed table as stable JSON, by task id."""
-    payload = {
+def dump_table(rows: Sequence[TableRow], *, unrated: Mapping[str, str] | None = None) -> str:
+    """The committed table as stable JSON, by task id; an unrated task is kept out of it as
+    `{"unrated": reason}` (the coordinator's ruling, 2026-11-15)."""
+    entries: dict[str, object] = {
         r.task_id: {
             "read_sha256": r.read_sha256,
             "facts": asdict(r.facts),
             "expected": asdict(r.expected),
         }
-        for r in sorted(rows, key=lambda r: r.task_id)
+        for r in rows
     }
+    entries |= {task_id: {"unrated": reason} for task_id, reason in (unrated or {}).items()}
+    payload = {task_id: entries[task_id] for task_id in sorted(entries)}
     return json.dumps(payload, indent=2, sort_keys=False) + "\n"
+
+
+UNRATED_REASONS: Final = frozenset({"target_after_opener", "pressed_unread"})
+"""Tasks the lead rules on before they are rated (the coordinator, 2026-11-15): a target that
+shows only after an opener, and a toggle whose pressed state the read does not show. They are
+kept out of both tables and out of acceptance until then."""
+
+
+def load_unrated(text: str) -> dict[str, str]:
+    """The `{"unrated": reason}` entries of an acts file or a table, checked strictly."""
+    raw = json.loads(text)
+    if not isinstance(raw, dict):
+        raise ValueError("unrated: not an object")
+    return {
+        str(task_id): _unrated(str(task_id), entry)
+        for task_id, entry in raw.items()
+        if isinstance(entry, dict) and "unrated" in entry
+    }
+
+
+def _unrated(task_id: str, entry: Mapping[str, object]) -> str:
+    reason = entry.get("unrated")
+    if set(entry) != {"unrated"} or reason not in UNRATED_REASONS:
+        raise ValueError(f"unrated: {task_id} needs exactly one known reason")
+    return str(reason)
+
+
+def _rated(raw: Mapping[str, object]) -> dict[str, object]:
+    """The entries that are not unrated markers (each marker checked)."""
+    for task_id, entry in raw.items():
+        if isinstance(entry, dict) and "unrated" in entry:
+            _unrated(str(task_id), entry)
+    return {str(k): v for k, v in raw.items() if not (isinstance(v, dict) and "unrated" in v)}
 
 
 def load_table(text: str) -> dict[str, TableRow]:
@@ -245,7 +303,7 @@ def load_table(text: str) -> dict[str, TableRow]:
     raw = json.loads(text)
     if not isinstance(raw, dict):
         raise ValueError("table: not an object")
-    return {str(task_id): _table_row(str(task_id), entry) for task_id, entry in raw.items()}
+    return {task_id: _table_row(task_id, entry) for task_id, entry in _rated(raw).items()}
 
 
 _ENTRY_FIELDS: Final = frozenset({"read_sha256", "facts", "expected"})
@@ -304,7 +362,7 @@ def load_acts(text: str) -> dict[str, SiteRow]:
     raw = json.loads(text)
     if not isinstance(raw, dict):
         raise ValueError("acts: not an object")
-    return {str(task_id): _row(str(task_id), entry) for task_id, entry in raw.items()}
+    return {task_id: _row(task_id, entry) for task_id, entry in _rated(raw).items()}
 
 
 def _row(task_id: str, entry: object) -> SiteRow:
