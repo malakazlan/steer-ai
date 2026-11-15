@@ -20,10 +20,12 @@ real input through the child; only in a window the coordinator has cleared with 
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -342,3 +344,119 @@ def _last_json(out: Path) -> Json | None:
     except ValueError:
         return None
     return final if isinstance(final, dict) else None
+
+
+def _start(argv: list[str], out: Path) -> Child:  # pragma: no cover - live
+    handle = out.open("w", encoding="utf-8")
+    return subprocess.Popen(argv, stdout=handle, stderr=subprocess.DEVNULL)  # noqa: S603 - our own CLI, a fixed argv
+
+
+# ---- the live run (Windows; real input through the child) ---------------------------------------
+
+
+def _idle_s() -> float:  # pragma: no cover - live, Windows only
+    import ctypes  # noqa: PLC0415 - Windows only
+    from ctypes import wintypes  # noqa: PLC0415
+
+    class LastInput(ctypes.Structure):
+        _fields_ = (("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD))
+
+    last = LastInput()
+    last.cbSize = ctypes.sizeof(LastInput)
+    ctypes.windll.user32.GetLastInputInfo(ctypes.byref(last))
+    tick = int(ctypes.windll.kernel32.GetTickCount()) & 0xFFFF_FFFF
+    return float((tick - int(last.dwTime)) & 0xFFFF_FFFF) / 1000
+
+
+def _live_3d(
+    task: StageTask, run: int, *, out_dir: Path, price: Path
+) -> RunRecord:  # pragma: no cover - live
+    """One 3d run: the page in a throwaway Chrome, the child on its window, the page's own log."""
+    import shutil  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    from steerai.probes import instant_search as fixture  # noqa: PLC0415 - live only
+    from steerai.probes.chrome_a11y import (  # noqa: PLC0415
+        CHROME_DEFAULT,
+        launch_chrome,
+        stop_chrome,
+    )
+    from steerai.probes.layer_b import _ours  # noqa: PLC0415
+    from steerai.probes.layer_b_pages import PageServer  # noqa: PLC0415
+    from steerai.probes.suite_chunks import kill_tree  # noqa: PLC0415
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
+
+    variant = task.page.lstrip("/")
+    tmp = Path(tempfile.mkdtemp(prefix="steer-stage1-"))
+    run_dir = out_dir / f"{task.task_id}-{run}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with PageServer(fixture.pages()) as server:
+        port = fixture._free_port()
+        base = f"http://127.0.0.1:{server.port}"
+        proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, base + task.page)
+        try:
+            try:
+                window = wait_window_for_pid(proc.pid, timeout_s=30.0, process=proc)
+                cdp, _ = _ours(port, server.port)
+                fixture._wait_ready(cdp)
+            except (OSError, TimeoutError, RuntimeError):
+                return RunRecord(task.task_id, run, None, False, False, None, None)
+            ran = run_child(
+                child_argv(task, hwnd=window.hwnd, price=price, trace=run_dir / "trace.jsonl"),
+                cap_s=TASK_CAP_S, out=run_dir / "final.jsonl", start=_start, kill=kill_tree,
+            )  # fmt: skip
+            time.sleep(fixture.SETTLE_S)
+            try:
+                entries = fixture.parse_log(fixture._read_log(cdp, base))
+            except (OSError, RuntimeError, ValueError):
+                return RunRecord(task.task_id, run, ran.final, True, False, None, None)
+            finally:
+                cdp.close()
+            enters = sum(e.ev == "enter" for e in entries)
+            passed = fixture.passes(variant, entries)  # type: ignore[arg-type]  # a variant's path
+            return RunRecord(task.task_id, run, ran.final, True, True, passed, enters)
+        finally:
+            stop_chrome(proc, tmp / "profile")
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, Windows only
+    from steerai.probes import instant_search  # noqa: PLC0415 - live only
+    from steerai.probes.memory_guard import free_physical_mb  # noqa: PLC0415
+
+    parser = argparse.ArgumentParser(prog="python -m steerai.loop2.stage1")
+    parser.add_argument("--set", choices=["3d"], required=True)
+    parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--price-file", type=Path, required=True)
+    args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    tasks = THREE_D
+    passed = sum(
+        instant_search.passes(v, instant_search.run_control(v)) for v in instant_search.VARIANTS
+    )
+    controls = (passed, len(instant_search.VARIANTS))
+    _emit({"controls": {"passed": passed, "total": controls[1]}})
+    classified: list[Classified] = []
+    for task in tasks:
+        for run in range(1, args.runs + 1):
+            refused = precheck(free_mb=free_physical_mb, idle_s=_idle_s)
+            if refused is not None:
+                _emit({"task": task.task_id, "run": run, "not_started": refused})
+                continue
+            record = _live_3d(task, run, out_dir=args.out, price=args.price_file)
+            got = classify(task, record)
+            classified.append(got)
+            _emit({"task": got.task_id, "run": got.run, "verdict": got.verdict,
+                   "reason": got.reason, "monitor_lost": got.monitor_lost})  # fmt: skip
+    summary = accept(tasks, classified, controls=controls)
+    _emit({"summary": {"accepted": summary.accepted, "gates": summary.gates, **summary.report}})
+    return 0 if summary.accepted else 1
+
+
+def _emit(row: Mapping[str, Any]) -> None:  # Any: JSON values  # pragma: no cover - live
+    sys.stdout.write(json.dumps(dict(row), allow_nan=False) + "\n")
+    sys.stdout.flush()
+
+
+if __name__ == "__main__":  # pragma: no cover - live
+    raise SystemExit(main())
