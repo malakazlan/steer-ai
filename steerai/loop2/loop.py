@@ -25,6 +25,7 @@ from typing import Final, Literal
 
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.errors import ErrorCode, SteerError
+from steerai.loop2.controller import LogEntry
 from steerai.loop2.decision import ActionDoc, Decision
 from steerai.loop2.form import (
     ACTING_ROLES,
@@ -105,8 +106,9 @@ class TurnView:
     """What one controller call is given: the latest observation and closed history tokens."""
 
     observed: Observed
-    history: tuple[str, ...]
-    """Code-written tokens only (§8.6): never screen text, model text or ids ([V2.38] RT-17)."""
+    log: tuple[LogEntry | str, ...]
+    """[V2.46]: what happened so far, in order: an action entry (closed tokens and the task
+    handle) or a history event (a closed token). Never screen text or model text (§8.6)."""
     first_turn: bool
     handles: Mapping[int, int]
     """[V2.38] RT-17: each listed element's task handle, by its snapshot id. The listing shows
@@ -115,6 +117,11 @@ class TurnView:
     """The task's subgoals as frozen at intake (none before the first Decision)."""
     proven: frozenset[str] = frozenset()
     """The subgoal ids proven so far: their status is `done`."""
+
+    @property
+    def history(self) -> tuple[str, ...]:
+        """The log as history tokens (§8.6): an action entry as its `token()`."""
+        return tuple(e if isinstance(e, str) else e.token() for e in self.log)
 
 
 READ_BACK_VERBS = frozenset({"type", "choose", "check", "uncheck", "select", "expand", "collapse"})

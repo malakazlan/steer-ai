@@ -35,7 +35,7 @@ HANDLES = {GO.id: 41, FIELD.id: 7}
 def _view(**changes: object) -> TurnView:
     view = TurnView(
         observed=observed(),
-        history=(),
+        log=(),
         first_turn=False,
         handles=HANDLES,
         subgoals=(SUB, OTHER),

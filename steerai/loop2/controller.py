@@ -1,6 +1,7 @@
 """Controller prompt building and reply parsing. The model call itself is injected.
 
 Free text (element names, subgoal descriptions, the request) only ever appears inside a fence.
+The action log holds no free text at all ([V2.46]): closed tokens and task handles only.
 The task fence is fixed for a task so the stable and log blocks stay byte-identical across calls;
 the screen fence is fresh for every call.
 """
@@ -12,17 +13,25 @@ import re
 import secrets
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, get_args
+from typing import Any, Final, Literal, get_args
 
 from pydantic import ValidationError
 
-from steerai.loop2.decision import STEP, STEP_VERBS, SUBGOAL_ID, Decision, Verb, validate
+from steerai.loop2.decision import (
+    PARAM_NAME,
+    STEP,
+    STEP_VERBS,
+    SUBGOAL_ID,
+    Decision,
+    Verb,
+    validate,
+)
 from steerai.loop2.task import Status
 from steerai.loop2.text import clean_line, has_control
 from steerai.world.elements import format_lines
 from steerai.world.model import Snapshot
 
-PROMPT_VERSION = "controller-4"
+PROMPT_VERSION = "controller-5"
 ASK_PREFIX = "Steer asks: "
 ASK_MAX_CHARS = 200
 MAX_REPLY_BYTES = 64 * 1024
@@ -43,6 +52,8 @@ SYSTEM_RULES = (
     "- `screen: unstable` means the window was still changing; `wait` is then an option.\n"
     "Rules:\n"
     "- Act only on ids in the current listing. Never name an element that is not listed.\n"
+    "- The action log names an element by its id and role only; while it is listed, read its "
+    "name in the listing by that id.\n"
     "- A ComboBox can be a text field: `type` is allowed on it.\n"
     "- Each subgoal declares `closes`, the kind of fact that proves it done: value, state or "
     "page (a field holds the text, an element is in a state, the page shows it). A page subgoal "
@@ -124,15 +135,74 @@ def v2_listing(snapshot: Snapshot, *, handles: Mapping[int, int]) -> list[Listin
     return rows
 
 
+UIA_CONTROL_TYPES: Final = frozenset(
+    {
+        "AppBar", "Button", "Calendar", "CheckBox", "ComboBox", "Custom", "DataGrid", "DataItem",
+        "Document", "Edit", "Group", "Header", "HeaderItem", "Hyperlink", "Image", "List",
+        "ListItem", "MenuBar", "Menu", "MenuItem", "Pane", "ProgressBar", "RadioButton",
+        "ScrollBar", "SemanticZoom", "Separator", "Slider", "Spinner", "SplitButton", "StatusBar",
+        "Tab", "TabItem", "Table", "Text", "Thumb", "TitleBar", "ToolBar", "ToolTip", "Tree",
+        "TreeItem", "Window",
+    }
+)  # fmt: skip
+"""[V2.46]: the UIA control types by their programmatic names (`Element.role` comes from the
+`UIA_*ControlTypeId` constants via `control_type_names`): the 41 documented at
+https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-controltype-ids (50000-50040;
+page dated 2025-07-14, read 2026-11-15)."""
+LOG_ROLES: Final = frozenset({r.lower() for r in UIA_CONTROL_TYPES} | {"unknown"})
+EFFECT = re.compile(r"[a-z_]{1,32}(:[a-z_]{1,32})?")
+"""An effect class or token: `own_value`, or `unknown:<cause>` ([V2.42] (B))."""
+CLAIM_RESULT = re.compile(r"none|proven|accepted|refused:[a-z_]{1,32}")
+EVENT = re.compile(r"[a-z0-9_:.-]{1,128}")
+"""A non-action history line: a closed token the runner wrote (§8.6)."""
+READ_BACK: Final = frozenset({"mismatch", "unread"})
+
+
+def log_role(role: str) -> str:
+    """[V2.46]: the role as the action log shows it: the control-type enum name, lowercased;
+    `unknown` for anything else (an unknown id, a localized type, an ARIA role)."""
+    return role.lower() if role in UIA_CONTROL_TYPES else "unknown"
+
+
 @dataclass(frozen=True)
 class LogEntry:
-    """One past action: closed tokens, plus the element name, which is screen data."""
+    """[V2.46]: one past action, as closed tokens and the target's task handle. No name and no
+    text: a name in the history is page text that would follow the model to later pages."""
 
     verb: str
+    handle: int | None
+    """The target's task handle; None for an action with no target."""
     role: str
-    name: str
-    effects: tuple[str, ...]
+    """`log_role` of the target's control type."""
+    subgoal: str | None
+    param: str | None
+    """For a type, the name of the param typed (never its text)."""
+    delivery: str
+    classes: tuple[str, ...]
+    tokens: tuple[str, ...]
+    read_back: str | None
+    """`mismatch` or `unread` for a read-back verb whose read-back did not verify."""
     claim: str
+    """The turn's claim result on this action's subgoal: none, proven, accepted, refused:<t>."""
+
+    def token(self) -> str:
+        """The history token (§8.6): `act:<verb>:<handle>:<role>:<subgoal>:<param>:<delivery>:
+        <classes>:<tokens>[:read_back_<r>]`, `-` for a field that is not there, `empty` and
+        `none` for no class and no token."""
+        parts = [
+            "act",
+            self.verb,
+            "-" if self.handle is None else str(self.handle),
+            self.role,
+            self.subgoal or "-",
+            self.param or "-",
+            self.delivery,
+            ".".join(sorted(self.classes)) or "empty",
+        ]
+        parts.append(".".join(sorted(self.tokens)) or "none")
+        if self.read_back is not None:
+            parts.append(f"read_back_{self.read_back}")
+        return ":".join(parts)
 
 
 def repair_rate(records: Sequence[DecideRecord]) -> float:
@@ -170,14 +240,33 @@ def _token(text: str) -> str:
     return text
 
 
-def _log_line(index: int, entry: LogEntry, fence: str) -> str:
-    if entry.verb not in VERBS:
+def _log_line(index: int, entry: LogEntry | str) -> str:
+    """[V2.46]: an action line from its closed fields, or a history event as written. Anything
+    outside the closed vocabularies is refused (`unsafe_token`), never escaped."""
+    if isinstance(entry, str):
+        if EVENT.fullmatch(entry) is None:
+            raise ControllerError("unsafe_token")
+        return f"{index} {entry}"
+    handle = entry.handle
+    if handle is not None and (isinstance(handle, bool) or handle < 0):
         raise ControllerError("unsafe_token")
-    effects = ",".join(_token(e) for e in entry.effects) or "none"
-    head = f"{index} {entry.verb} {_token(entry.role)}"
+    closed = (
+        entry.verb in VERBS
+        and entry.role in LOG_ROLES
+        and (entry.subgoal is None or SUBGOAL_ID.fullmatch(entry.subgoal) is not None)
+        and (entry.param is None or PARAM_NAME.fullmatch(entry.param) is not None)
+        and TOKEN.fullmatch(entry.delivery) is not None
+        and all(EFFECT.fullmatch(e) is not None for e in (*entry.classes, *entry.tokens))
+        and (entry.read_back is None or entry.read_back in READ_BACK)
+        and CLAIM_RESULT.fullmatch(entry.claim) is not None
+    )
+    if not closed:
+        raise ControllerError("unsafe_token")
+    effects = ",".join((*entry.classes, *entry.tokens)) or "none"
     return (
-        f"{head} effects={effects} claim={_token(entry.claim)} "
-        f"<<<name {fence} {_data(entry.name, fence)} {fence}>>>"
+        f"{index} {entry.verb} handle={'-' if handle is None else handle} role={entry.role} "
+        f"subgoal={entry.subgoal or '-'} param={entry.param or '-'} delivery={entry.delivery} "
+        f"effects={effects} read_back={entry.read_back or '-'} claim={entry.claim}"
     )
 
 
@@ -200,7 +289,7 @@ def _prompt_schema() -> dict[str, Any]:  # Any: a JSON schema document
 def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
     task_goal: str,
     subgoal_lines: Sequence[str],
-    action_log: Sequence[LogEntry],
+    action_log: Sequence[LogEntry | str],
     subgoal_status: Sequence[tuple[str, str]],
     window_title: str,
     listing_rows: Sequence[ListingRow],
@@ -226,7 +315,7 @@ def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
     )
     stable = "\n".join([f"request: {_data(task_goal, task_fence)}", *subgoals])
     log = "\n".join(
-        ["action log:", *(_log_line(i, e, task_fence) for i, e in enumerate(action_log, 1))]
+        ["action log:", *(_log_line(i, e) for i, e in enumerate(action_log, 1))]
         if action_log
         else ["action log: none"]
     )
@@ -302,7 +391,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     *,
     task_goal: str,
     subgoal_lines: Sequence[str],
-    action_log: Sequence[LogEntry],
+    action_log: Sequence[LogEntry | str],
     subgoal_status: Sequence[tuple[str, str]],
     window_title: str,
     listing_rows: Sequence[ListingRow],

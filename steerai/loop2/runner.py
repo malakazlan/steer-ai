@@ -19,13 +19,14 @@ import hashlib
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from dataclasses import field as dataclass_field
 from typing import Final, Literal
 
 from steerai.action.dispositions import Delivery
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.actuate import may_retry, press_allowed
 from steerai.loop2.batch import batch_continues
-from steerai.loop2.controller import ControllerError
+from steerai.loop2.controller import ControllerError, LogEntry, log_role
 from steerai.loop2.decision import (
     CLAIM_CLOSES,
     NOT_IN_STEP_VERBS,
@@ -183,6 +184,8 @@ class _Turn:
     moved_after_send: bool = False
     """The world moved after a send in this turn: the turn is scored normally and the stale
     streak is left as it was, neither raised nor reset ([V2.43] confirmation)."""
+    claims: dict[str, str] = dataclass_field(default_factory=dict)
+    """[V2.46]: this turn's claim result per subgoal: proven, accepted or refused:<token>."""
 
 
 class _Handles:
@@ -301,7 +304,8 @@ class _Run:
         self.subgoals: tuple[Subgoal, ...] = task.subgoals
         self.frozen = bool(task.subgoals)
         self.proven: set[str] = set()
-        self.history: list[str] = []
+        self.log: list[LogEntry | str] = []
+        """[V2.46]: action entries and history events, in order (`TurnView.log`)."""
         self.dispatched: list[Dispatch] = []
         self.model_calls = 0
         self.tokens = 0.0
@@ -517,7 +521,7 @@ class _Run:
     def _decide(self, observed: Observed) -> Decision:
         view = TurnView(
             observed=observed,
-            history=tuple(self.history),
+            log=tuple(self.log),
             first_turn=not self.frozen,
             handles=self.handles.bind(observed),
             subgoals=self.subgoals,
@@ -641,6 +645,8 @@ class _Run:
         proofs[param or ""] = _Proof(claim.evidence[0], claim.kind, claim.wanted)
         if set(proofs) >= set(subgoal.params) and self._still(subgoal, observed):
             self._tick(subgoal, how="claim")
+            return
+        self._claimed(subgoal.id, "accepted")
 
     def _refused(
         self, claim: Claim, subgoal: Subgoal, param: str | None, observed: Observed
@@ -699,8 +705,18 @@ class _Run:
         return True
 
     def _reject(self, subgoal: Subgoal, tokens: Sequence[str]) -> None:
-        self.history.extend(f"claim:{subgoal.id}:{t}" for t in tokens)
+        self.log.extend(f"claim:{subgoal.id}:{t}" for t in tokens)
         self.turn.claim_rejected = True
+        if tokens:
+            self._claimed(subgoal.id, f"refused:{tokens[0]}")
+
+    def _claimed(self, sid: str, result: str) -> None:
+        """[V2.46]: the turn's claim result on a subgoal; a refusal outranks a proof, and a
+        proof outranks a param accepted without closing."""
+        rank = {"refused": 0, "proven": 1, "accepted": 2}
+        held = self.turn.claims.get(sid)
+        if held is None or rank[result.split(":", maxsplit=1)[0]] < rank[held.split(":")[0]]:
+            self.turn.claims[sid] = result
 
     def _allow_file(self) -> bool:
         """[V2.39]: a `file:` page counts only when the task started on one."""
@@ -712,13 +728,17 @@ class _Run:
         """A proven subgoal. RT-06, §8.8: a commit subgoal is never closed in step 3 (a standard
         proof never closes it; the strict tier is step 4)."""
         if subgoal.commit != "none":
-            self.history.append(f"claim:{subgoal.id}:standard_only")
+            self.log.append(f"claim:{subgoal.id}:standard_only")
             self.turn.claim_rejected = True
+            if how == "claim":
+                self._claimed(subgoal.id, "refused:standard_only")
             return
         self.proven.add(subgoal.id)
         self.turn.ticked = True
         self.refusal = None
-        self.history.append(f"proven:{subgoal.id}:{how}")
+        self.log.append(f"proven:{subgoal.id}:{how}")
+        if how == "claim":
+            self._claimed(subgoal.id, "proven")
 
     def _check_done(self) -> None:
         """A task with zero subgoals never ends `done` ([V2.11] decision 1)."""
@@ -849,7 +869,7 @@ class _Run:
             self.target_changes += 1
         else:
             self.focus_losses += 1
-        self.history.append(_MOVED_TOKEN[what])
+        self.log.append(_MOVED_TOKEN[what])
 
     def _text(self, action: ActionDoc) -> str | None:
         """RT-36: the text a `type` sends: its param's goal span, or its free text."""
@@ -998,6 +1018,26 @@ class _Run:
             return mine[-1]
         return self.ever[-1].field if self.ever else None
 
+    def _log_entry(self, sent: Dispatch, act: ActResult, report: EffectReport) -> LogEntry:
+        """[V2.46], §8.6: the action as closed tokens and its task handle; never the target's
+        name and never the typed text (a type names its param)."""
+        action = sent.action
+        read = {True: None, False: "mismatch", None: None}[act.read_back]
+        if action.verb in READ_BACK_VERBS and act.read_back is None:
+            read = "unread"
+        return LogEntry(
+            verb=action.verb,
+            handle=action.target,
+            role=log_role(sent.role) if action.target is not None else "unknown",
+            subgoal=action.subgoal,
+            param=action.param if action.verb == "type" else None,
+            delivery=act.delivery.value,
+            classes=tuple(sorted(report.classes)),
+            tokens=tuple(sorted(report.tokens)),
+            read_back=read,
+            claim=self.turn.claims.get(action.subgoal, "none"),
+        )
+
     def _echo(self, subgoal: Subgoal) -> bool:
         """[V2.38] RT-39: the subgoal's words are text Steer typed anywhere in the task; any
         generated text counts, since its words are not kept."""
@@ -1038,7 +1078,7 @@ class _Run:
             self.batch_last = (key, report)
         if element is not None:
             self.last_acted = _Acted(element.runtime_id, element.role, element.name)
-        self.history.append(_act_token(sent, act, report))
+        self.log.append(self._log_entry(sent, act, report))
         if not report.classes <= {"none", "unknown"}:
             self.refusal = None  # [V2.12]: progress resets the refusal that decides the status
         if sent.submit:
@@ -1070,7 +1110,7 @@ class _Run:
         held = watched.timed_out or watched.conclusive_ms is not None
         if not held and (outcome.outcome != "unexpected_effect" or outcome.row == "4"):
             outcome = EnterOutcome("back_to_controller", "unknown", "5")
-        self.history.append(f"enter:{outcome.token}:{outcome.row}")
+        self.log.append(f"enter:{outcome.token}:{outcome.row}")
         if outcome.outcome == "unexpected_effect":
             raise _End("stopped", Reason("unexpected_effect"))
 
@@ -1183,7 +1223,7 @@ class _Run:
         refusal also attaches to the refused action's subgoal and stands until it is proven."""
         kind, token = refusal_of(tokens)
         self.refusal = (kind, token)
-        self.history.extend(f"refused:{t}" for t in tokens)
+        self.log.extend(f"refused:{t}" for t in tokens)
         self.turn.refused = True
         if kind in ("policy", "step") and subgoal is not None:
             self.refused_seq += 1
@@ -1213,7 +1253,7 @@ class _Run:
         if top is None or top.runtime_id in self.reasked or left <= 0:
             return None
         self.reasked.add(top.runtime_id)
-        self.history.append("load_guard")
+        self.log.append("load_guard")
         held = self.ports.settle(observed, left)
         self._check_interrupt()
         return self._in_domain(held)
@@ -1413,16 +1453,6 @@ def _key(action: ActionDoc, element: Element, *, text_digest: str | None) -> Act
     return ActionKey(
         verb=action.verb, params=params, runtime_id=element.runtime_id, identity=_identity(element)
     )
-
-
-def _act_token(sent: Dispatch, act: ActResult, report: EffectReport) -> str:
-    """§8.6, [V2.38] RT-17 (the minimum): closed tokens only, and no ids: the verb, the delivery
-    and the effect classes."""
-    classes = ".".join(sorted(report.classes)) or "empty"
-    read = {True: "", False: ":read_back_mismatch", None: ""}[act.read_back]
-    if sent.action.verb in READ_BACK_VERBS and act.read_back is None:
-        read = ":read_back_unread"
-    return f"act:{sent.action.verb}:{act.delivery.value}:{classes}{read}"
 
 
 def _changed_since(baseline: Observed, now: Observed) -> bool:

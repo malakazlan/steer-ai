@@ -111,14 +111,23 @@ def test_an_element_without_a_runtime_id_has_no_handle() -> None:
     assert world.dispatched == []
 
 
-def test_history_tokens_carry_no_ids() -> None:
+def test_the_only_number_in_history_is_an_action_lines_task_handle() -> None:
+    """[V2.46]: an action line carries its target's task handle; no other history line carries
+    a number (a refused unlisted handle included)."""
     world = World(
         [decision(act("click", target=GO.id), first=True), decision(act("click", target=99))],
         effects=[report("content_changed")],
     )
     run_task(task(), world.ports())
+    issued = {str(h) for h in world.views[-1].handles.values()}
     for token in world.views[-1].history:
-        assert not any(re.fullmatch(r"\d+", part) for part in token.split(":")), token
+        parts = token.split(":")
+        numbers = [p for p in parts if re.fullmatch(r"[0-9]+", p)]
+        if token.startswith("act:"):
+            assert numbers == [parts[2]]
+            assert parts[2] in issued
+        else:
+            assert numbers == [], token
 
 
 def test_claim_evidence_is_read_through_the_handles(monkeypatch: pytest.MonkeyPatch) -> None:

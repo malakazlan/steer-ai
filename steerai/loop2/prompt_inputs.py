@@ -5,14 +5,15 @@
   title: both inside the per-call screen fence;
 - the request and the subgoal definitions, checked against the task fence; the definitions sit
   inside its subgoals block;
-- the action log, from the runner's code-written history (`history_log`).
+- the action log as the runner wrote it ([V2.46]): action entries and history events, closed
+  tokens and task handles only.
 `make_decide` is `Ports.decide`: the inputs through `controller.decide`, its provider calls on the
 decide worker (`DecideCalls`).
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from steerai.loop2.controller import ListingRow, LogEntry, decide, v2_listing
@@ -27,7 +28,7 @@ class ControllerInputs:
 
     task_goal: str
     subgoal_lines: tuple[str, ...]
-    action_log: tuple[LogEntry, ...]
+    action_log: tuple[LogEntry | str, ...]
     subgoal_status: tuple[tuple[str, Status], ...]
     window_title: str
     listing_rows: tuple[ListingRow, ...]
@@ -45,7 +46,7 @@ def controller_inputs(view: TurnView, *, goal: str) -> ControllerInputs:
     return ControllerInputs(
         task_goal=goal,
         subgoal_lines=tuple(_subgoal_line(s) for s in view.subgoals),
-        action_log=history_log(view.history),
+        action_log=view.log,
         subgoal_status=tuple(
             (s.id, "done" if s.id in view.proven else s.status) for s in view.subgoals
         ),
@@ -67,13 +68,6 @@ def _subgoal_line(subgoal: Subgoal) -> str:
     head = f"{subgoal.id} closes={subgoal.closes} commit={subgoal.commit}: {subgoal.desc}"
     params = "; ".join(f'{name}="{span.text}"' for name, span in sorted(subgoal.params.items()))
     return f"{head}; {params}" if params else head
-
-
-def history_log(history: Sequence[str]) -> tuple[LogEntry, ...]:
-    """The action log from the runner's history tokens. Pending [V2.46] (the next commit): no
-    line yet."""
-    del history
-    return ()
 
 
 def make_decide(calls: DecideCalls, *, goal: str, task_fence: str) -> Callable[[TurnView], Decided]:
