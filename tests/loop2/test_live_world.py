@@ -1666,3 +1666,43 @@ def test_the_hook_timeout_is_read_from_the_registry_and_capped(
     for raw, shown in (("300", 300), (5000, 1000), (None, None), ("x", None)):
         monkeypatch.setattr(live, "_read_hooks_timeout", lambda raw=raw: raw)
         assert WindowsPlatform().hook_timeout_ms() == shown
+
+
+# ---- #362: the close order, and a failure right after the monitor started ----------------------
+
+
+def test_close_runs_in_its_order() -> None:
+    """COM holders dropped first (on this thread), then the monitor stopped, then v1's tag
+    back, then the session released: no hook outlives the session, no tag outlives the run."""
+    platform = Platform()
+    world, _ = _world(platform)
+    seen: list[str] = []
+
+    def monitor_close() -> None:
+        seen.append("monitor" if not hasattr(world, "world") else "monitor_before_com")
+
+    platform.monitor.close = monitor_close  # type: ignore[method-assign]  # a recording fake
+    platform.calls.clear()
+    world.close()
+    assert seen == ["monitor"]
+    assert platform.calls == ["untag", "release_session"]
+
+
+@pytest.mark.parametrize("step", ["_init_state", "_token"])
+def test_a_failure_right_after_the_monitor_started_closes_the_world(
+    monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
+    """#362: `_init_state` and the abandoned-session token run inside the close-on-failure
+    try, so the monitor, the tag and the session are all given back."""
+    platform = Platform()
+    platform.session = "abandoned"
+
+    def broken(*_args: object) -> None:
+        raise RuntimeError(step)
+
+    monkeypatch.setattr(LiveWorld, step, broken)
+    with pytest.raises(RuntimeError, match=step):
+        _world(platform)
+    assert platform.monitor.closed == 1
+    assert platform.calls.count("untag") == 1
+    assert platform.calls.count("release_session") == 1

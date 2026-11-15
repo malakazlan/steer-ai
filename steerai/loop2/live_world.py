@@ -272,10 +272,10 @@ class LiveWorld:
             del client, bindings  # released here, before the refusal leaves the loop thread
             raise
         self._monitor = monitor
-        self._init_state()
-        if held == "abandoned":
-            self._token("session_abandoned")  # a previous Steer died holding it
-        try:
+        try:  # #362: everything after the monitor started closes the world on a failure
+            self._init_state()
+            if held == "abandoned":
+                self._token("session_abandoned")  # a previous Steer died holding it
             debug = self._debug_sink()
             self._build(client, bindings, debug)
         except BaseException:
@@ -607,7 +607,7 @@ class LiveWorld:
         their own thread, with no collection needed), and the monitor stops once."""
         if threading.get_ident() != getattr(self, "_thread", threading.get_ident()):
             raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "wrong_thread")
-        if self._closed:
+        if getattr(self, "_closed", False):  # unset: `_init_state` itself failed
             return
         self._closed = True
         try:
