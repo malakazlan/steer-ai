@@ -549,6 +549,7 @@ class LiveWorld:
             "goal_word_subcap": str(LISTING_CAP // 3),
             "hook_timeout_ms": _shown(self._platform.hook_timeout_ms()),
             "probe_deadline_ms": str(round(self._probe_deadline_s * 1000)),
+            "probe_key_ime": "closed_only",  # [V2.59]: verified with the IME closed only
         }
         if price is not None:
             record["price_source"] = price.source

@@ -567,6 +567,7 @@ def test_the_run_header_names_the_model_effort_prompt_trace_and_price() -> None:
         "goal_word_subcap": "50",
         "hook_timeout_ms": "unset",
         "probe_deadline_ms": "1050",
+        "probe_key_ime": "closed_only",  # [V2.59]: an open IME is probed before stage 2
     }
 
 
