@@ -49,12 +49,16 @@ ENTER_TOKENS: Final = frozenset(get_args(EnterToken))
 ROWS: Final = frozenset(get_args(RowId))
 MAX_LINE: Final = 256
 RunnerRefusal = Literal[
+    "field_not_empty",
+    "focus_needs_field",
     "id_not_listed",
     "not_delivered",
+    "not_own_text",
     "press_not_at_focus",
     "press_target_changed",
     "press_target_gone",
     "repeat_send",
+    "type_not_at_focus",
 ]
 """What the runner itself refuses (it imports `history`, so its Literal lives here)."""
 PolicyRefusal = Literal["secure_field", "secure_unread", "text_changed"]

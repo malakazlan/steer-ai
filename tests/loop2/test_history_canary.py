@@ -14,6 +14,8 @@ from __future__ import annotations
 import dataclasses
 import json
 
+import pytest
+
 from steerai.loop2.decide_port import DecideCalls, Reply, TaskGenerations
 from steerai.loop2.history import LogEntry
 from steerai.loop2.loop import TokenUsage
@@ -67,7 +69,7 @@ def _world() -> World:
         FIELD, name=CANARY["name2"] + "f", automation_id=CANARY["aid2"] + "f"
     )
     swap = {GO.id: go, FIELD.id: field}
-    screen = observed([*(swap.get(e.id, e) for e in PAGE), odd])
+    screen = observed([*(swap.get(e.id, e) for e in PAGE), odd], focus=FIELD.runtime_id)
     screen = dataclasses.replace(
         screen,
         snapshot=dataclasses.replace(
@@ -94,10 +96,17 @@ def _world() -> World:
     return world
 
 
-def test_no_canary_reaches_the_history_or_the_prompt_outside_the_screen_fence() -> None:
+FOCUS = {"row": FIELD.runtime_id, "elsewhere": (9, 999), "unread": None}
+"""[V2.52] (b): the focus on a listed row, on nothing listed, and unread."""
+
+
+@pytest.mark.parametrize("where", sorted(FOCUS))
+def test_no_canary_reaches_the_history_or_the_prompt_outside_the_screen_fence(where: str) -> None:
     world = _world()
     outcome = run_task(task(), world.ports())
     view = world.views[-1]
+    focused = dataclasses.replace(view.observed, focus=FOCUS[where])
+    view = dataclasses.replace(view, observed=focused)
     acts = [e for e in view.log if isinstance(e, LogEntry)]
     assert len(acts) == 3, view.log
     assert acts[1].role == "unknown"  # a localized control type is never shown
@@ -122,3 +131,5 @@ def test_no_canary_reaches_the_history_or_the_prompt_outside_the_screen_fence() 
         assert canary not in outside, key
     assert CANARY["name"] in turn  # shown, inside the screen fence
     assert CANARY["title"] in turn
+    header = [line for line in outside.split(chr(10)) if line.startswith("focus")]
+    assert header == ([] if where == "row" else [f"focus: {where}"])  # closed tokens only

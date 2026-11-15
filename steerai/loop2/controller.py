@@ -38,7 +38,7 @@ from steerai.loop2.text import clean_line, has_control
 from steerai.world.elements import format_lines
 from steerai.world.model import Snapshot
 
-PROMPT_VERSION = "controller-5"
+PROMPT_VERSION = "controller-6"
 ASK_PREFIX = "Steer asks: "
 ASK_MAX_CHARS = 200
 MAX_REPLY_BYTES = 64 * 1024
@@ -57,6 +57,9 @@ SYSTEM_RULES = (
     "that appeared or changed since your last turn.\n"
     "- Rows are indented two spaces per depth level; an indented row sits inside the row above.\n"
     "- `screen: unstable` means the window was still changing; `wait` is then an option.\n"
+    "- `focused` marks the element with the keyboard focus; `focus: elsewhere` means it is on "
+    "something not listed (such as the address bar), `focus: unread` that it could not be "
+    "read.\n"
     "Rules:\n"
     "- Act only on ids in the current listing. Never name an element that is not listed.\n"
     "- The action log names an element by its id and role only; while it is listed, read its "
@@ -64,6 +67,9 @@ SYSTEM_RULES = (
     "delivery:effect classes:effect tokens; the other lines are what code saw: refused, claim, "
     "proven, target_changed, focus_lost, stale_observation, load_guard, enter.\n"
     "- A ComboBox can be a text field: `type` is allowed on it.\n"
+    "- Focus a text field before you type into it (focus and type can be one batch); `focus` "
+    "is for text fields only. Backspace edits only text you typed; a field that already holds "
+    "text is never cleared.\n"
     "- Each subgoal declares `closes`, the kind of fact that proves it done: value, state or "
     "page (a field holds the text, an element is in a state, the page shows it). A page subgoal "
     "needs at least one param.\n"
@@ -125,23 +131,42 @@ class ListingRow:
     text: str
 
 
+FocusState = Literal["elsewhere", "unread"]
+"""[V2.52] (b): where the keyboard focus is when no listing row can carry it."""
+FOCUSED = "focused"
+"""[V2.52] (b): the row token of the element with the keyboard focus (a code fact)."""
 SECURE_UNREAD = "secure_unread"
 """[V2.26] (2): the listing token for a field whose secure flag was not read, so the model does
 not keep targeting it with a type."""
 
 
-def v2_listing(snapshot: Snapshot, *, handles: Mapping[int, int]) -> list[ListingRow]:
+def v2_listing(
+    snapshot: Snapshot, *, handles: Mapping[int, int], focus: tuple[int, ...] | None = None
+) -> list[ListingRow]:
     """The v2 listing of `snapshot`: v1's line for every element, numbered by its task handle
     ([V2.38] RT-17: never the snapshot's ordinal), `-` for an element with no handle (it has no
     RuntimeId and cannot be acted on), with `secure_unread` added to a field whose secure flag
-    was not read."""
+    was not read, and `focused` on the element whose RuntimeId is the keyboard focus ([V2.52]
+    (b))."""
     rows: list[ListingRow] = []
     for e, line in zip(snapshot.elements, format_lines(snapshot.elements), strict=True):
         handle = handles.get(e.id)
         body = line[len(f"{e.id} ") :]
         unread = f" {SECURE_UNREAD}" if e.id in snapshot.unread_secure else ""
-        rows.append(ListingRow(e.depth, f"{'-' if handle is None else handle} {body}{unread}"))
+        focused = f" {FOCUSED}" if focus and e.runtime_id == focus else ""
+        text = f"{'-' if handle is None else handle} {body}{unread}{focused}"
+        rows.append(ListingRow(e.depth, text))
     return rows
+
+
+def focus_state(snapshot: Snapshot, focus: tuple[int, ...] | None) -> FocusState | None:
+    """[V2.52] (b): None when a listing row carries the focus; `unread` when it was not read;
+    `elsewhere` when it is on something the snapshot does not hold."""
+    if focus is None:
+        return "unread"
+    if focus and any(e.runtime_id == focus for e in snapshot.elements):
+        return None
+    return "elsewhere"
 
 
 def repair_rate(records: Sequence[DecideRecord]) -> float:
@@ -218,6 +243,7 @@ def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
     growing: bool = False,
     young: bool = False,
     vocab: Vocab | None = None,
+    focus: FocusState | None = None,
 ) -> tuple[list[str], list[str]]:
     """Return (system blocks, user blocks): stable, then append-only log, then the live turn.
     `vocab` is what the log's records may name (the task's subgoals and issued handles)."""
@@ -246,6 +272,7 @@ def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
             *(["screen: unstable"] if unstable else []),
             *(["screen: page growing"] if growing else []),
             *(["screen: page young"] if young else []),
+            *([f"focus: {focus}"] if focus is not None else []),
             f"<<<screen {screen_fence}",
             f"window: {_data(window_title, screen_fence)}",
             *(
@@ -325,6 +352,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     screen_fence: str | None = None,
     max_repairs: int = 1,
     issued: frozenset[int] = frozenset(),
+    focus: FocusState | None = None,
 ) -> tuple[Decision, DecideRecord]:
     """Ask, parse, validate; on failure repair with code tokens only, up to `max_repairs` times.
 
@@ -344,6 +372,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
         growing=growing,
         young=young,
         vocab=Vocab(dict(known_subgoals or {}), issued),
+        focus=focus,
     )
     error: ControllerError | None = None
     for attempt in range(max_repairs + 1):

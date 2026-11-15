@@ -541,14 +541,14 @@ def test_n1_every_typed_field_stays_pending_not_only_the_latest() -> None:
     world = World(
         [
             decision(act("type", target=COMPOSER.id, param="text"), first=True),
-            decision(act("type", target=other.id, param="text")),
+            decision(act("focus", target=other.id), act("type", target=other.id, param="text")),
             decision(act("click", target=ICON.id)),
         ],
-        effects=[report("own_value"), report("own_value")],
+        effects=[report("own_value"), report("focus"), report("own_value")],
         screen=marked,
     )
     outcome = run_task(task(), world.ports())
-    assert [d.action.verb for d in world.dispatched] == ["type", "type"]
+    assert [d.action.verb for d in world.dispatched] == ["type", "focus", "type"]
     assert (outcome.status, outcome.reason) == ("blocked", "commit_not_in_step")
 
 

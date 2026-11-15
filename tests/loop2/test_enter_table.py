@@ -440,6 +440,7 @@ def test_the_worst_pending_field_wins_emptied_over_kept() -> None:
         [
             decision(
                 act("type", target=FIELD.id, param="text"),
+                act("focus", target=second.id),
                 act("type", target=second.id, param="text"),
                 act("click", target=GO.id),
                 first=True,
@@ -447,14 +448,15 @@ def test_the_worst_pending_field_wins_emptied_over_kept() -> None:
         ],
         effects=[
             report("own_value"),
+            report("focus"),
             report("own_value"),
             report("content_changed", carriers=["title"]),
         ],
         screen=screen,
-        cleared={FIELD.runtime_id: 3},
+        cleared={FIELD.runtime_id: 4},
     )
     outcome = run_task(task(), world.ports())
-    assert [d.action.verb for d in world.dispatched] == ["type", "type", "click"]
+    assert [d.action.verb for d in world.dispatched] == ["type", "focus", "type", "click"]
     assert (outcome.status, outcome.reason) == ("stopped", "unexpected_effect")
 
 
@@ -464,7 +466,9 @@ def test_a_pending_field_unmatched_on_a_partial_read_is_unread_on_row_2() -> Non
     is `unread`, never `gone`, so row 2 gives `unknown`."""
     second = element(50, "Edit", "Find", (9, 50), 1)
     roles = {FIELD.runtime_id: "searchbox", second.runtime_id: "searchbox"}
-    screen = dataclasses.replace(observed([*QUERY_PAGE, second]), aria_roles=roles)
+    screen = dataclasses.replace(
+        observed([*QUERY_PAGE, second], focus=FIELD.runtime_id), aria_roles=roles
+    )
     partial = dataclasses.replace(
         observed([e for e in QUERY_PAGE if e.id != FIELD.id] + [second]),
         aria_roles=roles,
@@ -474,6 +478,7 @@ def test_a_pending_field_unmatched_on_a_partial_read_is_unread_on_row_2() -> Non
         [
             decision(
                 act("type", target=FIELD.id, param="text"),
+                act("focus", target=second.id),
                 act("type", target=second.id, param="text"),
                 first=True,
             ),
@@ -481,15 +486,16 @@ def test_a_pending_field_unmatched_on_a_partial_read_is_unread_on_row_2() -> Non
         ],
         effects=[
             report("own_value"),
+            report("focus"),
             report("own_value"),
             report("content_changed", carriers=["title"]),
         ],
         screen=screen,
         later=partial,
-        later_after_acts=2,
+        later_after_acts=3,
     )
     run_task(task(), world.ports())
-    assert [d.action.verb for d in world.dispatched] == ["type", "type", "click"]
+    assert [d.action.verb for d in world.dispatched] == ["type", "focus", "type", "click"]
     assert "enter:unknown:2" in _history(world)
 
 
