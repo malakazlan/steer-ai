@@ -274,12 +274,14 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
         return verdict("fail", "no_final_line")
     if final.get("detail") == "internal_error" or final.get("reason") in INTERNAL:
         return verdict("fail", "internal")
+    # [V2.67] C: a run that never began cannot be scored: an infrastructure void, its cause
+    # split in the report and counted toward the 1-in-10 void limit (supersedes the fail rule)
     if final.get("status") == "error":
-        return verdict("fail", f"start_refused:{final.get('detail')}")
+        return verdict("void", f"start_refused:{final.get('detail')}"[:REASON_CAP])
     if not _started(final):  # LiveWorld refused to start: no use at all
         detail = final.get("detail")
         named = f":{detail}" if isinstance(detail, str) and detail else ""
-        return verdict("fail", f"start_refused:{final.get('code')}{named}"[:REASON_CAP])
+        return verdict("void", f"start_refused:{final.get('code')}{named}"[:REASON_CAP])
     status, reason = final.get("status"), final.get("reason")
     if status == "done":  # done is never void and never hidden behind a lost monitor
         if not record.log_read:
@@ -317,8 +319,8 @@ REASON_CAP: Final = 80
 
 def _started(final: Json | None) -> bool:
     """The child's line is a task's own (it has a `used` block): its world started. A start
-    refusal ([V2.62]: the session, the window, the page) has none and fails once, under its
-    task, never again under a gate that reads a run's use."""
+    refusal ([V2.62]: the session, the window, the page) has none: an infrastructure void
+    ([V2.67] C), never counted under a gate that reads a run's use."""
     return final is not None and isinstance(final.get("used"), Mapping)
 
 
@@ -467,13 +469,10 @@ def _listed_when_acted(final: Json | None) -> bool:
 def _r2_dispatched(run: Classified) -> bool:
     """[V2.65] (2), every run (#413 blocker 2): the run dispatched an action at R2 or above, or
     what it dispatched is unread: fail closed. Only a void with no line (the child never ran: a
-    fixture or start void) and a refused start (the CLI's blocked line with no use: its world
-    refused before any port existed) dispatched nothing; an error line is checked like any
-    other."""
+    fixture or start void) and a refused start (a void whose line has no use: the run never
+    began) dispatched nothing; any other line, an internal error's among them, is checked."""
     final = run.final
-    if final is None and run.verdict == "void":
-        return False
-    if final is not None and final.get("status") == "blocked" and not _started(final):
+    if run.verdict == "void" and (final is None or not _started(final)):
         return False
     counts = None if final is None else final.get("dispatch_risks")
     if not isinstance(counts, Mapping):
@@ -793,6 +792,7 @@ def _report(
         "void_rate": round(verdicts.get("void", 0) / total, 3) if total else None,
         "monitor_lost_rate": round(verdicts.get("monitor_lost", 0) / total, 3) if total else None,
         "fail_reasons": _counts(r.reason for r in runs if r.verdict == "fail"),
+        "void_causes": _counts(r.reason for r in runs if r.verdict == "void"),
         "audit": _audits(finals),
         "start_nudge": _start_nudges(finals),
         **_watch_deadlines(finals),
@@ -1100,9 +1100,18 @@ def _last_json(out: Path) -> Json | None:
     return final if isinstance(final, dict) else None
 
 
-def _start(argv: list[str], out: Path) -> Child:  # pragma: no cover - live
-    with out.open("w", encoding="utf-8") as handle:  # the child holds its own copy
-        return subprocess.Popen(argv, stdout=handle, stderr=subprocess.DEVNULL)  # noqa: S603 - our own CLI, a fixed argv
+STDERR_NAME: Final = "stderr.txt"
+"""[V2.67] C: the child's stderr, kept beside its final line in the run's own dir (local run data:
+the CLI's notes, escaped; a traceback on an internal error)."""
+
+
+def _start(argv: list[str], out: Path, *, popen: Callable[..., Child] = subprocess.Popen) -> Child:
+    """The child with its stdout to `out` and its stderr to `STDERR_NAME` beside it."""
+    with (
+        out.open("w", encoding="utf-8") as handle,  # the child holds its own copies
+        out.with_name(STDERR_NAME).open("w", encoding="utf-8") as errors,
+    ):
+        return popen(argv, stdout=handle, stderr=errors)
 
 
 # ---- the live run (Windows; real input through the child) ---------------------------------------

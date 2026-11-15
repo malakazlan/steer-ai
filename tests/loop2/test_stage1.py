@@ -168,10 +168,12 @@ def test_an_internal_error_or_a_reached_stub_is_a_fail_said_as_internal(
     assert (got.verdict, got.reason) == ("fail", "internal")
 
 
-def test_a_refused_start_is_steers_fail_not_a_void() -> None:
+def test_a_refused_start_is_an_infrastructure_void() -> None:
+    """[V2.67] C (supersedes "a refused start is Steer's fail"): a run that never began cannot
+    be scored; it counts toward the 1-in-10 void limit."""
     final = {"status": "error", "code": "gate_blocked", "detail": "price_missing"}
     got = classify(DONE, _record(final, check=False))
-    assert (got.verdict, got.reason) == ("fail", "start_refused:price_missing")
+    assert (got.verdict, got.reason) == ("void", "start_refused:price_missing")
 
 
 # ---- acceptance ------------------------------------------------------------------------------
@@ -520,13 +522,13 @@ def test_the_idle_floor_is_exactly_two_seconds() -> None:
 # ---- #366 re-review: a world that refused to start is never an outcome --------------------------
 
 
-def test_a_world_start_refusal_on_a_never_done_task_is_a_fail_not_a_pass() -> None:
+def test_a_world_start_refusal_on_a_never_done_task_is_a_void_not_a_pass() -> None:
     """cli.py's shape when LiveWorld refused to start (the session still held by a killed
     tree, the monitor, the window): no reason, no use, no cache counters."""
     refusal = {"task_id": "t", "status": "blocked", "code": "gate_blocked",
                "detail": "steer_already_running"}  # fmt: skip
     got = classify(NEVER, _record(refusal, check=False))
-    assert (got.verdict, got.reason) == ("fail", "start_refused:gate_blocked:steer_already_running")
+    assert (got.verdict, got.reason) == ("void", "start_refused:gate_blocked:steer_already_running")
 
 
 # ---- #366 re-review: the re-run loop and the wait for the person, pure -------------------------

@@ -159,7 +159,6 @@ def test_a_cap_kill_with_a_wall_is_a_fail() -> None:
     [
         {"status": "nonsense"},  # no_final_line
         {"status": "done", "reason": "internal_error", "used": {"max_actions": 1}},  # internal
-        {"status": "error", "detail": "x"},  # start_refused
     ],
 )
 def test_every_steer_caused_result_wins_over_a_confirmed_wall(final: Mapping[str, Any]) -> None:
