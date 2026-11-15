@@ -94,7 +94,7 @@ def run_start_child(hwnd: int, *, out: Path, trace: Path) -> int:  # pragma: no 
                 world.bring_to_front()
                 result = "ok"
             except SteerError as exc:
-                result = f"refused:{exc.message}"
+                result = exc.message  # the refusal token
             raised = time.monotonic()
             reads: list[dict[str, object]] = []
             while (now := time.monotonic() - raised) < READ_S:
