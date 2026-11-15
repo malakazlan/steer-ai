@@ -12,7 +12,12 @@ in-process `Monitor` protocol that `LiveWorld` reads, built on the helper's shar
   transitions; any during the task stops it (§5.6). It also runs kill layer 2.
 - **The kill** ([V2.60] Q1): layer 1, the loop thread acknowledges (`kill_ack`) the first time it
   sees the kill; layer 2, the watchdog ends Steer's own process when a set kill stays
-  unacknowledged past `KILL_ACK_S`. Nothing else here ever ends Steer (tested).
+  unacknowledged past `KILL_ACK_S`. Nothing else here ever ends Steer (tested). A self-end that
+  raises is counted in `end_self_failures` and tried again on the next step (#383 HM-08).
+- **The ack disarms layers 2 and 3** (#383 HM-05, accepted as designed): once `kill_ack` is
+  written neither fires, even if the loop then hangs. After the ack the kill is still read before
+  every input burst ([V2.40]), so a loop that keeps running cannot send; layers 2 and 3 exist for
+  a Steer that cannot read the kill at all.
 """
 
 from __future__ import annotations
