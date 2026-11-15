@@ -31,6 +31,7 @@ def ready(step: int) -> bool:
         price,
         prompt_inputs,
         query,
+        read_child,
         record,
         runner,
         stage1,
