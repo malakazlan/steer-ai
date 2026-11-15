@@ -31,6 +31,7 @@ from tests.loop2.world_fakes import (
     act,
     decision,
     element,
+    judged_by,
     observed,
     report,
     task,
@@ -96,7 +97,7 @@ def test_the_auto_proof_never_closes_a_value_subgoal(monkeypatch: pytest.MonkeyP
         calls.append(1)
         return "title"
 
-    monkeypatch.setattr(runner, "auto_proof", proven)
+    monkeypatch.setattr(runner, "judge", judged_by(proven))
     moved = dataclasses.replace(
         observed(), url=URL + "?q=red%20shoes", document_url=URL + "?q=red%20shoes"
     )
