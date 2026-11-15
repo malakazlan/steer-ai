@@ -41,6 +41,8 @@ CLOCK_RESOLUTION_S: Final = 0.015625
 """`time.monotonic()` on CPython 3.12 here is GetTickCount64 at 15.625 ms (meas,
 `time.get_clock_info`, 2026-11-15): one tick added to a person's input time (§5.3)."""
 WATCH_PERIOD_MS: Final = 100
+MAX_WAIT_MS: Final = 1000
+"""#383 HM-20: one kill-aware wait is a step; its caller re-reads the words between steps."""
 WATCH_JOIN_S: Final = (CLOSE_TIMEOUT_MS + 2 * WATCH_PERIOD_MS) / 1000
 """#383 blocker 6: close waits out a watchdog that may be ending the helper (up to
 `CLOSE_TIMEOUT_MS`) before the helper's handles are closed."""
@@ -139,6 +141,8 @@ class HelperMonitor:
         self._closed = False
         self._poll_session()  # #383 blocker 5: never "nothing seen yet"
         self._stop = threading.Event()
+        self._nap = threading.Event()
+        """Never set: a wait that cannot wait on the helper still takes its time (HM-20)."""
         self._thread: threading.Thread | None = None
         if start_thread:
             self._thread = threading.Thread(target=self._run, name="steer-helper-watch",
@@ -221,8 +225,18 @@ class HelperMonitor:
         return events, self._quantile(status, 0.95, events), self._quantile(status, 0.99, events)
 
     def wait(self, seconds: float) -> None:
-        """HH-08: a kill-aware wait wakes on the helper's `wake` or its exit."""
-        self._helper.wait_wake(max(0, int(seconds * 1000)))
+        """HH-08: a kill-aware wait wakes on the helper's `wake` or its exit. #383 HM-20: the
+        time is clamped; once the helper is closed or gone, or its wait fails, the time is
+        napped instead, so a caller's loop of waits never spins."""
+        ms = int(min(seconds, MAX_WAIT_MS / 1000) * 1000) if seconds > 0 else 0
+        if self._closed or self._helper.has_exited():
+            self._nap.wait(ms / 1000)
+            return
+        try:
+            self._helper.wait_wake(ms)
+        except OSError as exc:
+            self._lose(f"wake_wait_failed:{exc.errno}")
+            self._nap.wait(ms / 1000)
 
     def close(self) -> None:
         if self._closed:

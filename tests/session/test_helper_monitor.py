@@ -47,6 +47,7 @@ class FakeHelper:
     terminated: int = 0
     closed: int = 0
     wakes: list[int] = field(default_factory=list)
+    wake_fails: bool = False
     on_get: Callable[[str], None] | None = None
     terminate_exits: bool = True
     """False: the end was asked for but has not taken effect yet (its words still read)."""
@@ -97,6 +98,8 @@ class FakeHelper:
 
     def wait_wake(self, timeout_ms: int) -> None:
         self.wakes.append(timeout_ms)
+        if self.wake_fails:
+            raise OSError(6, "the handle is invalid")
 
     def terminate(self) -> None:
         self.terminated += 1
@@ -618,3 +621,55 @@ def test_a_failed_self_end_is_counted_and_tried_again_on_the_next_step() -> None
     rig.monitor.watch_once()
     assert rig.ended == [1]  # tried again, then once only
     assert rig.helper.config.get("end_self_failures") == 1
+
+
+# ---- #383 HM-20: a kill-aware wait is clamped, and never returns at once to a caller's loop ---
+
+
+def _naps(monitor: HelperMonitor) -> list[float | None]:
+    naps: list[float | None] = []
+
+    def wait(timeout: float | None = None) -> bool:
+        naps.append(timeout)
+        return False
+
+    monitor._nap.wait = wait  # type: ignore[method-assign]  # a recorded nap
+    return naps
+
+
+@pytest.mark.parametrize(
+    ("seconds", "ms"),
+    [(float("nan"), 0), (-1.0, 0), (float("inf"), 1000), (1e12, 1000), (0.0004, 0)],
+)
+def test_a_kill_aware_wait_is_clamped(seconds: float, ms: int) -> None:
+    rig = _rig()
+    rig.monitor.wait(seconds)
+    assert rig.helper.wakes == [ms]
+
+
+def test_once_the_helper_is_gone_a_wait_naps_its_time_instead_of_returning_at_once() -> None:
+    """Its exit signals the wake wait at once: a caller's loop of waits would spin."""
+    rig = _rig()
+    naps = _naps(rig.monitor)
+    rig.helper.exited = True
+    rig.monitor.wait(0.25)
+    assert rig.helper.wakes == []
+    assert naps == [0.25]
+
+
+def test_after_close_a_wait_naps_and_never_touches_the_helper() -> None:
+    rig = _rig()
+    naps = _naps(rig.monitor)
+    rig.monitor.close()
+    rig.monitor.wait(0.25)
+    assert rig.helper.wakes == []
+    assert naps == [0.25]
+
+
+def test_a_failed_wake_wait_is_a_loss_and_naps_its_time() -> None:
+    rig = _rig()
+    naps = _naps(rig.monitor)
+    rig.helper.wake_fails = True
+    rig.monitor.wait(0.25)
+    assert naps == [0.25]
+    assert not rig.monitor.healthy()
