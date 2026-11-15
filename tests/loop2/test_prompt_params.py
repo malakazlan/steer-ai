@@ -5,7 +5,8 @@ what `param` names and steered a page subgoal to a kind step 3 cannot check. Rep
 (a) a rule line: `param` names a subgoal param by its name, never its words;
 (b) one claim-kind table per step ([V2.44]'s rule for verbs): step 3 offers state, value and
     navigated only;
-(c) the page legend: the page's address or title shows it, claimed with `navigated`;
+(c) the page legend ([V2.64]): the page shows the result the request asks for; in this step
+    proven only when the address or title shows it;
 (d) the repair line explains each rejection token, in closed text."""
 
 from __future__ import annotations
@@ -52,11 +53,24 @@ def test_a_rule_says_param_is_a_subgoal_params_name_never_its_words() -> None:
     assert "never by its words" in rules
 
 
-def test_the_page_legend_points_at_a_navigated_claim() -> None:
+def test_the_page_legend_describes_the_request_and_says_what_this_step_can_prove() -> None:
+    """[V2.64] One: the kind describes the request, not what step 3 can prove."""
     rules = _system()[0]
-    assert "the page shows it" not in rules
-    assert "the page's address or title shows it" in rules
-    assert "claimed with navigated" in rules
+    assert "the page shows the result the request asks for" in rules
+    assert ("In this step it can be proven only when the address or title shows it; otherwise "
+            "stop with blocked.") in rules  # fmt: skip
+    assert "claimed with navigated" not in rules
+
+
+def test_the_subgoal_rule_says_what_will_be_true_as_the_person_would_check_it() -> None:
+    """[V2.64] One: in general terms, naming no task type."""
+    rules = _system()[0]
+    assert ("A subgoal states what will be true when the request is finished, as the person "
+            "would check it.") in rules  # fmt: skip
+    assert ("Text in a field is the outcome only when the request asks for the text to be there "
+            "and nothing more.") in rules  # fmt: skip
+    for task_word in ("search", "catalog", "results"):
+        assert task_word not in rules.lower().split()
 
 
 def test_the_prompt_offers_exactly_the_claim_kinds_validate_accepts_for_the_step() -> None:

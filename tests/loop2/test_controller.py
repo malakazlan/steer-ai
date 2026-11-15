@@ -97,8 +97,8 @@ def test_system_rules_content_and_stability() -> None:
         "If a subgoal can only be shown by another kind, stop with blocked.",
         "Use check, uncheck, select, expand, collapse or choose when an element's states offer "
         "it; click otherwise.",
-        "Subgoals are the outcomes the request asks for, not steps on the way. If one already "
-        "holds, claim it without acting.",
+        "Subgoals are outcomes, not steps on the way. If one already holds, claim it without "
+        "acting.",
         "Do only what the request asks. If the screen demands something else to continue "
         "(sign-in, payment, consent), stop with blocked.",
         "If nothing listed moves a subgoal forward, wait if the page may hold more; "
