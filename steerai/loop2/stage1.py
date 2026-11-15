@@ -41,7 +41,7 @@ from typing import Any, Final, Literal, Protocol, get_args
 
 from steerai.loop2.guards import StrikeReason
 from steerai.loop2.history import REFUSAL_TOKENS
-from steerai.loop2.loop import PARENT_KINDS, URL_READS, AuditReason
+from steerai.loop2.loop import PARENT_KINDS, URL_READS, AuditReason, RunnerAuditReason
 from steerai.loop2.stage1_expected import LARGE_TASKS, Expected, large_expected
 from steerai.orchestrator.contracts import RISKS
 from steerai.probes.gallery_page import large_passes, parse_large_log
@@ -194,7 +194,8 @@ MTA_COMPARABILITY: Final[Mapping[str, Any]] = {  # Any: JSON values
     "differ": [],
     "g12": "explained: the probe's executor had no option source (#406, #414)",
     "artefact": "D:/steerai-data/probes/2026-11-15/mta_act.json",
-    "artefact_summary": "PR #400's body (the MTA act comparison, verbatim)",
+    "artefact_summary": "local only, not in the repo; its summary verbatim in PR #400's body",
+    "artefact_sha256": "02f8e6d1cbcfca359ecc8aa3ea143faab455d6b8c2d3975eaeea6527c9667e8a",
 }
 """[V2.64] Four, closed by [V2.65] Four: v1's executors behave the same in both apartments, so
 the stage 1 report states executor behaviour under the MTA as compared, not as unseparated."""
@@ -822,7 +823,7 @@ def _start_nudges(finals: Sequence[Json]) -> dict[str, int]:
 
 
 AUDIT_RESULTS: Final = ("allowed", "vetoed", "failed")
-AUDIT_REASONS: Final = frozenset({*get_args(AuditReason), "audit_failed", "audit_no_call"})
+AUDIT_REASONS: Final = frozenset({*get_args(AuditReason), *get_args(RunnerAuditReason)})
 """#425 (3): the closed audit reasons (the controller's verdicts and the runner's failures); any
 other text is counted as `other`, so a model's words never become report keys."""
 

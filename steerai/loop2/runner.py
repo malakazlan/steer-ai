@@ -66,11 +66,14 @@ from steerai.loop2.history import (
 )
 from steerai.loop2.listing import ListingTurn, words_of
 from steerai.loop2.loop import (
+    AUDIT_FAILED,
+    AUDIT_NO_CALL,
     COMMIT_RISK,
     PARENT_KINDS,
     READ_BACK_VERBS,
     URL_READS,
     ActResult,
+    AuditReason,
     AuditView,
     Dispatch,
     ParentKind,
@@ -80,6 +83,7 @@ from steerai.loop2.loop import (
     ProofLine,
     Provenance,
     Reason,
+    RunnerAuditReason,
     Status,
     TaskOutcome,
     TokenUsage,
@@ -425,7 +429,7 @@ class _Run:
         self.unread_aids = 0
         self.proven_how: dict[str, ProvenHow] = {}
         """[V2.64] One: how each subgoal was proven (a claim, or the auto proof's token)."""
-        self.audit: tuple[str, str] | None = None
+        self.audit: tuple[str, AuditReason | RunnerAuditReason] | None = None
         """[V2.64] One: the final audit's outcome and reason, when it ran."""
         self.query_combobox_listed = False
         self.typed_into_combobox = False
@@ -965,7 +969,7 @@ class _Run:
             tokens=self.tokens,
         )
         if audit is None or budget_hit(self.task.budgets, used) is not None:
-            self.audit = ("failed", "audit_failed")
+            self.audit = ("failed", AUDIT_FAILED)
             raise _End("blocked", Reason("audit_failed"))
         cited = {
             self.handles.by_handle[p.handle]
@@ -986,7 +990,7 @@ class _Run:
         except (PortInterrupted, SteerError, ControllerError) as exc:
             if isinstance(exc, ControllerError) and exc.record is None:
                 # refused before any call (the bound, a fence in the data): no call is counted
-                self.audit = ("failed", "audit_no_call")
+                self.audit = ("failed", AUDIT_NO_CALL)
                 raise _End("blocked", Reason("audit_failed")) from None
             self.model_calls += 1
             if isinstance(exc, PortInterrupted):
@@ -994,7 +998,7 @@ class _Run:
                 self.usage_incomplete = True
                 raise
             self._spend(exc.usage if isinstance(exc, ControllerError) else None)
-            self.audit = ("failed", "audit_failed")
+            self.audit = ("failed", AUDIT_FAILED)
             raise _End("blocked", Reason("audit_failed")) from None
         self.model_calls += 1
         self._spend(audited.usage)

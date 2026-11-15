@@ -252,6 +252,11 @@ class Decided:
 
 AuditReason = Literal["outcome_shown", "outcome_not_shown", "outcome_unclear"]
 """[V2.64] One: what the final audit says of the request's outcome (closed)."""
+RunnerAuditReason = Literal["audit_failed", "audit_no_call"]
+"""[V2.64] One, #432: the runner's own audit endings: the audit failed or was refused before
+any call (closed; the outcome's `audit` reason is one of these or an `AuditReason`)."""
+AUDIT_FAILED: Final[RunnerAuditReason] = "audit_failed"
+AUDIT_NO_CALL: Final[RunnerAuditReason] = "audit_no_call"
 ProofLine = tuple[str, str, str, str, bool]
 """One proven subgoal for the audit: (subgoal id, closes, how, kind, closed only by value or
 state claims)."""
@@ -423,7 +428,7 @@ class TaskOutcome:
     Stage 1 runs with caching off and asserts every cache counter here is zero."""
     exact_counts: int = 0
     """[V2.61]: turns on which the prompt guard spent an exact count (near the ceiling)."""
-    audit: tuple[str, str] | None = None
+    audit: tuple[str, AuditReason | RunnerAuditReason] | None = None
     """[V2.64] One: the final audit's (`allowed` | `vetoed` | `failed`, reason token); None when
     no audit ran (some proof was not self-written, or the task did not reach done)."""
     query_combobox_listed: bool = False

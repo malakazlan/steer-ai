@@ -131,10 +131,22 @@ def test_an_audit_reason_off_the_closed_enum_is_counted_as_other() -> None:
 def test_the_closed_audit_reasons_are_the_controllers_and_the_runners() -> None:
     from typing import get_args  # noqa: PLC0415
 
-    from steerai.loop2.loop import AuditReason  # noqa: PLC0415
+    from steerai.loop2.loop import AuditReason, RunnerAuditReason  # noqa: PLC0415
     from steerai.loop2.stage1 import AUDIT_REASONS  # noqa: PLC0415
 
-    assert set(get_args(AuditReason)) | {"audit_failed", "audit_no_call"} == AUDIT_REASONS
+    assert set(get_args(RunnerAuditReason)) == {"audit_failed", "audit_no_call"}
+    assert set(get_args(AuditReason)) | set(get_args(RunnerAuditReason)) == AUDIT_REASONS
+
+
+def test_the_runner_records_only_typed_audit_reasons() -> None:
+    """#432: the runner's audit tuple is typed, so a new bare reason fails mypy, not the
+    report; and the reason it puts on the outcome is one of the closed tokens."""
+    import inspect  # noqa: PLC0415
+
+    from steerai.loop2 import runner  # noqa: PLC0415
+
+    source = inspect.getsource(runner)
+    assert '("failed", "audit_' not in source  # the runner's tokens come from the Literal
 
 
 def test_the_mta_statement_cites_its_probe_artefact() -> None:
@@ -142,3 +154,5 @@ def test_the_mta_statement_cites_its_probe_artefact() -> None:
 
     assert MTA_COMPARABILITY["artefact"].endswith("mta_act.json")
     assert "#400" in MTA_COMPARABILITY["artefact_summary"]
+    assert "local only" in MTA_COMPARABILITY["artefact_summary"]
+    assert len(MTA_COMPARABILITY["artefact_sha256"]) == 64
