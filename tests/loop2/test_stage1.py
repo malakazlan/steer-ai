@@ -486,3 +486,28 @@ def test_the_harness_imports_nothing_that_holds_the_session_or_the_hooks() -> No
             modules.update(alias.name for alias in node.names)
     banned = ("steerai.session", "steerai.loop2.live_world", "steerai.platform", "monitor")
     assert not [m for m in modules if m.startswith(banned) or m.endswith("monitor")]
+
+
+# ---- mutants that survived the first run --------------------------------------------------------
+
+
+def test_never_done_fails_when_steer_says_done_and_the_page_agrees() -> None:
+    got = classify(NEVER, _record(_final("done"), check=True))
+    assert (got.verdict, got.reason) == ("fail", "expected_never_done:done:None")
+
+
+def test_a_final_without_cache_counters_fails_the_cache_gate() -> None:
+    bare = _final()
+    del bare["cache_tokens"]
+    runs = [_ok(DONE, 1, final=bare), _ok(DONE, 2), _ok(DONE, 3)]
+    assert (
+        accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="t").gates["cache_zero"]
+        is False
+    )
+
+
+def test_the_idle_floor_is_exactly_two_seconds() -> None:
+    assert precheck(free_mb=lambda: 8000, idle_s=lambda: 2.0) is None
+    assert precheck(free_mb=lambda: 8000, idle_s=lambda: 1.99) == "person_active"
+    assert precheck(free_mb=lambda: 4096, idle_s=lambda: 5.0) is None
+    assert precheck(free_mb=lambda: 4095, idle_s=lambda: 5.0) == "low_memory"
