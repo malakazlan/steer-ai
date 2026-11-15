@@ -489,6 +489,9 @@ def test_the_run_header_names_the_model_effort_prompt_trace_and_price() -> None:
         "prompt_version": PROMPT_VERSION,
         "trace_level": "redacted",
         "price": "not configured",
+        "listing_cap": "150",
+        "always_keep_ceiling": "300",
+        "goal_word_subcap": "50",
     }
 
 

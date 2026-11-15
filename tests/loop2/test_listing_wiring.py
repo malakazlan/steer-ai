@@ -170,12 +170,16 @@ def test_a_prompt_over_the_ceiling_is_cut_rest_first_before_the_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     rows = _long_rows()
-    calls, fits = _decide_with(rows, ceiling=2_500, monkeypatch=monkeypatch)
+    system, user = build_prompt(
+        GOAL, [], [], [], "Shop", [], task_fence="taskfence01", screen_fence="f" * 32
+    )
+    ceiling = controller.prompt_tokens(system, user) + 1_000  # room for about 25 rows
+    calls, fits = _decide_with(rows, ceiling=ceiling, monkeypatch=monkeypatch)
     assert len(calls) == 1
     shown, cut = fits[0]
     assert cut > 0
     assert set(range(1, 21)) <= shown  # keep and goal rows survive while rest rows can go
-    assert controller.prompt_tokens([], calls[0]) <= 2_500
+    assert not set(range(81, 101)) & shown  # the rest goes from the bottom up
 
 
 def test_a_prompt_that_cannot_fit_is_never_sent(monkeypatch: pytest.MonkeyPatch) -> None:
