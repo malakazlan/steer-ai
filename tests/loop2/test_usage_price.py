@@ -102,6 +102,35 @@ def test_a_missing_usage_marks_the_outcome_incomplete() -> None:
     assert math.isnan(outcome.tokens)
 
 
+def test_a_missing_usage_never_reports_a_cost_of_zero() -> None:
+    """Review #344 (1): with a price set, a missing usage makes the cost NaN (the cost budget
+    trips), never 0.0, which would read as free and enforced."""
+    cost = _run(None).cost_usd
+    assert cost is not None
+    assert math.isnan(cost)
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        TokenUsage(input_tokens=0, output_tokens=5),
+        TokenUsage(input_tokens=0, output_tokens=0),
+    ],
+)
+def test_a_call_with_no_input_at_all_is_an_invalid_usage(usage: TokenUsage) -> None:
+    """Review #344 (3): every call sends input, so input plus every cache category of zero is
+    a usage that was not really reported: incomplete, never a free call."""
+    outcome = _run(usage)
+    assert outcome.usage_incomplete is True
+    assert math.isnan(outcome.tokens)
+
+
+def test_input_read_from_the_cache_alone_is_a_valid_usage() -> None:
+    outcome = _run(TokenUsage(input_tokens=0, output_tokens=5, cache_read=100))
+    assert outcome.usage_incomplete is False
+    assert outcome.tokens == 2 * 105
+
+
 def test_a_complete_usage_is_not_marked_incomplete() -> None:
     assert _run(USED).usage_incomplete is False
 
@@ -114,9 +143,10 @@ def test_a_negative_cache_count_is_an_invalid_usage(field: str) -> None:
     assert outcome.usage_incomplete is True
 
 
-@pytest.mark.parametrize("name", CACHE_RATES)
+@pytest.mark.parametrize("name", ["usd_per_input_token", "usd_per_output_token", *CACHE_RATES])
 @pytest.mark.parametrize("bad", [0.0, -1e-6, math.nan, math.inf])
-def test_a_cache_rate_must_be_finite_and_positive_when_given(name: str, bad: float) -> None:
+def test_every_rate_must_be_finite_and_positive_when_given(name: str, bad: float) -> None:
+    """Review #344 (2): a rate of 0 would make that category free."""
     with pytest.raises(ValueError, match="price"):
         _price(**{name: bad})
 

@@ -1255,7 +1255,8 @@ def _step_subgoal(decision: Decision) -> str | None:
 
 def _counts(usage: TokenUsage | None) -> tuple[int, int, int, int, int] | None:
     """[V2.37] P6, [V2.40] Q3, [V2.45]: a call's token counts by category; None when the usage
-    is missing or a count is not a whole number of tokens, zero or more."""
+    is missing, a count is not a whole number of tokens, zero or more, or the call had no input
+    at all (every call sends input, fresh or from the cache)."""
     if usage is None:
         return None
     counts = (
@@ -1266,6 +1267,9 @@ def _counts(usage: TokenUsage | None) -> tuple[int, int, int, int, int] | None:
         usage.cache_read,
     )
     if any(isinstance(c, bool) or not isinstance(c, int) or c < 0 for c in counts):
+        return None
+    fresh, _, write_5m, write_1h, read = counts
+    if fresh + write_5m + write_1h + read == 0:
         return None
     return counts
 

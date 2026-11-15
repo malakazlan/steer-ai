@@ -218,7 +218,8 @@ class TaskOutcome:
     observe that reported its cost, and each watched action's watch. The observe layer's share
     of the wall-time split."""
     tokens: float = 0.0
-    """Input plus output tokens of every call; NaN once a call's usage was missing."""
+    """Every reported token of every call, all categories ([V2.45]); NaN once a call's usage
+    was missing or invalid."""
     stale_observations: int = 0
     """[V2.28] item 1: Decisions discarded because the page moved under them (counted)."""
     target_changes: int = 0
@@ -238,8 +239,9 @@ class TaskOutcome:
     usage: TokenUsage = TokenUsage(input_tokens=0, output_tokens=0)
     """[V2.45]: the reported usage summed by category (a lower bound when `usage_incomplete`).
     Stage 1 runs with caching off and asserts every cache counter here is zero."""
-    """[V2.41] (1): some call's usage was missing or invalid (an abandoned call is billed but
-    never reported): `tokens` and `cost_usd` are then a lower bound, never complete."""
+    """[V2.41] (1): some call's usage was missing or invalid: `tokens` and `cost_usd` are then a
+    lower bound, never complete. A decide that raises (abandoned on a kill, or failed) is counted
+    by the decide port's slice (#326), not here."""
 
     @property
     def reason(self) -> str | None:
