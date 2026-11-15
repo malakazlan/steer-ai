@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import json
 
-from steerai.probes.gallery_page import page_html
+import pytest
+
+from steerai.probes.gallery_page import LargeTask, large_passes, page_html, parse_large_log
 from steerai.probes.task_suite import GALLERY, h2_event, passed, task_set
 
 
@@ -85,10 +87,88 @@ def test_the_large_page_has_a_menu_that_reveals_items_and_a_target_far_down() ->
     html = pages()["/large.html"]
     assert 'aria-haspopup="menu"' in html
     assert 'aria-expanded="false"' in html
-    assert 'role="menu" hidden' in html
+    assert 'role="menu" aria-label="Sort by" hidden' in html
     assert LARGE_TARGET >= 1900
     assert f"var TARGET = {LARGE_TARGET};" in html
-    assert 'put(e, {row: "large", item: n})' in html  # the target's own trusted log entry
+
+
+def test_the_sort_items_are_menuitemradios_that_stay_open_and_reorder_the_rows() -> None:
+    """Stage 1 ruling 2026-11-15: "By size" is checked in place (a state proof on the item, so
+    the menu stays open after a choice), the rows reorder, and the choice is logged."""
+    from steerai.probes.gallery_page import pages  # noqa: PLC0415 - this test only
+
+    html = pages()["/large.html"]
+    for key, label in (("name", "By name"), ("date", "By date"), ("size", "By size")):
+        item = f'<li role="menuitemradio" aria-checked="false" tabindex="-1" data-key="{key}">'
+        assert f"{item}{label}</li>" in html
+    assert 'put(e, {row: "large-sort", value: key})' in html
+    assert "list.appendChild(sorted[k])" in html
+    assert "menu.hidden = true" not in html  # a choice never closes the menu
+
+
+def test_the_target_is_a_toggle_whose_name_keeps_its_words() -> None:
+    """Stage 1 ruling 2026-11-15: the target toggles `aria-pressed` (a state proof) and shows
+    "Reserved"; its own name never changes ([V2.40] Q7: a state claim's element must hold the
+    param's words; WAI-ARIA APG button pattern: a toggle's label does not change with its
+    state)."""
+    from steerai.probes.gallery_page import pages  # noqa: PLC0415 - this test only
+
+    html = pages()["/large.html"]
+    assert 'button.setAttribute("aria-pressed", "false")' in html
+    assert 'button.textContent = "Reserve item " + n' in html
+    assert 'mark.textContent = on ? " Reserved" : ""' in html
+    assert 'put(e, {row: "large-reserve", item: n, on: on})' in html
+    assert 'put(e, {row: "large-details", item: n})' in html  # a stray row is seen
+
+
+def _entry(row: str, **fields: object) -> dict[str, object]:
+    return {"row": row, **fields}
+
+
+RESERVED = _entry("large-reserve", item=1987, on=True)
+OPENED = _entry("large-menu", open=True)
+BY_SIZE = _entry("large-sort", value="size")
+
+
+@pytest.mark.parametrize(
+    ("task", "entries", "ok"),
+    [
+        ("lg1", [RESERVED], True),
+        ("lg1", [], False),
+        ("lg1", [_entry("large-reserve", item=1986, on=True)], False),
+        ("lg1", [RESERVED, _entry("large-reserve", item=1987, on=False)], False),
+        ("lg1", [{**RESERVED, "untrusted": True}], False),
+        ("lg1", [_entry("large-details", item=4), RESERVED], False),
+        ("lg1", [OPENED, RESERVED], False),
+        ("lg2", [OPENED, BY_SIZE], True),
+        ("lg2", [BY_SIZE], False),
+        ("lg2", [OPENED, _entry("large-sort", value="date")], False),
+        ("lg2", [OPENED, _entry("large-sort", value="date"), BY_SIZE], False),
+        ("lg2", [OPENED, BY_SIZE, RESERVED], False),
+        ("lg2", [OPENED, {**BY_SIZE, "untrusted": True}], False),
+    ],
+)
+def test_a_large_task_passes_only_on_its_own_trusted_end_state(
+    task: LargeTask, entries: list[dict[str, object]], ok: bool
+) -> None:
+    assert large_passes(task, parse_large_log(json.dumps(entries))) is ok
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "{}",
+        '[{"row": "elsewhere"}]',
+        '[{"row": "large-reserve", "item": "1987", "on": true}]',
+        '[{"row": "large-reserve", "item": 1987, "on": 1}]',
+        '[{"row": "large-sort", "value": 3}]',
+        '[{"row": "large-menu", "open": true, "untrusted": "yes"}]',
+        "[1]",
+    ],
+)
+def test_a_log_of_another_shape_is_an_error_never_a_pass(raw: str) -> None:
+    with pytest.raises(ValueError, match="large log"):
+        parse_large_log(raw)
 
 
 def test_the_large_page_reuses_nothing_from_h7() -> None:
