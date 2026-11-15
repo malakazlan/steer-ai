@@ -180,7 +180,9 @@ def test_the_unrated_2a_tasks_are_kept_out_of_the_table_and_the_run() -> None:
     assert unrated == load_unrated(stage2a.ACTS.read_text(encoding="utf-8"))
     assert set(load_table(text)) | set(unrated) == {t.task_id for t in local_tasks()}
     stages = local_stage_tasks(load_table(text), unrated=unrated)
-    assert not {s.task_id for s in stages} & set(unrated)
+    held = {s.task_id: s.expect for s in stages if s.task_id in unrated}
+    assert held == dict.fromkeys(unrated, "unrated")  # [V2.65] (2): run, never exempt
+    assert len(stages) == len(local_tasks())
     summary = summarize(stages, [], not_started=0, runs_per_task=3, unrated=unrated)
     assert summary.report["unrated"] == unrated
 

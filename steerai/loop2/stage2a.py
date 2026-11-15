@@ -128,9 +128,9 @@ def read_groups(tasks: Sequence[Task]) -> dict[str, list[str]]:
 def local_stage_tasks(
     table: Mapping[str, TableRow], *, unrated: Mapping[str, str] | None = None
 ) -> tuple[StageTask, ...]:
-    """Each 2a task with its committed expected outcome, less the tasks held for the lead's
-    ruling (`unrated`: not run, not counted); any other task missing from the table is a
-    `ValueError`."""
+    """Each 2a task with its committed expected outcome; a task held for the lead's ruling runs
+    expected `unrated` ([V2.65] (2): held to the hard bar, out of the tasks gate). Any other task
+    missing from the table is a `ValueError`."""
     held = set(unrated or {})
     rated_and_held = sorted(held & set(table))
     if rated_and_held:
@@ -142,7 +142,9 @@ def local_stage_tasks(
     if missing:
         raise ValueError(f"unrated tasks: {missing}")
     return tuple(
-        StageTask(
+        StageTask(t.task_id, t.goal, "local", t.start, "unrated")
+        if t.task_id in held
+        else StageTask(
             t.task_id,
             t.goal,
             "local",
@@ -151,7 +153,6 @@ def local_stage_tasks(
             reason=table[t.task_id].expected.reason,
         )
         for t in local_tasks()
-        if t.task_id not in held
     )
 
 
