@@ -39,9 +39,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Literal, Protocol, get_args
 
+from steerai.errors import START_DETAILS, ErrorCode
 from steerai.loop2.guards import StrikeReason
 from steerai.loop2.history import REFUSAL_TOKENS
-from steerai.loop2.loop import PARENT_KINDS, URL_READS
+from steerai.loop2.loop import PARENT_KINDS, REASON_TOKEN, URL_READS
 from steerai.loop2.stage1_expected import LARGE_TASKS, Expected, large_expected
 from steerai.orchestrator.contracts import RISKS
 from steerai.probes.gallery_page import large_passes, parse_large_log
@@ -424,6 +425,17 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
         "valid_tasks": valid,
         "site_invalid_tasks": unmeasured,
         "unrated_tasks": sorted(held),
+        # #419: a gate failure on an unread count shows the run's own reason beside it
+        "no_r2_dispatch_failures": [
+            {
+                "task": r.task_id,
+                "run": r.run,
+                "reason": _closed_reason(r.reason),
+                "counts": _counts_state(r),
+            }
+            for r in runs
+            if _r2_dispatched(r)
+        ],
     }
     kept = total - len(site)
     report["void_rate"] = round(infra / kept, 3) if kept else None  # infrastructure only
@@ -481,6 +493,49 @@ def _r2_dispatched(run: Classified) -> bool:
     if not all(type(n) is int and n >= 0 for n in exact.values()):
         return True
     return any(exact[r] != 0 for r in RISKS[RISKS.index("R2") :])
+
+
+def _closed_reason(reason: str | None) -> str | None:
+    """#428 (2): a run's reason as closed tokens only. A reason that carries a field of the
+    child's own line keeps it only when it is one of the closed values that field can hold (an
+    error code, a count, a status, a reason token); anything else is `other`, so no page text
+    can reach the report."""
+    if reason is None or ":" not in reason:
+        return reason
+    head, _, tail = reason.partition(":")
+    if head == "start_refused":
+        return reason if tail in _START_DETAILS else f"{head}:other"
+    if head == "enters":
+        return reason if tail.isdigit() or tail == "None" else f"{head}:other"
+    if head == "reason":
+        return reason if _token(tail) else f"{head}:other"
+    if head.startswith("expected_"):
+        status, _, why = tail.partition(":")
+        closed = status in STATUSES and (why == "None" or _token(why))
+        return reason if closed else f"{head}:other"
+    return "other"
+
+
+def _token(text: str) -> bool:
+    bare = text.removeprefix("after_refusal:")
+    return REASON_TOKEN.fullmatch(bare) is not None
+
+
+_START_DETAILS: Final = frozenset(
+    {c.value for c in ErrorCode} | START_DETAILS | {"internal_error", "None"}
+)
+"""The values a refused start's line carries that the report keeps: its code, a closed detail
+the emitters share (`errors.START_DETAILS`, #429), or the CLI's own internal-error token."""
+
+
+def _counts_state(run: Classified) -> str:
+    """Why a run failed `no_r2_dispatch`: its counts were unread, or it dispatched at R2+."""
+    counts = None if run.final is None else run.final.get("dispatch_risks")
+    if not isinstance(counts, Mapping):
+        return "unread"
+    if not all(type(counts.get(r)) is int and counts.get(r, -1) >= 0 for r in RISKS):
+        return "unread"
+    return "r2_dispatched"
 
 
 def _cache_spent(final: Json | None) -> bool:
@@ -791,8 +846,8 @@ def _report(
         "cost_usd_total": round(sum(costs), 6) if costs else None,
         "void_rate": round(verdicts.get("void", 0) / total, 3) if total else None,
         "monitor_lost_rate": round(verdicts.get("monitor_lost", 0) / total, 3) if total else None,
-        "fail_reasons": _counts(r.reason for r in runs if r.verdict == "fail"),
-        "void_causes": _counts(r.reason for r in runs if r.verdict == "void"),
+        "fail_reasons": _counts(_closed_reason(r.reason) for r in runs if r.verdict == "fail"),
+        "void_causes": _counts(_closed_reason(r.reason) for r in runs if r.verdict == "void"),
         "audit": _audits(finals),
         "start_nudge": _start_nudges(finals),
         **_watch_deadlines(finals),

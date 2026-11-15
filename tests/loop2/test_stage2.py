@@ -217,7 +217,7 @@ def test_an_unread_start_page_is_an_infrastructure_void() -> None:
 
 def test_a_second_load_of_a_host_waits_out_its_spacing() -> None:
     clock = Clock()
-    spacer = Spacer(clock, clock.sleep)
+    spacer = Spacer(clock, clock.sleep, day=lambda: 0)
     spacer.wait("a.test")
     spacer.loaded("a.test")
     clock.now += 10.0
@@ -273,7 +273,7 @@ def _run(
         attempt=logged_attempt,
         control=logged_control,
         confirm=logged_confirm,
-        spacer=Spacer(clock, clock.sleep),
+        spacer=Spacer(clock, clock.sleep, day=Days(clock)),
     )
     return got, not_started, loads, clock
 
@@ -346,7 +346,7 @@ def test_a_run_not_started_is_counted_and_re_run() -> None:
         return refused if refused else SiteRecord(record(t.stage.task_id, n), None)
 
     clock = Clock()
-    spacer = Spacer(clock, clock.sleep)
+    spacer = Spacer(clock, clock.sleep, day=lambda: 0)
     got, not_started = run_stage(
         tasks,
         runs=3,
@@ -525,7 +525,7 @@ def test_re_runs_are_spaced_too() -> None:
 def test_the_loads_per_host_are_counted_and_reported() -> None:
     tasks = [site("a1", "a.test")]
     clock = Clock()
-    spacer = Spacer(clock, clock.sleep)
+    spacer = Spacer(clock, clock.sleep, day=lambda: 0)
     got, not_started = run_stage(
         tasks,
         runs=3,
@@ -691,3 +691,52 @@ def test_a_site_void_on_one_host_repeats_only_that_hosts_control() -> None:
     controls = [host for _, kind, host in loads if kind == "control"]
     assert controls.count("a.test") == 2
     assert controls.count("b.test") == 1
+
+
+# ---- #419: the midnight flake, and the daily cap as a hard cap -----------------------------------
+
+CALENDAR_TEST = "test_a_spacer_counts_days_on_the_calendar_by_default"
+
+
+def test_no_stage_test_reads_the_real_calendar() -> None:
+    """#419 (1): a run across local midnight must never flip a result. Every `Spacer` built in a
+    stage test is given its day, except the one test of the calendar default itself."""
+    tests = Path(__file__).parent
+    bare = []
+    for path in tests.glob("test_stage*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for fn in ast.walk(tree):
+            if not isinstance(fn, ast.FunctionDef) or fn.name == CALENDAR_TEST:
+                continue
+            for call in ast.walk(fn):
+                if not isinstance(call, ast.Call) or getattr(call.func, "id", "") != "Spacer":
+                    continue
+                if not any(k.arg == "day" for k in call.keywords):
+                    bare.append(f"{path.name}:{fn.name}")
+    assert bare == []
+
+
+def test_an_attempt_never_starts_without_its_whole_budget_left_today() -> None:
+    """#419 (2): the cap is hard. An attempt's loads (its control when due, its run, and a
+    possible wall confirmation) all count; one that would overrun waits for the next day."""
+    clock = Clock()
+    days = Days(clock)
+    spacer = Spacer(clock, clock.sleep, day=days, cap=3)
+    loads: list[tuple[int, str]] = []
+
+    def attempt(t: SiteTask, n: int) -> SiteRecord:
+        loads.append((days(), "run"))
+        return SiteRecord(record("a1", n, final=None), "site_down")  # a control repeats
+
+    def ctl(_host: str) -> ControlResult:
+        loads.append((days(), "control"))
+        return "pass"
+
+    run_stage([site("a1", "a.test")], runs=1, attempt=attempt, control=ctl,
+              confirm=lambda _t: False, spacer=spacer)  # fmt: skip
+    per_day: dict[int, list[str]] = {}
+    for day, kind in loads:
+        per_day.setdefault(day, []).append(kind)
+    assert all(len(kinds) <= 3 for kinds in per_day.values())
+    assert all(kinds[-1] == "run" for kinds in per_day.values())  # no control left without its run
+    assert len(per_day) > 1  # the attempts that would overrun waited for the next day
