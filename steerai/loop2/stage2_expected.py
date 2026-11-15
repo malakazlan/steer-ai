@@ -1,0 +1,278 @@
+"""Stage 2's expected outcomes (packet v2-ports-adapter, stage 2 plan rev 4.4 §1.2, [V2.63]):
+computed, never hand-written, as stage 1's were (#369).
+
+Each real-site task's acts are data (`stage2_acts.json`: the acted field's role and name as the
+task's saved start-page read shows them, then its Enter or button). They are rated by stage 1's
+own `rate` on that read and turned into an outcome by its own `outcome_of`, both unchanged.
+
+The saved reads hold third-party page text, so they stay in a local directory outside the repo.
+What is committed is the table: per task, the read's SHA-256 and its *deciding facts* (the acted
+field's role and AriaRole, whether it sits under a Search landmark, the button's role and
+landmark, and the rated risk), with the expected outcome. Never a whole-page hash: at run time
+the harness re-reads the start page and compares these facts only (`site_changed`, [V2.63] Q4).
+
+    uv run python -m steerai.loop2.stage2_expected --save-reads <dir>     # live, read-only
+    uv run python -m steerai.loop2.stage2_expected --acts steerai/loop2/stage2_acts.json \\
+        --reads <dir> --out <table.json>
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Final, get_args
+
+from steerai.loop2.decision import Key, Verb
+from steerai.loop2.query import search_landmark_of
+from steerai.loop2.stage1_expected import (
+    Act,
+    Expected,
+    ProofKind,
+    outcome_of,
+    rate,
+    target_in,
+)
+from steerai.orchestrator.contracts import RISKS, Risk
+from steerai.probes.task_suite import H2, H3, H4, H5, H6, HELD_OUT, TASKS, Task
+from steerai.world.effects import Observed
+from steerai.world.read_json import observed_from_json
+
+ACTS: Final = Path(__file__).with_name("stage2_acts.json")
+_ACT_FIELDS: Final = frozenset({"verb", "role", "name", "key", "option", "param"})
+_ROW_FIELDS: Final = frozenset({"acts", "proof", "why"})
+_PROOFS: Final = frozenset(get_args(ProofKind))
+_VERBS: Final[dict[object, Verb]] = {v: v for v in get_args(Verb)}
+_KEYS: Final[dict[object, Key]] = {k: k for k in get_args(Key)}
+
+
+@dataclass(frozen=True)
+class SiteRow:
+    """One real-site task's acts, the step 3 proof kind that reads its end state (None: none
+    does), and one line saying why."""
+
+    acts: tuple[Act, ...]
+    proof: ProofKind | None
+    why: str
+
+
+@dataclass(frozen=True)
+class DecidingFacts:
+    """What a task's expected outcome was computed from, and nothing else."""
+
+    field_role: str | None
+    """The typed field's control type; None when the acts type into nothing."""
+    aria_role: str | None
+    """The typed field's AriaRole; None when unread or absent."""
+    search_landmark: bool | None
+    """The typed field sits under a Search landmark; None when the acts type into nothing."""
+    button_role: str | None
+    """The clicked button's control type; None when the acts click nothing (an Enter)."""
+    button_search_landmark: bool | None
+    risk: Risk
+
+
+@dataclass(frozen=True)
+class TableRow:
+    task_id: str
+    read_sha256: str
+    facts: DecidingFacts
+    expected: Expected
+
+
+def real_site_tasks() -> tuple[Task, ...]:
+    """The pooled set's real-site tasks (dev, H1-H6), in set order, each once: the rows whose
+    start is a web address. The sets are data; nothing here names a site."""
+    seen: dict[str, Task] = {}
+    for task in (*TASKS, *HELD_OUT, *H2, *H3, *H4, *H5, *H6):
+        if task.start.startswith("https://"):
+            seen.setdefault(task.task_id, task)
+    return tuple(seen.values())
+
+
+def deciding_facts(row: SiteRow, goal: str, read: Observed) -> DecidingFacts:
+    """The deciding facts of `row`'s acts on `read`. A target missing from the read is a
+    `ValueError` (`not_in_read`), as `rate` raises it: the start page differs."""
+    risk = rate(goal, row.acts, read)
+    typed = next((a for a in row.acts if a.verb == "type"), None)
+    clicked = next((a for a in reversed(row.acts) if a.verb == "click"), None)
+    field = None if typed is None else target_in(typed, read)
+    button = None if clicked is None else target_in(clicked, read)
+    roles = read.aria_roles
+    return DecidingFacts(
+        field_role=None if field is None else field.role,
+        aria_role=None if field is None or roles is None else roles.get(field.runtime_id),
+        search_landmark=None if field is None else _in_search(read, field.runtime_id),
+        button_role=None if button is None else button.role,
+        button_search_landmark=None if button is None else _in_search(read, button.runtime_id),
+        risk=risk,
+    )
+
+
+def _in_search(read: Observed, runtime_id: tuple[int, ...]) -> bool:
+    return search_landmark_of(read, runtime_id) is not None
+
+
+def site_changed(committed: DecidingFacts, now: DecidingFacts) -> bool:
+    """[V2.63] Q4: the site changed under the table when any deciding fact differs."""
+    return committed != now
+
+
+def table_row(task_id: str, row: SiteRow, goal: str, raw_read: bytes) -> TableRow:
+    """One committed row from the saved read's bytes: its digest, its deciding facts and the
+    expected outcome by stage 1's rule."""
+    read = observed_from_json(raw_read.decode("utf-8"))
+    facts = deciding_facts(row, goal, read)
+    outcome, reason = outcome_of(facts.risk, row.proof)
+    expected = Expected(task_id, outcome, reason, facts.risk, row.proof, row.why)
+    return TableRow(task_id, hashlib.sha256(raw_read).hexdigest(), facts, expected)
+
+
+def dump_table(rows: Sequence[TableRow]) -> str:
+    """The committed table as stable JSON, by task id."""
+    payload = {
+        r.task_id: {
+            "read_sha256": r.read_sha256,
+            "facts": asdict(r.facts),
+            "expected": asdict(r.expected),
+        }
+        for r in sorted(rows, key=lambda r: r.task_id)
+    }
+    return json.dumps(payload, indent=2, sort_keys=False) + "\n"
+
+
+def load_table(text: str) -> dict[str, TableRow]:
+    raw = json.loads(text)
+    table: dict[str, TableRow] = {}
+    for task_id, entry in raw.items():
+        facts = entry["facts"]
+        risk = facts["risk"]
+        if risk not in RISKS:
+            raise ValueError(f"table: {task_id} has an unknown risk")
+        expected = entry["expected"]
+        table[task_id] = TableRow(
+            task_id,
+            str(entry["read_sha256"]),
+            DecidingFacts(**facts),
+            Expected(**expected),
+        )
+    return table
+
+
+def load_acts(text: str) -> dict[str, SiteRow]:
+    """The acts file: `{task_id: {"acts": [...], "proof": ..., "why": ...}}`, checked strictly
+    (a `ValueError` naming `acts` for anything else)."""
+    raw = json.loads(text)
+    if not isinstance(raw, dict):
+        raise ValueError("acts: not an object")
+    return {str(task_id): _row(str(task_id), entry) for task_id, entry in raw.items()}
+
+
+def _row(task_id: str, entry: object) -> SiteRow:
+    if not isinstance(entry, dict) or set(entry) != _ROW_FIELDS:
+        raise ValueError(f"acts: {task_id} needs exactly {sorted(_ROW_FIELDS)}")
+    acts = entry["acts"]
+    proof = entry["proof"]
+    why = entry["why"]
+    if not isinstance(acts, list) or not acts:
+        raise ValueError(f"acts: {task_id} has no acts")
+    if proof is not None and proof not in _PROOFS:
+        raise ValueError(f"acts: {task_id} has an unknown proof kind")
+    if not isinstance(why, str) or not why:
+        raise ValueError(f"acts: {task_id} needs a why")
+    return SiteRow(tuple(_act(task_id, a) for a in acts), proof, why)
+
+
+def _act(task_id: str, raw: object) -> Act:
+    if not isinstance(raw, dict) or not set(raw) <= _ACT_FIELDS:
+        raise ValueError(f"acts: {task_id} has an act with unknown fields")
+    verb = _VERBS.get(raw.get("verb"))
+    key = None if raw.get("key") is None else _KEYS.get(raw.get("key"))
+    if verb is None:
+        raise ValueError(f"acts: {task_id} has an unknown verb")
+    if key is None and raw.get("key") is not None:
+        raise ValueError(f"acts: {task_id} has an unknown key")
+    texts = {name: raw.get(name) for name in ("role", "name", "option", "param")}
+    if not all(v is None or isinstance(v, str) for v in texts.values()):
+        raise ValueError(f"acts: {task_id} has a field that is not text")
+    return Act(
+        verb,
+        texts["role"] or "",
+        texts["name"] or "",
+        key=key,
+        option=texts["option"],
+        param=texts["param"],
+    )
+
+
+def table_from_reads(acts: Mapping[str, SiteRow], reads: Path) -> list[TableRow]:
+    """Every row with acts, rated on its saved read `<reads>/<task_id>.json`."""
+    goals = {t.task_id: t.goal for t in real_site_tasks()}
+    unknown = sorted(set(acts) - set(goals))
+    if unknown:
+        raise ValueError(f"acts: not real-site tasks: {unknown}")
+    return [
+        table_row(task_id, row, goals[task_id], (reads / f"{task_id}.json").read_bytes())
+        for task_id, row in acts.items()
+    ]
+
+
+def save_reads(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live, Windows only
+    """The `--save-reads` pass: each real-site start page once, in a throwaway profile, read as
+    the v2 loop's full read takes it, written to `<out>/<task_id>.json`. Read-only: no input.
+    A start page shared by several tasks is loaded once."""
+    import secrets  # noqa: PLC0415 - live only
+
+    from steerai.probes.live_browser import live_page  # noqa: PLC0415 - Windows only
+    from steerai.probes.shadow_v2 import _ComFacts  # noqa: PLC0415 - COM failures as OSError
+    from steerai.world.model import WorldModel  # noqa: PLC0415 - Windows only
+    from steerai.world.observe2 import read_observed  # noqa: PLC0415 - Windows only
+    from steerai.world.read_json import observed_to_json  # noqa: PLC0415
+
+    out.mkdir(parents=True, exist_ok=True)
+    by_start: dict[str, list[str]] = {}
+    for task in real_site_tasks():
+        by_start.setdefault(task.start, []).append(task.task_id)
+    for start, task_ids in by_start.items():
+        with live_page(start, floor_mb=floor_mb, settle_s=6.0) as page:
+            snapshot = WorldModel(page.client).observe(page.hwnd, cap_s=5.0)
+            read = read_observed(
+                snapshot,
+                _ComFacts(page.client),
+                key=secrets.token_bytes(32),
+                windows=lambda: (page.hwnd,),
+            )
+        text = (observed_to_json(read) + "\n").encode("utf-8")
+        for task_id in task_ids:
+            (out / f"{task_id}.json").write_bytes(text)
+        sys.stdout.write(json.dumps({"tasks": task_ids, "elements": len(snapshot.elements)}) + "\n")
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Stage 2's expected outcomes.")
+    parser.add_argument("--save-reads", type=Path, help="live: save each start page's read here")
+    parser.add_argument("--min-free-mb", type=int, default=4096)
+    parser.add_argument("--acts", type=Path, default=ACTS)
+    parser.add_argument("--reads", type=Path, help="the saved reads' local directory")
+    parser.add_argument("--out", type=Path, help="write the table here")
+    args = parser.parse_args(argv)
+    if args.save_reads is not None:  # pragma: no cover - live
+        return save_reads(args.save_reads, floor_mb=args.min_free_mb)
+    if args.reads is None:
+        parser.error("--reads is required to compute the table")
+    rows = table_from_reads(load_acts(args.acts.read_text(encoding="utf-8")), args.reads)
+    for r in rows:
+        e = r.expected
+        sys.stdout.write(f"{r.task_id:<6} {e.risk:<3} {e.outcome:<11} {e.reason or '-'}\n")
+    if args.out is not None:
+        args.out.write_bytes(dump_table(rows).encode("utf-8"))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
