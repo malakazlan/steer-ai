@@ -369,10 +369,10 @@ def save_opened(out: Path) -> int:  # pragma: no cover - live, Windows only
         row: dict[str, object] = {"task": task.task_id}
         path = fresh_opened(out, task.task_id)
         try:
+            targets = opener_targets(acted, task.task_id)  # before any load (#429, #451)
             with _opened(task) as (hwnd, port):
                 if port is None:
                     raise InvalidRun("opener_needs_a_page")
-                targets = opener_targets(acted, task.task_id)  # fails closed (#429)
                 revealed = _revealed(hwnd, port, opener, targets)
         except (InvalidRun, OpenerError) as exc:
             sys.stdout.write(json.dumps({**row, "invalid": str(exc)}) + "\n")
