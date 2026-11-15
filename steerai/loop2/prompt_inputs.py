@@ -19,15 +19,19 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
+from steerai.loop2 import controller
 from steerai.loop2.controller import (
+    AUDIT_PROMPT_VERSION,
     TOKENS_PER_BYTE,
     ControllerError,
+    DecideRecord,
     FocusState,
     ListingRow,
     build_audit_prompt,
     decide,
     focus_state,
     parse_audit,
+    prompt_tokens,
     v2_listing,
 )
 from steerai.loop2.decide_port import DecideCalls
@@ -207,15 +211,37 @@ def make_audit(calls: DecideCalls, *, goal: str, task_fence: str) -> Callable[[A
     or unparsed call raises (`ControllerError` carries its usage): the runner vetoes."""
 
     def port(view: AuditView) -> Audited:
-        rows = v2_listing(view.observed.snapshot, handles=view.handles)
+        observed = view.observed
+        snapshot = observed.snapshot
+        listing = select_listing(  # #404 principal 2: decide's cap and keep set
+            snapshot, cap=LISTING_CAP, focus=observed.focus, keep=view.keep, goal_words=view.words
+        )
+        rows = v2_listing(snapshot, handles=view.handles, focus=observed.focus, listing=listing)
         system, user = build_audit_prompt(
-            goal, view.proofs, view.observed.snapshot.title or "", rows,
+            goal, view.proofs, snapshot.title or "", rows,
             task_fence=task_fence, screen_fence=secrets.token_hex(16),
         )  # fmt: skip
-        doc, usage = calls.turn(lambda ask: parse_audit(ask(system, user)))
+        _within_bound(calls, system, user)  # over it: refused before any call
+        try:
+            doc, usage = calls.turn(lambda ask: parse_audit(ask(system, user)))
+        except ControllerError as failed:
+            failed.record = DecideRecord(AUDIT_PROMPT_VERSION, 1, False, True)  # a call was made
+            raise
         return Audited(doc.veto, doc.reason, usage)
 
     return port
+
+
+def _within_bound(calls: DecideCalls, system: list[str], user: list[str]) -> None:
+    """#404 principal 2: the audit's prompt under decide's byte bound, with one exact count near
+    the ceiling ([V2.61]); over it, or a count that failed, `prompt_too_large` with no record."""
+    ceiling = controller.PROMPT_TOKEN_CEILING
+    bound = prompt_tokens(system, user)
+    if bound <= ceiling:
+        return
+    exact = calls.count(system, user) if bound <= ceiling * controller.EXACT_BAND else None
+    if exact is None or exact > ceiling:
+        raise ControllerError("prompt_too_large")
 
 
 def calibrated(

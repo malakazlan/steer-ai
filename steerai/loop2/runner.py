@@ -64,7 +64,7 @@ from steerai.loop2.history import (
     log_role,
     record_ok,
 )
-from steerai.loop2.listing import ListingTurn
+from steerai.loop2.listing import ListingTurn, words_of
 from steerai.loop2.loop import (
     COMMIT_RISK,
     PARENT_KINDS,
@@ -949,10 +949,27 @@ class _Run:
         if audit is None or self.model_calls + 1 > budgets.max_model_calls or spent:
             self.audit = ("failed", "audit_failed")
             raise _End("blocked", Reason("audit_failed"))
-        view = AuditView(observed=observed, handles=self.handles.bind(observed), proofs=lines)
+        cited = {
+            self.handles.by_handle[p.handle]
+            for proofs in self.proofs.values()
+            for p in proofs.values()
+            if p.handle in self.handles.by_handle
+        }
+        words = words_of(span.text for s in self.subgoals for span in s.params.values())
+        view = AuditView(
+            observed=observed,
+            handles=self.handles.bind(observed),
+            proofs=lines,
+            keep=self._always_keep() | cited,
+            words=words,
+        )
         try:
             audited = audit(view)
         except (PortInterrupted, SteerError, ControllerError) as exc:
+            if isinstance(exc, ControllerError) and exc.record is None:
+                # refused before any call (the bound, a fence in the data): no call is counted
+                self.audit = ("failed", "audit_no_call")
+                raise _End("blocked", Reason("audit_failed")) from None
             self.model_calls += 1
             if isinstance(exc, PortInterrupted):
                 self.tokens = math.nan  # abandoned: billed, never reported ([V2.41] (1))

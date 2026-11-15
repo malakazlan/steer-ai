@@ -162,6 +162,7 @@ def test_the_audit_sees_the_proof_tokens_and_the_final_listing() -> None:
     view = world.audits[0]
     assert isinstance(view, AuditView)
     assert view.proofs == (("s1", "value", "claim", "value", True),)
+    assert FIELD.runtime_id in view.keep
     assert view.observed.snapshot.elements
 
 
@@ -185,3 +186,81 @@ def test_the_audit_prompt_holds_no_desc_no_param_words_and_nothing_outside_the_f
     assert AUDIT_PROMPT_VERSION == "audit-1"
     schema = json.loads(system[1])
     assert set(schema["properties"]) == {"veto", "reason"}
+
+
+# ---- #404 principal 2: the audit's listing is bounded as decide's ------------------------
+
+
+SENTINEL_DESC = "zqsentineldesc"
+OFF_LISTING = "zqofflistingname"
+
+
+def test_make_audit_carries_no_desc_and_nothing_from_the_page_outside_the_listing() -> None:
+    """Rev 4.5 test 9: a sentinel desc and a page name the cap leaves out never reach the
+    audit's blocks; the listing is selected with decide's keep set and cap."""
+    from steerai.loop2.decide_port import DecideCalls, Reply, TaskGenerations  # noqa: PLC0415
+    from steerai.loop2.prompt_inputs import make_audit  # noqa: PLC0415
+
+    sent: list[list[str]] = []
+
+    def provider(_system: list[str], blocks: list[str]) -> Reply:
+        sent.append(blocks)
+        return Reply('{"veto": false, "reason": "outcome_shown"}', "end_turn", TokenUsage(5, 1))
+
+    many = [element(100 + i, "Button", f"Item {i}", (9, 100 + i), 1) for i in range(400)]
+    far = dataclasses.replace(element(999, "Button", OFF_LISTING, (9, 999), 1), offscreen=True)
+    seen = observed([*PAGE, *many, far])
+    handles = {e.id: e.id for e in seen.snapshot.elements}
+    calls = DecideCalls(provider, interrupted=lambda: None, generations=TaskGenerations(),
+                        late_error=lambda _t: None)  # fmt: skip
+    audit = make_audit(calls, goal="type red shoes in the field", task_fence="taskfence01")
+    view = AuditView(
+        observed=seen,
+        handles=handles,
+        proofs=(("s1", "value", "claim", "value", True),),
+        keep=frozenset({FIELD.runtime_id}),
+        words=frozenset({"red", "shoes"}),
+    )
+    assert audit(view).veto is False
+    text = "\n".join(sent[0])
+    assert SENTINEL_DESC not in text
+    assert OFF_LISTING not in text
+    assert '"Search"' in text  # the kept field is listed
+
+
+def test_an_audit_prompt_over_the_bound_is_failed_with_no_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Principal 2: the same byte bound as decide; over it, no call is made."""
+    from steerai.loop2 import controller  # noqa: PLC0415
+    from steerai.loop2.decide_port import DecideCalls, Reply, TaskGenerations  # noqa: PLC0415
+    from steerai.loop2.prompt_inputs import make_audit  # noqa: PLC0415
+
+    monkeypatch.setattr(controller, "PROMPT_TOKEN_CEILING", 10)
+    called: list[int] = []
+
+    def provider(_system: list[str], _blocks: list[str]) -> Reply:
+        called.append(1)
+        return Reply('{"veto": false, "reason": "outcome_shown"}', "end_turn", TokenUsage(5, 1))
+
+    calls = DecideCalls(provider, interrupted=lambda: None, generations=TaskGenerations(),
+                        late_error=lambda _t: None)  # fmt: skip
+    audit = make_audit(calls, goal="type red shoes", task_fence="taskfence01")
+    seen = observed(PAGE)
+    view = AuditView(observed=seen, handles={e.id: e.id for e in PAGE},
+                     proofs=(("s1", "value", "claim", "value", True),))  # fmt: skip
+    with pytest.raises(ControllerError) as refused:
+        audit(view)
+    assert refused.value.code == "prompt_too_large"
+    assert refused.value.record is None  # no call was made
+    assert called == []
+
+
+def test_an_audit_that_made_no_call_is_not_counted_as_one() -> None:
+    """Non-blocking: a refusal before any call (`prompt_too_large`, a fence in the data) is
+    `audit_failed` with no model call counted and no NaN tokens."""
+    world = _value_only(ControllerError("prompt_too_large"))
+    outcome = run_task(task(), world.ports())
+    assert (outcome.status, outcome.reason) == ("blocked", "audit_failed")
+    assert outcome.model_calls == world.events.count("decide")
+    assert outcome.audit == ("failed", "audit_no_call")

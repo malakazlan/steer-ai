@@ -265,6 +265,11 @@ class AuditView:
     observed: Observed
     handles: Mapping[int, int]
     proofs: tuple[ProofLine, ...]
+    keep: frozenset[tuple[int, ...]] = frozenset()
+    """#404 principal 2: decide's always-keep set plus every cited element, by RuntimeId: the
+    audit's listing is selected as decide's is, with these kept under the cap."""
+    words: frozenset[str] = frozenset()
+    """The subgoals' param words, for the goal-word class of the listing."""
 
 
 @dataclass(frozen=True)
