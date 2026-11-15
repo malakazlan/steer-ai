@@ -526,6 +526,8 @@ def _result(
                 "prompt_tokens": t.prompt_tokens,
                 "root_depth": t.root_depth,
                 "prompt_bytes": t.prompt_bytes,
+                "acted": len(t.acted),  # #366 P5: dispatched under this turn's Decision
+                "acted_listed": t.acted <= t.listed,
             }
             for t in outcome.listings
         ],
