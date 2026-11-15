@@ -506,6 +506,7 @@ def _action_variant(
     }
     if verb == "type":
         variant["oneOf"] = [{"required": ["text"]}, {"required": ["param"]}]
+        properties["text"] = {**properties["text"], "minLength": 1}  # "" is no text
     return variant
 
 
@@ -837,6 +838,10 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     the ceiling (`_fit`); `on_sent` hears each call's prompt bytes.
     A failure raises ControllerError carrying the DecideRecord of the calls spent.
     """
+    if first_turn == bool(subgoal_lines):
+        # [V2.65]: the schema shown is chosen by the subgoal lines (`build_prompt`) and the
+        # reply is validated by `first_turn`; a caller where they disagree is a bug, never sent
+        raise ValueError("first_turn_mismatch")
     screen = screen_fence if screen_fence is not None else secrets.token_hex(16)
 
     def render(rows: Sequence[ListingRow]) -> tuple[list[str], list[str]]:

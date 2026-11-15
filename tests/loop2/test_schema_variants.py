@@ -8,7 +8,9 @@ from __future__ import annotations
 import json
 from typing import Any, get_args
 
-from steerai.loop2.controller import PROMPT_VERSION, build_prompt
+import pytest
+
+from steerai.loop2.controller import PROMPT_VERSION, build_prompt, decide
 from steerai.loop2.decision import (
     NO_COMMIT_VERBS,
     STEP,
@@ -210,6 +212,55 @@ def test_every_claim_shape_the_schema_offers_is_one_validate_accepts() -> None:
     for kind, variant in variants.items():
         doc = _minimal_claim(kind)
         assert _fits(variant, doc), kind
+        decision = Decision.model_validate({"claims": [doc]})
+        tokens = validate(decision, listed_ids=frozenset({1}), goal=GOAL, first_turn=False,
+                          known_subgoals={"s1": frozenset({"text"})})  # fmt: skip
+        assert tokens == [], (kind, tokens)
+
+
+def test_decide_refuses_a_first_turn_that_disagrees_with_the_subgoal_lines() -> None:
+    """Principal #417 (2): the schema shown follows the subgoal lines and the reply is validated
+    by `first_turn`; a caller where they disagree fails before any call."""
+    calls: list[object] = []
+
+    def ask(_system: list[str], _blocks: list[str]) -> str:
+        calls.append(None)
+        return "{}"
+
+    for first_turn, lines in ((True, ["s1 closes=value commit=none: x"]), (False, [])):
+        with pytest.raises(ValueError, match="first_turn_mismatch"):
+            decide(ask, task_goal=GOAL, subgoal_lines=lines, action_log=[], subgoal_status=[],
+                   window_title="t", listing_rows=[], listed_ids=frozenset(),
+                   first_turn=first_turn, task_fence=TASK_FENCE)  # fmt: skip
+    assert calls == []
+
+
+def test_typed_text_is_never_empty() -> None:
+    """`validate` reads "" as no text (`text_missing`); the schema does not offer it."""
+    assert _variants(LATER)["type"]["properties"]["text"]["minLength"] == 1
+
+
+def test_every_optional_field_the_schema_offers_is_one_validate_accepts() -> None:
+    """Principal #417 note: the maximal shapes too, not only the minimal ones. A commit on every
+    verb that may carry one, a param hint on a state claim, cited rows on navigated."""
+    for verb, variant in _variants(FIRST).items():
+        doc = _minimal(verb)
+        if "commit" in variant["properties"]:
+            doc["commit"] = "none"
+        assert _fits(variant, doc), verb
+        decision = Decision.model_validate(
+            {
+                "subgoals": [
+                    {"id": "s1", "desc": "d", "params": {"text": "hello"}, "closes": "state"}
+                ],
+                "actions": [doc],
+            }
+        )
+        assert validate(decision, listed_ids=frozenset({1}), goal=GOAL, first_turn=True) == []
+    claims = _claim_variants(LATER)
+    for kind, extra in (("state", {"param": "text"}), ("navigated", {"evidence": [1]})):
+        doc = {**_minimal_claim(kind), **extra}
+        assert _fits(claims[kind], doc), kind
         decision = Decision.model_validate({"claims": [doc]})
         tokens = validate(decision, listed_ids=frozenset({1}), goal=GOAL, first_turn=False,
                           known_subgoals={"s1": frozenset({"text"})})  # fmt: skip
