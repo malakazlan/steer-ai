@@ -3,8 +3,8 @@ Pure: no Chrome, no child process, no input; the live entry point is marked and 
 
 from __future__ import annotations
 
-import dataclasses
 import ast
+import dataclasses
 import json
 import subprocess
 from collections.abc import Mapping
