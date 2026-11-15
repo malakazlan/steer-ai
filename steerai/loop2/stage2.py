@@ -32,7 +32,6 @@ the coordinator has cleared).
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
 import urllib.parse
@@ -59,6 +58,7 @@ from steerai.loop2.stage1 import (
     wait_until_ready,
 )
 from steerai.loop2.stage2_expected import (
+    START_EXPRESSION,
     DecidingFacts,
     SiteRow,
     TableRow,
@@ -67,6 +67,7 @@ from steerai.loop2.stage2_expected import (
     load_table,
     real_site_tasks,
     site_changed,
+    start_document,
 )
 from steerai.probes.task_suite import CHALLENGE_TITLES, Task, control_url
 
@@ -332,18 +333,9 @@ def _start_page(site: SiteTask, port: int, hwnd: int) -> StartPage:  # pragma: n
     from steerai.world.model import WorldModel  # noqa: PLC0415 - Windows only
     from steerai.world.observe2 import read_observed  # noqa: PLC0415 - Windows only
 
-    expression = (
-        "JSON.stringify({uri: document.documentURI, title: document.title, status: "
-        "(performance.getEntriesByType('navigation')[0] || {}).responseStatus || 0})"
-    )
-    page = json.loads(_read(port, expression, "start") or "{}")
-    status = page.get("status")
-    loaded = (
-        not str(page.get("uri", "")).startswith("chrome-error:")
-        and isinstance(status, int)
-        and 200 <= status < 400
-    )
-    wall = str(page.get("title", "")) in CHALLENGE_TITLES
+    document = start_document(_read(port, START_EXPRESSION, "start"))
+    loaded = document.loaded
+    wall = document.title in CHALLENGE_TITLES
     if not loaded or wall or site.row is None or site.suite is None:
         return StartPage(loaded, wall, None)
     client = UiaClient()
