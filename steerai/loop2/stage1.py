@@ -509,6 +509,7 @@ def _run_facts(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures
         if final.get("url_reads") is not None:
             tally(final.get("url_reads"), urls, URL_READS)
     counts, counts_odd = _outcome_counts(finals)
+    combobox, combobox_odd = _combobox_facts(finals)
     refusals, refusals_odd = _refusal_counts(finals)
     return {
         "read_cost": {
@@ -522,7 +523,8 @@ def _run_facts(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures
         "url_reads": urls,
         "refusals": refusals,
         "counts": counts,
-        "run_facts_incomplete": odd + counts_odd + refusals_odd,
+        "combobox": combobox,
+        "run_facts_incomplete": odd + counts_odd + combobox_odd + refusals_odd,
     }
 
 
@@ -544,6 +546,28 @@ def _refusal_counts(finals: Sequence[Json]) -> tuple[dict[str, int], int]:
             else:
                 sums[token] = sums.get(token, 0) + got
     return {k: v for k, v in sums.items() if v}, odd
+
+
+COMBOBOX_FACTS: Final = ("query_class_listed", "typed_into")
+
+
+def _combobox_facts(finals: Sequence[Json]) -> tuple[dict[str, int], int]:
+    """[V2.64] Two: how many runs held each ComboBox fact; a value that is not a bool is said
+    (odd), never counted; a missing or null block is skipped."""
+    held = dict.fromkeys(COMBOBOX_FACTS, 0)
+    odd = 0
+    for final in finals:
+        block = final.get("combobox")
+        if not isinstance(block, Mapping):
+            odd += block is not None
+            continue
+        for key in COMBOBOX_FACTS:
+            value = block.get(key)
+            if not isinstance(value, bool):
+                odd += 1
+            else:
+                held[key] += value
+    return held, odd
 
 
 def _outcome_counts(finals: Sequence[Json]) -> tuple[dict[str, Any], int]:  # Any: JSON figures

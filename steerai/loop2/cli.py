@@ -396,6 +396,7 @@ RUN_FACTS: Final = (
     "stale_observations",
     "unread_automation_ids",
     "url_reads",
+    "combobox",
     "partial_page_calls",
     "refusals",
     "counts",
@@ -489,6 +490,10 @@ def _result(
         "stale_observations": outcome.stale_observations,
         "unread_automation_ids": outcome.unread_automation_ids,
         "url_reads": dict(outcome.url_reads),
+        "combobox": {  # [V2.64] Two: two facts, no judgement
+            "query_class_listed": outcome.query_combobox_listed,
+            "typed_into": outcome.typed_into_combobox,
+        },
         "partial_page_calls": outcome.partial_page_calls,  # [V2.35]
         "refusals": dict(outcome.refusals),  # [V2.46]: by closed token
         "counts": {  # [V2.63]: every count the rulings asked for, collected before stage 2
