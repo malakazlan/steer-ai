@@ -259,6 +259,13 @@ class HelperProcess:
         return self._wake
 
     @property
+    def job_handle(self) -> int:
+        """The helper's own job (read-only): for the windows test's `IsProcessInJob` (#375 P6)."""
+        if self._job is None:
+            raise RuntimeError("the helper is not started")
+        return self._job
+
+    @property
     def process_handle(self) -> int:
         if self._process is None:
             raise RuntimeError("the helper is not started")

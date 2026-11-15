@@ -691,3 +691,16 @@ def test_an_unreadable_pyvenv_cfg_is_a_refusal(tmp_path: Path, content: bytes | 
             executable=str(tmp_path / "python.exe"),
             base_executable=r"C:\py\python.exe",
         )
+
+
+# ---- #375 review P6: the helper's own job, readable for the windows test ---------------------
+
+
+def test_the_job_handle_is_the_helpers_own_job_and_read_only() -> None:
+    w = FakeWin32()
+    helper = _helper(w)
+    helper.start()
+    (job,) = (c[1] for c in w.named("job"))
+    assert helper.job_handle == job
+    with pytest.raises(AttributeError):
+        helper.job_handle = 0  # type: ignore[misc]  # a read-only property
