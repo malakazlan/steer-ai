@@ -5,12 +5,15 @@ above (the step 3 invariant, read from each run's final line). Only the expected
 
 from __future__ import annotations
 
+import ast
 import json
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from steerai.errors import START_DETAILS, WORLD_START_DETAILS
 from steerai.loop2 import cli
 from steerai.loop2.loop import Dispatch, TaskOutcome
 from steerai.loop2.stage1 import Classified, RunRecord, StageTask, accept, classify
@@ -143,12 +146,55 @@ def test_a_count_that_is_not_an_exact_non_negative_int_fails_closed(count: objec
 
 
 def test_an_r2_gate_failure_reports_each_runs_own_reason() -> None:
-    line = {**final("R1"), "status": "error", "detail": "no_window"}
+    """#438: an error after the task began (its line has `used`) is a fail and is checked."""
+    line = {**final("R1"), "status": "error", "detail": "gate_blocked"}
     del line["dispatch_risks"]
+    errored = classify(TASKS[0], RunRecord("t0", 4, line, True, True, None, None))
+    rated = [r for t in TASKS for r in runs(t, final("R1"))]
+    summary = accept(TASKS, [*rated, errored], controls=None, runs_per_task=3, label="t")
+    assert not summary.gates["no_r2_dispatch"]
+    assert summary.report["no_r2_dispatch_failures"] == [
+        {"task": "t0", "run": 4, "reason": "error_after_start", "counts": "unread"}
+    ]
+
+
+def _refused_before_start(detail: str) -> dict[str, object]:
+    """The CLI's line for a start refused before the task began: no `used` block (#438)."""
+    return {"status": "error", "code": None, "detail": detail}
+
+
+# ---- #428 (2): the gate's report carries closed tokens only ------------------------------------
+
+
+def test_the_gate_report_never_carries_text_from_the_childs_line() -> None:
+    line = _refused_before_start("a page title the child echoed")
     refused = classify(TASKS[0], RunRecord("t0", 4, line, True, True, None, None))
     rated = [r for t in TASKS for r in runs(t, final("R1"))]
     summary = accept(TASKS, [*rated, refused], controls=None, runs_per_task=3, label="t")
-    assert not summary.gates["no_r2_dispatch"]
-    assert summary.report["no_r2_dispatch_failures"] == [
-        {"task": "t0", "run": 4, "reason": "start_refused:no_window", "counts": "unread"}
-    ]
+    assert summary.report["void_causes"] == {"start_refused:None:other": 1}
+    assert "page title" not in json.dumps(summary.report)
+
+
+# ---- #429 (1): the closed details the emitters really send are kept ------------------------------
+
+
+@pytest.mark.parametrize("detail", sorted(START_DETAILS))
+def test_each_closed_start_detail_is_kept_in_the_report(detail: str) -> None:
+    line = _refused_before_start(detail)
+    refused = classify(TASKS[0], RunRecord("t0", 4, line, True, True, None, None))
+    rated = [r for t in TASKS for r in runs(t, final("R1"))]
+    summary = accept(TASKS, [*rated, refused], controls=None, runs_per_task=3, label="t")
+    assert summary.report["void_causes"] == {f"start_refused:None:{detail}": 1}
+
+
+def test_the_emitters_use_the_shared_details() -> None:
+    """No emitter spells a closed detail as its own literal: the report's set cannot drift."""
+    root = Path(__file__).resolve().parents[2] / "steerai"
+    for name in ("loop2/cli.py", "run.py"):
+        tree = ast.parse((root / name).read_text(encoding="utf-8"))
+        literals = {
+            n.value
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+        }
+        assert not literals & (START_DETAILS - WORLD_START_DETAILS), name

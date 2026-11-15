@@ -170,12 +170,16 @@ class Claim(_Strict):
     answer: str | None = None
 
 
+Stop = Literal["cannot", "blocked"]
+"""A Decision's stop: the closed set the runner's `_stopped` and the turn trace share."""
+
+
 class Decision(_Strict):
     subgoals: list[SubgoalDoc] | None = None
     claims: list[Claim] = Field(default_factory=list)
     actions: list[ActionDoc] = Field(default_factory=list)
     ask: str | None = None
-    stop: Literal["cannot", "blocked"] | None = None
+    stop: Stop | None = None
 
 
 def _action_tokens(

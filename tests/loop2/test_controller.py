@@ -334,6 +334,7 @@ def test_decide_repairs_rejection_with_tokens_only() -> None:
     ask, seen = make_model([bad, GOOD])
     _, record = run(ask)
     assert (record.calls, record.repaired) == (2, True)
+    assert record.rejections == ("ask_with_actions", "id_not_listed")  # [V2.67] D
     assert seen[1][len(seen[0]) :] == [repair_line(["ask_with_actions", "id_not_listed"])]
     assert seen[1][-1].startswith("repair: ask_with_actions, id_not_listed.")  # #386: closed legend
     assert all(SECRET not in block for block in seen[1])
@@ -341,7 +342,8 @@ def test_decide_repairs_rejection_with_tokens_only() -> None:
 
 def test_decide_repairs_not_json() -> None:
     ask, seen = make_model([f"{SECRET} not json", GOOD])
-    run(ask)
+    _, record = run(ask)
+    assert record.rejections == ("not_json",)  # [V2.67] D: the code, never the answer
     assert seen[1][-1] == repair_line(["not_json"])
     assert all(SECRET not in b for b in seen[1])
 
@@ -351,14 +353,18 @@ def test_decide_fails_twice_and_carries_its_record() -> None:
     with pytest.raises(ControllerError) as e:
         run(ask)
     assert len(seen) == 2
-    assert e.value.record == DecideRecord("controller-10", 2, True, True)
+    assert e.value.record == DecideRecord(
+        "controller-10", 2, True, True, rejections=("id_not_listed", "id_not_listed")
+    )
 
 
 def test_decide_failure_without_repairs_carries_its_record() -> None:
     ask, _ = make_model([BAD_TARGET])
     with pytest.raises(ControllerError) as e:
         run(ask, max_repairs=0)
-    assert e.value.record == DecideRecord("controller-10", 1, False, True)
+    assert e.value.record == DecideRecord(
+        "controller-10", 1, False, True, rejections=("id_not_listed",)
+    )
 
 
 def test_decide_no_third_call_on_parse_failure() -> None:

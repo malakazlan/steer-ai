@@ -731,7 +731,7 @@ def test_a_controller_failure_after_calling_counts_the_call() -> None:
     world = World([], decide_raises=error)
     outcome = run_task(task(), world.ports())
     assert (outcome.status, outcome.reason) == ("stopped", "port_not_json")
-    assert outcome.model_calls == 1
+    assert outcome.model_calls == 2  # invariant 9, [V2.68]: the call and its repair
     assert outcome.usage_incomplete
 
 
