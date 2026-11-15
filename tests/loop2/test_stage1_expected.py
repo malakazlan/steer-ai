@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from steerai.loop2.decision import Claim
 from steerai.loop2.stage1_expected import (
     COMMIT_REASON,
     GALLERY_ROWS,
@@ -24,10 +26,13 @@ from steerai.loop2.stage1_expected import (
     rate,
     table,
 )
+from steerai.loop2.task import GoalSpan, Subgoal
+from steerai.loop2.verify import Readers, check_claim
 from steerai.orchestrator.contracts import Risk
 from steerai.probes.gallery_page import LARGE_TARGET
 from steerai.probes.task_suite import GALLERY
-from steerai.world.effects import Observed
+from steerai.world.effects import Observed, ValueFact
+from steerai.world.elements import Element
 from steerai.world.landmarks import Landmark
 from steerai.world.read_json import observed_from_json
 from tests.loop2.world_fakes import element, observed
@@ -167,6 +172,56 @@ def test_the_large_tasks_are_written_as_data_and_expected_done() -> None:
         "lg1": ("done", "state"),
         "lg2": ("done", "state"),
     }
+
+
+# ---- g12 to g14: done is backed by the select's own live value, not the observer's own_value --
+
+CHOSEN = ("g12", "g13", "g14")
+
+
+def _value_claim(
+    task_id: str, read_value: Callable[[Element], ValueFact | None]
+) -> tuple[str, ...]:
+    """A `value` claim citing the row's ComboBox, checked by the runner's `check_claim` on
+    observations that carry no observer value (`acted_value` None: no own_value at all)."""
+    act = GALLERY_ROWS[task_id].acts[0]
+    assert act.option is not None
+    goal = f"pick {act.option}"
+    box = element(3, act.role, act.name, (7, 3), 1)
+    seen = observed([DOC, box])
+    assert seen.acted_value is None
+    params = {"choice": GoalSpan.of(goal, 5, len(goal))}
+    subgoal = Subgoal("s1", "pick it", params, "value")
+    claim = Claim(subgoal="s1", kind="value", evidence=[box.id], param="choice")
+
+    def fact_of(text: str) -> ValueFact:
+        return ValueFact(filled=bool(text), digest=f"d:{text}")
+
+    readers = Readers(read_state=lambda _e, _w: None, read_value=read_value, fact_of=fact_of)
+    return check_claim(claim, subgoal, seen, seen, readers=readers)
+
+
+@pytest.mark.parametrize("task_id", CHOSEN)
+def test_a_chosen_option_is_done_by_a_value_proof_on_the_combobox_itself(task_id: str) -> None:
+    row = GALLERY_ROWS[task_id]
+    assert row.proof == "value"
+    assert [(a.verb, a.role) for a in row.acts] == [("choose", "ComboBox")]
+    option = row.acts[0].option
+    assert check_rejects(task_id, ValueFact(filled=True, digest=f"d:{option}")) == ()
+
+
+@pytest.mark.parametrize("task_id", CHOSEN)
+def test_the_value_proof_reads_the_live_value_so_an_unread_one_never_proves(task_id: str) -> None:
+    """The proof is the cited element's live value read (`Readers.read_value`, bound to the
+    world's Value pattern read); an unread value rejects whatever the observer saw. Whether
+    Chrome's native-select ComboBox gives a readable value is a live fact this cannot pin
+    offline: the stage 1 runs measure it (an unread one ends not done, never a false done)."""
+    assert check_rejects(task_id, None) == ("value_unread",)
+    assert check_rejects(task_id, ValueFact(filled=True, digest="d:other")) == ("value_mismatch",)
+
+
+def check_rejects(task_id: str, fact: ValueFact | None) -> tuple[str, ...]:
+    return _value_claim(task_id, lambda _element: fact)
 
 
 # ---- the 24 gallery outcomes, rated from the gallery's own saved read -------------------------
