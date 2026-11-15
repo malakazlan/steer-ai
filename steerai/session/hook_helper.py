@@ -261,7 +261,8 @@ def make_keyboard_proc(
                 )
         except Exception:  # noqa: BLE001 - the hook chain must go on; the count is the report
             on_error()
-        return call_next(code, wparam, lparam)
+        finally:
+            return call_next(code, wparam, lparam)  # noqa: B012 - #375 H8: the chain goes on whatever happened
 
     return proc
 
@@ -285,7 +286,8 @@ def make_mouse_proc(
                 )
         except Exception:  # noqa: BLE001 - the hook chain must go on; the count is the report
             on_error()
-        return call_next(code, wparam, lparam)
+        finally:
+            return call_next(code, wparam, lparam)  # noqa: B012 - #375 H8: the chain goes on whatever happened
 
     return proc
 

@@ -127,3 +127,20 @@ def test_a_failure_before_the_handler_is_reported_and_the_chain_goes_on() -> Non
         proc = make(sink, lambda: errors.append("error"), lambda *_args: NEXT)
         assert proc(HC_ACTION, 0x100, ctypes.addressof(info)) == NEXT
     assert errors == ["error", "error"]
+
+
+def test_the_chain_goes_on_even_when_the_error_report_itself_fails() -> None:
+    """#375 H8: `CallNextHookEx` runs whatever happens in the procedure."""
+
+    def sink(**_event: int) -> None:
+        raise RuntimeError("a decode or dispatch failure")
+
+    def on_error() -> None:
+        raise RuntimeError("the error report failed too")
+
+    for make, info in (
+        (make_keyboard_proc, KeyboardHookStruct(vkCode=1, scanCode=0, flags=0, time=0)),
+        (make_mouse_proc, MouseHookStruct(pt=(0, 0), mouseData=0, flags=0, time=0)),
+    ):
+        proc = make(sink, on_error, lambda *_args: NEXT)
+        assert proc(HC_ACTION, 0x100, ctypes.addressof(info)) == NEXT
