@@ -7,6 +7,7 @@ only a loop around `watch_once`, which these tests call directly."""
 from __future__ import annotations
 
 import ast
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from steerai.session import helper_monitor
 from steerai.session.helper_core import KILL_ACK_S, write_config
 from steerai.session.helper_monitor import HelperMonitor
 from steerai.session.hook_layout import (
+    HISTOGRAMS,
     KIND_OTHER_STEER,
     KIND_TAKEOVER,
     STATE_FAILED,
@@ -43,6 +45,7 @@ class FakeHelper:
     terminated: int = 0
     closed: int = 0
     wakes: list[int] = field(default_factory=list)
+    on_get: Callable[[str], None] | None = None
 
     def __post_init__(self) -> None:
         write_config(self.config, run_tag=0x1234_5678, probe_vk=0x0E, kill_mods=7, kill_vk=0x53,
@@ -56,7 +59,18 @@ class FakeHelper:
 
     @property
     def status(self) -> Words:
-        return status_words(memoryview(self.status_buf).toreadonly())
+        words = status_words(memoryview(self.status_buf).toreadonly())
+        if self.on_get is None:
+            return words
+        hook = self.on_get
+
+        class Spy(Words):
+            def get(self, name: str) -> int:
+                value = words.get(name)
+                hook(name)
+                return value
+
+        return Spy(memoryview(self.status_buf).toreadonly(), words.names(), HISTOGRAMS)
 
     @property
     def status_w(self) -> Words:
@@ -190,6 +204,27 @@ def test_the_loop_threads_own_read_also_loses_and_ends_the_helper() -> None:
     rig.helper.status_w.set("callback_errors", 1)
     assert not rig.monitor.healthy()
     assert rig.helper.terminated == 1
+
+
+def test_a_watchdog_read_in_the_middle_of_a_loop_read_is_no_false_decrease() -> None:
+    """Rev 2a: the loop thread has read `delivered_mouse` (old) when the helper moves on and the
+    watchdog reads the newer words. Were the last-read values shared, the loop's older value
+    would look like a decrease and the monitor would be lost for nothing."""
+    rig = _rig()
+    rig.monitor.watch_once()
+    assert rig.monitor.healthy()
+    fired: list[int] = []
+
+    def mid_read(name: str) -> None:
+        if name == "callback_errors" and not fired:  # the last word of the loop's read
+            fired.append(1)
+            rig.deliver("mouse")
+            rig.monitor.watch_once()
+
+    rig.helper.on_get = mid_read
+    assert rig.monitor.healthy()
+    assert fired
+    assert rig.helper.terminated == 0
 
 
 def test_the_loop_thread_and_the_watchdog_never_share_last_read_values() -> None:
