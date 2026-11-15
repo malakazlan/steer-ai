@@ -147,3 +147,65 @@ def test_an_old_read_date_warns_and_still_loads(tmp_path: Path) -> None:
     edge = date.fromordinal(TODAY.toordinal() - STALE_DAYS).isoformat()
     assert _load(tmp_path, _doc(read_on=old)).stale is True
     assert _load(tmp_path, _doc(read_on=edge)).stale is False
+
+
+# ---- #361 hunter rows ------------------------------------------------------------------------
+
+
+def _raw(tmp_path: Path, text: str, *, bom: bool = False) -> PriceFile:
+    path = tmp_path / "price.json"
+    path.write_bytes((b"\xef\xbb\xbf" if bom else b"") + text.encode("utf-8"))
+    return load_price(path, model=MODEL, today=TODAY)
+
+
+def _raw_refused(tmp_path: Path, text: str) -> str:
+    with pytest.raises(SteerError) as refused:
+        _raw(tmp_path, text)
+    return refused.value.message
+
+
+def test_an_integer_too_large_for_a_float_is_a_bad_rate_not_a_crash(tmp_path: Path) -> None:
+    """PRC-01: `math.isfinite(10**400)` raises OverflowError."""
+    huge = "1" + "0" * 400
+    text = json.dumps(_doc()).replace('"input": 5.0', f'"input": {huge}')
+    assert _raw_refused(tmp_path, text) == "price_rate"
+    capped = json.dumps(_doc()).replace(
+        '"max_cost_usd_per_task": 0.5', f'"max_cost_usd_per_task": {huge}'
+    )
+    assert _raw_refused(tmp_path, capped) == "price_cost_cap"
+
+
+def test_a_rate_that_underflows_to_zero_per_token_is_refused(tmp_path: Path) -> None:
+    """PRC-02: 5e-324 per million is 0.0 per token, which would silently turn the cost off."""
+    assert (
+        _refused(tmp_path, _doc(usd_per_million_tokens={**RATES, "output": 5e-324})) == "price_rate"
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "https://user:pw@docs.example.com/pricing",
+        "https://docs.example.com/pricing?key=x",
+        "https://docs.example.com/pricing#top",
+        "https://docs.example.com/" + "a" * 300,
+        "https:///pricing",
+    ],
+    ids=["userinfo", "query", "fragment", "long", "no-host"],
+)
+def test_the_source_carries_no_userinfo_query_or_fragment(tmp_path: Path, source: str) -> None:
+    """PRC-09: the source goes to the header and the trace; nothing but a plain page."""
+    assert _refused(tmp_path, _doc(source=source)) == "price_source"
+
+
+def test_a_file_saved_with_a_bom_is_read(tmp_path: Path) -> None:
+    """PRC-04: Notepad writes UTF-8 with a BOM."""
+    assert _raw(tmp_path, json.dumps(_doc()), bom=True).max_cost_usd == 0.5
+
+
+def test_a_duplicate_key_refuses(tmp_path: Path) -> None:
+    """PRC-05: the last of two `model` keys would win silently."""
+    text = json.dumps(_doc())[:-1] + ', "max_cost_usd_per_task": 99}'
+    assert _raw_refused(tmp_path, text) == "price_duplicate_key"
+    nested = json.dumps(_doc()).replace('"input": 5.0', '"input": 5.0, "input": 0.0')
+    assert _raw_refused(tmp_path, nested) == "price_duplicate_key"

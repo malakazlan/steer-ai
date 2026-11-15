@@ -14,13 +14,24 @@ from typing import Any
 
 import pytest
 
-from steerai.errors import ErrorCode
+from steerai.errors import ErrorCode, SteerError
 from steerai.loop2 import cli
 from steerai.loop2.cli import DEFAULT_BUDGETS, V2Deps, bind_window, parse_v2
+from steerai.loop2.live_world import LiveWorld
 from steerai.loop2.loop import Reason, TaskOutcome
 from steerai.planner.claude_planner import DEFAULT_MODEL
 from steerai.probes.windows import WindowInfo
-from steerai.run import EXIT_USAGE, Deps, RunnerError, UsageError, _pick_window, main, parse_args
+from steerai.run import (
+    EXIT_ERROR,
+    EXIT_STOPPED,
+    EXIT_USAGE,
+    Deps,
+    RunnerError,
+    UsageError,
+    _pick_window,
+    main,
+    parse_args,
+)
 from tests.action.fakes import TYPE_IDS
 from tests.loop2.test_live_world import Clock, Platform, _Handle
 from tests.loop2.world_fakes import PAGE
@@ -63,12 +74,14 @@ class Run:
         self.trace = tmp_path / "trace.jsonl"
         self.stdout, self.stderr = io.StringIO(), io.StringIO()
         self.ready = True
+        self.image = "browser.exe"
         self.clock = Clock()
         self.deps = V2Deps(
             list_windows=lambda: WINDOWS,
             exclusions=lambda: EXCLUDED,
             platform=lambda: self.platform,
             today=lambda: TODAY,
+            image_of=lambda _pid: self.image,
             ready=lambda _step: self.ready,
             clock=self.clock,
             pause=self.clock.pause,
@@ -349,15 +362,16 @@ def test_unknown_token_use_is_reported_as_incomplete_never_nan(
 ) -> None:
     broken = TaskOutcome(
         status="paused", cause=Reason("max_tokens"), dispatched=(), model_calls=1, strikes=(),
-        tokens=float("nan"), cost_usd=None, wall_s=1.0,
+        tokens=float("nan"), cost_usd=float("nan"), wall_s=1.0,
     )  # fmt: skip
     monkeypatch.setattr(cli, "run_task", lambda _task, _ports: broken)
     run = Run(tmp_path)
     run()
-    result = run.result()
+    result = run.result()  # #361 P1: the line is written; a NaN cost would have lost it
     assert result["used"]["max_tokens"] is None
     assert result["used"]["max_cost_usd"] is None
     assert result["tokens_incomplete"] is True
+    assert result["cost_incomplete"] is True
     assert "NaN" not in run.stdout.getvalue()
 
 
@@ -389,3 +403,116 @@ def test_run_py_reads_the_loop_flag_before_v1s_parser(argv: list[str], asks: boo
     from steerai.run import _asks_v2  # noqa: PLC0415 - this test only
 
     assert _asks_v2(argv) is asks
+
+
+def test_an_unknown_wall_time_is_null_and_said(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#361 H8 (JSN-01): a clock that broke gives an infinite wall time; the line is still
+    written, with the wall time null and flagged."""
+    broken = TaskOutcome(
+        status="paused", cause=Reason("max_wall"), dispatched=(), model_calls=1, strikes=(),
+        tokens=10.0, cost_usd=0.0, wall_s=float("inf"),
+    )  # fmt: skip
+    monkeypatch.setattr(cli, "run_task", lambda _task, _ports: broken)
+    run = Run(tmp_path)
+    run()
+    result = run.result()
+    assert result["used"]["max_wall_s"] is None
+    assert result["wall_incomplete"] is True
+    assert result["paused_by"] == "max_wall"
+
+
+def test_the_header_is_written_to_the_trace_once_with_every_limit(tmp_path: Path) -> None:
+    """#361 H13 (HDR-01)."""
+    run = Run(tmp_path)
+    run()
+    lines = run.trace.read_text(encoding="utf-8").splitlines()
+    headers = [json.loads(ln) for ln in lines if '"run_header"' in ln]
+    assert len(headers) == 1
+    assert headers[0]["max_actions"] == "40"
+
+
+def test_no_localappdata_and_no_price_file_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#361 H11 (PRC-10): never a price file from the working directory."""
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    with pytest.raises(UsageError, match="price"):
+        parse_v2([*WHERE])
+    assert parse_v2([*WHERE, "--price-file", "p.json"]).price_file == Path("p.json")
+
+
+def test_the_cli_binds_only_the_process_it_listed(tmp_path: Path) -> None:
+    """#361 H6: the listed window's pid and image go to the binding, which re-reads them."""
+    run = Run(tmp_path)
+    run.image = "other.exe"
+    assert run() == cli.EXIT_FOR["blocked"]
+    assert (run.result()["code"], run.result()["detail"]) == ("app_crashed", "window_changed")
+
+
+def test_ctrl_c_still_writes_the_outcome_and_stops(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#361 P2: every exit path writes exactly one JSON line; an interrupt during the join is
+    said, the outcome kept, and the exit is EXIT_STOPPED."""
+    from tests.loop2.test_live_world import _interrupt_the_first_join  # noqa: PLC0415
+
+    _interrupt_the_first_join(monkeypatch)
+    run = Run(tmp_path)
+    assert run() == EXIT_STOPPED
+    result = run.result()
+    assert result["interrupted"] is True
+    assert "used" in result
+    assert "interrupted" in run.stderr.getvalue()
+    assert run.platform.calls.count("release_com") == 1
+
+
+def test_an_unexpected_error_is_internal_error_on_one_line(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#361 P2: as v1's `run()`: the traceback on stderr, escaped; one JSON line; exit 70."""
+
+    def broken(_task: object, _ports: object) -> TaskOutcome:
+        raise RuntimeError("a bug")
+
+    monkeypatch.setattr(cli, "run_task", broken)
+    run = Run(tmp_path)
+    assert run() == EXIT_ERROR
+    assert (run.result()["status"], run.result()["detail"]) == ("error", "internal_error")
+    assert "RuntimeError" in run.stderr.getvalue()
+    assert run.platform.calls.count("release_com") == 1
+
+
+def test_a_steer_error_mid_task_reports_use_not_a_refused_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#361 H5 (CLI-04): the world started, so the line is the run's shape, with the use and
+    the limits; the use that could not be counted is null and said."""
+
+    def failed(_task: object, _ports: object) -> TaskOutcome:
+        raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "uia_timeout")
+
+    monkeypatch.setattr(cli, "run_task", failed)
+    run = Run(tmp_path)
+    assert run() == EXIT_STOPPED
+    result = run.result()
+    assert (result["status"], result["reason"], result["error"]) == (
+        "stopped", "port_perception_degraded", "uia_timeout",
+    )  # fmt: skip
+    assert result["limits"]["max_actions"] == 40
+    assert result["used"]["max_model_calls"] is None
+    assert result["tokens_incomplete"] is True
+    assert result["listings"] == []
+
+
+def test_a_steer_error_after_the_task_keeps_its_outcome(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def report(_self: object) -> dict[str, object]:
+        raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "wrong_thread")
+
+    monkeypatch.setattr(LiveWorld, "report", report)
+    run = Run(tmp_path)
+    assert run() == EXIT_STOPPED
+    result = run.result()
+    assert result["error"] == "wrong_thread"
+    assert result["used"]["max_model_calls"] >= 1  # the task's own counts survive

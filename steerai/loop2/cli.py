@@ -18,6 +18,7 @@ import math
 import os
 import sys
 import time
+import traceback
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -40,6 +41,7 @@ from steerai.probes.windows import WindowInfo
 from steerai.run import (
     EXIT_BLOCKED,
     EXIT_DONE,
+    EXIT_ERROR,
     EXIT_PAUSED,
     EXIT_STOPPED,
     EXIT_USAGE,
@@ -91,6 +93,8 @@ class V2Deps:
     """(hwnds, pids) never to bind: this console and its process tree (v1's RN-15)."""
     platform: Callable[[], Platform]
     today: Callable[[], date]
+    image_of: Callable[[int], str]
+    """A process's image name, lower case (v1's `process_name`): bound with the listed pid."""
     ready: Callable[[int], bool] = ready_step
     clock: Callable[[], float] = field(default=time.monotonic)
     pause: Callable[[float], None] = field(default=time.sleep)
@@ -131,11 +135,7 @@ def parse_v2(argv: Sequence[str]) -> V2Options:
     parser.add_argument("--task-id", default=None)
     parser.add_argument("--kill-key", default=DEFAULT_KILL_KEY)
     parser.add_argument("--trace", type=Path, default=None, help="the clear JSON-lines trace")
-    parser.add_argument(
-        "--price-file",
-        type=Path,
-        default=Path(os.environ.get("LOCALAPPDATA", ".")) / "steer" / "price.json",
-    )
+    parser.add_argument("--price-file", type=Path, default=None)
     calls, actions, tokens, wall = DEFAULT_BUDGETS
     parser.add_argument("--max-model-calls", type=_positive_int, default=calls)
     parser.add_argument("--max-actions", type=_positive_int, default=actions)
@@ -156,12 +156,21 @@ def parse_v2(argv: Sequence[str]) -> V2Options:
         task_id=args.task_id or f"task-{uuid.uuid4().hex[:12]}",
         kill_key=str(args.kill_key),
         trace=args.trace,
-        price_file=args.price_file,
+        price_file=args.price_file if args.price_file is not None else _default_price_file(),
         max_model_calls=args.max_model_calls,
         max_actions=args.max_actions,
         max_tokens=args.max_tokens,
         max_wall_s=args.max_wall_s,
     )
+
+
+def _default_price_file() -> Path:
+    """`%LOCALAPPDATA%/steer/price.json`; with LOCALAPPDATA unset, a refusal, never the working
+    directory (#361 H11)."""
+    root = os.environ.get("LOCALAPPDATA")
+    if not root:
+        raise UsageError("LOCALAPPDATA is unset: give the price file with --price-file")
+    return Path(root) / "steer" / "price.json"
 
 
 def bind_window(
@@ -198,6 +207,7 @@ def real_deps() -> V2Deps:
     from steerai.probes.windows import (  # noqa: PLC0415 - Windows only
         console_exclusions,
         list_top_windows,
+        process_name,
     )
 
     return V2Deps(
@@ -205,6 +215,7 @@ def real_deps() -> V2Deps:
         exclusions=console_exclusions,
         platform=WindowsPlatform,
         today=date.today,
+        image_of=lambda pid: process_name(pid).lower(),
     )
 
 
@@ -268,31 +279,84 @@ def _run(options: V2Options, deps: V2Deps, out: _Out, price: PriceFile, window: 
         generations=TaskGenerations(),
         clock=deps.clock,
         pause=deps.pause,
+        bound_pid=window.pid,
+        bound_image=deps.image_of(window.pid),
     )
     platform = deps.platform()
 
+    done: dict[str, TaskOutcome] = {}
+    started: list[bool] = []
+
     def work() -> tuple[TaskOutcome, dict[str, int | str | None]]:
         with LiveWorld(config, platform) as world:
-            header = {**world.header(task), **_limits_header(task.budgets, price)}
-            trace.write(header)
-            out.note("header: " + json.dumps(header, sort_keys=True))
+            started.append(True)
+            limits = _limits_header(task.budgets, price)
+            out.note("header: " + json.dumps({**world.header(task), **limits}, sort_keys=True))
             if price.stale:
                 out.note(
                     f"warning: the price was read on {price.price.read_on.isoformat()}, more "
                     f"than {STALE_DAYS} days ago; re-read it"
                 )
-            ports = world.ports(task)
+            ports = world.ports(task, header=limits)  # the trace's one header record
             outcome = run_task(task, ports)
+            done["outcome"] = outcome
             del ports  # rev 4.0c: nothing holding COM outlives the world on this thread
             return outcome, world.report()
 
+    interrupts: list[bool] = []
     try:
-        outcome, report = run_on_loop_thread(work, release=platform.release_com)
-    except SteerError as exc:  # the world refused to start: the session, the monitor, the window
-        out.emit({"status": "blocked", "code": exc.code.value, "detail": exc.message}, options)
-        return EXIT_BLOCKED
-    out.emit(_result(outcome, task.budgets, report), options)
+        outcome, report = run_on_loop_thread(
+            work, release=platform.release_com, interrupted=lambda: interrupts.append(True)
+        )
+    except SteerError as exc:
+        if not started:  # the world refused to start: the session, the monitor, the window
+            out.emit({"status": "blocked", "code": exc.code.value, "detail": exc.message}, options)
+            return EXIT_BLOCKED
+        # #361 H5: after the start, the run's own shape, with what was counted
+        kept = done.get("outcome")
+        result = _unfinished(task.budgets) if kept is None else _result(kept, task.budgets, {})
+        result.update(
+            status="stopped", reason=f"port_{exc.code.value}"[:64], error=exc.message, world=None
+        )
+        out.emit(result, options)
+        return EXIT_STOPPED
+    except Exception:  # noqa: BLE001 - as v1's run(): the last line of defence, one exit code
+        for line in traceback.format_exc().splitlines():
+            out.note(line)  # escaped: exception text can quote titles or page text
+        out.emit({"status": "error", "code": None, "detail": "internal_error"}, options)
+        return EXIT_ERROR
+    result = _result(outcome, task.budgets, report)
+    if interrupts:  # #361 P2: Ctrl+C during the join; the outcome is still the task's own
+        out.note("interrupted: Ctrl+C arrived while the task ran; the kill hot key is the stop")
+        out.emit({**result, "interrupted": True}, options)
+        return EXIT_STOPPED
+    out.emit(result, options)
     return EXIT_FOR[outcome.status]
+
+
+def _unfinished(budgets: Budgets) -> dict[str, Any]:  # Any: the final JSON
+    """#361 H5: the run's shape when the task ended with no outcome: nothing was counted, so
+    every use is null and said, never 0."""
+    return {
+        "paused_by": None,
+        "used": dict.fromkeys(_limits(budgets)),
+        "tokens_incomplete": True,
+        "cost_incomplete": True,
+        "wall_incomplete": True,
+        "limits": _limits(budgets),
+        "listings": [],
+        "focus": None,
+    }
+
+
+def _limits(budgets: Budgets) -> dict[str, int | float]:
+    return {
+        "max_model_calls": budgets.max_model_calls,
+        "max_actions": budgets.max_actions,
+        "max_tokens": budgets.max_tokens,
+        "max_wall_s": budgets.max_wall_s,
+        "max_cost_usd": budgets.max_cost_usd,
+    }
 
 
 def _limits_header(budgets: Budgets, price: PriceFile) -> dict[str, str]:
@@ -314,6 +378,9 @@ def _result(
     """[V2.53] (3): use against each limit, the limit that paused the task, the listing and
     focus counts, and the world's report. An unknown token count is `null` and said, never NaN."""
     tokens_known = math.isfinite(outcome.tokens)
+    cost = outcome.cost_usd
+    cost_known = cost is not None and math.isfinite(cost)  # #361 P1: NaN once usage is unknown
+    wall_known = math.isfinite(outcome.wall_s)
     reason = outcome.reason
     return {
         "status": outcome.status,
@@ -323,17 +390,13 @@ def _result(
             "max_model_calls": outcome.model_calls,
             "max_actions": len(outcome.dispatched),
             "max_tokens": outcome.tokens if tokens_known else None,
-            "max_wall_s": round(outcome.wall_s, 3),
-            "max_cost_usd": outcome.cost_usd,
+            "max_wall_s": round(outcome.wall_s, 3) if wall_known else None,
+            "max_cost_usd": cost if cost_known else None,
         },
         "tokens_incomplete": not tokens_known,
-        "limits": {
-            "max_model_calls": budgets.max_model_calls,
-            "max_actions": budgets.max_actions,
-            "max_tokens": budgets.max_tokens,
-            "max_wall_s": budgets.max_wall_s,
-            "max_cost_usd": budgets.max_cost_usd,
-        },
+        "cost_incomplete": not cost_known,
+        "wall_incomplete": not wall_known,
+        "limits": _limits(budgets),
         "listings": [
             {
                 "eligible": t.eligible,

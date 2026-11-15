@@ -122,6 +122,7 @@ class Platform:
         self.bindings = UiaBindings(control_types=names, interfaces={})
         self.calls: list[str] = []
         self.session = "acquired"
+        self.tag_error: Exception | None = None
         self.identity: WindowIdentity | None = WindowIdentity(
             pid=4242, started=133_000_000_000_000_000, image="browser.exe", root=True, visible=True
         )
@@ -151,6 +152,8 @@ class Platform:
     def use_extra_info(self, tag: int) -> None:
         self.calls.append("tag")
         self.input_tag = tag
+        if self.tag_error is not None:
+            raise self.tag_error
 
     def acquire_session(self) -> str:
         self.calls.append("session")
@@ -1219,7 +1222,8 @@ def test_the_chunked_runners_parent_never_takes_the_session(
 
 def test_the_session_is_taken_only_where_the_monitor_starts() -> None:
     """Every call of `acquire_session` in the package is in one function that, after it, starts
-    the monitor: `LiveWorld.__init__`. A chunk parent, a CLI or a helper never takes it."""
+    the monitor: `LiveWorld._take_session`, which only `LiveWorld.__init__` calls. A chunk
+    parent, a CLI or a helper never takes it."""
     import ast  # noqa: PLC0415 - this test only
 
     package = Path(__file__).resolve().parents[2] / "steerai"
@@ -1237,7 +1241,11 @@ def test_the_session_is_taken_only_where_the_monitor_starts() -> None:
             if "acquire_session" in calls:
                 callers.append(f"{path.name}:{function.name}")
                 assert calls.index("start_monitor") > calls.index("acquire_session")
-    assert callers == ["live_world.py:__init__"]
+    assert callers == ["live_world.py:_take_session"]
+    source = (package / "loop2" / "live_world.py").read_text(encoding="utf-8")
+    init = source[source.index("    def __init__(self, config: LiveConfig") :]
+    init = init[: init.index(chr(10) + "    def ", 1)]
+    assert source.count("self._take_session(") == init.count("self._take_session(") == 1
 
 
 def test_a_random_draw_of_zero_or_v1s_tag_is_drawn_again(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1397,3 +1405,113 @@ def test_the_windows_identity_carries_root_and_visibility(monkeypatch: pytest.Mo
     identity = WindowsPlatform().window_identity(16)
     assert identity is not None
     assert (identity.root, identity.visible) == (False, False)
+
+
+def test_a_tag_that_cannot_be_set_releases_the_session() -> None:
+    """#361 H12 (MTX-01): a failure between taking the session and starting the monitor."""
+    platform = Platform()
+    platform.tag_error = ValueError("an input tag is a nonzero 32-bit value")
+    with pytest.raises(ValueError, match="tag"):
+        _world(platform)
+    assert platform.calls.count("release_session") == 1
+    assert not any(c.startswith("monitor") for c in platform.calls)
+
+
+@pytest.mark.parametrize(
+    "listed", [{"bound_pid": 4243}, {"bound_image": "other.exe"}], ids=["pid", "image"]
+)
+def test_a_window_that_is_not_the_one_listed_is_never_bound(listed: dict[str, object]) -> None:
+    """#361 H6 (WIN-01): the handle was reused between the listing and the binding."""
+    platform = Platform()
+    with pytest.raises(SteerError) as refused:
+        _world(platform, **listed)
+    assert (refused.value.code, refused.value.message) == (ErrorCode.APP_CRASHED, "window_changed")
+    assert "session" not in platform.calls
+
+
+def test_the_listed_window_binds() -> None:
+    world, _ = _world(bound_pid=4242, bound_image="browser.exe")
+    world.close()
+
+
+@pytest.mark.parametrize("verb", ["click", "press"])
+def test_a_window_replaced_after_the_last_read_gets_no_action(verb: str) -> None:
+    """#361 H7 (WIN-02): the identity changes after the last poll and before the act; nothing
+    reaches the window, through UIA or the keyboard: the act re-checks it first."""
+    platform = Platform()
+    handles: list[FakeHandle] = [
+        _Handle(control_type=TYPE_IDS.get(e.role, TYPE_IDS["Button"]), name=e.name) for e in PAGE
+    ]
+    platform.handles = handles
+    platform.fake_input.focused = FIELD.runtime_id
+    world, _ = _world(platform)
+    ports = world.ports(task())
+    ports.observe()
+    assert platform.identity is not None
+    platform.identity = dataclasses.replace(platform.identity, pid=1)
+    target = GO if verb == "click" else FIELD
+    extra = {} if verb == "click" else {"key": "Enter"}
+    sent = Dispatch(
+        act(verb, target=target.id, **extra), target.runtime_id, target.role, target.name, "R0",
+        None,
+    )  # fmt: skip
+    with pytest.raises(SteerError) as ended:
+        ports.act(sent)
+    assert (ended.value.code, ended.value.message) == (ErrorCode.APP_CRASHED, "window_changed")
+    assert sum(h.invoked for h in handles) == 0
+    assert platform.fake_input.bursts == []
+    assert platform.fake_input.clicks == []
+
+
+def test_a_failed_tasks_frames_are_gone_before_com_is_released() -> None:
+    """#361 H4 (CLI-01): the failure's traceback, and a chained one, would keep `work`'s frame
+    and its COM-holding locals alive past `CoUninitialize`."""
+    refs: list[weakref.ref[_Client]] = []
+    alive_at_release: list[bool] = []
+
+    def work() -> None:
+        held = _Client()
+        refs.append(weakref.ref(held))
+        try:
+            raise OSError("a read failed")
+        except OSError as cause:
+            raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "uia_timeout") from cause
+
+    def release() -> None:
+        alive_at_release.append(refs[0]() is not None)
+
+    gc.disable()
+    try:
+        with pytest.raises(SteerError) as raised:
+            run_on_loop_thread(work, release=release)
+    finally:
+        gc.enable()
+    assert alive_at_release == [False]
+    assert raised.value.message == "uia_timeout"
+
+
+def _interrupt_the_first_join(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Ctrl+C reaches the main thread while it joins the loop thread (on 3.12 Windows it arrives
+    once `join` returns, bpo-29971); the first join of `steer-v2-loop` raises it."""
+    real = threading.Thread.join
+    raised: list[int] = []
+
+    def join(self: threading.Thread, timeout: float | None = None) -> None:
+        if self.name == "steer-v2-loop" and not raised:
+            raised.append(1)
+            raise KeyboardInterrupt
+        real(self, timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", join)
+    return raised
+
+
+def test_ctrl_c_during_the_join_keeps_joining_and_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#361 P2: the loop thread is never abandoned holding COM; the caller hears it."""
+    raised = _interrupt_the_first_join(monkeypatch)
+    heard: list[str] = []
+    released: list[bool] = []
+    result = run_on_loop_thread(
+        lambda: "done", release=lambda: released.append(True), interrupted=lambda: heard.append("x")
+    )
+    assert (result, raised, heard, released) == ("done", [1], ["x"], [True])

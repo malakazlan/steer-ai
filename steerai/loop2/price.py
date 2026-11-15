@@ -21,7 +21,8 @@ import math
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Final
+from typing import Final, TypeGuard
+from urllib.parse import urlsplit
 
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.task import TokenPrice
@@ -35,6 +36,8 @@ _KEYS: Final = frozenset(
     {"model", "source", "read_on", "usd_per_million_tokens", "max_cost_usd_per_task"}
 )
 _PER_MILLION: Final = 1_000_000
+MAX_SOURCE_CHARS: Final = 200
+"""PRC-09: a pricing page's URL; anything longer is not a plain page."""
 
 
 @dataclass(frozen=True)
@@ -57,13 +60,7 @@ def load_price(path: Path, *, model: str, today: date) -> PriceFile:
     if not _finite_positive(cap):
         raise _refused("price_cost_cap")
     source = doc.get("source")
-    if not (
-        isinstance(source, str)
-        and source.startswith("https://")
-        and source.isprintable()
-        and " " not in source
-        and len(source) > len("https://")
-    ):
+    if not _plain_page(source):
         raise _refused("price_source")
     read_on = _day(doc.get("read_on"), today)
     price = TokenPrice(
@@ -89,7 +86,9 @@ def _read(path: Path) -> dict[str, object]:
     if size > MAX_PRICE_FILE_BYTES:
         raise _refused("price_unreadable")
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc = json.loads(path.read_text(encoding="utf-8-sig"), object_pairs_hook=_no_duplicates)
+    except _DuplicateKeyError as exc:
+        raise _refused("price_duplicate_key") from exc
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         raise _refused("price_unreadable") from exc
     if not isinstance(doc, dict):
@@ -104,6 +103,8 @@ def _rates(table: object) -> tuple[float, float, float, float, float]:
     if not all(_finite_positive(v) for v in values):
         raise _refused("price_rate")
     per_token = [float(v) / _PER_MILLION for v in values]
+    if not all(rate > 0 for rate in per_token):  # PRC-02: a denormal rate underflows to 0.0
+        raise _refused("price_rate")
     return per_token[0], per_token[1], per_token[2], per_token[3], per_token[4]
 
 
@@ -123,7 +124,50 @@ def _finite_positive(value: object) -> bool:
     """A number above zero and finite; a bool is never a number here."""
     if isinstance(value, bool) or not isinstance(value, int | float):
         return False
-    return math.isfinite(value) and value > 0
+    try:
+        number = float(value)
+    except OverflowError:  # PRC-01: an integer beyond any float
+        return False
+    return math.isfinite(number) and number > 0
+
+
+def _plain_page(source: object) -> TypeGuard[str]:
+    """PRC-09: an https page with a host and nothing else: no userinfo, query or fragment, at
+    most `MAX_SOURCE_CHARS`, printable, no spaces (it is printed in the header and the trace)."""
+    if not (
+        isinstance(source, str)
+        and len(source) <= MAX_SOURCE_CHARS
+        and source.isprintable()
+        and " " not in source
+    ):
+        return False
+    try:
+        parts = urlsplit(source)
+    except ValueError:
+        return False
+    return (
+        parts.scheme == "https"
+        and bool(parts.hostname)
+        and "@" not in parts.netloc
+        and not parts.query
+        and not parts.fragment
+        and "?" not in source
+        and "#" not in source
+    )
+
+
+class _DuplicateKeyError(ValueError):
+    pass
+
+
+def _no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """PRC-05: a key given twice is refused, never last-one-wins."""
+    doc: dict[str, object] = {}
+    for key, value in pairs:
+        if key in doc:
+            raise _DuplicateKeyError(key)
+        doc[key] = value
+    return doc
 
 
 def _refused(token: str) -> SteerError:

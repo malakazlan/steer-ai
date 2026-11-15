@@ -165,6 +165,10 @@ class LiveConfig:
     times: WorldTimes = field(default_factory=WorldTimes)
     debug_path: Path | None = None
     """Where the DPAPI debug file goes at level `debug`; none: no debug records are kept."""
+    bound_pid: int | None = None
+    """#361 H6: the pid of the window as it was listed; the binding's identity must match."""
+    bound_image: str | None = None
+    """#361 H6: the image of the listed window's process, lower case."""
 
 
 def enter_mta(co_initialize_ex: Callable[[int], int]) -> None:
@@ -237,24 +241,17 @@ class LiveWorld:
         if bound is None:
             del client, bindings
             raise SteerError(ErrorCode.APP_CRASHED, "window_unreadable")
+        if (config.bound_pid is not None and bound.pid != config.bound_pid) or (
+            config.bound_image is not None and bound.image != config.bound_image
+        ):  # #361 H6: the handle now names another process than the one listed
+            del client, bindings
+            raise SteerError(ErrorCode.APP_CRASHED, "window_changed")
         self._bound = bound
         try:
-            held = platform.acquire_session()  # [V2.57] LW-02: one Steer per session
+            held, monitor = self._take_session(platform, config)
         except BaseException:
             del client, bindings  # released here, before the refusal leaves the loop thread
             raise
-        self._input_tag = _run_tag()
-        platform.use_extra_info(self._input_tag)
-        try:
-            monitor = platform.start_monitor(config.kill_key, config.clock, self._input_tag)
-        except SteerError:
-            del client, bindings  # the UIA client is released before the task is refused
-            platform.release_session()
-            raise  # HookMonitor's own GATE_BLOCKED monitor_unavailable, with its reason
-        except Exception as exc:  # any other start failure: no kill switch, no task
-            del client, bindings
-            platform.release_session()
-            raise SteerError(ErrorCode.GATE_BLOCKED, "monitor_unavailable") from exc
         self._monitor = monitor
         self._init_state()
         if held == "abandoned":
@@ -265,6 +262,24 @@ class LiveWorld:
         except BaseException:
             self.close()
             raise
+
+    def _take_session(self, platform: Platform, config: LiveConfig) -> tuple[str, Monitor]:
+        """[V2.57] LW-02: the session, then the run's tag, then the monitor on it. Any failure
+        after the session was taken releases it (#361 H12)."""
+        held = platform.acquire_session()  # one Steer per session
+        try:
+            self._input_tag = _run_tag()
+            platform.use_extra_info(self._input_tag)
+            try:
+                monitor = platform.start_monitor(config.kill_key, config.clock, self._input_tag)
+            except SteerError:
+                raise  # HookMonitor's own GATE_BLOCKED monitor_unavailable, with its reason
+            except Exception as exc:  # any other start failure: no kill switch, no task
+                raise SteerError(ErrorCode.GATE_BLOCKED, "monitor_unavailable") from exc
+        except BaseException:
+            platform.release_session()
+            raise
+        return held, monitor
 
     def _init_state(self) -> None:
         """The world's own state, set once the monitor runs."""
@@ -469,15 +484,16 @@ class LiveWorld:
 
     # ---- the ports -------------------------------------------------------------------------------
 
-    def ports(self, task: Task) -> Ports:
-        """The task's `Ports`, built once; the header is the trace's first record."""
+    def ports(self, task: Task, *, header: Mapping[str, str] | None = None) -> Ports:
+        """The task's `Ports`, built once; the header, with the caller's own fields (the CLI's
+        limits), is the trace's first record, written once (#361 H13)."""
         if self._ported or self._closed:
             raise RuntimeError("a LiveWorld builds its ports once, for one task, before close")
         self._ported = True
         config = self._config
         clock = config.clock
         started = clock()
-        self._write(self.header(task))
+        self._write({**self.header(task), **(header or {})})
         act = ActPort(
             world=self.world,
             semantic=self.semantic,
@@ -499,6 +515,7 @@ class LiveWorld:
 
         def act_here(dispatch: Dispatch) -> ActResult:
             check()
+            self._same_window(None)  # #361 H7: the window may be replaced after the last read
             return act.act(dispatch)
 
         def read_value_here(element: Element) -> ValueFact | None:
@@ -571,7 +588,28 @@ _V1_TAG = 0x5354_4545
 """v1's input tag (`win_input.STEER_EXTRA_INFO`); a v2 run never uses it."""
 
 
-def run_on_loop_thread[T](work: Callable[[], T], *, release: Callable[[], None]) -> T:
+def _without_frames(error: BaseException) -> BaseException:
+    """#361 H4: the error and every error chained to it, without their tracebacks, so no frame
+    of the task (nor a COM object it held) outlives the release. The caller re-raises it as
+    itself; its own traceback then starts at the caller."""
+    seen: set[int] = set()
+    pending: list[BaseException | None] = [error]
+    while pending:
+        link = pending.pop()
+        if link is None or id(link) in seen:
+            continue
+        seen.add(id(link))
+        link.__traceback__ = None
+        pending += [link.__cause__, link.__context__]
+    return error
+
+
+def run_on_loop_thread[T](
+    work: Callable[[], T],
+    *,
+    release: Callable[[], None],
+    interrupted: Callable[[], None] | None = None,
+) -> T:
     """Run one task's `work` on its own loop thread (packet §1, rev 4.0c, rev 4.2).
 
     `work` builds and closes its `LiveWorld` and returns plain data only, never an object
@@ -579,7 +617,8 @@ def run_on_loop_thread[T](work: Callable[[], T], *, release: Callable[[], None])
     alive by a cycle), then `release`, the platform's one `CoUninitialize`, exactly once and
     never before the release step. An exception from `work` is re-raised here as itself, so a
     decide worker's `SystemExit`, raised on the loop thread, ends the process from the caller
-    (#346 (2))."""
+    (#346 (2)). A Ctrl+C while joining is heard (`interrupted`) and the join goes on: the kill
+    hot key is the stop; the task's thread is never left running (#361 P2)."""
     result: list[T] = []
     failure: list[BaseException] = []
 
@@ -587,14 +626,20 @@ def run_on_loop_thread[T](work: Callable[[], T], *, release: Callable[[], None])
         try:
             result.append(work())
         except BaseException as exc:  # noqa: BLE001 - re-raised in the caller as itself
-            failure.append(exc)
+            failure.append(_without_frames(exc))
         finally:
             gc.collect()
             release()
 
     thread = threading.Thread(target=loop, name="steer-v2-loop")
     thread.start()
-    thread.join()
+    while True:
+        try:
+            thread.join()
+            break
+        except KeyboardInterrupt:  # #361 P2: never abandon the thread that holds COM
+            if interrupted is not None:
+                interrupted()
     if failure:
         raise failure[0]
     return result[0]

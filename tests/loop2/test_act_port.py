@@ -1028,6 +1028,8 @@ def _real_executors(*, guarded: bool) -> tuple[Any, Any]:
             interrupted=lambda: None,
             focused=lambda: ((), False),
             clock=lambda: 0.0,
+            last_input=lambda: -1.0,
+            takeover_token=lambda: "takeover",
         )
     else:
         uia = UiaBindings(control_types=names, interfaces={})

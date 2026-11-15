@@ -22,6 +22,7 @@ def ready(step: int) -> bool:
         form,
         guards,
         history,
+        identity_cost,
         listing,
         live_world,
         loop,

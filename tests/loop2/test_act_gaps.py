@@ -12,7 +12,7 @@ from steerai.action.dispositions import ActionResult, Delivery
 from steerai.action.execution import RefusalError
 from steerai.action.physical import PhysicalAction
 from steerai.errors import ErrorCode, SteerError
-from steerai.loop2.act_guards import GuardDesk
+from steerai.loop2.act_guards import GuardDesk, InputGuard
 from steerai.loop2.loop import ActResult, PortInterrupted
 from steerai.loop2.runner import run_task
 from steerai.loop2.task import Budgets
@@ -64,6 +64,10 @@ TOK_FIRST, TOK_IDLE, TOK_WAIT = "tok_first", "tok_idle", "tok_wait"
 
 
 # ---- 1: the tap refusal before a press -------------------------------------------------------
+
+
+def _desk(guard: InputGuard) -> GuardDesk:
+    return GuardDesk(guard, last_input=lambda: 0.0, takeover_token=lambda: "takeover")
 
 
 def test_a_tap_refusal_stops_a_press() -> None:
@@ -177,12 +181,19 @@ class _TaxonomyFailure(FakeInput):
 
 
 def test_a_taxonomy_error_in_the_tap_check_refuses() -> None:
-    desk = GuardDesk(_guard(_TaxonomyFailure()), last_input=lambda: 0.0)
+    desk = GuardDesk(
+        _guard(_TaxonomyFailure()), last_input=lambda: 0.0, takeover_token=lambda: "takeover"
+    )
     assert desk.tap_refusal() == "tap_unreadable"
 
 
 def test_a_taxonomy_error_in_the_focus_read_is_unread() -> None:
-    assert GuardDesk(_guard(_TaxonomyFailure()), last_input=lambda: 0.0).focused() is None
+    assert (
+        GuardDesk(
+            _guard(_TaxonomyFailure()), last_input=lambda: 0.0, takeover_token=lambda: "takeover"
+        ).focused()
+        is None
+    )
 
 
 # ---- 7: the double-click wait is the remainder, not the whole time -------------------------------

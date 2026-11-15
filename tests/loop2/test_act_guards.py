@@ -53,6 +53,10 @@ class Switch:
         return self.latched if self.reads > self.after else None
 
 
+def _desk(guard: InputGuard) -> GuardDesk:
+    return GuardDesk(guard, last_input=lambda: 0.0, takeover_token=lambda: "takeover")
+
+
 def _guard(
     inner: FakeInput,
     switch: Callable[[], str | None] | None = None,
@@ -74,6 +78,8 @@ def _guard(
         focused=lambda: (inner.focused_runtime_id(), secure()),
         clock=lambda: clock["t"],
         pause=pause,
+        last_input=lambda: -1.0,
+        takeover_token=lambda: "takeover",
     )
 
 
@@ -326,9 +332,18 @@ def test_every_key_maps_to_one_named_key_with_no_modifier() -> None:
 
 
 def test_the_desk_reads_v1s_tap_refusal() -> None:
-    desk = GuardDesk(_guard(FakeInput(modifiers=["shift"])), last_input=lambda: 0.0)
+    desk = GuardDesk(
+        _guard(FakeInput(modifiers=["shift"])),
+        last_input=lambda: 0.0,
+        takeover_token=lambda: "takeover",
+    )
     assert desk.tap_refusal() == "hands_on"
-    assert GuardDesk(_guard(FakeInput()), last_input=lambda: 0.0).tap_refusal() is None
+    assert (
+        GuardDesk(
+            _guard(FakeInput()), last_input=lambda: 0.0, takeover_token=lambda: "takeover"
+        ).tap_refusal()
+        is None
+    )
 
 
 def test_an_unreadable_tap_check_refuses() -> None:
@@ -336,7 +351,7 @@ def test_an_unreadable_tap_check_refuses() -> None:
         def input_desktop_name(self) -> str:
             raise OSError("unreadable")
 
-    desk = GuardDesk(_guard(Broken()), last_input=lambda: 0.0)
+    desk = _desk(_guard(Broken()))
     assert desk.tap_refusal() == "tap_unreadable"
 
 
@@ -345,9 +360,24 @@ def test_the_desk_reads_no_focus_as_unread() -> None:
         def focused_runtime_id(self) -> tuple[int, ...]:
             raise OSError("unreadable")
 
-    assert GuardDesk(_guard(Broken()), last_input=lambda: 0.0).focused() is None
-    assert GuardDesk(_guard(FakeInput(focused=())), last_input=lambda: 0.0).focused() is None
-    assert GuardDesk(_guard(FakeInput()), last_input=lambda: 0.0).focused() == TARGET_ID
+    assert (
+        GuardDesk(
+            _guard(Broken()), last_input=lambda: 0.0, takeover_token=lambda: "takeover"
+        ).focused()
+        is None
+    )
+    assert (
+        GuardDesk(
+            _guard(FakeInput(focused=())), last_input=lambda: 0.0, takeover_token=lambda: "takeover"
+        ).focused()
+        is None
+    )
+    assert (
+        GuardDesk(
+            _guard(FakeInput()), last_input=lambda: 0.0, takeover_token=lambda: "takeover"
+        ).focused()
+        == TARGET_ID
+    )
 
 
 # ---- [V2.51] (4): the second Toggle only on an indeterminate state, re-read before it ---------
@@ -547,7 +577,13 @@ def test_one_read_of_the_focused_element_per_burst() -> None:
         return TARGET_ID, False
 
     guard = InputGuard(
-        inner, interrupted=lambda: None, focused=focused, clock=lambda: 0.0, pause=lambda _s: None
+        inner,
+        interrupted=lambda: None,
+        focused=focused,
+        clock=lambda: 0.0,
+        pause=lambda _s: None,
+        last_input=lambda: -1.0,
+        takeover_token=lambda: "takeover",
     )
     with guard.armed(frozenset({TARGET_ID})):
         guard.type_text("a")
@@ -580,3 +616,18 @@ def test_a_second_toggle_that_raises_may_have_landed(fast_poll: None) -> None:
     assert handle.calls == ["toggle", "toggle"]
     assert result.delivery is Delivery.DELIVERY_UNCERTAIN
     assert result.evidence["detail"] == "second_toggle_uncertain"
+
+
+@pytest.mark.parametrize(("cls", "names"), [
+    (InputGuard, ("last_input", "takeover_token")),
+    (GuardDesk, ("last_input", "takeover_token")),
+])  # fmt: skip
+def test_the_guard_has_no_disarmed_mode(cls: type, names: tuple[str, ...]) -> None:
+    """#361 P3, [V2.57]: the person's input and who made it are required, keyword-only, with no
+    default that would leave LW-05 off."""
+    import inspect  # noqa: PLC0415 - this test only
+
+    params = inspect.signature(cls).parameters
+    for name in names:
+        assert params[name].kind is inspect.Parameter.KEYWORD_ONLY
+        assert params[name].default is inspect.Parameter.empty
