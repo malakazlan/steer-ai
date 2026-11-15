@@ -202,6 +202,7 @@ class ActPort:
         _check_dispatch(dispatch)
         self._boundary(physical=verb in PHYSICAL_VERBS)
         element, snapshot = self._resolve(dispatch)
+        self._proven_just_now()
         if verb in SEMANTIC_VERBS:
             result = self._semantic_send(dispatch, element, snapshot)
         else:
@@ -226,7 +227,6 @@ class ActPort:
                     ErrorCode.SECURE_DESKTOP if tap == "secure_desktop" else ErrorCode.GATE_BLOCKED
                 )
                 raise _Refused(code, tap)
-        self._desk.prove_hooks()  # [V2.57] LW-01: before each send's idle decision
         if not self._wait_for_idle():
             return
         before = self._world.last
@@ -236,6 +236,17 @@ class ActPort:
             before.snapshot.title,
         ):
             raise _Refused(ErrorCode.FOCUS_LOST, "screen_changed_during_wait")
+
+    def _proven_just_now(self) -> None:
+        """[V2.57] LW-01, #364 H4: both hooks proven by a fresh probe as late as possible, after
+        the idle wait and the resolve; then one last look at the switch and the person's input,
+        so input during the probe's wait refuses the act."""
+        self._desk.prove_hooks()
+        token = self._interrupted()
+        if token is not None:
+            raise PortInterrupted(token)
+        if self._clock() - self._desk.last_input() < IDLE_S:
+            raise _Refused(ErrorCode.GATE_PENDING_USER, self._desk.takeover_token())
 
     def _wait_for_idle(self) -> bool:
         """v1's `wait_for_idle` in kill-aware steps: True when it waited. A person busy past

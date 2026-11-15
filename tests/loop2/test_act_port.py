@@ -1108,3 +1108,53 @@ def test_a_hook_lost_before_the_idle_decision_sends_nothing() -> None:
         rig.port.act(_dispatch("type", FIELD, **TYPE))
     assert [lost.value.token] == ["monitor_lost"]
     assert _nothing_executed(rig)
+
+
+# ---- #364 H4: the proof as late as possible, then one last switch and idle check ----------------
+
+
+class _LoggingDesk(Desk):
+    def __init__(self, log: list[str], **kw: Any) -> None:  # Any: Desk's own knobs
+        super().__init__(**kw)
+        self.log = log
+
+    def last_input(self) -> float:
+        self.log.append("idle")
+        return super().last_input()
+
+    def prove_hooks(self) -> None:
+        self.log.append("prove")
+        super().prove_hooks()
+
+
+def test_the_proof_comes_after_the_idle_wait_and_just_before_the_send() -> None:
+    log: list[str] = []
+    desk = _LoggingDesk(log)
+    physical = Executor(ok("type"))
+    physical.during = lambda: log.append("send")
+
+    def switch() -> str | None:
+        log.append("switch")
+        return None
+
+    rig = _port(physical=physical, desk=desk, interrupted=switch)
+    rig.port.act(_dispatch("type", FIELD, **TYPE))
+    proof = log.index("prove")
+    assert "idle" in log[:proof]  # the idle wait came first
+    assert log[proof + 1 :] == ["switch", "idle", "send"]  # then one last look, then the send
+
+
+def test_the_persons_input_during_the_proof_refuses_the_act() -> None:
+    log: list[str] = []
+    desk = _LoggingDesk(log, last_input=-100.0)
+    original = desk.prove_hooks
+
+    def proof_while_the_person_types() -> None:
+        original()
+        desk.last = 1e9  # the person typed while the probe was out
+
+    desk.prove_hooks = proof_while_the_person_types  # type: ignore[method-assign]  # one test
+    rig = _port(physical=Executor(ok("type")), desk=desk)
+    result = rig.port.act(_dispatch("type", FIELD, **TYPE))
+    assert _refused(result, ErrorCode.GATE_PENDING_USER, "takeover")
+    assert _nothing_executed(rig)
