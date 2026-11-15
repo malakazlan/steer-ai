@@ -364,3 +364,15 @@ def test_a_lost_monitor_comes_before_the_unread_log_void() -> None:
 def test_internal_comes_before_a_refused_start_and_a_lost_monitor() -> None:
     final = {"status": "error", "code": None, "detail": "internal_error", "monitor_lost": True}
     assert classify(DONE, _record(final, check=None)).reason == "internal"
+
+
+def test_a_crash_followed_by_a_noise_line_is_no_final_line(tmp_path: Path) -> None:
+    """#366 E2: the last JSON line must be the CLI's own, with a known status."""
+    out = tmp_path / "out.jsonl"
+    child = _Child(out, ["Traceback (most recent call last):", '{"probe": "noise"}'])
+    ran = run_child(
+        ["steer"], cap_s=60.0, out=out, start=lambda _argv, _out: child, kill=lambda _pid: None
+    )
+    got = classify(DONE, _record(ran.final))
+    assert (got.verdict, got.reason) == ("fail", "no_final_line")
+    assert classify(DONE, _record({"status": "finished"})).reason == "no_final_line"

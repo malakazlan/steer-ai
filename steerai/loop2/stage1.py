@@ -42,6 +42,8 @@ IDLE_FLOOR_S: Final = 2.0
 TASK_CAP_S: Final = 600.0
 """The child's cap: twice the 300 s wall budget, so the budget stops the task first."""
 INTERNAL: Final = frozenset({"internal_stub_reached", "internal_error"})
+STATUSES: Final = frozenset({"done", "blocked", "asked", "paused", "stopped", "cannot", "error"})
+"""The statuses the v2 CLI's final line can carry; anything else is not its line."""
 
 
 @dataclass(frozen=True)
@@ -117,7 +119,7 @@ def classify(  # noqa: PLR0911 - one return per rule, in the rules' order
     if not record.fixture_ok:
         return verdict("void", "fixture_failed_before_start")
     final = record.final
-    if final is None:
+    if final is None or final.get("status") not in STATUSES:  # #366 E2: the CLI's own line
         return verdict("fail", "no_final_line")
     if final.get("detail") == "internal_error" or final.get("reason") in INTERNAL:
         return verdict("fail", "internal")
