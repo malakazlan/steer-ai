@@ -1329,6 +1329,167 @@ def run_first_read(out_dir: Path) -> int:  # pragma: no cover - live
     return 0
 
 
+Nudge = Literal["none", "top", "minrestore", "again"]
+NUDGES: Final[tuple[Nudge, ...]] = get_args(Nudge)
+NUDGE_POINTS_S: Final = (0.0, 1.0, 2.0, 3.0, 5.0, 10.0)
+
+
+def _nudge(world: Any, hwnd: int, nudge: Nudge) -> str:  # pragma: no cover - live
+    """One candidate nudge on our own window after the raise. Any: the live world."""
+    import ctypes  # noqa: PLC0415 - Windows only
+
+    from steerai.errors import SteerError  # noqa: PLC0415
+
+    user32 = ctypes.windll.user32
+    if nudge == "top":  # SetWindowPos(HWND_TOP, SWP_NOMOVE | SWP_NOSIZE)
+        return f"top:{bool(user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x2 | 0x1))}"
+    if nudge == "minrestore":  # SW_MINIMIZE then SW_RESTORE
+        user32.ShowWindow(hwnd, 6)
+        time.sleep(0.2)
+        return f"minrestore:{bool(user32.ShowWindow(hwnd, 9))}"
+    if nudge == "again":
+        time.sleep(0.5)
+        try:
+            world.bring_to_front()
+        except SteerError as exc:
+            return f"again:refused:{exc.message}"
+        return "again:ok"
+    return "none"
+
+
+def run_nudge_child(  # noqa: PLR0913 - one live child  # pragma: no cover
+    hwnd: int,
+    *,
+    cdp_port: int,
+    server_port: int,
+    nudge: Nudge,
+    early_cdp: bool,
+    out: Path,
+    trace: Path,
+) -> int:
+    """The real child's setup, `bring_to_front`, one nudge, then at each of `NUDGE_POINTS_S`
+    after the raise: the front snapshot (foreground, z, `cover_of`, what overlaps above, Chrome's
+    visibility) and one UIA read. `early_cdp` opens the DevTools session before the world is
+    built; otherwise it opens after the raise and nudge."""
+    from steerai.errors import SteerError  # noqa: PLC0415
+    from steerai.loop2.live_world import LiveWorld, run_on_loop_thread  # noqa: PLC0415
+    from steerai.probes.layer_b import _ours  # noqa: PLC0415
+
+    acquired: list[str] = []
+    platform = _recording_platform(acquired)
+    config = _live_config(hwnd, trace)
+    early = _ours(cdp_port, server_port)[0] if early_cdp else None
+
+    def work() -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        with LiveWorld(config, platform) as world:
+            try:
+                world.bring_to_front()
+                result = "ok"
+            except SteerError as exc:
+                result = f"refused:{exc.message}"
+            raised = time.monotonic()
+            nudged = _nudge(world, hwnd, nudge)
+            rows.append({"bring_to_front": result, "acquire_foreground": list(acquired),
+                         "nudge": nudged})  # fmt: skip
+            cdp = early if early is not None else _ours(cdp_port, server_port)[0]
+            try:
+                for point in NUDGE_POINTS_S:
+                    wait = point - (time.monotonic() - raised)
+                    if wait > 0:
+                        time.sleep(wait)
+                    snap = _front_snapshot(hwnd, cdp, f"{point:g}s")
+                    shape = read_shape(world._poll_read(), time.monotonic() - raised)
+                    rows.append({**snap, "uia": f"{shape['doc_nodes']}/{shape['nodes']}"})
+            finally:
+                if early is None:
+                    cdp.close()
+        return rows
+
+    try:
+        rows = run_on_loop_thread(work, release=platform.release_com)
+    finally:
+        if early is not None:
+            early.close()
+    with out.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row) + "\n")
+    return 0
+
+
+def run_nudges(out_dir: Path) -> int:  # pragma: no cover - live
+    """One input-only child on 3d-a; then five fresh Chromes on 3d-b, each raised by a nudge
+    child: d0 (no nudge, DevTools late), e1 (no nudge, DevTools early), n1 (HWND_TOP), n2
+    (minimise and restore), n3 (a second bring_to_front 500 ms later)."""
+    import shutil  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    from steerai.probes import instant_search as fixture  # noqa: PLC0415 - live only
+    from steerai.probes.chrome_a11y import (  # noqa: PLC0415
+        CHROME_DEFAULT,
+        launch_chrome,
+        stop_chrome,
+    )
+    from steerai.probes.layer_b import _ours  # noqa: PLC0415
+    from steerai.probes.layer_b_pages import PageServer  # noqa: PLC0415
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
+
+    def emit(row: Mapping[str, object]) -> None:
+        sys.stdout.write(json.dumps(dict(row)) + "\n")
+        sys.stdout.flush()
+
+    cells: list[tuple[str, str, Nudge | None, bool]] = [
+        ("0-input-only", "a", None, False),
+        ("d0-none-late", "b", "none", False),
+        ("e1-none-early", "b", "none", True),
+        ("n1-top", "b", "top", False),
+        ("n2-minrestore", "b", "minrestore", False),
+        ("n3-again", "b", "again", False),
+    ]
+    for name, variant, nudge, early_cdp in cells:
+        run_dir = out_dir / name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(prefix="steer-readchild-"))
+        with PageServer(fixture.pages()) as server:
+            port = fixture._free_port()
+            proc = launch_chrome(
+                CHROME_DEFAULT, tmp / "profile", port, f"http://127.0.0.1:{server.port}/{variant}"
+            )
+            cdp: Any = None  # Any: a CdpSession
+            try:
+                window = wait_window_for_pid(proc.pid, timeout_s=30.0, process=proc)
+                cdp, _ = _ours(port, server.port)  # held open while the child runs, as before
+                fixture._wait_ready(cdp)
+                if nudge is None:
+                    argv = [sys.executable, "-m", "steerai.loop2.read_child", "child",
+                            "--hwnd", str(window.hwnd), "--arm", "mta", "--then", "input",
+                            "--out", str(run_dir / "reads.jsonl"),
+                            "--trace", str(run_dir / "trace.jsonl")]  # fmt: skip
+                    subprocess.run(argv, capture_output=True, timeout=CHILD_CAP_S, check=False)  # noqa: S603
+                    emit({"cell": name, **_summary(run_dir / "reads.jsonl")})
+                    continue
+                argv = [sys.executable, "-m", "steerai.loop2.read_child", "nudge",
+                        "--hwnd", str(window.hwnd), "--cdp-port", str(port),
+                        "--server-port", str(server.port), "--nudge", nudge,
+                        *(["--early-cdp"] if early_cdp else []),
+                        "--out", str(run_dir / "nudge.jsonl"),
+                        "--trace", str(run_dir / "trace.jsonl")]  # fmt: skip
+                done = subprocess.run(  # noqa: S603 - our own module, a fixed argv
+                    argv, capture_output=True, text=True, timeout=CHILD_CAP_S, check=False
+                )
+                emit({"cell": name, "code": done.returncode, "stderr_tail": done.stderr[-300:]})
+                lines = (run_dir / "nudge.jsonl").read_text("utf-8").splitlines()
+                for line in lines:
+                    emit({"cell": name, **json.loads(line)})
+            finally:
+                if cdp is not None:
+                    cdp.close()
+                stop_chrome(proc, tmp / "profile")
+                shutil.rmtree(tmp, ignore_errors=True)
+    return 0
+
+
 def run_front_child(  # pragma: no cover - live
     hwnd: int, *, cdp_port: int, server_port: int, out: Path, trace: Path
 ) -> int:
@@ -1471,7 +1632,7 @@ def _summary(path: Path) -> dict[str, object]:  # pragma: no cover - live
     return rows[-1] if rows and "summary" in rows[-1] else {"summary": None}
 
 
-def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911, PLR0915  # pragma: no cover
+def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911, PLR0912, PLR0915  # pragma: no cover
     parser = argparse.ArgumentParser(prog="python -m steerai.loop2.read_child")
     sub = parser.add_subparsers(dest="mode", required=True)
     child = sub.add_parser("child")
@@ -1489,6 +1650,16 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911, PLR0915  #
     front.add_argument("--server-port", type=int, required=True)
     front.add_argument("--out", type=Path, required=True)
     front.add_argument("--trace", type=Path, required=True)
+    nudge = sub.add_parser("nudge")
+    nudge.add_argument("--hwnd", type=int, required=True)
+    nudge.add_argument("--cdp-port", type=int, required=True)
+    nudge.add_argument("--server-port", type=int, required=True)
+    nudge.add_argument("--nudge", choices=NUDGES, required=True)
+    nudge.add_argument("--early-cdp", action="store_true")
+    nudge.add_argument("--out", type=Path, required=True)
+    nudge.add_argument("--trace", type=Path, required=True)
+    nudges = sub.add_parser("nudges")
+    nudges.add_argument("--out-dir", type=Path, required=True)
     first = sub.add_parser("first-read")
     first.add_argument("--hwnd", type=int, required=True)
     first.add_argument("--cdp-port", type=int, required=True)
@@ -1533,6 +1704,18 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911, PLR0915  #
             out=args.out,
             trace=args.trace,
         )
+    if args.mode == "nudge":
+        return run_nudge_child(
+            args.hwnd,
+            cdp_port=args.cdp_port,
+            server_port=args.server_port,
+            nudge=args.nudge,
+            early_cdp=args.early_cdp,
+            out=args.out,
+            trace=args.trace,
+        )
+    if args.mode == "nudges":
+        return run_nudges(args.out_dir)
     if args.mode == "first-read":
         return run_first_read_child(
             args.hwnd,
