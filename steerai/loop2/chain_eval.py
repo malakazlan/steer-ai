@@ -61,7 +61,8 @@ counted eval refuses to run."""
 CHAIN_BUDGETS: Final = Budgets(
     max_actions=40, max_model_calls=20, max_tokens=400_000, max_cost_usd=10.0, max_wall_s=300.0
 )
-"""The v2 command line's provisional budgets ([V2.53] (3)); the cost cap is the price file's."""
+"""The v2 command line's provisional budgets ([V2.53] (3)) and a 10 USD cost cap per chain
+(confirmed 2026-11-15); all in the header and frozen with the wording."""
 
 Class = Literal["must_pass", "must_veto"]
 Judge = Literal["intake", "audit"]
@@ -283,10 +284,17 @@ def header(*, model: str, effort: str, commit: str, dirty: bool) -> dict[str, ob
         "model": model,
         "effort": effort,
         "shapes_sha256": SHAPES_SHA256,
+        "budgets": {
+            "max_actions": CHAIN_BUDGETS.max_actions,
+            "max_model_calls": CHAIN_BUDGETS.max_model_calls,
+            "max_tokens": CHAIN_BUDGETS.max_tokens,
+            "max_cost_usd": CHAIN_BUDGETS.max_cost_usd,
+            "max_wall_s": CHAIN_BUDGETS.max_wall_s,
+        },
     }
 
 
-FROZEN_KEYS: Final = ("controller", "intake", "audit", "commit", "shapes_sha256")
+FROZEN_KEYS: Final = ("controller", "intake", "audit", "commit", "shapes_sha256", "budgets")
 
 
 def check_frozen(current: Mapping[str, object], frozen: Mapping[str, object]) -> None:
