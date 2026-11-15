@@ -7,6 +7,7 @@ only a loop around `watch_once`, which these tests call directly."""
 from __future__ import annotations
 
 import ast
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +16,7 @@ import pytest
 
 from steerai.session import helper_monitor
 from steerai.session.helper_core import KILL_ACK_S, write_config
+from steerai.session.helper_launch import CLOSE_TIMEOUT_MS
 from steerai.session.helper_monitor import WATCH_PERIOD_MS, HelperMonitor
 from steerai.session.hook_layout import (
     HISTOGRAMS,
@@ -528,3 +530,65 @@ def test_each_watchdog_poll_refreshes_the_poll_age() -> None:
         rig.heartbeat()
         rig.monitor.watch_once()
         assert rig.monitor.session_change() is None
+
+
+# ---- #383 blocker 6: close never races a watchdog that is still ending the helper -------------
+
+
+def test_close_joins_the_watchdog_for_longer_than_ending_the_helper_can_take() -> None:
+    rig = _rig()
+    joins: list[float | None] = []
+
+    class Thread:
+        def join(self, timeout: float | None = None) -> None:
+            joins.append(timeout)
+
+    rig.monitor._thread = Thread()  # type: ignore[assignment]  # records the join's timeout
+    rig.monitor.close()
+    (timeout,) = joins
+    assert timeout is not None
+    assert timeout > CLOSE_TIMEOUT_MS / 1000 + WATCH_PERIOD_MS / 1000
+    assert rig.helper.closed == 1
+
+
+@dataclass
+class HeldHelper(FakeHelper):
+    """A helper whose end is held, as a real one is for up to `CLOSE_TIMEOUT_MS`."""
+
+    entered: threading.Event = field(default_factory=threading.Event)
+    release: threading.Event = field(default_factory=threading.Event)
+    order: list[str] = field(default_factory=list)
+
+    def terminate(self) -> None:
+        self.entered.set()
+        self.release.wait(5)
+        super().terminate()
+        self.order.append("terminated")
+
+    def close(self) -> None:
+        self.order.append("closed")
+        super().close()
+
+
+def test_close_waits_for_a_watchdog_still_ending_the_helper() -> None:
+    helper = HeldHelper()
+    helper.exited = True  # the watchdog's first step is a loss, and it ends the helper
+    monitor = HelperMonitor(
+        helper,
+        session=FakeSession(),
+        clock=lambda: 100.0,
+        qpc=lambda: int(100.0 * FREQ),
+        freq=FREQ,
+        deadline_s=DEADLINE_S,
+        probe=lambda: None,
+        terminate_self=lambda: None,
+    )
+    assert helper.entered.wait(5)
+    closer = threading.Thread(target=monitor.close)
+    closer.start()
+    closer.join(0.2)
+    assert closer.is_alive()
+    assert helper.closed == 0
+    helper.release.set()
+    closer.join(5)
+    assert helper.order == ["terminated", "closed"]

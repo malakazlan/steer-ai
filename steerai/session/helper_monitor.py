@@ -25,6 +25,7 @@ from ctypes import wintypes
 from typing import Any, Final, Protocol
 
 from steerai.session.helper_core import KILL_ACK_S
+from steerai.session.helper_launch import CLOSE_TIMEOUT_MS
 from steerai.session.helper_reader import (
     ReaderState,
     StatusRead,
@@ -40,6 +41,9 @@ CLOCK_RESOLUTION_S: Final = 0.015625
 """`time.monotonic()` on CPython 3.12 here is GetTickCount64 at 15.625 ms (meas,
 `time.get_clock_info`, 2026-11-15): one tick added to a person's input time (§5.3)."""
 WATCH_PERIOD_MS: Final = 100
+WATCH_JOIN_S: Final = (CLOSE_TIMEOUT_MS + 2 * WATCH_PERIOD_MS) / 1000
+"""#383 blocker 6: close waits out a watchdog that may be ending the helper (up to
+`CLOSE_TIMEOUT_MS`) before the helper's handles are closed."""
 """The watchdog's period: the helper's heartbeat period (rev 2 §5.3, provisional)."""
 _UNSET: Final = object()
 _OURS: Final[dict[str, object]] = {"lock": 1, "desktop": "Default"}
@@ -226,7 +230,7 @@ class HelperMonitor:
         self._closed = True
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
+            self._thread.join(timeout=WATCH_JOIN_S)
         self._helper.close()
 
     # ---- the watchdog ----------------------------------------------------------------------------

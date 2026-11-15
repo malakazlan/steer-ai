@@ -289,8 +289,12 @@ class HelperProcess:
 
     def terminate(self) -> None:
         """P4 (rev 2): a helper-caused loss ends the helper at once: through its job, else its
-        process, then a bounded wait for it to be gone (#375 H5)."""
-        self._end()
+        process, then a bounded wait for it to be gone (#375 H5). It takes the close lock and does
+        nothing once closed (#383 blocker 6): the handles are released by then."""
+        with self._close_lock:
+            if self._closed:
+                return
+            self._end()
 
     # ---- lifecycle ------------------------------------------------------------------------------
 

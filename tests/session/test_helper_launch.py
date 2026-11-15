@@ -748,3 +748,44 @@ def test_terminate_ends_the_helper_checked_and_waits_for_it() -> None:
     helper.terminate()
     assert w.named("terminate_process")
     assert w.calls[-1] == ("wait", (w.process,), CLOSE_TIMEOUT_MS)
+
+
+# ---- #383 blocker 6: ending the helper never races its close ----------------------------------
+
+
+def test_terminate_after_close_touches_nothing() -> None:
+    """The handles are released by then; ending through them would end whatever reused them."""
+    w = FakeWin32()
+    helper = _helper(w)
+    helper.start()
+    helper.close()
+    before = len(w.calls)
+    helper.terminate()
+    assert w.calls[before:] == []
+
+
+def test_a_terminate_during_close_waits_for_it_and_then_does_nothing() -> None:
+    w = FakeWin32()
+    helper = _helper(w)
+    helper.start()
+    entered, release = threading.Event(), threading.Event()
+    real_wait = w.wait_any
+
+    def held_wait(handles: tuple[int, ...], timeout_ms: int) -> int | None:
+        entered.set()
+        release.wait(5)
+        return real_wait(handles, timeout_ms)
+
+    w.wait_any = held_wait  # type: ignore[method-assign]  # the close is held inside it
+    closer = threading.Thread(target=helper.close)
+    closer.start()
+    assert entered.wait(5)
+    ender = threading.Thread(target=helper.terminate)
+    ender.start()
+    ender.join(0.2)
+    assert ender.is_alive()  # behind the close, not racing it
+    release.set()
+    closer.join(5)
+    ender.join(5)
+    assert not w.named("terminate_job")
+    assert not w.named("terminate_process")
