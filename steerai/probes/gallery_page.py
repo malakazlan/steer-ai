@@ -306,10 +306,87 @@ SEARCH_PAGE = """<!doctype html>
 """The page g23's search form opens: titled with the words, as a real results page is."""
 
 
+LARGE_ROWS = 2000
+"""[V2.55] (3): rows on the large page, well past the listing cap (150)."""
+LARGE_TARGET = 1987
+"""The row a task acts on, far down the list."""
+
+LARGE_PAGE = """<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Large inventory</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 10px; font-size: 13px; }
+  [hidden] { display: none !important; }
+  [role="menu"] { list-style: none; padding: 2px; border: 1px solid #999; width: 12em; }
+</style></head>
+<body>
+<h1>Inventory</h1>
+<button id="sort" aria-haspopup="menu" aria-expanded="false" aria-controls="sort-menu">Sort</button>
+<ul id="sort-menu" role="menu" hidden>
+  <li role="menuitem" tabindex="-1">By name</li>
+  <li role="menuitem" tabindex="-1">By date</li>
+  <li role="menuitem" tabindex="-1">By size</li>
+</ul>
+<ul id="rows"></ul>
+<script>
+(function () {
+  var KEY = "LOG_KEY_HERE";
+  var ROWS = LARGE_ROWS_HERE;
+  var TARGET = LARGE_TARGET_HERE;
+  window.PENDING = 0;
+  function put(e, entry) {
+    if (!e.isTrusted) { entry.untrusted = true; }
+    var log = JSON.parse(localStorage.getItem(KEY) || "[]");
+    log.push(entry);
+    localStorage.setItem(KEY, JSON.stringify(log));
+  }
+  var sort = document.getElementById("sort");
+  var menu = document.getElementById("sort-menu");
+  sort.addEventListener("click", function (e) {
+    var open = sort.getAttribute("aria-expanded") !== "true";
+    sort.setAttribute("aria-expanded", open ? "true" : "false");
+    menu.hidden = !open;
+    put(e, {row: "large-menu", open: open});
+  });
+  var list = document.getElementById("rows");
+  for (var i = 1; i <= ROWS; i++) {
+    var li = document.createElement("li");
+    li.textContent = "Item " + i + " ";
+    var button = document.createElement("button");
+    button.textContent = i === TARGET ? "Reserve item " + i : "Details";
+    (function (n) {
+      button.addEventListener("click", function (e) {
+        if (n === TARGET) { put(e, {row: "large", item: n}); }
+      });
+    })(i);
+    li.appendChild(button);
+    list.appendChild(li);
+  }
+})();
+</script>
+</body></html>
+"""
+"""[V2.55] (3): a generic large page for the listing cap's stage 1 runs: thousands of rows, a menu
+that reveals items, a target far down. Nothing from H7; it logs like the gallery."""
+
+
+def large_html() -> str:
+    return (
+        LARGE_PAGE.replace("LOG_KEY_HERE", LOG_KEY)
+        .replace("LARGE_ROWS_HERE", str(LARGE_ROWS))
+        .replace("LARGE_TARGET_HERE", str(LARGE_TARGET))
+    )
+
+
 def page_html() -> str:
     return PAGE.replace("LOG_KEY_HERE", LOG_KEY)
 
 
 def pages() -> dict[str, str]:
     """Every page the gallery serves, by path."""
-    return {"/page.html": page_html(), "/terms.html": TERMS_PAGE, "/search.html": SEARCH_PAGE}
+    return {
+        "/page.html": page_html(),
+        "/terms.html": TERMS_PAGE,
+        "/search.html": SEARCH_PAGE,
+        "/large.html": large_html(),
+    }

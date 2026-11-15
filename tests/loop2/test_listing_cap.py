@@ -100,11 +100,25 @@ def test_goal_words_come_next_up_to_a_third_of_the_cap() -> None:
 
 
 def test_a_goal_word_matches_whole_words_case_folded() -> None:
-    shown = snapshot([ROOT, _row(1, name="LAMPS"), _row(2, name="Clampdown"), *(
+    shown = snapshot([ROOT, _row(1, name="LAMP"), _row(2, name="Clampdown"), *(
         _row(i) for i in range(3, 400))])  # fmt: skip
-    listing = _select(shown, cap=10, goal_words=frozenset({"lamps"}))
-    assert 1 in listing.ids
-    assert listing.ids.index(1) < 10
+    listing = _select(shown, cap=10, goal_words=frozenset({"lamp"}))
+    by_id = dict(zip(listing.ids, listing.priorities, strict=True))
+    assert by_id[1] == "goal"
+    assert by_id.get(2) != "goal"  # a word inside another word is not the word
+
+
+def test_an_over_full_always_keep_class_is_chosen_on_screen_interactive_first() -> None:
+    """[V2.55] (1): past the ceiling, v1's order inside the class, never tree order."""
+    hidden = [_row(i, top=5000 + i, offscreen=True) for i in range(1, 6)]
+    plain = [_row(i, role="Text", name=f"Note {i}") for i in range(6, 11)]
+    buttons = [_row(i) for i in range(11, 16)]
+    shown = snapshot([ROOT, *hidden, *plain, *buttons])
+    every = frozenset(e.runtime_id for e in [*hidden, *plain, *buttons])
+    listing = _select(shown, cap=2, keep=every)
+    kept = {i for i, c in zip(listing.ids, listing.priorities, strict=True) if c == "keep"}
+    assert set(range(11, 15)) <= kept  # on-screen interactive first, up to the ceiling of 4
+    assert not kept & set(range(1, 6))
 
 
 def test_a_kept_element_brings_its_parent_so_indentation_stays_true() -> None:

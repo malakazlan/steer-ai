@@ -64,3 +64,37 @@ def test_the_search_row_submits_a_form_to_a_results_page_titled_with_the_words()
     assert '<form action="/search.html" method="get"' in served["/page.html"]
     assert 'name="q"' in served["/page.html"]
     assert 'document.title = q + " - Gallery search"' in served["/search.html"]
+
+
+# ---- [V2.55] (3): a large page for the listing cap --------------------------------------------
+
+
+def test_the_large_page_is_served_from_the_gallery_origin() -> None:
+    from steerai.probes.gallery_page import LARGE_ROWS, pages  # noqa: PLC0415 - this test only
+
+    served = pages()
+    html = served["/large.html"]
+    assert "<title>Large inventory</title>" in html
+    assert LARGE_ROWS >= 2000
+    assert f"var ROWS = {LARGE_ROWS};" in html
+
+
+def test_the_large_page_has_a_menu_that_reveals_items_and_a_target_far_down() -> None:
+    from steerai.probes.gallery_page import LARGE_TARGET, pages  # noqa: PLC0415 - this test only
+
+    html = pages()["/large.html"]
+    assert 'aria-haspopup="menu"' in html
+    assert 'aria-expanded="false"' in html
+    assert 'role="menu" hidden' in html
+    assert LARGE_TARGET >= 1900
+    assert f"var TARGET = {LARGE_TARGET};" in html
+    assert 'put(e, {row: "large", item: n})' in html  # the target's own trusted log entry
+
+
+def test_the_large_page_reuses_nothing_from_h7() -> None:
+    """[V2.55] (3): generic content, no held-out site's names."""
+    from steerai.probes.gallery_page import pages  # noqa: PLC0415 - this test only
+
+    html = pages()["/large.html"].lower()
+    for name in ("wikipedia", "youtube", "google", "amazon", "github", "npm"):
+        assert name not in html
