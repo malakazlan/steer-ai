@@ -41,13 +41,14 @@ from steerai.loop2.act_guards import GuardDesk, InputGuard, ToggleGuard
 from steerai.loop2.act_port import ActPort
 from steerai.loop2.controller import PROMPT_VERSION
 from steerai.loop2.decide_port import Call, DecideCalls, TaskGenerations
-from steerai.loop2.loop import Dispatch, Ports
+from steerai.loop2.loop import ActResult, Dispatch, Ports
 from steerai.loop2.prompt_inputs import make_decide
 from steerai.loop2.task import Task
-from steerai.loop2.world_ports import WorldPorts, WorldTimes
+from steerai.loop2.world_ports import WorldPorts, WorldTimes, kill_sleep
 from steerai.orchestrator.trace import Trace
 from steerai.planner.claude_planner import DEFAULT_MODEL, EFFORT
-from steerai.world.effects import Observed, poll_tier, top_document
+from steerai.world.effects import Observed, ValueFact, poll_tier, top_document
+from steerai.world.elements import Element
 from steerai.world.model import Snapshot
 from steerai.world.observe2 import DocumentSince, FactReader, FirstTouches, read_observed
 from steerai.world.secure import SecureMemory
@@ -75,14 +76,22 @@ class Platform(Protocol):
 
     def dpi_aware(self) -> bool: ...
     def uia(self) -> tuple[Any, UiaBindings]: ...  # Any: the UiaClient
-    def start_monitor(self, kill_key: str) -> Monitor: ...
+    def apartment(self) -> str:
+        """The calling thread's COM apartment after `uia()`: `MTA`, `STA`, `MAINSTA` or `NA`."""
+        ...
+
+    def start_monitor(self, kill_key: str, clock: Callable[[], float]) -> Monitor:
+        """The hook monitor on the world's clock: its `last_user_input` feeds the idle rule."""
+        ...
+
     def protect(self, data: bytes) -> bytes: ...
     def session_locked(self) -> bool | None: ...
     def input_desktop(self) -> str: ...
     def observer(  # Any: the UiaClient
-        self, client: Any, clock: Callable[[], float]
+        self, client: Any, clock: Callable[[], float], sleep: Callable[[float], None]
     ) -> Callable[[int], Snapshot]:
-        """One task's window reader, stamping `Snapshot.taken_at` on `clock` (packet §1)."""
+        """One task's window reader, stamping `Snapshot.taken_at` on `clock` (packet §1); its own
+        stability loop polls on `clock` and pauses through `sleep`, the kill-aware one."""
         ...
 
     def facts(self, client: Any) -> FactReader: ...  # Any: the UiaClient
@@ -159,14 +168,27 @@ class LiveWorld:
             client, bindings = platform.uia()
         except Exception as exc:  # creation fails as a COMError (no stubs) or OSError
             raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "uia_unavailable") from exc
+        if platform.apartment() != "MTA":  # LW-12, packet §1 threads
+            del client, bindings
+            raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "com_apartment")
+        self._thread = threading.get_ident()
         try:
-            monitor = platform.start_monitor(config.kill_key)
+            monitor = platform.start_monitor(config.kill_key, config.clock)
         except SteerError:
+            del client, bindings  # the UIA client is released before the task is refused
             raise  # HookMonitor's own GATE_BLOCKED monitor_unavailable, with its reason
         except Exception as exc:  # any other start failure: no kill switch, no task
+            del client, bindings
             raise SteerError(ErrorCode.GATE_BLOCKED, "monitor_unavailable") from exc
         self._monitor = monitor
         self._closed = False
+        self._ported = False
+        self._trace_lock = threading.Lock()
+        """One lock for every clear-trace write: the decide worker writes late errors."""
+        self.debug_failure: str | None = None
+        self.trace_unwritable = 0
+        self.late_sink_failures = 0
+        self._latched: str | None = None
         try:
             debug = self._debug_sink()
             self._build(client, bindings, debug)
@@ -191,10 +213,8 @@ class LiveWorld:
         config.generations.bump()  # a reply asked under an earlier task is never used (§2.9)
         self.task_fence = secrets.token_hex(16)
         self._key = secrets.token_bytes(32)
-        self._lock = threading.Lock()
-        self.late_sink_failures = 0
         self._client = client
-        self._observe = platform.observer(client, config.clock)
+        self._observe = platform.observer(client, config.clock, self._kill_aware_sleep)
         self._facts = platform.facts(client)
         self._secure = SecureMemory()
         self._stamp = DocumentSince(clock=config.clock)
@@ -238,24 +258,31 @@ class LiveWorld:
     # ---- the switch (packet §2.10) ---------------------------------------------------------------
 
     def interrupted(self) -> str | None:
-        """The latched kill first; then the monitor's health (kept up by `maintain`); then the
-        lock and the input desktop, each failing closed (unread is `secure_desktop`). The act
-        port's idle rule owns `takeover` (rev 3.10 (b))."""
+        """The latched kill first; then the lock and the input desktop (latched for the task,
+        each failing closed: unread is `secure_desktop`, LW-17/18: the lock is the cause, a
+        probe lost behind it only a symptom); then the monitor's health, kept up by `maintain`.
+        Never raises. The act port's idle rule owns `takeover` (rev 3.10 (b))."""
         monitor = self._monitor
         if monitor.kill_requested():
             return "killed"
-        monitor.maintain()
-        if not monitor.healthy():
+        if self._latched is None:
+            self._latched = self._session_signal()
+        if self._latched is not None:
+            return self._latched
+        try:
+            monitor.maintain()
+            healthy = monitor.healthy()
+        except Exception:  # noqa: BLE001 - a monitor that cannot answer is lost (fail closed)
             return "monitor_lost"
-        return self._session_signal()
+        return None if healthy else "monitor_lost"
 
     def _session_signal(self) -> str | None:
-        """The lock, then the input desktop; a read that fails or is unknown is the secure
-        desktop (fail closed)."""
+        """The lock, then the input desktop; a read that fails (any error) or is unknown is the
+        secure desktop (fail closed): the switch never raises out of the loop."""
         try:
             locked = self._platform.session_locked()
             desktop = None if locked is not False else self._platform.input_desktop()
-        except OSError:
+        except Exception:  # noqa: BLE001 - unread is the secure desktop (fail closed)
             return "secure_desktop"
         if locked is True:
             return "session_locked"
@@ -263,8 +290,14 @@ class LiveWorld:
 
     # ---- the reads -------------------------------------------------------------------------------
 
+    def _on_loop_thread(self) -> None:
+        """LW-12: COM elements are used only on the thread that built them (packet §1)."""
+        if threading.get_ident() != self._thread:
+            raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "wrong_thread")
+
     def _poll_read(self) -> Observed:
         """The window's snapshot with the task's sticky secure flags (packet §1)."""
+        self._on_loop_thread()
         snapshot = self._observe(self._config.hwnd)
         return poll_tier(self._secure.apply(snapshot))
 
@@ -281,17 +314,37 @@ class LiveWorld:
 
     # ---- the trace -------------------------------------------------------------------------------
 
+    def _kill_aware_sleep(self, seconds: float) -> None:
+        kill_sleep(seconds, interrupted=self.interrupted, pause=self._config.pause)
+
+    def _write(self, record: Mapping[str, str]) -> None:
+        """One clear-trace line under the one lock (LW-24). A write that fails is counted as
+        `trace_unwritable` and never raised raw into the task (LW-16)."""
+        with self._trace_lock:
+            try:
+                self._config.trace.write(record)
+            except Exception:  # noqa: BLE001 - a trace failure never stops a task; counted
+                self.trace_unwritable += 1
+
     def _token(self, token: str) -> None:
-        self._config.trace.write({"event": "read", "token": token})
+        self._write({"event": "read", "token": token})
 
     def late_error(self, token: str) -> None:
         """#346: an abandoned call's failure, as its closed token. It may run on the decide
         worker's thread, so it never raises there: a sink that fails is counted, not re-raised."""
-        with self._lock:
+        with self._trace_lock:
             try:
                 self._config.trace.write({"event": "late_error", "token": token})
             except Exception:  # noqa: BLE001 - the worker thread must never raise; counted
                 self.late_sink_failures += 1
+
+    def report(self) -> dict[str, int | str | None]:
+        """The world's own counters for the run's final JSON (LW-26/27)."""
+        return {
+            "trace_unwritable": self.trace_unwritable,
+            "late_sink_failures": self.late_sink_failures,
+            "debug_failure": self.debug_failure,
+        }
 
     def header(self, task: Task) -> Mapping[str, str]:
         """The run header ([V2.40] Q5): model, effort, prompt version, trace level, and the
@@ -314,11 +367,14 @@ class LiveWorld:
     # ---- the ports -------------------------------------------------------------------------------
 
     def ports(self, task: Task) -> Ports:
-        """The task's `Ports`; the header is the trace's first record."""
+        """The task's `Ports`, built once; the header is the trace's first record."""
+        if self._ported or self._closed:
+            raise RuntimeError("a LiveWorld builds its ports once, for one task, before close")
+        self._ported = True
         config = self._config
         clock = config.clock
         started = clock()
-        self._config.trace.write(dict(self.header(task)))
+        self._write(self.header(task))
         act = ActPort(
             world=self.world,
             semantic=self.semantic,
@@ -335,30 +391,54 @@ class LiveWorld:
             generations=config.generations,
             late_error=self.late_error,
         )
+        world = self.world
+        check = self._on_loop_thread
+
+        def act_here(dispatch: Dispatch) -> ActResult:
+            check()
+            return act.act(dispatch)
+
+        def read_value_here(element: Element) -> ValueFact | None:
+            check()
+            return world.read_value(element)
+
+        def read_state_here(element: Element, wanted: str) -> bool | None:
+            check()
+            return world.read_state(element, wanted)
+
         return Ports(
             decide=make_decide(calls, goal=task.goal, task_fence=self.task_fence),
-            observe=self.world.observe,
-            act=act.act,
-            watch=self.world.watch,
+            observe=world.observe,
+            act=act_here,
+            watch=world.watch,
             write_ahead=_write_ahead_closed,
             interrupted=self.interrupted,
             clock=clock,
             stamp=self._stamp,
-            settle=self.world.settle,
-            read_value=self.world.read_value,
-            read_state=self.world.read_state,
-            fact_of=self.world.fact_of,
+            settle=world.settle,
+            read_value=read_value_here,
+            read_state=read_state_here,
+            fact_of=world.fact_of,
         )
+
+    def __enter__(self) -> LiveWorld:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        """LW-06: any exception in the task still stops the hooks and the hot key."""
+        self.close()
 
     def close(self) -> None:
         """Task end: the monitor stops once; the debug records are protected and written."""
         if self._closed:
             return
         self._closed = True
-        debug = getattr(self, "_debug", None)
-        if debug is not None:
-            debug.flush()
-        self._monitor.close()
+        try:
+            debug = getattr(self, "_debug", None)
+            if debug is not None:
+                self.debug_failure = debug.flush()  # its closed failure token, or None
+        finally:
+            self._monitor.close()
 
 
 def _write_ahead_closed(_dispatch: Dispatch) -> str:
@@ -380,10 +460,10 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
 
         return UiaClient(), UiaBindings.load()
 
-    def start_monitor(self, kill_key: str) -> Monitor:
+    def start_monitor(self, kill_key: str, clock: Callable[[], float]) -> Monitor:
         from steerai.session.monitor import HookMonitor  # noqa: PLC0415 - Windows hooks
 
-        monitor = HookMonitor(kill_key=kill_key)
+        monitor = HookMonitor(kill_key=kill_key, monotonic=clock)
         monitor.start()
         return monitor
 
@@ -402,13 +482,24 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
 
         return input_desktop_name()
 
+    def apartment(self) -> str:
+        """`CoGetApartmentType` for this thread (APTTYPE: 0 STA, 1 MTA, 2 NA, 3 MAINSTA)."""
+        import ctypes  # noqa: PLC0415 - Windows only
+
+        kind, qualifier = ctypes.c_int(-1), ctypes.c_int(0)
+        result = ctypes.windll.ole32.CoGetApartmentType(ctypes.byref(kind), ctypes.byref(qualifier))
+        if result != 0:
+            return "unknown"
+        return {0: "STA", 1: "MTA", 2: "NA", 3: "MAINSTA"}.get(kind.value, "unknown")
+
     def observer(  # Any: the UiaClient
-        self, client: Any, clock: Callable[[], float]
+        self, client: Any, clock: Callable[[], float], sleep: Callable[[float], None]
     ) -> Callable[[int], Snapshot]:
+        """`WorldModel.observe` with its own defaults (`CAP_S` 1.5 s, packet §2.1)."""
         from steerai.world.model import WorldModel  # noqa: PLC0415 - Windows only
 
-        model = WorldModel(client, clock=clock)
-        return lambda hwnd: model.observe(hwnd, cap_s=5.0)
+        model = WorldModel(client, clock=clock, sleep=sleep)
+        return model.observe
 
     def facts(self, client: Any) -> FactReader:  # Any: the UiaClient
         return _ComFacts(client)

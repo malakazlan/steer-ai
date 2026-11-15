@@ -127,3 +127,48 @@ def test_every_pending_mark_carries_its_step_and_none_is_step_3() -> None:
     assert len(steps) > 100
     assert None not in steps, "every pending mark names its step"
     assert 3 not in steps
+
+
+def _ready_imports() -> set[str]:
+    """The modules `ready()` imports, read from its source."""
+    tree = ast.parse((LOOP2 / "__init__.py").read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "steerai.loop2":
+            names.update(alias.name for alias in node.names)
+    return names
+
+
+def test_ready_imports_every_module_of_the_package() -> None:
+    """#355 LW-13: a stub in a module `ready()` never imported would never be counted."""
+    modules = {p.stem for p in LOOP2.glob("*.py")} - {"__init__", "_stub"}
+    assert _ready_imports() == modules
+
+
+PACKAGE = ROOT / "steerai"
+BUILDERS = {"Executor", "PhysicalExecutor", "ActPort"}
+
+
+def _constructions(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in BUILDERS
+    }
+
+
+def test_the_v2_executors_and_the_act_port_are_built_only_by_live_world() -> None:
+    """#355 LW-04, the AST half: inside the v2 package only `live_world.py` builds v1's
+    executors and the act port (so every one is guarded); outside it, v1 builds its own
+    executors and nothing builds an `ActPort`."""
+    offenders: list[str] = []
+    for path in PACKAGE.rglob("*.py"):
+        built = _constructions(path)
+        if LOOP2 in path.parents and path.name != "live_world.py" and built:
+            offenders.append(f"{path.name}:{sorted(built)}")
+        if LOOP2 not in path.parents and "ActPort" in built:
+            offenders.append(f"{path.name}:ActPort")
+    assert offenders == []

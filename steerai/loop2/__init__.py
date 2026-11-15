@@ -9,17 +9,29 @@ def ready(step: int) -> bool:
     that step or an earlier one is still a stub. Reads the stub registry only; it calls nothing
     live."""
     from steerai.loop2 import (  # noqa: F401, PLC0415 - importing registers each module's stubs
+        act_guards,
+        act_port,
         actuate,
         batch,
         claims,
         consent,
+        controller,
+        decide_port,
+        decision,
         form,
         guards,
+        history,
+        live_world,
         loop,
+        owned,
+        prompt_inputs,
         query,
         record,
         runner,
+        task,
+        text,
         verify,
+        world_ports,
     )
     from steerai.loop2._stub import PENDING_STEP  # noqa: PLC0415 - after the modules registered
 

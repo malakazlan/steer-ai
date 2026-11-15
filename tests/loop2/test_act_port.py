@@ -19,14 +19,14 @@ import pytest
 from steerai.action.dispositions import ActionResult, Delivery, Step
 from steerai.action.executor import Action
 from steerai.action.physical import PhysicalAction
-from steerai.errors import ErrorCode
+from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.act_port import ActPort
 from steerai.loop2.loop import Dispatch, PortInterrupted
 from steerai.orchestrator.loop import IDLE_S, MAX_WAIT_S
 from steerai.world.effects import Observed, ValueFact
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
-from tests.action.fakes import UIA_E_ELEMENTNOTAVAILABLE, com_error
+from tests.action.fakes import TYPE_IDS, UIA_E_ELEMENTNOTAVAILABLE, com_error
 from tests.loop2.world_fakes import FIELD, GO, PAGE, PASSWORD, act, element, observed
 
 BOX = element(42, "CheckBox", "Shop", (9, 42), 1)
@@ -1003,3 +1003,64 @@ def test_a_raw_com_error_inside_the_port_keeps_its_taxonomy_code() -> None:
         "error": "ComError",
         "code": "element_not_found",
     }
+
+
+# ---- [V2.57] LW-04: the act port refuses unguarded v1 executors --------------------------------
+
+
+def _real_executors(*, guarded: bool) -> tuple[Any, Any]:
+    from steerai.action.execution import UiaBindings  # noqa: PLC0415 - this test only
+    from steerai.action.executor import Executor as V1Executor  # noqa: PLC0415
+    from steerai.action.physical import PhysicalExecutor  # noqa: PLC0415
+    from steerai.loop2.act_guards import InputGuard, ToggleGuard  # noqa: PLC0415
+    from tests.action.fakes import FakeWindows  # noqa: PLC0415
+    from tests.action.test_physical import FakeInput  # noqa: PLC0415
+
+    names = {v: k for k, v in TYPE_IDS.items()}
+    if guarded:
+        uia: UiaBindings = ToggleGuard(control_types=names, interfaces={})
+        inputs: Any = InputGuard(
+            FakeInput(),
+            interrupted=lambda: None,
+            focused=lambda: ((), False),
+            clock=lambda: 0.0,
+        )
+    else:
+        uia = UiaBindings(control_types=names, interfaces={})
+        inputs = FakeInput()
+    semantic = V1Executor(uia=uia, windows=FakeWindows(), clock=lambda: 0.0)
+    physical = PhysicalExecutor(uia=uia, windows=FakeWindows(), clock=lambda: 0.0, inputs=inputs)
+    return semantic, physical
+
+
+def _build(semantic: Any, physical: Any) -> ActPort:
+    clock = Clock()
+    return ActPort(
+        world=World(),
+        semantic=semantic,
+        physical=physical,
+        desk=Desk(),
+        interrupted=lambda: None,
+        clock=clock,
+        wall_left=lambda: 60.0,
+        pause=clock.pause,
+    )
+
+
+def test_the_act_port_takes_guarded_v1_executors() -> None:
+    semantic, physical = _real_executors(guarded=True)
+    assert isinstance(_build(semantic, physical), ActPort)
+
+
+@pytest.mark.parametrize("which", ["semantic", "physical"])
+def test_the_act_port_refuses_an_unguarded_v1_executor(which: str) -> None:
+    """[V2.57]: the refusal at construction is the guard; the AST test is the backstop. There
+    is no disarmed mode and no bypass flag."""
+    guarded = _real_executors(guarded=True)
+    bare = _real_executors(guarded=False)
+    semantic = bare[0] if which == "semantic" else guarded[0]
+    physical = bare[1] if which == "physical" else guarded[1]
+    with pytest.raises(SteerError) as refused:
+        _build(semantic, physical)
+    assert refused.value.code is ErrorCode.GATE_BLOCKED
+    assert refused.value.message == f"unguarded_{which}"

@@ -9,6 +9,8 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+import threading
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -24,7 +26,7 @@ from steerai.loop2.controller import PROMPT_VERSION
 from steerai.loop2.decide_port import Reply, TaskGenerations
 from steerai.loop2.live_world import LiveConfig, LiveWorld, UiaElements, WindowsPlatform
 from steerai.loop2.live_world import Platform as LivePlatform
-from steerai.loop2.loop import Dispatch, TokenUsage
+from steerai.loop2.loop import Dispatch, PortInterrupted, TokenUsage
 from steerai.loop2.runner import run_task
 from steerai.orchestrator.trace import ListTrace
 from steerai.world.model import Snapshot
@@ -62,15 +64,21 @@ class Monitor:
         self.maintained = 0
         self.closed = 0
         self.last = 0.0
+        self.raises: Exception | None = None
+        """Raised by `maintain` and `healthy` (a hook thread that failed)."""
 
     def kill_requested(self) -> bool:
         return self.killed
 
     def healthy(self) -> bool:
+        if self.raises is not None:
+            raise self.raises
         return self.ok
 
     def maintain(self) -> None:
         self.maintained += 1
+        if self.raises is not None:
+            raise self.raises
 
     def last_user_input(self) -> float:
         return self.last
@@ -94,7 +102,9 @@ class Platform:
         names = {v: k for k, v in TYPE_IDS.items()}
         self.bindings = UiaBindings(control_types=names, interfaces={})
         self.calls: list[str] = []
+        self.com_apartment = "MTA"
         self.protected: list[bytes] = []
+        self.flush_raises = False
         self.prompts: list[list[str]] = []
         self.click_named: str | None = None
         self.screen = snapshot(PAGE)
@@ -106,14 +116,18 @@ class Platform:
         self.calls.append("dpi")
         return self.dpi
 
+    def apartment(self) -> str:
+        return self.com_apartment
+
     def uia(self) -> tuple[Any, UiaBindings]:
         self.calls.append("uia")
         if self.uia_error is not None:
             raise self.uia_error
         return self.client, self.bindings
 
-    def start_monitor(self, kill_key: str) -> Monitor:
+    def start_monitor(self, kill_key: str, clock: Any) -> Monitor:  # Any: the world's clock
         self.calls.append(f"monitor:{kill_key}")
+        self.monitor_clock = clock
         if self.monitor_error is not None:
             raise self.monitor_error
         return self.monitor
@@ -135,9 +149,10 @@ class Platform:
             raise self.desktop
         return self.desktop
 
-    def observer(self, client: Any, clock: Any) -> Any:  # Any: the clock, the reader
+    def observer(self, client: Any, clock: Any, sleep: Any) -> Any:  # Any: clock, sleep, reader
         del client
         self.observer_clock = clock
+        self.observer_sleep = sleep
 
         def read(_hwnd: int) -> Snapshot:
             if self.handles is None:
@@ -360,6 +375,8 @@ def test_a_late_error_is_traced_as_its_token() -> None:
         ({"desktop": "Winlogon"}, "secure_desktop"),
         ({"desktop": OSError("unreadable")}, "secure_desktop"),
         ({"killed": True, "ok": False, "locked": True}, "killed"),
+        ({"ok": False, "locked": True}, "session_locked"),
+        ({"ok": False, "desktop": "Winlogon"}, "secure_desktop"),
     ],
 )
 def test_interrupted_reads_each_signal_failing_closed(
@@ -641,3 +658,267 @@ def test_the_desk_reads_the_persons_last_input_from_the_monitor() -> None:
     world, platform = _world()
     platform.monitor.last = 1_000_123.5
     assert world.desk.last_input() == 1_000_123.5
+
+
+# ---- #355 review round -----------------------------------------------------------------------
+
+SENTINEL = "zqsentinelname"
+
+
+def test_a_debug_trace_goes_to_its_file_only_through_dpapi(tmp_path: Any) -> None:
+    """Principal 1: at level `debug` the records are protected by the platform and written as
+    base64 of what DPAPI returned; the name never reaches the file in clear."""
+    platform = Platform()
+    path = tmp_path / "trace.debug.jsonl.dpapi"
+    world, _ = _world(platform, trace_level="debug", debug_path=path)
+    world.physical._debug.record("aim", {"element": {"name": SENTINEL}})
+    world.close()
+    data = path.read_bytes()
+    assert SENTINEL.encode() not in data
+    assert data.splitlines() == [b"YmxvYg=="]  # base64 of the fake's b"blob"
+    assert any(SENTINEL.encode() in p for p in platform.protected)
+
+
+@pytest.mark.parametrize("where", ["locked", "desktop"])
+def test_a_session_read_that_raises_anything_is_the_secure_desktop(where: str) -> None:
+    """Principal 2: fail closed on any error, never out of `run_task`."""
+    platform = Platform()
+    setattr(platform, where, RuntimeError("COM gone"))
+    world, _ = _world(platform)
+    assert world.interrupted() == "secure_desktop"
+
+
+def test_a_monitor_that_raises_is_lost() -> None:
+    platform = Platform()
+    platform.monitor.raises = RuntimeError("hook thread died")
+    world, _ = _world(platform)
+    assert world.interrupted() == "monitor_lost"
+
+
+def test_the_monitor_runs_on_the_worlds_clock() -> None:
+    """Principal 3: `last_user_input` feeds the idle rule, so it is read on the port's clock."""
+    world, platform = _world()
+    assert platform.monitor_clock is world.clock
+
+
+def test_the_window_reader_sleeps_kill_aware_on_the_worlds_clock() -> None:
+    """Principal 4: the reader's own stability loop polls on the world's clock and pauses
+    through the switch, so a kill ends a read in progress."""
+    world, platform = _world()
+    assert platform.observer_clock is world.clock
+    platform.monitor.killed = True
+    with pytest.raises(PortInterrupted):
+        platform.observer_sleep(0.05)
+
+
+def test_close_always_closes_the_monitor_and_counts_a_failed_flush(tmp_path: Any) -> None:
+    platform = Platform()
+    world, _ = _world(platform, trace_level="debug", debug_path=tmp_path / "d.dpapi")
+    world.physical._debug.record("aim", {"x": 1})
+    platform.dpapi_error = OSError("DPAPI gone at task end")
+    world.close()
+    assert platform.monitor.closed == 1
+    assert world.debug_failure == "unavailable"
+
+
+def test_the_ports_are_built_once_per_task() -> None:
+    trace = ListTrace()
+    world, _ = _world(trace=trace)
+    world.ports(task())
+    with pytest.raises(RuntimeError, match="once"):
+        world.ports(task())
+    assert sum('"run_header"' in line for line in trace.lines) == 1
+
+
+class _HeldTrace(ListTrace):
+    """A trace whose first write blocks until released, counting writers inside at once."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.inside = 0
+        self.most = 0
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def write(self, record: Any) -> None:
+        self.inside += 1
+        self.most = max(self.most, self.inside)
+        self.entered.set()
+        self.release.wait(timeout=2.0)
+        self.inside -= 1
+        super().write(record)
+
+
+def test_every_trace_write_holds_one_lock() -> None:
+    """One lock for every clear-trace write: the decide worker's late error and the loop
+    thread's reads never write at once."""
+    trace = _HeldTrace()
+    world, _ = _world(trace=trace)
+    worker = threading.Thread(target=world.late_error, args=("late_model_timeout",))
+    worker.start()
+    assert trace.entered.wait(timeout=2.0)
+    reader = threading.Thread(target=world.world._trace, args=("read_unread:x",))
+    reader.start()
+    reader.join(timeout=0.2)  # held at the lock while the worker writes
+    trace.release.set()
+    worker.join(timeout=2.0)
+    reader.join(timeout=2.0)
+    assert trace.most == 1
+    assert len(trace.lines) == 2
+
+
+@pytest.mark.windows
+def test_the_windows_platform_constructs_and_closes() -> None:
+    """The real side: UIA, the hook monitor with its hot key, then a clean close."""
+    from steerai.probes.windows import list_top_windows  # noqa: PLC0415 - Windows only
+
+    hwnd = list_top_windows()[0].hwnd
+    world = LiveWorld(_config(hwnd=hwnd, kill_key="ctrl+alt+shift+f9"), WindowsPlatform())
+    try:
+        assert world.interrupted() in {None, "session_locked", "secure_desktop"}
+    finally:
+        world.close()
+
+
+def test_the_value_digest_key_is_random_per_task() -> None:
+    """The tester's M7e: 32 random bytes per task (a value digest is never comparable across
+    tasks, nor guessable)."""
+    first, _ = _world()
+    second, _ = _world()
+    assert len(first._key) == 32
+    assert first._key != second._key
+
+
+# ---- #355 round, the principal's second pass -------------------------------------------------
+
+
+class _Unwritable(ListTrace):
+    def write(self, _record: Any) -> None:
+        raise OSError("disk full")
+
+
+def test_a_trace_that_cannot_be_written_never_raises_and_is_counted() -> None:
+    """LW-16: a clear-trace write failure on the loop thread (a read token, the header) is
+    counted as `trace_unwritable`, never raised raw into the task."""
+    world, _ = _world(trace=_Unwritable())
+    world.ports(task())  # the header's write fails
+    world.world._trace("read_unread:element_not_found")
+    assert world.report()["trace_unwritable"] == 2
+
+
+def test_the_report_has_every_counter() -> None:
+    world, _ = _world()
+    world.close()
+    assert world.report() == {"trace_unwritable": 0, "late_sink_failures": 0, "debug_failure": None}
+
+
+def test_the_world_is_a_context_manager_that_always_closes() -> None:
+    """LW-06: any exception in the task still stops the hooks and the hot key."""
+    platform = Platform()
+    with pytest.raises(KeyError), LiveWorld(_config(), platform):
+        raise KeyError("a bug in the task")
+    assert platform.monitor.closed == 1
+
+
+def test_a_uia_client_outside_the_mta_never_starts() -> None:
+    """LW-12, packet §1 threads: UIA runs on an MTA thread."""
+    platform = Platform()
+    platform.com_apartment = "STA"
+    with pytest.raises(SteerError) as failed:
+        _world(platform)
+    assert failed.value.code is ErrorCode.PERCEPTION_DEGRADED
+    assert failed.value.message == "com_apartment"
+
+
+def test_the_ports_run_only_on_the_thread_that_built_the_world() -> None:
+    """LW-12: COM elements never cross threads (packet §1, a design choice)."""
+    world, _ = _world()
+    ports = world.ports(task())
+    seen: list[BaseException] = []
+
+    def elsewhere() -> None:
+        try:
+            ports.observe()
+        except SteerError as exc:
+            seen.append(exc)
+
+    other = threading.Thread(target=elsewhere)
+    other.start()
+    other.join(timeout=5.0)
+    assert len(seen) == 1
+    assert isinstance(seen[0], SteerError)
+    assert seen[0].message == "wrong_thread"
+
+
+def test_a_lock_or_secure_desktop_is_latched_for_the_task() -> None:
+    """LW-18: once the session is locked (or the desktop unread), the task stays stopped for that
+    reason, even if the person unlocks before the loop reads the switch again."""
+    platform = Platform()
+    platform.locked = True
+    world, _ = _world(platform)
+    assert world.interrupted() == "session_locked"
+    platform.locked = False
+    assert world.interrupted() == "session_locked"
+
+
+def test_the_kill_outranks_a_latched_lock() -> None:
+    platform = Platform()
+    platform.locked = True
+    world, _ = _world(platform)
+    world.interrupted()
+    platform.monitor.killed = True
+    assert world.interrupted() == "killed"
+
+
+# ---- [V2.57] and the round's last survivors ------------------------------------------------------
+
+
+def test_nothing_at_all_is_sent_while_the_session_is_locked(
+    fast_clock: dict[str, float],  # noqa: F811 - the v1 fixture
+) -> None:
+    """[V2.57] LW-17: locked stops with that reason and injects no input of any kind: no
+    monitor probe, no cursor move, no click, no key."""
+    platform = Platform()
+    platform.locked = True
+    world, _ = _world(platform)
+    assert world.interrupted() == "session_locked"
+    result = world.physical.execute(CLICK, _now(world, physical_snapshot(FakeHandle())))
+    typed = PhysicalAction(verb="type", element_id=1, text="abc")
+    with world.desk.armed(frozenset({TARGET_ID})):
+        world.physical.execute(typed, _now(world, physical_snapshot(_edit(), role="Edit")))
+    assert platform.monitor.maintained == 0  # the self-probe is input too
+    assert platform.fake_input.moves == []
+    assert platform.fake_input.clicks == []
+    assert platform.fake_input.bursts == []
+    assert result.delivery is Delivery.NOT_DELIVERED
+
+
+def test_no_ports_after_close() -> None:
+    world, _ = _world()
+    world.close()
+    with pytest.raises(RuntimeError, match="before close"):
+        world.ports(task())
+
+
+@pytest.mark.parametrize("call", ["act", "read_value", "read_state"])
+def test_the_act_and_the_live_reads_refuse_another_thread(call: str) -> None:
+    world, _ = _world()
+    ports = world.ports(task())
+    sent = Dispatch(act("click", target=1), GO.runtime_id, "Button", "Go", "R0", None)
+    calls: dict[str, Callable[[], object]] = {
+        "act": lambda: ports.act(sent),
+        "read_value": lambda: ports.read_value(FIELD),
+        "read_state": lambda: ports.read_state(GO, "on"),
+    }
+    seen: list[BaseException] = []
+
+    def elsewhere() -> None:
+        try:
+            calls[call]()
+        except SteerError as exc:
+            seen.append(exc)
+
+    other = threading.Thread(target=elsewhere)
+    other.start()
+    other.join(timeout=5.0)
+    assert [getattr(e, "message", "") for e in seen] == ["wrong_thread"]
