@@ -5,12 +5,15 @@ above (the step 3 invariant, read from each run's final line). Only the expected
 
 from __future__ import annotations
 
+import ast
 import json
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from steerai.errors import START_DETAILS
 from steerai.loop2 import cli
 from steerai.loop2.loop import Dispatch, TaskOutcome
 from steerai.loop2.stage1 import Classified, RunRecord, StageTask, accept, classify
@@ -166,3 +169,31 @@ def test_the_gate_report_never_carries_text_from_the_childs_line() -> None:
     (failure,) = summary.report["no_r2_dispatch_failures"]
     assert failure["reason"] == "start_refused:other"
     assert "page title" not in json.dumps(summary.report)
+
+
+
+# ---- #429 (1): the closed details the emitters really send are kept ------------------------------
+
+
+@pytest.mark.parametrize("detail", sorted(START_DETAILS))
+def test_each_closed_start_detail_is_kept_in_the_report(detail: str) -> None:
+    line = {**final("R1"), "status": "error", "detail": detail}
+    del line["dispatch_risks"]
+    refused = classify(TASKS[0], RunRecord("t0", 4, line, True, True, None, None))
+    rated = [r for t in TASKS for r in runs(t, final("R1"))]
+    summary = accept(TASKS, [*rated, refused], controls=None, runs_per_task=3, label="t")
+    (failure,) = summary.report["no_r2_dispatch_failures"]
+    assert failure["reason"] == f"start_refused:{detail}"
+
+
+def test_the_emitters_use_the_shared_details() -> None:
+    """No emitter spells a closed detail as its own literal: the report's set cannot drift."""
+    root = Path(__file__).resolve().parents[2] / "steerai"
+    for name in ("loop2/cli.py", "run.py"):
+        tree = ast.parse((root / name).read_text(encoding="utf-8"))
+        literals = {
+            n.value
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+        }
+        assert not literals & START_DETAILS, name

@@ -28,6 +28,7 @@ from steerai.loop2.stage2_expected import (
     opened_read_path,
     opener_start_facts,
     opener_table_row,
+    opener_targets,
     reveal_targets,
     wait_revealed,
 )
@@ -314,3 +315,21 @@ def test_fresh_opened_never_removes_a_start_read(tmp_path: Path) -> None:
     start.write_text("{}", encoding="utf-8")
     assert fresh_opened(tmp_path, "wk1") == tmp_path / "wk1.opened.json"
     assert start.exists()
+
+
+
+# ---- #429 (2): an opener task with no acts row is refused ----------------------------------------
+
+
+def test_an_opener_with_no_acts_row_fails_closed() -> None:
+    with pytest.raises(OpenerError, match="no_acts"):
+        opener_targets({}, "mdn1")
+
+
+def test_an_opener_with_its_acts_row_gives_its_targets() -> None:
+    row = SiteRow(
+        (OPEN_SEARCH, Act("type", "Edit", "Find", param="x"), Act("press", "", "", key="Enter")),
+        "navigated",
+        "w",
+    )
+    assert opener_targets({"mdn1": row}, "mdn1") == (Act("type", "Edit", "Find", param="x"),)
