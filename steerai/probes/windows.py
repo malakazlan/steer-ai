@@ -751,6 +751,67 @@ def _cover_user32() -> ctypes.WinDLL:  # pragma: no cover - live, Windows only
     return user32
 
 
+# ---- [V2.64] the nudge's placement reads and writes (our own bound window only) ------------
+
+
+class _WindowPlacement(ctypes.Structure):
+    _fields_ = (
+        ("length", wintypes.UINT),
+        ("flags", wintypes.UINT),
+        ("showCmd", wintypes.UINT),
+        ("ptMinPosition", wintypes.POINT),
+        ("ptMaxPosition", wintypes.POINT),
+        ("rcNormalPosition", wintypes.RECT),
+    )
+
+
+def get_placement(  # pragma: no cover - live, Windows only
+    hwnd: int,
+) -> tuple[int, Rect, tuple[int, int], tuple[int, int]]:
+    """GetWindowPlacement: (show command, normal rect, minimised position, maximised position)."""
+    placement = _WindowPlacement()
+    placement.length = ctypes.sizeof(_WindowPlacement)
+    if not ctypes.windll.user32.GetWindowPlacement(hwnd, ctypes.byref(placement)):
+        raise OSError("GetWindowPlacement failed")
+    normal = placement.rcNormalPosition
+    return (
+        int(placement.showCmd),
+        (normal.left, normal.top, normal.right, normal.bottom),
+        (placement.ptMinPosition.x, placement.ptMinPosition.y),
+        (placement.ptMaxPosition.x, placement.ptMaxPosition.y),
+    )
+
+
+def set_placement(  # pragma: no cover - live, Windows only
+    hwnd: int, show_cmd: int, normal: Rect, min_pos: tuple[int, int], max_pos: tuple[int, int]
+) -> None:
+    """SetWindowPlacement with the saved values."""
+    placement = _WindowPlacement()
+    placement.length = ctypes.sizeof(_WindowPlacement)
+    placement.showCmd = show_cmd
+    placement.ptMinPosition = wintypes.POINT(*min_pos)
+    placement.ptMaxPosition = wintypes.POINT(*max_pos)
+    placement.rcNormalPosition = wintypes.RECT(*normal)
+    if not ctypes.windll.user32.SetWindowPlacement(hwnd, ctypes.byref(placement)):
+        raise OSError("SetWindowPlacement failed")
+
+
+def get_window_rect(hwnd: int) -> Rect:  # pragma: no cover - live, Windows only
+    rect = wintypes.RECT()
+    if not ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        raise OSError("GetWindowRect failed")
+    return (rect.left, rect.top, rect.right, rect.bottom)
+
+
+def set_window_rect(hwnd: int, rect: Rect) -> None:  # pragma: no cover - live, Windows only
+    """SetWindowPos to `rect`: SWP_NOZORDER 0x4 | SWP_NOACTIVATE 0x10."""
+    left, top, right, bottom = rect
+    if not ctypes.windll.user32.SetWindowPos(
+        hwnd, None, left, top, right - left, bottom - top, 0x14
+    ):
+        raise OSError("SetWindowPos failed")
+
+
 # ---- the session's lock state (issue #31) ------------------------------------------------------
 
 _WTS_CURRENT_SESSION = 0xFFFFFFFF
