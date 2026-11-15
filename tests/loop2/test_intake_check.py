@@ -39,9 +39,9 @@ from tests.loop2.world_fakes import FIELD, GO, World, act, report, task
 
 NEWLINE = chr(10)
 INTAKE_FIXED = "686561ec64eb27386ccca13e12958475ff88fae32e9acf97f4c6c711667dfdeb"
-"""V4: sha256 of the intake's rules and schema blocks, joined by newlines (filled from a run)."""
-AUDIT_FIXED = "unmeasured"
-"""V4: sha256 of the audit's rules and schema blocks, joined by newlines (filled from a run)."""
+"""V4: sha256 of the intake's rules and schema blocks, joined by newlines (from CI, f950884)."""
+AUDIT_FIXED = "4a1baf618c7ee16e0551a14790bace6aa4d01a941ed851c3bed5950ee82a7cea"
+"""V4: sha256 of the audit's rules and schema blocks, joined by newlines (from CI, f950884)."""
 
 VALUE = SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value")
 STATE = SubgoalDoc(id="s2", desc="x", params={"what": "shoes"}, closes="state")
@@ -308,8 +308,8 @@ def test_the_runner_hands_the_check_positions_never_model_ids() -> None:
     assert view.subgoals == ((1, "value", ((1, "red shoes"),)),)
     system, user = build_intake_prompt(task().goal, view.subgoals, task_fence="taskfence01")
     text = NEWLINE.join([*system, *user])
-    for leak in ("zqleakid", "zqdesc", "zqparam"):  # #457 principal: the whole prompt
-        assert leak not in text
+    for word in ("zqleakid", "zqdesc", "zqparam"):  # #457 principal: the whole prompt
+        assert word not in text
 
 
 # ---- versions, legend --------------------------------------------------------------------------
