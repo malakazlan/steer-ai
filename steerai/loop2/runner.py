@@ -452,6 +452,8 @@ class _Run:
         """#335 review: the pending fields as the last `_pending` found them, for row 2."""
         self.baselines: dict[str, Observed] = {}
         self.first: Observed | None = None
+        self.first_full: Observed | None = None
+        """[V2.72]: the task's first full observation, every subgoal's baseline."""
         self.last_acted: _Acted | None = None
         self.batch_last: tuple[ActionKey, EffectReport] | None = None
         self.fresh: dict[tuple[int, ...], ValueFact | None] = {}
@@ -738,6 +740,8 @@ class _Run:
         beyond `CLOCK_DOMAIN_S`, or not finite, is another clock (small skew is clamped by the
         load guard)."""
         observed = self.ports.stamp(observed)
+        if self.first_full is None and observed.tier == "full":
+            self.first_full = observed  # [V2.72]: every subgoal's baseline
         self.unread_aids += observed.snapshot.unread_automation_id_count  # #301: counted
         self.url_reads[url_read(observed)] += 1
         focus = focus_state(observed.snapshot, observed.focus)  # [V2.52] (b): counted
@@ -903,13 +907,15 @@ class _Run:
         return next(s for s in self.subgoals if s.id == sid)
 
     def _baseline(self, sid: str) -> Observed:
-        """[V2.38] RT-39: the observation before the first action dispatched under `sid`
-        (mid-batch, the previous action's after); with none yet, the task's first observation."""
+        """[V2.38] RT-39 as [V2.72] tightens it: the task's first full observation, for every
+        subgoal; it never moves later, except where [V2.72] Two moves it (`_rebase`). Which
+        subgoal an action was dispatched under plays no part: the model assigns those labels."""
         if sid in self.baselines:
             return self.baselines[sid]
-        if self.first is None:  # set before the first decide
+        first = self.first_full or self.first
+        if first is None:  # set before the first decide
             raise AssertionError("no first observation")
-        return self.first
+        return first
 
     def _claim(self, claim: Claim, observed: Observed) -> None:
         """One claim: code's refusals first (`_refused`), then the claim check. A page claim
@@ -936,12 +942,12 @@ class _Run:
             self._reject(subgoal, rejected)
             return
         if subgoal.closes == "page":
-            self._tick(subgoal, how="claim")
+            self._tick(subgoal, how="claim", at=observed)
             return
         proofs = self.proofs.setdefault(subgoal.id, {})
         proofs[param or ""] = _Proof(claim.evidence[0], claim.kind, claim.wanted)
         if set(proofs) >= set(subgoal.params) and self._still(subgoal, observed):
-            self._tick(subgoal, how="claim")
+            self._tick(subgoal, how="claim", at=observed)
             return
         self._note(ClaimResult(subgoal.id, "accepted"))  # [V2.47]: one param held, not closed
 
@@ -1037,9 +1043,9 @@ class _Run:
         address = None if first is None else (first.document_url or first.url)
         return address is not None and address.lower().startswith("file:")
 
-    def _tick(self, subgoal: Subgoal, *, how: ProvenHow) -> None:
-        """A proven subgoal. RT-06, §8.8: a commit subgoal is never closed in step 3 (a standard
-        proof never closes it; the strict tier is step 4)."""
+    def _tick(self, subgoal: Subgoal, *, how: ProvenHow, at: Observed) -> None:
+        """A proven subgoal, closed on the observation `at`. RT-06, §8.8: a commit subgoal is
+        never closed in step 3 (a standard proof never closes it; the strict tier is step 4)."""
         if subgoal.commit != "none":
             self._note(ClaimResult(subgoal.id, "standard_only"))
             self.turn.claim_rejected = True
@@ -1049,6 +1055,19 @@ class _Run:
         self.turn.ticked = True
         self.refusal = None
         self._note(Proven(subgoal.id, how))
+        self._rebase(subgoal, at)
+
+    def _rebase(self, closed: Subgoal, at: Observed) -> None:
+        """[V2.72] Two: one event cannot close two subgoals of the same kind. Every other open
+        subgoal with the same closing kind and a shared param span takes `at` as its baseline,
+        so its evidence must be newer. Same kind only: a value and a page subgoal sharing a span
+        may both close on one type (a field's digest and a page's carriers differ)."""
+        spans = {_folded(span.text) for span in closed.params.values()}
+        for other in self.subgoals:
+            if other.id in self.proven or other.closes != closed.closes:
+                continue
+            if spans & {_folded(span.text) for span in other.params.values()}:
+                self.baselines[other.id] = at
 
     def _check_done(self, observed: Observed) -> None:
         """A task with zero subgoals never ends `done` ([V2.11] decision 1). [V2.69] One: every
@@ -1546,7 +1565,6 @@ class _Run:
         observed: Observed,
         key: ActionKey | None,
     ) -> tuple[Observed, tuple[ActResult, EffectReport]] | None:
-        self.baselines.setdefault(sent.action.subgoal, observed)
         before = observed
         if element is not None:  # [V2.28] item 3: the target's own value, just before dispatch
             before = _with_value(observed, self._read_value(element, observed))
@@ -1761,11 +1779,11 @@ class _Run:
         elif not observed.snapshot.stable:
             skipped = "unstable"
         for position, subgoal in enumerate(self.subgoals):  # the trace's 0-based positions
-            if subgoal.id in self.proven or subgoal.id not in self.baselines:
+            if subgoal.id in self.proven:
                 continue
             if subgoal.closes != "page":
                 continue  # [V2.39]: the navigated auto proof closes only a page subgoal
-            baseline = self.baselines[subgoal.id]
+            baseline = self._baseline(subgoal.id)  # [V2.72]: every open page subgoal is judged
             gate = None if skipped is not None else _change_gate(baseline, observed)
             if gate is None:
                 if tracing:
@@ -1785,7 +1803,7 @@ class _Run:
             if tracing:
                 self.turn.proofs.append(_attempt(position, read_kind, observed, None, gate, judged))
             if judged.proof is not None:
-                self._tick(subgoal, how=judged.proof)
+                self._tick(subgoal, how=judged.proof, at=observed)
         if skipped is None:
             self._check_done(observed)
 
