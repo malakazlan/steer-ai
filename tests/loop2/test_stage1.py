@@ -15,6 +15,7 @@ import pytest
 from steerai.loop2 import cli, stage1
 from steerai.loop2.loop import Reason, TaskOutcome
 from steerai.loop2.stage1 import (
+    MAX_RERUNS,
     THREE_D,
     Classified,
     RunRecord,
@@ -25,6 +26,8 @@ from steerai.loop2.stage1 import (
     classify,
     precheck,
     run_child,
+    run_task_runs,
+    wait_until_ready,
 )
 from steerai.loop2.task import Budgets
 
@@ -523,3 +526,78 @@ def test_a_world_start_refusal_on_a_never_done_task_is_a_fail_not_a_pass() -> No
                "detail": "steer_already_running"}  # fmt: skip
     got = classify(NEVER, _record(refusal, check=False))
     assert (got.verdict, got.reason) == ("fail", "start_refused:gate_blocked")
+
+
+# ---- #366 re-review: the re-run loop and the wait for the person, pure -------------------------
+
+
+def _scripted(*outcomes: str) -> tuple[list[int], Any]:  # Any: the attempt callable
+    """An attempt per run: a verdict-producing record, or a not-started reason."""
+    asked: list[int] = []
+    script = list(outcomes)
+
+    def attempt(run: int) -> RunRecord | str:
+        asked.append(run)
+        kind = script.pop(0)
+        if kind in ("low_memory", "person_active"):
+            return kind
+        if kind == "void":
+            return RunRecord("a", run, None, False, False, None, None)
+        if kind == "lost":
+            return _record(
+                _final("stopped", "monitor_lost", monitor_lost=True), check=False, run=run
+            )
+        if kind == "fail":
+            return _record(_final("paused", "max_actions"), check=False, run=run)
+        return _record(run=run)
+
+    return asked, attempt
+
+
+def test_only_pass_fail_and_false_done_are_scored_runs() -> None:
+    asked, attempt = _scripted("void", "pass", "lost", "fail", "pass")
+    runs, not_started = run_task_runs(DONE, runs=3, attempt=attempt)
+    assert [r.verdict for r in runs] == ["void", "pass", "monitor_lost", "fail", "pass"]
+    assert (asked, not_started) == ([1, 2, 3, 4, 5], 0)
+
+
+def test_re_runs_stop_at_the_bound_and_the_task_fails_closed() -> None:
+    asked, attempt = _scripted(*["void"] * 10)
+    runs, _ = run_task_runs(DONE, runs=3, attempt=attempt)
+    assert len(asked) == 3 + MAX_RERUNS
+    summary = accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="t")
+    assert summary.gates["tasks"] is False
+
+
+def test_a_run_not_started_is_counted_and_re_run() -> None:
+    asked, attempt = _scripted("low_memory", "pass", "pass", "pass")
+    runs, not_started = run_task_runs(DONE, runs=3, attempt=attempt)
+    assert (len(runs), not_started, asked) == (3, 1, [1, 2, 3, 4])
+
+
+def test_the_harness_waits_for_the_person_before_a_run_is_not_started() -> None:
+    clock = {"t": 0.0}
+    readings = iter(["person_active", "person_active", None])
+    got = wait_until_ready(
+        lambda: next(readings), sleep=lambda s: clock.__setitem__("t", clock["t"] + s),
+        clock=lambda: clock["t"], bound_s=120.0,
+    )  # fmt: skip
+    assert got is None
+    assert 0 < clock["t"] < 120.0
+
+
+def test_a_person_still_at_the_keys_after_the_bound_refuses() -> None:
+    clock = {"t": 0.0}
+    got = wait_until_ready(
+        lambda: "person_active", sleep=lambda s: clock.__setitem__("t", clock["t"] + s),
+        clock=lambda: clock["t"], bound_s=120.0,
+    )  # fmt: skip
+    assert got == "person_active"
+    assert clock["t"] >= 120.0
+
+
+def test_low_memory_is_not_waited_out() -> None:
+    slept: list[float] = []
+    got = wait_until_ready(lambda: "low_memory", sleep=slept.append, clock=lambda: 0.0,
+                           bound_s=120.0)  # fmt: skip
+    assert (got, slept) == ("low_memory", [])

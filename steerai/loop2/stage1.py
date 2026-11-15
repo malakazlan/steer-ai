@@ -47,6 +47,9 @@ MIN_RUNS_PER_TASK: Final = 3
 """#366 P1: acceptance is 3 of 3 at least ([V2.27] stage 1, as v1's bar)."""
 KILL_WAIT_S: Final = 10.0
 """How long the harness waits for a killed child's tree to go before it moves on."""
+IDLE_WAIT_S: Final = 120.0
+"""#366: how long a person at the keys is waited out before the run is not started."""
+IDLE_POLL_S: Final = 2.0
 MAX_RERUNS: Final = 3
 """#366 P1: a task's void, monitor_lost or not-started runs are re-run up to this many times."""
 STATUSES: Final = frozenset({"done", "blocked", "asked", "paused", "stopped", "cannot", "error"})
@@ -328,6 +331,54 @@ def _counts(items: Iterable[object]) -> dict[str, int]:
     return out
 
 
+# ---- the re-run loop and the wait for the person (#366: pure, the attempt injected) ----------
+
+
+def run_task_runs(
+    task: StageTask,
+    *,
+    runs: int,
+    attempt: Callable[[int], RunRecord | str],
+    emit: Callable[[Mapping[str, Any]], None] = lambda _row: None,  # Any: JSON values
+) -> tuple[list[Classified], int]:
+    """One task's runs until `runs` are scored or `runs + MAX_RERUNS` were attempted: a void,
+    a monitor_lost and a run not started (`attempt` returns its reason) are not scored and are
+    re-run, within the bound; a task that runs out fails closed in `accept` (too few passes).
+    Returns the classified runs and how many were not started."""
+    classified: list[Classified] = []
+    scored = not_started = run = 0
+    while scored < runs and run < runs + MAX_RERUNS:
+        run += 1
+        record = attempt(run)
+        if isinstance(record, str):
+            not_started += 1
+            emit({"task": task.task_id, "run": run, "not_started": record})
+            continue
+        got = classify(task, record)
+        classified.append(got)
+        scored += got.verdict not in ("void", "monitor_lost")
+        emit({"task": got.task_id, "run": got.run, "verdict": got.verdict,
+              "reason": got.reason, "monitor_lost": got.monitor_lost})  # fmt: skip
+    return classified, not_started
+
+
+def wait_until_ready(
+    check: Callable[[], str | None],
+    *,
+    sleep: Callable[[float], None],
+    clock: Callable[[], float],
+    bound_s: float,
+) -> str | None:
+    """#366: a person at the keys is waited out, up to `bound_s`, before a run counts as not
+    started; low memory is not waited for. None when the run may start."""
+    started = clock()
+    while True:
+        refused = check()
+        if refused != "person_active" or clock() - started >= bound_s:
+            return refused
+        sleep(IDLE_POLL_S)
+
+
 # ---- the precheck --------------------------------------------------------------------------------
 
 
@@ -501,20 +552,19 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
     classified: list[Classified] = []
     not_started = 0
     for task in tasks:
-        scored, run = 0, 0
-        while scored < args.runs and run < args.runs + MAX_RERUNS:  # #366 P1: re-run, bounded
-            run += 1
-            refused = precheck(free_mb=free_physical_mb, idle_s=_idle_s)
-            if refused is not None:
-                not_started += 1
-                _emit({"task": task.task_id, "run": run, "not_started": refused})
-                continue
-            record = _live_3d(task, run, out_dir=args.out, price=args.price_file)
-            got = classify(task, record)
-            classified.append(got)
-            scored += got.verdict not in ("void", "monitor_lost")
-            _emit({"task": got.task_id, "run": got.run, "verdict": got.verdict,
-                   "reason": got.reason, "monitor_lost": got.monitor_lost})  # fmt: skip
+
+        def attempt(run: int, task: StageTask = task) -> RunRecord | str:
+            ready = wait_until_ready(
+                lambda: precheck(free_mb=free_physical_mb, idle_s=_idle_s),
+                sleep=time.sleep, clock=time.monotonic, bound_s=IDLE_WAIT_S,
+            )  # fmt: skip
+            if ready is not None:
+                return ready
+            return _live_3d(task, run, out_dir=args.out, price=args.price_file)
+
+        runs, refused = run_task_runs(task, runs=args.runs, attempt=attempt, emit=_emit)
+        classified += runs
+        not_started += refused
     label = "3d" if args.runs >= MIN_RUNS_PER_TASK else "3d-shakedown"
     summary = accept(tasks, classified, controls=controls,
                      runs_per_task=max(args.runs, MIN_RUNS_PER_TASK), label=label,
