@@ -54,6 +54,20 @@ KILL_WAIT_S: Final = 10.0
 IDLE_WAIT_S: Final = 120.0
 """#366: how long a person at the keys is waited out before the run is not started."""
 IDLE_POLL_S: Final = 2.0
+MEMORY_WAIT_S: Final = 60.0
+"""How long free memory below `FLOOR_MB` is waited out before the run is not started (the
+coordinator's bound, 2026-11-15: the box idles at 4.2-4.6 GB free and dips under the floor for a
+few seconds after Chrome processes close). The floor itself is the user's rule and stays."""
+MEMORY_POLL_S: Final = 2.0
+WAITED: Final[Mapping[str, tuple[float, float]]] = {
+    "person_active": (IDLE_WAIT_S, IDLE_POLL_S),
+    "low_memory": (MEMORY_WAIT_S, MEMORY_POLL_S),
+}
+"""The refusals a run waits out, each with its bound and its poll; any other is not waited for."""
+EXIT_WAIT_S: Final = 30.0
+"""How long the first task waits for the controls' own Chrome processes to exit (unmeasured;
+stop_chrome already killed their tree and waited up to 10 s for the browser)."""
+EXIT_POLL_S: Final = 0.5
 MAX_RERUNS: Final = 3
 """#366 P1: a task's void, monitor_lost or not-started runs are re-run up to this many times."""
 STATUSES: Final = frozenset({"done", "blocked", "asked", "paused", "stopped", "cannot", "error"})
@@ -491,16 +505,37 @@ def wait_until_ready(
     *,
     sleep: Callable[[float], None],
     clock: Callable[[], float],
-    bound_s: float,
 ) -> str | None:
-    """#366: a person at the keys is waited out, up to `bound_s`, before a run counts as not
-    started; low memory is not waited for. None when the run may start."""
+    """#366: a person at the keys, and free memory under the floor, are each waited out up to
+    their bound in `WAITED` (from the start of the wait) before a run counts as not started; any
+    other refusal is returned at once. None when the run may start. Kill-aware: a kill
+    (KeyboardInterrupt) raised in a sleep ends the wait as itself, never as a run not started."""
     started = clock()
     while True:
         refused = check()
-        if refused != "person_active" or clock() - started >= bound_s:
+        waited = None if refused is None else WAITED.get(refused)
+        if waited is None or clock() - started >= waited[0]:
             return refused
-        sleep(IDLE_POLL_S)
+        sleep(waited[1])
+
+
+def wait_for_exit(
+    pids: set[int],
+    *,
+    alive: Callable[[], set[int]],
+    sleep: Callable[[float], None],
+    clock: Callable[[], float],
+    bound_s: float = EXIT_WAIT_S,
+) -> set[int]:
+    """The harness's own processes in `pids` still alive after waiting up to `bound_s` for them
+    to exit; empty when all have. Nothing is killed here (stop_chrome already did). Kill-aware
+    as `wait_until_ready`."""
+    started = clock()
+    while True:
+        left = pids & alive()
+        if not left or clock() - started >= bound_s:
+            return left
+        sleep(EXIT_POLL_S)
 
 
 # ---- the precheck --------------------------------------------------------------------------------
@@ -735,6 +770,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
     from steerai.loop2.stage1_expected import gallery_expected  # noqa: PLC0415 - live only
     from steerai.probes import instant_search  # noqa: PLC0415 - live only
     from steerai.probes.memory_guard import free_physical_mb  # noqa: PLC0415
+    from steerai.probes.process_tree import process_table, tree_pids  # noqa: PLC0415
     from steerai.world.read_json import observed_from_json  # noqa: PLC0415
 
     parser = argparse.ArgumentParser(prog="python -m steerai.loop2.stage1")
@@ -748,11 +784,20 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
     tasks = tasks_for(args.set, expected)
     controls: tuple[int, int] | None = None
     if args.set == "3d":
+        ours: set[int] = set()
+
+        def record(pid: int) -> None:  # the control's Chrome tree, read before it is stopped
+            ours.update(tree_pids(pid, process_table()) or {pid})
+
         passed = sum(
-            instant_search.passes(v, instant_search.run_control(v)) for v in instant_search.VARIANTS
+            instant_search.passes(v, instant_search.run_control(v, on_stop=record))
+            for v in instant_search.VARIANTS
         )
         controls = (passed, len(instant_search.VARIANTS))
         _emit({"controls": {"passed": passed, "total": controls[1]}})
+        left = wait_for_exit(ours, alive=lambda: {pid for pid, _ in process_table()},
+                             sleep=time.sleep, clock=time.monotonic)  # fmt: skip
+        _emit({"controls_exited": not left, "controls_left": len(left)})
     live = _live_3d if args.set == "3d" else _live_page
     classified: list[Classified] = []
     not_started = 0
@@ -761,7 +806,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
         def attempt(run: int, task: StageTask = task) -> RunRecord | str:
             ready = wait_until_ready(
                 lambda: precheck(free_mb=free_physical_mb, idle_s=_idle_s),
-                sleep=time.sleep, clock=time.monotonic, bound_s=IDLE_WAIT_S,
+                sleep=time.sleep, clock=time.monotonic,
             )  # fmt: skip
             if ready is not None:
                 return ready
