@@ -270,17 +270,21 @@ TYPED_TEXT: Final = "[typed_text]"
 
 
 def masked(observed: Observed, texts: Sequence[str]) -> Observed:
-    """Packet rev 5 item 5: every free text Steer typed in this task, replaced in each element's
-    name and in the window title by `TYPED_TEXT` (matched after NFKC folding and whitespace
-    collapsing, ignoring case), so a page that echoes it whole never hands the audit model text.
-    A part echo is not caught; the chain eval measures how often one escapes."""
+    """Packet rev 5 item 5, #452 review: every free text Steer typed in this task, replaced in
+    each element's name and in the window title by `TYPED_TEXT`. Both sides are folded the same
+    way (NFKC, whitespace collapsed, full casefold) and only whole words match, so "Straße"
+    matches "STRASSE" and a typed "a" never garbles "Search". A name with a match is shown
+    folded; a name with none is left exactly as it was. A part echo is not caught; the chain eval
+    measures how often one escapes."""
     folded = sorted({_fold(t) for t in texts if t.strip()}, key=len, reverse=True)
     if not folded:
         return observed
-    pattern = re.compile("|".join(re.escape(t) for t in folded), re.IGNORECASE)
+    words = "|".join(re.escape(t) for t in folded)
+    pattern = re.compile(rf"(?<!\w)(?:{words})(?!\w)")
 
     def mask(text: str) -> str:
-        return pattern.sub(TYPED_TEXT, _fold_keep_case(text))
+        line = _fold(text)
+        return pattern.sub(TYPED_TEXT, line) if pattern.search(line) else text
 
     snapshot = observed.snapshot
     elements = type(snapshot.elements)(
@@ -293,8 +297,6 @@ def masked(observed: Observed, texts: Sequence[str]) -> Observed:
 
 
 def _fold(text: str) -> str:
-    return _fold_keep_case(text).casefold()
-
-
-def _fold_keep_case(text: str) -> str:
-    return " ".join(unicodedata.normalize("NFKC", text).split())
+    """NFKC, whitespace collapsed, full casefold, NFKC again (casefold can denormalise)."""
+    collapsed = " ".join(unicodedata.normalize("NFKC", text).split())
+    return unicodedata.normalize("NFKC", collapsed.casefold())

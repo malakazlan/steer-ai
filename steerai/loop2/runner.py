@@ -82,6 +82,7 @@ from steerai.loop2.loop import (
     Ports,
     ProofLine,
     Provenance,
+    ReadKind,
     Reason,
     Status,
     TaskOutcome,
@@ -1002,7 +1003,8 @@ class _Run:
         `facts_finish_request`: `audit_veto`. Each ends not done."""
         audit = self.ports.audit
         used = Usage(  # #404 principal 3: every budget, checked as decide checks it before a call
-            actions=len(self.dispatched),
+            actions=0,  # #452 principal 1: the audit sends no action; a task that spent its last
+            # allowed action closing is audited, never paused for it (packet §4)
             model_calls=self.model_calls,  # the guard trips at `not spent < limit`, as decide
             cost_usd=self._cost(),
             wall_s=self.ports.clock() - self.started,
@@ -1014,7 +1016,7 @@ class _Run:
             raise _End("paused", Reason(hit))
         if audit is None:
             self.audit_counts["audit_no_call"] += 1
-            self.audit = ("failed", "audit_failed")
+            self.audit = ("failed", "audit_no_call")
             raise _End("blocked", Reason("audit_failed"))
         cited = {
             self.handles.by_handle[p.handle]
@@ -1046,7 +1048,10 @@ class _Run:
                 self.tokens = math.nan  # abandoned: billed, never reported ([V2.41] (1))
                 self.usage_incomplete = True
                 raise
-            self._spend(exc.usage if isinstance(exc, ControllerError) else None)
+            usage = exc.usage if isinstance(exc, ControllerError) else None
+            self._spend(usage)
+            if usage is not None:  # #452 tester G3: a failed call's reported tokens are counted
+                self.audit_counts["audit_tokens"] += sum(_counts(usage) or ())
             self.audit = ("failed", "audit_failed")
             raise _End("blocked", Reason("audit_failed")) from None
         self.model_calls += 1
@@ -1953,7 +1958,7 @@ def _digest(observed: Observed) -> str:
     return hashlib.sha256(repr(rows).encode()).hexdigest()
 
 
-def _read_token(subgoal: Subgoal, how: str, proofs: Mapping[str, _Proof]) -> tuple[str, str]:
+def _read_token(subgoal: Subgoal, how: str, proofs: Mapping[str, _Proof]) -> tuple[ReadKind, str]:
     """[V2.68] One: what code verified for a proven subgoal, as a closed (kind, detail) pair that
     the audit's prompt renders (`kind:detail`); no string is built here (#347 decision B)."""
     if subgoal.closes == "value":

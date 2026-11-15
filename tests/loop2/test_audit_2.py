@@ -220,7 +220,7 @@ def test_free_text_steer_typed_never_reaches_the_audit() -> None:
     assert "[typed_text]" in text
 
 
-# ---- #452 REVISE: the audit's budget check, the mask's folding, the failure counts ----------------
+# ---- #452 REVISE: the audit's budget check, the mask's folding, the failure counts ---------
 
 
 def test_the_last_allowed_action_can_still_close_and_be_audited() -> None:
@@ -250,8 +250,8 @@ def test_a_spent_token_budget_before_the_audit_pauses_with_its_token() -> None:
         ("Hauptstraße 5", "HAUPTSTRASSE 5"),
         ("İstanbul", "İstanbul"),
         ("red Shoes", "RED SHOES"),
-        ("red  shoes", "red shoes"),
-        ("ｚｑｗｉｄｅ", "zqwide"),
+        ("red  shoes", "red\u00a0shoes"),
+        ("\uff5a\uff51\uff57\uff49\uff44\uff45", "zqwide"),
     ],
     ids=["eszett", "eszett_upper", "dotted_i", "case", "spaces", "nfkc"],
 )
@@ -266,7 +266,7 @@ def test_a_whole_echo_is_masked_whatever_its_case_and_form(typed: str, echo: str
     seen = dataclasses.replace(seen, snapshot=dataclasses.replace(seen.snapshot, title=echo))
     out = masked(seen, [typed])
     names = [e.name for e in out.snapshot.elements]
-    assert "Results for [typed_text]" in names
+    assert "results for [typed_text]" in names  # a masked name is shown folded
     assert out.snapshot.title == "[typed_text]"
 
 

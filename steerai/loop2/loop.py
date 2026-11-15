@@ -258,7 +258,8 @@ class Decided:
 AuditReason = Literal["facts_finish_request", "request_asks_more", "unclear"]
 """[V2.68] One, packet rev 4 item 4: the sufficiency judges' closed reasons; only
 `facts_finish_request` with `sufficient` lets a task end done."""
-"""[V2.64] One: what the final audit says of the request's outcome (closed)."""
+ReadKind = Literal["value_read", "state_read", "navigated"]
+"""[V2.68] One: what kind of fact code verified for a proven subgoal (the audit's read token)."""
 AUDIT_COUNTS: Final = (
     "audit_calls",
     "audit_allowed",
@@ -275,7 +276,7 @@ AUDIT_COUNTS: Final = (
 ProofParam = tuple[int, str]
 """[V2.68], packet rev 5 §5: a proven param for the audit: its position among the subgoal's
 params (sorted by name, as `decision_shape`) and its span of the request (the person's words)."""
-ProofLine = tuple[int, str, str, str, tuple[str, str], tuple[ProofParam, ...]]
+ProofLine = tuple[int, str, str, str, tuple[ReadKind, str], tuple[ProofParam, ...]]
 """[V2.68], [V2.69] One: one proven subgoal for the audit, by position, never its id: (position,
 closes, how, kind, read, params). `read` is what code verified, a closed (kind, detail) pair the
 prompt renders as `value_read:equals_param`, `state_read:<wanted>` or `navigated:<how>`."""
@@ -294,7 +295,7 @@ class AuditView:
     audit's listing is selected as decide's is, with these kept under the cap."""
     words: frozenset[str] = frozenset()
     """The subgoals' param words, for the goal-word class of the listing."""
-    typed: tuple[str, ...] = ()
+    typed: tuple[str, ...] = dataclass_field(default=(), repr=False)
     """Packet rev 5 item 5: each free text Steer typed in the task (in memory only); the audit
     port masks it out of the listing and the title before the call."""
 
