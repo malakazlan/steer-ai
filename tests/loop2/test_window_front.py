@@ -477,3 +477,33 @@ def test_the_images_above_go_only_to_the_debug_trace(tmp_path: Path) -> None:
     assert platform.images_read == [4242, 99]
     assert any(b"chrome.exe" in blob for blob in platform.protected)
     assert not any(".exe" in line for line in config.trace.lines)  # type: ignore[attr-defined]
+
+
+def test_every_cover_detail_is_a_closed_start_detail() -> None:
+    """#442 review: a start refused for a cover keeps its detail in the report's cause split."""
+    from steerai.errors import START_DETAILS  # noqa: PLC0415
+    from steerai.loop2.live_world import COVER_DETAILS  # noqa: PLC0415
+
+    assert set(COVER_DETAILS.values()) <= START_DETAILS
+
+
+def test_a_debug_record_that_fails_to_build_is_reported_never_raised(tmp_path: Path) -> None:
+    """#442 review: reading the images above for the debug trace is guarded (the sink's own
+    `capture`): a read that raises becomes the debug failure token, the start refusal stands."""
+
+    class Failing(Platform):
+        def process_image(self, pid: int) -> str:
+            raise RuntimeError(f"no image for {pid}")
+
+    platform = Failing()
+    platform.fake_input = _platform().fake_input
+    platform.cover = dataclasses.replace(COVERED, above=COVERED.above * 2, above_pids=(4242, 99))
+    config = _config(trace_level="debug", debug_path=tmp_path / "d.dpapi", bound_pid=4242)
+    world = LiveWorld(config, platform)
+    try:
+        with pytest.raises(SteerError) as refused:
+            world.bring_to_front()
+    finally:
+        world.close()
+    assert refused.value.message == "window_covered"
+    assert world.report()["debug_failure"] == "build_failed"

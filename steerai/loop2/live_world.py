@@ -703,17 +703,14 @@ class LiveWorld:
         self.cover_seen = (token, counts)
         self._write({"event": "cover", "token": token, **(counts or {})})
         if facts is not None and self._config.trace_level == "debug":
-            images = [self._image(pid) for pid in facts.above_pids]
-            self._debug.record("cover_above", {"images": images})
+            pids = facts.above_pids  # the sink's `capture` guards the reads: a failure is its
+            self._debug.capture(  # `build_failed` token in the report, never raised here
+                "cover_above", lambda: {"images": [self._image(pid) for pid in pids]}
+            )
         return token
 
     def _image(self, pid: int) -> str:
-        if not pid:
-            return "unread"
-        try:
-            return self._platform.process_image(pid)
-        except OSError:
-            return "unread"
+        return self._platform.process_image(pid) if pid else "unread"
 
     # ---- the switch (packet §2.10) ---------------------------------------------------------------
 

@@ -37,6 +37,7 @@ DETAIL_CLOAK_UNREADABLE: Final = "cloak_unreadable"
 WORLD_START_DETAILS: Final = frozenset(
     {
         "com_apartment",
+        "cover_unread",
         "dpi_context",
         "foreground_refused",
         "identity_unread",
@@ -51,7 +52,9 @@ WORLD_START_DETAILS: Final = frozenset(
         "trace_needs_dpapi",
         "uia_unavailable",
         "window_changed",
+        "window_cloaked",
         "window_covered",
+        "window_minimized",
         "window_unreadable",
         "write_ahead_in_step_3",
         "wrong_thread",
