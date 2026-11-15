@@ -6,9 +6,12 @@ app in code)."""
 from __future__ import annotations
 
 import ast
+import contextlib
 import hashlib
 import json
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -306,3 +309,27 @@ def test_a_calculator_it_launched_is_closed_after_use() -> None:
     ) as hwnd:
         assert hwnd == 5
     assert closed == [5]
+
+
+# ---- #451: an opener task with no acts row opens no page ----------------------------------------
+
+
+def test_an_opener_task_with_no_acts_row_is_refused_before_its_page_opens(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The 2b pass already asks for the targets before any load; the 2a pass does too."""
+    opened: list[str] = []
+
+    @contextlib.contextmanager
+    def never(task: Any) -> Iterator[tuple[int, int]]:  # Any: a task_suite Task
+        opened.append(task.task_id)
+        yield (0x10, 9222)
+
+    monkeypatch.setattr(stage2a, "_opened", never)
+    monkeypatch.setattr(stage2a, "load_acts", lambda _raw: {})
+    monkeypatch.setattr("steerai.probes.memory_guard.free_physical_mb", lambda: 10**6)
+    assert stage2a.save_opened(tmp_path) == 0
+    assert opened == []
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert rows
+    assert all(row.get("invalid") == "no_acts" for row in rows)
