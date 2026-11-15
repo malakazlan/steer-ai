@@ -514,6 +514,7 @@ def test_a_steer_error_mid_task_reports_use_not_a_refused_start(
     assert result["used"]["max_model_calls"] is None
     assert result["tokens_incomplete"] is True
     assert result["listings"] == []
+    assert result["cache_tokens"] == {"write_5m": None, "write_1h": None, "read": None}
 
 
 def test_a_steer_error_after_the_task_keeps_its_outcome(

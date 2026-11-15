@@ -601,3 +601,22 @@ def test_low_memory_is_not_waited_out() -> None:
     got = wait_until_ready(lambda: "low_memory", sleep=slept.append, clock=lambda: 0.0,
                            bound_s=120.0)  # fmt: skip
     assert (got, slept) == ("low_memory", [])
+
+
+def test_an_unfinished_runs_unknown_cache_counters_are_not_a_cache_failure() -> None:
+    """#366: a port-error stop already fails; its counters are unknown (null), never a second
+    failure under cache_zero. A final with no counters at all still fails the gate."""
+    unknown = _final(cache_tokens={"write_5m": None, "write_1h": None, "read": None})
+    runs = [_ok(DONE, 1, final=unknown), _ok(DONE, 2), _ok(DONE, 3)]
+    gates = accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="t").gates
+    assert gates["cache_zero"] is True
+
+
+def test_the_summary_names_the_runs_that_failed_each_gate() -> None:
+    cached = _final(cache_tokens={"write_5m": 0, "write_1h": 0, "read": 12})
+    runs = [_ok(DONE, 1), _ok(DONE, 2, "false_done"), _ok(DONE, 3, final=cached),
+            _ok(DONE, 4, "fail", reason="internal")]  # fmt: skip
+    report = accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="t").report
+    assert report["gate_failures"] == {
+        "false_done": ["a#2"], "cache_zero": ["a#3"], "internal": ["a#4"], "tasks": ["a"],
+    }  # fmt: skip

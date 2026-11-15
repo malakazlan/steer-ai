@@ -341,6 +341,7 @@ def _unfinished(budgets: Budgets) -> dict[str, Any]:  # Any: the final JSON
         "paused_by": None,
         "monitor_lost": False,
         "used": dict.fromkeys(_limits(budgets)),
+        "cache_tokens": dict.fromkeys(("write_5m", "write_1h", "read")),  # unknown, said
         "tokens_incomplete": True,
         "cost_incomplete": True,
         "wall_incomplete": True,

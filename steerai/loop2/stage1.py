@@ -215,7 +215,8 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
         per_task.setdefault(r.task_id, []).append(r.verdict)
     # false_done has its own gate; void and monitor_lost are not scored ([V2.41], [V2.59])
     scored = {k: [v for v in vs if v in ("pass", "fail")] for k, vs in per_task.items()}
-    finals = [r.final for r in runs if r.final is not None and r.final.get("status") != "error"]
+    counted = [r for r in runs if r.final is not None and r.final.get("status") != "error"]
+    finals = [r.final for r in counted if r.final is not None]
     gates = {
         "controls": controls is None or (controls[1] > 0 and controls[0] == controls[1]),
         "tasks": all(vs.count("pass") == runs_per_task == len(vs) for vs in scored.values()),
@@ -223,12 +224,13 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
         # a run not started was not Steer's either: it counts with the voids ([V2.41])
         "void": (verdicts["void"] + not_started) * 10 <= total + not_started,
         "monitor_lost": verdicts["monitor_lost"] * 10 <= total,
-        "cache_zero": all(_cache_zero(f) for f in finals),
+        "cache_zero": not any(_cache_spent(r.final) for r in counted),
         "internal": not any(r.reason == "internal" for r in runs),
         # #366 P5: the target listed on the turn it is acted on is not checked yet: fail closed
         "large_listed": not any(t.fixture == "large" for t in tasks),
     }
     report = {
+        "gate_failures": _gate_failures(gates, tasks, runs, scored, runs_per_task),
         "set": label,
         "runs_per_task": runs_per_task,
         "not_started": not_started,
@@ -237,12 +239,49 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
     return Summary(all(gates.values()), gates, report)
 
 
-def _cache_zero(final: Json) -> bool:
-    """[V2.45]: caching is off in stage 1; an unread counter is not zero."""
-    cache = final.get("cache_tokens")
-    return isinstance(cache, Mapping) and all(
-        cache.get(k) == 0 for k in ("write_5m", "write_1h", "read")
-    )
+def _cache_spent(final: Json | None) -> bool:
+    """[V2.45]: caching is off in stage 1. A counter above zero, or a line with no counters at
+    all, is a failure; a run that ended with its counters unknown (all null: the CLI's
+    unfinished shape, #366) already failed on its own and is not a second failure here."""
+    cache = None if final is None else final.get("cache_tokens")
+    if not isinstance(cache, Mapping):
+        return True
+    values = [cache.get(k) for k in ("write_5m", "write_1h", "read")]
+    if all(v is None for v in values):
+        return False
+    return any(v != 0 for v in values)
+
+
+def _counted(run: Classified) -> bool:
+    """A run whose final line is a task's own (not a refused start)."""
+    return run.final is not None and run.final.get("status") != "error"
+
+
+def _gate_failures(
+    gates: Mapping[str, bool],
+    tasks: Sequence[StageTask],
+    runs: Sequence[Classified],
+    scored: Mapping[str, Sequence[str]],
+    runs_per_task: int,
+) -> dict[str, list[str]]:
+    """#366: each failed gate with the runs (`task#run`) or tasks that failed it."""
+
+    def ids(match: Callable[[Classified], bool]) -> list[str]:
+        return [f"{r.task_id}#{r.run}" for r in runs if match(r)]
+
+    named = {
+        "false_done": ids(lambda r: r.verdict == "false_done"),
+        "void": ids(lambda r: r.verdict == "void"),
+        "monitor_lost": ids(lambda r: r.verdict == "monitor_lost"),
+        "cache_zero": ids(lambda r: _counted(r) and _cache_spent(r.final)),
+        "internal": ids(lambda r: r.reason == "internal"),
+        "tasks": [
+            k for k, vs in scored.items() if not vs.count("pass") == runs_per_task == len(vs)
+        ],
+        "large_listed": [t.task_id for t in tasks if t.fixture == "large"],
+        "controls": ["controls"],
+    }
+    return {gate: named.get(gate, []) for gate, ok in gates.items() if not ok}
 
 
 def _report(
