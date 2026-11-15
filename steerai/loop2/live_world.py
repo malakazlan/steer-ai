@@ -49,9 +49,11 @@ from steerai.loop2.loop import ActResult, Dispatch, PortInterrupted, Ports
 from steerai.loop2.prompt_inputs import make_decide
 from steerai.loop2.task import Task
 from steerai.loop2.world_ports import WorldPorts, WorldTimes, kill_sleep
+from steerai.orchestrator.loop import IDLE_S, WAIT_POLL_S
 from steerai.orchestrator.trace import Trace
 from steerai.planner.claude_planner import DEFAULT_MODEL, EFFORT
 from steerai.session.monitor import probe_deadline_s
+from steerai.world.cover import CoverFacts, cover_of
 from steerai.world.effects import Observed, ValueFact, poll_tier, top_document
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
@@ -68,6 +70,10 @@ _WAIT_ABANDONED = 0x80
 COINIT_MULTITHREADED = 0x0
 """`CoInitializeEx`'s MTA flag (objbase.h)."""
 DPAPI_PROBE = b"steer-v2-dpapi-probe"
+START_IDLE_S = 10.0
+"""[V2.62] how long the task start waits for the person to go idle (they have usually just
+typed the command) before the window is brought in front; provisional, unmeasured. Past it
+the task does not start (`person_active`)."""
 """Protected once at construction at level `debug`: DPAPI must work before a name is kept."""
 
 
@@ -146,6 +152,10 @@ class Platform(Protocol):
 
     def window_identity(self, hwnd: int) -> WindowIdentity | None:
         """LW-03: what `hwnd` is now; None when any part of it cannot be read."""
+        ...
+
+    def window_cover(self, hwnd: int) -> CoverFacts:
+        """[V2.62] one read of `hwnd`'s cover facts (`probes.windows.window_cover`)."""
         ...
 
     def focused(  # Any: the UiaClient
@@ -345,8 +355,9 @@ class LiveWorld:
         self._facts = platform.facts(client)
         self._secure = SecureMemory()
         self._stamp = DocumentSince(clock=config.clock)
+        self._inputs = platform.inputs(client)
         guard = InputGuard(
-            platform.inputs(client),
+            self._inputs,
             interrupted=self.interrupted,
             focused=platform.focused(client),
             clock=config.clock,
@@ -387,7 +398,61 @@ class LiveWorld:
             live=UiaElements(client, bindings),
             key=self._key,
             trace=self._token,
+            cover=self._cover,
         )
+
+    # ---- [V2.62] the task start: the bound window in front -------------------------------------
+
+    def bring_to_front(self) -> None:
+        """Before the task: wait, kill-aware and bounded by `START_IDLE_S`, for the person to be
+        idle `IDLE_S` (v1's rule); then bring the bound window in front through v1's
+        `acquire_foreground` (a code action, never a model verb) and check the postcondition:
+        the window is the foreground, not minimised, not cloaked and not covered. A refusal is
+        a start refusal with its own reason. A switch token (a kill, the lock, a lost monitor)
+        stops the start without sending anything and is left to the task, whose first check
+        ends it with that token ([V2.59]: monitor_lost is counted apart). Mid-task Steer never
+        raises the window again (`InputGuard.acquire_foreground`). The CLI calls it once, right
+        after the world is built and before the task starts."""
+        hwnd = self._config.hwnd
+        if not self._idle_to_start():
+            return
+        try:
+            self._inputs.acquire_foreground(hwnd)
+        except OSError as exc:
+            raise SteerError(ErrorCode.FOCUS_LOST, "foreground_refused") from exc
+        if self.interrupted() is not None:
+            return  # the lock or a kill during the acquire (SW-07's re-check): the task's own
+        if self._inputs.foreground_hwnd() != hwnd:
+            raise SteerError(ErrorCode.FOCUS_LOST, "not_in_front")
+        if self._cover() is not None:
+            raise SteerError(ErrorCode.FOCUS_LOST, "window_covered")
+
+    def _idle_to_start(self) -> bool:
+        """True once the person is idle; False on a switch token (nothing sent); a person
+        still active at `START_IDLE_S` refuses the start (`person_active`)."""
+        clock = self._config.clock
+        started = clock()
+        while True:
+            if self.interrupted() is not None:
+                return False
+            now = clock()
+            if now - self._monitor.last_user_input() >= IDLE_S:
+                return True
+            if now - started >= START_IDLE_S:
+                raise SteerError(ErrorCode.GATE_PENDING_USER, "person_active")
+            try:
+                self._kill_aware_sleep(min(WAIT_POLL_S, START_IDLE_S - (now - started)))
+            except PortInterrupted:
+                return False
+
+    def _cover(self) -> str | None:
+        """[V2.62] why the bound window is covered (`world.cover.cover_of`), or None; a read that
+        fails is `cover_unread`, never "visible"."""
+        try:
+            facts = self._platform.window_cover(self._config.hwnd)
+        except Exception:  # noqa: BLE001 - any failed read fails closed: a cover
+            return "cover_unread"
+        return cover_of(facts)
 
     # ---- the switch (packet §2.10) ---------------------------------------------------------------
 
@@ -866,6 +931,11 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
 
     def facts(self, client: Any) -> FactReader:  # Any: the UiaClient
         return _ComFacts(client)
+
+    def window_cover(self, hwnd: int) -> CoverFacts:
+        from steerai.probes.windows import window_cover  # noqa: PLC0415 - Windows only
+
+        return window_cover(hwnd)
 
     def window_identity(self, hwnd: int) -> WindowIdentity | None:
         from steerai.probes.windows import window_identity  # noqa: PLC0415 - Windows only

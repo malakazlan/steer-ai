@@ -40,6 +40,7 @@ from steerai.loop2.live_world import Platform as LivePlatform
 from steerai.loop2.loop import Dispatch, PortInterrupted, TokenUsage
 from steerai.loop2.runner import run_task
 from steerai.orchestrator.trace import ListTrace
+from steerai.world.cover import CoverFacts
 from steerai.world.model import Snapshot
 from tests.action.fakes import (
     TYPE_IDS,
@@ -151,6 +152,8 @@ class Platform:
         self.fake_input = FakeInput()
         self.handles: list[FakeHandle] | None = None
         """When set, each read is the screen with these live handles, stamped on the clock."""
+        self.cover = CoverFacts(minimized=False, cloaked=False, rect=(0, 0, 1200, 900), above=())
+        """[V2.62] the bound window's cover facts: in front and uncovered unless a test says."""
 
     def dpi_aware(self) -> bool:
         self.calls.append("dpi")
@@ -188,6 +191,10 @@ class Platform:
         self.identity_reads += 1
         assert hwnd == 16
         return self.identity
+
+    def window_cover(self, hwnd: int) -> CoverFacts:
+        assert hwnd == 16
+        return self.cover
 
     def uia(self) -> tuple[Any, UiaBindings]:
         self.calls.append("uia")

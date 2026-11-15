@@ -7,17 +7,23 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
 from steerai.action.dispositions import Delivery
 from steerai.action.execution import UiaBindings
 from steerai.action.physical import PhysicalAction, PhysicalExecutor
-from steerai.errors import ErrorCode
+from steerai.errors import ErrorCode, SteerError
+from steerai.loop2 import cli
 from steerai.loop2.act_guards import GuardDesk, InputGuard
+from steerai.loop2.live_world import START_IDLE_S, LiveConfig, LiveWorld
 from steerai.loop2.loop import WindowCovered, render_reason
 from steerai.loop2.runner import run_task
 from steerai.loop2.world_ports import WorldPorts, WorldTimes
+from steerai.orchestrator.loop import IDLE_S
+from steerai.run import EXIT_BLOCKED
+from steerai.world.cover import CoverFacts
 from steerai.world.effects import Observed
 from steerai.world.observe2 import FirstTouches
 from tests.action.fakes import TYPE_IDS, FakeHandle, FakeWindows
@@ -28,6 +34,9 @@ from tests.action.test_physical import (
     fast_clock,  # noqa: F401 - the v1 fixture, used by name
 )
 from tests.loop2.test_act_port import Desk, _dispatch, _nothing_executed, _port, _refused
+from tests.loop2.test_cli_v2 import Run
+from tests.loop2.test_live_world import Clock as LiveClock
+from tests.loop2.test_live_world import Platform, _config, _world
 from tests.loop2.test_world_ports import KEY, Clock, Live, Screen
 from tests.loop2.world_fakes import FIELD, World, observed, task
 
@@ -236,3 +245,163 @@ def test_a_cover_found_in_the_act_ports_fresh_look_ends_the_task_not_the_act() -
     with pytest.raises(WindowCovered):
         rig.port.act(_dispatch("click", FIELD))
     assert _nothing_executed(rig)
+
+
+# ---- [V2.62] the task start: idle, then the window brought in front with its postcondition -----
+
+COVERED = CoverFacts(
+    minimized=False, cloaked=False, rect=(0, 0, 100, 100), above=((0, 0, 100, 100),)
+)
+
+
+def _platform(behind: bool = True) -> Platform:
+    platform = Platform()
+    if behind:
+        platform.fake_input.foreground = OTHER  # another window is in front at the start
+    return platform
+
+
+def _refusal(config: LiveConfig, platform: Platform) -> SteerError:
+    world = LiveWorld(config, platform)
+    try:
+        with pytest.raises(SteerError) as refused:
+            world.bring_to_front()
+    finally:
+        world.close()
+    return refused.value
+
+
+def test_the_start_brings_the_window_in_front_once_the_person_is_idle() -> None:
+    platform = _platform()
+    world, _ = _world(platform)
+    world.bring_to_front()
+    assert platform.fake_input.foreground == BOUND
+    world.close()
+
+
+def test_the_start_waits_for_the_person_to_go_idle_first() -> None:
+    config = _config()
+    clock = config.clock
+    assert isinstance(clock, LiveClock)
+    typing_until = clock.now + 3.0
+    platform = _platform()
+    platform.monitor.last = typing_until
+    platform.monitor.last_user_input = lambda: min(clock.now, typing_until)  # type: ignore[method-assign]
+    world = LiveWorld(config, platform)
+    world.bring_to_front()
+    assert platform.fake_input.foreground == BOUND
+    assert clock.now >= typing_until + IDLE_S  # it waited out the typing and the idle window
+    world.close()
+
+
+def test_a_person_still_active_at_the_bound_never_starts_and_nothing_is_raised() -> None:
+    config = _config()
+    clock = config.clock
+    assert isinstance(clock, LiveClock)
+    platform = _platform()
+    platform.monitor.last_user_input = lambda: clock.now  # type: ignore[method-assign]
+    started = clock.now
+    refused = _refusal(config, platform)
+    assert (refused.code, refused.message) == (ErrorCode.GATE_PENDING_USER, "person_active")
+    assert platform.fake_input.foreground == OTHER  # never raised
+    assert START_IDLE_S <= clock.now - started < START_IDLE_S + 1.0
+
+
+@pytest.mark.parametrize("signal", ["killed", "monitor_lost"])
+def test_a_switch_token_during_the_start_wait_sends_nothing_and_is_the_tasks_own(
+    signal: str,
+) -> None:
+    """[V2.59]: a lost monitor is counted apart, so the start never turns it into a refusal;
+    the task's first check ends it with the token."""
+    config = _config()
+    clock = config.clock
+    assert isinstance(clock, LiveClock)
+    platform = _platform()
+    platform.monitor.last_user_input = lambda: clock.now  # type: ignore[method-assign]
+    world = LiveWorld(config, platform)
+    if signal == "killed":
+        platform.monitor.killed = True
+    else:
+        platform.monitor.ok = False
+    world.bring_to_front()
+    assert platform.fake_input.foreground == OTHER  # never raised
+    outcome = run_task(task(), world.ports(task()))
+    world.close()
+    assert render_reason(outcome.cause) == signal
+
+
+def test_a_refused_foreground_never_starts() -> None:
+    platform = _platform()
+    platform.fake_input.acquire_fails = True
+    refused = _refusal(_config(), platform)
+    assert (refused.code, refused.message) == (ErrorCode.FOCUS_LOST, "foreground_refused")
+
+
+def test_a_window_still_not_in_front_after_the_acquire_never_starts() -> None:
+    class Stubborn(FakeInput):
+        def acquire_foreground(self, _hwnd: int) -> str:
+            return "direct"  # says it worked; the foreground did not move
+
+    platform = _platform()
+    platform.fake_input = Stubborn(foreground=OTHER)
+    refused = _refusal(_config(), platform)
+    assert (refused.code, refused.message) == (ErrorCode.FOCUS_LOST, "not_in_front")
+
+
+@pytest.mark.parametrize(
+    "facts",
+    [
+        COVERED,
+        CoverFacts(minimized=True, cloaked=False, rect=(0, 0, 100, 100), above=()),
+        CoverFacts(minimized=False, cloaked=None, rect=(0, 0, 100, 100), above=()),
+    ],
+    ids=["covered", "minimized", "cloak_unread"],
+)
+def test_a_window_in_front_but_covered_or_hidden_never_starts(facts: CoverFacts) -> None:
+    platform = _platform()
+    platform.cover = facts
+    refused = _refusal(_config(), platform)
+    assert (refused.code, refused.message) == (ErrorCode.FOCUS_LOST, "window_covered")
+
+
+def test_a_cover_read_that_fails_is_a_cover() -> None:
+    class Unreadable(Platform):
+        def window_cover(self, hwnd: int) -> CoverFacts:
+            raise OSError(f"no read of {hwnd}")
+
+    refused = _refusal(_config(), Unreadable())
+    assert refused.message == "window_covered"
+
+
+def test_a_window_covered_after_the_start_ends_the_task_at_its_first_observe() -> None:
+    platform = _platform()
+    world, _ = _world(platform)
+    platform.cover = COVERED
+    outcome = run_task(task(), world.ports(task()))
+    world.close()
+    assert outcome.status == "stopped"
+    assert render_reason(outcome.cause) == "window_covered"
+    assert platform.reads == 0  # nothing waited on a page that could not show
+
+
+def test_the_cli_refuses_the_start_with_its_reason_and_never_runs_the_task(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def never(_task: object, _ports: object) -> object:
+        raise AssertionError("the task never runs")
+
+    monkeypatch.setattr(cli, "run_task", never)
+    run = Run(tmp_path)
+    run.platform.fake_input.foreground = OTHER
+    run.platform.monitor.last_user_input = lambda: run.clock.now  # type: ignore[method-assign]
+    assert run() == EXIT_BLOCKED
+    result = run.result()
+    assert (result["status"], result["detail"]) == ("blocked", "person_active")
+    assert run.platform.fake_input.foreground == OTHER
+
+
+def test_the_cli_brings_the_window_in_front_before_the_task(tmp_path: Path) -> None:
+    run = Run(tmp_path)
+    run.platform.fake_input.foreground = OTHER
+    run()
+    assert run.platform.fake_input.foreground == BOUND
