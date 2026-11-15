@@ -1786,7 +1786,7 @@ def _loop_v2_refused() -> int:
     The only place outside the package that imports `steerai.loop2`, and only on this branch."""
     from steerai.loop2 import ready  # noqa: PLC0415 - the v1 path never imports loop2
 
-    detail = "loop v2 is not built yet: step 3c" if not ready() else "loop v2 is not wired yet"
+    detail = "loop v2 is not built yet: step 3" if not ready(3) else "loop v2 is not wired yet"
     sys.stderr.write(f"error: {detail}\n")
     sys.stdout.write(json.dumps({"status": "error", "code": None, "detail": "loop_v2"}) + "\n")
     return EXIT_USAGE

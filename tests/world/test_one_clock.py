@@ -140,3 +140,19 @@ def test_a_v2_snapshot_persists_in_the_same_format_with_wall_time() -> None:
     or monotonic field is added to the record."""
     snapshot = WorldModel(cast(UiaClient, _Client(FakeHandle())), clock=lambda: MONO).observe(HWND)
     assert snapshot_to_json(snapshot) == V1_JSON.replace("SNAPSHOT_ID", snapshot.id)
+
+
+@pytest.mark.usefixtures("window")
+def test_the_readers_stability_loop_runs_on_the_injected_clock_and_sleep() -> None:
+    """#355 principal 4: v2 injects its clock and a kill-aware sleep; v1's defaults stay."""
+    now = {"t": MONO}
+    slept: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        now["t"] += seconds
+
+    model = WorldModel(cast(UiaClient, _Client(FakeHandle())), clock=lambda: now["t"], sleep=sleep)
+    model.observe(HWND, stable_window=3)
+    assert slept
+    assert now["t"] > MONO

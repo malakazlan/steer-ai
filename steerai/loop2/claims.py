@@ -136,7 +136,7 @@ class Checked:
     tokens: tuple[ClaimToken, ...]
 
 
-@stub
+@stub(4)
 def check_content(  # noqa: PLR0913 - the claim, its screens, and keyword-only facts
     claim: Claim,
     after: Snapshot,
@@ -169,14 +169,14 @@ def check_content(  # noqa: PLR0913 - the claim, its screens, and keyword-only f
     raise NotImplementedError("step 4: content_present")
 
 
-@stub
+@stub(4)
 def strict_reason(t1_reason: str) -> ClaimToken:
     """A T1 `Appeared` failure reason as the strict tier's reject token: passed through
     unchanged ([V2.17] item 7). A reason outside `T1_REASONS` raises ValueError."""
     raise NotImplementedError("step 4: T1 reasons")
 
 
-@stub
+@stub(4)
 def closes(commit: Commit, proof: Proof) -> ClaimToken | None:
     """Whether `proof` may close a subgoal of `commit`: a standard proof never closes a commit
     subgoal (`standard_only`, §7.1, §8.8); None when it may."""

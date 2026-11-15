@@ -82,14 +82,15 @@ def test_an_unknown_loop_is_a_usage_error(capsys: pytest.CaptureFixture[str]) ->
     assert "usage error" in capsys.readouterr().err
 
 
-def test_loop2_is_not_ready_while_any_stub_is_left() -> None:
-    """[V2.29] Q3: `--loop v2` refuses until every stub is built; step 4's remain."""
-    assert ready() is False
+def test_loop2_is_not_ready_for_step_4_while_its_stubs_are_left() -> None:
+    """[V2.29] Q3, packet §7: the step 4 stubs keep `ready(4)` False; step 3 has none."""
+    assert ready(4) is False
+    assert ready(3) is True
     assert PENDING
 
 
 def test_the_step_4_interfaces_keep_loop2_not_ready() -> None:
-    ready()
+    ready(4)
     step4 = {
         "steerai.loop2.claims.check_content",
         "steerai.loop2.consent.gate_pass",
@@ -99,16 +100,17 @@ def test_the_step_4_interfaces_keep_loop2_not_ready() -> None:
     assert step4 <= PENDING
 
 
-def test_loop_v2_refuses_to_start_while_it_is_not_built(
+def test_loop_v2_refuses_to_start_while_it_is_not_wired(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Slice 7a builds the LiveWorld; 7b switches `--loop v2` on."""
     assert main([*WHERE, "--loop", "v2"]) == 1
     captured = capsys.readouterr()
-    assert "loop v2 is not built yet: step 3c" in captured.err
+    assert "loop v2 is not wired yet" in captured.err
     assert '"status": "error"' in captured.out
 
 
-PENDING_MARK = re.compile(r'@pending\(\s*"([^"]*)"\s*,?\s*\)')
+PENDING_MARK = re.compile(r'@pending\(\s*"([^"]*)"\s*,\s*step=\d+\s*,?\s*\)')
 NAMES_INVARIANT = re.compile(r"§\d|\[V2\.\d+\]")
 INVARIANT_FILES = sorted(TESTS.glob("test_invariants_*.py"))
 

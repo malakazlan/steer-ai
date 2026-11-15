@@ -402,6 +402,8 @@ class _Run:
             return self._outcome(end.status, end.cause)
         except PortInterrupted:
             return self._after_port_interrupt()
+        except NotImplementedError:  # packet §7: a later step's stub never falls through
+            return self._outcome("stopped", Reason("internal_stub_reached"))
         except (SteerError, ControllerError) as exc:  # RT-16: a port failed; keep the evidence
             code = exc.code.value if isinstance(exc.code, ErrorCode) else exc.code
             return self._outcome("stopped", Reason(f"port_{code}"[:64]))

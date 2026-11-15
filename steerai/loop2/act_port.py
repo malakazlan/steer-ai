@@ -47,10 +47,17 @@ from contextlib import AbstractContextManager
 from typing import Final, Protocol, TypeVar
 
 from steerai.action.dispositions import ActionResult, Delivery, Step
-from steerai.action.executor import Action, aim_of, click_point, physical_click_target
-from steerai.action.physical import PhysicalAction
-from steerai.errors import ErrorCode
-from steerai.loop2.act_guards import KEY_CHORDS, SECOND_REFUSED, SETTLED
+from steerai.action.execution import code_for
+from steerai.action.executor import Action, Executor, aim_of, click_point, physical_click_target
+from steerai.action.physical import PhysicalAction, PhysicalExecutor
+from steerai.errors import ErrorCode, SteerError
+from steerai.loop2.act_guards import (
+    KEY_CHORDS,
+    SECOND_REFUSED,
+    SETTLED,
+    InputGuard,
+    ToggleGuard,
+)
 from steerai.loop2.actuate import key_targets
 from steerai.loop2.loop import ActResult, Dispatch, PortInterrupted
 from steerai.loop2.world_ports import KILL_POLL_S, kill_sleep
@@ -143,6 +150,7 @@ class ActPort:
         wall_left: Callable[[], float],
         pause: Callable[[float], None] = time.sleep,
     ) -> None:
+        _refuse_unguarded(semantic, physical)
         self._world = world
         self._semantic = semantic
         self._physical = physical
@@ -167,7 +175,10 @@ class ActPort:
         except _Refused as refused:
             return ActResult(_not_sent(verb, refused.code, refused.detail), None)
         except Exception as exc:  # noqa: BLE001 - [V2.51] (2): fail closed, never raise
+            code, _extra = code_for(exc)  # AP-27: a raw COMError keeps its taxonomy code
             evidence = {"detail": "port_error", "error": type(exc).__name__}
+            if code is not None:
+                evidence["code"] = code.value
             steps: list[Step] = [] if self._sent is None else list(self._sent.steps)  # v1 sent
             failed = ActionResult(
                 verb,
@@ -357,6 +368,20 @@ class ActPort:
             if self._clock() - started >= FOCUS_READ_S or self._interrupted() is not None:
                 return None if focus is None else False
             self._pause(KILL_POLL_S)
+
+
+def _refuse_unguarded(semantic: object, physical: object) -> None:
+    """[V2.57] LW-04: v1's executors reach the screen only guarded: a `PhysicalExecutor`'s
+    input port is an `InputGuard`, an `Executor`'s UIA bindings are a `ToggleGuard`. There is
+    no disarmed mode and no bypass flag; test doubles of the executors live only in the tests
+    (the AST test keeps every real construction in `live_world`)."""
+    if isinstance(semantic, Executor) and not isinstance(
+        getattr(semantic, "_uia", None), ToggleGuard
+    ):
+        raise SteerError(ErrorCode.GATE_BLOCKED, "unguarded_semantic")
+    unguarded = not isinstance(getattr(physical, "_inputs", None), InputGuard)
+    if isinstance(physical, PhysicalExecutor) and unguarded:
+        raise SteerError(ErrorCode.GATE_BLOCKED, "unguarded_physical")
 
 
 def _check_dispatch(dispatch: Dispatch) -> None:
