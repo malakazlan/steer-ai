@@ -63,6 +63,51 @@ TAKEOVER_TOKENS = frozenset({TAKEOVER, OTHER_STEER_INPUT})
 
 
 HOOKS = ("keyboard", "mouse")
+HOOK_TIMEOUT_CAP_MS = 1000
+"""Microsoft Learn, LowLevelKeyboardProc: on Windows 10 1709 and later the system uses 1000 ms
+for any LowLevelHooksTimeout larger than that."""
+MEASURER_MARGIN_S = 0.05
+"""[V2.59]: what the measurer adds on top of the hook timeout: the proof's poll interval
+(0.01 s) and two ticks of the 15.625 ms monotonic clock it reads, rounded up."""
+
+
+def parse_hook_timeout(raw: object) -> int | None:
+    """LowLevelHooksTimeout as Windows stores it (REG_SZ; a DWORD accepted), in ms, capped at
+    `HOOK_TIMEOUT_CAP_MS`; None when absent, zero or not a number (#364 H7: ASCII digits)."""
+    if isinstance(raw, str) and raw.strip().isascii() and raw.strip().isdigit():
+        value = int(raw.strip())
+    elif isinstance(raw, int) and not isinstance(raw, bool):
+        value = raw
+    else:
+        return None
+    return min(value, HOOK_TIMEOUT_CAP_MS) if value > 0 else None
+
+
+def probe_deadline_s(timeout_ms: int | None) -> float:
+    """[V2.59]: the probe's deadline, derived: the hook timeout read at start (unset is the
+    cap) plus `MEASURER_MARGIN_S`. An echo slower than that means Windows has likely dropped
+    the hook, so the monitor is lost."""
+    ms = HOOK_TIMEOUT_CAP_MS if timeout_ms is None else min(timeout_ms, HOOK_TIMEOUT_CAP_MS)
+    return ms / 1000 + MEASURER_MARGIN_S
+
+
+def read_hook_timeout_ms() -> int | None:  # pragma: no cover - live, Windows only
+    """HKCU\\Control Panel\\Desktop LowLevelHooksTimeout, parsed and capped."""
+    return parse_hook_timeout(_read_hooks_timeout())
+
+
+def _read_hooks_timeout() -> object:  # pragma: no cover - live, Windows only
+    """The registry value as stored; None when absent."""
+    import winreg  # noqa: PLC0415 - Windows only
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop") as key:
+            value, _kind = winreg.QueryValueEx(key, "LowLevelHooksTimeout")
+    except OSError:
+        return None
+    return value
+
+
 UNASSIGNED_VKS = frozenset({0x0E, 0x0F, *range(0x97, 0xA0), 0xE8})
 """Microsoft Learn, Virtual-Key Codes (Winuser.h): 0x0E-0F, 0x97-9F and 0xE8 are Unassigned."""
 PROBE_VK = 0x0E
@@ -112,7 +157,7 @@ class HookLatency:
 
 
 class MonitorCore:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - keyword-only knobs; v1 passes none of the v2 ones
         self,
         *,
         started_at: float,
@@ -120,8 +165,11 @@ class MonitorCore:
         extra_info: int = STEER_EXTRA_INFO,
         per_hook: bool = False,
         probe_vk: int = PROBE_VK,
+        deadline_s: float = PROBE_DEADLINE_S,
     ) -> None:
         self._per_hook = per_hook
+        self._deadline_s = deadline_s
+        """[V2.59] (v2): the derived probe deadline; v1 keeps `PROBE_DEADLINE_S`."""
         """[V2.57] LW-01 (v2): each hook proves itself; v1 keeps one proof for both."""
         self._probe_vk = probe_vk
         self._delivered = dict.fromkeys(HOOKS, 0)
@@ -251,7 +299,7 @@ class MonitorCore:
     def lost_hooks(self, *, now: float) -> tuple[str, ...]:
         """LW-01: the hooks that have not seen the last probe past its deadline, in order."""
         sent = self._probe_sent_at
-        if sent is None or not self._outstanding or now - sent <= PROBE_DEADLINE_S:
+        if sent is None or not self._outstanding or now - sent <= self._deadline_s:
             return ()
         return self._unproven()
 
@@ -379,12 +427,14 @@ class HookMonitor:
         per_hook: bool = False,
         probe_vk: int | None = None,
         tick: Callable[[], int] | None = None,
+        probe_deadline_s: float = PROBE_DEADLINE_S,
     ) -> None:
         if per_hook and probe_vk not in UNASSIGNED_VKS:
             raise ValueError("the keyboard probe must be an unassigned virtual key")
         self._per_hook = per_hook
         """[V2.57] LW-01 (v2): each hook proves itself, and each callback's latency is kept."""
         self._probe_vk = probe_vk
+        self._deadline_s = probe_deadline_s
         self._tick = tick
         """The system tick in ms (GetTickCount, the clock of the hook structs' `time`)."""
         self._latency = HookLatency()
@@ -400,6 +450,7 @@ class HookMonitor:
             extra_info=extra_info,
             per_hook=per_hook,
             probe_vk=PROBE_VK if probe_vk is None else probe_vk,
+            deadline_s=probe_deadline_s,
         )
         self._thread: threading.Thread | None = None
         self._thread_id = 0
@@ -425,6 +476,7 @@ class HookMonitor:
             extra_info=self._extra_info,
             per_hook=self._per_hook,
             probe_vk=PROBE_VK if self._probe_vk is None else self._probe_vk,
+            deadline_s=self._deadline_s,
         )
         self._latency = HookLatency()
         self._ready.clear()

@@ -353,3 +353,37 @@ def test_a_late_event_of_an_overwritten_probe_is_not_proof_of_the_next() -> None
     _own_key(core, 101.2)
     _own_move(core, 101.2)  # B's
     assert core.probe_seen() is True
+
+
+# ---- [V2.59]: the probe deadline is derived from the system's hook timeout ----------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "timeout_ms"),
+    [(None, None), ("300", 300), (300, 300), ("5000", 1000), ("x", None), (chr(0xB2), None),
+     ("0", None), (True, None)],
+)  # fmt: skip
+def test_the_hook_timeout_is_parsed_as_windows_stores_it_and_capped(
+    raw: object, timeout_ms: int | None
+) -> None:
+    from steerai.session.monitor import parse_hook_timeout  # noqa: PLC0415 - this test only
+
+    assert parse_hook_timeout(raw) == timeout_ms
+
+
+@pytest.mark.parametrize(("timeout_ms", "seconds"), [(None, 1.0), (300, 0.3), (1000, 1.0)])
+def test_the_probe_deadline_is_the_hook_timeout_plus_the_measurer_margin(
+    timeout_ms: int | None, seconds: float
+) -> None:
+    """[V2.59]: unset is the 1000 ms cap; the margin is named, never folded in."""
+    from steerai.session.monitor import MEASURER_MARGIN_S, probe_deadline_s  # noqa: PLC0415
+
+    assert probe_deadline_s(timeout_ms) == pytest.approx(seconds + MEASURER_MARGIN_S)
+
+
+def test_a_per_hook_core_loses_a_hook_only_past_its_own_deadline() -> None:
+    core = MonitorCore(started_at=100.0, per_hook=True, deadline_s=1.05)
+    core.probe_sent(now=101.0)
+    _own_move(core, 101.1)
+    assert core.lost_hooks(now=101.0 + 1.05) == ()
+    assert core.lost_hooks(now=101.0 + 1.06) == ("keyboard",)

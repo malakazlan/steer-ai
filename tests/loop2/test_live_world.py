@@ -196,11 +196,12 @@ class Platform:
         return self.client, self.bindings
 
     def start_monitor(  # Any: the world's clock
-        self, kill_key: str, clock: Any, extra_info: int
+        self, kill_key: str, clock: Any, extra_info: int, deadline_s: float
     ) -> Monitor:
         self.calls.append(f"monitor:{kill_key}")
         self.monitor_clock = clock
         self.monitor_tag = extra_info
+        self.monitor_deadline = deadline_s
         if self.monitor_error is not None:
             raise self.monitor_error
         return self.monitor
@@ -565,6 +566,7 @@ def test_the_run_header_names_the_model_effort_prompt_trace_and_price() -> None:
         "always_keep_ceiling": "300",
         "goal_word_subcap": "50",
         "hook_timeout_ms": "unset",
+        "probe_deadline_ms": "1050",
     }
 
 
@@ -1607,15 +1609,18 @@ def test_the_desk_proves_both_hooks_with_a_fresh_probe() -> None:
 
 
 def test_a_probe_not_seen_by_both_hooks_in_time_is_a_lost_monitor() -> None:
-    from steerai.session.monitor import PROBE_DEADLINE_S  # noqa: PLC0415 - this test only
+    from steerai.session.monitor import probe_deadline_s  # noqa: PLC0415 - this test only
 
-    world, platform = _world()
+    platform = Platform()
+    platform.hook_timeout = 300
+    world, _ = _world(platform)
     platform.monitor.seen = False
     started = world.clock()
     with pytest.raises(PortInterrupted) as lost:
         world.desk.prove_hooks()
     assert [lost.value.token] == ["monitor_lost"]
-    assert world.clock() - started >= PROBE_DEADLINE_S  # waited out the deadline, kill-aware
+    waited = world.clock() - started
+    assert probe_deadline_s(300) <= waited < probe_deadline_s(300) + 0.05  # [V2.59]
     assert world.interrupted() == "monitor_lost"
     assert world.report()["monitor_lost"] == 1
 
@@ -1650,8 +1655,9 @@ def test_the_v2_platform_starts_a_per_hook_monitor(monkeypatch: pytest.MonkeyPat
             built.append({"started": True})
 
     monkeypatch.setattr(monitor_module, "HookMonitor", Recorded)
-    WindowsPlatform().start_monitor("ctrl+alt+k", lambda: 0.0, 0x1234_5678)
+    WindowsPlatform().start_monitor("ctrl+alt+k", lambda: 0.0, 0x1234_5678, 1.05)
     assert built[0]["per_hook"] is True
+    assert built[0]["probe_deadline_s"] == 1.05
     assert built[0]["probe_vk"] == monitor_module.PROBE_VK
     assert built[0]["extra_info"] == 0x1234_5678
 
@@ -1661,13 +1667,13 @@ def test_the_hook_timeout_is_read_from_the_registry_and_capped(
 ) -> None:
     """Microsoft Learn, LowLevelKeyboardProc: HKCU\\Control Panel\\Desktop LowLevelHooksTimeout,
     in ms; Windows 10 1709 and later use 1000 for any value larger."""
-    from steerai.loop2 import live_world as live  # noqa: PLC0415 - this test only
+    from steerai.session import monitor as hooks  # noqa: PLC0415 - this test only
 
     for raw, shown in (
         ("300", 300), (5000, 1000), (None, None), ("x", None),
         (chr(0xB2), None), (chr(0xFF13), None),  # #364 H7: isdigit() but no int() here
     ):  # fmt: skip
-        monkeypatch.setattr(live, "_read_hooks_timeout", lambda raw=raw: raw)
+        monkeypatch.setattr(hooks, "_read_hooks_timeout", lambda raw=raw: raw)
         assert WindowsPlatform().hook_timeout_ms() == shown
 
 
@@ -1766,7 +1772,7 @@ def test_a_probe_that_could_not_be_sent_is_lost_at_once() -> None:
 def test_a_kill_during_the_proof_wins(when: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """H3 (LW-05): killed, never monitor_lost, whenever the kill lands, even after the last
     poll and before the deadline check; nothing latched or counted as a loss."""
-    from steerai.session.monitor import PROBE_DEADLINE_S  # noqa: PLC0415 - this test only
+    from steerai.session.monitor import probe_deadline_s  # noqa: PLC0415 - this test only
 
     world, platform = _world()
     platform.monitor.seen = False
@@ -1775,7 +1781,7 @@ def test_a_kill_during_the_proof_wins(when: str, monkeypatch: pytest.MonkeyPatch
     else:
 
         def last_poll(_seconds: float) -> None:  # the wait ends; then the kill lands
-            world._config.pause(PROBE_DEADLINE_S)
+            world._config.pause(probe_deadline_s(None))
             platform.monitor.killed = True
 
         monkeypatch.setattr(world, "_kill_aware_sleep", last_poll)
@@ -1783,3 +1789,17 @@ def test_a_kill_during_the_proof_wins(when: str, monkeypatch: pytest.MonkeyPatch
         world.desk.prove_hooks()
     assert [stopped.value.token] == ["killed"]
     assert world.report()["monitor_lost"] == 0
+
+
+# ---- [V2.59]: the deadline in force, from the system --------------------------------------------
+
+
+@pytest.mark.parametrize("timeout", [None, 300])
+def test_the_monitor_and_the_header_get_the_derived_deadline(timeout: int | None) -> None:
+    from steerai.session.monitor import probe_deadline_s  # noqa: PLC0415 - this test only
+
+    platform = Platform()
+    platform.hook_timeout = timeout
+    world, _ = _world(platform)
+    assert platform.monitor_deadline == probe_deadline_s(timeout)
+    assert world.header(task())["probe_deadline_ms"] == str(round(probe_deadline_s(timeout) * 1000))

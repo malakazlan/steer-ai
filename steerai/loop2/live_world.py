@@ -51,7 +51,7 @@ from steerai.loop2.task import Task
 from steerai.loop2.world_ports import WorldPorts, WorldTimes, kill_sleep
 from steerai.orchestrator.trace import Trace
 from steerai.planner.claude_planner import DEFAULT_MODEL, EFFORT
-from steerai.session.monitor import PROBE_DEADLINE_S
+from steerai.session.monitor import probe_deadline_s
 from steerai.world.effects import Observed, ValueFact, poll_tier, top_document
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
@@ -105,7 +105,9 @@ class Platform(Protocol):
         """Balance `uia()`'s `CoInitializeEx` on this thread: one `CoUninitialize`, once."""
         ...
 
-    def start_monitor(self, kill_key: str, clock: Callable[[], float], extra_info: int) -> Monitor:
+    def start_monitor(
+        self, kill_key: str, clock: Callable[[], float], extra_info: int, deadline_s: float
+    ) -> Monitor:
         """The hook monitor on the world's clock (its `last_user_input` feeds the idle rule),
         counting only input tagged `extra_info` as Steer's own."""
         ...
@@ -285,12 +287,16 @@ class LiveWorld:
     def _take_session(self, platform: Platform, config: LiveConfig) -> tuple[str, Monitor]:
         """[V2.57] LW-02: the session, then the run's tag, then the monitor on it. Any failure
         after the session was taken releases it (#361 H12)."""
+        # [V2.59]: the probe deadline from the system's hook timeout, read once at start
+        self._probe_deadline_s = probe_deadline_s(platform.hook_timeout_ms())
         held = platform.acquire_session()  # one Steer per session
         try:
             self._input_tag = _run_tag()
             platform.use_extra_info(self._input_tag)
             try:
-                monitor = platform.start_monitor(config.kill_key, config.clock, self._input_tag)
+                monitor = platform.start_monitor(
+                    config.kill_key, config.clock, self._input_tag, self._probe_deadline_s
+                )
             except SteerError:
                 raise  # HookMonitor's own GATE_BLOCKED monitor_unavailable, with its reason
             except Exception as exc:  # any other start failure: no kill switch, no task
@@ -416,8 +422,8 @@ class LiveWorld:
             self.monitor_lost += 1
 
     def _prove_hooks(self) -> None:
-        """[V2.57] LW-01: before each send's idle decision, a fresh probe both hooks must see
-        within `PROBE_DEADLINE_S` on the world's clock, waited out kill-aware; else the monitor
+        """[V2.57] LW-01: just before each send, a fresh probe both hooks must see within the
+        derived deadline ([V2.59]) on the world's clock, waited out kill-aware; else the monitor
         is lost and the send never happens."""
         monitor = self._monitor
         if monitor.kill_requested():  # #364 H3: the kill wins at every point
@@ -434,7 +440,7 @@ class LiveWorld:
                 raise PortInterrupted("monitor_lost")
             if monitor.probe_seen():
                 return
-            if self._config.clock() - started >= PROBE_DEADLINE_S:
+            if self._config.clock() - started >= self._probe_deadline_s:
                 if monitor.kill_requested():  # a kill after the last poll still wins
                     raise PortInterrupted("killed")
                 self._lose()
@@ -542,6 +548,7 @@ class LiveWorld:
             "always_keep_ceiling": str(2 * LISTING_CAP),
             "goal_word_subcap": str(LISTING_CAP // 3),
             "hook_timeout_ms": _shown(self._platform.hook_timeout_ms()),
+            "probe_deadline_ms": str(round(self._probe_deadline_s * 1000)),
         }
         if price is not None:
             record["price_source"] = price.source
@@ -648,25 +655,10 @@ or the world ports); `close` drops them on the loop thread."""
 _LATENCY_KEYS = ("hook_events", "hook_latency_p95_ms", "hook_latency_p99_ms")
 PROVE_POLL_S = 0.01
 """LW-01: how often the fresh probe's arrival is checked (unmeasured; the deadline decides)."""
-HOOK_TIMEOUT_CAP_MS = 1000
-"""Microsoft Learn, LowLevelKeyboardProc: on Windows 10 1709 and later the system uses 1000 ms
-for any LowLevelHooksTimeout larger than that."""
 
 
 def _shown(value: int | None) -> str:
     return "unset" if value is None else str(value)
-
-
-def _read_hooks_timeout() -> object:  # pragma: no cover - live, Windows only
-    """HKCU\\Control Panel\\Desktop LowLevelHooksTimeout (ms), as stored; None when absent."""
-    import winreg  # noqa: PLC0415 - Windows only
-
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop") as key:
-            value, _kind = winreg.QueryValueEx(key, "LowLevelHooksTimeout")
-    except OSError:
-        return None
-    return value
 
 
 def _run_tag() -> int:
@@ -816,7 +808,9 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
             self._entered = False
             _ole32().CoUninitialize()
 
-    def start_monitor(self, kill_key: str, clock: Callable[[], float], extra_info: int) -> Monitor:
+    def start_monitor(
+        self, kill_key: str, clock: Callable[[], float], extra_info: int, deadline_s: float
+    ) -> Monitor:
         from steerai.session.monitor import PROBE_VK, HookMonitor  # noqa: PLC0415 - Windows hooks
 
         monitor = HookMonitor(
@@ -825,19 +819,15 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
             extra_info=extra_info,
             per_hook=True,  # [V2.57] LW-01
             probe_vk=PROBE_VK,
+            probe_deadline_s=deadline_s,  # [V2.59]
         )
         monitor.start()
         return monitor
 
     def hook_timeout_ms(self) -> int | None:
-        raw = _read_hooks_timeout()  # REG_SZ as written by Windows; a DWORD is accepted too
-        if isinstance(raw, str) and raw.strip().isascii() and raw.strip().isdigit():  # #364 H7
-            value = int(raw.strip())
-        elif isinstance(raw, int) and not isinstance(raw, bool):
-            value = raw
-        else:
-            return None
-        return min(value, HOOK_TIMEOUT_CAP_MS) if value > 0 else None
+        from steerai.session.monitor import read_hook_timeout_ms  # noqa: PLC0415 - Windows only
+
+        return read_hook_timeout_ms()
 
     def protect(self, data: bytes) -> bytes:
         from steerai.debug_trace import protect_for_user  # noqa: PLC0415 - DPAPI
