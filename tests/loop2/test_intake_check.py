@@ -14,7 +14,7 @@ import dataclasses
 import hashlib
 import inspect
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -33,15 +33,25 @@ from steerai.loop2.decide_port import DecideCalls, Reply, TaskGenerations
 from steerai.loop2.decision import Claim, Decision, SubgoalDoc
 from steerai.loop2.loop import Audited, IntakeView, PortInterrupted, TokenUsage
 from steerai.loop2.prompt_inputs import make_intake
-from steerai.loop2.runner import run_task
+from steerai.loop2.runner import numbered_params, run_task
 from tests.loop2.test_live_world import _world
-from tests.loop2.world_fakes import FIELD, GO, World, act, report, task
+from tests.loop2.world_fakes import (
+    FIELD,
+    GO,
+    World,
+    act,
+    element,
+    observed,
+    report,
+    task,
+)
+from tests.loop2.world_fakes import PAGE as SCREEN
 
 NEWLINE = chr(10)
-INTAKE_FIXED = "686561ec64eb27386ccca13e12958475ff88fae32e9acf97f4c6c711667dfdeb"
-"""V4: sha256 of the intake's rules and schema blocks, joined by newlines (from CI, f950884)."""
-AUDIT_FIXED = "4a1baf618c7ee16e0551a14790bace6aa4d01a941ed851c3bed5950ee82a7cea"
-"""V4: sha256 of the audit's rules and schema blocks, joined by newlines (from CI, f950884)."""
+INTAKE_FIXED = "979763949ff64f8048a89f2820706164af5a286b7b96271c550f580bd092e109"
+"""V4: sha256 of the intake's rules and schema blocks, joined by newlines."""
+AUDIT_FIXED = "01ecdb87fd3fd46261f36161d45a342fc04fb0f4aaa9fa3eff2f28e4c17c48fe"
+"""V4: sha256 of the audit's rules and schema blocks, joined by newlines."""
 
 VALUE = SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value")
 STATE = SubgoalDoc(id="s2", desc="x", params={"what": "shoes"}, closes="state")
@@ -346,6 +356,24 @@ def test_intake_insufficient_is_told_to_the_model() -> None:
     assert "intake_insufficient" in REPAIR_LEGEND
 
 
+def _both_numbered(world: World) -> tuple[list[str], list[str]]:
+    """One done run's intake and audit prompts, each cut to its numbered lines."""
+    assert run_task(task(), world.ports()).status == "done"
+    (intake,) = world.intakes
+    (audit,) = world.audits
+    goal, fence = task().goal, "taskfence01"
+    _, intake_user = build_intake_prompt(goal, intake.subgoals, task_fence=fence)
+    _, audit_user = build_audit_prompt(
+        goal, audit.proofs, "w", [], task_fence=fence, screen_fence="scrfence01"
+    )
+
+    def numbered(block: str) -> list[str]:
+        rows = block.split(NEWLINE)
+        return [r.split(" proven=")[0] for r in rows if r.startswith(("subgoal ", "  param:"))]
+
+    return numbered(intake_user[0]), numbered(audit_user[0])
+
+
 def test_the_intake_and_the_audit_number_subgoals_and_params_alike() -> None:
     """Coordinator ruling on #455: both judges read 1-based positions in `decision_shape`'s
     order (0-based only in the trace), so one run's subgoal and param carry the same numbers in
@@ -362,18 +390,77 @@ def test_the_intake_and_the_audit_number_subgoals_and_params_alike() -> None:
         effects=[report("own_value")],
     )
     world.intake_reply = _pass()
-    assert run_task(task(), world.ports()).status == "done"
-    (intake,) = world.intakes
-    (audit,) = world.audits
-    goal, fence = task().goal, "taskfence01"
-    _, intake_user = build_intake_prompt(goal, intake.subgoals, task_fence=fence)
-    _, audit_user = build_audit_prompt(
-        goal, audit.proofs, "w", [], task_fence=fence, screen_fence="scrfence01"
+    intake, audit = _both_numbered(world)
+    assert audit == intake
+    assert intake == ["subgoal 1 closes=value", "  param:1 red shoes"]
+
+
+def test_two_subgoals_with_unsorted_params_number_alike_in_both_judges() -> None:
+    """#457 review 3: two subgoals, the second's param names declared out of alphabetical order;
+    both judges number them by the names' sorted order (`aa` before `zz`), never as declared."""
+    on: Literal["on"] = "on"
+    red = element(42, "CheckBox", "Red", (9, 42), 1)
+    shoes = element(43, "CheckBox", "Shoes", (9, 43), 1)
+    subs = [
+        SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value"),
+        SubgoalDoc(id="s2", desc="x", params={"zz": "red", "aa": "shoes"}, closes="state"),
+    ]
+    world = World(
+        [
+            Decision(
+                subgoals=subs,
+                actions=[act("type", target=FIELD.id, param="text", subgoal="s1")],
+                claims=[
+                    Claim(subgoal="s2", kind="state", evidence=[red.id], param="zz", wanted=on)
+                ],
+            ),
+            Decision(
+                claims=[
+                    Claim(subgoal="s1", kind="value", evidence=[FIELD.id], param="text"),
+                    Claim(subgoal="s2", kind="state", evidence=[shoes.id], param="aa", wanted=on),
+                ]
+            ),
+        ],
+        effects=[report("own_value")],
+        screen=observed([*SCREEN, red, shoes], focus=FIELD.runtime_id),
     )
+    world.states[(red.runtime_id, on)] = True
+    world.states[(shoes.runtime_id, on)] = True
+    world.intake_reply = _pass()
+    intake, audit = _both_numbered(world)
+    assert audit == intake
+    assert intake == [
+        "subgoal 1 closes=value",
+        "  param:1 red shoes",
+        "subgoal 2 closes=state",
+        "  param:1 shoes",
+        "  param:2 red",
+    ]
 
-    def numbered(block: str) -> list[str]:
-        rows = block.split("\n")
-        return [r.split(" proven=")[0] for r in rows if r.startswith(("subgoal ", "  param:"))]
 
-    assert numbered(audit_user[0]) == numbered(intake_user[0])
-    assert numbered(intake_user[0]) == ["subgoal 1 closes=value", "  param:1 red shoes"]
+def test_params_are_numbered_by_their_names_sorted_order() -> None:
+    assert numbered_params({"zz": "red", "aa": "shoes"}) == ((1, "shoes"), (2, "red"))
+    assert numbered_params({}) == ()
+
+
+def test_the_intake_user_block_renders_exactly() -> None:
+    """#457 review: one rendered user block, pinned whole, so a format change is seen."""
+    lines = ((1, "value", ((1, "red shoes"),)), (2, "state", ((1, "shoes"), (2, "red"))))
+    _, user = build_intake_prompt("search red shoes", lines, task_fence="taskfence01")
+    assert user == [
+        NEWLINE.join(
+            [
+                "<<<request taskfence01",
+                "search red shoes",
+                "taskfence01>>>",
+                "subgoals:",
+                "<<<subgoals taskfence01",
+                "subgoal 1 closes=value",
+                "  param:1 red shoes",
+                "subgoal 2 closes=state",
+                "  param:1 shoes",
+                "  param:2 red",
+                "taskfence01>>>",
+            ]
+        )
+    ]

@@ -1090,9 +1090,7 @@ class _Run:
                 if proofs
                 else ("navigated" if how == "claim" else how)
             )
-            params = tuple(
-                (n, param.text) for n, param in numbered_params(subgoal.params)
-            )
+            params = tuple((n, param.text) for n, param in numbered_params(subgoal.params))
             lines.append(
                 (position, subgoal.closes, how, kind, _read_token(subgoal, how, proofs), params)
             )
