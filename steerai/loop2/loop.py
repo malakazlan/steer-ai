@@ -160,6 +160,17 @@ class TokenUsage:
     cache_read: int = 0
 
 
+class PortInterrupted(Exception):  # noqa: N818 - the packet's name ([V2.40] Q4)
+    """A port abandoned its wait because `interrupted()` reported a token, or because its result
+    belongs to a task generation that is no longer current ([V2.40] Q4, [V2.41] (1)). It carries
+    no authority: the runner re-reads `interrupted()`, and only the latched switch stops the task
+    as killed."""
+
+    def __init__(self, token: str) -> None:
+        super().__init__(token)
+        self.token = token
+
+
 @dataclass(frozen=True)
 class Decided:
     """What the decide port returns: the Decision and the call's usage; None when the usage was
