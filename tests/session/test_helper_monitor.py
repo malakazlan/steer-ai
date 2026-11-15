@@ -46,6 +46,8 @@ class FakeHelper:
     closed: int = 0
     wakes: list[int] = field(default_factory=list)
     on_get: Callable[[str], None] | None = None
+    terminate_exits: bool = True
+    """False: the end was asked for but has not taken effect yet (its words still read)."""
 
     def __post_init__(self) -> None:
         write_config(self.config, run_tag=0x1234_5678, probe_vk=0x0E, kill_mods=7, kill_vk=0x53,
@@ -96,7 +98,7 @@ class FakeHelper:
 
     def terminate(self) -> None:
         self.terminated += 1
-        self.exited = True
+        self.exited = self.terminate_exits
 
     def close(self) -> None:
         self.closed += 1
@@ -421,3 +423,14 @@ def test_any_nonzero_kill_word_is_requested() -> None:
     rig = _rig()
     rig.helper.status_w.set("kill", 7)
     assert rig.monitor.kill_requested()
+
+
+def test_a_latched_loss_stays_lost_when_the_words_read_well_again() -> None:
+    """#383 T1: the helper is being ended but its words still read; a heartbeat that goes
+    fresh again must not make a lost monitor healthy (K3)."""
+    rig = _rig()
+    rig.helper.terminate_exits = False
+    rig.at(100.0 + DEADLINE_S + 0.1)
+    assert not rig.monitor.healthy()  # stale: lost, latched
+    rig.heartbeat()
+    assert not rig.monitor.healthy()
