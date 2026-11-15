@@ -349,15 +349,16 @@ def test_unknown_token_use_is_reported_as_incomplete_never_nan(
 ) -> None:
     broken = TaskOutcome(
         status="paused", cause=Reason("max_tokens"), dispatched=(), model_calls=1, strikes=(),
-        tokens=float("nan"), cost_usd=None, wall_s=1.0,
+        tokens=float("nan"), cost_usd=float("nan"), wall_s=1.0,
     )  # fmt: skip
     monkeypatch.setattr(cli, "run_task", lambda _task, _ports: broken)
     run = Run(tmp_path)
     run()
-    result = run.result()
+    result = run.result()  # #361 P1: the line is written; a NaN cost would have lost it
     assert result["used"]["max_tokens"] is None
     assert result["used"]["max_cost_usd"] is None
     assert result["tokens_incomplete"] is True
+    assert result["cost_incomplete"] is True
     assert "NaN" not in run.stdout.getvalue()
 
 

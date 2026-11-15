@@ -314,6 +314,8 @@ def _result(
     """[V2.53] (3): use against each limit, the limit that paused the task, the listing and
     focus counts, and the world's report. An unknown token count is `null` and said, never NaN."""
     tokens_known = math.isfinite(outcome.tokens)
+    cost = outcome.cost_usd
+    cost_known = cost is not None and math.isfinite(cost)  # #361 P1: NaN once usage is unknown
     reason = outcome.reason
     return {
         "status": outcome.status,
@@ -324,9 +326,10 @@ def _result(
             "max_actions": len(outcome.dispatched),
             "max_tokens": outcome.tokens if tokens_known else None,
             "max_wall_s": round(outcome.wall_s, 3),
-            "max_cost_usd": outcome.cost_usd,
+            "max_cost_usd": cost if cost_known else None,
         },
         "tokens_incomplete": not tokens_known,
+        "cost_incomplete": not cost_known,
         "limits": {
             "max_model_calls": budgets.max_model_calls,
             "max_actions": budgets.max_actions,
