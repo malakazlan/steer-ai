@@ -408,3 +408,13 @@ def test_an_unknown_wall_time_is_null_and_said(
     assert result["used"]["max_wall_s"] is None
     assert result["wall_incomplete"] is True
     assert result["paused_by"] == "max_wall"
+
+
+def test_the_header_is_written_to_the_trace_once_with_every_limit(tmp_path: Path) -> None:
+    """#361 H13 (HDR-01)."""
+    run = Run(tmp_path)
+    run()
+    lines = run.trace.read_text(encoding="utf-8").splitlines()
+    headers = [json.loads(ln) for ln in lines if '"run_header"' in ln]
+    assert len(headers) == 1
+    assert headers[0]["max_actions"] == "40"

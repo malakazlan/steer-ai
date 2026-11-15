@@ -469,15 +469,16 @@ class LiveWorld:
 
     # ---- the ports -------------------------------------------------------------------------------
 
-    def ports(self, task: Task) -> Ports:
-        """The task's `Ports`, built once; the header is the trace's first record."""
+    def ports(self, task: Task, *, header: Mapping[str, str] | None = None) -> Ports:
+        """The task's `Ports`, built once; the header, with the caller's own fields (the CLI's
+        limits), is the trace's first record, written once (#361 H13)."""
         if self._ported or self._closed:
             raise RuntimeError("a LiveWorld builds its ports once, for one task, before close")
         self._ported = True
         config = self._config
         clock = config.clock
         started = clock()
-        self._write(self.header(task))
+        self._write({**self.header(task), **(header or {})})
         act = ActPort(
             world=self.world,
             semantic=self.semantic,

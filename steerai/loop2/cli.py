@@ -273,15 +273,14 @@ def _run(options: V2Options, deps: V2Deps, out: _Out, price: PriceFile, window: 
 
     def work() -> tuple[TaskOutcome, dict[str, int | str | None]]:
         with LiveWorld(config, platform) as world:
-            header = {**world.header(task), **_limits_header(task.budgets, price)}
-            trace.write(header)
-            out.note("header: " + json.dumps(header, sort_keys=True))
+            limits = _limits_header(task.budgets, price)
+            out.note("header: " + json.dumps({**world.header(task), **limits}, sort_keys=True))
             if price.stale:
                 out.note(
                     f"warning: the price was read on {price.price.read_on.isoformat()}, more "
                     f"than {STALE_DAYS} days ago; re-read it"
                 )
-            ports = world.ports(task)
+            ports = world.ports(task, header=limits)  # the trace's one header record
             outcome = run_task(task, ports)
             del ports  # rev 4.0c: nothing holding COM outlives the world on this thread
             return outcome, world.report()
