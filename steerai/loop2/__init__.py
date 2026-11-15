@@ -37,6 +37,7 @@ def ready(step: int) -> bool:
         stage1_expected,
         stage2,
         stage2_expected,
+        stage2a,
         task,
         text,
         verify,

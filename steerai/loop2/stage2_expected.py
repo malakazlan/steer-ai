@@ -344,12 +344,15 @@ def _act(task_id: str, raw: object) -> Act:
     )
 
 
-def table_from_reads(acts: Mapping[str, SiteRow], reads: Path) -> list[TableRow]:
-    """Every row with acts, rated on its saved read `<reads>/<task_id>.json`."""
-    goals = {t.task_id: t.goal for t in real_site_tasks()}
+def table_from_reads(
+    acts: Mapping[str, SiteRow], reads: Path, *, tasks: Sequence[Task] | None = None
+) -> list[TableRow]:
+    """Every row with acts, rated on its saved read `<reads>/<task_id>.json`; `tasks` are the
+    group's tasks (the real-site ones by default; group 2a passes its own)."""
+    goals = {t.task_id: t.goal for t in (real_site_tasks() if tasks is None else tasks)}
     unknown = sorted(set(acts) - set(goals))
     if unknown:
-        raise ValueError(f"acts: not real-site tasks: {unknown}")
+        raise ValueError(f"acts: not tasks of this group: {unknown}")
     return [
         table_row(task_id, row, goals[task_id], (reads / f"{task_id}.json").read_bytes())
         for task_id, row in acts.items()
