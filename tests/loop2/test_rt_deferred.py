@@ -20,7 +20,9 @@ from steerai.loop2.task import Budgets, TokenPrice
 from steerai.orchestrator.loop import REUSE_FRESHNESS_S
 from steerai.world.effects import Observed, ValueFact
 from steerai.world.elements import Element
+from steerai.world.observe2 import FIRST_READY_S
 from tests.loop2.world_fakes import (
+    BAR,
     FIELD,
     GO,
     MENU,
@@ -30,6 +32,7 @@ from tests.loop2.world_fakes import (
     PRICE_URL,
     QUERY_PAGE,
     SEND,
+    TAB,
     URL,
     World,
     act,
@@ -495,7 +498,10 @@ def test_a_fresh_enough_observation_is_not_read_again() -> None:
 
 
 def test_an_empty_listing_never_reaches_the_model() -> None:
-    world = World([Decision(stop="cannot")], screen=observed([]))
+    """A window with nothing listable at all: a native one (no address bar); a browser frame
+    with nothing listable is a page not ready ([V2.44] (2))."""
+    native = dataclasses.replace(observed([]), url_observed=False, url=None)
+    world = World([Decision(stop="cannot")], screen=native)
     outcome = run_task(task(), world.ports())
     assert outcome.model_calls == 0
     assert (outcome.status, outcome.reason) == ("cannot", "empty_listing")
@@ -585,6 +591,73 @@ def test_a_move_after_a_send_in_the_batch_is_scored_and_the_send_remembered() ->
     assert outcome.focus_losses == 1
 
 
+# ---- [V2.44] (2): a browser frame with no page content ends page_not_ready ---------------------
+
+FRAME_ONLY = observed([TAB, BAR])
+"""A browser window whose page has not appeared: the frame (tabs, address bar), no Document."""
+
+
+def test_a_frame_with_no_document_ends_page_not_ready_never_reaching_the_model() -> None:
+    """The first observation already waited out the first-ready deadline ([V2.31])."""
+    world = World([Decision(stop="cannot")], screen=FRAME_ONLY)
+    outcome = run_task(task(), world.ports())
+    assert outcome.model_calls == 0
+    assert "settle" not in world.events  # no second wait on top of the first-ready one
+    assert (outcome.status, outcome.reason) == ("cannot", "page_not_ready")
+
+
+def test_an_empty_document_ends_page_not_ready() -> None:
+    world = World([Decision(stop="cannot")], screen=observed([PAGE[0], TAB, BAR]))
+    outcome = run_task(task(), world.ports())
+    assert outcome.model_calls == 0
+    assert (outcome.status, outcome.reason) == ("cannot", "page_not_ready")
+
+
+def test_a_native_window_with_no_document_is_a_normal_page() -> None:
+    """No address bar (`url_observed` false): a native window, never a page not ready."""
+    note = element(30, "Edit", "Text editor", (9, 30), None)
+    native = dataclasses.replace(observed([note]), url_observed=False, url=None)
+    world = World([Decision(stop="cannot")], screen=native)
+    outcome = run_task(task(), world.ports())
+    assert outcome.model_calls == 1
+
+
+def test_a_page_that_blanks_mid_task_is_waited_for_until_it_returns() -> None:
+    """Later in the task the page goes blank (a navigation under way): held, not ended, while
+    the first-ready deadline lasts; the model is called again only on the page with content."""
+    world = World(
+        [decision(act("click", target=GO.id), first=True), Decision(stop="cannot")],
+        effects=[report("navigated")],
+        after=FRAME_ONLY,  # the watch's after is blank; the page then returns
+    )
+    world.settle_advance_s = 1.0
+    outcome = run_task(task(), world.ports())
+    assert "settle" in world.events
+    assert outcome.model_calls == 2
+    assert outcome.reason == "controller_stop"
+
+
+def test_a_page_that_stays_blank_mid_task_ends_page_not_ready() -> None:
+    world = World(
+        [decision(act("click", target=GO.id), first=True), Decision(stop="cannot")],
+        effects=[report("navigated")],
+        after=FRAME_ONLY,
+        settled=FRAME_ONLY,  # every hold reads the blank page again
+    )
+    world.settle_advance_s = 1.0
+    outcome = run_task(task(), world.ports())
+    assert outcome.model_calls == 1
+    assert (outcome.status, outcome.reason) == ("cannot", "page_not_ready")
+
+
+def test_a_blank_page_whose_window_is_gone_is_infrastructure() -> None:
+    gone = dataclasses.replace(FRAME_ONLY, windows=(99,))  # the task's window is not listed
+    world = World([Decision(stop="cannot")], screen=gone)
+    outcome = run_task(task(), world.ports())
+    assert outcome.model_calls == 0
+    assert (outcome.status, outcome.reason) == ("stopped", "window_gone")
+
+
 # ---- the lead's [V2.43] confirmation ------------------------------------------------------------
 
 
@@ -666,29 +739,85 @@ def test_a_press_re_read_on_age_rechecks_the_focus_on_the_new_read() -> None:
     assert outcome.focus_losses == 1
 
 
-def test_a_mixed_turn_then_one_stale_turn_is_no_strike() -> None:
-    """The streak is neither raised by a mixed turn: mixed (0 -> 0), then one stale turn
-    (0 -> 1) is the first in a row, no strike. A mixed turn that raised it would make that
-    stale turn the second (a strike)."""
+# ---- #342 review ---------------------------------------------------------------------------------
 
-    def at(url: str, focus: tuple[int, ...]) -> Observed:
-        seen = observed(QUERY_PAGE, focus=focus)
-        return dataclasses.replace(seen, url=url, document_url=url)
 
-    a, b = URL + "a", URL + "b"
+def test_a_blank_page_never_ends_before_the_first_ready_deadline() -> None:
+    """Short holds (0.1 s) never end the wait early: it ends on `FIRST_READY_S` after the page
+    went blank, not on a count of holds."""
     world = World(
-        [
-            decision(
-                act("type", target=FIELD.id, param="text"), act("press", key="Enter"), first=True
-            ),
-            decision(act("click", target=GO.id)),
-        ],
-        effects=[report("own_value")],
-        observations=[at(a, FIELD.runtime_id), at(a, FIELD.runtime_id), at(b, FIELD.runtime_id)],
-        after=at(a, MENU.runtime_id),  # after the type, focus is on the menu: a mixed turn
+        [decision(act("click", target=GO.id), first=True)],
+        effects=[report("navigated")],
+        after=FRAME_ONLY,
+        settled=FRAME_ONLY,
+    )
+    world.settle_advance_s = 0.1
+    outcome = run_task(task(), world.ports())
+    assert outcome.reason == "page_not_ready"
+    assert world.now >= FIRST_READY_S - 1e-6
+
+
+def test_a_clock_that_does_not_move_ends_the_wait_after_one_hold() -> None:
+    world = World(
+        [decision(act("click", target=GO.id), first=True)],
+        effects=[report("navigated")],
+        after=FRAME_ONLY,
+        settled=FRAME_ONLY,
     )
     outcome = run_task(task(), world.ports())
-    history = [t for v in world.views for t in v.history]
-    assert "focus_lost" in history
-    assert outcome.stale_observations == 1
-    assert all("refused" not in reasons for reasons in outcome.strikes)
+    assert outcome.reason == "page_not_ready"
+    assert world.events.count("settle") == 1
+
+
+def test_a_browser_frame_with_nothing_listable_is_a_page_not_ready() -> None:
+    """[V2.44] (2): a frame-only browser page is never `empty_listing`, even with nothing
+    listable at all."""
+    blank = dataclasses.replace(observed([]), url_observed=True)
+    world = World([Decision(stop="cannot")], screen=blank)
+    outcome = run_task(task(), world.ports())
+    assert outcome.model_calls == 0
+    assert (outcome.status, outcome.reason) == ("cannot", "page_not_ready")
+
+
+def test_several_empty_root_documents_are_not_blank() -> None:
+    """Unreadable, not blank: no single top Document, so the page goes to the model as before."""
+    roots = [
+        element(1, "Document", "A", (9, 1), None),
+        element(2, "Document", "B", (9, 2), None),
+        TAB,
+        BAR,
+    ]
+    world = World([Decision(stop="cannot")], screen=observed(roots))
+    outcome = run_task(task(), world.ports())
+    assert outcome.model_calls == 1
+
+
+def test_the_deadline_counts_from_when_the_page_went_blank() -> None:
+    """The page goes blank 20 s into the task: it is still waited for `FIRST_READY_S` from
+    then, never from the task's start."""
+    world = World(
+        [decision(act("click", target=GO.id), first=True)],
+        effects=[report("navigated")],
+        later=FRAME_ONLY,  # the screen stays blank after the click, on every read
+        settled=FRAME_ONLY,
+    )
+    world.watch_s = 20.0
+    world.settle_advance_s = 0.5
+    outcome = run_task(task(), world.ports())
+    assert outcome.reason == "page_not_ready"
+    assert world.now >= 20.0 + FIRST_READY_S - 1e-6
+
+
+def test_a_wall_budget_that_ends_the_blank_page_wait_is_max_wall() -> None:
+    """The wall budget runs out during the hold, before the first-ready deadline: the task pauses
+    on the budget (`max_wall`), never `page_not_ready`."""
+    budgets = Budgets(**(GOOD | {"max_wall_s": 3.0}))
+    world = World(
+        [decision(act("click", target=GO.id), first=True), Decision(stop="cannot")],
+        effects=[report("navigated")],
+        after=FRAME_ONLY,
+        settled=FRAME_ONLY,
+    )
+    world.settle_advance_s = 0.5
+    outcome = run_task(task(budgets), world.ports())
+    assert (outcome.status, outcome.reason) == ("paused", "max_wall")

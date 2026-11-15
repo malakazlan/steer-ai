@@ -94,6 +94,8 @@ the Document, so its form is the whole page, and on `PAGE` the password and Send
 a commit (R2). The query-class cases (an R1 Enter or search click) run on this page."""
 EMPTY = ValueFact(filled=False, digest="empty")
 TYPED_VALUE = ValueFact(filled=True, digest="typed")
+MAX_SETTLES = 1_000
+"""More settles than this in one task is a runaway wait: the fake fails the test."""
 """What `World.read_value` returns: a field is empty until a type into it reads back True."""
 PRICE_URL = "https://platform.claude.com/docs/en/build-with-claude/prompt-caching"
 PRICE_READ_ON = date(2026, 11, 15)
@@ -266,6 +268,8 @@ class World:
     """The guard each `settle` (the [V2.31] load-guard wait) was given."""
     settled: Observed | None = None
     """What `settle` returns; None: the current screen."""
+    settle_advance_s: float = 0.0
+    """How far the clock moves during each settle (a hold that takes time)."""
     interrupt_after_settle: bool = False
     """Report `interruption` once a settle has run (the person's kill during the wait)."""
     interrupt_in_decide: int | None = None
@@ -367,6 +371,9 @@ class World:
     def _settle(self, first: Observed, guard_s: float) -> Observed:  # noqa: ARG002 - the Ports shape
         self.events.append("settle")
         self.settle_guards.append(guard_s)
+        if len(self.settle_guards) > MAX_SETTLES:  # a loop that never ends fails, never hangs
+            raise AssertionError(f"settle called more than {MAX_SETTLES} times")
+        self.now += self.settle_advance_s
         if self.settled is not None:
             self.screen = self.settled  # the settle is a read of the screen
         return self.screen

@@ -170,7 +170,8 @@ class Admission:
     windows: WindowState
     bindings: UiaBindings
     clock: Callable[[], float] = time.time
-    """Same clock as `Snapshot.taken_at` (wall time) for the age check."""
+    """Same clock as `Snapshot.taken_at` for the age check: wall time by default (v1); the v2
+    adapter passes its one monotonic clock here and to `WorldModel` ([V2.40] Q2)."""
 
     def admit(self, action: Admissible, snapshot: Snapshot) -> tuple[Element, Any]:
         element = snapshot.element(action.element_id)
