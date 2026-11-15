@@ -620,3 +620,20 @@ def test_the_summary_names_the_runs_that_failed_each_gate() -> None:
     assert report["gate_failures"] == {
         "false_done": ["a#2"], "cache_zero": ["a#3"], "internal": ["a#4"], "tasks": ["a"],
     }  # fmt: skip
+
+
+def test_the_summary_sums_the_watch_deadline_counts_per_class() -> None:
+    """[V2.48]: stage 1 reports per class the watches that ended at their deadline."""
+    one = _final(watch_deadlines={"trigger": {"watches": 2, "deadline": 1},
+                                  "wait": {"watches": 1, "deadline": 0}})  # fmt: skip
+    two = _final(watch_deadlines={"trigger": {"watches": 3, "deadline": 2},
+                                  "submit": {"watches": 1, "deadline": "x"}})  # fmt: skip
+    runs = [_ok(DONE, 1, final=one), _ok(DONE, 2, final=two), _ok(DONE, 3)]
+    report = accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="t").report
+    assert report["watch_deadlines"] == {
+        "plain": {"watches": 0, "deadline": 0},
+        "trigger": {"watches": 5, "deadline": 3},
+        "submit": {"watches": 1, "deadline": 0},
+        "wait": {"watches": 1, "deadline": 0},
+    }
+    assert report["watch_deadlines_incomplete"] == 1  # the odd count was said, not summed

@@ -311,6 +311,31 @@ def _cache_spent(final: Json | None) -> bool:
     return any(v != 0 for v in values)
 
 
+WATCH_CLASSES: Final = ("plain", "trigger", "submit", "wait")
+
+
+def _watch_deadlines(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures
+    """[V2.48]: per watch class, the watches and those that ended at their deadline, summed over
+    the runs; a count that is not a whole number is said (incomplete), never summed."""
+    sums = {k: {"watches": 0, "deadline": 0} for k in WATCH_CLASSES}
+    odd = 0
+    for final in finals:
+        block = final.get("watch_deadlines")
+        if not isinstance(block, Mapping):
+            continue
+        for kind, counts in block.items():
+            if kind not in sums or not isinstance(counts, Mapping):
+                odd += 1
+                continue
+            for key in ("watches", "deadline"):
+                value = _whole(counts.get(key))
+                if value is None:
+                    odd += 1
+                else:
+                    sums[kind][key] += value
+    return {"watch_deadlines": sums, "watch_deadlines_incomplete": odd}
+
+
 def _counted(run: Classified) -> bool:
     """A run whose final line is a task's own (not a refused start)."""
     return run.final is not None and run.final.get("status") != "error"
@@ -385,6 +410,7 @@ def _report(
         "void_rate": round(verdicts.get("void", 0) / total, 3) if total else None,
         "monitor_lost_rate": round(verdicts.get("monitor_lost", 0) / total, 3) if total else None,
         "fail_reasons": _counts(r.reason for r in runs if r.verdict == "fail"),
+        **_watch_deadlines(finals),
     }
 
 
