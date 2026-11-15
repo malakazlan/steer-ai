@@ -336,6 +336,8 @@ class _Run:
         """[V2.43] (2): targets re-rendered after the observation the model saw."""
         self.focus_losses = 0
         """[V2.43] (2): focus moved off a press's target after the listing showed it there."""
+        self.unread_aids = 0
+        """#301: unread automation ids over every observation taken in (`_in_domain`)."""
 
     # ---- the outcome ----------------------------------------------------------------------
 
@@ -362,6 +364,7 @@ class _Run:
             stale_observations=self.stale_count,
             target_changes=self.target_changes,
             focus_losses=self.focus_losses,
+            unread_automation_ids=self.unread_aids,
         )
 
     def _cost(self) -> float | None:
@@ -448,6 +451,7 @@ class _Run:
         beyond `CLOCK_DOMAIN_S`, or not finite, is another clock (small skew is clamped by the
         load guard)."""
         observed = self.ports.stamp(observed)
+        self.unread_aids += observed.snapshot.unread_automation_id_count  # #301: counted
         now = self.ports.clock()
         if not abs(now - observed.snapshot.taken_at) <= CLOCK_DOMAIN_S:
             raise _End("stopped", Reason("clock_domain"))
