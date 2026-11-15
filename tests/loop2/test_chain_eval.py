@@ -18,6 +18,8 @@ from steerai.errors import ErrorCode, SteerError
 from steerai.loop2 import chain_eval
 from steerai.loop2.chain_eval import (
     MAX_VOIDS,
+    EvalAborted,
+    Ledger,
     ChainRecord,
     JudgeCall,
     N,
@@ -29,15 +31,18 @@ from steerai.loop2.chain_eval import (
     load_shapes,
     pilot_ids,
     record_json,
+    recorded_judge,
+    run_eval,
     run_chain,
     run_shape,
     score,
     summary,
+    typed_text_escaped,
 )
 from steerai.loop2.chain_pages import Page, PageWorld, outcome_shown
 from steerai.loop2.decide_port import Reply
 from steerai.loop2.decision import ActionDoc
-from steerai.loop2.loop import Dispatch, TokenUsage
+from steerai.loop2.loop import Audited, Dispatch, TokenUsage
 
 SHAPES = {s.id: s for s in load_shapes()}
 
@@ -201,6 +206,8 @@ def _rec(
     *,
     pilot: bool = False,
     index: int = 0,
+    outage: bool = False,
+    shown: bool | None = None,
 ) -> ChainRecord:
     return ChainRecord(
         shape="g22",
@@ -212,7 +219,8 @@ def _rec(
         tokens=100.0,
         judges=tuple(JudgeCall(j, v, None, 5.0) for j, v in judges),  # type: ignore[arg-type]  # test tokens
         declared=(("value",),),
-        outcome_shown=status == "done",
+        outcome_shown=status == "done" if shown is None else shown,
+        outage=outage,
     )
 
 
@@ -232,11 +240,12 @@ def _rec(
         # no such verdict and not done: reported with its reason, never a veto
         ("must_pass", _rec("paused", "no_progress", [("intake", "passed")]), "not_done"),
         ("must_pass", _rec("paused", "max_model_calls"), "not_done"),
-        # infrastructure before any judge verdict is a void; after one, it is not
-        ("must_pass", _rec("stopped", "port_model_timeout"), "void"),
-        ("must_veto", _rec("stopped", "port_model_error"), "void"),
-        ("must_pass", _rec("stopped", "port_model_timeout", [("intake", "rejected")]),
-         "false_veto"),
+        # the provider failing on a controller turn before any judge verdict is a void
+        ("must_pass", _rec("stopped", "port_model_timeout", outage=True), "void"),
+        ("must_veto", _rec("stopped", "port_model_error", outage=True), "void"),
+        # after a judge verdict it is not (#454 (4): an intake reject, then an outage)
+        ("must_pass", _rec("stopped", "port_model_timeout", [("intake", "rejected")],
+                           outage=True), "false_veto"),
     ],
 )  # fmt: skip
 def test_how_a_chain_counts(cls: Any, record: ChainRecord, expected: str) -> None:  # Any: Class
@@ -462,3 +471,253 @@ def test_shape_dataclass_is_frozen() -> None:
 
 def test_score_takes_shapes_as_loaded() -> None:
     assert isinstance(SHAPES["g22"], Shape)
+
+
+# ---- #454 review: (3) harness bugs are never voids ---------------------------------------------
+
+
+def test_a_port_error_that_is_no_provider_outage_aborts_the_eval() -> None:
+    """A `port_<code>` the provider did not cause is the harness's own bug, never a void."""
+    with pytest.raises(EvalAborted, match="harness_port_error"):
+        ending("must_pass", _rec("stopped", "port_perception_timeout"))
+
+
+def test_a_harness_port_failing_in_a_chain_aborts_the_eval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken(self: PageWorld, before: Any, sent: Any) -> Any:  # Any: the Ports shapes
+        raise SteerError(ErrorCode.PERCEPTION_TIMEOUT, "fake page bug")
+
+    monkeypatch.setattr(PageWorld, "watch", broken)
+    provider = Scripted(_typed_and_claimed("Full name", "Ada Lovelace"), ALLOW)
+    with pytest.raises(EvalAborted, match="harness_port_error"):
+        run_chain(SHAPES["g22"], index=0, provider=provider)
+
+
+def test_a_provider_outage_on_a_controller_turn_is_tagged_as_the_cause() -> None:
+    def outage(_system: list[str], _blocks: list[str]) -> Reply:
+        raise SteerError(ErrorCode.MODEL_TIMEOUT, "timeout")
+
+    record = run_chain(SHAPES["g22"], index=0, provider=outage)
+    assert record.outage is True
+
+
+# ---- (4) and (5): the judges' recorders --------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class Judgement:
+    sufficient: bool
+    reason: str
+    usage: TokenUsage | None = None
+
+
+def test_an_intake_reject_then_an_outage_on_a_must_pass_chain_is_a_false_veto() -> None:
+    seen = chain_eval._Recorder()
+    intake = recorded_judge("intake", lambda _view: Judgement(False, "request_asks_more"), seen)
+    intake(object())
+    record = dataclasses.replace(
+        _rec("stopped", "port_model_timeout", outage=True), judges=tuple(seen.judges)
+    )
+    assert [(j.judge, j.verdict) for j in record.judges] == [("intake", "rejected")]
+    assert ending("must_pass", record) == "false_veto"
+
+
+@pytest.mark.parametrize(
+    ("answer", "verdict"),
+    [
+        (Audited(True, "facts_finish_request"), "allowed"),
+        (Audited(True, "unclear"), "vetoed"),  # the runner's rule: only the allowed pair passes
+        (Audited(False, "facts_finish_request"), "vetoed"),
+        (Audited(False, "request_asks_more"), "vetoed"),
+    ],
+)
+def test_the_audit_recorder_takes_the_runners_own_rule(answer: Audited, verdict: str) -> None:
+    seen = chain_eval._Recorder()
+    recorded_judge("audit", lambda _view: answer, seen)(object())
+    assert [j.verdict for j in seen.judges] == [verdict]
+
+
+def test_a_steer_error_after_a_paid_judge_call_is_a_failed_verdict() -> None:
+    seen = chain_eval._Recorder()
+    provider = chain_eval._watching(lambda _s, _b: Reply("{}", "end_turn", None), seen)
+
+    def paid_then_failed(_view: object) -> Audited:
+        provider([], [])
+        raise SteerError(ErrorCode.MODEL_ERROR, "refusal")
+
+    with pytest.raises(SteerError):
+        recorded_judge("audit", paid_then_failed, seen)(object())
+    assert [j.verdict for j in seen.judges] == ["failed"]
+
+
+def test_a_judge_that_failed_before_any_call_records_no_verdict() -> None:
+    seen = chain_eval._Recorder()
+
+    def no_call(_view: object) -> Audited:
+        raise SteerError(ErrorCode.MODEL_ERROR, "before the call")
+
+    with pytest.raises(SteerError):
+        recorded_judge("audit", no_call, seen)(object())
+    assert seen.judges == []
+
+
+# ---- (6): the mask measure reads the screen block only -------------------------------------------
+
+
+def _audit_blocks(screen: str) -> list[str]:
+    return [
+        "<<<request f1\nsearch the articles for zqfreeword\nf1>>>",
+        f"<<<screen f2\nwindow: {screen}\n1 Document \"x\"\nf2>>>",
+    ]
+
+
+def test_a_typed_word_only_in_the_request_has_not_escaped() -> None:
+    assert typed_text_escaped(["zqfreeword"], _audit_blocks("[typed_text] - Articles")) is False
+
+
+def test_a_typed_word_left_in_the_screen_has_escaped() -> None:
+    assert typed_text_escaped(["zqfreeword"], _audit_blocks("zqfreewo - Articles")) is False
+    assert typed_text_escaped(["zqfreeword"], _audit_blocks("zqfreeword - Articles")) is True
+
+
+def test_nothing_typed_is_not_measured() -> None:
+    assert typed_text_escaped([], _audit_blocks("anything")) is None
+
+
+# ---- (7): every must-pass outcome is reachable through the loop ----------------------------------
+
+
+def _subgoal(sid: str, closes: str, param: str, words: str) -> dict[str, Any]:  # Any: JSON
+    return {"id": sid, "desc": "it is so", "params": {param: words}, "closes": closes}
+
+
+def _state_turns(name: str) -> list[Callable[[str], dict[str, Any]]]:
+    sub = _subgoal("s1", "state", "what", name)
+    return [
+        lambda p: {"subgoals": [sub], "actions": [
+            {"verb": "check", "target": handle(p, name), "subgoal": "s1", "param": "what"}]},
+        lambda p: {"claims": [{"subgoal": "s1", "kind": "state", "evidence": [handle(p, name)],
+                               "param": "what", "wanted": "on"}]},
+    ]  # fmt: skip
+
+
+REACHING: dict[str, Callable[[], list[Callable[[str], dict[str, Any]]]]] = {
+    "select": lambda: [
+        lambda p: {"subgoals": [_subgoal("s1", "value", "country", "Kenya")], "actions": [
+            {"verb": "choose", "target": handle(p, "Country"), "subgoal": "s1",
+             "option": "Kenya"}]},
+        lambda p: {"claims": [{"subgoal": "s1", "kind": "value",
+                               "evidence": [handle(p, "Country")], "param": "country"}]},
+    ],
+    "toggle": lambda: _state_turns("Dark mode"),
+    "heldout_toggle": lambda: _state_turns("Remember this device"),
+    "heldout_non_english": lambda: _state_turns("Dunkelmodus"),
+    "heldout_two_field": lambda: [
+        lambda p: {"subgoals": [_subgoal("s1", "value", "name", "Ada Lovelace"),
+                                _subgoal("s2", "value", "email", "ada@example.com")],
+                   "actions": [
+            {"verb": "focus", "target": handle(p, "Name"), "subgoal": "s1"},
+            {"verb": "type", "target": handle(p, "Name"), "subgoal": "s1", "param": "name"}]},
+        lambda p: {"actions": [
+            {"verb": "focus", "target": handle(p, "Email"), "subgoal": "s2"},
+            {"verb": "type", "target": handle(p, "Email"), "subgoal": "s2", "param": "email"}]},
+        lambda p: {"claims": [
+            {"subgoal": "s1", "kind": "value", "evidence": [handle(p, "Name")], "param": "name"},
+            {"subgoal": "s2", "kind": "value", "evidence": [handle(p, "Email")],
+             "param": "email"}]},
+    ],
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("shape_id", sorted(REACHING))
+def test_a_must_pass_outcome_is_reachable_through_the_loop(shape_id: str) -> None:
+    record = run_chain(SHAPES[shape_id], index=0, provider=Scripted(REACHING[shape_id](), ALLOW))
+    assert (record.status, record.reason, record.outcome_shown) == ("done", None, True)
+    assert ending("must_pass", record) == "ok"
+
+
+def test_a_must_veto_chain_showing_the_outcome_is_a_broken_page() -> None:
+    with pytest.raises(ValueError, match="broken_page"):
+        score(SHAPES["g23"], [_rec("blocked", "audit_veto", [("audit", "vetoed")], shown=True)])
+
+
+def test_a_must_pass_done_without_the_outcome_is_reported_per_shape() -> None:
+    allowed = [("audit", "allowed")]
+    records = [_rec("done", judges=allowed, shown=False), _rec("done", judges=allowed)]
+    assert score(SHAPES["g22"], records).done_without_outcome == 1
+
+
+# ---- (1) and (2): the ledger, the freeze and the run ------------------------------------------
+
+
+def _wired(**changes: Any) -> dict[str, object]:  # Any: header values
+    return {**_head(intake="intake-1"), **changes}
+
+
+def test_the_pilot_refuses_an_unwired_intake_or_a_dirty_tree(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    with pytest.raises(ValueError, match="intake_not_wired"):
+        ledger.start("pilot", _head())
+    with pytest.raises(ValueError, match="tree_not_clean"):
+        ledger.start("pilot", _wired(dirty=True))
+    assert ledger.entries() == []
+
+
+def test_a_counted_run_reads_its_freeze_from_the_ledger_and_runs_once(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    with pytest.raises(ValueError, match="wording_not_frozen"):
+        ledger.start("counted", _wired())  # no pilot: nothing frozen
+    ledger.start("pilot", _wired())
+    with pytest.raises(ValueError, match="wording_not_frozen"):
+        ledger.start("counted", _wired(commit="b" * 40))
+    ledger.start("counted", _wired())
+    with pytest.raises(ValueError, match="counted_run_exists"):
+        ledger.start("counted", _wired())
+    assert [e["kind"] for e in ledger.entries()] == ["pilot", "counted"]
+
+
+def test_held_out_shapes_run_once_ever(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.start("pilot", _wired())
+    ledger.start("held_out", _wired())
+    with pytest.raises(ValueError, match="held_out_run_exists"):
+        ledger.start("held_out", _wired())
+
+
+def test_run_eval_refuses_an_existing_out_dir(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    with pytest.raises(ValueError, match="out_exists"):
+        run_eval("pilot", [SHAPES["g22"]], lambda s, i: _rec(index=i), out=tmp_path,
+                 ledger=ledger, head=_wired())  # fmt: skip
+    assert ledger.entries() == []
+
+
+def test_run_eval_writes_the_start_first_and_each_chain_as_it_ends(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    out = tmp_path / "run"
+    seen_on_disk: list[int] = []
+
+    def chain(shape: Shape, i: int) -> ChainRecord:
+        assert ledger.entries()[-1]["kind"] == "pilot"  # the start is on disk before chain 0
+        if (out / "chains.jsonl").exists():
+            seen_on_disk.append(len((out / "chains.jsonl").read_text().splitlines()))
+        return dataclasses.replace(_rec(index=i, pilot=True), shape=shape.id)
+
+    run_eval("pilot", [SHAPES["g22"], SHAPES["select"]], chain, out=out, ledger=ledger,
+             head=_wired())  # fmt: skip
+    assert seen_on_disk == [1]  # the first chain was flushed before the second began
+    assert len((out / "chains.jsonl").read_text().splitlines()) == 2
+
+
+def test_run_eval_writes_an_aborted_record_on_any_exception(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+
+    def broken(_shape: Shape, _i: int) -> ChainRecord:
+        raise RuntimeError("harness bug")
+
+    with pytest.raises(RuntimeError):
+        run_eval("pilot", [SHAPES["g22"]], broken, out=tmp_path / "run", ledger=ledger,
+                 head=_wired())  # fmt: skip
+    assert ledger.entries()[-1] == {"event": "aborted", "kind": "pilot", "shape": "g22",
+                                    "index": 0, "error": "RuntimeError"}  # fmt: skip
