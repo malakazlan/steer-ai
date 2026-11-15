@@ -32,9 +32,9 @@ pytestmark = pytest.mark.windows
 
 _MOD_ALT, _MOD_CTRL, _MOD_SHIFT = 0x0001, 0x0002, 0x0004
 _VK_F10 = 0x79
+"""A chord no Steer run uses, so a test helper never collides with a real one."""
 _PROCESS_QUERY_LIMITED = 0x1000
 """PROCESS_QUERY_LIMITED_INFORMATION: to read the exit code after close."""
-"""A chord no Steer run uses, so a test helper never collides with a real one."""
 
 
 def _env_dict(block: str) -> dict[str, str]:

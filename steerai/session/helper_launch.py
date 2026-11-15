@@ -230,6 +230,9 @@ class HelperProcess:
         self._views: list[memoryview] = []
         self._job: int | None = None
         self._process: int | None = None
+        self._in_job = False
+        """#378 (2): whether the helper is in our job yet; until then only its own handle ends
+        it (the suspended path, before the assignment)."""
         self._quit = 0
         self._wake = 0
         self._config: Words | None = None
@@ -271,6 +274,33 @@ class HelperProcess:
             raise RuntimeError("the helper is not started")
         return self._process
 
+    def pid(self) -> int:
+        return self._w.process_id(self.process_handle)
+
+    def has_exited(self) -> bool:
+        return self._w.has_exited(self.process_handle)
+
+    def wait_exit(self, timeout_ms: int) -> bool:
+        """The watchdog's wait: True when the helper exited within `timeout_ms`."""
+        return self._w.wait_any((self.process_handle,), timeout_ms) == 0
+
+    def wait_wake(self, timeout_ms: int) -> None:
+        """HH-08, HH-15: a kill-aware wait wakes on `wake` or the helper's exit; `wake` is a
+        hint only, reset once woken, and the caller re-reads the words."""
+        self._w.wait_any((self._wake, self.process_handle), timeout_ms)
+        self._w.reset_event(self._wake)
+
+    def terminate(self) -> None:
+        """P4 (rev 2): a helper-caused loss ends the helper at once: through its job, else its
+        process, then a bounded wait for it to be gone (#375 H5). It takes the close lock and does
+        nothing once closed (#383 blocker 6): the handles are released by then."""
+        with self._close_lock:
+            if self._closed:
+                return
+            failure = self._end()
+            if failure is not None:
+                raise failure  # #388: a failed end wait is reported, never dropped
+
     # ---- lifecycle ------------------------------------------------------------------------------
 
     def start(self) -> None:
@@ -289,7 +319,7 @@ class HelperProcess:
         try:
             self._start()
         except BaseException as exc:  # #375 P2: whatever went wrong, nothing is left (K16)
-            self._abort()
+            self._abort(exc)
             if isinstance(exc, SteerError) or not isinstance(exc, Exception):
                 raise  # a refusal already, or an interrupt that must stay one
             raise _refuse(f"{type(exc).__name__} while starting the hook helper") from exc
@@ -303,14 +333,17 @@ class HelperProcess:
             self._closed = True
             w = self._w
             process = self._process
+            failure: OSError | None = None
             try:
                 if process is not None and not w.has_exited(process):
                     w.set_event(self._quit)
                     w.wait_any((process,), CLOSE_TIMEOUT_MS)
                     if not w.has_exited(process):
-                        self._end()
+                        failure = self._end()
             finally:
                 self._release()  # #375 P3: whatever the wait did
+            if failure is not None:
+                raise failure  # #378 (1): reported once everything is released
 
     # ---- internals -----------------------------------------------------------------------------
 
@@ -364,6 +397,7 @@ class HelperProcess:
             try:
                 for h in inherit:  # #375 H1: inside the try, so a failure part-way is undone
                     w.set_inherit(h, True)
+                suspended = False
                 try:
                     process, thread, _pid = w.create_process(
                         app,
@@ -373,8 +407,8 @@ class HelperProcess:
                         inherit=inherit,
                         jobs=(job,),
                     )
-                    suspended = False
                 except OSError:  # P4: no JOB_LIST here; create suspended, assign, resume
+                    suspended = True
                     process, thread, _pid = w.create_process(
                         app,
                         cmdline=cmdline,
@@ -383,19 +417,21 @@ class HelperProcess:
                         inherit=inherit,
                         jobs=(),
                     )
-                    suspended = True
+                # outside the try: an ownership failure never triggers the second create (#388)
+                self._owned_now(process, thread, in_job=not suspended)
             finally:
                 self._no_inherit(inherit)
-        self._process = self._own(process)
-        self._own(thread)
         if suspended:
-            try:
-                w.assign(job, process)
-            except OSError:
-                w.terminate_process(process)
-                raise
+            w.assign(job, process)  # a failure: `_abort` ends it by its own handle
+            self._in_job = True
             w.resume(thread)
         self._close(thread)
+
+    def _owned_now(self, process: int, thread: int, *, in_job: bool) -> None:
+        """#378 (2): own both handles the moment they exist, before anything else can raise."""
+        self._process = self._own(process)
+        self._own(thread)
+        self._in_job = in_job
 
     def _no_inherit(self, handles: tuple[int, ...]) -> None:
         """#375 H1: every handle is made non-inheritable again, each attempted even when one
@@ -453,23 +489,32 @@ class HelperProcess:
         if not same:
             raise _refuse("the hook helper's identity did not match")
 
-    def _abort(self) -> None:
+    def _abort(self, cause: BaseException) -> None:
+        """End and release after a failed start. A failed wait for the end is noted on `cause`,
+        the error being raised, never put in its place (#378 (1))."""
         self._closed = True
         try:
-            self._end()
+            failure = self._end()
+            if failure is not None:
+                cause.add_note(f"waiting for the hook helper to end failed: {failure!r}")
         finally:
             self._release()
 
-    def _end(self) -> None:
-        """#375 H5 (HL-09): end the helper through its job, else its process (each result
-        checked), then wait a bounded time for it to be gone, so a restart never meets it still
-        holding the kill chord."""
+    def _end(self) -> OSError | None:
+        """#375 H5 (HL-09): end the helper through its job (once it is in the job), else its
+        process (each result checked), then wait a bounded time for it to be gone, so a restart
+        never meets it still holding the kill chord. A failed wait is returned, not raised, so
+        the caller reports it without losing its own error (#378 (1))."""
         w = self._w
-        ended = self._job is not None and w.terminate_job(self._job)
+        ended = self._in_job and self._job is not None and w.terminate_job(self._job)
         if not ended and self._process is not None:
             w.terminate_process(self._process)
         if self._process is not None:
-            w.wait_any((self._process,), CLOSE_TIMEOUT_MS)
+            try:
+                w.wait_any((self._process,), CLOSE_TIMEOUT_MS)
+            except OSError as exc:
+                return exc
+        return None
 
     def _close(self, handle: int) -> None:
         if handle in self._owned:

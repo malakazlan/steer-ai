@@ -52,6 +52,7 @@ STATUS_WORDS: Final = (
     "latency_events",
     "run_time_events",
     "ws_floor",
+    "end_steer_failures",
 )
 CONFIG_WORDS: Final = (
     "magic",
@@ -69,6 +70,7 @@ CONFIG_WORDS: Final = (
     "crc",
     "ask_depth",
     "kill_ack",
+    "end_self_failures",
 )
 LATENCY_BUCKETS: Final = 1001
 """Event tick to entry tick, one bucket per ms, 0..1000; 1000 holds 1000 ms and over (the hook
@@ -80,7 +82,7 @@ HISTOGRAMS: Final = (("latency", LATENCY_BUCKETS), ("run_time", RUN_TIME_BUCKETS
 
 MAGIC: Final = 0x5354_4545_484F_4F4B
 """`STEEHOOK`: the config section's first word."""
-LAYOUT_VERSION: Final = 1
+LAYOUT_VERSION: Final = 2
 
 STATE_STARTING: Final = 0
 STATE_READY: Final = 1

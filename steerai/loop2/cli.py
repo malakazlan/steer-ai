@@ -96,6 +96,10 @@ class V2Deps:
     today: Callable[[], date]
     image_of: Callable[[int], str]
     """A process's image name, lower case (v1's `process_name`): bound with the listed pid."""
+    input_methods: Callable[[], Sequence[int]]
+    """[V2.63] Q3: the installed input locales (HKLs); OSError when unread."""
+    ime_record: Callable[[], Mapping[str, Any] | None]
+    """[V2.63] Q3: the open-IME probe's recorded pass on this machine (`ime_gate`)."""
     ready: Callable[[int], bool] = ready_step
     clock: Callable[[], float] = field(default=time.monotonic)
     pause: Callable[[float], None] = field(default=time.sleep)
@@ -204,7 +208,9 @@ def bind_window(
 
 
 def real_deps() -> V2Deps:
+    from steerai.loop2.ime_gate import read_record, steer_dir  # noqa: PLC0415
     from steerai.loop2.live_world import WindowsPlatform  # noqa: PLC0415 - Windows only
+    from steerai.probes.ime_probe import installed_layouts  # noqa: PLC0415 - Windows only
     from steerai.probes.windows import (  # noqa: PLC0415 - Windows only
         console_exclusions,
         list_top_windows,
@@ -217,10 +223,12 @@ def real_deps() -> V2Deps:
         platform=WindowsPlatform,
         today=date.today,
         image_of=lambda pid: process_name(pid).lower(),
+        input_methods=installed_layouts,
+        ime_record=lambda: read_record(steer_dir()),
     )
 
 
-def main(
+def main(  # noqa: PLR0911 - one return per start refusal, in order
     argv: Sequence[str],
     *,
     deps: V2Deps | None = None,
@@ -241,6 +249,13 @@ def main(
         price = load_price(options.price_file, model=DEFAULT_MODEL, today=deps.today())
     except SteerError as exc:
         return out.error(exc.code, exc.message, task_id=options.task_id)
+    refused = _ime_refused(deps)
+    if refused is not None:
+        out.note(
+            "error: a Chinese, Japanese or Korean IME is installed and the open-IME probe has no "
+            "recorded pass on this machine: run python -m steerai.probes.ime_probe first"
+        )
+        return out.error(ErrorCode.GATE_BLOCKED, refused, task_id=options.task_id)
     try:
         window = bind_window(
             deps.list_windows(), deps.exclusions(), hwnd=options.hwnd, title=options.window
@@ -252,6 +267,18 @@ def main(
         out.note(f"usage error: {exc}")
         return out.error(None, "usage", task_id=options.task_id)
     return _run(options, deps, out, price, window)
+
+
+def _ime_refused(deps: V2Deps) -> str | None:
+    """[V2.63] Q3, before anything is built: an installed input method list that cannot be read
+    proves nothing either, so it refuses the same way."""
+    from steerai.loop2.ime_gate import UNPROBED, ime_refusal  # noqa: PLC0415 - at start only
+
+    try:
+        installed = deps.input_methods()
+    except OSError:
+        return UNPROBED
+    return ime_refusal(installed, deps.ime_record)
 
 
 def _run(options: V2Options, deps: V2Deps, out: _Out, price: PriceFile, window: WindowInfo) -> int:
@@ -361,8 +388,11 @@ RUN_FACTS: Final = (
     "unread_automation_ids",
     "url_reads",
     "partial_page_calls",
+    "refusals",
+    "counts",
 )
-"""Stage 2 plan §6 (3): the run facts the final line carries beside the use and the listings."""
+"""Stage 2 plan §6 (3), [V2.63]: the run facts the final line carries beside the use and the
+listings; `counts` holds the counts that were on the outcome only."""
 
 
 def read_cost_summary(costs: Sequence[ReadCost]) -> dict[str, float | int | None]:
@@ -451,6 +481,18 @@ def _result(
         "unread_automation_ids": outcome.unread_automation_ids,
         "url_reads": dict(outcome.url_reads),
         "partial_page_calls": outcome.partial_page_calls,  # [V2.35]
+        "refusals": dict(outcome.refusals),  # [V2.46]: by closed token
+        "counts": {  # [V2.63]: every count the rulings asked for, collected before stage 2
+            "second_toggles": outcome.second_toggles,
+            "second_toggles_refused": outcome.second_toggles_refused,
+            "toggles_settled_on_reread": outcome.toggles_settled_on_reread,
+            "fields_not_empty": outcome.fields_not_empty,
+            "not_own_text": outcome.not_own_text,
+            "target_changes": outcome.target_changes,
+            "focus_losses": outcome.focus_losses,
+            "history_dropped": outcome.history_dropped,
+            "submit_parents": dict(outcome.submit_parents),
+        },
         "watch_deadlines": {  # [V2.48]: per class, watches and those ended at the deadline
             kind: {"watches": watches, "deadline": hits}
             for kind, watches, hits in outcome.watch_deadlines
