@@ -638,3 +638,16 @@ def test_a_turn_whose_target_read_finds_the_page_moved_is_written_once() -> None
     records = _records(world)
     assert world.dispatched == []
     assert [r["turn"] for r in records] == [1, 2]
+
+
+def test_a_turn_traced_before_the_task_ends_at_the_loop_top_is_not_written_again() -> None:
+    """A takeover after the turn's one act ends the task at the next loop top: the turn was
+    already written when it ended, and the end writes nothing more."""
+    world = World(
+        [decision(act("click", target=GO.id), first=True)],
+        effects=[report("content_changed")],
+        interrupt_after=1,
+    )
+    records = _records(world)
+    assert len(world.dispatched) == 1
+    assert [r["turn"] for r in records] == [1]
