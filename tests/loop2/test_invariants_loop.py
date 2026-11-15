@@ -603,24 +603,24 @@ def test_a_policy_refusal_after_a_model_fault_decides_the_status() -> None:
     assert (outcome.status, outcome.reason) == ("blocked", "secure_field")
 
 
-def test_a_model_fault_after_a_policy_refusal_decides_the_status() -> None:
+def test_a_policy_refusal_stands_over_a_later_model_fault() -> None:
+    """[V2.42] RT-30 (overrules [V2.37] P5 for policy): the policy refusal attaches to its open
+    subgoal and stands; a later model fault does not replace it at the stop."""
     world = World([decision(SECURE_TYPE, first=True), decision(UNLISTED_CLICK)])
     outcome = run_task(task(), world.ports())
-    assert outcome.status == "cannot"
-    _assert_after_refusal(outcome, "id_not_listed")
+    assert (outcome.status, outcome.reason) == ("blocked", "secure_field")
 
 
-def test_progress_after_a_refusal_resets_the_status_mapping() -> None:
+def test_progress_does_not_clear_a_standing_policy_refusal() -> None:
+    """[V2.42] RT-30 (overrules [V2.12]'s reset for policy): progress elsewhere leaves the policy
+    refusal standing until its subgoal is proven."""
     world = World(
         [decision(SECURE_TYPE, first=True), decision(act("click", target=GO.id))],
         effects=[report("content_changed")],
     )
     outcome = run_task(task(), world.ports())
     assert [d.runtime_id for d in world.dispatched] == [GO.runtime_id]
-    assert outcome.status == "cannot", "the stop's own value: no refusal since the progress"
-    reason = outcome.reason or ""
-    assert "secure_field" not in reason
-    assert "after_refusal" not in reason
+    assert (outcome.status, outcome.reason) == ("blocked", "secure_field")
 
 
 # ---- [V2.24] item 3: each delivery maps to the loop's handling --------------------------------

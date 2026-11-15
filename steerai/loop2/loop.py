@@ -90,11 +90,14 @@ class Dispatch:
     submit: bool = False
     """[V2.28] item 1: the action goes through the Enter table (an Enter on a field, or a
     submit of pending text), so the watch holds it to a conclusive report; set by code."""
+    text: str | None = dataclasses.field(default=None, repr=False)
+    """RT-36: the text a `type` sends, resolved by code (the param's goal span, or the free
+    text); the act port types it. Never in a repr, a trace or the outcome."""
 
     def redacted(self) -> Dispatch:
         """The dispatch as the outcome keeps it (RT-18): no typed text, option or name."""
         action = self.action.model_copy(update={"text": None, "option": None})
-        return dataclasses.replace(self, action=action, name="")
+        return dataclasses.replace(self, action=action, name="", text=None)
 
 
 @dataclass(frozen=True)
@@ -169,6 +172,8 @@ class Ports:
     """Send one action and read it back where the verb has a read-back ([V2.24] item 3)."""
     watch: Callable[[Observed, Dispatch], Watched]
     write_ahead: Callable[[Dispatch], str]
+    """The R2/R3 record before dispatch (closed in step 3). The Dispatch carries the typed text
+    (RT-36): a record written to disk takes `Dispatch.redacted()` or a digest, never the text."""
     interrupted: Callable[[], str | None]
     """A takeover, the secure desktop or a lock, as a token; None to go on."""
     clock: Callable[[], float]
@@ -210,6 +215,12 @@ class TaskOutcome:
     """Input plus output tokens of every call; NaN once a call's usage was missing."""
     stale_observations: int = 0
     """[V2.28] item 1: Decisions discarded because the page moved under them (counted)."""
+    target_changes: int = 0
+    """[V2.43] (2): Decisions discarded because their target re-rendered after the observation
+    the model saw (counted apart from page-level staleness)."""
+    focus_losses: int = 0
+    """[V2.43] (2): Decisions discarded because focus left a press's target after the listing
+    showed it there (counted on its own)."""
     unread_automation_ids: int = 0
     """[V2.26] (2), V2 §6.1, #301: the elements whose automation id was not read, summed over
     every observation the loop took in; counted on the pooled set, the decision stays open."""
@@ -275,8 +286,9 @@ COMMIT_RISK: Final[Mapping[Commit, Risk]] = {
 STATE_FLOOR: Final = frozenset({"check", "uncheck", "select", "choose", "expand", "collapse"})
 """v1's R1 floor for the state verbs and `choose` (contracts `_RISK_FLOOR`)."""
 NO_DENY_VERBS: Final = frozenset({"scroll", "wait"})
-"""A scroll moves the view and a wait sends nothing: no deny word on them raises the tier; a
-declared commit still does."""
+"""A scroll moves the view and a wait sends nothing: no deny word on them raises the tier.
+[V2.42] RT-42 narrows #297: a declared commit on a wait, a scroll or a focus is now a shape error
+refused by `validate` (a model fault), so it never reaches the tier."""
 ACTIVATING_VERBS: Final = frozenset(
     {"click", "focus", "expand", "collapse", "check", "uncheck", "select"}
 )

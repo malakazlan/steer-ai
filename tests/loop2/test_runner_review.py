@@ -216,7 +216,9 @@ def test_the_typed_field_is_read_once_before_its_enter() -> None:
 SECURE = act("type", target=PAGE[4].id, param="text")
 
 
-def test_p5_policy_then_world_then_stop_ends_on_the_world_token() -> None:
+def test_p5_policy_then_world_then_stop_keeps_the_standing_policy_refusal() -> None:
+    """[V2.42] RT-30: the policy refusal stands on its open subgoal; the later world refusal does
+    not replace it at the stop."""
     world = World(
         [
             decision(SECURE, first=True),
@@ -226,7 +228,7 @@ def test_p5_policy_then_world_then_stop_ends_on_the_world_token() -> None:
         results=[act_result("click", Delivery.NOT_DELIVERED)],
     )
     outcome = run_task(task(), world.ports())
-    assert (outcome.status, outcome.reason) == ("cannot", "after_refusal:not_delivered")
+    assert (outcome.status, outcome.reason) == ("blocked", "secure_field")
 
 
 def test_p5_world_then_policy_then_stop_ends_blocked() -> None:

@@ -98,7 +98,8 @@ def same_action(earlier: ActionKey, later: ActionKey, present: frozenset[tuple[i
         return False
     if earlier.runtime_id == later.runtime_id:
         return True
-    return earlier.runtime_id not in present and earlier.identity == later.identity
+    named = bool(earlier.identity[1] or earlier.identity[2])  # RT-35: no name, no id: nothing
+    return earlier.runtime_id not in present and named and earlier.identity == later.identity
 
 
 def _effect_key(effect: EffectReport | None) -> tuple[frozenset[str], ...] | None:

@@ -62,6 +62,9 @@ CLAIM_CLOSES: Mapping[str, Closes] = {
 """[V2.39]: the closing kind each claim kind proves; a claim of another kind is `kind_mismatch`."""
 
 UNTARGETED = frozenset({"press", "wait"})
+NO_COMMIT_VERBS = frozenset({"wait", "scroll", "focus"})
+"""[V2.42] RT-42: verbs that cannot commit anything; a declared commit on one is a shape error
+(a model fault). Every other verb: a declared commit still raises the tier."""
 STEP: Final = 3
 """The v2 loop's current step (V2 §12)."""
 STEP_VERBS: Final[Mapping[int, frozenset[str]]] = {
@@ -125,9 +128,11 @@ class Decision(_Strict):
 def _action_tokens(
     action: ActionDoc, listed_ids: frozenset[int], known: Mapping[str, set[str]]
 ) -> list[str]:
-    if action.verb in NOT_IN_STEP_VERBS:
-        return ["not_in_step"]
     tokens: list[str] = []
+    if action.commit != "none" and action.verb in NO_COMMIT_VERBS:
+        tokens.append("commit_cannot_apply")  # [V2.42] RT-42: these verbs cannot commit
+    if action.verb in NOT_IN_STEP_VERBS:
+        return [*tokens, "not_in_step"]
     if action.subgoal not in known:
         tokens.append("subgoal_unknown")
     if action.verb in UNTARGETED:
