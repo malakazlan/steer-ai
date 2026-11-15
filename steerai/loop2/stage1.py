@@ -40,7 +40,8 @@ from pathlib import Path
 from typing import Any, Final, Literal, Protocol, get_args
 
 from steerai.loop2.guards import StrikeReason
-from steerai.loop2.loop import URL_READS
+from steerai.loop2.history import REFUSAL_TOKENS
+from steerai.loop2.loop import PARENT_KINDS, URL_READS
 from steerai.loop2.stage1_expected import LARGE_TASKS, Expected, large_expected
 from steerai.probes.gallery_page import large_passes, parse_large_log
 from steerai.probes.process_tree import Sample, summarize
@@ -425,6 +426,18 @@ def _watch_deadlines(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON fig
 
 STRIKE_REASONS: Final = frozenset(get_args(StrikeReason))
 COUNTED_FACTS: Final = ("stale_observations", "unread_automation_ids")
+OUTCOME_COUNTS: Final = (
+    "second_toggles",
+    "second_toggles_refused",
+    "toggles_settled_on_reread",
+    "fields_not_empty",
+    "not_own_text",
+    "target_changes",
+    "focus_losses",
+    "history_dropped",
+)
+"""[V2.63]: the final line's `counts` block, summed over the runs (its `submit_parents` by
+`PARENT_KINDS`)."""
 
 
 def _run_facts(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures
@@ -495,6 +508,8 @@ def _run_facts(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures
                 counted[key] += got
         if final.get("url_reads") is not None:
             tally(final.get("url_reads"), urls, URL_READS)
+    counts, counts_odd = _outcome_counts(finals)
+    refusals, refusals_odd = _refusal_counts(finals)
     return {
         "read_cost": {
             **cost,
@@ -505,8 +520,60 @@ def _run_facts(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures
         "strikes": {"count": strike_count, "by_reason": {k: v for k, v in by_reason.items() if v}},
         **counted,
         "url_reads": urls,
-        "run_facts_incomplete": odd,
+        "refusals": refusals,
+        "counts": counts,
+        "run_facts_incomplete": odd + counts_odd + refusals_odd,
     }
+
+
+def _refusal_counts(finals: Sequence[Json]) -> tuple[dict[str, int], int]:
+    """[V2.46], [V2.63] (e): the final lines' `refusals` summed by token, with how many entries
+    were odd (a token that is not a refusal token, or a count that is not a whole number):
+    said, never summed; a missing or null block is skipped."""
+    sums: dict[str, int] = {}
+    odd = 0
+    for final in finals:
+        block = final.get("refusals")
+        if not isinstance(block, Mapping):
+            odd += block is not None
+            continue
+        for token, value in block.items():
+            got = _whole(value)
+            if token not in REFUSAL_TOKENS or got is None:
+                odd += 1
+            else:
+                sums[token] = sums.get(token, 0) + got
+    return {k: v for k, v in sums.items() if v}, odd
+
+
+def _outcome_counts(finals: Sequence[Json]) -> tuple[dict[str, Any], int]:  # Any: JSON figures
+    """[V2.63]: the final lines' `counts` blocks summed, with how many values were odd (not a
+    whole number, or a parent kind that is not one): said, never summed; a missing or null
+    block is skipped."""
+    sums = dict.fromkeys(OUTCOME_COUNTS, 0)
+    parents = dict.fromkeys(PARENT_KINDS, 0)
+    odd = 0
+    for final in finals:
+        block = final.get("counts")
+        if not isinstance(block, Mapping):
+            continue
+        for key in OUTCOME_COUNTS:
+            got = _whole(block.get(key))
+            if got is None:
+                odd += 1
+            else:
+                sums[key] += got
+        kinds = block.get("submit_parents")
+        if not isinstance(kinds, Mapping):
+            odd += kinds is not None
+            continue
+        for kind, value in kinds.items():
+            got = _whole(value)
+            if kind not in parents or got is None:
+                odd += 1
+            else:
+                parents[kind] += got
+    return {**sums, "submit_parents": parents}, odd
 
 
 def _counted(run: Classified) -> bool:
