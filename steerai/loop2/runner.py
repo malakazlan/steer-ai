@@ -520,6 +520,8 @@ class _Run:
             history=tuple(self.history),
             first_turn=not self.frozen,
             handles=self.handles.bind(observed),
+            subgoals=self.subgoals,
+            proven=frozenset(self.proven),
         )
         try:
             decided = self.ports.decide(view)

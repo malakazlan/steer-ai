@@ -35,7 +35,7 @@ from steerai.loop2.form import (
 )
 from steerai.loop2.guards import StrikeReason
 from steerai.loop2.query import SearchFacts, classify, search_landmark_of
-from steerai.loop2.task import Commit
+from steerai.loop2.task import Commit, Subgoal
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.orchestrator.gate import DenyFacts, deny_tier_of, group_name
 from steerai.verify.predicates import FIELD_ROLES
@@ -111,6 +111,10 @@ class TurnView:
     handles: Mapping[int, int]
     """[V2.38] RT-17: each listed element's task handle, by its snapshot id. The listing shows
     these, and the model names elements by them; an element with no RuntimeId has none."""
+    subgoals: tuple[Subgoal, ...] = ()
+    """The task's subgoals as frozen at intake (none before the first Decision)."""
+    proven: frozenset[str] = frozenset()
+    """The subgoal ids proven so far: their status is `done`."""
 
 
 READ_BACK_VERBS = frozenset({"type", "choose", "check", "uncheck", "select", "expand", "collapse"})
