@@ -190,3 +190,16 @@ def test_counts_carry_kinds_only_never_codes_positions_or_times() -> None:
     assert all(isinstance(v, int) for v in counts.values())
     with pytest.raises(AttributeError):
         _ = core.events  # type: ignore[attr-defined]  # there is no event list to leak
+
+
+# ---- [V2.57] LW-02: the monitor recognises the run's own tag, and only it --------------------
+
+
+def test_the_core_counts_only_its_runs_tag_as_steer() -> None:
+    from steerai.session.monitor import MonitorCore  # noqa: PLC0415 - this test only
+
+    core = MonitorCore(started_at=0.0, extra_info=0x1234_5678)
+    core.on_keyboard(flags=0, extra=0x1234_5678, now=1.0)
+    assert core.last_user_input() == 0.0  # its own key: not the person's
+    core.on_keyboard(flags=0, extra=STEER_EXTRA_INFO, now=2.0)  # another instance's key
+    assert core.last_user_input() == 2.0

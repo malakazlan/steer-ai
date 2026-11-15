@@ -236,3 +236,22 @@ def test_a_batch_focus_on_another_field_overrides_the_listing() -> None:
     assert [d.action.verb for d in world.dispatched] == ["focus"]
     assert f"refused:type_not_at_focus:{FIELD.id}" in world.views[-1].history
     assert outcome.focus_losses == 0
+
+
+def test_a_takeover_during_an_acts_bursts_stops_the_task() -> None:
+    """[V2.57] LW-05: the guard refused a burst for the person's input; whatever went out, the
+    task stops as a takeover."""
+    partial = ActionResult(
+        "type",
+        Delivery.DELIVERY_UNCERTAIN,
+        code=ErrorCode.VERIFY_FAILED,
+        evidence={"reason": "gate_pending_user", "phase": "call", "detail": "takeover"},
+    )
+    world = World(
+        [decision(TYPE, first=True)],
+        screen=observed(QUERY_PAGE, focus=FIELD.runtime_id),
+        results=[ActResult(partial, None)],
+    )
+    outcome = run_task(task(), world.ports())
+    assert (outcome.status, outcome.reason) == ("stopped", "takeover")
+    assert [d.action.verb for d in outcome.dispatched] == ["type"]

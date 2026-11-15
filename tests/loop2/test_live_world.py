@@ -115,6 +115,7 @@ class Platform:
         names = {v: k for k, v in TYPE_IDS.items()}
         self.bindings = UiaBindings(control_types=names, interfaces={})
         self.calls: list[str] = []
+        self.session = "acquired"
         self.com_apartment = "MTA"
         self.protected: list[bytes] = []
         self.flush_raises = False
@@ -135,15 +136,31 @@ class Platform:
     def release_com(self) -> None:
         self.calls.append("release_com")
 
+    def use_extra_info(self, tag: int) -> None:
+        self.calls.append("tag")
+        self.input_tag = tag
+
+    def acquire_session(self) -> str:
+        self.calls.append("session")
+        if self.session == "held":
+            raise SteerError(ErrorCode.GATE_BLOCKED, "steer_already_running")
+        return self.session
+
+    def release_session(self) -> None:
+        self.calls.append("release_session")
+
     def uia(self) -> tuple[Any, UiaBindings]:
         self.calls.append("uia")
         if self.uia_error is not None:
             raise self.uia_error
         return self.client, self.bindings
 
-    def start_monitor(self, kill_key: str, clock: Any) -> Monitor:  # Any: the world's clock
+    def start_monitor(  # Any: the world's clock
+        self, kill_key: str, clock: Any, extra_info: int
+    ) -> Monitor:
         self.calls.append(f"monitor:{kill_key}")
         self.monitor_clock = clock
+        self.monitor_tag = extra_info
         if self.monitor_error is not None:
             raise self.monitor_error
         return self.monitor
@@ -323,7 +340,7 @@ def test_a_redacted_trace_never_needs_dpapi() -> None:
 
 def test_the_checks_run_in_order_before_anything_else() -> None:
     _, platform = _world(trace_level="debug")
-    assert platform.calls[:4] == ["dpi", "uia", "monitor:ctrl+alt+k", "dpapi"]
+    assert platform.calls[:6] == ["dpi", "uia", "session", "tag", "monitor:ctrl+alt+k", "dpapi"]
 
 
 # ---- the task's own state ---------------------------------------------------------------------
@@ -1078,3 +1095,69 @@ def test_close_refuses_any_thread_but_the_loop_thread() -> None:
     assert platform.monitor.closed == 0
     world.close()
     assert platform.monitor.closed == 1
+
+
+# ---- [V2.57] LW-02: the session mutex and the run's own input tag ------------------------------
+
+
+def test_the_session_is_taken_and_the_tag_set_before_the_monitor_starts() -> None:
+    _, platform = _world(trace_level="debug")
+    order = [c for c in platform.calls if c in {"session", "tag"} or c.startswith("monitor")]
+    assert order == ["session", "tag", "monitor:ctrl+alt+k"]
+
+
+def test_a_second_steer_never_starts() -> None:
+    platform = Platform()
+    platform.session = "held"
+    with pytest.raises(SteerError) as refused:
+        _world(platform)
+    assert refused.value.message == "steer_already_running"
+    assert not any(c.startswith("monitor") for c in platform.calls)
+
+
+def test_an_abandoned_session_is_taken_and_traced() -> None:
+    platform = Platform()
+    platform.session = "abandoned"
+    trace = ListTrace()
+    _world(platform, trace=trace)
+    assert any('"token": "session_abandoned"' in line for line in trace.lines)
+
+
+def test_the_session_is_released_at_close_and_after_a_failed_start() -> None:
+    world, platform = _world()
+    world.close()
+    assert platform.calls.count("release_session") == 1
+    failing = Platform()
+    failing.dpapi_error = OSError("no DPAPI")
+    with pytest.raises(SteerError):
+        _world(failing, trace_level="debug")
+    assert failing.calls.count("release_session") == 1
+
+
+def test_each_run_has_its_own_random_tag_used_by_the_monitor_and_the_input() -> None:
+    first, a = _world()
+    second, b = _world()
+    assert a.input_tag == a.monitor_tag
+    assert b.input_tag == b.monitor_tag
+    assert a.input_tag != b.input_tag
+    for tag in (a.input_tag, b.input_tag):
+        assert 0 < tag < 1 << 32
+        assert tag != 0x5354_4545  # never v1's
+    del first, second
+
+
+# ---- [V2.57] LW-05: the person's input between bursts is a takeover ----------------------------
+
+
+def test_a_key_after_the_person_typed_during_the_act_is_a_takeover() -> None:
+    from steerai.action.execution import RefusalError  # noqa: PLC0415 - this test only
+
+    world, platform = _world()
+    platform.fake_input.focused = FIELD.runtime_id
+    with world.desk.armed(frozenset({FIELD.runtime_id})):
+        world.physical._inputs.type_text("a")  # the guard itself
+        platform.monitor.last = world.clock() + 1.0  # the person types after the act began
+        with pytest.raises(RefusalError) as refused:
+            world.physical._inputs.type_text("b")
+    assert refused.value.detail == "takeover"
+    assert platform.fake_input.bursts == ["text:1"]

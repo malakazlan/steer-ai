@@ -59,6 +59,10 @@ from steerai.world.secure import SecureMemory
 TraceLevel = Literal["redacted", "debug"]
 """`redacted`: a clear trace of closed tokens and counts only. `debug`: also the DPAPI debug
 sink, which may hold names and titles; it never starts without DPAPI (packet §1 traces)."""
+SESSION_MUTEX = "Local\\SteerV2Session"
+"""[V2.57] LW-02: one Steer per Windows session (the `Local\\` namespace)."""
+_WAIT_OBJECT_0 = 0x0
+_WAIT_ABANDONED = 0x80
 COINIT_MULTITHREADED = 0x0
 """`CoInitializeEx`'s MTA flag (objbase.h)."""
 DPAPI_PROBE = b"steer-v2-dpapi-probe"
@@ -89,9 +93,22 @@ class Platform(Protocol):
         """Balance `uia()`'s `CoInitializeEx` on this thread: one `CoUninitialize`, once."""
         ...
 
-    def start_monitor(self, kill_key: str, clock: Callable[[], float]) -> Monitor:
-        """The hook monitor on the world's clock: its `last_user_input` feeds the idle rule."""
+    def start_monitor(self, kill_key: str, clock: Callable[[], float], extra_info: int) -> Monitor:
+        """The hook monitor on the world's clock (its `last_user_input` feeds the idle rule),
+        counting only input tagged `extra_info` as Steer's own."""
         ...
+
+    def use_extra_info(self, tag: int) -> None:
+        """[V2.57] LW-02: every input this process sends from now on carries `tag`."""
+        ...
+
+    def acquire_session(self) -> str:
+        """[V2.57] LW-02: the session-local single-instance mutex, before the monitor starts:
+        `acquired`, or `abandoned` (a previous holder died; acquired too). Already held raises
+        `GATE_BLOCKED` / `steer_already_running`."""
+        ...
+
+    def release_session(self) -> None: ...
 
     def protect(self, data: bytes) -> bytes: ...
     def session_locked(self) -> bool | None: ...
@@ -197,13 +214,18 @@ class LiveWorld:
             del client, bindings
             raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "com_apartment")
         self._thread = threading.get_ident()
+        held = platform.acquire_session()  # [V2.57] LW-02: one Steer per session
+        self._input_tag = _run_tag()
+        platform.use_extra_info(self._input_tag)
         try:
-            monitor = platform.start_monitor(config.kill_key, config.clock)
+            monitor = platform.start_monitor(config.kill_key, config.clock, self._input_tag)
         except SteerError:
             del client, bindings  # the UIA client is released before the task is refused
+            platform.release_session()
             raise  # HookMonitor's own GATE_BLOCKED monitor_unavailable, with its reason
         except Exception as exc:  # any other start failure: no kill switch, no task
             del client, bindings
+            platform.release_session()
             raise SteerError(ErrorCode.GATE_BLOCKED, "monitor_unavailable") from exc
         self._monitor = monitor
         self._closed = False
@@ -214,6 +236,8 @@ class LiveWorld:
         self.trace_unwritable = 0
         self.late_sink_failures = 0
         self._latched: str | None = None
+        if held == "abandoned":
+            self._token("session_abandoned")  # a previous Steer died holding it
         try:
             debug = self._debug_sink()
             self._build(client, bindings, debug)
@@ -249,6 +273,7 @@ class LiveWorld:
             focused=platform.focused(client),
             clock=config.clock,
             pause=config.pause,
+            last_input=self._monitor.last_user_input,
         )
         self.desk = GuardDesk(guard, last_input=self._monitor.last_user_input)
         self.semantic = Executor(
@@ -473,12 +498,27 @@ class LiveWorld:
             for name in _COM_HOLDERS:
                 if hasattr(self, name):
                     delattr(self, name)
-            self._monitor.close()
+            try:
+                self._monitor.close()
+            finally:
+                self._platform.release_session()
 
 
 _COM_HOLDERS = ("world", "semantic", "physical", "desk", "_observe", "_facts", "_client", "_debug")
 """Rev 4.0c: the attributes that hold COM objects (directly, or through an executor, the guard
 or the world ports); `close` drops them on the loop thread."""
+
+
+def _run_tag() -> int:
+    """[V2.57] LW-02: a random nonzero 32-bit input tag for this run, never v1's."""
+    while True:
+        tag = secrets.randbits(32)
+        if tag not in {0, _V1_TAG}:
+            return tag
+
+
+_V1_TAG = 0x5354_4545
+"""v1's input tag (`win_input.STEER_EXTRA_INFO`); a v2 run never uses it."""
 
 
 def run_on_loop_thread[T](work: Callable[[], T], *, release: Callable[[], None]) -> T:
@@ -536,15 +576,54 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
 
         return UiaClient(), UiaBindings.load()
 
+    def use_extra_info(self, tag: int) -> None:
+        from steerai.probes.win_input import use_extra_info  # noqa: PLC0415 - Windows only
+
+        use_extra_info(tag)
+
+    def acquire_session(self) -> str:
+        import ctypes  # noqa: PLC0415 - Windows only
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+        handle = kernel32.CreateMutexW(None, 0, SESSION_MUTEX)
+        if not handle:
+            raise SteerError(ErrorCode.GATE_BLOCKED, "session_mutex_unavailable")
+        waited = kernel32.WaitForSingleObject(handle, 0)
+        if waited == _WAIT_OBJECT_0:
+            self._session = handle
+            return "acquired"
+        if waited == _WAIT_ABANDONED:
+            self._session = handle
+            return "abandoned"
+        kernel32.CloseHandle(handle)
+        raise SteerError(ErrorCode.GATE_BLOCKED, "steer_already_running")
+
+    def release_session(self) -> None:
+        import ctypes  # noqa: PLC0415 - Windows only
+
+        handle = getattr(self, "_session", None)
+        if handle is None:
+            return
+        self._session = None
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.ReleaseMutex.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.ReleaseMutex(handle)
+        kernel32.CloseHandle(handle)
+
     def release_com(self) -> None:
         if getattr(self, "_entered", False):
             self._entered = False
             _ole32().CoUninitialize()
 
-    def start_monitor(self, kill_key: str, clock: Callable[[], float]) -> Monitor:
+    def start_monitor(self, kill_key: str, clock: Callable[[], float], extra_info: int) -> Monitor:
         from steerai.session.monitor import HookMonitor  # noqa: PLC0415 - Windows hooks
 
-        monitor = HookMonitor(kill_key=kill_key, monotonic=clock)
+        monitor = HookMonitor(kill_key=kill_key, monotonic=clock, extra_info=extra_info)
         monitor.start()
         return monitor
 

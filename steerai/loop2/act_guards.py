@@ -66,7 +66,7 @@ SECOND_UNCERTAIN: Final = "second_toggle_uncertain"
 class InputGuard:
     """v1's `InputPort`, with the switch read before every input-sending call (AP-01)."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - every collaborator is injected so the guard runs pure in tests
         self,
         inner: InputPort,
         *,
@@ -74,6 +74,7 @@ class InputGuard:
         focused: Callable[[], tuple[tuple[int, ...], bool | None]],
         clock: Callable[[], float],
         pause: Callable[[float], None] = time.sleep,
+        last_input: Callable[[], float] | None = None,
     ) -> None:
         self._inner = inner
         self._interrupted = interrupted
@@ -83,6 +84,9 @@ class InputGuard:
         self._clock = clock
         self._pause = pause
         self._armed: frozenset[tuple[int, ...]] | None = None
+        self._last_input = last_input
+        """[V2.57] LW-05: the person's last input on the same clock (the monitor's), or None."""
+        self._act_started = 0.0
         self._last_click: float | None = None
 
     # ---- the act port's arming -----------------------------------------------------------------
@@ -94,6 +98,7 @@ class InputGuard:
     @contextmanager
     def _arm(self, focus: frozenset[tuple[int, ...]]) -> Iterator[None]:
         self._armed = focus
+        self._act_started = self._clock()
         try:
             yield
         finally:
@@ -110,6 +115,9 @@ class InputGuard:
         self._switch()
         if self._armed is None:
             raise RefusalError(ErrorCode.GATE_BLOCKED, "not_armed")
+        if self._last_input is not None and self._last_input() > self._act_started:
+            # [V2.57] LW-05: the person took the keyboard or mouse during this act
+            raise RefusalError(ErrorCode.GATE_PENDING_USER, "takeover")
         focus, secure = self._focused()
         if focus not in self._armed:
             raise RefusalError(ErrorCode.FOCUS_LOST, "focus_moved")

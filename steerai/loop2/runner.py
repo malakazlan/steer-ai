@@ -1228,6 +1228,9 @@ class _Run:
         if element is not None:  # [V2.28] item 3: the target's own value, just before dispatch
             before = _with_value(observed, self._read_value(element, observed))
         act = self._act(sent)
+        if act.action.evidence.get("detail") == "takeover":
+            # [V2.57] LW-05: the person took over, before or during the act's input
+            raise _End("stopped", Reason("takeover"))
         if act.delivery is Delivery.NOT_DELIVERED and not act.action.skipped:
             self._not_delivered(act, element)
             return None
