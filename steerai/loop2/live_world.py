@@ -388,7 +388,7 @@ class LiveWorld:
             interrupted=self.interrupted,
             focused=platform.focused(client),
             clock=config.clock,
-            pause=config.pause,
+            pause=self._pause,
             last_input=self._monitor.last_user_input,
             takeover_token=self._monitor.takeover_token,
             gap_clock=config.gap_clock,
@@ -420,7 +420,7 @@ class LiveWorld:
             full_from=self._full_from,
             interrupted=self.interrupted,
             clock=config.clock,
-            pause=config.pause,
+            pause=self._pause,
             touches=FirstTouches(),
             times=config.times,
             live=UiaElements(client, bindings),
@@ -622,6 +622,23 @@ class LiveWorld:
                 return
             self._helper_step(helper, min(left, KILL_POLL_S))
 
+    def _pause(self, seconds: float) -> None:
+        """[V2.60] HH-08 for every hold (#385 principal 3: WorldPorts, the input guard, the act
+        port): with the helper, a pause waits on it in kill-aware steps for its whole time on
+        the world's clock, ending early only for a kill, which the caller's next switch read
+        raises. Without it, the plain `config.pause`."""
+        helper = self._helper_monitor
+        if helper is None:
+            self._config.pause(seconds)
+            return
+        clock = self._config.clock
+        deadline = clock() + (seconds if math.isfinite(seconds) else 0.0)
+        while self._kill_token() is None:
+            left = deadline - clock()
+            if left <= 0:
+                return
+            self._helper_step(helper, min(left, KILL_POLL_S))
+
     def _helper_step(self, helper: HelperWorldMonitor, step: float) -> None:
         """One kill-aware step on the helper (HH-08). A wait that returns early with no kill
         (a probe's wake, the helper's exit, a stuck event) sleeps the rest of the step plainly,
@@ -732,7 +749,7 @@ class LiveWorld:
             interrupted=self.interrupted,
             clock=clock,
             wall_left=lambda: task.budgets.max_wall_s - (clock() - started),
-            pause=config.pause,
+            pause=self._pause,
         )
         calls = DecideCalls(
             self._platform.provider(),

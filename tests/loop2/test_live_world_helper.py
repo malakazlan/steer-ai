@@ -7,11 +7,14 @@ wait on the helper (wake or exit, HH-08) instead of a plain sleep. Fakes only.""
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 import pytest
 
 from steerai.errors import ErrorCode, SteerError
+from steerai.loop2 import live_world
+from steerai.loop2.act_port import ActPort
 from steerai.loop2.loop import PortInterrupted
 from steerai.loop2.world_ports import KILL_POLL_S
 from tests.loop2.test_live_world import Monitor, Platform, _world
@@ -224,3 +227,40 @@ def test_a_helper_wait_that_returns_at_once_never_spins_the_sleep() -> None:
     world._kill_aware_sleep(0.5)
     assert world.clock() - started >= 0.5
     assert len(helper.waits) <= round(0.5 / KILL_POLL_S) + 1
+
+
+def test_every_hold_waits_on_the_helper(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#385 principal 3 (HH-08 scope): WorldPorts, the input guard and the act port pause
+    through the helper for the whole time asked, never through a plain pause."""
+    platform = HelperPlatform()
+    world, _ = _world(platform, hook_helper=True)
+    helper = platform.helper
+    assert helper is not None
+    real = ActPort
+    pauses: list[Any] = []  # Any: the act port's pause callable
+
+    def act_port(**kwargs: Any) -> Any:  # Any: the act port's own arguments
+        pauses.append(kwargs["pause"])
+        return real(**kwargs)
+
+    monkeypatch.setattr(live_world, "ActPort", act_port)
+    world.ports(task())
+    plain: list[float] = []
+    world._config = dataclasses.replace(world._config, pause=plain.append)  # records any
+    for pause in (pauses[0], world.world._pause, world.desk._guard._pause):
+        helper.waits.clear()
+        before = world.clock()
+        pause(0.12)
+        assert sum(helper.waits) == pytest.approx(0.12)
+        assert world.clock() - before == pytest.approx(0.12)
+    assert plain == []
+
+
+def test_a_kill_ends_a_helper_pause_early() -> None:
+    platform = HelperPlatform()
+    world, _ = _world(platform, hook_helper=True)
+    helper = platform.helper
+    assert helper is not None
+    helper.kill_after_waits = 2
+    world._pause(1.0)
+    assert len(helper.waits) == 2
