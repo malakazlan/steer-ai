@@ -8,6 +8,7 @@ wait on the helper (wake or exit, HH-08) instead of a plain sleep. Fakes only.""
 from __future__ import annotations
 
 import dataclasses
+import math
 import time
 from typing import Any
 
@@ -16,9 +17,10 @@ import pytest
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2 import live_world
 from steerai.loop2.act_port import ActPort
+from steerai.loop2.live_world import LiveWorld
 from steerai.loop2.loop import PortInterrupted
-from steerai.loop2.world_ports import KILL_POLL_S
-from tests.loop2.test_live_world import Monitor, Platform, _config, _world
+from steerai.loop2.world_ports import KILL_POLL_S, kill_sleep
+from tests.loop2.test_live_world import Clock, Monitor, Platform, _config, _world
 from tests.loop2.world_fakes import task
 
 
@@ -368,3 +370,84 @@ def test_the_windows_platform_runs_on_the_helper_end_to_end() -> None:
         assert win32.wait_any((watch,), 3000) == 0  # the helper is gone after close
     finally:
         win32.close(watch)
+
+
+# ---- #398 HH4-05, HH4-04: helper-mode holds are counted in steps, timed on the gap clock -------
+
+
+class Fine(Clock):
+    """The QPC-like gap clock; the world's clock reads it in 15.625 ms ticks."""
+
+    def coarse(self) -> float:
+        return math.floor(self.now / TICK_S) * TICK_S
+
+
+TICK_S = 0.015625
+
+
+def _ticked() -> tuple[LiveWorld, HelperMonitor, Fine]:
+    fine = Fine()
+    platform = HelperPlatform()
+    world, _ = _world(
+        platform, hook_helper=True, clock=fine.coarse, pause=fine.pause, gap_clock=fine
+    )
+    helper = platform.helper
+    assert helper is not None
+    helper.clock = fine
+    return world, helper, fine
+
+
+@pytest.mark.parametrize("hold", ["sleep", "pause"])
+@pytest.mark.parametrize("seconds", [0.05, 0.12, 0.2])
+def test_a_helper_hold_lasts_what_was_asked_on_a_ticking_world_clock(
+    hold: str, seconds: float
+) -> None:
+    """HH4-05: a step is timed on the gap clock (QPC), never on the world's 15.625 ms clock,
+    so a 50 ms step is not slept out to the next tick."""
+    world, _, fine = _ticked()
+    fine.now += 0.004  # between two ticks
+    started = fine.now
+    (world._kill_aware_sleep if hold == "sleep" else world._pause)(seconds)
+    assert fine.now - started == pytest.approx(seconds)
+
+
+@pytest.mark.parametrize("hold", ["sleep", "pause"])
+def test_a_backwards_gap_clock_never_stretches_a_step(hold: str) -> None:
+    """HH4-05: a helper wait that returns at once while the gap clock reads backwards sleeps at
+    most the rest of its own step; the hold has as many steps as the time asked holds."""
+    world, helper, fine = _ticked()
+    helper.returns_at_once = True
+    reads = iter(range(1000, 0, -1))
+    world._config = dataclasses.replace(world._config, gap_clock=lambda: float(next(reads)))
+    started = fine.now
+    (world._kill_aware_sleep if hold == "sleep" else world._pause)(0.12)
+    assert fine.now - started == pytest.approx(0.12)
+    assert len(helper.waits) == math.ceil(0.12 / KILL_POLL_S)
+
+
+@pytest.mark.parametrize(
+    "seconds", [math.nan, math.inf, -math.inf, -1.0, 0.0, 0.051, 0.12, KILL_POLL_S]
+)
+def test_the_helper_sleep_takes_the_plain_sleeps_steps_and_reads(seconds: float) -> None:
+    """HH4-04: NaN, infinities, a negative time and a last part-step (no overshoot) behave as
+    `kill_sleep` does: the same steps, and the switch read before each and once at the end."""
+    plain: list[float] = []
+    plain_reads: list[None] = []
+
+    def read() -> None:
+        plain_reads.append(None)
+
+    kill_sleep(seconds, interrupted=read, pause=plain.append)
+    world, helper, _ = _ticked()
+    reads = 0
+    real = world.interrupted
+
+    def counted() -> str | None:
+        nonlocal reads
+        reads += 1
+        return real()
+
+    world.interrupted = counted  # type: ignore[method-assign]  # counts the switch reads
+    world._kill_aware_sleep(seconds)
+    assert helper.waits == pytest.approx(plain)
+    assert reads == len(plain_reads)
