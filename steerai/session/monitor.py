@@ -63,9 +63,12 @@ TAKEOVER_TOKENS = frozenset({TAKEOVER, OTHER_STEER_INPUT})
 HOOKS = ("keyboard", "mouse")
 UNASSIGNED_VKS = frozenset({0x0E, 0x0F, *range(0x97, 0xA0), 0xE8})
 """Microsoft Learn, Virtual-Key Codes (Winuser.h): 0x0E-0F, 0x97-9F and 0xE8 are Unassigned."""
-PROBE_VK = 0xE8
-"""[V2.57] LW-01: the keyboard hook's probe key, a key-up of an unassigned code (provisional
-until the probe in the PR picks it: it must cause nothing in the foreground app, IME included)."""
+PROBE_VK = 0x0E
+"""[V2.57] LW-01: the keyboard hook's probe key, a key-up of an unassigned code, picked by probe
+(`steerai.probes.probe_key`, 2026-11-15, this machine): 20 tagged key-ups of each of the 12
+unassigned codes into our own empty Notepad changed nothing (text, caret, IME open status,
+layout, foreground; none left down; the hook saw all 20); the first that passes is 0x0E. The
+IME was closed and the layout en-US there: an open IME is unprobed."""
 LATENCY_BUCKETS_MS = 1000
 """The latency histogram's last bucket: 1000 ms and over (the hook timeout's cap, Microsoft
 Learn LowLevelKeyboardProc: Windows 10 1709 and later allow at most 1000 ms)."""

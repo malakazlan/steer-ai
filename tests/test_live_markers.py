@@ -11,7 +11,7 @@ from pathlib import Path
 TESTS = Path(__file__).resolve().parent
 LIVE_CALLS = frozenset({"UiaClient", "WindowsPlatform", "LiveInput", "LiveWindows", "HookMonitor"})
 """Constructors of the real Windows side."""
-LIVE_MODULES = frozenset({"win_input"})
+LIVE_MODULES = frozenset({"win_input", "probe_key"})
 """A call through one of these modules (`win_input.click_at(...)`) is live."""
 MARKS = frozenset({"windows", "live", "probe"})
 FAKED: frozenset[str] = frozenset(
