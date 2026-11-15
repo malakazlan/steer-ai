@@ -102,7 +102,7 @@ def test_steers_own_mutable_words_are_outside_the_crc() -> None:
 def test_the_helper_starts_then_reports_ready_with_its_pid_and_the_nonce() -> None:
     core, _cfg, status = _core()
     assert status.get("state") == STATE_STARTING
-    core.ready()
+    core.ready(qpc=1_000 * MS, unbiased_100ns=1_000 * 10_000)
     assert status.get("state") == STATE_READY
     assert status.get("pid") == 4242
     assert (status.get("nonce_echo_lo"), status.get("nonce_echo_hi")) == NONCE
@@ -331,3 +331,13 @@ def test_inside_one_publish_the_persons_time_is_stored_before_the_delivery() -> 
     assert order.index("last_user_qpc_keyboard") < delivered
     assert order.index("last_user") < delivered
     assert order.index("last_own_qpc_keyboard") < delivered
+
+
+# ---- #375 review H6 (HL-02): the gap baseline starts at ready ----------------------------------
+
+
+def test_a_stall_between_ready_and_the_first_loop_is_a_gap() -> None:
+    core, _cfg, status = _core()
+    core.ready(qpc=1_100 * MS, unbiased_100ns=1_100 * 10_000)
+    core.loop(qpc=2_300 * MS, unbiased_100ns=2_300 * 10_000)  # 1.2 s after ready
+    assert status.get("gap_events") == 1

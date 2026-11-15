@@ -174,7 +174,7 @@ def run_helper(args: list[str], platform: HelperPlatform) -> int:  # noqa: PLR09
         step = ERROR_HOTKEY
         platform.register_hotkey(config.get("kill_mods"), config.get("kill_vk"))
         step = ERROR_INTERNAL
-        core.ready()
+        core.ready(qpc=platform.qpc(), unbiased_100ns=platform.unbiased())
         platform.wake(handles.wake)
         heartbeat_ms = config.get("heartbeat_ms")
         while True:

@@ -175,7 +175,10 @@ class HelperCore:
 
     # ---- lifecycle -----------------------------------------------------------------------------
 
-    def ready(self) -> None:
+    def ready(self, *, qpc: int, unbiased_100ns: int) -> None:
+        """Published once the hooks and the hot key are in place; the loop's gap and sleep
+        baseline starts here (#375 H6), so a stall before the first loop is still a gap."""
+        self._last_loop = (qpc, unbiased_100ns)
         s = self._status
         s.set("pid", self._pid)
         s.set("nonce_echo_lo", self._config.get("nonce_lo"))
