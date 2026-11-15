@@ -123,12 +123,30 @@ class Platform(Protocol):
 
     def facts(self, client: Any) -> FactReader: ...  # Any: the UiaClient
     def windows(self, pid: int) -> tuple[int, ...]: ...
+    def window_identity(self, hwnd: int) -> WindowIdentity | None:
+        """LW-03: what `hwnd` is now; None when any part of it cannot be read."""
+        ...
+
     def focused(  # Any: the UiaClient
         self, client: Any
     ) -> Callable[[], tuple[tuple[int, ...], bool | None]]: ...
     def inputs(self, client: Any) -> InputPort: ...  # Any: the UiaClient
     def window_state(self) -> WindowState: ...
     def provider(self) -> Call: ...
+
+
+@dataclass(frozen=True)
+class WindowIdentity:
+    """LW-03 ([V2.53] (1)): what the bound window is, read at binding: its process (pid and start
+    time, so a reused pid is not the same process), the image, whether the handle is a top-level
+    root (a reused handle can come back as a child window) and whether it is visible. The title,
+    minimized and cloaked states change in normal use and are not part of it."""
+
+    pid: int
+    started: int
+    image: str
+    root: bool
+    visible: bool
 
 
 @dataclass(frozen=True)
@@ -215,6 +233,11 @@ class LiveWorld:
             del client, bindings
             raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "com_apartment")
         self._thread = threading.get_ident()
+        bound = platform.window_identity(config.hwnd)  # LW-03: the binding's identity
+        if bound is None:
+            del client, bindings
+            raise SteerError(ErrorCode.APP_CRASHED, "window_unreadable")
+        self._bound = bound
         try:
             held = platform.acquire_session()  # [V2.57] LW-02: one Steer per session
         except BaseException:
@@ -362,8 +385,21 @@ class LiveWorld:
     def _poll_read(self) -> Observed:
         """The window's snapshot with the task's sticky secure flags (packet §1)."""
         self._on_loop_thread()
-        snapshot = self._observe(self._config.hwnd)
+        try:
+            snapshot = self._observe(self._config.hwnd)
+        except (
+            Exception
+        ) as exc:  # re-raised: as `window_changed` if the window is not the bound one
+            self._same_window(exc)
+            raise
+        self._same_window(None)
         return poll_tier(self._secure.apply(snapshot))
+
+    def _same_window(self, cause: Exception | None) -> None:
+        """LW-03: one identity read per snapshot read, so no snapshot of another window is ever
+        used; changed or unreadable ends the task."""
+        if self._platform.window_identity(self._config.hwnd) != self._bound:
+            raise SteerError(ErrorCode.APP_CRASHED, "window_changed") from cause
 
     def _full_from(self, observed: Observed) -> Observed:
         """The full read's facts on a poll read's snapshot (packet §2.1)."""
@@ -677,6 +713,25 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
 
     def facts(self, client: Any) -> FactReader:  # Any: the UiaClient
         return _ComFacts(client)
+
+    def window_identity(self, hwnd: int) -> WindowIdentity | None:
+        from steerai.probes.windows import window_identity  # noqa: PLC0415 - Windows only
+
+        facts = window_identity(hwnd)
+        if facts is None:
+            return None
+        pid, started, image = facts["pid"], facts["start"], facts["image"]
+        if not (isinstance(pid, int) and isinstance(started, int) and isinstance(image, str)):
+            return None  # the process start time or its image could not be read
+        if not image:
+            return None
+        return WindowIdentity(
+            pid=pid,
+            started=started,
+            image=image,
+            root=facts["root"] is True,
+            visible=facts["visible"] is True,
+        )
 
     def windows(self, pid: int) -> tuple[int, ...]:
         from steerai.probes.windows import list_top_windows  # noqa: PLC0415 - Windows only

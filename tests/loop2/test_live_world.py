@@ -31,6 +31,7 @@ from steerai.loop2.live_world import (
     LiveConfig,
     LiveWorld,
     UiaElements,
+    WindowIdentity,
     WindowsPlatform,
     enter_mta,
     run_on_loop_thread,
@@ -121,6 +122,12 @@ class Platform:
         self.bindings = UiaBindings(control_types=names, interfaces={})
         self.calls: list[str] = []
         self.session = "acquired"
+        self.identity: WindowIdentity | None = WindowIdentity(
+            pid=4242, started=133_000_000_000_000_000, image="browser.exe", root=True, visible=True
+        )
+        self.identity_reads = 0
+        self.reads = 0
+        self.screen_error: Exception | None = None
         self.com_apartment = "MTA"
         self.protected: list[bytes] = []
         self.flush_raises = False
@@ -153,6 +160,12 @@ class Platform:
 
     def release_session(self) -> None:
         self.calls.append("release_session")
+
+    def window_identity(self, hwnd: int) -> WindowIdentity | None:
+        self.calls.append("identity")
+        self.identity_reads += 1
+        assert hwnd == 16
+        return self.identity
 
     def uia(self) -> tuple[Any, UiaBindings]:
         self.calls.append("uia")
@@ -193,6 +206,9 @@ class Platform:
         self.observer_sleep = sleep
 
         def read(_hwnd: int) -> Snapshot:
+            self.reads += 1
+            if self.screen_error is not None:
+                raise self.screen_error
             if self.handles is None:
                 return self.screen
             return dataclasses.replace(self.screen, taken_at=clock(), handles=self.handles)
@@ -346,7 +362,9 @@ def test_a_redacted_trace_never_needs_dpapi() -> None:
 
 def test_the_checks_run_in_order_before_anything_else() -> None:
     _, platform = _world(trace_level="debug")
-    assert platform.calls[:6] == ["dpi", "uia", "session", "tag", "monitor:ctrl+alt+k", "dpapi"]
+    assert platform.calls[:7] == [
+        "dpi", "uia", "identity", "session", "tag", "monitor:ctrl+alt+k", "dpapi",
+    ]  # fmt: skip
 
 
 # ---- the task's own state ---------------------------------------------------------------------
@@ -1243,3 +1261,139 @@ def test_input_before_or_at_the_acts_start_is_not_a_takeover() -> None:
     with world.desk.armed(frozenset({FIELD.runtime_id})):
         world.physical._inputs.type_text("b")
     assert platform.fake_input.bursts == ["text:1", "text:1"]
+
+
+# ---- LW-03 ([V2.53] (1)): the bound window's identity, re-checked on every observation ----------
+
+
+def test_a_window_whose_identity_cannot_be_read_is_never_bound() -> None:
+    platform = Platform()
+    platform.identity = None
+    with pytest.raises(SteerError) as refused:
+        _world(platform)
+    assert (refused.value.code, refused.value.message) == (
+        ErrorCode.APP_CRASHED,
+        "window_unreadable",
+    )
+    assert "session" not in platform.calls  # refused before the session is taken
+
+
+def test_every_snapshot_read_re_checks_the_identity_read_at_binding() -> None:
+    world, platform = _world()
+    ports = world.ports(task())
+    bound = platform.identity_reads
+    ports.observe()
+    ports.observe()
+    assert platform.reads > 0
+    assert platform.identity_reads == bound + platform.reads
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        {"pid": 4243},
+        {"started": 133_000_000_000_000_001},
+        {"image": "other.exe"},
+        {"root": False},
+        {"visible": False},
+    ],
+    ids=["pid", "start", "image", "root", "visible"],
+)
+def test_a_changed_identity_ends_the_task(field: dict[str, object]) -> None:
+    world, platform = _world()
+    ports = world.ports(task())
+    ports.observe()
+    assert platform.identity is not None
+    platform.identity = dataclasses.replace(platform.identity, **field)  # type: ignore[arg-type]  # one field per case
+    with pytest.raises(SteerError) as ended:
+        ports.observe()
+    assert (ended.value.code, ended.value.message) == (ErrorCode.APP_CRASHED, "window_changed")
+
+
+def test_an_identity_unreadable_mid_task_ends_the_task() -> None:
+    world, platform = _world()
+    ports = world.ports(task())
+    platform.identity = None
+    with pytest.raises(SteerError) as ended:
+        ports.observe()
+    assert (ended.value.code, ended.value.message) == (ErrorCode.APP_CRASHED, "window_changed")
+
+
+def test_a_failed_read_of_a_replaced_window_is_window_changed() -> None:
+    world, platform = _world()
+    ports = world.ports(task())
+    platform.screen_error = SteerError(ErrorCode.PERCEPTION_DEGRADED, "uia_timeout")
+    assert platform.identity is not None
+    platform.identity = dataclasses.replace(platform.identity, pid=1)
+    with pytest.raises(SteerError) as ended:
+        ports.observe()
+    assert (ended.value.code, ended.value.message) == (ErrorCode.APP_CRASHED, "window_changed")
+
+
+def test_a_failed_read_of_the_same_window_keeps_its_own_error() -> None:
+    world, platform = _world()
+    ports = world.ports(task())
+    platform.screen_error = SteerError(ErrorCode.PERCEPTION_DEGRADED, "uia_timeout")
+    with pytest.raises(SteerError) as failed:
+        ports.observe()
+    assert failed.value.message == "uia_timeout"
+
+
+def test_the_runner_stops_on_a_changed_window() -> None:
+    from steerai.loop2.runner import run_task  # noqa: PLC0415 - this test only
+
+    world, platform = _world()
+    ports = world.ports(task())
+    assert platform.identity is not None
+    platform.identity = dataclasses.replace(platform.identity, pid=1)
+    outcome = run_task(task(), ports)
+    assert (outcome.status, outcome.reason) == ("stopped", "port_app_crashed")
+
+
+_FACTS: dict[str, object] = {
+    "hwnd": 16, "pid": 4242, "start": 133_000_000_000_000_000, "image": "browser.exe",
+    "title": "Shop", "visible": True, "root": True, "minimized": False, "cloaked": False,
+}  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("change", "readable"),
+    [
+        ({}, True),
+        ({"title": "Other", "minimized": True, "cloaked": None}, True),
+        ({"start": None}, False),
+        ({"image": ""}, False),
+        ({"pid": "4242"}, False),
+    ],
+    ids=["whole", "title_and_states_ignored", "start_unread", "image_unread", "pid_not_int"],
+)
+def test_the_windows_identity_is_v1s_facts_or_none_when_any_part_is_unread(
+    monkeypatch: pytest.MonkeyPatch, change: dict[str, object], readable: bool
+) -> None:
+    from steerai.probes import windows  # noqa: PLC0415 - v1's reader, replaced here
+
+    monkeypatch.setattr(windows, "window_identity", lambda _hwnd: {**_FACTS, **change})
+    expected = WindowIdentity(
+        pid=4242, started=133_000_000_000_000_000, image="browser.exe", root=True, visible=True
+    )
+    assert WindowsPlatform().window_identity(16) == (expected if readable else None)
+
+
+def test_the_windows_identity_of_a_gone_window_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    from steerai.probes import windows  # noqa: PLC0415 - v1's reader, replaced here
+
+    monkeypatch.setattr(windows, "window_identity", lambda _hwnd: None)
+    assert WindowsPlatform().window_identity(16) is None
+
+
+def test_the_windows_identity_carries_root_and_visibility(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reused handle that came back as a child window, or a hidden one, is a different
+    identity from the bound visible root."""
+    from steerai.probes import windows  # noqa: PLC0415 - v1's reader, replaced here
+
+    monkeypatch.setattr(
+        windows, "window_identity", lambda _hwnd: {**_FACTS, "root": False, "visible": False}
+    )
+    identity = WindowsPlatform().window_identity(16)
+    assert identity is not None
+    assert (identity.root, identity.visible) == (False, False)
