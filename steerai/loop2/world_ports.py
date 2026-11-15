@@ -256,6 +256,26 @@ class WorldPorts:
         state = self._read(lambda: self._live.expand_state(handle))
         return None if state is None else state == (1 if wanted == "expanded" else 0)
 
+    def read_secure(self, element: Element) -> bool | None:
+        """AP-08: the field's IsPassword before keys go to it. True: a password (listed secure,
+        or live); None: unread (its flag was not read at listing, it is not listed exactly once
+        with a live handle, or the live read failed); False: read live and not a password."""
+        last = self.last
+        if last is None or not element.runtime_id:
+            return None
+        snapshot = last.snapshot
+        matches = [i for i, e in enumerate(snapshot.elements) if e.runtime_id == element.runtime_id]
+        if len(matches) != 1 or len(snapshot.handles) != len(snapshot.elements):
+            return None
+        found = snapshot.elements[matches[0]]
+        if found.secure:
+            return True
+        if found.id in snapshot.unread_secure:
+            return None
+        handle = snapshot.handles[matches[0]]
+        identity = self._read(lambda: self._live.identity(handle))
+        return None if identity is None else identity[2]
+
     def _resolved(self, element: Element) -> Any:  # Any: a COM element pointer, or None
         """Resolve as `act` does (packet 2.7): the one element with this RuntimeId on the last
         observation handed out, with its live handle, never a secure or unread-secure field, and

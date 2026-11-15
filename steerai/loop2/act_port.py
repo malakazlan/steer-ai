@@ -1,34 +1,58 @@
-"""The act port (adapter slice 6; packet 2.5, section 3, rev 3.8 "Slice 6 design").
+"""The act port (adapter slice 6; packet 2.5, section 3, rev 3.8 "Slice 6 design", rev 3.9 the
+edge-case fold-in and [V2.51]).
 
 `ActPort.act(dispatch)` sends one action through v1's executors, over injected collaborators so it
-runs and is tested off Windows: the world ports (the last observation handed out and the live
-reads), a semantic executor (`action.executor.Executor`) and a physical one
-(`action.physical.PhysicalExecutor`). Slice 7 builds both executors with the adapter's one
-monotonic clock and with `blocker = interrupted`, so v1's `Call` reads the switch before every
-input burst and every pattern call: nothing is sent after the key.
+runs and is tested off Windows: the world ports (the last observation handed out, a fresh look and
+the live reads), a semantic executor (`action.executor.Executor`, built in slice 7 over
+`act_guards.ToggleGuard`), a physical one (`action.physical.PhysicalExecutor`, built over
+`act_guards.InputGuard` with `blocker = interrupted`) and the desk (`act_guards.GuardDesk`).
 
 The order of every act:
-1. the switch, read once more before anything is sent;
-2. nothing to send: a `wait` actuates nothing (the change-aware watch after it IS the wait), and a
-   `scroll` is refused defensively, behind `validate` ([V2.41] (2));
-3. resolve on the last observation by RuntimeId (exactly one element), and check it is the
-   element the gate rated (`Dispatch.role` / `Dispatch.name`, RT-04): else nothing is sent;
-4. the executor for the verb (section 3); v1's `Admission` then re-checks the live element;
-5. a click whose semantic call provably sent nothing (`not_delivered`) falls back to one physical
-   click ([V2.40] Q6); a timeout or an error is uncertain delivery and comes back as it is;
-6. the read-back of a read-back verb, attached only when something was sent.
+1. the switch, read once more before anything is sent; after it, the port never raises:
+   any error becomes `delivery_uncertain` ([V2.51] (2)), never `not_delivered`, so no retry
+   follows a crash that may have come after keys went out;
+2. nothing to send: a `wait` actuates nothing (the change-aware watch after it IS the wait);
+   `scroll`, `open` and `switch` are refused (behind `validate`, [V2.41] (2));
+3. the dispatch, checked again: R0/R1 only (AP-13), text only on a type and an option only on a
+   choose (AP-26), focus only on a field ([V2.51] (1)), a key only from the closed map (AP-12),
+   Backspace only on Steer's own text ([V2.51] (5));
+4. before physical input (type, press, focus): v1's tap refusal, then v1's idle rule (the person
+   idle `IDLE_S`, waited in kill-aware steps up to `MAX_WAIT_S` or the wall budget left), then,
+   when it waited, a fresh look: the same window and title, or nothing is sent (AP-03, AP-30,
+   v1 `_fallback_look`);
+5. resolve on the last observation by RuntimeId (exactly one element), and check it is the
+   element the gate rated (`Dispatch.role` / `Dispatch.name`, RT-04); keys never go to a
+   listed, unread or live secure field (AP-08, AP-09); a type and a press go only where the live
+   focus is the target itself (a ComboBox: or its own Edit), and the guard is armed on exactly
+   that set (AP-10, AP-11);
+6. the executor for the verb; v1's `Admission` re-checks the live element; a check or uncheck
+   whose second Toggle never went (`ToggleGuard`, v1's `unchanged`, or a read that failed after
+   the first) is one delivered Toggle, `second_toggle_refused`, and one the guard's re-read found
+   in the wanted state is verified (`settled_on_reread`, [V2.52] (a));
+7. a click whose semantic call was refused for `no_InvokePattern` with nothing tried falls back
+   to v1's physical click, exactly as v1 does (AP-04..06, 5.9 [v2.50]);
+8. the read-back of a read-back verb, attached only when something was sent; v1's delivery is
+   kept as reported beside it ([V2.51] (2)).
 """
 
 from __future__ import annotations
 
+import dataclasses
+import time
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager
 from typing import Final, Protocol, TypeVar
 
 from steerai.action.dispositions import ActionResult, Delivery
-from steerai.action.executor import Action
+from steerai.action.executor import Action, click_point, physical_click_target
 from steerai.action.physical import PhysicalAction
 from steerai.errors import ErrorCode
+from steerai.loop2.act_guards import KEY_CHORDS, SECOND_REFUSED, SETTLED
+from steerai.loop2.actuate import key_targets
 from steerai.loop2.loop import ActResult, Dispatch, PortInterrupted
+from steerai.loop2.world_ports import KILL_POLL_S, kill_sleep
+from steerai.orchestrator.loop import IDLE_S, MAX_WAIT_S, WAIT_POLL_S
+from steerai.verify.predicates import FIELD_ROLES
 from steerai.world.effects import Observed, ValueFact
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot, normalise_name
@@ -42,11 +66,10 @@ SEMANTIC_VERBS: Final = frozenset(
 PHYSICAL_VERBS: Final = frozenset({"type", "press", "focus"})
 """Sent as input (`PhysicalExecutor`, every event tagged with Steer's `dwExtraInfo`); `focus` is a
 hit-tested click, as in v1."""
-FALLBACK_VERBS: Final = frozenset({"click"})
-"""[V2.40] Q6, the conservative reading: only a click falls back to the physical path, and only
-when its semantic call provably sent nothing. check, uncheck, select, expand, collapse and choose
-never fall back (a physical click on a state element is a different action: it may toggle twice
-or pick another option); type, press and focus are physical already."""
+NOT_IN_STEP: Final = frozenset({"scroll", "open", "switch"})
+"""Verbs `validate` refuses in step 3 ([V2.41] (2)); the port refuses them again."""
+STEP_RISKS: Final = frozenset({"R0", "R1"})
+"""Step 3 dispatches only these (the runner ends the task on a commit first, AP-13)."""
 WANTED: Final[Mapping[str, str]] = {
     "check": "on",
     "uncheck": "off",
@@ -55,6 +78,11 @@ WANTED: Final[Mapping[str, str]] = {
     "collapse": "collapsed",
 }
 """The live state each state verb reads back ([V2.29] Q2)."""
+NO_INVOKE: Final = "no_InvokePattern"
+"""v1's refusal detail for a control with no InvokePattern: the only one that falls back."""
+FOCUS_READ_S: Final = 0.5
+"""How long the focus read-back polls for the focus to arrive after the click, in `KILL_POLL_S`
+steps (UNMEASURED; the watch after the act reads the focus again)."""
 
 
 class Reads(Protocol):
@@ -62,13 +90,31 @@ class Reads(Protocol):
 
     last: Observed | None
 
+    def observe(self) -> Observed: ...
     def read_value(self, element: Element) -> ValueFact | None: ...
     def read_state(self, element: Element, wanted: str) -> bool | None: ...
+    def read_secure(self, element: Element) -> bool | None: ...
     def fact_of(self, text: str) -> ValueFact: ...
+
+
+class Desk(Protocol):
+    """What the act port reads and arms before physical input (`act_guards.GuardDesk`)."""
+
+    def tap_refusal(self) -> str | None: ...
+    def last_input(self) -> float: ...
+    def focused(self) -> tuple[int, ...] | None: ...
+    def armed(self, focus: frozenset[tuple[int, ...]]) -> AbstractContextManager[None]: ...
 
 
 class Executes(Protocol[A_contra]):
     def execute(self, action: A_contra, snapshot: Snapshot) -> ActionResult: ...
+
+
+class _Refused(Exception):  # noqa: N818 - a control-flow signal: nothing was sent
+    def __init__(self, code: ErrorCode, detail: str) -> None:
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
 
 
 def _not_sent(verb: str, code: ErrorCode, detail: str) -> ActionResult:
@@ -76,70 +122,127 @@ def _not_sent(verb: str, code: ErrorCode, detail: str) -> ActionResult:
     return ActionResult(verb, Delivery.NOT_DELIVERED, code=code, evidence={"detail": detail})
 
 
-def _refused(verb: str, code: ErrorCode, detail: str) -> ActResult:
-    """Nothing was sent: v1's `not_delivered` with its code and a closed detail."""
-    return ActResult(
-        ActionResult(verb, Delivery.NOT_DELIVERED, code=code, evidence={"detail": detail}), None
-    )
-
-
 class ActPort:
     """`Ports.act` for one task."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - every collaborator is injected so the port runs pure in tests
         self,
         *,
         world: Reads,
         semantic: Executes[Action],
         physical: Executes[PhysicalAction],
+        desk: Desk,
         interrupted: Callable[[], str | None],
+        clock: Callable[[], float],
+        wall_left: Callable[[], float],
+        pause: Callable[[float], None] = time.sleep,
     ) -> None:
         self._world = world
         self._semantic = semantic
         self._physical = physical
+        self._desk = desk
         self._interrupted = interrupted
+        self._clock = clock
+        self._wall_left = wall_left
+        self._pause = pause
 
     def act(self, dispatch: Dispatch) -> ActResult:
         verb = dispatch.action.verb
         token = self._interrupted()
         if token is not None:  # nothing is sent after the key ([V2.40] Q4)
             raise PortInterrupted(token)
+        try:
+            return self._act(dispatch)
+        except PortInterrupted:
+            raise  # raised only by the waits before anything is sent
+        except _Refused as refused:
+            return ActResult(_not_sent(verb, refused.code, refused.detail), None)
+        except Exception as exc:  # noqa: BLE001 - [V2.51] (2): fail closed, never raise
+            evidence = {"detail": "port_error", "error": type(exc).__name__}
+            failed = ActionResult(
+                verb, Delivery.DELIVERY_UNCERTAIN, code=ErrorCode.VERIFY_FAILED, evidence=evidence
+            )
+            return ActResult(failed, None)
+
+    def _act(self, dispatch: Dispatch) -> ActResult:
+        verb = dispatch.action.verb
         if verb == "wait":
             # the watch after a wait IS the wait (slice 5, change-aware): nothing is actuated
             return ActResult(ActionResult(verb, Delivery.DELIVERED_VERIFIED), None)
-        if verb == "scroll":
-            return _refused(verb, ErrorCode.GATE_BLOCKED, "not_in_step")
-        found = self._resolve(dispatch)
-        if found is None:
-            return _refused(verb, ErrorCode.ELEMENT_NOT_FOUND, "target_gone")
-        element, snapshot = found
+        _check_dispatch(dispatch)
+        if verb in PHYSICAL_VERBS:
+            self._boundary()
+        element, snapshot = self._resolve(dispatch)
+        if verb in SEMANTIC_VERBS:
+            result = self._semantic_send(dispatch, element, snapshot)
+        else:
+            result = self._physical_send(dispatch, element, snapshot)
+        if result.delivery is Delivery.NOT_DELIVERED and not result.skipped:
+            return ActResult(result, None)
+        if verb == "focus":
+            return ActResult(dataclasses.replace(result, verb="focus"), self._read_focus(element))
+        return ActResult(result, self._read_back(dispatch, element))
+
+    # ---- before anything is sent -------------------------------------------------------------
+
+    def _boundary(self) -> None:
+        """v1's order before physical input: the tap refusal, the idle rule, then a fresh look
+        when it waited (AP-03, AP-30); a refusal raises `_Refused`, a kill `PortInterrupted`."""
+        tap = self._desk.tap_refusal()
+        if tap is not None:
+            code = ErrorCode.SECURE_DESKTOP if tap == "secure_desktop" else ErrorCode.GATE_BLOCKED
+            raise _Refused(code, tap)
+        if not self._wait_for_idle():
+            return
+        before = self._world.last
+        fresh = self._world.observe()
+        if before is None or (fresh.snapshot.hwnd, fresh.snapshot.title) != (
+            before.snapshot.hwnd,
+            before.snapshot.title,
+        ):
+            raise _Refused(ErrorCode.FOCUS_LOST, "screen_changed_during_wait")
+
+    def _wait_for_idle(self) -> bool:
+        """v1's `wait_for_idle` in kill-aware steps: True when it waited. A person busy past
+        `MAX_WAIT_S` is a takeover; the wall budget left caps the wait too (`wall_budget`)."""
+        started = self._clock()
+        cap = min(MAX_WAIT_S, max(0.0, self._wall_left()))
+        waited = False
+        while True:
+            token = self._interrupted()
+            if token is not None:
+                raise PortInterrupted(token)
+            now = self._clock()
+            if now - self._desk.last_input() >= IDLE_S:
+                return waited
+            if now - started >= cap:
+                detail = "takeover" if cap >= MAX_WAIT_S else "wall_budget"
+                raise _Refused(ErrorCode.GATE_PENDING_USER, detail)
+            kill_sleep(
+                min(WAIT_POLL_S, cap - (now - started)),
+                interrupted=self._interrupted,
+                pause=self._pause,
+            )
+            waited = True
+
+    def _resolve(self, dispatch: Dispatch) -> tuple[Element, Snapshot]:
+        """The one element of the last observation with the dispatch's RuntimeId, still the one
+        the gate rated (RT-04); an empty RuntimeId resolves nothing (AP-14)."""
+        last = self._world.last
+        if last is None or not dispatch.runtime_id:
+            raise _Refused(ErrorCode.ELEMENT_NOT_FOUND, "target_gone")
+        matches = [e for e in last.snapshot.elements if e.runtime_id == dispatch.runtime_id]
+        if len(matches) != 1:
+            raise _Refused(ErrorCode.ELEMENT_NOT_FOUND, "target_gone")
+        element = matches[0]
         if (element.role, normalise_name(element.name)) != (
             dispatch.role,
             normalise_name(dispatch.name),
         ):
-            return _refused(verb, ErrorCode.ELEMENT_NOT_FOUND, "identity_changed")
-        result = self._send(dispatch, element, snapshot)
-        if result.delivery is Delivery.NOT_DELIVERED and not result.skipped:
-            return ActResult(result, None)
-        return ActResult(result, self._read_back(dispatch, element))
+            raise _Refused(ErrorCode.ELEMENT_NOT_FOUND, "identity_changed")
+        return element, last.snapshot
 
-    def _resolve(self, dispatch: Dispatch) -> tuple[Element, Snapshot] | None:
-        """The one element of the last observation with the dispatch's RuntimeId."""
-        last = self._world.last
-        if last is None or not dispatch.runtime_id:
-            return None
-        matches = [e for e in last.snapshot.elements if e.runtime_id == dispatch.runtime_id]
-        if len(matches) != 1:
-            return None
-        return matches[0], last.snapshot
-
-    def _send(self, dispatch: Dispatch, element: Element, snapshot: Snapshot) -> ActionResult:
-        verb = dispatch.action.verb
-        if verb in SEMANTIC_VERBS:
-            return self._semantic_send(dispatch, element, snapshot)
-        if verb in PHYSICAL_VERBS:
-            return self._physical_send(dispatch, element, snapshot)
-        return _not_sent(verb, ErrorCode.GATE_BLOCKED, "not_in_step")
+    # ---- semantic ------------------------------------------------------------------------------
 
     def _semantic_send(
         self, dispatch: Dispatch, element: Element, snapshot: Snapshot
@@ -147,26 +250,49 @@ class ActPort:
         verb = dispatch.action.verb
         option = dispatch.action.option if verb == "choose" else None
         result = self._semantic.execute(Action(verb, element.id, option=option), snapshot)
-        nothing_sent = result.delivery is Delivery.NOT_DELIVERED and not result.skipped
-        if verb in FALLBACK_VERBS and nothing_sent:  # provably nothing sent ([V2.40] Q6)
-            return self._physical.execute(PhysicalAction("click", element.id), snapshot)
+        if verb in {"check", "uncheck"}:
+            result = _one_toggle(result)
+        if verb == "click" and _no_invoke(result) and physical_click_target(snapshot, element):
+            return self._fallback(dispatch, result)
         return result
+
+    def _fallback(self, dispatch: Dispatch, refused: ActionResult) -> ActionResult:
+        """v1's fallback (orchestrator/loop.py `_dispatch`, 5.9 [v2.50]): the boundary, the
+        fresh look when it waited, the target again, still a plain control with no acting
+        descendant, then one physical click at v1's `click_point`."""
+        self._boundary()
+        element, snapshot = self._resolve(dispatch)
+        if not physical_click_target(snapshot, element):
+            return refused  # an acting child appeared in the wait
+        point = click_point(snapshot, element)
+        clicked = self._physical.execute(PhysicalAction("click", point.id), snapshot)
+        # the semantic refusal tried nothing (`_no_invoke`: no steps), so the click's steps are
+        # the act's whole log
+        evidence = {**clicked.evidence, "click_fallback": "physical", "semantic_detail": NO_INVOKE}
+        return dataclasses.replace(clicked, evidence=evidence)
+
+    # ---- physical ------------------------------------------------------------------------------
 
     def _physical_send(
         self, dispatch: Dispatch, element: Element, snapshot: Snapshot
     ) -> ActionResult:
-        verb, key = dispatch.action.verb, dispatch.action.key
+        verb = dispatch.action.verb
+        if verb == "focus":  # a hit-tested click, as in v1
+            return self._physical.execute(PhysicalAction("click", element.id), snapshot)
+        _check_secure(element, snapshot, self._world.read_secure(element))
+        allowed = key_targets(element, snapshot)
+        if self._desk.focused() not in allowed:
+            detail = "target_not_focused" if verb == "type" else "press_not_at_focus"
+            raise _Refused(ErrorCode.FOCUS_LOST, detail)
         if verb == "type":
-            if dispatch.text is None:  # the runner always resolves it (RT-36); fail closed
-                return _not_sent(verb, ErrorCode.INVALID_TEXT, "text_missing")
             sent = PhysicalAction("type", element.id, text=dispatch.text)
-        elif verb == "press":
-            if key is None:  # validate refuses this shape first; fail closed
-                return _not_sent(verb, ErrorCode.GATE_BLOCKED, "key_missing")
-            sent = PhysicalAction("press", element.id, chord=key)
-        else:  # focus: a hit-tested click, as in v1
-            sent = PhysicalAction("click", element.id)
-        return self._physical.execute(sent, snapshot)
+        else:
+            chord = KEY_CHORDS[dispatch.action.key]  # type: ignore[index]  # checked first
+            sent = PhysicalAction("press", element.id, chord=chord)
+        with self._desk.armed(allowed):
+            return self._physical.execute(sent, snapshot)
+
+    # ---- after something was sent --------------------------------------------------------------
 
     def _read_back(self, dispatch: Dispatch, element: Element) -> bool | None:
         """[V2.11] item 2, [V2.24] item 3: True verified, False a mismatch, None unread; None for
@@ -181,6 +307,88 @@ class ActPort:
                 self._world.read_value(element), self._world.fact_of(dispatch.action.option)
             )
         return None
+
+    def _read_focus(self, element: Element) -> bool | None:
+        """[V2.51] (1): the live focus after a focus click, polled up to `FOCUS_READ_S`: True on
+        the target, False elsewhere, None unread. A kill ends the poll with what was read (the
+        click went: it is never raised away)."""
+        started = self._clock()
+        while True:
+            focus = self._desk.focused()
+            if focus == element.runtime_id:
+                return True
+            if self._clock() - started >= FOCUS_READ_S or self._interrupted() is not None:
+                return None if focus is None else False
+            self._pause(KILL_POLL_S)
+
+
+def _check_dispatch(dispatch: Dispatch) -> None:
+    """The dispatch, checked again before anything is sent (the runner checks it first)."""
+    action = dispatch.action
+    verb = action.verb
+    if verb in NOT_IN_STEP:
+        raise _Refused(ErrorCode.GATE_BLOCKED, "not_in_step")
+    if dispatch.risk not in STEP_RISKS:
+        raise _Refused(ErrorCode.GATE_BLOCKED, "commit_not_in_step")
+    if (dispatch.text is not None and verb != "type") or (
+        action.option is not None and verb != "choose"
+    ):
+        raise _Refused(ErrorCode.GATE_BLOCKED, "shape")
+    if verb == "type" and dispatch.text is None:  # the runner always resolves it (RT-36)
+        raise _Refused(ErrorCode.INVALID_TEXT, "text_missing")
+    if verb == "focus" and dispatch.role not in FIELD_ROLES:
+        raise _Refused(ErrorCode.GATE_BLOCKED, "focus_needs_field")
+    if verb == "press":
+        if action.key not in KEY_CHORDS:
+            raise _Refused(ErrorCode.GATE_BLOCKED, "key_not_allowed")
+        if action.key == "Backspace" and not dispatch.own_text:
+            raise _Refused(ErrorCode.GATE_BLOCKED, "not_own_text")
+
+
+def _check_secure(element: Element, snapshot: Snapshot, live: bool | None) -> None:
+    """AP-08, AP-09: keys never go to a field listed secure, whose flag was not read at listing,
+    or that reads secure (or unread) live now."""
+    if element.secure or live is True:
+        raise _Refused(ErrorCode.GATE_BLOCKED, "secure_field")
+    if element.id in snapshot.unread_secure or live is None:
+        raise _Refused(ErrorCode.GATE_BLOCKED, "secure_unread")
+
+
+def _one_toggle(result: ActionResult) -> ActionResult:
+    """[V2.52] (a): a check or uncheck whose first Toggle went and returned (its one step
+    succeeded) and whose second never went. Settled on the guard's re-read: verified. Refused
+    by the guard, stopped by v1 as `unchanged`, or a read after the first Toggle that failed
+    (v1's uncertain, phase read-back): delivered, unverified, `second_toggle_refused`. Anything
+    else is v1's result as it is."""
+    one = [s.outcome for s in result.steps] == ["succeeded"]
+    detail = result.evidence.get("detail")
+    unread = (
+        result.delivery is Delivery.DELIVERY_UNCERTAIN
+        and result.evidence.get("phase") == "readback"
+        and detail is None
+    )
+    if not one:
+        return result
+    if detail == SETTLED:
+        evidence = {"toggles": 1, "detail": SETTLED}
+        return ActionResult(
+            result.verb, Delivery.DELIVERED_VERIFIED, steps=result.steps, evidence=evidence
+        )
+    if detail in {SECOND_REFUSED, "unchanged"} or unread:
+        return ActionResult(
+            result.verb,
+            Delivery.DELIVERED_UNVERIFIED,
+            steps=result.steps,
+            code=ErrorCode.VERIFY_FAILED,
+            evidence={"toggles": 1, "detail": SECOND_REFUSED},
+        )
+    return result
+
+
+def _no_invoke(result: ActionResult) -> bool:
+    """v1's fallback condition (AP-04): refused with nothing tried, for no InvokePattern."""
+    refused = result.delivery is Delivery.NOT_DELIVERED and not result.steps
+    return refused and result.evidence.get("detail") == NO_INVOKE
 
 
 def _equal(read: ValueFact | None, wanted: ValueFact) -> bool | None:

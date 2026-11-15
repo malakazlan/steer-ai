@@ -94,6 +94,10 @@ class Dispatch:
     trigger: bool = False
     """[V2.50]: the risk path classed it an activation with no read-back (`RiskVerdict.trigger`),
     so the watch holds it as a trigger; set by code."""
+    own_text: bool = False
+    """[V2.51] (5): a Backspace goes only to a field holding Steer's own pending text; the
+    runner's press rule sets it from its pending-text records, and the act port refuses a
+    Backspace without it (the second layer). Set by code."""
     text: str | None = dataclasses.field(default=None, repr=False)
     """RT-36: the text a `type` sends, resolved by code (the param's goal span, or the free
     text); the act port types it. Never in a repr, a trace or the outcome."""
@@ -134,9 +138,11 @@ class TurnView:
         return tuple(render(r) for r in self.log)
 
 
-READ_BACK_VERBS = frozenset({"type", "choose", "check", "uncheck", "select", "expand", "collapse"})
-"""The verbs whose actuation reads its result back ([V2.11] item 2, [V2.5]): type, choose and the
-state verbs."""
+READ_BACK_VERBS = frozenset(
+    {"type", "choose", "focus", "check", "uncheck", "select", "expand", "collapse"}
+)
+"""The verbs whose actuation reads its result back ([V2.11] item 2, [V2.5]): type, choose, the
+state verbs, and focus (the live keyboard focus, [V2.51] (1))."""
 
 
 @dataclass(frozen=True)
@@ -145,7 +151,9 @@ class ActResult:
     (its delivery, its code, and the method steps, label and mechanism, kept for step 5);
     `read_back` is the three-valued read-back of a read-back verb: True verified, False a
     mismatch, None unread. The read-back belongs to the actuation (§7.3: type, then read back),
-    so it travels here and no separate port reads it."""
+    so it travels here and no separate port reads it. [V2.51] (2): both facts are kept as they
+    are; v2's "verified" is the read-back alone (a v1 `delivered_verified` with a False read-back
+    is a mismatch, and a True read-back stands after any delivery)."""
 
     action: ActionResult
     read_back: bool | None
@@ -154,13 +162,10 @@ class ActResult:
         if self.read_back is None:
             return
         if self.action.verb not in READ_BACK_VERBS:
-            raise ValueError("read_back is only for type, choose and the state verbs")
+            raise ValueError("read_back is only for type, choose, focus and the state verbs")
         sent_nothing = self.action.delivery is Delivery.NOT_DELIVERED and not self.action.skipped
         if sent_nothing:
             raise ValueError("read_back needs a delivery: nothing was sent")
-        verified = self.action.delivery is Delivery.DELIVERED_VERIFIED or self.action.skipped
-        if self.read_back and not verified:
-            raise ValueError("a True read_back needs a verified or already-wanted delivery")
 
     @property
     def delivery(self) -> Delivery:
@@ -272,6 +277,26 @@ class TaskOutcome:
     focus_moved_after_press: int = 0
     """[V2.43] (1), #298: presses (Space or Enter on a state-set element) after which the watch's
     after-read showed the focus off the target."""
+    observations_focus_unread: int = 0
+    """[V2.52] (b): observations taken in whose keyboard focus was not read (stage 1 report)."""
+    observations_focus_elsewhere: int = 0
+    """[V2.52] (b): observations taken in whose focus was on nothing listed (stage 1 report)."""
+    type_unfocused: int = 0
+    """[V2.51] (3): types refused or re-asked because the keyboard focus was not on the field
+    (the evidence for folding the focus click into type, a step 5 ladder question)."""
+    second_toggles: int = 0
+    """[V2.52] (a): actuations in which a second Toggle fired (the re-read still showed the
+    third state)."""
+    second_toggles_refused: int = 0
+    """[V2.52] (a): actuations whose second Toggle never went: unchanged from the initial
+    state, unread, or moved off the third state (`second_toggle_refused`)."""
+    toggles_settled_on_reread: int = 0
+    """[V2.52] (a): actuations whose re-read before the second Toggle showed the wanted state
+    (no second Toggle; a success)."""
+    fields_not_empty: int = 0
+    """[V2.51] (5): types refused because the field already held text (`field_not_empty`)."""
+    not_own_text: int = 0
+    """[V2.51] (5): Backspaces refused on a field holding no pending text of Steer's."""
     history_dropped: int = 0
     """[V2.47]: history lines off the history vocabulary (`history_line_ok`): dropped, never
     shown."""

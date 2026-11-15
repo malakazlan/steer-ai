@@ -14,8 +14,9 @@ import pytest
 from steerai.loop2.act_port import ActPort
 from steerai.loop2.history import FocusMovedAfterPress, Vocab, record_ok, render
 from steerai.loop2.runner import run_task
-from steerai.world.effects import Observed
+from tests.loop2.test_act_port import Desk
 from tests.loop2.test_act_port import Executor as RecordingExecutor
+from tests.loop2.test_act_port import World as PortWorld
 from tests.loop2.world_fakes import (
     PAGE,
     World,
@@ -85,28 +86,17 @@ def test_the_record_is_closed_like_every_history_record() -> None:
 # ---- #339 review: a scroll through run_task with the live act port sends nothing ----------------
 
 
-class _Reads:
-    def __init__(self, last: Observed) -> None:
-        self.last: Observed | None = last
-
-    def read_value(self, element: object) -> None:
-        del element
-
-    def read_state(self, element: object, wanted: str) -> None:
-        del element, wanted
-
-    def fact_of(self, text: str) -> object:
-        return text
-
-
 def test_a_scroll_decision_through_run_task_sends_nothing() -> None:
     world = World([decision(act("scroll", target=PAGE[1].id), first=True)])
     semantic, physical = RecordingExecutor(), RecordingExecutor()
     port = ActPort(
-        world=_Reads(world.screen),  # type: ignore[arg-type]  # a minimal reader
+        world=PortWorld(world.screen),
         semantic=semantic,
         physical=physical,
+        desk=Desk(),
         interrupted=lambda: None,
+        clock=lambda: 0.0,
+        wall_left=lambda: 60.0,
     )
     ports = world.ports()
     import dataclasses  # noqa: PLC0415 - local to the one test that swaps a port

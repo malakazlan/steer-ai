@@ -8,6 +8,8 @@ from steerai.action.dispositions import ActionResult, Delivery
 from steerai.errors import ErrorCode
 from steerai.orchestrator.contracts import Risk
 from steerai.world.effects import EffectReport
+from steerai.world.elements import Element
+from steerai.world.model import Snapshot
 
 RETRY_RUNGS = 0
 """Packet §3: no retry rung in step 3. §7.3's one more rung for a plain R0/R1 click that provably
@@ -56,3 +58,28 @@ def press_allowed(*, focus: tuple[int, ...] | None, last_acted: tuple[int, ...] 
     was read and is on that element; refused when it is elsewhere, unread, or nothing was
     acted on."""
     return focus is not None and last_acted is not None and focus == last_acted
+
+
+def key_targets(element: Element, snapshot: Snapshot) -> frozenset[tuple[int, ...]]:
+    """AP-10, [V2.51] (3): where keys for this target may go: the target itself, and for a
+    ComboBox its own Edit (a direct child), never any other descendant."""
+    allowed = {element.runtime_id}
+    if element.role == "ComboBox":
+        allowed |= {
+            e.runtime_id
+            for e in snapshot.elements
+            if e.parent_id == element.id and e.role == "Edit" and e.runtime_id
+        }
+    return frozenset(allowed)
+
+
+def type_focus_ok(*, focus: tuple[int, ...] | None, target: Element, snapshot: Snapshot) -> bool:
+    """[V2.51] (3): the keyboard focus, as `snapshot`'s observation read it, is where a type
+    into `target` goes: the target (found in `snapshot` by its RuntimeId, exactly once) or its
+    ComboBox's own Edit. Unread focus is never there."""
+    if focus is None or not target.runtime_id:
+        return False
+    found = [e for e in snapshot.elements if e.runtime_id == target.runtime_id]
+    if len(found) != 1:
+        return False
+    return focus in key_targets(found[0], snapshot)
