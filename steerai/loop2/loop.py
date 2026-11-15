@@ -389,6 +389,9 @@ class TaskOutcome:
     Stage 1 runs with caching off and asserts every cache counter here is zero."""
     exact_counts: int = 0
     """[V2.61]: turns on which the prompt guard spent an exact count (near the ceiling)."""
+    partial_page_calls: int = 0
+    """[V2.35]: model calls made on a partial page (the observation growing, or its Document
+    younger than the load guard), counted where every call is."""
     refusals: tuple[tuple[RefusalWord, int], ...] = ()
     """[V2.46], [V2.63] (e): every refusal counted by its closed token, in the order first seen
     (the repeat rule is `repeat_send`)."""

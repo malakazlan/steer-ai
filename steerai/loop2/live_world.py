@@ -625,7 +625,7 @@ class LiveWorld:
     def _kill_aware_sleep(self, seconds: float) -> None:
         kill_sleep(seconds, interrupted=self.interrupted, pause=self._config.pause)
 
-    def _write(self, record: Mapping[str, str]) -> None:
+    def _write(self, record: Mapping[str, Any]) -> None:  # Any: closed tokens and counts
         """One clear-trace line under the one lock (LW-24). A write that fails is counted as
         `trace_unwritable` and never raised raw into the task (LW-16)."""
         with self._trace_lock:
@@ -726,7 +726,12 @@ class LiveWorld:
             return world.read_state(element, wanted)
 
         return Ports(
-            decide=make_decide(calls, goal=task.goal, task_fence=self.task_fence),
+            decide=make_decide(
+                calls,
+                goal=task.goal,
+                task_fence=self.task_fence,
+                on_rejected=lambda shape: self._write({"event": "decision_rejected", **shape}),
+            ),
             observe=world.observe,
             act=act_here,
             watch=world.watch,
