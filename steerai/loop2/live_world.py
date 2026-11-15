@@ -30,7 +30,7 @@ import threading
 import time
 import traceback
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -59,7 +59,13 @@ from steerai.world.cover import CoverFacts, cover_of
 from steerai.world.effects import Observed, ValueFact, poll_tier, top_document
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
-from steerai.world.observe2 import DocumentSince, FactReader, FirstTouches, read_observed
+from steerai.world.observe2 import (
+    DocumentSince,
+    FactReader,
+    FirstTouches,
+    document_nodes,
+    read_observed,
+)
 from steerai.world.secure import SecureMemory
 
 TraceLevel = Literal["redacted", "debug"]
@@ -72,6 +78,28 @@ _WAIT_ABANDONED = 0x80
 COINIT_MULTITHREADED = 0x0
 """`CoInitializeEx`'s MTA flag (objbase.h)."""
 DPAPI_PROBE = b"steer-v2-dpapi-probe"
+ShowCommand = Literal["minimize"]
+NudgeKind = Literal["move1px", "minrestore"]
+DEFAULT_NUDGE: NudgeKind = "move1px"
+"""[V2.64] (5): the gentle nudge first; it worked on 10 of 10 normal and snapped windows in the
+evidence run (2026-11-15, Chrome 157). A maximised window still gets `minrestore`."""
+SW_SHOWNORMAL = 1
+WPF_SETMINPOSITION = 0x0001
+"""WINDOWPLACEMENT.flags: "This flag must be specified if the coordinates are set in the
+ptMinPosition member" (learn.microsoft.com, ns-winuser-windowplacement, read 2026-11-15);
+without it the set-back left ptMinPosition at the parking point (measured 2026-11-15)."""
+RESTORE_TRIES = 2
+"""#400 REVISE 1: a put-back that fails is tried once more; failing again is `restore_failed`."""
+DOCUMENT_WAIT_S = 1.0
+"""[V2.64] (1): how long the start waits after the raise for the page before the nudge.
+Measured (degenerate distribution), floor 1.0 s: 24 starts on 2026-11-15 (12 cold, 12 loaded,
+Chrome 157, no trigger) had the page at the first read after the raise in every one (p99 0.0
+s); max(p99 + 0.5 s, 1.0 s), the floor from the diagnosis run in which a raised window turned
+visible unaided in about 1 s. A late nudge costs a 1-px move."""
+DOCUMENT_POLL_S = 0.25
+NUDGE_PAUSE_S = 0.2
+"""[V2.62] addendum: the pause between the minimise and the restore of the start's nudge (the
+value the diagnosis used; one run per nudge, provisional)."""
 START_IDLE_S = 10.0
 """[V2.62] how long the task start waits for the person to go idle (they have usually just
 typed the command) before the window is brought in front; provisional, unmeasured. Past it
@@ -179,6 +207,30 @@ class Platform(Protocol):
         """[V2.62] one read of `hwnd`'s cover facts (`probes.windows.window_cover`)."""
         ...
 
+    def window_placement(self, hwnd: int) -> WindowPlacement:
+        """GetWindowPlacement; an OSError when it fails."""
+        ...
+
+    def set_window_placement(self, hwnd: int, placement: WindowPlacement) -> None:
+        """SetWindowPlacement on the bound window only; an OSError when it fails."""
+        ...
+
+    def window_rect(self, hwnd: int) -> tuple[int, int, int, int]:
+        """GetWindowRect; an OSError when it fails."""
+        ...
+
+    def set_window_rect(self, hwnd: int, rect: tuple[int, int, int, int]) -> None:
+        """SetWindowPos to `rect`, no activation, no z-order change; the bound window only."""
+        ...
+
+    def on_primary_monitor(self, hwnd: int) -> bool:
+        """Whether the window's nearest monitor is the primary one; an OSError when unread."""
+        ...
+
+    def show_window(self, hwnd: int, command: ShowCommand) -> None:
+        """ShowWindow on the bound window only; an OSError when it is no window."""
+        ...
+
     def focused(  # Any: the UiaClient
         self, client: Any
     ) -> Callable[[], tuple[tuple[int, ...], bool | None]]: ...
@@ -186,6 +238,22 @@ class Platform(Protocol):
     def window_state(self) -> WindowState: ...
     def provider(self) -> Call: ...
     def counter(self) -> Counter: ...
+
+
+@dataclass(frozen=True, slots=True)
+class WindowPlacement:
+    """[V2.64] (3) a window's placement (WINDOWPLACEMENT): its flags, its show state and its
+    normal, minimised and maximised positions, saved before a nudge and set back after it with
+    WPF_SETMINPOSITION added. A window never minimised before reads `min_pos` (-1, -1), unset:
+    Windows fills in its parking point on that first minimise even with the flag (measured
+    2026-11-15, 1 of 5; the other 4 byte-identical), so the put-back is compared on flags, show
+    state, normal and maximised positions and the rect."""
+
+    flags: int
+    show_cmd: int
+    normal: tuple[int, int, int, int]
+    min_pos: tuple[int, int]
+    max_pos: tuple[int, int]
 
 
 @dataclass(frozen=True)
@@ -387,6 +455,8 @@ class LiveWorld:
         self._lost = False
         """[V2.57] LW-01: monitor_lost is final for the task: never re-installed and resumed."""
         self.monitor_lost = 0
+        self.front_nudged: NudgeKind | None = None
+        """[V2.64] the nudge the start applied, or None."""
 
     def _debug_sink(self) -> DebugSink:
         config = self._config
@@ -459,16 +529,18 @@ class LiveWorld:
 
     # ---- [V2.62] the task start: the bound window in front -------------------------------------
 
-    def bring_to_front(self) -> None:
-        """Before the task: wait, kill-aware and bounded by `START_IDLE_S`, for the person to be
-        idle `IDLE_S` (v1's rule); then bring the bound window in front through v1's
-        `acquire_foreground` (a code action, never a model verb) and check the postcondition:
-        the window is the foreground, not minimised, not cloaked and not covered. A refusal is
-        a start refusal with its own reason. A switch token (a kill, the lock, a lost monitor)
-        stops the start without sending anything and is left to the task, whose first check
-        ends it with that token ([V2.59]: monitor_lost is counted apart). Mid-task Steer never
-        raises the window again (`InputGuard.acquire_foreground`). The CLI calls it once, right
-        after the world is built and before the task starts."""
+    def bring_to_front(self, *, nudge: NudgeKind = DEFAULT_NUDGE) -> None:
+        """Before the task ([V2.62], [V2.64]): wait, kill-aware and bounded by `START_IDLE_S`, for
+        the person to be idle `IDLE_S` (v1's rule); bring the bound window in front through v1's
+        `acquire_foreground` (a code action, never a model verb); check it is the foreground and
+        uncovered; then wait up to `DOCUMENT_WAIT_S` for its page. Only a window still showing a
+        browser frame with no Document while in front and uncovered is nudged, once (`_nudge`,
+        the last resort), and its page waited for again; still missing, the start is refused
+        (`page_hidden`); a window off the primary monitor is never nudged (unmeasured there) and
+        is refused `page_hidden` at once. A refusal is a start refusal with its own reason. A
+        switch token (a kill, the lock, a lost monitor) stops the start without sending anything
+        more and is left to the task ([V2.59]). Mid-task Steer never raises or nudges the window
+        (`InputGuard.acquire_foreground`). The CLI calls it once, before the task starts."""
         hwnd = self._config.hwnd
         if not self._idle_to_start():
             return
@@ -478,10 +550,107 @@ class LiveWorld:
             raise SteerError(ErrorCode.FOCUS_LOST, "foreground_refused") from exc
         if self.interrupted() is not None:
             return  # the lock or a kill during the acquire (SW-07's re-check): the task's own
+        self._check_in_front(hwnd)
+        needs = self._needs_nudge(hwnd)
+        if not needs:
+            return  # a page, a native window, or a switch token (None): nothing more here
+        if not self._on_primary_monitor(hwnd):
+            # #400 REVISE 3: a nudge on another monitor is unmeasured; never nudged there
+            raise SteerError(ErrorCode.FOCUS_LOST, "page_hidden")
+        self._nudge(hwnd, nudge)
+        if self.interrupted() is not None:
+            return  # a kill during the nudge: the placement is back, the task's own
+        self._check_in_front(hwnd)
+        if self._needs_nudge(hwnd):
+            raise SteerError(ErrorCode.FOCUS_LOST, "page_hidden")
+
+    def _check_in_front(self, hwnd: int) -> None:
         if self._inputs.foreground_hwnd() != hwnd:
             raise SteerError(ErrorCode.FOCUS_LOST, "not_in_front")
         if self._cover() is not None:
             raise SteerError(ErrorCode.FOCUS_LOST, "window_covered")
+
+    def _needs_nudge(self, hwnd: int) -> bool | None:
+        """[V2.64] (4) the trigger, a shape and never a name: a browser frame (its address bar
+        reads) with no Document at all, after waiting up to `DOCUMENT_WAIT_S` on the world's
+        clock. False on any Document (an empty one is a slow first paint, left to the task's
+        first observation: #400 REVISE 2) or on a native window (no Document and no address
+        bar, decided on the first read); None on a switch token."""
+        clock = self._config.clock
+        started = clock()
+        first = True
+        while True:
+            if self.interrupted() is not None:
+                return None
+            inside = document_nodes(self._full_from(self._poll_read()).snapshot)
+            if inside is not None:
+                return False
+            if first:
+                first = False
+                if inside is None and not self._address_bar_reads(hwnd):
+                    return False
+            if clock() - started >= DOCUMENT_WAIT_S:
+                return self._address_bar_reads(hwnd)
+            self._config.pause(DOCUMENT_POLL_S)
+
+    def _address_bar_reads(self, hwnd: int) -> bool:
+        try:
+            return self._facts.address_bar(hwnd) is not None
+        except OSError:
+            return False
+
+    def _nudge(self, hwnd: int, nudge: NudgeKind) -> None:
+        """[V2.64] one nudge of our own bound window, the last resort. `move1px` (one pixel
+        across and back to the rect saved before it, the default) applies to a window in its
+        normal state; any other, and every window when `minrestore` is chosen, is minimised then
+        put back with its placement (GetWindowPlacement before, SetWindowPlacement after, with
+        WPF_SETMINPOSITION) and, for a normal window that the placement moved (a snapped window's
+        placement holds its pre-snap rect), its saved rect. The putting back runs whatever
+        happens after the first call, is tried `RESTORE_TRIES` times, and a put-back that still
+        fails refuses the start `restore_failed` (never `nudge_refused`: the window may be left
+        moved or minimised). A failed read or first call is `nudge_refused`. Recorded in
+        `front_nudged`."""
+        platform = self._platform
+        try:
+            placement = platform.window_placement(hwnd)
+            rect = platform.window_rect(hwnd)
+        except OSError as exc:
+            raise SteerError(ErrorCode.FOCUS_LOST, "nudge_refused") from exc
+        kind: NudgeKind = (
+            "move1px"
+            if nudge == "move1px" and placement.show_cmd == SW_SHOWNORMAL
+            else "minrestore"
+        )
+        left, top, right, bottom = rect
+        try:
+            if kind == "move1px":
+                platform.set_window_rect(hwnd, (left + 1, top, right + 1, bottom))
+            else:
+                platform.show_window(hwnd, "minimize")
+        except OSError as exc:
+            raise SteerError(ErrorCode.FOCUS_LOST, "nudge_refused") from exc
+        try:
+            self._config.pause(NUDGE_PAUSE_S)
+        finally:
+            if kind == "move1px":
+                _restored(lambda: platform.set_window_rect(hwnd, rect))
+            else:
+                put_back = replace(placement, flags=placement.flags | WPF_SETMINPOSITION)
+                _restored(lambda: platform.set_window_placement(hwnd, put_back))
+        if kind == "minrestore" and placement.show_cmd == SW_SHOWNORMAL:
+            _restored(lambda: self._rect_back(hwnd, rect))
+        self.front_nudged = kind
+
+    def _rect_back(self, hwnd: int, rect: tuple[int, int, int, int]) -> None:
+        if self._platform.window_rect(hwnd) != rect:
+            self._platform.set_window_rect(hwnd, rect)
+
+    def _on_primary_monitor(self, hwnd: int) -> bool:
+        """A monitor read that fails is not the primary monitor (fails closed: no nudge)."""
+        try:
+            return self._platform.on_primary_monitor(hwnd)
+        except OSError:
+            return False
 
     def _idle_to_start(self) -> bool:
         """True once the person is idle; False on a switch token (nothing sent); a person
@@ -891,6 +1060,19 @@ def _without_frames(error: BaseException) -> BaseException:
     return error
 
 
+def _restored(put_back: Callable[[], None]) -> None:
+    """#400 REVISE 1: one put-back of the bound window, tried `RESTORE_TRIES` times; still
+    failing, the start is refused `restore_failed`."""
+    for attempt in range(RESTORE_TRIES):
+        try:
+            put_back()
+        except OSError as exc:
+            if attempt == RESTORE_TRIES - 1:
+                raise SteerError(ErrorCode.FOCUS_LOST, "restore_failed") from exc
+        else:
+            return
+
+
 def run_on_loop_thread[T](
     work: Callable[[], T],
     *,
@@ -1126,6 +1308,51 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
 
     def facts(self, client: Any) -> FactReader:  # Any: the UiaClient
         return _ComFacts(client)
+
+    def window_placement(self, hwnd: int) -> WindowPlacement:
+        from steerai.probes.windows import get_placement  # noqa: PLC0415 - Windows only
+
+        flags, show, normal, min_pos, max_pos = get_placement(hwnd)
+        return WindowPlacement(
+            flags=flags, show_cmd=show, normal=normal, min_pos=min_pos, max_pos=max_pos
+        )
+
+    def set_window_placement(self, hwnd: int, placement: WindowPlacement) -> None:
+        from steerai.probes.windows import set_placement  # noqa: PLC0415 - Windows only
+
+        set_placement(
+            hwnd,
+            flags=placement.flags,
+            show_cmd=placement.show_cmd,
+            normal=placement.normal,
+            min_pos=placement.min_pos,
+            max_pos=placement.max_pos,
+        )
+
+    def window_rect(self, hwnd: int) -> tuple[int, int, int, int]:
+        from steerai.probes.windows import get_window_rect  # noqa: PLC0415 - Windows only
+
+        return get_window_rect(hwnd)
+
+    def set_window_rect(self, hwnd: int, rect: tuple[int, int, int, int]) -> None:
+        from steerai.probes.windows import set_window_rect  # noqa: PLC0415 - Windows only
+
+        set_window_rect(hwnd, rect)
+
+    def on_primary_monitor(self, hwnd: int) -> bool:
+        from steerai.probes.windows import on_primary_monitor  # noqa: PLC0415 - Windows only
+
+        return on_primary_monitor(hwnd)
+
+    def show_window(self, hwnd: int, command: ShowCommand) -> None:
+        import ctypes  # noqa: PLC0415 - Windows only
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        # SW_MINIMIZE 6 (the restore is SetWindowPlacement); ShowWindow's return is the previous
+        # visibility, never a failure, so only a dead handle is refused
+        if not user32.IsWindow(hwnd):
+            raise OSError("not_a_window")
+        user32.ShowWindow(hwnd, {"minimize": 6}[command])
 
     def window_cover(self, hwnd: int) -> CoverFacts:
         from steerai.probes.windows import window_cover  # noqa: PLC0415 - Windows only

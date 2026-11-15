@@ -5,6 +5,7 @@ Only each read's SHA-256 and its deciding facts are committed; the reads stay lo
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import hashlib
 import json
 from pathlib import Path
@@ -15,20 +16,25 @@ import pytest
 from steerai.loop2.stage1_expected import Act, Expected
 from steerai.loop2.stage2_expected import (
     SITE_SPACING_S,
+    UNRATED_REASONS,
+    DayDidNotTurn,
     DecidingFacts,
     SiteRow,
     Spacer,
     StartDocument,
+    calendar_day,
     deciding_facts,
     dump_table,
     load_acts,
     load_table,
+    load_unrated,
     real_site_tasks,
     site_check,
     start_document,
     table_row,
 )
 from steerai.world.effects import Observed
+from steerai.world.elements import Element
 from steerai.world.landmarks import Landmark
 from steerai.world.read_json import observed_from_json, observed_to_json
 from tests.loop2.world_fakes import DOC, FIELD, GO, element, observed
@@ -334,3 +340,96 @@ def test_loads_of_one_host_are_spaced_and_counted() -> None:
         spacer.loaded(host)
     assert clock.slept == [pytest.approx(SITE_SPACING_S)]
     assert spacer.loads == {"a.test": 2, "b.test": 1}
+
+
+# ---- the coordinator's rulings on the save-reads pass (2026-11-15) -----------------------------
+
+BOX_TWIN = element(45, "Edit", "Find", (9, 45), 40)
+"""A second copy of the field in the same search form: the same deciding facts."""
+BOX_ELSEWHERE = element(46, "Edit", "Find", (9, 46), 1)
+"""A copy outside the search form: another landmark, so other deciding facts."""
+
+
+def twin_read(*extra: Element) -> Observed:
+    base = read()
+    elements = [*SHOWN, *extra]
+    marks = dict(base.landmarks or {})
+    search = Landmark(kind="search", runtime_id=FORM.runtime_id)
+    for e in extra:
+        marks[e.runtime_id] = search if e.parent_id == FORM.id else None
+    roles = {**(base.aria_roles or {}), **{e.runtime_id: "searchbox" for e in extra}}
+    return dataclasses.replace(
+        base, snapshot=dataclasses.replace(base.snapshot, elements=elements),
+        landmarks=marks, aria_roles=roles,
+    )  # fmt: skip
+
+
+def test_copies_of_a_target_that_agree_on_every_deciding_fact_are_rated() -> None:
+    """The rating does not depend on which copy Steer picks, so it is not ambiguous."""
+    assert deciding_facts(TYPE_CLICK, GOAL, twin_read(BOX_TWIN)) == deciding_facts(
+        TYPE_CLICK, GOAL, read()
+    )
+
+
+def test_copies_that_disagree_are_ambiguous_naming_the_facts_that_differ() -> None:
+    with pytest.raises(ValueError, match="ambiguous_target") as refused:
+        deciding_facts(TYPE_CLICK, GOAL, twin_read(BOX_ELSEWHERE))
+    assert "search_landmark" in str(refused.value)
+
+
+def test_an_unrated_task_is_kept_out_of_the_table_with_its_reason() -> None:
+    rows = [table_row("t1", TYPE_ENTER, GOAL, saved(read()))]
+    text = dump_table(rows, unrated={"t9": "target_after_opener"})
+    assert set(load_table(text)) == {"t1"}
+    assert load_unrated(text) == {"t9": "target_after_opener"}
+
+
+def test_the_acts_file_carries_the_unrated_tasks() -> None:
+    text = json.dumps({"t1": {"acts": [{"verb": "press", "key": "Enter"}], "proof": None,
+                              "why": "w"}, "t9": {"unrated": "pressed_unread"}})  # fmt: skip
+    assert set(load_acts(text)) == {"t1"}
+    assert load_unrated(text) == {"t9": "pressed_unread"}
+
+
+@pytest.mark.parametrize("bad", [{"unrated": "because"}, {"unrated": "pressed_unread", "x": 1}])
+def test_an_unrated_marker_that_is_not_valid_is_refused(bad: object) -> None:
+    with pytest.raises(ValueError, match="unrated"):
+        load_unrated(json.dumps({"t9": bad}))
+
+
+def test_the_unrated_reasons_are_closed() -> None:
+    assert (
+        frozenset({"target_after_opener", "pressed_unread", "copies_disagree"}) == UNRATED_REASONS
+    )
+
+
+# ---- #413 blocker 1: the day turns in production, and the wait for it is bounded ----------------
+
+
+def test_a_spacer_counts_days_on_the_calendar_by_default() -> None:
+    clock = Clock()
+    spacer = Spacer(clock, clock.sleep)
+    assert spacer.day is calendar_day
+    assert calendar_day() == datetime.date.today().toordinal()  # noqa: DTZ011 - the local day
+
+
+def test_the_wait_for_the_day_to_turn_sleeps_an_hour_at_most_each_time() -> None:
+    clock = Clock()
+
+    def days() -> int:  # the fake calendar
+        return int(clock() // 86_400)
+
+    clock.now = 86_400 * 5 + 100.0
+    spacer = Spacer(clock, clock.sleep, day=days)
+    spacer.wait_next_day()
+    assert days() == 6
+    assert max(clock.slept) <= 3600.0
+
+
+def test_a_day_that_never_turns_is_refused_after_a_bounded_wait() -> None:
+    clock = Clock()
+    spacer = Spacer(clock, clock.sleep, day=lambda: 7)
+    with pytest.raises(DayDidNotTurn, match="day_did_not_turn"):
+        spacer.wait_next_day()
+    assert len(clock.slept) <= 27
+    assert sum(clock.slept) <= 27 * 3600.0
