@@ -13,9 +13,12 @@ from typing import Any
 
 import pytest
 
+from steerai.loop2 import runner
+from steerai.loop2.history import REFUSAL_TOKENS
 from steerai.loop2.loop import TokenUsage
 from steerai.loop2.runner import run_task
 from steerai.loop2.turn_trace import (
+    KEY_TOKENS,
     CarrierFact,
     ParamProof,
     ProofAttempt,
@@ -73,7 +76,7 @@ def full_record() -> dict[str, Any]:  # Any: JSON
                 "ask": False,
                 "stop": None,
             },
-            refusals=("not_listed", "press_not_at_focus"),
+            refusals=("id_not_listed", "press_not_at_focus"),
             watch=(WatchFacts("submit", 1.25),),
             tokens=TokenUsage(1200, 80),
             history=("stale_observation", "load_guard"),
@@ -145,6 +148,20 @@ def test_a_history_line_is_only_ever_one_the_grammar_accepts(line: str) -> None:
     assert not closed(record)
 
 
+def test_the_refusal_allowlist_is_the_producers_own_closed_set() -> None:
+    """Not a hand list: `history.REFUSAL_TOKENS`, the set every emitter is pinned to
+    (`test_history_vocabulary`), and the one `_refuse` is typed by."""
+    assert KEY_TOKENS["refusals"] is REFUSAL_TOKENS
+    assert KEY_TOKENS["rejections"] is REFUSAL_TOKENS
+
+
+@pytest.mark.parametrize("token", ["click", "title", "navigated", "turn"])
+def test_a_closed_token_of_another_set_is_not_a_refusal(token: str) -> None:
+    record = full_record()
+    record["refusals"] = [token]
+    assert not closed(record)
+
+
 def test_a_number_that_is_not_finite_fails_the_record() -> None:
     record = full_record()
     record["watch"][0]["seconds"] = float("nan")
@@ -173,3 +190,27 @@ def test_the_runner_writes_each_turn_closed_and_none_of_the_pages_text() -> None
     shown.add(world.screen.snapshot.title)
     assert not [name for name in shown if name and name in written]
     assert records[0]["decision"]["actions"][0]["verb"] == "click"
+
+
+def test_a_dropped_turn_record_is_counted_in_the_runs_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A record that fails the check is never written, and the run's result says how many were
+    dropped: a gap in the trace never reads as a clean run."""
+    world = World([decision(act("click", target=GO.id), first=True)])
+    clean: list[dict[str, Any]] = []  # Any: JSON
+    kept = run_task(task(), dataclasses.replace(world.ports(), turn_trace=clean.append))
+    assert clean
+    assert kept.turn_trace_dropped == 0
+
+    real = runner.turn_record
+
+    def leaky(facts: TurnTrace) -> dict[str, Any]:  # Any: JSON
+        return {**real(facts), "focus": TITLE}  # a title where a closed token belongs
+
+    monkeypatch.setattr(runner, "turn_record", leaky)
+    world = World([decision(act("click", target=GO.id), first=True)])
+    written: list[dict[str, Any]] = []  # Any: JSON
+    outcome = run_task(task(), dataclasses.replace(world.ports(), turn_trace=written.append))
+    assert written == []
+    assert outcome.turn_trace_dropped == len(clean)
