@@ -42,6 +42,9 @@ TAKEOVER_TOKENS: Final = frozenset({TAKEOVER, OTHER_STEER_INPUT})
 """The closed tokens of a stop for someone else's input: a person, or another Steer."""
 
 HOOKS: Final = ("keyboard", "mouse")
+UNASSIGNED_VKS: Final = frozenset({0x0E, 0x0F, *range(0x97, 0xA0), 0xE8})
+"""Microsoft Learn, Virtual-Key Codes (Winuser.h): 0x0E-0F, 0x97-9F and 0xE8 are Unassigned; the
+keyboard probe is one of them."""
 
 
 class Classifier:
@@ -133,6 +136,10 @@ class Classifier:
 
     def mark_ask_closed(self) -> None:
         self._ask_depth = max(0, self._ask_depth - 1)
+
+    def sync_ask_depth(self, depth: int) -> None:
+        """The hook helper: Steer's `ask_depth` word, read directly before each event (K7)."""
+        self._ask_depth = max(0, depth)
 
     # ---- what the ledger and the loop read ------------------------------------------------------
 

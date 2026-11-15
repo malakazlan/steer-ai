@@ -51,6 +51,7 @@ STATUS_WORDS: Final = (
     "max_event_lag_ms",
     "latency_events",
     "run_time_events",
+    "ws_floor",
 )
 CONFIG_WORDS: Final = (
     "magic",
@@ -76,6 +77,30 @@ RUN_TIME_BUCKETS: Final = 1001
 """Callback entry to exit on QPC, one bucket per 100 µs, 0..100 ms; the last holds 100 ms and
 over (#365 item 1; the M2 bar is a max of 100 ms)."""
 HISTOGRAMS: Final = (("latency", LATENCY_BUCKETS), ("run_time", RUN_TIME_BUCKETS))
+
+MAGIC: Final = 0x5354_4545_484F_4F4B
+"""`STEEHOOK`: the config section's first word."""
+LAYOUT_VERSION: Final = 1
+
+STATE_STARTING: Final = 0
+STATE_READY: Final = 1
+STATE_CLOSED: Final = 2
+STATE_FAILED: Final = 3
+STATES: Final = frozenset({STATE_STARTING, STATE_READY, STATE_CLOSED, STATE_FAILED})
+
+ERROR_NONE: Final = 0
+ERROR_LAYOUT: Final = 1
+"""F15: the config's magic, version, CRC or values are not usable."""
+ERROR_HOOKS: Final = 2
+ERROR_HOTKEY: Final = 3
+"""`RegisterHotKey` failed: another program (or an orphan helper) holds the chord."""
+ERROR_LOOP: Final = 4
+"""The helper's wait or message pump failed after it was ready."""
+ERROR_MAP: Final = 5
+"""The config section could not be mapped."""
+ERROR_INTERNAL: Final = 6
+"""Any other exception in a start step or the loop: the helper has no stderr, so this code is its
+only report (the accepted standard-handles deviation)."""
 
 KIND_TAKEOVER: Final = 0
 KIND_OTHER_STEER: Final = 1
@@ -103,6 +128,9 @@ class Words:
         for name, count in histograms:
             self._buckets[name] = (start, count)
             start += count
+
+    def names(self) -> tuple[str, ...]:
+        return tuple(self._index)
 
     def get(self, name: str) -> int:
         return int(self._words[self._index[name]])
