@@ -426,6 +426,27 @@ class UiaClient:
         runtime_id = element.GetRuntimeId()
         return tuple(int(v) for v in runtime_id) if runtime_id else ()
 
+    def focused_facts(self) -> tuple[tuple[int, ...], bool | None]:
+        """ONE read of the focused element (v2 packet rev 3.10 (a)): its RuntimeId (empty when
+        none) and its IsPassword (None when that read failed), so the two can never describe two
+        different elements. A failure to find the element raises OSError."""
+        try:
+            element = self._uia.GetFocusedElement()
+        except Exception as exc:  # COMError exists only once comtypes is loaded
+            raise OSError("no focused UIA element") from exc
+        if not element:
+            return (), None
+        try:
+            runtime_id = element.GetRuntimeId()
+            focus = tuple(int(v) for v in runtime_id) if runtime_id else ()
+        except Exception as exc:  # COMError exists only once comtypes is loaded
+            raise OSError("focused element unreadable") from exc
+        try:
+            secure: bool | None = bool(element.CurrentIsPassword)
+        except Exception:  # noqa: BLE001 - COMError has no stubs: an unread flag is None
+            secure = None
+        return focus, secure
+
     def cached_list_items(self, element: Any, properties: Sequence[int]) -> list[Any]:
         """The ListItems among `element`'s descendants with `properties` cached, in one
         FindAllBuildCache (a ComboBox's options, W4-13). `element` is a COM element (Any); a COM

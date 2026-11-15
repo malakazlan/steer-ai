@@ -1,0 +1,470 @@
+"""Adapter slice 7a: `LiveWorld`, the v2 loop's `Ports` over the live window, one per task
+(packet §1, §2, rev 4.0 design, rev 3.10 contract).
+
+`LiveWorld(config, platform)` builds everything a task needs from existing modules, over an
+injected `Platform` (the Windows side; `WindowsPlatform` is the real one), so construction, the
+switch, the wiring of v1's executors and the run header are tested off Windows.
+
+Construction fails closed, so the task never starts, in this order (packet §1, principal 6):
+1. the process is not Per-Monitor-V2 DPI aware: `PERCEPTION_DEGRADED` / `dpi_context`;
+2. UIA cannot be created: `PERCEPTION_DEGRADED` / `uia_unavailable`;
+3. the hook monitor or the kill hot key cannot start: `GATE_BLOCKED` / `monitor_unavailable`;
+4. at trace level `debug` (names, the prompt), DPAPI cannot protect: `GATE_BLOCKED` /
+   `trace_needs_dpapi`. A plaintext trace holds closed tokens and counts only.
+A failure after the monitor started closes it.
+
+Then: the shared `TaskGenerations` is bumped (a previous task's late reply is never used, §2.9);
+the task fence is `secrets.token_hex(16)`; the value-digest key is 32 random bytes in memory only;
+v1's executors are built on the one monotonic clock with `blocker = interrupted` (AP-31), the
+semantic one over `ToggleGuard` and `UiaOptions(client)` (AP-54), the physical one over
+`InputGuard` (rev 3.10 (d)).
+"""
+
+from __future__ import annotations
+
+import secrets
+import threading
+import time
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Literal, Protocol
+
+from steerai.action.execution import UiaBindings, WindowState, code_for
+from steerai.action.executor import Executor
+from steerai.action.live_reads import UiaLiveReads
+from steerai.action.options import UiaOptions
+from steerai.action.physical import InputPort, PhysicalExecutor
+from steerai.debug_trace import BufferedDebugSink, DebugSink, NullDebugSink
+from steerai.errors import ErrorCode, SteerError
+from steerai.loop2.act_guards import GuardDesk, InputGuard, ToggleGuard
+from steerai.loop2.act_port import ActPort
+from steerai.loop2.controller import PROMPT_VERSION
+from steerai.loop2.decide_port import Call, DecideCalls, TaskGenerations
+from steerai.loop2.loop import Dispatch, Ports
+from steerai.loop2.prompt_inputs import make_decide
+from steerai.loop2.task import Task
+from steerai.loop2.world_ports import WorldPorts, WorldTimes
+from steerai.orchestrator.trace import Trace
+from steerai.planner.claude_planner import DEFAULT_MODEL, EFFORT
+from steerai.world.effects import Observed, poll_tier, top_document
+from steerai.world.model import Snapshot
+from steerai.world.observe2 import DocumentSince, FactReader, FirstTouches, read_observed
+from steerai.world.secure import SecureMemory
+
+TraceLevel = Literal["redacted", "debug"]
+"""`redacted`: a clear trace of closed tokens and counts only. `debug`: also the DPAPI debug
+sink, which may hold names and titles; it never starts without DPAPI (packet §1 traces)."""
+DPAPI_PROBE = b"steer-v2-dpapi-probe"
+"""Protected once at construction at level `debug`: DPAPI must work before a name is kept."""
+
+
+class Monitor(Protocol):
+    """The takeover monitor as the v2 adapter reads it (`session.monitor.HookMonitor`)."""
+
+    def kill_requested(self) -> bool: ...
+    def healthy(self) -> bool: ...
+    def maintain(self) -> None: ...
+    def last_user_input(self) -> float: ...
+    def close(self) -> None: ...
+
+
+class Platform(Protocol):
+    """The Windows side of one task. A COM client and bindings are opaque here (Any): built,
+    used and released on the loop thread (packet §1 threads)."""
+
+    def dpi_aware(self) -> bool: ...
+    def uia(self) -> tuple[Any, UiaBindings]: ...  # Any: the UiaClient
+    def start_monitor(self, kill_key: str) -> Monitor: ...
+    def protect(self, data: bytes) -> bytes: ...
+    def session_locked(self) -> bool | None: ...
+    def input_desktop(self) -> str: ...
+    def observe(self, client: Any, hwnd: int) -> Snapshot: ...  # Any: the UiaClient
+    def facts(self, client: Any) -> FactReader: ...  # Any: the UiaClient
+    def windows(self, pid: int) -> tuple[int, ...]: ...
+    def focused(  # Any: the UiaClient
+        self, client: Any
+    ) -> Callable[[], tuple[tuple[int, ...], bool | None]]: ...
+    def inputs(self, client: Any) -> InputPort: ...  # Any: the UiaClient
+    def window_state(self) -> WindowState: ...
+    def provider(self) -> Call: ...
+
+
+@dataclass(frozen=True)
+class LiveConfig:
+    task_id: str
+    hwnd: int
+    kill_key: str
+    trace_level: TraceLevel
+    trace: Trace
+    """The clear trace: closed tokens, counts and the run header only."""
+    generations: TaskGenerations
+    """Shared by every task of the process: bumped when a task starts (§2.9)."""
+    clock: Callable[[], float] = time.monotonic
+    """The one monotonic clock (packet §1): the loop, the stamp, the watch, admission."""
+    pause: Callable[[float], None] = time.sleep
+    times: WorldTimes = field(default_factory=WorldTimes)
+    debug_path: Path | None = None
+    """Where the DPAPI debug file goes at level `debug`; none: no debug records are kept."""
+
+
+class UiaElements:
+    """`world_ports.LiveElements` over UIA: v1's live reads plus the identity read (role, name,
+    IsPassword) the world ports re-check before any read (packet §2.7)."""
+
+    def __init__(self, client: Any, bindings: UiaBindings) -> None:  # Any: the UiaClient
+        self._reads = UiaLiveReads(client, bindings)
+        self._bindings = bindings
+
+    def identity(self, handle: Any) -> tuple[str, str, bool | None]:  # Any: a COM element
+        try:
+            type_id = int(handle.CurrentControlType)
+            name = str(handle.CurrentName or "")
+            secure = bool(handle.CurrentIsPassword)
+        except Exception as exc:  # a COMError has no stubs: mapped by its code, or re-raised
+            code, _extra = code_for(exc)
+            if code is None:
+                raise
+            raise SteerError(code, "identity_unread") from exc
+        return self._bindings.control_types.get(type_id, str(type_id)), name, secure
+
+    def value(self, handle: Any) -> str | None:  # Any: a COM element
+        return self._reads.value(handle)
+
+    def toggle_state(self, handle: Any) -> int | None:  # Any: a COM element
+        return self._reads.toggle_state(handle)
+
+    def is_selected(self, handle: Any) -> bool | None:  # Any: a COM element
+        return self._reads.is_selected(handle)
+
+    def expand_state(self, handle: Any) -> int | None:  # Any: a COM element
+        return self._reads.expand_state(handle)
+
+
+class LiveWorld:
+    """One task's live world: build it (fail closed), take `ports(task)` once, `close()`."""
+
+    def __init__(self, config: LiveConfig, platform: Platform) -> None:
+        self._config = config
+        self._platform = platform
+        self.clock = config.clock
+        if not platform.dpi_aware():
+            raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "dpi_context")
+        try:
+            client, bindings = platform.uia()
+        except Exception as exc:  # creation fails as a COMError (no stubs) or OSError
+            raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "uia_unavailable") from exc
+        try:
+            monitor = platform.start_monitor(config.kill_key)
+        except SteerError:
+            raise  # HookMonitor's own GATE_BLOCKED monitor_unavailable, with its reason
+        except Exception as exc:  # any other start failure: no kill switch, no task
+            raise SteerError(ErrorCode.GATE_BLOCKED, "monitor_unavailable") from exc
+        self._monitor = monitor
+        self._closed = False
+        try:
+            debug = self._debug_sink()
+            self._build(client, bindings, debug)
+        except BaseException:
+            self.close()
+            raise
+
+    def _debug_sink(self) -> DebugSink:
+        config = self._config
+        if config.trace_level != "debug":
+            return NullDebugSink()
+        try:
+            self._platform.protect(DPAPI_PROBE)
+        except Exception as exc:  # DPAPI unreachable: names are never kept in clear
+            raise SteerError(ErrorCode.GATE_BLOCKED, "trace_needs_dpapi") from exc
+        if config.debug_path is None:
+            return NullDebugSink()
+        return BufferedDebugSink(config.debug_path, protect=self._platform.protect)
+
+    def _build(self, client: Any, bindings: UiaBindings, debug: DebugSink) -> None:  # Any: COM
+        config, platform = self._config, self._platform
+        config.generations.bump()  # a reply asked under an earlier task is never used (§2.9)
+        self.task_fence = secrets.token_hex(16)
+        self._key = secrets.token_bytes(32)
+        self._lock = threading.Lock()
+        self.late_sink_failures = 0
+        self._client = client
+        self._facts = platform.facts(client)
+        self._secure = SecureMemory()
+        self._stamp = DocumentSince(clock=config.clock)
+        guard = InputGuard(
+            platform.inputs(client),
+            interrupted=self.interrupted,
+            focused=platform.focused(client),
+            clock=config.clock,
+            pause=config.pause,
+        )
+        self.desk = GuardDesk(guard, last_input=self._monitor.last_user_input)
+        self.semantic = Executor(
+            uia=ToggleGuard(control_types=bindings.control_types, interfaces=bindings.interfaces),
+            windows=platform.window_state(),
+            clock=config.clock,
+            blocker=self.interrupted,
+            options=UiaOptions(client),
+        )
+        self.physical = PhysicalExecutor(
+            uia=bindings,
+            windows=platform.window_state(),
+            clock=config.clock,
+            inputs=guard,
+            blocker=self.interrupted,
+            debug=debug,
+        )
+        self._debug = debug
+        self.world = WorldPorts(
+            poll_read=self._poll_read,
+            full_from=self._full_from,
+            interrupted=self.interrupted,
+            clock=config.clock,
+            pause=config.pause,
+            touches=FirstTouches(),
+            times=config.times,
+            live=UiaElements(client, bindings),
+            key=self._key,
+            trace=self._token,
+        )
+
+    # ---- the switch (packet §2.10) ---------------------------------------------------------------
+
+    def interrupted(self) -> str | None:
+        """The latched kill first; then the monitor's health (kept up by `maintain`); then the
+        lock and the input desktop, each failing closed (unread is `secure_desktop`). The act
+        port's idle rule owns `takeover` (rev 3.10 (b))."""
+        monitor = self._monitor
+        if monitor.kill_requested():
+            return "killed"
+        monitor.maintain()
+        if not monitor.healthy():
+            return "monitor_lost"
+        return self._session_signal()
+
+    def _session_signal(self) -> str | None:
+        """The lock, then the input desktop; a read that fails or is unknown is the secure
+        desktop (fail closed)."""
+        try:
+            locked = self._platform.session_locked()
+            desktop = None if locked is not False else self._platform.input_desktop()
+        except OSError:
+            return "secure_desktop"
+        if locked is True:
+            return "session_locked"
+        return None if desktop == "Default" else "secure_desktop"
+
+    # ---- the reads -------------------------------------------------------------------------------
+
+    def _poll_read(self) -> Observed:
+        """The window's snapshot with the task's sticky secure flags (packet §1)."""
+        snapshot = self._platform.observe(self._client, self._config.hwnd)
+        return poll_tier(self._secure.apply(snapshot))
+
+    def _full_from(self, observed: Observed) -> Observed:
+        """The full read's facts on a poll read's snapshot (packet §2.1)."""
+        snapshot = observed.snapshot
+        return read_observed(
+            snapshot,
+            self._facts,
+            key=self._key,
+            windows=lambda: self._platform.windows(snapshot.pid),
+            page_facts=top_document(snapshot) is not None,
+        )
+
+    # ---- the trace -------------------------------------------------------------------------------
+
+    def _token(self, token: str) -> None:
+        self._config.trace.write({"event": "read", "token": token})
+
+    def late_error(self, token: str) -> None:
+        """#346: an abandoned call's failure, as its closed token. It may run on the decide
+        worker's thread, so it never raises there: a sink that fails is counted, not re-raised."""
+        with self._lock:
+            try:
+                self._config.trace.write({"event": "late_error", "token": token})
+            except Exception:  # noqa: BLE001 - the worker thread must never raise; counted
+                self.late_sink_failures += 1
+
+    def header(self, task: Task) -> Mapping[str, str]:
+        """The run header ([V2.40] Q5): model, effort, prompt version, trace level, and the
+        price as `configured` (with where and when it was read) or `not configured`."""
+        price = task.budgets.price
+        record = {
+            "event": "run_header",
+            "loop": "v2",
+            "model": DEFAULT_MODEL,
+            "effort": EFFORT,
+            "prompt_version": PROMPT_VERSION,
+            "trace_level": self._config.trace_level,
+            "price": "not configured" if price is None else "configured",
+        }
+        if price is not None:
+            record["price_source"] = price.source
+            record["price_read_on"] = price.read_on.isoformat()
+        return record
+
+    # ---- the ports -------------------------------------------------------------------------------
+
+    def ports(self, task: Task) -> Ports:
+        """The task's `Ports`; the header is the trace's first record."""
+        config = self._config
+        clock = config.clock
+        started = clock()
+        self._config.trace.write(dict(self.header(task)))
+        act = ActPort(
+            world=self.world,
+            semantic=self.semantic,
+            physical=self.physical,
+            desk=self.desk,
+            interrupted=self.interrupted,
+            clock=clock,
+            wall_left=lambda: task.budgets.max_wall_s - (clock() - started),
+            pause=config.pause,
+        )
+        calls = DecideCalls(
+            self._platform.provider(),
+            interrupted=self.interrupted,
+            generations=config.generations,
+            late_error=self.late_error,
+        )
+        return Ports(
+            decide=make_decide(calls, goal=task.goal, task_fence=self.task_fence),
+            observe=self.world.observe,
+            act=act.act,
+            watch=self.world.watch,
+            write_ahead=_write_ahead_closed,
+            interrupted=self.interrupted,
+            clock=clock,
+            stamp=self._stamp,
+            settle=self.world.settle,
+            read_value=self.world.read_value,
+            read_state=self.world.read_state,
+            fact_of=self.world.fact_of,
+        )
+
+    def close(self) -> None:
+        """Task end: the monitor stops once; the debug records are protected and written."""
+        if self._closed:
+            return
+        self._closed = True
+        debug = getattr(self, "_debug", None)
+        if debug is not None:
+            debug.flush()
+        self._monitor.close()
+
+
+def _write_ahead_closed(_dispatch: Dispatch) -> str:
+    """Packet §2.6: closed in step 3; step 4c binds it to the DPAPI ledger."""
+    raise SteerError(ErrorCode.GATE_BLOCKED, "write_ahead_in_step_3")
+
+
+class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-marked tests)
+    """`Platform` over Windows: UIA, the hook monitor, DPAPI and the Win32 reads. Every import is
+    local, so the module loads off Windows and on the v1 path nothing of this runs."""
+
+    def dpi_aware(self) -> bool:
+        from steerai.probes.win_input import ensure_per_monitor_v2  # noqa: PLC0415 - Windows
+
+        return ensure_per_monitor_v2()
+
+    def uia(self) -> tuple[Any, UiaBindings]:  # Any: the UiaClient
+        from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415 - Windows only
+
+        return UiaClient(), UiaBindings.load()
+
+    def start_monitor(self, kill_key: str) -> Monitor:
+        from steerai.session.monitor import HookMonitor  # noqa: PLC0415 - Windows hooks
+
+        monitor = HookMonitor(kill_key=kill_key)
+        monitor.start()
+        return monitor
+
+    def protect(self, data: bytes) -> bytes:
+        from steerai.debug_trace import protect_for_user  # noqa: PLC0415 - DPAPI
+
+        return protect_for_user(data)
+
+    def session_locked(self) -> bool | None:
+        from steerai.probes.windows import session_locked  # noqa: PLC0415 - Windows only
+
+        return session_locked()
+
+    def input_desktop(self) -> str:
+        from steerai.probes.windows import input_desktop_name  # noqa: PLC0415 - Windows only
+
+        return input_desktop_name()
+
+    def observe(self, client: Any, hwnd: int) -> Snapshot:  # Any: the UiaClient
+        model = getattr(self, "_model", None)
+        if model is None or getattr(self, "_model_client", None) is not client:
+            from steerai.world.model import WorldModel  # noqa: PLC0415 - Windows only
+
+            model = WorldModel(client, clock=time.monotonic)
+            self._model, self._model_client = model, client
+        return model.observe(hwnd, cap_s=5.0)
+
+    def facts(self, client: Any) -> FactReader:  # Any: the UiaClient
+        return _ComFacts(client)
+
+    def windows(self, pid: int) -> tuple[int, ...]:
+        from steerai.probes.windows import list_top_windows  # noqa: PLC0415 - Windows only
+
+        return tuple(sorted(w.hwnd for w in list_top_windows() if w.pid == pid))
+
+    def focused(self, client: Any) -> Callable[[], tuple[tuple[int, ...], bool | None]]:
+        return client.focused_facts  # type: ignore[no-any-return]  # UiaClient, rev 3.10 (a)
+
+    def inputs(self, client: Any) -> InputPort:  # Any: the UiaClient
+        from steerai.action.physical import LiveInput  # noqa: PLC0415 - Windows only
+
+        return LiveInput(client)
+
+    def window_state(self) -> WindowState:
+        from steerai.action.execution import LiveWindows  # noqa: PLC0415 - Windows only
+
+        return LiveWindows()
+
+    def provider(self) -> Call:
+        """[V2.40] Q5: v1's planner timeout and one SDK retry; the key comes from the SDK's own
+        environment variables, never from this code."""
+        import anthropic  # noqa: PLC0415 - the SDK, only when a real task runs
+
+        from steerai.loop2.decide_port import anthropic_call  # noqa: PLC0415
+        from steerai.planner.claude_planner import (  # noqa: PLC0415
+            DEFAULT_MAX_RETRIES,
+            DEFAULT_TIMEOUT_S,
+        )
+
+        client = anthropic.Anthropic(timeout=DEFAULT_TIMEOUT_S, max_retries=DEFAULT_MAX_RETRIES)
+        return anthropic_call(client)
+
+
+class _ComFacts:  # pragma: no cover - live, Windows only
+    """`UiaClient` as a `FactReader` whose COM failures are all OSError, so `read_observed`
+    reads them as not read (as the shadow probe's reader does)."""
+
+    def __init__(self, client: Any) -> None:  # Any: the UiaClient
+        self._client = client
+
+    def document_url_in(self, snapshot: Snapshot, document_id: int) -> Any:  # Any: DocumentUrl
+        return _com(lambda: self._client.document_url_in(snapshot, document_id))
+
+    def address_bar(self, hwnd: int) -> str | None:
+        return _com(lambda: self._client.address_bar(hwnd))  # type: ignore[no-any-return]
+
+    def focused_runtime_id(self) -> tuple[int, ...]:
+        return _com(self._client.focused_runtime_id)  # type: ignore[no-any-return]
+
+    def page_facts(self, hwnd: int) -> Any:  # Any: PageFacts
+        return _com(lambda: self._client.page_facts(hwnd))
+
+
+def _com(read: Callable[[], Any]) -> Any:  # pragma: no cover - live; Any: the read's value
+    from _ctypes import COMError  # noqa: PLC0415 - CPython on Windows
+
+    try:
+        return read()
+    except COMError as exc:
+        raise OSError("uia read failed") from exc

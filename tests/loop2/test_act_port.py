@@ -984,6 +984,7 @@ def test_the_fallback_records_where_it_aimed() -> None:
     rig = _port(semantic=Executor(NO_INVOKE), physical=Executor(ok("click")))
     assert rig.port.act(_dispatch("click", ROW)).action.evidence["aim"] == "label"
 
+
 def test_a_raw_com_error_inside_the_port_keeps_its_taxonomy_code() -> None:
     """AP-27: a COMError the executor did not classify goes through `execution.code_for`."""
     rig = _port(semantic=Executor(com_error(UIA_E_ELEMENTNOTAVAILABLE)))
