@@ -148,10 +148,16 @@ class ActResult:
 
 @dataclass(frozen=True)
 class TokenUsage:
-    """[V2.37] P6: the tokens one controller call used, as the provider reported them."""
+    """[V2.37] P6, [V2.40] Q3, [V2.45]: the tokens one controller call used, as the provider
+    reported them, by category. `input_tokens` excludes the cache categories; the two writes split
+    the API's `cache_creation_input_tokens` by lifetime (its `cache_creation` breakdown), and
+    `cache_read` is its `cache_read_input_tokens`."""
 
     input_tokens: int
     output_tokens: int
+    cache_write_5m: int = 0
+    cache_write_1h: int = 0
+    cache_read: int = 0
 
 
 @dataclass(frozen=True)
@@ -216,7 +222,8 @@ class TaskOutcome:
     observe that reported its cost, and each watched action's watch. The observe layer's share
     of the wall-time split."""
     tokens: float = 0.0
-    """Input plus output tokens of every call; NaN once a call's usage was missing."""
+    """Every reported token of every call, all categories ([V2.45]); NaN once a call's usage
+    was missing or invalid."""
     stale_observations: int = 0
     """[V2.28] item 1: Decisions discarded because the page moved under them (counted)."""
     target_changes: int = 0
@@ -229,8 +236,16 @@ class TaskOutcome:
     """[V2.26] (2), V2 §6.1, #301: the elements whose automation id was not read, summed over
     every observation the loop took in; counted on the pooled set, the decision stays open."""
     cost_usd: float | None = None
-    """Tokens times the configured price; None when no price is configured ([V2.37] P6): the
-    cost budget is then reported "not configured", never as enforced."""
+    """Each token category times its configured rate ([V2.40] Q3); None when no price is
+    configured or a used category has no rate ([V2.37] P6): the cost budget is then reported
+    "not configured", never as enforced, never 0.0."""
+    usage_incomplete: bool = False
+    """[V2.41] (1): some call's usage was missing or invalid: `tokens` and `cost_usd` are then a
+    lower bound, never complete. A decide that raises (abandoned on a kill, or failed) is counted
+    by the decide port's slice (#326), not here."""
+    usage: TokenUsage = TokenUsage(input_tokens=0, output_tokens=0)
+    """[V2.45]: the reported usage summed by category (a lower bound when `usage_incomplete`).
+    Stage 1 runs with caching off and asserts every cache counter here is zero."""
 
     @property
     def reason(self) -> str | None:

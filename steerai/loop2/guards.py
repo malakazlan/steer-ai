@@ -41,8 +41,8 @@ class Usage:
     """None when no price is configured: the cost budget is not checked ([V2.37] P6)."""
     wall_s: float
     tokens: float = 0.0
-    """Input plus output tokens; NaN once a call's usage was missing or invalid, so the token
-    budget trips ([V2.37] P6)."""
+    """Every reported token, all categories ([V2.45]); NaN once a call's usage was missing or
+    invalid, so the token budget trips ([V2.37] P6)."""
 
 
 def budget_hit(budgets: Budgets, used: Usage) -> BudgetToken | None:

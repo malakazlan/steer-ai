@@ -6,6 +6,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import date
 
 import pytest
 
@@ -96,6 +97,9 @@ TYPED_VALUE = ValueFact(filled=True, digest="typed")
 MAX_SETTLES = 1_000
 """More settles than this in one task is a runaway wait: the fake fails the test."""
 """What `World.read_value` returns: a field is empty until a type into it reads back True."""
+PRICE_URL = "https://platform.claude.com/docs/en/build-with-claude/prompt-caching"
+PRICE_READ_ON = date(2026, 11, 15)
+"""[V2.45]: where a test price says it was read, and when."""
 
 
 def snapshot(elements: Sequence[Element], *, stable: bool = True) -> Snapshot:

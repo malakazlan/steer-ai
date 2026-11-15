@@ -304,6 +304,10 @@ class _Run:
         self.dispatched: list[Dispatch] = []
         self.model_calls = 0
         self.tokens = 0.0
+        self.by_category = [0, 0, 0, 0, 0]
+        """[V2.40] Q3, [V2.45]: input, output, 5-minute write, 1-hour write and read, over every
+        reported call."""
+        self.usage_incomplete = False
         self.strikes = Strikes(STRIKE_LIMIT)
         self.strike_log: list[tuple[StrikeReason, ...]] = []
         self.refusal: tuple[RefusalKind, str] | None = None
@@ -360,6 +364,8 @@ class _Run:
             strikes=tuple(self.strike_log),
             tokens=self.tokens,
             cost_usd=self._cost(),
+            usage_incomplete=self.usage_incomplete,
+            usage=TokenUsage(*self.by_category),
             read_costs=tuple(self.read_costs),
             stale_observations=self.stale_count,
             target_changes=self.target_changes,
@@ -368,11 +374,18 @@ class _Run:
         )
 
     def _cost(self) -> float | None:
-        """[V2.37] P6: tokens times the configured price; None when no price is configured."""
+        """[V2.37] P6, [V2.40] Q3: each category times its own rate; None when no price is
+        configured or a used category has no rate ("not configured", never 0.0). With some
+        usage missing it is NaN: the cost budget trips, as the token budget does."""
         price = self.task.budgets.price
         if price is None:
             return None
-        return self.tokens * max(price.usd_per_input_token, price.usd_per_output_token)
+        total = 0.0
+        for used, rate in zip(self.by_category, price.rates(), strict=True):
+            if used and rate is None:
+                return None
+            total += used * (rate or 0.0)
+        return math.nan if self.usage_incomplete else total
 
     def _stopped(self, stop: Literal["cannot", "blocked"]) -> _End:
         """[V2.12], [V2.37] P5: the status after a stop, from the latest refusal since the last
@@ -498,7 +511,13 @@ class _Run:
         )
         decided = self.ports.decide(view)
         self.model_calls += 1
-        self.tokens += _tokens(decided.usage)
+        counts = _counts(decided.usage)
+        if counts is None:
+            self.tokens = math.nan  # never zero: the token budget trips ([V2.37] P6)
+            self.usage_incomplete = True
+        else:
+            self.tokens += sum(counts)
+            self.by_category = [a + b for a, b in zip(self.by_category, counts, strict=True)]
         return decided.decision
 
     def _turn(self, decision: Decision, observed: Observed, fresh: Observed) -> Observed:
@@ -1280,15 +1299,25 @@ def _step_subgoal(decision: Decision) -> str | None:
     return next((a.subgoal for a in decision.actions if a.verb in NOT_IN_STEP_VERBS), None)
 
 
-def _tokens(usage: TokenUsage | None) -> float:
-    """[V2.37] P6: a call's tokens; NaN when the usage is missing or invalid, so the token
-    budget trips."""
+def _counts(usage: TokenUsage | None) -> tuple[int, int, int, int, int] | None:
+    """[V2.37] P6, [V2.40] Q3, [V2.45]: a call's token counts by category; None when the usage
+    is missing, a count is not a whole number of tokens, zero or more, or the call had no input
+    at all (every call sends input, fresh or from the cache)."""
     if usage is None:
-        return math.nan
-    counts = (usage.input_tokens, usage.output_tokens)
+        return None
+    counts = (
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_write_5m,
+        usage.cache_write_1h,
+        usage.cache_read,
+    )
     if any(isinstance(c, bool) or not isinstance(c, int) or c < 0 for c in counts):
-        return math.nan
-    return float(sum(counts))
+        return None
+    fresh, _, write_5m, write_1h, read = counts
+    if fresh + write_5m + write_1h + read == 0:
+        return None
+    return counts
 
 
 def _shared_rids(observed: Observed) -> frozenset[tuple[int, ...]]:

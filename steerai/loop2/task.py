@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import date
 from typing import Literal
 
 Commit = Literal["none", "send", "submit", "delete", "pay"]
@@ -69,18 +70,51 @@ class Envelope:
     mode: Mode
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class TokenPrice:
-    """[V2.37] P6: the configured price of the model's tokens, in dollars per token."""
+    """[V2.37] P6, [V2.45]: the configured price of the model's tokens, in dollars per token.
+    Rates are configuration, never constants, and carry the page they were read from and the day
+    they were read."""
 
     usd_per_input_token: float
     usd_per_output_token: float
+    usd_per_cache_write_5m_token: float | None = None
+    """[V2.45]: the rate of a cache write that lives 5 minutes; None: not configured."""
+    usd_per_cache_write_1h_token: float | None = None
+    """[V2.45]: the rate of a cache write that lives 1 hour; None: not configured."""
+    usd_per_cache_read_token: float | None = None
+    """[V2.40] Q3: the cache-read rate; None: not configured."""
+    source: str
+    """[V2.45]: the https page the rates were read from."""
+    read_on: date
+    """[V2.45]: the day they were read."""
 
     def __post_init__(self) -> None:
-        """RT-32: a price is a finite positive number; 0 would read as free, never enforced."""
-        for rate in (self.usd_per_input_token, self.usd_per_output_token):
-            if not _positive(rate, integer=False):
+        """RT-32: a price is a finite positive number; 0 would read as free, never enforced.
+        A cache rate may be left out (not configured), never 0."""
+        for rate in self.rates():
+            if rate is not None and not _positive(rate, integer=False):
                 raise ValueError("a token price must be finite and positive")
+        source = self.source
+        if (
+            not isinstance(source, str)
+            or not source.startswith("https://")
+            or not source.isprintable()
+            or " " in source
+        ):
+            raise ValueError("a price source must be an https page")
+        if type(self.read_on) is not date:  # a datetime is not the day it was read
+            raise ValueError("a price read_on must be a date")
+
+    def rates(self) -> tuple[float, float, float | None, float | None, float | None]:
+        """The rates in `TokenUsage` order: input, output, 5-minute write, 1-hour write, read."""
+        return (
+            self.usd_per_input_token,
+            self.usd_per_output_token,
+            self.usd_per_cache_write_5m_token,
+            self.usd_per_cache_write_1h_token,
+            self.usd_per_cache_read_token,
+        )
 
 
 @dataclass(frozen=True)

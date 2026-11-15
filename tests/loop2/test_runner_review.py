@@ -21,6 +21,8 @@ from tests.loop2.world_fakes import (
     FIELD,
     GO,
     PAGE,
+    PRICE_READ_ON,
+    PRICE_URL,
     QUERY_PAGE,
     TYPED_VALUE,
     World,
@@ -293,7 +295,9 @@ def test_p6_with_no_price_the_cost_is_not_configured_and_never_trips() -> None:
 
 
 def test_p6_with_a_price_the_cost_budget_is_enforced() -> None:
-    price = TokenPrice(usd_per_input_token=0.01, usd_per_output_token=0.01)
+    price = TokenPrice(
+        usd_per_input_token=0.01, usd_per_output_token=0.01, source=PRICE_URL, read_on=PRICE_READ_ON
+    )
     budgets = Budgets(
         max_actions=20,
         max_model_calls=10,
