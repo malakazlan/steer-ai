@@ -35,7 +35,7 @@ from steerai.loop2.decision import (
     subgoal_tokens,
     validate,
 )
-from steerai.loop2.form import STATE_SET_VERB
+from steerai.loop2.form import ENTER_FIELDS, STATE_SET_VERB, scope_fields
 from steerai.loop2.guards import (
     ActionKey,
     StrikeReason,
@@ -426,6 +426,8 @@ class _Run:
         """[V2.64] Two: the two ComboBox facts of the task, no judgement."""
         """#301: unread automation ids over every observation taken in (`_in_domain`)."""
         self.partial_page_calls = 0
+        self.pre_task_draft_clicks = 0
+        """[V2.64] Two: counted at each non-field click (`_pre_task_draft`)."""
         """[V2.35]: model calls made on a growing or young observation (`_decide`)."""
         self.refusal_counts: dict[RefusalWord, int] = {}
         """[V2.46], [V2.63] (e): every refusal by its token (`_refuse`)."""
@@ -486,6 +488,7 @@ class _Run:
             query_combobox_listed=self.query_combobox_listed,
             typed_into_combobox=self.typed_into_combobox,
             partial_page_calls=self.partial_page_calls,
+            pre_task_draft_clicks=self.pre_task_draft_clicks,
             refusals=tuple(self.refusal_counts.items()),
             submit_parents=tuple(self.submit_parents.items()),
             history_dropped=self.history_dropped,
@@ -979,6 +982,8 @@ class _Run:
         if key is not None and not self._may_send(key, observed):
             self._refuse("repeat_send", handle=self._handle_of(element))
             return None
+        if action.verb == "click" and element is not None and element.role not in ENTER_FIELDS:
+            self._pre_task_draft(element, observed)
         self._check_budgets()
         sent = Dispatch(
             action=action,
@@ -1218,6 +1223,19 @@ class _Run:
         self.typed = kept
         self.pending = found
         return out
+
+    def _pre_task_draft(self, target: Element, observed: Observed) -> None:
+        """[V2.64] Two, [V2.37]'s recorded limit: count the click once when a field in its scope
+        holds text and has no pending-text record. A count only, never a refusal; secure fields
+        are never read, and the reads stop at the first filled one."""
+        mine = {m.runtime_id for typed in self.typed for m in _matches(typed, observed)}
+        for held in scope_fields(observed, target):
+            if held.runtime_id in mine:
+                continue
+            value = self._read_value(held, observed)
+            if value is not None and value.filled:
+                self.pre_task_draft_clicks += 1
+                return
 
     def _readers(self, observed: Observed) -> Readers:
         """[V2.29] Q2: the claim checks' live reads, bound to the ports, taken at the claim and

@@ -22,7 +22,7 @@ from steerai.orchestrator.gate import (
     group_name,
     may_read,
 )
-from steerai.world.effects import Observed
+from steerai.world.effects import Observed, top_document
 from steerai.world.elements import Element
 
 STATE_SET_VERB: Final[Mapping[str, str]] = {
@@ -76,6 +76,23 @@ def beside(observed: Observed, field: tuple[int, ...], target: Element) -> bool 
     by_id = {e.id: e for e in observed.snapshot.elements}
     typed = next(e for e in observed.snapshot.elements if e.runtime_id == field)
     return _beside(observed, by_id, typed, target)
+
+
+def scope_fields(observed: Observed, target: Element) -> tuple[Element, ...]:
+    """[V2.64] Two: the fields (Edit, ComboBox) whose [V2.22] scope holds a click's target, in
+    the page's top Document. A missing fact reads as inside; a field proven outside the top
+    Document (the browser frame's address bar) is never in it."""
+    snapshot = observed.snapshot
+    by_id = {e.id: e for e in snapshot.elements}
+    top = top_document(snapshot)
+    return tuple(
+        e
+        for e in snapshot.elements
+        if e.role in ENTER_FIELDS
+        and e.runtime_id != target.runtime_id
+        and (top is None or _under(e, top.id, by_id) is not False)
+        and _beside(observed, by_id, e, target) is not False
+    )
 
 
 def _beside(
