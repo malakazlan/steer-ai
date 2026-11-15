@@ -1072,18 +1072,30 @@ def run_child(
     kill: Callable[[int], None],
 ) -> ChildRun:
     """Run the child to its end or its cap (then its whole tree is killed), and read its final
-    JSON line from `out`; a last line that is not one JSON object is no final line."""
+    JSON line from `out`; a last line that is not one JSON object is no final line. On any
+    other exit path (a Ctrl+C, any exception while waiting) the child this call started is
+    killed the same way before the exception goes on: a stopped run never leaves its task
+    running."""
     child = start(argv, out)
     killed = False
     try:
         code: int | None = child.wait(timeout=cap_s)
     except subprocess.TimeoutExpired:
         killed = True
-        kill(child.pid)
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            child.wait(timeout=KILL_WAIT_S)  # bounded: a tree that will not die is not waited on
+        _end(child, kill)
         code = None
+    except BaseException:
+        _end(child, kill)
+        raise
     return ChildRun(None if killed else _last_json(out), killed, code)
+
+
+def _end(child: Child, kill: Callable[[int], None]) -> None:
+    """Kill the child's tree by the pid of the handle `start` gave, then wait for it, bounded:
+    a tree that will not die is not waited on."""
+    kill(child.pid)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        child.wait(timeout=KILL_WAIT_S)
 
 
 def _last_json(out: Path) -> Json | None:
