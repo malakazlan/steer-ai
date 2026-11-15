@@ -237,6 +237,12 @@ def page_check(task: StageTask, raw: str) -> bool:
     raise ValueError(f"no page check for {task.fixture} task {task.task_id}")
 
 
+CHROME_LOST: Final = "chrome_lost"
+"""#459: the run's own Chrome went away under the harness (its DevTools connection closed): an
+infrastructure void, re-run within the bound and counted toward the 1-in-10 void limit. The
+same token as `chrome_a11y.CHROME_LOST`, which a test pins."""
+
+
 @dataclass(frozen=True)
 class RunRecord:
     """What one run left: the child's final line and the fixture's own facts."""
@@ -256,6 +262,8 @@ class RunRecord:
     """The child's exit code; None when killed."""
     memory: Json | None = None
     """[V2.63]: the working-set sampler's summary over the child's run (`run_sampled`)."""
+    lost: str | None = None
+    """#459: the run's own Chrome went away under the harness (`CHROME_LOST`); None when not."""
 
 
 @dataclass(frozen=True)
@@ -281,6 +289,8 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
     # #366 P2: the rules in this order
     if not record.fixture_ok:
         return verdict("void", "fixture_failed_before_start")
+    if record.lost is not None:  # #459: the browser went away under the harness
+        return verdict("void", record.lost)
     if record.killed:
         return verdict("fail", "cap_killed")
     final = record.final
@@ -1297,6 +1307,7 @@ def _live_3d(
     from steerai.probes import instant_search as fixture  # noqa: PLC0415 - live only
     from steerai.probes.chrome_a11y import (  # noqa: PLC0415
         CHROME_DEFAULT,
+        ChromeLost,
         launch_chrome,
         stop_chrome,
     )
@@ -1331,6 +1342,10 @@ def _live_3d(
             time.sleep(fixture.SETTLE_S)
             try:
                 entries = fixture.parse_log(fixture._read_log(cdp, base))
+            except ChromeLost:  # #459: the browser went away; a void, never a crash
+                return RunRecord(task.task_id, run, ran.final, True, False, None, None,
+                                 killed=ran.killed, code=ran.code, memory=memory,
+                                 lost=CHROME_LOST)  # fmt: skip
             except (OSError, RuntimeError, ValueError):
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
                                  killed=ran.killed, code=ran.code, memory=memory)  # fmt: skip
@@ -1361,6 +1376,7 @@ def _live_page(
     from steerai.probes import instant_search  # noqa: PLC0415 - live only
     from steerai.probes.chrome_a11y import (  # noqa: PLC0415
         CHROME_DEFAULT,
+        ChromeLost,
         launch_chrome,
         stop_chrome,
     )
@@ -1407,6 +1423,10 @@ def _live_page(
                 if not isinstance(raw, str):
                     raise ValueError("the page log is not text")
                 check = page_check(task, raw)
+            except ChromeLost:  # #459: the browser went away; a void, never a crash
+                return RunRecord(task.task_id, run, ran.final, True, False, None, None,
+                                 killed=ran.killed, code=ran.code, memory=memory,
+                                 lost=CHROME_LOST)  # fmt: skip
             except (OSError, RuntimeError, ValueError):
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
                                  killed=ran.killed, code=ran.code, memory=memory)  # fmt: skip
