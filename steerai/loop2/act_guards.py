@@ -35,7 +35,6 @@ from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.decision import Key
 from steerai.loop2.loop import PortInterrupted
 from steerai.loop2.world_ports import kill_sleep
-from steerai.session.monitor import TAKEOVER
 from steerai.world.elements import Box
 
 KEY_CHORDS: Final[Mapping[Key, str]] = {
@@ -74,9 +73,9 @@ class InputGuard:
         interrupted: Callable[[], str | None],
         focused: Callable[[], tuple[tuple[int, ...], bool | None]],
         clock: Callable[[], float],
+        last_input: Callable[[], float],
+        takeover_token: Callable[[], str],
         pause: Callable[[float], None] = time.sleep,
-        last_input: Callable[[], float] | None = None,
-        takeover_token: Callable[[], str] = lambda: TAKEOVER,
     ) -> None:
         self._inner = inner
         self._interrupted = interrupted
@@ -119,7 +118,7 @@ class InputGuard:
         self._switch()
         if self._armed is None:
             raise RefusalError(ErrorCode.GATE_BLOCKED, "not_armed")
-        if self._last_input is not None and self._last_input() > self._act_started:
+        if self._last_input() > self._act_started:
             # [V2.57] LW-05: the person took the keyboard or mouse during this act
             raise RefusalError(ErrorCode.GATE_PENDING_USER, self._takeover_token())
         focus, secure = self._focused()
@@ -237,7 +236,7 @@ class GuardDesk:
         guard: InputGuard,
         *,
         last_input: Callable[[], float],
-        takeover_token: Callable[[], str] = lambda: TAKEOVER,
+        takeover_token: Callable[[], str],
     ) -> None:
         self._guard = guard
         self._last_input = last_input
