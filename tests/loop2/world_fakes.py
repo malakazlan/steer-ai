@@ -17,6 +17,8 @@ from steerai.loop2.listing import ListingTurn
 from steerai.loop2.loop import (
     READ_BACK_VERBS,
     ActResult,
+    Audited,
+    AuditView,
     Decided,
     Dispatch,
     Ports,
@@ -277,6 +279,14 @@ class World:
     """What `settle` returns; None: the current screen."""
     settle_advance_s: float = 0.0
     """How far the clock moves during each settle (a hold that takes time)."""
+    audit_reply: Audited | BaseException = field(
+        default_factory=lambda: Audited(veto=False, reason="outcome_shown", usage=TokenUsage(20, 2))
+    )
+    """[V2.64] One: what the final audit answers (an allow by default, so a self-written task
+    still ends done for one more call), or the failure it raises."""
+    audits: list[AuditView] = field(default_factory=list)
+    interrupt_after_audit: bool = False
+    """Report `interruption` once the audit has been asked."""
     interrupt_after_settle: bool = False
     """Report `interruption` once a settle has run (the person's kill during the wait)."""
     decide_raises: Exception | None = None
@@ -422,14 +432,25 @@ class World:
     def _interrupted(self) -> str | None:
         if self.interrupt_after_settle:
             return self.interruption if "settle" in self.events else None
+        if self.interrupt_after_audit:
+            return self.interruption if "audit" in self.events else None
         if self.interrupt_in_decide is not None and len(self.views) >= self.interrupt_in_decide:
             return self.interruption
         if self.interrupt_after is not None and len(self.dispatched) >= self.interrupt_after:
             return self.interruption
         return None
 
+    def _audit(self, view: AuditView) -> Audited:
+        self.events.append("audit")
+        self.audits.append(view)
+        reply = self.audit_reply
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
     def ports(self) -> Ports:
         return Ports(
+            audit=self._audit,
             decide=self._decide,
             observe=self._observe,
             act=self._act,
