@@ -343,6 +343,9 @@ class TaskOutcome:
     watch_deadlines: tuple[tuple[WatchKind, int, int], ...] = ()
     """[V2.48]: per watch class (every class, in order): the watches and how many ended at their
     deadline, for stage 1's per-class deadline counts."""
+    rejections: tuple[str, ...] = ()
+    """The controller's rejection tokens of the turn that ended the task (closed tokens only),
+    so a stopped run says why; empty otherwise."""
     usage_incomplete: bool = False
     """[V2.41] (1): some call's usage was missing or invalid: `tokens` and `cost_usd` are then a
     lower bound, never complete. A decide that raises (abandoned on a kill, or failed) is counted

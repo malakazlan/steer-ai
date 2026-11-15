@@ -546,6 +546,20 @@ def test_a_lost_monitor_is_reported_apart_from_steers_own_stops(tmp_path: Path) 
     assert clean.result()["monitor_lost"] is False
 
 
+def test_the_final_line_names_a_rejection_with_its_closed_tokens(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The 3d shakedown's #3: a run stopped on a rejected turn says why, in closed tokens."""
+    stopped = TaskOutcome(
+        status="stopped", cause=Reason("port_rejected"), dispatched=(), model_calls=2,
+        strikes=(), tokens=240.0, cost_usd=0.0, wall_s=1.0, rejections=("id_not_listed",),
+    )  # fmt: skip
+    monkeypatch.setattr(cli, "run_task", lambda _task, _ports: stopped)
+    run = Run(tmp_path)
+    run()
+    assert run.result()["rejections"] == ["id_not_listed"]
+
+
 def test_the_final_line_carries_the_cache_counters(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

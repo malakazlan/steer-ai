@@ -25,7 +25,7 @@ from steerai.action.dispositions import Delivery
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.actuate import may_retry, press_allowed, type_focus_ok
 from steerai.loop2.batch import batch_continues
-from steerai.loop2.controller import ControllerError, focus_state
+from steerai.loop2.controller import TOKEN, ControllerError, focus_state
 from steerai.loop2.decision import (
     CLAIM_CLOSES,
     NOT_IN_STEP_VERBS,
@@ -376,6 +376,8 @@ class _Run:
         self.usage_incomplete = False
         self.watch_counts: dict[WatchKind, list[int]] = {k: [0, 0] for k in get_args(WatchKind)}
         """[V2.48]: per class, the watches and those that ended at their deadline."""
+        self.rejections: tuple[str, ...] = ()
+        """The shakedown's #3: the last rejected turn's closed tokens, for the final line."""
         self.strikes = Strikes(STRIKE_LIMIT)
         self.strike_log: list[tuple[StrikeReason, ...]] = []
         self.refusal: tuple[RefusalKind, str] | None = None
@@ -448,6 +450,7 @@ class _Run:
             cost_usd=self._cost(),
             usage_incomplete=self.usage_incomplete,
             watch_deadlines=tuple((k, w, d) for k, (w, d) in self.watch_counts.items()),
+            rejections=self.rejections,
             usage=TokenUsage(*self.by_category),
             read_costs=tuple(self.read_costs),
             stale_observations=self.stale_count,
@@ -615,12 +618,20 @@ class _Run:
         try:
             decided = self.ports.decide(view)
         except (PortInterrupted, SteerError, ControllerError) as exc:
-            if not (isinstance(exc, ControllerError) and exc.record is None):
+            if isinstance(exc, ControllerError):
+                self.rejections = tuple(t for t in exc.tokens if TOKEN.fullmatch(t))
+            if isinstance(exc, ControllerError) and exc.record is None:
+                raise  # no call was made: nothing billed
+            self.model_calls += 1
+            counts = _counts(exc.usage) if isinstance(exc, ControllerError) else None
+            if counts is None:
                 # [V2.41] (1): an abandoned or failed call is billed but never reported: it is
                 # counted, and the usage is a lower bound, never zero
-                self.model_calls += 1
                 self.tokens = math.nan
                 self.usage_incomplete = True
+            else:  # a rejected turn's calls reported their usage: counted, never unknown
+                self.tokens += sum(counts)
+                self.by_category = [a + b for a, b in zip(self.by_category, counts, strict=True)]
             raise
         self.model_calls += 1
         counts = _counts(decided.usage)
