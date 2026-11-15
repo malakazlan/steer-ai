@@ -105,7 +105,14 @@ from steerai.loop2.query import (
     top_document_replaced,
 )
 from steerai.loop2.task import GoalSpan, Subgoal, Task, known_params
-from steerai.loop2.turn_trace import ProofAttempt, TurnTrace, WatchFacts, closed, turn_record
+from steerai.loop2.turn_trace import (
+    ProofAttempt,
+    TurnTrace,
+    WatchFacts,
+    closed,
+    positional,
+    turn_record,
+)
 from steerai.loop2.verify import (
     PAGE_CARRIERS,
     URL_CARRIERS,
@@ -925,7 +932,8 @@ class _Run:
         vocab = Vocab(known_params(self.subgoals), frozenset(self.handles.by_handle))
         if record_ok(record, vocab):
             self.log.append(record)
-            self.turn.history.append(render(record))  # [V2.67] D: the grammar-checked line
+            ids = [s.id for s in self.subgoals]  # [V2.67] D (a): positions, never names
+            self.turn.history.append(render(positional(record, ids, vocab.known)))
         else:
             self.history_dropped += 1
 

@@ -7,8 +7,10 @@ every proof attempt with every condition (`ProofAttempt`, filled by the verifier
 The trace crosses the trace boundary (CLAUDE.md: names, message text and paths are redacted), so
 the check is structural: `closed` walks the record and accepts only the fixed keys, numbers,
 booleans, tokens from the code's own closed sets, `param:<n>` positions, and history lines the
-history grammar accepts. A record that fails is dropped and counted by its writer, never
-written in part.
+positional grammar accepts. A history line names no model-chosen word: its subgoal ids and
+param names are replaced by their positions (`positional`, the ruling's (a)), so a raw id
+fails the record. A record that fails is dropped and counted by its writer, never written in
+part.
 """
 
 from __future__ import annotations
@@ -16,12 +18,21 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Final, Literal, get_args
 
 from steerai.loop2.controller import FocusState
 from steerai.loop2.decision import ClaimKind, Closes, Key, Stop, Verb
-from steerai.loop2.history import GRAMMAR, MAX_LINE, REFUSAL_TOKENS, RefusalWord
+from steerai.loop2.history import (
+    MAX_LINE,
+    POSITIONAL_GRAMMAR,
+    REFUSAL_TOKENS,
+    ClaimResult,
+    HistoryRecord,
+    LogEntry,
+    Proven,
+    RefusalWord,
+)
 from steerai.loop2.loop import TokenUsage, WatchKind
 from steerai.loop2.owned import OwnedToken
 from steerai.loop2.verify import CheckToken, ProofToken
@@ -113,8 +124,37 @@ class TurnTrace:
     watch: tuple[WatchFacts, ...]
     tokens: TokenUsage | None
     history: tuple[str, ...]
-    """The turn's typed history lines, as `history.render` gives them."""
+    """The turn's typed history lines, as `history.render` gives them for the `positional`
+    record."""
     proofs: tuple[ProofAttempt, ...]
+
+
+UNKNOWN: Final = "?"
+"""A name not found among the task's subgoals or a subgoal's params: no grammar accepts it, so
+the record fails the check and is dropped, never written with the raw name."""
+
+
+def positional(
+    record: HistoryRecord, subgoals: Sequence[str], known: Mapping[str, frozenset[str]]
+) -> HistoryRecord:
+    """[V2.67] D ruling (a): the record with every model-chosen name replaced by its position,
+    the rule `decision_shape` uses: a subgoal id by its place among the task's subgoals (`s0`),
+    a param name by its place among its subgoal's declared params, sorted (`param:0`). A
+    subgoal id or param name is model text and may carry the request's own words."""
+
+    def subgoal(sid: str) -> str:
+        return f"s{subgoals.index(sid)}" if sid in subgoals else UNKNOWN
+
+    if isinstance(record, LogEntry):
+        param = record.param
+        if param is not None:
+            declared = sorted(known.get(record.subgoal or "", frozenset()))
+            param = f"param:{declared.index(param)}" if param in declared else UNKNOWN
+        sid = None if record.subgoal is None else subgoal(record.subgoal)
+        return replace(record, subgoal=sid, param=param)
+    if isinstance(record, ClaimResult | Proven):
+        return replace(record, subgoal=subgoal(record.subgoal))
+    return record
 
 
 def turn_record(facts: TurnTrace) -> dict[str, object]:
@@ -176,8 +216,9 @@ KEYS: Final = frozenset(
 
 def closed(record: Mapping[str, object]) -> bool:
     """The record holds no free text: fixed keys only; numbers finite; strings from the closed
-    sets or `param:<n>`; history lines only under `history`, each one the history grammar
-    accepts. Anything else (a name, a title, a path, page text) fails the whole record."""
+    sets or `param:<n>`; history lines only under `history`, each one the positional grammar
+    accepts (a raw subgoal id or param name fails it). Anything else (a name, a title, a
+    path, page text) fails the whole record."""
     return _ok(record, key=None)
 
 
@@ -190,7 +231,7 @@ def _ok(value: object, *, key: str | None) -> bool:  # noqa: PLR0911 - one retur
         return math.isfinite(value)
     if isinstance(value, str):
         if key == "history":
-            return len(value) <= MAX_LINE and GRAMMAR.fullmatch(value) is not None
+            return len(value) <= MAX_LINE and POSITIONAL_GRAMMAR.fullmatch(value) is not None
         if key in KEY_TOKENS:
             return value in KEY_TOKENS[key]
         return value in CLOSED_TOKENS or _PARAM.fullmatch(value) is not None
