@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Final, Literal, get_args
 
 from steerai.loop2.decision import Key, Verb
+from steerai.loop2.form import beside
 from steerai.loop2.query import search_landmark_of
 from steerai.loop2.stage1_expected import (
     Act,
@@ -182,16 +183,35 @@ def deciding_facts(row: SiteRow, goal: str, read: Observed) -> DecidingFacts:
     copy Steer picks, and it stands. Otherwise it is `ambiguous_target`, naming the facts that
     differ (the coordinator's ruling, 2026-11-15)."""
     options = [[None] if act.verb == "press" else list(targets_in(act, read)) for act in row.acts]
-    seen = {
-        _facts_for(row, goal, read, dict(enumerate(choice)))
-        for choice in itertools.product(*options)
-    }
+    choices = [dict(enumerate(choice)) for choice in itertools.product(*options)]
+    in_scope = [c for c in choices if _paired(row, read, c)]
+    seen = {_facts_for(row, goal, read, choice) for choice in (in_scope or choices)}
     if len(seen) > 1:
         differ = sorted(
             f.name for f in fields(DecidingFacts) if len({getattr(s, f.name) for s in seen}) > 1
         )
         raise ValueError(f"ambiguous_target: the copies differ on {differ}")
     return seen.pop()
+
+
+def _paired(row: SiteRow, read: Observed, picked: Mapping[int, Element | None]) -> bool:
+    """A click pairs with the copy of the field typed before it only when it is in that field's
+    [V2.22] submit scope (`form.beside`, the gate's own): typing into one copy of a form and
+    clicking another copy's button is no submit of the text. An unknown relation pairs (the gate
+    reads it as a submit too). With no click after a type, every choice pairs."""
+    typed: Element | None = None
+    for index, act in enumerate(row.acts):
+        element = picked.get(index)
+        if act.verb == "type":
+            typed = element
+        elif (
+            act.verb == "click"
+            and typed is not None
+            and element is not None
+            and beside(read, typed.runtime_id, element) is False
+        ):
+            return False
+    return True
 
 
 def _facts_for(

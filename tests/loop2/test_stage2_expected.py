@@ -398,3 +398,47 @@ def test_the_unrated_reasons_are_closed() -> None:
     assert (
         frozenset({"target_after_opener", "pressed_unread", "copies_disagree"}) == UNRATED_REASONS
     )
+
+
+# ---- the coordinator's ruling on py1: a click pairs with the field it would submit ---------------
+
+FORM_TWO = element(60, "Group", "", (9, 60), 1)
+BOX_TWO = element(61, "Edit", "Find", (9, 61), 60)
+GO_TWO = element(62, "Button", "Look up", (9, 62), 60)
+
+
+def two_forms() -> Observed:
+    """The page holds the search form twice: each field's button is in its own form."""
+    base = read()
+    marks = dict(base.landmarks or {})
+    second = Landmark(kind="search", runtime_id=FORM_TWO.runtime_id)
+    marks |= {FORM_TWO.runtime_id: None, BOX_TWO.runtime_id: second, GO_TWO.runtime_id: second}
+    roles = {**(base.aria_roles or {}), BOX_TWO.runtime_id: "searchbox"}
+    elements = [*SHOWN, FORM_TWO, BOX_TWO, GO_TWO]
+    return dataclasses.replace(
+        base, snapshot=dataclasses.replace(base.snapshot, elements=elements),
+        landmarks=marks, aria_roles=roles,
+    )  # fmt: skip
+
+
+def test_a_click_is_rated_only_with_the_fields_in_its_submit_scope() -> None:
+    """Typing into one form and clicking the other form's button is no submit of the text, and
+    not what Steer does: those pairs are left out, as the gate's own [V2.22] scope decides."""
+    assert deciding_facts(TYPE_CLICK, GOAL, two_forms()) == deciding_facts(TYPE_CLICK, GOAL, read())
+
+
+def test_a_click_beside_no_copy_of_the_field_is_still_rated_on_every_pair() -> None:
+    """When no pair is in scope the click submits nothing: every pair stands, as before."""
+    lone = SiteRow(
+        acts=(Act("type", "Edit", "Notes", param="red shoes"), Act("click", "Button", "Look up")),
+        proof=None,
+        why="w",
+    )
+    facts = deciding_facts(lone, GOAL, two_forms_notes())
+    assert facts.button_role == "Button"
+
+
+def two_forms_notes() -> Observed:
+    """NOTE (the field) and both forms' buttons: NOTE is under the Document, so both buttons are
+    under its parent container: both pairs are in scope, and agree."""
+    return two_forms()
