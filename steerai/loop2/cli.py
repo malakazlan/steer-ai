@@ -131,11 +131,7 @@ def parse_v2(argv: Sequence[str]) -> V2Options:
     parser.add_argument("--task-id", default=None)
     parser.add_argument("--kill-key", default=DEFAULT_KILL_KEY)
     parser.add_argument("--trace", type=Path, default=None, help="the clear JSON-lines trace")
-    parser.add_argument(
-        "--price-file",
-        type=Path,
-        default=Path(os.environ.get("LOCALAPPDATA", ".")) / "steer" / "price.json",
-    )
+    parser.add_argument("--price-file", type=Path, default=None)
     calls, actions, tokens, wall = DEFAULT_BUDGETS
     parser.add_argument("--max-model-calls", type=_positive_int, default=calls)
     parser.add_argument("--max-actions", type=_positive_int, default=actions)
@@ -156,12 +152,21 @@ def parse_v2(argv: Sequence[str]) -> V2Options:
         task_id=args.task_id or f"task-{uuid.uuid4().hex[:12]}",
         kill_key=str(args.kill_key),
         trace=args.trace,
-        price_file=args.price_file,
+        price_file=args.price_file if args.price_file is not None else _default_price_file(),
         max_model_calls=args.max_model_calls,
         max_actions=args.max_actions,
         max_tokens=args.max_tokens,
         max_wall_s=args.max_wall_s,
     )
+
+
+def _default_price_file() -> Path:
+    """`%LOCALAPPDATA%/steer/price.json`; with LOCALAPPDATA unset, a refusal, never the working
+    directory (#361 H11)."""
+    root = os.environ.get("LOCALAPPDATA")
+    if not root:
+        raise UsageError("LOCALAPPDATA is unset: give the price file with --price-file")
+    return Path(root) / "steer" / "price.json"
 
 
 def bind_window(

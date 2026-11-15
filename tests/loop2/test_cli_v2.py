@@ -418,3 +418,11 @@ def test_the_header_is_written_to_the_trace_once_with_every_limit(tmp_path: Path
     headers = [json.loads(ln) for ln in lines if '"run_header"' in ln]
     assert len(headers) == 1
     assert headers[0]["max_actions"] == "40"
+
+
+def test_no_localappdata_and_no_price_file_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#361 H11 (PRC-10): never a price file from the working directory."""
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    with pytest.raises(UsageError, match="price"):
+        parse_v2([*WHERE])
+    assert parse_v2([*WHERE, "--price-file", "p.json"]).price_file == Path("p.json")
