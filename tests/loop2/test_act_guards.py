@@ -23,7 +23,12 @@ from steerai.action.executor import Action, Executor
 from steerai.action.keyboard import NAMED_KEYS
 from steerai.action.physical import PhysicalAction, PhysicalExecutor
 from steerai.errors import ErrorCode
-from steerai.loop2.act_guards import KEY_CHORDS, GuardDesk, InputGuard, ToggleGuard
+from steerai.loop2.act_guards import (
+    KEY_CHORDS,
+    GuardDesk,
+    InputGuard,
+    ToggleGuard,
+)
 from steerai.loop2.decision import Key
 from tests.action.fakes import TYPE_IDS, UIA_INVOKE, UIA_TOGGLE, FakeHandle, FakeWindows
 from tests.action.test_executor import _snapshot as _state_snapshot
@@ -80,7 +85,7 @@ def _guard(
         focused=lambda: (inner.focused_runtime_id(), secure()),
         clock=lambda: clock["t"],
         pause=pause,
-        last_input=lambda: -1.0,
+        last_input=lambda: -100.0,  # idle: the act port's check passed
         takeover_token=lambda: "takeover",
     )
 
@@ -568,7 +573,7 @@ def test_one_read_of_the_focused_element_per_burst() -> None:
         focused=focused,
         clock=lambda: 0.0,
         pause=lambda _s: None,
-        last_input=lambda: -1.0,
+        last_input=lambda: -100.0,  # idle: the act port's check passed
         takeover_token=lambda: "takeover",
     )
     with guard.armed(frozenset({TARGET_ID})):

@@ -55,6 +55,7 @@ PINNED_STATUS = (
     "latency_events",
     "run_time_events",
     "ws_floor",
+    "end_steer_failures",
 )
 PINNED_CONFIG = (
     "magic",
@@ -72,6 +73,7 @@ PINNED_CONFIG = (
     "crc",
     "ask_depth",
     "kill_ack",
+    "end_self_failures",
 )
 NO_INPUT_CONTENT = ("vk", "scan", "key_code", "char", "text", "point", "pos", "_x", "_y", "data")
 

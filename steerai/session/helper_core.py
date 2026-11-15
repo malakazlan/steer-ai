@@ -50,6 +50,14 @@ SLEEP_DIVERGENCE_MS: Final = 50
 """[V2.60] provisional: a loop whose QPC advanced this much more than the unbiased interrupt time
 (which excludes sleep, Microsoft Learn QueryUnbiasedInterruptTime) is a resume. The final value
 is max(50 ms, 3 x the no-sleep maximum), from P-sleep."""
+KILL_ACK_S: Final = 2.0
+"""[V2.60] Q1, layer 2 (provisional, unmeasured; M10 sets it): Steer's own watchdog ends Steer
+when a set kill word is not acknowledged within this."""
+KILL_TERMINATE_S: Final = 5.0
+"""[V2.60] Q1, layer 3 (provisional, unmeasured; M10 sets it; at least 2 x `KILL_ACK_S`): the
+helper ends Steer when the kill is still unacknowledged after this."""
+KILL_EXIT_CODE: Final = 4
+"""The exit code of a Steer ended for the kill: v1's `EXIT_STOPPED` (pinned equal by a test)."""
 MAX_ASK_DEPTH: Final = 16
 """#375 P5: the most nested asks Steer can have open. A larger word is an underflow (or a
 corrupt word): read as no ask, and counted as a callback error, so Steer loses the monitor."""
@@ -63,7 +71,7 @@ EXIT_MAP: Final = 3
 """The status section could not be mapped, so nothing could be published."""
 EXIT_FAILED: Final = 4
 """A failure was published in the status words (`state = failed`, an error code)."""
-_STEERS_OWN: Final = frozenset({"crc", "ask_depth", "kill_ack"})
+_STEERS_OWN: Final = frozenset({"crc", "ask_depth", "kill_ack", "end_self_failures"})
 _IMMUTABLE: Final = tuple(n for n in CONFIG_WORDS if n not in _STEERS_OWN)
 _COUNTS: Final = ("user", "injected_other", "steer", "answer", "other_steer")
 _TICK_WRAP: Final = 0xFFFF_FFFF
@@ -172,6 +180,7 @@ class HelperCore:
         self._published_user: float | None = None
         self._published_own = dict.fromkeys(HOOKS, float(started_qpc))
         self._last_loop: tuple[int, int] | None = None
+        self._kill_qpc: int | None = None
 
     # ---- lifecycle -----------------------------------------------------------------------------
 
@@ -239,9 +248,24 @@ class HelperCore:
         if run > self._timeout_qpc:
             s.set("gap_events", s.get("gap_events") + 1)
 
-    def hotkey(self) -> None:
+    def hotkey(self, *, qpc: int) -> None:
+        """The person's kill: set once, never cleared; the first press starts layer 3's bound."""
         self._classifier.on_hotkey()
         self._status.set("kill", 1)
+        if self._kill_qpc is None:
+            self._kill_qpc = qpc
+
+    def kill_overdue(self, *, qpc: int) -> bool:
+        """[V2.60] Q1, layer 3: the kill is set, Steer has not acknowledged it (`kill_ack`), and
+        `KILL_TERMINATE_S` has passed since the first press. The only reason the helper ever
+        ends Steer."""
+        if self._kill_qpc is None or self._config.get("kill_ack"):
+            return False
+        return qpc - self._kill_qpc > KILL_TERMINATE_S * self._freq
+
+    def end_steer_failed(self) -> None:
+        """#383 HM-08: layer 3's `TerminateProcess` failed; counted, and the loop tries again."""
+        self._status.set("end_steer_failures", self._status.get("end_steer_failures") + 1)
 
     def callback_error(self) -> None:
         self._classifier.on_callback_error()
