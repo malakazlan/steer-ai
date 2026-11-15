@@ -76,6 +76,10 @@ def _param_names() -> bool:
     return bool(params["propertyNames"]["pattern"] == f"^{PARAM_NAME.pattern}$")
 
 
+def _params_needed() -> bool:
+    return bool(_defs()["SubgoalDoc"]["properties"]["params"].get("minProperties") == 1)
+
+
 def _desc_length() -> bool:
     return bool(_defs()["SubgoalDoc"]["properties"]["desc"]["maxLength"] == MAX_DESC_CHARS)
 
@@ -93,10 +97,10 @@ TAUGHT: Final[Mapping[str, Taught]] = {
     "param_name_bad": _param_names,
     "param_not_span": (
         "rule",
-        "A param's value is words copied exactly from the request, as written there, never an "
-        "element's name.",
+        "When you declare a subgoal, each param's value is words copied exactly from the "
+        "request, never an element's name.",
     ),
-    "state_without_param": ("rule", "Every subgoal needs at least one param."),
+    "state_without_param": _params_needed,
     "stop_with_actions": ("rule", "A reply either stops or asks, never both, and then has no "),
     "subgoal_duplicate": ("rule", "Subgoal ids are unique"),
     "subgoal_id_bad": _subgoal_id_pattern,
@@ -105,7 +109,7 @@ TAUGHT: Final[Mapping[str, Taught]] = {
     "text_bad": ("rule", "`type` text is one line of words from the request exactly"),
     "too_many_actions": _top("actions", "maxItems", MAX_ACTIONS),
     "too_many_subgoals": _top("subgoals", "maxItems", MAX_SUBGOALS),
-    "value_without_param": ("rule", "Every subgoal needs at least one param."),
+    "value_without_param": _params_needed,
     "commit_cannot_apply": _omits("Action_wait", "commit"),
     "commit_undeclared": ("rule", "Declare `commit` for any action that changes someone else's"),
     "focus_needs_field": ("rule", "`focus` is for text fields only"),
@@ -113,7 +117,7 @@ TAUGHT: Final[Mapping[str, Taught]] = {
     "key_missing": _requires("Action_press", "key"),
     "not_own_text": ("rule", "Backspace edits only text you typed"),
     "option_missing": _requires("Action_choose", "option"),
-    "page_without_param": ("rule", "Every subgoal needs at least one param."),
+    "page_without_param": ("rule", "A page subgoal needs at least one param."),
     "param_missing": _requires("Claim_value", "param"),
     "param_unknown": ("rule", "`param` names one of its subgoal's params by its name"),
     "repeat_send": ("rule", "Never repeat an action that had no effect."),

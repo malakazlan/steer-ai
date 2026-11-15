@@ -132,3 +132,12 @@ def test_the_pattern_literals_are_pinned_to_their_length_constants() -> None:
 
     assert SUBGOAL_ID.pattern == "[a-z0-9_]{1,%d}" % SUBGOAL_ID_CHARS  # noqa: UP031 - a pin
     assert PARAM_NAME.pattern == "[a-z0-9_]{1,%d}" % PARAM_NAME_CHARS  # noqa: UP031 - a pin
+
+
+@pytest.mark.parametrize("closes", ["value", "state", "page"])
+def test_a_subgoal_with_no_param_is_refused_by_both(closes: str) -> None:
+    """[V2.68] Two ruling (b): every closing kind needs a param; the schema says so once."""
+    params = _schema()["$defs"]["SubgoalDoc"]["properties"]["params"]
+    assert params["minProperties"] == 1
+    got = _tokens(_first(_sub(closes=closes, params={})))
+    assert f"{closes}_without_param" in got
