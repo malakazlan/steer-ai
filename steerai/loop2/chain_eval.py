@@ -45,17 +45,32 @@ from typing import Any, Final, Literal, Protocol
 from steerai.loop2.chain_pages import Page, PageWorld, outcome_shown
 from steerai.loop2.controller import AUDIT_PROMPT_VERSION, PROMPT_VERSION, ControllerError
 from steerai.loop2.decide_port import Call, Counter, DecideCalls, TaskGenerations
-from steerai.loop2.loop import Decided, Ports, TaskOutcome, TurnView
+from steerai.loop2.decision import Decision
+from steerai.loop2.loop import Decided, Ports, TaskOutcome, TokenUsage, TurnView
 from steerai.loop2.prompt_inputs import make_audit, make_decide
 from steerai.loop2.runner import run_task
 from steerai.loop2.task import Budgets, Envelope, Task
 
 SHAPES_PATH: Final = Path(__file__).with_name("chain_shapes.json")
-SHAPES_SHA256: Final = "236854e1547b5a59b6dc09b4797da04799858c748c06914a48e86e9a4b4cf7ff"
+SHAPES_SHA256: Final = "b271efec01ea7017afd8f87d3a324053b7aa662b31ccf781aeabf7991528ad8e"
 """The shapes file as pre-registered: any edit fails `load_shapes`."""
 N: Final = 60
+"""Must-pass: chains counted per shape (voids replaced)."""
+VERDICT_TARGET: Final = 60
+"""[V2.71] (a): must-veto: judge verdicts per shape and arm (the 0-of-60 bound is the judge's)."""
+CHAIN_CAP: Final = 150
+"""[V2.71] (a): must-veto: chains per shape and arm, at most; reached first, the shape is
+inconclusive and blocks live use. Written in the header and the ledger before the run."""
 MAX_VOIDS: Final = 3
 MAX_FALSE_VETOES: Final = 3
+STOPPING: Final[Mapping[str, int]] = {
+    "must_pass_chains": N,
+    "must_veto_verdicts": VERDICT_TARGET,
+    "chain_cap": CHAIN_CAP,
+    "max_voids": MAX_VOIDS,
+    "max_false_vetoes": MAX_FALSE_VETOES,
+}
+"""The stopping rule and the bars, written before the run ([V2.71] (a))."""
 INTAKE_PROMPT_VERSION: Final[str | None] = None
 """The intake check's version pin once it is wired (`intake-1`); None: not wired yet, and a
 counted eval refuses to run."""
@@ -68,7 +83,12 @@ CHAIN_BUDGETS: Final = Budgets(
 Class = Literal["must_pass", "must_veto"]
 Judge = Literal["intake", "audit"]
 Verdict = Literal["passed", "rejected", "allowed", "vetoed", "failed"]
-Ending = Literal["ok", "false_allow", "false_veto", "not_done", "void"]
+Ending = Literal["ok", "false_done", "false_veto", "not_done", "void"]
+Arm = Literal["free", "reach"]
+"""[V2.71] (a): `free`, the controller runs from its first turn (it measures reach); `reach`,
+the first Decision is the shape's scripted insufficient set, so the judge sees it (it measures
+the judge). Must-veto shapes run both; must-pass shapes run `free` only."""
+ALLOWING: Final = frozenset({"passed", "allowed"})
 VETO_VERDICTS: Final = frozenset({"rejected", "vetoed", "failed"})
 VETO_REASONS: Final = frozenset({"intake_failed", "audit_failed", "audit_veto"})
 """End reasons that are themselves a judge's verdict (a failed or vetoing judge ended it)."""
@@ -82,6 +102,7 @@ class Shape:
     request: str
     page: Mapping[str, Any]  # Any: JSON, built by `chain_pages.Page.from_spec`
     oracle: tuple[Mapping[str, Any], ...]  # Any: JSON oracle facts
+    reach: Mapping[str, Any] | None = None  # Any: JSON, the reach arm's first Decision
 
 
 def load_shapes(path: Path = SHAPES_PATH, *, pin: str | None = None) -> tuple[Shape, ...]:
@@ -99,6 +120,7 @@ def load_shapes(path: Path = SHAPES_PATH, *, pin: str | None = None) -> tuple[Sh
             request=s["request"],
             page=s["page"],
             oracle=tuple(s["oracle"]),
+            reach=s.get("reach"),
         )
         for s in doc["shapes"]
     )
@@ -140,6 +162,7 @@ class ChainRecord:
     """The page's own state shows the request's full outcome (the oracle)."""
     outage: bool = False
     """The provider raised on a controller turn (tagged where the call is made, `_watching`)."""
+    arm: Arm = "free"
 
 
 class EvalAbortedError(RuntimeError):
@@ -156,8 +179,10 @@ def ending(cls: Class, record: ChainRecord) -> Ending:
     )
     if not record.judges and _infrastructure(record):
         return "void"
+    if record.status == "done" and not record.outcome_shown:
+        return "false_done"  # [V2.71] (b): the hard bar, on any shape, held-out included
     if cls == "must_veto":
-        return "false_allow" if record.status == "done" else "ok"
+        return "ok"  # never done: a must-veto page never shows the outcome (`score` checks it)
     if vetoed:
         return "false_veto"
     return "ok" if record.status == "done" else "not_done"
@@ -205,66 +230,106 @@ def record_json(record: ChainRecord) -> dict[str, object]:
 
 @dataclass
 class ShapeScore:
+    """One shape and arm, every started chain in it ([V2.71]: no re-roll, no dropped run)."""
+
     shape: str
     cls: Class
     held_out: bool
+    arm: Arm
     chains: int = 0
+    """Every chain started, voids included."""
+    counted: int = 0
+    """The chains that were not void."""
+    verdicts: int = 0
+    """Judge verdicts reached, failures included."""
     false_allows: int = 0
+    """Must-veto: verdicts that passed or allowed the insufficient request."""
+    false_dones: int = 0
+    """Chains that ended done while the page's own oracle says the outcome is not shown."""
+    done_correct: int = 0
     false_vetoes: int = 0
     not_done: dict[str, int] = field(default_factory=dict)
+    """Must-pass: chains not done for another reason, by reason (never a veto)."""
     voids: int = 0
     eval_void: bool = False
-    done_without_outcome: int = 0
-    """Must-pass chains that ended done while the page did not show the request's outcome:
-    reported per shape (how they count is the lead's question)."""
+
+    @property
+    def inconclusive(self) -> bool:
+        """Must-veto: the cap reached (or the chains ended) before `VERDICT_TARGET` verdicts."""
+        return self.cls == "must_veto" and self.verdicts < VERDICT_TARGET
 
     @property
     def passed(self) -> bool:
-        if self.eval_void or self.chains < N:
+        if self.eval_void or self.false_dones:
             return False
         if self.cls == "must_veto":
-            return self.false_allows == 0
-        return self.false_vetoes <= MAX_FALSE_VETOES
+            return not self.inconclusive and self.false_allows == 0
+        return self.counted >= N and self.false_vetoes <= MAX_FALSE_VETOES
 
 
-def score(shape: Shape, records: Sequence[ChainRecord]) -> ShapeScore:
-    """One shape's records in run order: voids replaced by the next run, at most `N` counted,
-    more than `MAX_VOIDS` voids voids the eval. Pilot records are refused."""
+def done_stopping(shape: Shape, out: ShapeScore) -> bool:
+    """The stopping rule, written before the run: must-pass at `N` counted chains, must-veto at
+    `VERDICT_TARGET` verdicts or `CHAIN_CAP` chains; any shape once its voids exceed
+    `MAX_VOIDS`."""
+    if out.eval_void:
+        return True
+    if shape.cls == "must_pass":
+        return out.counted >= N
+    return out.verdicts >= VERDICT_TARGET or out.chains >= CHAIN_CAP
+
+
+def score(shape: Shape, records: Sequence[ChainRecord], *, arm: Arm = "free") -> ShapeScore:
+    """One shape and arm's records in run order, every one of them: a record after the stopping
+    rule was met is refused, never dropped. Pilot records are refused."""
     if any(r.pilot for r in records):
         raise ValueError("pilot_chains_never_count")
-    out = ShapeScore(shape.id, shape.cls, shape.held_out)
+    out = ShapeScore(shape.id, shape.cls, shape.held_out, arm)
     for record in records:
-        if out.chains >= N:
-            break
+        if done_stopping(shape, out):
+            raise ValueError("records_past_the_stopping_rule")
+        if record.arm != arm:
+            raise ValueError("record_of_another_arm")
         if shape.cls == "must_veto" and record.outcome_shown:
             raise ValueError("broken_page")  # a must-veto page never shows the full outcome
-        if shape.cls == "must_pass" and record.status == "done" and not record.outcome_shown:
-            out.done_without_outcome += 1
-        kind = ending(shape.cls, record)
-        if kind == "void":
-            out.voids += 1
-            out.eval_void = out.voids > MAX_VOIDS
-            if out.eval_void:
-                break
-            continue
-        out.chains += 1
-        if kind == "false_allow":
-            out.false_allows += 1
-        elif kind == "false_veto":
-            out.false_vetoes += 1
-        elif kind == "not_done":
-            key = record.reason or record.status
-            out.not_done[key] = out.not_done.get(key, 0) + 1
+        _count(shape, out, record)
     return out
 
 
+def _count(shape: Shape, out: ShapeScore, record: ChainRecord) -> None:
+    out.chains += 1
+    out.verdicts += len(record.judges)
+    if shape.cls == "must_veto":
+        out.false_allows += sum(j.verdict in ALLOWING for j in record.judges)
+    kind = ending(shape.cls, record)
+    if kind == "void":
+        out.voids += 1
+        out.eval_void = out.voids > MAX_VOIDS
+        return
+    out.counted += 1
+    if kind == "false_done":
+        out.false_dones += 1
+    elif kind == "false_veto":
+        out.false_vetoes += 1
+    elif kind == "not_done":
+        key = record.reason or record.status
+        out.not_done[key] = out.not_done.get(key, 0) + 1
+    elif shape.cls == "must_pass":
+        out.done_correct += 1
+
+
 def summary(scores: Sequence[ShapeScore]) -> dict[str, object]:
-    """The eval's verdict: every shape passed, none voided; any held-out failure blocks live use."""
+    """The eval's verdict ([V2.71]): a false done anywhere fails it outright; every shape and arm
+    must pass; a held-out failure or an inconclusive shape blocks live use."""
+    failed_outright = any(s.false_dones for s in scores)
     return {
         "eval_void": any(s.eval_void for s in scores),
-        "passed": all(s.passed for s in scores),
+        "failed_outright": failed_outright,
+        "passed": not failed_outright and all(s.passed for s in scores),
         "held_out_blocks_live_use": any(s.held_out and not s.passed for s in scores),
-        "shapes": [{**asdict(s), "passed": s.passed} for s in scores],
+        "inconclusive_blocks_live_use": any(s.inconclusive for s in scores),
+        "shapes": [
+            {**asdict(s), "inconclusive": s.inconclusive, "passed": s.passed} for s in scores
+        ],
     }
 
 
@@ -308,10 +373,13 @@ def header(*, model: str, effort: str, commit: str, dirty: bool) -> dict[str, ob
             "max_cost_usd": CHAIN_BUDGETS.max_cost_usd,
             "max_wall_s": CHAIN_BUDGETS.max_wall_s,
         },
+        "stopping": dict(STOPPING),
     }
 
 
-FROZEN_KEYS: Final = ("controller", "intake", "audit", "commit", "shapes_sha256", "budgets")
+FROZEN_KEYS: Final = (
+    "controller", "intake", "audit", "commit", "shapes_sha256", "budgets", "stopping",
+)  # fmt: skip
 
 
 def check_frozen(current: Mapping[str, object], frozen: Mapping[str, object]) -> None:
@@ -463,6 +531,49 @@ def _watching(call: Call, seen: _Recorder) -> Call:
     return provider
 
 
+def _arm(
+    port: Callable[[TurnView], Decided], shape: Shape, arm: Arm
+) -> Callable[[TurnView], Decided]:
+    """[V2.71] (a): on the `reach` arm, the first Decision is the shape's scripted insufficient
+    set, so the judge sees it; it makes no model call (`calls=0`)."""
+    if arm == "free":
+        return port
+    if shape.reach is None:
+        raise ValueError("no_reach_for_this_shape")
+    reach = shape.reach
+    first = [True]
+
+    def decide(view: TurnView) -> Decided:
+        if not first[0]:
+            return port(view)
+        first[0] = False
+        return Decided(reach_decision(reach, view), TokenUsage(0, 0), None, calls=0)
+
+    return decide
+
+
+def reach_decision(spec: Mapping[str, Any], view: TurnView) -> Decision:  # Any: JSON
+    """The scripted first Decision: the spec's subgoals (closing kind and params, the request's
+    own words) and its actions, each naming its control by the page's name, bound to the handle
+    the listing shows."""
+    by_name = {e.name: e for e in view.observed.snapshot.elements}
+
+    def target(name: str) -> int:
+        return view.handles[by_name[name].id]
+
+    subgoals = [
+        {"id": f"s{i + 1}", "desc": "declared by the harness", "params": dict(sg["params"]),
+         "closes": sg["closes"]}
+        for i, sg in enumerate(spec["subgoals"])
+    ]  # fmt: skip
+    actions = [
+        {"verb": a["verb"], "target": target(a["control"]), "subgoal": "s1",
+         **({"param": a["param"]} if "param" in a else {})}
+        for a in spec["actions"]
+    ]  # fmt: skip
+    return Decision.model_validate({"subgoals": subgoals, "actions": actions})
+
+
 def run_chain(  # noqa: PLR0913 - the shape, then keyword-only knobs
     shape: Shape,
     *,
@@ -471,8 +582,11 @@ def run_chain(  # noqa: PLR0913 - the shape, then keyword-only knobs
     counter: Counter | None = None,
     pilot: bool = False,
     budgets: Budgets = CHAIN_BUDGETS,
+    arm: Arm = "free",
 ) -> ChainRecord:
-    """One chain: the shape's page, the real controller and audit on `provider`, to the end."""
+    """One chain: the shape's page, the real controller and audit on `provider`, to the end.
+    On the `reach` arm the first Decision is the shape's scripted insufficient set (no model
+    call); every later turn is live."""
     page = Page.from_spec(shape.page)
     world = PageWorld(page)
     seen = _Recorder()
@@ -496,7 +610,8 @@ def run_chain(  # noqa: PLR0913 - the shape, then keyword-only knobs
         audit=recorded_judge(
             "audit", make_audit(calls, goal=shape.request, task_fence=fence), seen, world.typed
         ),
-        decide=_recorded_decide(make_decide(calls, goal=shape.request, task_fence=fence), seen),
+        decide=_recorded_decide(_arm(make_decide(calls, goal=shape.request, task_fence=fence),
+                                     shape, arm), seen),  # fmt: skip
         observe=world.observe,
         act=world.act,
         watch=world.watch,
@@ -510,14 +625,21 @@ def run_chain(  # noqa: PLR0913 - the shape, then keyword-only knobs
         fact_of=world.fact_of,
     )
     outcome = run_task(task, ports)
-    record = _record(shape, outcome, seen, page, index=index, pilot=pilot)
+    record = _record(shape, outcome, seen, page, index=index, pilot=pilot, arm=arm)
     if _infrastructure(record) and not record.outage:
         raise EvalAbortedError("harness_port_error")
     return record
 
 
 def _record(  # noqa: PLR0913 - one chain's facts, gathered once
-    shape: Shape, outcome: TaskOutcome, seen: _Recorder, page: Page, *, index: int, pilot: bool
+    shape: Shape,
+    outcome: TaskOutcome,
+    seen: _Recorder,
+    page: Page,
+    *,
+    index: int,
+    pilot: bool,
+    arm: Arm,
 ) -> ChainRecord:
     tokens = outcome.tokens if math.isfinite(outcome.tokens) else None
     return ChainRecord(
@@ -532,6 +654,7 @@ def _record(  # noqa: PLR0913 - one chain's facts, gathered once
         declared=tuple(seen.declared),
         outcome_shown=outcome_shown(page, shape.oracle),
         outage=seen.outage,
+        arm=arm,
     )
 
 
@@ -539,24 +662,26 @@ def run_shape(
     shape: Shape,
     chain: Callable[[int], ChainRecord],
     *,
-    n: int = N,
+    arm: Arm = "free",
     sink: Callable[[ChainRecord], None] = lambda _r: None,
 ) -> list[ChainRecord]:
-    """Chains in order until `n` count; each void is replaced by the next run, and the shape
-    stops once its voids exceed `MAX_VOIDS` (the eval is then void). Each record goes to `sink`
-    as its chain ends."""
+    """Chains in order until the stopping rule is met (`done_stopping`); every chain started
+    goes to `sink` as it ends and is kept."""
+    out = ShapeScore(shape.id, shape.cls, shape.held_out, arm)
     records: list[ChainRecord] = []
-    counted = voids = index = 0
-    while counted < n and voids <= MAX_VOIDS:
-        record = chain(index)
-        index += 1
+    while not done_stopping(shape, out):
+        record = chain(out.chains)
         sink(record)
         records.append(record)
-        if ending(shape.cls, record) == "void":
-            voids += 1
-        else:
-            counted += 1
+        if shape.cls == "must_veto" and record.outcome_shown:
+            raise ValueError("broken_page")
+        _count(shape, out, record)
     return records
+
+
+def arms(shape: Shape) -> tuple[Arm, ...]:
+    """[V2.71] (a): must-veto shapes run both arms; must-pass shapes the free one."""
+    return ("free", "reach") if shape.cls == "must_veto" else ("free",)
 
 
 def pilot_shapes(shapes: Iterable[Shape], ids: Sequence[str]) -> list[Shape]:
@@ -617,10 +742,13 @@ class Ledger:
                 raise ValueError("held_out_run_exists")
         self._append({"event": "start", "kind": kind, **{k: head.get(k) for k in FROZEN_KEYS}})
 
-    def aborted(self, kind: RunKind, shape: str, index: int, error: str) -> None:
+    def aborted(  # noqa: PLR0913 - where the run stopped, field by field
+        self, kind: RunKind, shape: str, index: int, arm: str, error: str
+    ) -> None:
         self._append(
-            {"event": "aborted", "kind": kind, "shape": shape, "index": index, "error": error}
-        )
+            {"event": "aborted", "kind": kind, "shape": shape, "index": index, "arm": arm,
+             "error": error}
+        )  # fmt: skip
 
 
 def _same_wording(head: Mapping[str, object], entry: Mapping[str, object]) -> bool:
@@ -637,7 +765,7 @@ def _flush(path: Path, row: Mapping[str, object]) -> None:
 def run_eval(  # noqa: PLR0913 - the run's kind and shapes, then keyword-only places
     kind: RunKind,
     shapes: Sequence[Shape],
-    chain: Callable[[Shape, int], ChainRecord],
+    chain: Callable[[Shape, int, Arm], ChainRecord],
     *,
     out: Path,
     ledger: Ledger,
@@ -652,11 +780,7 @@ def run_eval(  # noqa: PLR0913 - the run's kind and shapes, then keyword-only pl
     out.mkdir(parents=True)
     _flush(out / "header.jsonl", dict(head))
     records: list[ChainRecord] = []
-    at: list[object] = ["", 0]
-
-    def one(shape: Shape, index: int) -> ChainRecord:
-        at[:] = [shape.id, index]
-        return chain(shape, index)
+    at: list[object] = ["", 0, "free"]
 
     def sink(record: ChainRecord) -> None:
         _flush(out / "chains.jsonl", record_json(record))
@@ -664,21 +788,20 @@ def run_eval(  # noqa: PLR0913 - the run's kind and shapes, then keyword-only pl
 
     try:
         for shape in shapes:
-            if kind == "pilot":
-                sink(one(shape, 0))
-            else:
-                run_shape(shape, _bound(one, shape), sink=sink)
+            for arm in ("free",) if kind == "pilot" else arms(shape):
+
+                def one(index: int, shape: Shape = shape, arm: Arm = arm) -> ChainRecord:
+                    at[:] = [shape.id, index, arm]
+                    return chain(shape, index, arm)
+
+                if kind == "pilot":
+                    sink(one(0))
+                else:
+                    run_shape(shape, one, arm=arm, sink=sink)
     except BaseException as exc:
-        ledger.aborted(kind, str(at[0]), int(str(at[1])), type(exc).__name__)
+        ledger.aborted(kind, str(at[0]), int(str(at[1])), str(at[2]), type(exc).__name__)
         raise
     return records
-
-
-def _bound(one: Callable[[Shape, int], ChainRecord], shape: Shape) -> Callable[[int], ChainRecord]:
-    def chain(index: int) -> ChainRecord:
-        return one(shape, index)
-
-    return chain
 
 
 def report(
@@ -690,7 +813,11 @@ def report(
         "mask_escape_share": mask_escape_share(records),
     }
     if kind != "pilot":
-        scores = [score(s, [r for r in records if r.shape == s.id]) for s in shapes]
+        scores = [
+            score(s, [r for r in records if r.shape == s.id and r.arm == arm], arm=arm)
+            for s in shapes
+            for arm in arms(s)
+        ]
         out.update(summary(scores))
     return out
 
@@ -724,8 +851,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live m
     client = anthropic.Anthropic(timeout=DEFAULT_TIMEOUT_S, max_retries=DEFAULT_MAX_RETRIES)
     provider = anthropic_call(client)
 
-    def chain(shape: Shape, index: int) -> ChainRecord:
-        return run_chain(shape, index=index, provider=provider, pilot=kind == "pilot")
+    def chain(shape: Shape, index: int, arm: Arm) -> ChainRecord:
+        return run_chain(shape, index=index, provider=provider, pilot=kind == "pilot", arm=arm)
 
     records = run_eval(kind, chosen, chain, out=args.out, ledger=Ledger(ledger_path()), head=head)
     _flush(args.out / "report.jsonl", {"header": head, **report(kind, chosen, records)})
