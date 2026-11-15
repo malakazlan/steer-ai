@@ -62,6 +62,14 @@ def test_a_thin_sliver_left_uncovered_is_not_full_cover() -> None:
     assert covered_fraction(WINDOW, [(0, 0, 1200, 900)]) == 1.0
 
 
+def test_cover_of_reads_a_one_pixel_sliver_as_uncovered() -> None:
+    """The sliver through `cover_of` itself (principal review of #380): full cover means the whole
+    area, so a threshold below 1.0 (`>= 0.99`) fails here."""
+    assert cover_of(_facts(above=((0, 0, 1200, 899),))) is None
+    assert cover_of(_facts(above=((7, 0, 1193, 893),))) is None
+    assert cover_of(_facts(above=((0, 0, 1200, 900),))) == "covered"
+
+
 def test_an_empty_target_is_never_covered() -> None:
     assert covered_fraction((10, 10, 10, 50), [(0, 0, 100, 100)]) == 0.0
 
