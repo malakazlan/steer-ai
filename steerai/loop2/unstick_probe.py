@@ -208,10 +208,17 @@ def run(out_dir: Path, price: Path) -> int:  # noqa: PLR0915 - one live run  # p
         tmp = Path(tempfile.mkdtemp(prefix="steer-unstick-"))
         with PageServer(fixture.pages()) as server:
             port = fixture._free_port()
-            proc = launch_chrome(
-                CHROME_DEFAULT, tmp / "profile", port, f"http://127.0.0.1:{server.port}/{variant}",
-                extra_args=("--start-maximized",) if maximized else (),
-            )  # fmt: skip
+            url = f"http://127.0.0.1:{server.port}/{variant}"
+            if maximized:
+                # `launch_chrome` fixes the size and position, which overrides a maximised
+                # start, so a maximised Chrome is launched here with the same flags but those
+                proc: Any = subprocess.Popen(  # noqa: S603 - our own Chrome, a fixed argv
+                    [str(CHROME_DEFAULT), f"--user-data-dir={tmp / 'profile'}",
+                     f"--remote-debugging-port={port}", "--no-first-run",
+                     "--no-default-browser-check", "--disable-sync", "--start-maximized", url]
+                )  # fmt: skip
+            else:
+                proc = launch_chrome(CHROME_DEFAULT, tmp / "profile", port, url)
             cdp: Any = None  # Any: a CdpSession
             try:
                 window = wait_window_for_pid(proc.pid, timeout_s=30.0, process=proc)
