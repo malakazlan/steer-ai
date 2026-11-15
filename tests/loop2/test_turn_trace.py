@@ -36,6 +36,7 @@ from steerai.loop2.runner import run_task
 from steerai.loop2.turn_trace import (
     ACT_DETAILS,
     KEY_TOKENS,
+    MAX_NUMBER,
     REPAIR_TOKENS,
     UNKNOWN,
     ActFact,
@@ -282,6 +283,94 @@ def test_a_number_that_is_not_finite_fails_the_record() -> None:
     record = full_record()
     record["watch"][0]["seconds"] = float("nan")
     assert not closed(record)
+
+
+# ---- #444: one closed set per key, bounded numbers ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("where", "token"),
+    [
+        ("verb", "navigated"),  # a claim kind where a verb belongs
+        ("stop", "click"),
+        ("focus", "Enter"),
+        ("closes", "title"),
+        ("gate", "navigated"),
+        ("param", "title"),
+        ("turn", "click"),  # a key that never holds a string
+    ],
+)
+def test_a_token_under_a_key_that_is_not_its_own_fails_the_record(where: str, token: str) -> None:
+    record = full_record()
+    place: dict[str, Any] = {  # Any: JSON
+        "verb": record["decision"]["actions"][0],
+        "stop": record["decision"],
+        "focus": record,
+        "closes": record["decision"]["subgoals"][0],
+        "gate": record["proofs"][0],
+        "param": record["decision"]["actions"][0],
+        "turn": record,
+    }[where]
+    place[where] = token
+    assert not closed(record)
+
+
+def test_each_string_key_has_its_own_closed_set() -> None:
+    record = full_record()
+    assert closed(record)
+    strings = {
+        key
+        for key in KEY_TOKENS
+        if key not in {"refusal", "rejections", "detail", "result", "repair_tokens"}
+    }
+    assert {"verb", "key", "kind", "closes", "stop", "focus", "gate", "param"} <= strings
+
+
+@pytest.mark.parametrize("number", [-1, MAX_NUMBER + 1, 2**63, -0.5, float(MAX_NUMBER) * 2])
+def test_a_number_out_of_bounds_fails_the_record(number: float) -> None:
+    record = full_record()
+    record["listed"] = number
+    assert not closed(record)
+
+
+def test_a_number_at_the_bounds_passes() -> None:
+    for number in (0, MAX_NUMBER, 0.0):
+        record = full_record()
+        record["listed"] = number
+        assert closed(record)
+
+
+def test_an_exception_while_tracing_is_counted_and_never_loses_the_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#444: the turn the task ends in is traced inside `_outcome`; a failure there is counted
+    as a dropped record and the outcome is still returned."""
+
+    def broken(_facts: TurnTrace) -> dict[str, Any]:  # Any: JSON
+        raise RuntimeError("a bug in the trace")
+
+    monkeypatch.setattr("steerai.loop2.runner.turn_record", broken)
+    world = World([decision(act("click", target=GO.id), first=True)])
+    written: list[dict[str, Any]] = []  # Any: JSON
+    outcome = run_task(task(), dataclasses.replace(world.ports(), turn_trace=_into(written)))
+    assert written == []
+    assert outcome.turn_trace_dropped >= 1
+    assert outcome.status in {"done", "blocked", "paused", "stopped", "cannot"}
+
+
+def test_no_trace_work_is_done_without_a_sink(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#444: with no trace port the decision's shape, the positional history and the proof
+    attempts are never built (the hot path)."""
+
+    def never(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("trace work without a sink")
+
+    for name in ("decision_shape", "positional", "_attempt", "turn_record"):
+        monkeypatch.setattr(f"steerai.loop2.runner.{name}", never)
+    world = World([decision(act("click", target=GO.id), first=True)])
+    ports = dataclasses.replace(world.ports(), turn_trace=None)
+    outcome = run_task(task(), ports)
+    assert outcome.turn_trace_dropped == 0
 
 
 def test_a_proof_attempt_built_with_free_text_fails_its_check() -> None:

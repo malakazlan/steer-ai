@@ -14,7 +14,6 @@ from steerai.loop2.task import Subgoal
 from steerai.orchestrator.gate import group_name
 from steerai.world.effects import (
     CarrierHeld,
-    EffectClass,
     Observed,
     ValueFact,
     _tokens,  # the observer's own token rule: one definition of a word (#334 review)
@@ -135,7 +134,9 @@ WEB_SCHEMES: Final = frozenset({"http", "https"})
 is `file:` ([V2.39]). An error page (`chrome-error:`) or an unread URL is never navigated."""
 URL_CARRIERS: Final = frozenset({"url_param", "url_path"})
 PAGE_CARRIERS: Final = frozenset({"title", "heading"})
-CHANGE: Final = frozenset({"navigated", "url_changed_in_place"})
+ChangeClass = Literal["navigated", "url_changed_in_place"]
+"""§7.1's change classes: a page proof needs one of them in some param's report."""
+CHANGE: Final[frozenset[ChangeClass]] = frozenset({"navigated", "url_changed_in_place"})
 OWNING_ROLES: Final = frozenset({"Menu", "ToolTip"})
 OPTION_CAPS: Final = frozenset({"selectable", "selected"})
 CheckToken = Literal[
@@ -185,7 +186,7 @@ class _Found:
     """The params with an accepted carrier (URL parameter or path, title, heading)."""
     texts: Mapping[str, str]
     """Each param's words."""
-    change_by: tuple[EffectClass, ...] = ()
+    change_by: tuple[ChangeClass, ...] = ()
     """[V2.67] D: the change classes the params' reports hold (`CHANGE`), sorted."""
 
 
@@ -196,10 +197,10 @@ class Judged:
     closed tokens and positions (param names and words never leave here)."""
 
     proof: ProofToken | None
-    refused: tuple[ClaimCheck, ...] = ()
+    refused: tuple[CheckToken, ...] = ()
     """`_navigated`'s no-navigation verdict (tier_mismatch, url_unread, not_a_page,
     param_missing, no_change, no_carrier); empty when the read was measured."""
-    change_by: tuple[EffectClass, ...] = ()
+    change_by: tuple[ChangeClass, ...] = ()
     params: tuple[tuple[str, tuple[CarrierHeld, ...]], ...] = ()
     """Per param, sorted by name: each carrier's two halves (`effects.carrier_facts`)."""
     content_by: ProofToken | None = None
@@ -310,7 +311,7 @@ def _navigated(  # noqa: PLR0911 - one return per closed outcome
     *,
     acted: tuple[int, ...] | None,
     allow_file: bool,
-) -> _Found | tuple[ClaimCheck, ...]:
+) -> _Found | tuple[CheckToken, ...]:
     """The carriers since the baseline, per param, or the reject tokens when it is no navigation
     at all. The change signal is met once, by the URL or the top Document."""
     if baseline.tier != now.tier:
@@ -338,9 +339,9 @@ def _navigated(  # noqa: PLR0911 - one return per closed outcome
     url = any(r.carriers & URL_CARRIERS for r in reports.values())
     if not carried and not url:
         return ("no_carrier",)
-    changed: set[EffectClass] = set()
+    changed: set[ChangeClass] = set()
     for report in reports.values():
-        changed |= report.classes & CHANGE
+        changed.update(c for c in CHANGE if c in report.classes)
     change_by = tuple(sorted(changed))
     return _Found(
         page=page, url=url, results=False, carried=carried, texts=texts, change_by=change_by

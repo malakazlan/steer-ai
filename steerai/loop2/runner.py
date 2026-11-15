@@ -123,8 +123,13 @@ from steerai.loop2.query import (
 from steerai.loop2.task import GoalSpan, Subgoal, Task, known_params
 from steerai.loop2.turn_trace import (
     ActFact,
+    CarrierFact,
+    Gate,
+    ParamProof,
     ProofAttempt,
+    ReadFacts,
     RefusalFact,
+    Skipped,
     TurnTrace,
     WatchFacts,
     closed,
@@ -132,10 +137,12 @@ from steerai.loop2.turn_trace import (
     positional,
     turn_record,
 )
+from steerai.loop2.turn_trace import ReadKind as ProofRead
 from steerai.loop2.verify import (
     PAGE_CARRIERS,
     URL_CARRIERS,
     CheckToken,
+    Judged,
     Readers,
     check_claim,
     holds_words,
@@ -502,6 +509,8 @@ class _Run:
         """§7.1: the last read the auto proof judged (`_auto_proofs`)."""
         self.saved_calls = 0
         """[V2.67] A: turns the turn-start judgement closed the task, so no model call was made."""
+        self.next_read: ProofRead = "turn_start"
+        """[V2.67] D: what the next turn-start judgement runs on (`_stale` marks a re-read)."""
         self.pre_task_draft_clicks = 0
         """[V2.64] Two: counted at each non-field click (`_pre_task_draft`)."""
         """[V2.35]: model calls made on a growing or young observation (`_decide`)."""
@@ -646,18 +655,21 @@ class _Run:
                 observed = self._rejected_turn(rejected, observed)
                 self._trace_turn()  # [V2.67] D: one record per rejected turn
                 continue
+            if self.ports.turn_trace is not None:  # #444: no trace work without a sink
+                # #457 review: shaped before the intake check, so a refused intake turn's record
+                # carries the Decision it judged (None means no call)
+                self.turn.shape = decision_shape(
+                    decision,
+                    known_subgoals=known_params(self.subgoals),
+                    tokens=(),
+                    turn=self.turn.number,
+                    attempt=0,
+                )
             if not self._intake_passes(decision):  # [V2.68] One: refused before anything freezes
                 observed = self._record_strike(observed)
                 self._trace_turn()  # [V2.67] D: one record per refused intake turn (#457 P5)
                 continue
             self._check_interrupt()  # #326, [V2.40] Q4: a Decision after the kill is discarded
-            self.turn.shape = decision_shape(
-                decision,
-                known_subgoals=known_params(self.subgoals),
-                tokens=(),
-                turn=self.turn.number,
-                attempt=0,
-            )
             fresh = self._observe()
             if fresh.read_cost is not None:
                 self.read_costs.append(fresh.read_cost)  # [V2.34]: this re-read is paid for too
@@ -1024,8 +1036,9 @@ class _Run:
         vocab = Vocab(known_params(self.subgoals), frozenset(self.handles.by_handle))
         if record_ok(record, vocab):
             self.log.append(record)
-            ids = [s.id for s in self.subgoals]  # [V2.67] D (a): positions, never names
-            self.turn.history.append(render(positional(record, ids, vocab.known)))
+            if self.ports.turn_trace is not None:  # #444: no trace work without a sink
+                ids = [s.id for s in self.subgoals]  # [V2.67] D (a): positions, never names
+                self.turn.history.append(render(positional(record, ids, vocab.known)))
         else:
             self.history_dropped += 1
 
@@ -1080,9 +1093,7 @@ class _Run:
                 if proofs
                 else ("navigated" if how == "claim" else how)
             )
-            params = tuple(
-                (n, subgoal.params[name].text) for n, name in enumerate(sorted(subgoal.params), 1)
-            )
+            params = tuple((n, param.text) for n, param in numbered_params(subgoal.params))
             lines.append(
                 (position, subgoal.closes, how, kind, _read_token(subgoal, how, proofs), params)
             )
@@ -1261,7 +1272,7 @@ class _Run:
                 return observed
             after, sent = result
             observed = after
-            self._auto_proofs(observed)
+            self._auto_proofs(observed, "after_action")
             nxt = actions[index + 1] if index + 1 < len(actions) else None
             if nxt is None or not self._continues(sent, nxt, listed, observed):
                 return observed
@@ -1825,29 +1836,43 @@ class _Run:
         """[V2.67] A: the read a decision is about to be made on is judged first; when that
         closes the task, the model call this turn would have made is not made and is counted."""
         proven = len(self.proven)
+        read, self.next_read = self.next_read, "turn_start"
         try:
-            self._auto_proofs(observed)
+            self._auto_proofs(observed, read)
         except _End as end:
             if end.status == "done" and len(self.proven) > proven:
                 self.saved_calls += 1
             raise
 
-    def _auto_proofs(self, observed: Observed) -> None:
+    def _auto_proofs(self, observed: Observed, read_kind: ProofRead) -> None:
         """§7.1, [V2.67] A: the code-only proof runs on every full observation code takes (the
         turn-start read, the stale re-read and the after-action read), for each open subgoal
         with a change signal since its baseline: same rules, guards and baseline, every param on
         this one read ([V2.39]). Only a stable full-tier read is judged, never a poll (a page
-        still growing is: its evidence is there). The same read is judged once."""
-        if observed is self.judged or observed.tier != "full" or not observed.snapshot.stable:
+        still growing is: its evidence is there). The same read is judged once. [V2.67] D: every
+        attempt, a skipped read and a closed gate included, goes to the turn's trace record with
+        every condition it rests on."""
+        if observed is self.judged:
             return
         self.judged = observed
-        for subgoal in self.subgoals:
+        tracing = self.ports.turn_trace is not None  # #444: no trace work without a sink
+        skipped: Skipped | None = None
+        if observed.tier != "full":
+            skipped = "poll"
+        elif not observed.snapshot.stable:
+            skipped = "unstable"
+        for position, subgoal in enumerate(self.subgoals):  # the trace's 0-based positions
             if subgoal.id in self.proven or subgoal.id not in self.baselines:
                 continue
             if subgoal.closes != "page":
                 continue  # [V2.39]: the navigated auto proof closes only a page subgoal
             baseline = self.baselines[subgoal.id]
-            if _change_gate(baseline, observed) is None:
+            gate = None if skipped is not None else _change_gate(baseline, observed)
+            if gate is None:
+                if tracing:
+                    self.turn.proofs.append(
+                        _attempt(position, read_kind, observed, skipped, gate, None)
+                    )
                 continue
             judged = judge(
                 subgoal,
@@ -1858,9 +1883,12 @@ class _Run:
                 echo=self._echo(subgoal),
                 allow_file=self._allow_file(),
             )
+            if tracing:
+                self.turn.proofs.append(_attempt(position, read_kind, observed, None, gate, judged))
             if judged.proof is not None:
                 self._tick(subgoal, how=judged.proof)
-        self._check_done(observed)
+        if skipped is None:
+            self._check_done(observed)
 
     # ---- refusals, guards -----------------------------------------------------------------
 
@@ -1922,6 +1950,7 @@ class _Run:
         controller asked again on the fresh read. No strike for one; the second in a row (and
         each after) is a strike. Each kind is counted on its own."""
         self.stale_streak += 1
+        self.next_read = "stale_reread"  # [V2.67] D: the next turn starts on this re-read
         self._count_moved(moved)
         if self.stale_streak < 2:
             self.turn.neutral = True
@@ -1931,13 +1960,23 @@ class _Run:
 
     def _trace_turn(self) -> None:
         """[V2.67] D: the turn's closed record to the trace port; a record that fails the
-        no-free-text check is dropped and counted, never written in part."""
+        no-free-text check is dropped and counted, never written in part. #444: an exception
+        while building or writing it is counted the same way and never raised: the turn is often
+        the one the task ends in (`_outcome`), and its outcome must never be lost."""
         sink = self.ports.turn_trace
         turn = self.turn
-        seen = turn.seen
-        if sink is None or seen is None or turn.traced:
+        if sink is None or turn.seen is None or turn.traced:
             return
         turn.traced = True
+        try:
+            self._write_turn(sink, turn)
+        except Exception:  # noqa: BLE001 - a trace failure never loses the task; it is counted
+            self.turn_trace_dropped += 1
+
+    def _write_turn(self, sink: Callable[[Mapping[str, object]], None], turn: _Turn) -> None:
+        seen = turn.seen
+        if seen is None:  # checked by the caller; kept for the type checker
+            return
         listing = turn.listing
         record = turn_record(
             TurnTrace(
@@ -2181,7 +2220,7 @@ def _key(action: ActionDoc, element: Element, *, text_digest: str | None) -> Act
     )
 
 
-def _change_gate(baseline: Observed, now: Observed) -> Literal["url", "document"] | None:
+def _change_gate(baseline: Observed, now: Observed) -> Gate | None:
     """§7.1's change signal, and which: the URL changed (both read), or the top Document was
     replaced; None: neither, so the proof is not tried ([V2.67] D names it)."""
     if baseline.url is not None and now.url is not None and baseline.url != now.url:
@@ -2199,6 +2238,55 @@ def _digest(observed: Observed) -> str:
     return hashlib.sha256(repr(rows).encode()).hexdigest()
 
 
+def _attempt(  # noqa: PLR0913, PLR0917 - one attempt's facts, positional for brevity
+    position: int,
+    read_kind: ProofRead,
+    observed: Observed,
+    skipped: Skipped | None,
+    gate: Gate | None,
+    judged: Judged | None,
+) -> ProofAttempt:
+    """[V2.67] D: one judgement of one subgoal on one read as closed facts: positions, closed
+    tokens and booleans, never a name, a word or an address."""
+    read = ReadFacts(
+        tier=observed.tier,
+        stable=observed.snapshot.stable,
+        growing=observed.growing,
+        young=observed.young,
+    )
+    if judged is None:
+        return ProofAttempt(subgoal=position, read_kind=read_kind, read=read, skipped=skipped,
+                            gate=gate, change=False, change_by=(), refused=(), params=(),
+                            content=False, content_by=None, guards=(), proven=False,
+                            proven_how=None)  # fmt: skip
+    params = tuple(
+        ParamProof(
+            param=n,
+            carriers=tuple(
+                CarrierFact(carrier=c, held=held, absent_before=None if was is None else not was)
+                for c, held, was in facts
+            ),
+        )
+        for n, (_name, facts) in enumerate(judged.params)  # sorted by name, as decision_shape
+    )
+    return ProofAttempt(
+        subgoal=position,
+        read_kind=read_kind,
+        read=read,
+        skipped=skipped,
+        gate=gate,
+        change=bool(judged.change_by),
+        change_by=judged.change_by,
+        refused=judged.refused,
+        params=params,
+        content=judged.content_by is not None,
+        content_by=judged.content_by,
+        guards=judged.guards,
+        proven=judged.proof is not None,
+        proven_how=judged.proof,
+    )
+
+
 def _read_token(subgoal: Subgoal, how: str, proofs: Mapping[str, _Proof]) -> tuple[ReadKind, str]:
     """[V2.68] One: what code verified for a proven subgoal, as a closed (kind, detail) pair that
     the audit's prompt renders (`kind:detail`); no string is built here (#347 decision B)."""
@@ -2210,6 +2298,13 @@ def _read_token(subgoal: Subgoal, how: str, proofs: Mapping[str, _Proof]) -> tup
     return ("navigated", how)
 
 
+def numbered_params[V](params: Mapping[str, V]) -> tuple[tuple[int, V], ...]:
+    """#457 review, coordinator ruling: the one numbering both judges read: a subgoal's params
+    by their names' sorted order, 1-based (`param:1`), each with its value. The model's names
+    are never shown, only their order."""
+    return tuple((n, params[name]) for n, name in enumerate(sorted(params), 1))
+
+
 def _intake_lines(subs: Sequence[SubgoalDoc]) -> tuple[IntakeLine, ...]:
     """[V2.68] One, packet rev 5 (P1): each declared subgoal by position and closing kind, its
     params by sorted position with their words; never the model's id, param names or desc."""
@@ -2217,7 +2312,7 @@ def _intake_lines(subs: Sequence[SubgoalDoc]) -> tuple[IntakeLine, ...]:
         (
             position,
             doc.closes,
-            tuple((n, doc.params[name]) for n, name in enumerate(sorted(doc.params), 1)),
+            numbered_params(doc.params),
         )
         for position, doc in enumerate(subs, 1)
     )

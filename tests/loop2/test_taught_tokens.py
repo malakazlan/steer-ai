@@ -1,0 +1,182 @@
+"""[V2.68] Two (3): every refusal the model can avoid by following a stated rule is stated before
+it errs. Each model-fault token (every `ValidateToken`, and every runner `RefusalWord` whose kind
+is `model`) maps to a line of the system prompt (its rules or its listing legend) or to a
+constraint of the schema the prompt shows; a token with no entry fails. The repair legend does
+not count: it is shown only after a rejection.
+
+Excluded, with a reason each (`EXCLUDED`): tokens counted as `model` only by `REFUSAL_KIND`'s
+default that are world or step facts the model cannot avoid by a rule, and step 4 tokens no step
+3 code produces (`loop2.consent` is not wired into the runner)."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from typing import Any, Final
+
+import pytest
+
+from steerai.loop2.controller import SYSTEM_RULES, _prompt_schema
+from steerai.loop2.decision import (
+    MAX_ACTIONS,
+    MAX_DESC_CHARS,
+    MAX_SUBGOALS,
+    PARAM_NAME,
+    SUBGOAL_ID,
+)
+from steerai.loop2.history import REFUSAL_TOKENS
+from steerai.loop2.runner import REFUSAL_KIND
+
+Schema = Mapping[str, Any]  # Any: a JSON schema document
+
+
+def _defs(first: bool = True) -> Mapping[str, Any]:  # Any: JSON schema parts
+    defs: Mapping[str, Any] = _prompt_schema(first_turn=first)["$defs"]  # Any: JSON parts
+    return defs
+
+
+def _requires(variant: str, field: str) -> Callable[[], bool]:
+    return lambda: field in _defs()[variant]["required"]
+
+
+def _omits(variant: str, field: str) -> Callable[[], bool]:
+    def check() -> bool:
+        part = _defs()[variant]
+        return field not in part["properties"] and part["additionalProperties"] is False
+
+    return check
+
+
+def _later_turn_has_no_subgoals() -> bool:
+    return "subgoals" not in _prompt_schema(first_turn=False)["properties"]
+
+
+def _type_text_or_param() -> bool:
+    return bool(
+        _defs()["Action_type"]["oneOf"] == [{"required": ["text"]}, {"required": ["param"]}]
+    )
+
+
+def _top(field: str, key: str, value: object) -> Callable[[], bool]:
+    def check() -> bool:
+        prop = _prompt_schema(first_turn=True)["properties"][field]
+        branch = next((b for b in prop.get("anyOf", [prop]) if b.get("type") != "null"), prop)
+        return bool(branch.get(key) == value)
+
+    return check
+
+
+def _subgoal_id_pattern() -> bool:
+    defs = _defs()
+    referenced = defs["SubgoalDoc"]["properties"]["id"] == {"$ref": "#/$defs/SubgoalId"}
+    return referenced and bool(defs["SubgoalId"]["pattern"] == f"^{SUBGOAL_ID.pattern}$")
+
+
+def _param_names() -> bool:
+    params = _defs()["SubgoalDoc"]["properties"]["params"]
+    return bool(params["propertyNames"]["pattern"] == f"^{PARAM_NAME.pattern}$")
+
+
+def _params_needed() -> bool:
+    return bool(_defs()["SubgoalDoc"]["properties"]["params"].get("minProperties") == 1)
+
+
+def _desc_length() -> bool:
+    return bool(_defs()["SubgoalDoc"]["properties"]["desc"]["maxLength"] == MAX_DESC_CHARS)
+
+
+Taught = tuple[str, str] | Callable[[], bool]
+"""A rule: ("rule", the exact words of the system prompt that state it); a schema constraint: a
+check on the schema the first turn shows."""
+
+TAUGHT: Final[Mapping[str, Taught]] = {
+    "ask_empty": _top("ask", "minLength", 1),
+    "ask_with_actions": ("rule", "A reply either stops or asks, never both, and then has no "),
+    "ask_with_stop": ("rule", "A reply either stops or asks, never both"),
+    "desc_bad": _desc_length,
+    "empty_decision": ("rule", "Every reply acts, claims, asks or stops."),
+    "param_name_bad": _param_names,
+    "param_not_span": (
+        "rule",
+        "When you declare a subgoal, each param's value is words copied exactly from the "
+        "request, never an element's name.",
+    ),
+    "state_without_param": _params_needed,
+    "stop_with_actions": ("rule", "A reply either stops or asks, never both, and then has no "),
+    "subgoal_duplicate": ("rule", "Subgoal ids are unique"),
+    "subgoal_id_bad": _subgoal_id_pattern,
+    "subgoal_unknown": ("rule", "actions and claims name a declared subgoal id"),
+    "subgoals_missing": ("rule", "A first reply that acts or claims declares its subgoals."),
+    "text_bad": ("rule", "`type` text is one line of words from the request exactly"),
+    "too_many_actions": _top("actions", "maxItems", MAX_ACTIONS),
+    "too_many_subgoals": _top("subgoals", "maxItems", MAX_SUBGOALS),
+    "value_without_param": _params_needed,
+    "commit_cannot_apply": _omits("Action_wait", "commit"),
+    "commit_undeclared": ("rule", "Declare `commit` for any action that changes someone else's"),
+    "focus_needs_field": ("rule", "`focus` is for text fields only"),
+    "id_not_listed": ("rule", "Act only on ids in the current listing."),
+    "intake_insufficient": (
+        "rule",
+        "refused:intake_insufficient means your subgoals would not finish the request",
+    ),
+    "key_missing": _requires("Action_press", "key"),
+    "not_own_text": ("rule", "Backspace edits only text you typed"),
+    "option_missing": _requires("Action_choose", "option"),
+    "page_without_param": ("rule", "A page subgoal needs at least one param."),
+    "param_missing": _requires("Claim_value", "param"),
+    "param_unknown": ("rule", "`param` names one of its subgoal's params by its name"),
+    "repeat_send": ("rule", "Never repeat an action that had no effect."),
+    "subgoals_after_first": _later_turn_has_no_subgoals,
+    "target_missing": _requires("Action_click", "target"),
+    "target_on_untargeted_verb": _omits("Action_press", "target"),
+    "text_missing": _type_text_or_param,
+    "type_text_and_param": ("rule", "A `type` gives `param` or `text`, never both."),
+    "wanted_missing": _requires("Claim_state", "wanted"),
+}
+
+EXCLUDED: Final[Mapping[str, str]] = {
+    "not_foreground": "a world fact (another window has the foreground); no rule avoids it",
+    "screen_changed_during_ask": "a world fact (the page moved while the person was asked)",
+    "composer_unreadable": "a world fact (the composer's text could not be read)",
+    "composer_differs": "a world fact (the composer holds other text than Steer typed)",
+    "done_already": "a step fact (the admission found the action already done)",
+    "commit_conflict": "step 4: only `loop2.consent` gives it, and the runner does not use it",
+    "no_strict_shape": "step 4: only `loop2.consent` gives it, and the runner does not use it",
+}
+"""The first five are `model` only by `REFUSAL_KIND`'s default: reclassifying them as `world`
+would change which token names an `after_refusal` ending when tokens mix (`KIND_ORDER`), so it
+waits for a ruling (#446). The step 4 two are taught when the runner wires `consent` (the
+tripwire below fails then)."""
+
+
+def _model_faults() -> set[str]:
+    return {t for t in REFUSAL_TOKENS if REFUSAL_KIND.get(t, "model") == "model"}
+
+
+def test_every_model_fault_is_taught_or_excluded_with_a_reason() -> None:
+    untaught = sorted(_model_faults() - set(TAUGHT) - set(EXCLUDED))
+    assert untaught == [], f"no rule or schema line tells the model: {untaught}"
+
+
+def test_no_entry_names_a_token_that_is_not_a_model_fault() -> None:
+    faults = _model_faults()
+    assert set(TAUGHT) <= faults
+    assert set(EXCLUDED) <= faults
+    assert not set(TAUGHT) & set(EXCLUDED)
+
+
+@pytest.mark.parametrize("token", sorted(TAUGHT))
+def test_each_entry_is_really_in_the_prompt_or_the_schema(token: str) -> None:
+    taught = TAUGHT[token]
+    if isinstance(taught, tuple):
+        assert taught[1] in SYSTEM_RULES, token
+    else:
+        assert taught(), token
+
+
+def test_the_step_4_exclusions_hold_only_while_the_runner_does_not_use_consent() -> None:
+    """Tripwire: once the runner imports `loop2.consent`, its tokens must be taught."""
+    import inspect  # noqa: PLC0415
+
+    from steerai.loop2 import runner  # noqa: PLC0415
+
+    assert "consent" not in inspect.getsource(runner)
