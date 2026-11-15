@@ -120,8 +120,12 @@ NOT_IN_STEP_VERBS: Final = frozenset(get_args(Verb)) - STEP_VERBS[STEP]
 MAX_ACTIONS = 4
 MAX_SUBGOALS = 5
 MAX_DESC_CHARS = 120
+SUBGOAL_ID_CHARS = 16
+PARAM_NAME_CHARS = 24
 SUBGOAL_ID = re.compile(r"[a-z0-9_]{1,16}")
 PARAM_NAME = re.compile(r"[a-z0-9_]{1,24}")
+"""Literals (a token producer builds no string at runtime); a test pins each bound to its
+`*_CHARS` constant, which the prompt's schema states."""
 """[V2.47]: a param name is closed at intake: lowercase letters, digits and underscore, at most
 24 characters (subgoal ids: the same alphabet, at most 16, `SUBGOAL_ID`)."""
 STEP_KINDS: Final[Mapping[int, frozenset[str]]] = {
