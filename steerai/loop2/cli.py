@@ -395,6 +395,11 @@ def _result(
             "max_cost_usd": cost if cost_known else None,
         },
         "monitor_lost": reason == "monitor_lost" or bool(report.get("monitor_lost")),
+        "cache_tokens": {  # [V2.45]: stage 1 asserts each is zero (caching is off)
+            "write_5m": outcome.usage.cache_write_5m,
+            "write_1h": outcome.usage.cache_write_1h,
+            "read": outcome.usage.cache_read,
+        },
         "tokens_incomplete": not tokens_known,
         "cost_incomplete": not cost_known,
         "wall_incomplete": not wall_known,

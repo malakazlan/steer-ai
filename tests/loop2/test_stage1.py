@@ -12,7 +12,8 @@ from typing import Any
 
 import pytest
 
-from steerai.loop2 import stage1
+from steerai.loop2 import cli, stage1
+from steerai.loop2.loop import Reason, TaskOutcome
 from steerai.loop2.stage1 import (
     Classified,
     RunRecord,
@@ -24,6 +25,7 @@ from steerai.loop2.stage1 import (
     precheck,
     run_child,
 )
+from steerai.loop2.task import Budgets
 
 DONE = StageTask("a", "search the catalog for red shoes", "3d", "/a", "done")
 BLOCKED = StageTask("g01", "click Save draft", "gallery", "/", "blocked")
@@ -34,28 +36,30 @@ NOBUTTON = StageTask(
 )  # fmt: skip
 
 
+BUDGETS = Budgets(max_actions=40, max_model_calls=20, max_tokens=400_000, max_cost_usd=2.0,
+                  max_wall_s=300.0)  # fmt: skip
+
+
 def _final(
     status: str = "done", reason: str | None = None, **changes: Any
 ) -> dict[str, Any]:  # Any: JSON
-    final: dict[str, Any] = {
-        "status": status,
-        "reason": reason,
-        "monitor_lost": False,
-        "used": {
-            "max_model_calls": 2,
-            "max_actions": 1,
-            "max_tokens": 900.0,
-            "max_wall_s": 4.2,
-            "max_cost_usd": 0.01,
-        },
-        "cache_tokens": {"write_5m": 0, "write_1h": 0, "read": 0},
-        "paused_by": None,
-        "listings": [],
-        "focus": {},
-        "world": {},
-    }
+    """A final line as the CLI writes it (`cli._result`, #366 P3: the contract is pinned), with
+    the fields a test needs changed."""
+    outcome = TaskOutcome(
+        status=status,  # type: ignore[arg-type]  # a status token under test
+        cause=None if reason is None else Reason(reason),
+        dispatched=(),
+        model_calls=2,
+        strikes=(),
+        tokens=900.0,
+        cost_usd=0.01,
+        wall_s=4.2,
+    )
+    report: dict[str, int | str | None] = {"monitor_lost": 0}
+    final = json.loads(json.dumps(cli._result(outcome, BUDGETS, report), allow_nan=False))
+    final["used"]["max_actions"] = 1  # one dispatch, unless a test says otherwise
     final.update(changes)
-    return final
+    return dict(final)
 
 
 def _record(
