@@ -514,6 +514,7 @@ def test_a_steer_error_mid_task_reports_use_not_a_refused_start(
     assert result["used"]["max_model_calls"] is None
     assert result["tokens_incomplete"] is True
     assert result["listings"] == []
+    assert result["cache_tokens"] == {"write_5m": None, "write_1h": None, "read": None}
 
 
 def test_a_steer_error_after_the_task_keeps_its_outcome(
@@ -557,3 +558,21 @@ def test_the_final_line_names_a_rejection_with_its_closed_tokens(
     run = Run(tmp_path)
     run()
     assert run.result()["rejections"] == ["id_not_listed"]
+
+
+def test_the_final_line_carries_the_cache_counters(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#366 P3, [V2.45]: stage 1 asserts every cache counter is zero, from this line."""
+    from steerai.loop2.loop import TokenUsage  # noqa: PLC0415 - this test only
+
+    usage = TokenUsage(input_tokens=10, output_tokens=5, cache_write_5m=1, cache_write_1h=2,
+                       cache_read=3)  # fmt: skip
+    outcome = TaskOutcome(
+        status="done", cause=None, dispatched=(), model_calls=1, strikes=(), tokens=21.0,
+        cost_usd=0.0, wall_s=1.0, usage=usage,
+    )  # fmt: skip
+    monkeypatch.setattr(cli, "run_task", lambda _task, _ports: outcome)
+    run = Run(tmp_path)
+    run()
+    assert run.result()["cache_tokens"] == {"write_5m": 1, "write_1h": 2, "read": 3}

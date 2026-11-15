@@ -341,6 +341,7 @@ def _unfinished(budgets: Budgets) -> dict[str, Any]:  # Any: the final JSON
         "paused_by": None,
         "monitor_lost": False,
         "used": dict.fromkeys(_limits(budgets)),
+        "cache_tokens": dict.fromkeys(("write_5m", "write_1h", "read")),  # unknown, said
         "tokens_incomplete": True,
         "cost_incomplete": True,
         "wall_incomplete": True,
@@ -396,6 +397,11 @@ def _result(
         },
         "monitor_lost": reason == "monitor_lost" or bool(report.get("monitor_lost")),
         "rejections": list(outcome.rejections),  # closed tokens: why a turn was rejected
+        "cache_tokens": {  # [V2.45]: stage 1 asserts each is zero (caching is off)
+            "write_5m": outcome.usage.cache_write_5m,
+            "write_1h": outcome.usage.cache_write_1h,
+            "read": outcome.usage.cache_read,
+        },
         "tokens_incomplete": not tokens_known,
         "cost_incomplete": not cost_known,
         "wall_incomplete": not wall_known,
