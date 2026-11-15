@@ -257,11 +257,31 @@ class Decided:
     """[V2.67] D: the closed rejection tokens of each attempt that failed before it, in order."""
 
 
-AuditReason = Literal["outcome_shown", "outcome_not_shown", "outcome_unclear"]
-"""[V2.64] One: what the final audit says of the request's outcome (closed)."""
-ProofLine = tuple[str, str, str, str, bool]
-"""One proven subgoal for the audit: (subgoal id, closes, how, kind, closed only by value or
-state claims)."""
+AuditReason = Literal["facts_finish_request", "request_asks_more", "unclear"]
+"""[V2.68] One, packet rev 4 item 4: the sufficiency judges' closed reasons; only
+`facts_finish_request` with `sufficient` lets a task end done."""
+ReadKind = Literal["value_read", "state_read", "navigated"]
+"""[V2.68] One: what kind of fact code verified for a proven subgoal (the audit's read token)."""
+AUDIT_COUNTS: Final = (
+    "audit_calls",
+    "audit_allowed",
+    "audit_vetoed",
+    "audit_failed",
+    "audit_no_call",
+    "audit_budget_stops",
+    "audit_tokens",
+)
+"""[V2.69] One, packet rev 4 item 4: the audit's counts on the outcome and the final line;
+`audit_calls == audit_allowed + audit_vetoed + audit_failed`."""
+
+
+ProofParam = tuple[int, str]
+"""[V2.68], packet rev 5 §5: a proven param for the audit: its position among the subgoal's
+params (sorted by name, as `decision_shape`) and its span of the request (the person's words)."""
+ProofLine = tuple[int, str, str, str, tuple[ReadKind, str], tuple[ProofParam, ...]]
+"""[V2.68], [V2.69] One: one proven subgoal for the audit, by position, never its id: (position,
+closes, how, kind, read, params). `read` is what code verified, a closed (kind, detail) pair the
+prompt renders as `value_read:equals_param`, `state_read:<wanted>` or `navigated:<how>`."""
 
 
 @dataclass(frozen=True)
@@ -277,13 +297,17 @@ class AuditView:
     audit's listing is selected as decide's is, with these kept under the cap."""
     words: frozenset[str] = frozenset()
     """The subgoals' param words, for the goal-word class of the listing."""
+    typed: tuple[str, ...] = dataclass_field(default=(), repr=False)
+    """Packet rev 5 item 5: each free text Steer typed in the task (in memory only); the audit
+    port masks it out of the listing and the title before the call."""
 
 
 @dataclass(frozen=True)
 class Audited:
-    """The audit's answer: a veto or not, its closed reason, and the call's usage."""
+    """The audit's answer: whether the verified facts finish the request, its closed reason, and
+    the call's usage ([V2.68] One)."""
 
-    veto: bool
+    sufficient: bool
     reason: AuditReason
     usage: TokenUsage | None = None
 
@@ -475,8 +499,20 @@ class TaskOutcome:
     exact_counts: int = 0
     """[V2.61]: turns on which the prompt guard spent an exact count (near the ceiling)."""
     audit: tuple[str, str] | None = None
-    """[V2.64] One: the final audit's (`allowed` | `vetoed` | `failed`, reason token); None when
-    no audit ran (some proof was not self-written, or the task did not reach done)."""
+    """[V2.64] One, [V2.69] One: the final audit's (`allowed` | `vetoed` | `failed`, reason token);
+    None when no audit was due (the task did not reach done)."""
+    audit_calls: int = 0
+    """[V2.69] One, packet rev 4 item 4: audit calls made; `audit_allowed + audit_vetoed +
+    audit_failed` (a failed call made counts in `audit_failed`)."""
+    audit_allowed: int = 0
+    audit_vetoed: int = 0
+    audit_failed: int = 0
+    audit_no_call: int = 0
+    """An audit refused before any call (no port, over the prompt bound): never a call."""
+    audit_budget_stops: int = 0
+    """[V2.69] Four: an audit due with a budget spent: no call, the task paused."""
+    audit_tokens: int = 0
+    """The audit call's reported input and output tokens."""
     query_combobox_listed: bool = False
     """[V2.64] Two: a query-class ComboBox (searchbox AriaRole, or under a Search landmark) was
     among the rows the model was shown."""
