@@ -586,10 +586,15 @@ class HookMonitor:
         """LW-01: the hooks that missed the last probe past its deadline."""
         return self._core.lost_hooks(now=self._monotonic())
 
-    def unhook_for_test(self) -> None:
-        """Remove the hooks behind the core's back, the way the OS does on a timeout."""
+    def unhook_for_test(self, hook: str | None = None) -> None:
+        """Remove the hooks behind the core's back, the way the OS removes a hook: both, or
+        only `hook` (`keyboard` or `mouse`; #364: measured, a stalled callback alone does not
+        make Windows remove it, so the removal test removes it for real)."""
+        if hook is not None and hook not in HOOKS:
+            raise ValueError("hook must be keyboard or mouse")
         if self._thread_id:
-            _user32().PostThreadMessageW(self._thread_id, WM_APP_UNHOOK_KEEP_KEY, 0, 0)
+            which = 0 if hook is None else 1 + HOOKS.index(hook)
+            _user32().PostThreadMessageW(self._thread_id, WM_APP_UNHOOK_KEEP_KEY, which, 0)
             time.sleep(0.05)
 
     # ---- the thread ----------------------------------------------------------------------------
@@ -612,7 +617,7 @@ class HookMonitor:
                     user32.UnregisterHotKey(None, HOTKEY_ID)
                     hotkey = False
             elif msg.message == WM_APP_UNHOOK_KEEP_KEY:
-                _unhook_all(user32, hooks)
+                _unhook_some(user32, hooks, int(msg.wParam))
             else:
                 user32.TranslateMessage(ctypes.byref(msg))
                 user32.DispatchMessageW(ctypes.byref(msg))
@@ -753,4 +758,18 @@ class HookMonitor:
 
 def _unhook_all(user32: Any, hooks: list[int]) -> None:
     while hooks:
-        user32.UnhookWindowsHookEx(hooks.pop())
+        hook = hooks.pop()
+        if hook:
+            user32.UnhookWindowsHookEx(hook)
+
+
+def _unhook_some(user32: Any, hooks: list[int], which: int) -> None:
+    """The test seam's removal: 0 every hook; 1 the keyboard's, 2 the mouse's (hooks are
+    installed mouse first, keyboard second); a removed one stays as 0 in its place."""
+    if which == 0:
+        _unhook_all(user32, hooks)
+        return
+    index = {1: 1, 2: 0}.get(which)
+    if index is not None and index < len(hooks) and hooks[index]:
+        user32.UnhookWindowsHookEx(hooks[index])
+        hooks[index] = 0

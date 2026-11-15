@@ -1,10 +1,16 @@
-"""#364 P3 ([V2.57] LW-01): the OS silently removes a hook whose callback outlives
-LowLevelHooksTimeout (Microsoft Learn, LowLevelKeyboardProc: "on Windows 7 and later, the hook
-is silently removed without being called"; at most 1000 ms on Windows 10 1709 and later). The
-v2 world must then lose the monitor, name the hook, and send nothing.
+"""#364 P3 ([V2.57] LW-01, [V2.59]): a hook Windows removes, and a callback slower than the
+derived deadline, both end in monitor_lost with nothing sent.
 
-Windows only, on CI's windows-latest: it installs real hooks and sends tagged probes (a mouse
-nudge in place and key-ups of the unassigned probe key). Never run locally."""
+Measured on this machine (2026-11-15, scratch probe `hook_removal_probe.py`, real hooks, tagged
+key-ups into our own Notepad): after 1, 2, 3, 5 and 8 consecutive keyboard callbacks stalled
+2.0 s each, Windows did NOT remove the hook: 20 of 20 later probes were delivered every time, and
+every stalled callback still counted, late. Microsoft Learn's wording ("the hook is silently
+removed") gives no count. So removal is modelled with a real unhook of one hook
+(`unhook_for_test("keyboard")`), and the stall case is its own test: the hook survives, but an
+echo slower than the deadline is lost (fail closed).
+
+Windows only, on CI's windows-latest or a cleared machine: real hooks, a mouse nudge in place and
+key-ups of the unassigned probe key."""
 
 from __future__ import annotations
 
@@ -46,9 +52,7 @@ def test_a_keyboard_hook_removed_by_the_os_is_lost_and_nothing_is_sent() -> None
     world, _ = _world(platform, clock=time.monotonic, pause=time.sleep)
     try:
         world.desk.prove_hooks()  # both hooks alive: proven
-        platform.real.stall_next_for_test("keyboard", STALL_S)
-        platform.real.probe_now()  # its key-up hangs the keyboard callback past the timeout
-        time.sleep(STALL_S + 0.5)
+        platform.real.unhook_for_test("keyboard")  # removed, as Windows removes a hook
         with pytest.raises(PortInterrupted) as lost:
             world.desk.prove_hooks()
         assert [lost.value.token] == ["monitor_lost"]
@@ -57,5 +61,24 @@ def test_a_keyboard_hook_removed_by_the_os_is_lost_and_nothing_is_sent() -> None
         assert platform.fake_input.bursts == []
         assert platform.fake_input.clicks == []
         assert world.report()["monitor_lost"] == 1
+    finally:
+        world.close()
+
+
+def test_an_echo_slower_than_the_deadline_is_lost_though_windows_keeps_the_hook() -> None:
+    """[V2.59]: the stalled callback runs late and Windows keeps the hook, but the proof
+    waits only the derived deadline: monitor_lost, fail closed, nothing sent."""
+    platform = _RealMonitor()
+    world, _ = _world(platform, clock=time.monotonic, pause=time.sleep)
+    try:
+        world.desk.prove_hooks()
+        platform.real.stall_next_for_test("keyboard", STALL_S)  # the next probe's echo hangs
+        with pytest.raises(PortInterrupted) as lost:
+            world.desk.prove_hooks()
+        assert [lost.value.token] == ["monitor_lost"]
+        assert platform.fake_input.bursts == []
+        assert platform.fake_input.clicks == []
+        time.sleep(STALL_S)  # the late echo lands; the loss stays latched
+        assert world.interrupted() == "monitor_lost"
     finally:
         world.close()

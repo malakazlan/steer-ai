@@ -708,3 +708,52 @@ def test_an_event_stamped_after_the_entry_tick_is_zero_not_a_second(
         assert monitor.latency() == (1, 0, 0)
     finally:
         monitor.close()
+
+
+def test_the_unhook_seam_can_remove_one_hook_the_way_windows_would(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#364 CI: Windows did not remove a hook after stalled callbacks (measured: 1 to 8 stalls
+    of 2 s, every later probe delivered), so the removal test removes it for real, one hook."""
+    user32 = FakeUser32()
+    monitor = _v2_started(monkeypatch, user32)
+    try:
+        monitor.unhook_for_test("keyboard")
+        assert WH_KEYBOARD_LL not in user32.procs
+        assert WH_MOUSE_LL in user32.procs
+        with pytest.raises(ValueError, match="hook"):
+            monitor.unhook_for_test("touch")
+    finally:
+        monitor.close()
+
+
+def test_a_stalled_probe_that_counts_late_cannot_prove_a_probe_sent_after_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows passes a timed-out event on, but the stalled callback still runs and counts it
+    late; that late count proves its own probe only, never one sent after it."""
+    monkeypatch.setattr(monitor_module, "nudge_in_place", lambda: None)
+    monkeypatch.setattr(monitor_module, "key_up_probe", lambda _vk: None)
+    user32 = FakeUser32()
+    clock = {"t": 100.0}
+    _patch(monkeypatch, user32)
+    monitor = HookMonitor(
+        monotonic=lambda: clock["t"], per_hook=True, probe_vk=PROBE_VK, tick=lambda: 1000
+    )
+    monitor.start()
+    try:
+        clock["t"] += 1.0
+        monitor.probe_now()  # A, whose callbacks stall
+        clock["t"] += 0.01
+        monitor.probe_now()  # B, sent while A is still out
+        key = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=STEER_EXTRA_INFO)
+        key.vkCode = PROBE_VK
+        move = _mouse(flags=LLMHF_INJECTED, extra=STEER_EXTRA_INFO)
+        user32.procs[WH_MOUSE_LL](HC_ACTION, WM_MOUSEMOVE, ctypes.addressof(move))
+        user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x101, ctypes.addressof(key))  # A, late
+        assert monitor.probe_seen() is False
+        user32.procs[WH_MOUSE_LL](HC_ACTION, WM_MOUSEMOVE, ctypes.addressof(move))
+        user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x101, ctypes.addressof(key))  # B
+        assert monitor.probe_seen() is True
+    finally:
+        monitor.close()
