@@ -429,3 +429,15 @@ def test_the_summary_says_which_set_it_is() -> None:
     runs = [_ok(DONE, r) for r in (1, 2, 3)]
     report = accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="3d").report
     assert report["set"] == "3d"
+
+
+def test_a_large_page_task_fails_closed_until_listed_when_acted_is_checked() -> None:
+    """#366 P5: acceptance needs the target listed on the turn it is acted on; until that
+    check exists, a set with a `/large.html` task is never accepted."""
+    large = StageTask("large-reserve", "reserve item 1987", "large", "/large.html", "done")
+    runs = [_ok(large, r) for r in (1, 2, 3)]
+    summary = accept([large], runs, controls=None, runs_per_task=3, label="large")
+    assert (summary.gates["large_listed"], summary.accepted) == (False, False)
+    other = accept([DONE], [_ok(DONE, r) for r in (1, 2, 3)], controls=(5, 5), runs_per_task=3,
+                   label="t")  # fmt: skip
+    assert other.gates["large_listed"] is True

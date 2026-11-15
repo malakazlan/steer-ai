@@ -211,6 +211,8 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
         "monitor_lost": verdicts["monitor_lost"] * 10 <= total,
         "cache_zero": all(_cache_zero(f) for f in finals),
         "internal": not any(r.reason == "internal" for r in runs),
+        # #366 P5: the target listed on the turn it is acted on is not checked yet: fail closed
+        "large_listed": not any(t.fixture == "large" for t in tasks),
     }
     report = {
         "set": label,
