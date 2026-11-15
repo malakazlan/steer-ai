@@ -46,6 +46,7 @@ from steerai.session.hook_classifier import (
     OTHER_STEER_INPUT,
     TAKEOVER,
     TAKEOVER_TOKENS,
+    UNASSIGNED_VKS,
     WM_LBUTTONDOWN,
     WM_MOUSEMOVE,
     WM_MOUSEWHEEL,
@@ -136,8 +137,6 @@ def _read_hooks_timeout() -> object:  # pragma: no cover - live, Windows only
     return value
 
 
-UNASSIGNED_VKS = frozenset({0x0E, 0x0F, *range(0x97, 0xA0), 0xE8})
-"""Microsoft Learn, Virtual-Key Codes (Winuser.h): 0x0E-0F, 0x97-9F and 0xE8 are Unassigned."""
 PROBE_VK = 0x0E
 """[V2.57] LW-01: the keyboard hook's probe key, a key-up of an unassigned code, picked by probe
 (`steerai.probes.probe_key`, 2026-11-15, this machine): 20 tagged key-ups of each of the 12

@@ -54,6 +54,7 @@ PINNED_STATUS = (
     "max_event_lag_ms",
     "latency_events",
     "run_time_events",
+    "ws_floor",
 )
 PINNED_CONFIG = (
     "magic",
