@@ -395,4 +395,6 @@ def test_an_unrated_marker_that_is_not_valid_is_refused(bad: object) -> None:
 
 
 def test_the_unrated_reasons_are_closed() -> None:
-    assert frozenset({"target_after_opener", "pressed_unread"}) == UNRATED_REASONS
+    assert (
+        frozenset({"target_after_opener", "pressed_unread", "copies_disagree"}) == UNRATED_REASONS
+    )

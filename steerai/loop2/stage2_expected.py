@@ -264,10 +264,11 @@ def dump_table(rows: Sequence[TableRow], *, unrated: Mapping[str, str] | None = 
     return json.dumps(payload, indent=2, sort_keys=False) + "\n"
 
 
-UNRATED_REASONS: Final = frozenset({"target_after_opener", "pressed_unread"})
+UNRATED_REASONS: Final = frozenset({"target_after_opener", "pressed_unread", "copies_disagree"})
 """Tasks the lead rules on before they are rated (the coordinator, 2026-11-15): a target that
-shows only after an opener, and a toggle whose pressed state the read does not show. They are
-kept out of both tables and out of acceptance until then."""
+shows only after an opener, a toggle whose pressed state the read does not show, and a target
+whose copies disagree on a deciding fact (no guess at which copy Steer acts on). They are kept
+out of both tables and out of acceptance until then."""
 
 
 def load_unrated(text: str) -> dict[str, str]:
