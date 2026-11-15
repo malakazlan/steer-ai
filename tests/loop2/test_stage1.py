@@ -432,6 +432,7 @@ def test_an_expectation_that_names_a_detail_matches_only_itself() -> None:
     assert not reason_matches("no_progress", "no_progressive")
     assert not reason_matches("after_refusal:press_not_at_focus", "after_refusal:press")
     assert reason_matches("commit_not_in_step", "commit_not_in_step")
+    assert not reason_matches("commit_not_in_step", "commit_not_in_step:x")  # no_progress only
     assert not reason_matches("no_progress", None)
 
 

@@ -558,12 +558,12 @@ def _token(text: str) -> bool:
 
 
 def reason_matches(expected: str, got: object) -> bool:
-    """[V2.70]: an expected ending scored by its reason class: `no_progress` matches
-    `no_progress` and any `no_progress:<token>` (diagnostic detail); an expectation that names
-    a detail matches only itself."""
+    """[V2.70]: an expected ending scored by its reason class. Only `no_progress` has a class
+    (its single cause, [V2.69] Two, is diagnostic detail): it matches `no_progress` and any
+    `no_progress:<token>`. Every other expectation matches only itself (#460 review)."""
     if not isinstance(got, str):
         return False
-    return got == expected or (":" not in expected and got.startswith(expected + ":"))
+    return got == expected or (expected == "no_progress" and got.startswith("no_progress:"))
 
 
 _START_CODES: Final = frozenset({c.value for c in ErrorCode} | {"None"})

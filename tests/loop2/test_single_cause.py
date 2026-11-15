@@ -10,6 +10,7 @@ from steerai.loop2.decision import Decision
 from steerai.loop2.guards import StrikeReason, single_cause
 from steerai.loop2.loop import Reason, render_reason
 from steerai.loop2.runner import run_task
+from tests.loop2.test_rejected_intake_turn import _rejected
 from tests.loop2.world_fakes import GO, World, act, decision, report, task
 
 ONE = frozenset({"not_in_step"})
@@ -74,4 +75,30 @@ def test_a_run_with_any_other_strike_stays_plain() -> None:
     later = [decision(act("click", target=GO.id))] * 4
     world = World([first, *later], effects=[report("none")] * 5)
     outcome = run_task(task(), world.ports())
+    assert (outcome.status, outcome.reason) == ("paused", "no_progress")
+
+
+def test_refusal_strikes_then_an_effect_none_strike_end_plain() -> None:
+    """#460 review: the same refusal twice, then a turn whose click had no effect: mixed."""
+    subgoal = {"id": "s1", "desc": "x", "params": {"text": "shop"}, "closes": "page"}
+    opener = Decision.model_validate(
+        {"subgoals": [subgoal], "actions": [{"verb": "open", "subgoal": "s1"}]}
+    )
+    clicked = Decision.model_validate(
+        {"subgoals": [subgoal], "actions": [{"verb": "click", "target": GO.id, "subgoal": "s1"}]}
+    )
+    world = World([opener, opener, clicked, clicked], effects=[report("none")] * 2)
+    outcome = run_task(task(), world.ports())
+    assert outcome.strikes[0] == ("refused",)
+    assert any("effect_none" in s for s in outcome.strikes)
+    assert (outcome.status, outcome.reason) == ("paused", "no_progress")
+
+
+def test_a_turn_refused_with_two_tokens_ends_plain() -> None:
+    """#460 review: every turn refused with the same two tokens: no single cause."""
+    world = World([])
+    world.decide_errors = [_rejected("id_not_listed", "key_missing") for _ in range(5)]
+    outcome = run_task(task(), world.ports())
+    assert dict(outcome.refusals) == {"id_not_listed": 3, "key_missing": 3}
+    assert all(set(s) <= {"refused", "state_seen"} for s in outcome.strikes)  # refusals only
     assert (outcome.status, outcome.reason) == ("paused", "no_progress")
