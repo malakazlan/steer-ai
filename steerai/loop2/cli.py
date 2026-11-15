@@ -519,6 +519,7 @@ def _result(
             "target_changes": outcome.target_changes,
             "focus_losses": outcome.focus_losses,
             "history_dropped": outcome.history_dropped,
+            "turn_trace_dropped": outcome.turn_trace_dropped,  # [V2.67] D
             "pre_task_draft_clicks": outcome.pre_task_draft_clicks,  # [V2.64] Two
             "saved_calls": outcome.saved_calls,  # [V2.67] A
             "submit_parents": dict(outcome.submit_parents),

@@ -618,6 +618,7 @@ OUTCOME_COUNTS: Final = (
     "target_changes",
     "focus_losses",
     "history_dropped",
+    "turn_trace_dropped",
     "pre_task_draft_clicks",
     "saved_calls",
 )

@@ -253,6 +253,8 @@ class Decided:
     """[V2.61]: the turn's calls held more input tokens than the guard's bound said."""
     calls: int = 1
     """Invariant 9, [V2.68]: the model calls the turn made (a repaired turn is two)."""
+    rejections: tuple[str, ...] = ()
+    """[V2.67] D: the closed rejection tokens of each attempt that failed before it, in order."""
 
 
 AuditReason = Literal["outcome_shown", "outcome_not_shown", "outcome_unclear"]
@@ -324,11 +326,52 @@ class Ports:
     """The value fact a field holding exactly this text reads as (the session key and the
     normalisation `read_value` uses), so a value claim compares digests, never text."""
     audit: Callable[[AuditView], Audited] | None = None
+    turn_trace: Callable[[Mapping[str, object]], None] | None = None
+    """[V2.67] D: each turn's closed record (`turn_trace.closed`) for the redacted trace; None
+    writes none."""
     """[V2.64] One: the final audit, called only when every proof is self-written; None means
     there is none, so such a task fails closed (`audit_failed`), never ends done unaudited."""
 
 
 WatchKind = Literal["plain", "trigger", "submit", "wait"]
+PortDetail = Literal[
+    # the act port's own refusals and results
+    "port_error",
+    "screen_changed_during_wait",
+    "target_gone",
+    "expand_needs_click",
+    "not_in_step",
+    "commit_not_in_step",
+    "shape",
+    "text_missing",
+    "focus_needs_field",
+    "key_not_allowed",
+    "not_own_text",
+    "secure_unread",
+    "wall_budget",
+    "press_not_at_focus",
+    # the input guard and the toggle guard
+    "idle_unread",
+    "not_armed",
+    "toggle_limit",
+    "second_toggle_refused",
+    "second_toggle_uncertain",
+    "settled_on_reread",
+    # the tap check, the takeover and the switch (`interrupted`)
+    "hands_on",
+    "foreground_elevated",
+    "tap_unreadable",
+    "takeover",
+    "other_steer_input",
+    "killed",
+    "monitor_lost",
+    "session_locked",
+    "generation",
+]
+"""[V2.67] D: every `detail` the act port, its guards and the switch put on an act result, on
+top of the executors' (`execution.RefusalDetail`). Pinned to its producers by
+`tests/action/test_refusal_details.py`."""
+PORT_DETAILS: Final = frozenset(get_args(PortDetail))
 """[V2.48]: the watch classes, each with its own deadline (`world_ports.WorldTimes`)."""
 
 
@@ -406,6 +449,9 @@ class TaskOutcome:
     history_dropped: int = 0
     """[V2.47]: history lines off the history vocabulary (`history_line_ok`): dropped, never
     shown."""
+    turn_trace_dropped: int = 0
+    """[V2.67] D: turn records that failed the no-free-text check (`turn_trace.closed`): dropped,
+    never written in part, and counted so a gap in the trace never reads as a clean run."""
     wall_s: float = 0.0
     """7b: the task's wall time on the ports' clock, start to end (use against `max_wall_s`)."""
     cost_usd: float | None = None
@@ -585,6 +631,20 @@ _ORDER: Final = {risk: index for index, risk in enumerate(RISKS)}
 AskReason = Literal["generated_text", "text_changed", "submit_pending_text"]
 """[V2.25]: `generated_text` and `text_changed` are asks no grant covers; `submit_pending_text`
 marks a tier the submit rule raised, so its blocks are counted on their own."""
+RiskWhy = Literal[
+    "commit_declared",
+    "state_floor",
+    "deny_pattern",
+    "parent_unread",
+    "secure_type",
+    "enter_field",
+    "enter_other",
+    "submit_rule",
+]
+"""[V2.67] D: the rule of `action_risk` that set the final tier (the first to reach it, in
+rule order): the declared commit, the state verbs' R1 floor, v1's deny, control, consent
+and billing patterns (`gate.deny_tier_of`, one tier for its four classes), a parent the
+snapshot does not hold, a type into a secure field, an Enter, or the submit rule."""
 ParentKind = Literal["document", "main", "narrower"]
 PARENT_KINDS: Final[tuple[ParentKind, ...]] = get_args(ParentKind)
 Held = Literal["held", "changed", "unread"]
@@ -609,17 +669,21 @@ class RiskVerdict:
     submit: bool = False
     """#350: the action goes through the Enter table (an Enter on a field, or the submit rule
     fired), decided by the same call; the watch holds it as a submit."""
+    why: RiskWhy | None = None
+    """[V2.67] D: the rule that set `risk`; None at R0 with nothing raised."""
 
 
 @dataclass
 class _Tally:
     risk: Risk = "R0"
+    why: RiskWhy | None = None
     reasons: set[AskReason] = dataclass_field(default_factory=set)
     submit_parent: ParentKind | None = None
     refused: bool = False
 
-    def raise_to(self, tier: Risk) -> None:
-        self.risk = _highest(self.risk, tier)
+    def raise_to(self, tier: Risk, why: RiskWhy) -> None:
+        if _ORDER[tier] > _ORDER[self.risk]:  # raise-only; the first rule to reach it
+            self.risk, self.why = tier, why
 
 
 def _highest(*tiers: Risk) -> Risk:
@@ -660,23 +724,24 @@ def action_risk(
     id, its group name and the submit rule. `goal` is kept for the step-4 goal check."""
     del goal  # the per-action goal check is step 4
     scoping = _scoping_verb(action, element)
-    tally = _Tally(COMMIT_RISK[action.commit])
-    tally.raise_to("R1" if scoping in STATE_FLOOR else "R0")
+    tally = _Tally()
+    tally.raise_to(COMMIT_RISK[action.commit], "commit_declared")
+    tally.raise_to("R1" if scoping in STATE_FLOOR else "R0", "state_floor")
     deny: Risk = "R0"
     if action.verb not in NO_DENY_VERBS:
         deny = _deny(action, element, observed, scoping)
-        tally.raise_to(deny)
+        tally.raise_to(deny, "deny_pattern")
         if _parent_unread(element, observed):
-            tally.raise_to("R2")  # its group name cannot be read: never read as "no group"
+            tally.raise_to("R2", "parent_unread")  # its group name cannot be read
     if action.verb == "type" and element.secure:
-        tally.raise_to("R3")
+        tally.raise_to("R3", "secure_type")
     states = _states(observed, pending)
     denied = _ORDER[deny] >= _ORDER["R2"]
     kind = action_class(action, element.role)  # [V2.50]: the one call, risk and timing
     if kind == "enter_field":
         _enter(tally, action, element, observed, states, denied=denied)
     elif kind == "enter_other":
-        tally.raise_to("R2")  # [V2.26] (3): an Enter on anything else, or no known target
+        tally.raise_to("R2", "enter_other")  # [V2.26] (3): an Enter on anything else
     elif kind in _SUBMIT_RULE:
         _submit(tally, action, element, observed, states, denied=denied)
     if _ORDER[tally.risk] >= _ORDER["R2"] and _generated(action, states):
@@ -688,6 +753,7 @@ def action_risk(
         "text_changed" if tally.refused else None,
         trigger=kind in TRIGGER_CLASSES,
         submit=kind == "enter_field" or tally.submit_parent is not None,
+        why=tally.why,
     )
 
 
@@ -819,11 +885,12 @@ def _enter(  # noqa: PLR0913 - the tally, the action, its target and the read fa
     mine = next(((h, s) for h, s in states if h.field == field.runtime_id), None)
     if mine is None:
         tally.raise_to(
-            classify(field=NO_SEARCH, goal_span=False, commit=action.commit, deny_word=denied)
+            classify(field=NO_SEARCH, goal_span=False, commit=action.commit, deny_word=denied),
+            "enter_field",
         )
         return
     held, state = mine
-    tally.raise_to(_classified(tally, action, observed, held, state, denied=denied))
+    tally.raise_to(_classified(tally, action, observed, held, state, denied=denied), "enter_field")
 
 
 def _submit(  # noqa: PLR0913 - the tally, the action, its target and the read facts
@@ -853,7 +920,7 @@ def _submit(  # noqa: PLR0913 - the tally, the action, its target and the read f
             tier = "R2"
         if _ORDER[tier] >= _ORDER["R2"]:
             tally.reasons.add("submit_pending_text")
-        tally.raise_to(tier)
+        tally.raise_to(tier, "submit_rule")
 
 
 def _parent_kind(observed: Observed, field: tuple[int, ...]) -> ParentKind:
