@@ -60,7 +60,41 @@ CLAIM_CLOSES: Mapping[str, Closes] = {
     "content_present": "page",
 }
 """[V2.39]: the closing kind each claim kind proves; a claim of another kind is `kind_mismatch`."""
-WITHOUT_PARAM: Final[dict[Closes, str]] = {
+ValidateToken = Literal[
+    "ask_empty",
+    "ask_with_actions",
+    "ask_with_stop",
+    "commit_cannot_apply",
+    "desc_bad",
+    "empty_decision",
+    "id_not_listed",
+    "key_missing",
+    "not_in_step",
+    "option_missing",
+    "param_missing",
+    "param_name_bad",
+    "param_not_span",
+    "param_unknown",
+    "stop_with_actions",
+    "subgoal_duplicate",
+    "subgoal_id_bad",
+    "subgoal_unknown",
+    "subgoals_after_first",
+    "subgoals_missing",
+    "target_missing",
+    "target_on_untargeted_verb",
+    "text_bad",
+    "text_missing",
+    "too_many_actions",
+    "too_many_subgoals",
+    "type_text_and_param",
+    "wanted_missing",
+    "value_without_param",
+    "state_without_param",
+    "page_without_param",
+]
+"""#349: every refusal `validate` can give (the model's shape faults), closed for mypy."""
+WITHOUT_PARAM: Final[dict[Closes, ValidateToken]] = {
     "value": "value_without_param",
     "state": "state_without_param",
     "page": "page_without_param",
@@ -136,8 +170,8 @@ class Decision(_Strict):
 
 def _action_tokens(
     action: ActionDoc, listed_ids: frozenset[int], known: Mapping[str, set[str]]
-) -> list[str]:
-    tokens: list[str] = []
+) -> list[ValidateToken]:
+    tokens: list[ValidateToken] = []
     if action.commit != "none" and action.verb in NO_COMMIT_VERBS:
         tokens.append("commit_cannot_apply")  # [V2.42] RT-42: these verbs cannot commit
     if action.verb in NOT_IN_STEP_VERBS:
@@ -160,7 +194,7 @@ def _action_tokens(
     return tokens
 
 
-def _type_tokens(action: ActionDoc, params: set[str]) -> list[str]:
+def _type_tokens(action: ActionDoc, params: set[str]) -> list[ValidateToken]:
     has_text = bool(action.text)
     if action.text is not None and has_control(action.text):
         return ["text_bad"]  # RT-38: free text is one line of printable text
@@ -175,8 +209,8 @@ def _type_tokens(action: ActionDoc, params: set[str]) -> list[str]:
 
 def _claim_tokens(
     claim: Claim, listed_ids: frozenset[int], known: Mapping[str, set[str]]
-) -> list[str]:
-    tokens: list[str] = []
+) -> list[ValidateToken]:
+    tokens: list[ValidateToken] = []
     if claim.kind not in CHECKED_KINDS:
         tokens.append("not_in_step")
     if claim.subgoal not in known:
@@ -192,8 +226,8 @@ def _claim_tokens(
     return tokens
 
 
-def _subgoal_doc_tokens(sub: SubgoalDoc, goal: str, fences: frozenset[str]) -> list[str]:
-    tokens: list[str] = []
+def _subgoal_doc_tokens(sub: SubgoalDoc, goal: str, fences: frozenset[str]) -> list[ValidateToken]:
+    tokens: list[ValidateToken] = []
     if SUBGOAL_ID.fullmatch(sub.id) is None:
         tokens.append("subgoal_id_bad")
     bad = has_control(sub.desc) or any(fence in sub.desc for fence in fences)
@@ -216,14 +250,14 @@ def _subgoal_tokens(
     first_turn: bool,
     known: dict[str, set[str]],
     fences: frozenset[str],
-) -> list[str]:
+) -> list[ValidateToken]:
     subs = decision.subgoals
     if subs is None or (first_turn and not subs):
         acts = bool(decision.actions or decision.claims)  # V2 §5: a first ask or stop needs none
         return ["subgoals_missing"] if first_turn and acts else []
     if not first_turn:
         return ["subgoals_after_first"]
-    tokens: list[str] = []
+    tokens: list[ValidateToken] = []
     if len(subs) > MAX_SUBGOALS:
         tokens.append("too_many_subgoals")
     if len({sub.id for sub in subs}) != len(subs):
@@ -236,14 +270,14 @@ def _subgoal_tokens(
 
 def subgoal_tokens(
     decision: Decision, *, goal: str, fences: frozenset[str] = frozenset()
-) -> list[str]:
+) -> list[ValidateToken]:
     """[V2.11] decision 1: the rejection tokens of a first decision's subgoals alone, so code can
     take valid subgoals even when an action or a claim of the same decision is refused."""
     return _subgoal_tokens(decision, goal, True, {}, fences)
 
 
-def _shape_tokens(decision: Decision) -> list[str]:
-    tokens: list[str] = []
+def _shape_tokens(decision: Decision) -> list[ValidateToken]:
+    tokens: list[ValidateToken] = []
     if not (decision.claims or decision.actions) and decision.ask is None and decision.stop is None:
         tokens.append("empty_decision")
     if decision.ask is not None and not clean_line(decision.ask):
@@ -267,7 +301,7 @@ def validate(  # noqa: PLR0913 - the decision and its keyword-only context
     first_turn: bool,
     known_subgoals: Mapping[str, frozenset[str]] | None = None,
     fences: frozenset[str] = frozenset(),
-) -> list[str]:
+) -> list[ValidateToken]:
     """Return the closed rejection tokens for a decision, deduplicated, in first-seen order.
 
     `known_subgoals` maps each declared subgoal id to the names of its params (build it with

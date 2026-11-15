@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Final, Literal
 
 from steerai.loop2.decision import Claim
-from steerai.loop2.owned import field_owned
+from steerai.loop2.owned import OwnedToken, field_owned
 from steerai.loop2.task import Subgoal
 from steerai.orchestrator.gate import group_name
 from steerai.world.effects import (
@@ -38,13 +38,13 @@ def _inside(element: Element, by_id: dict[int, Element], scope: tuple[int, ...])
 
 def evidence_tokens(
     claim: Claim, snapshot: Snapshot, *, scope_document: tuple[int, ...] | None
-) -> tuple[str, ...]:
+) -> tuple[ClaimCheck, ...]:
     """Reject tokens for the claim's cited ids in `snapshot`: `id_not_listed` when an id is not
     in the snapshot; `outside_scope` when an id is not inside the scope Document (no Document
     ancestor, or another Document: a side panel, a split view). With no scope Document the
     whole window is allowed. Empty when every cited element is admissible."""
     by_id = {e.id: e for e in snapshot.elements}
-    tokens: list[str] = []
+    tokens: list[ClaimCheck] = []
     for cited in claim.evidence:
         element = by_id.get(cited)
         if element is None:
@@ -80,7 +80,7 @@ def check_claim(  # noqa: PLR0911, PLR0913 - one return per outcome; keyword-onl
     acted: tuple[int, ...] | None = None,
     echo: bool = False,
     allow_file: bool = False,
-) -> tuple[str, ...]:
+) -> tuple[ClaimCheck, ...]:
     """A `state`, `value` or `navigated` claim checked by code (§7.1): the reject tokens, empty
     when it is proven. `state` and `value` cite exactly one element in the scope Document (the
     top Document of `now` unless given) and read it live ([V2.29] Q2): an unread read rejects
@@ -135,6 +135,34 @@ PAGE_CARRIERS: Final = frozenset({"title", "heading"})
 CHANGE: Final = frozenset({"navigated", "url_changed_in_place"})
 OWNING_ROLES: Final = frozenset({"Menu", "ToolTip"})
 OPTION_CAPS: Final = frozenset({"selectable", "selected"})
+CheckToken = Literal[
+    "evidence_missing",
+    "id_not_listed",
+    "no_carrier",
+    "no_change",
+    "no_content",
+    "not_a_page",
+    "not_in_delta",
+    "outside_scope",
+    "param_missing",
+    "param_unproven",
+    "secure_field",
+    "secure_unread",
+    "state_mismatch",
+    "state_unread",
+    "tier_mismatch",
+    "too_much_evidence",
+    "url_unread",
+    "value_mismatch",
+    "value_unread",
+    "under_suggestions",
+    "option_evidence",
+    "no_scope",
+    "inside_field",
+]
+"""#349: every rejection the step 3 claim checks give (`_excluded` included), closed for mypy."""
+ClaimCheck = CheckToken | OwnedToken
+"""What a claim check rejects with: its own tokens, or an ownership token."""
 ProofToken = Literal["title", "heading", "results_with_url"]
 """How the auto proof closed a subgoal; `results_with_url` is counted on the pooled run
 ([V2.29] Q1): one false done on it reverts the rule."""
@@ -166,7 +194,7 @@ def navigated_tokens(  # noqa: PLR0913 - the subgoal, both reads and keyword-onl
     acted: tuple[int, ...] | None = None,
     echo: bool = False,
     allow_file: bool = False,
-) -> tuple[str, ...]:
+) -> tuple[ClaimCheck, ...]:
     """§7.1 `navigated` since the subgoal's baseline, for a claim citing `cited`: the reject
     tokens, empty when proven. [V2.39] (2): every param is proven on this observation, each by an
     accepted carrier or by a cited row holding its words that the observer counts as new (absent
@@ -175,7 +203,7 @@ def navigated_tokens(  # noqa: PLR0913 - the subgoal, both reads and keyword-onl
     found = _navigated(subgoal, baseline, now, acted=acted, allow_file=allow_file)
     if isinstance(found, tuple):
         return found
-    rejected: list[str] = []
+    rejected: list[ClaimCheck] = []
     rows: set[str] = set()
     for eid in cited:
         tokens = _cited_tokens(eid, baseline, now, typed=typed, echo=echo)
@@ -228,7 +256,7 @@ def _navigated(  # noqa: PLR0911 - one return per closed outcome
     *,
     acted: tuple[int, ...] | None,
     allow_file: bool,
-) -> _Found | tuple[str, ...]:
+) -> _Found | tuple[ClaimCheck, ...]:
     """The carriers since the baseline, per param, or the reject tokens when it is no navigation
     at all. The change signal is met once, by the URL or the top Document."""
     if baseline.tier != now.tier:
@@ -298,7 +326,7 @@ def holds_words(snapshot: Snapshot, element: Element, text: str) -> bool:
 
 def _excluded(
     element: Element, now: Observed, *, typed: Sequence[tuple[int, ...]], echo: bool
-) -> list[str]:
+) -> list[ClaimCheck]:
     """[V2.29] Q1: why an element proves nothing, for the auto proof and a cited claim alike:
     outside the single top Document (§7.1: a tab name or the address bar is never evidence), or
     no single top Document at all (fail closed: never the whole window); a typed field itself;
@@ -312,7 +340,7 @@ def _excluded(
         return ["outside_scope"]
     if element.runtime_id in typed:
         return ["inside_field"]
-    tokens: list[str] = []
+    tokens: list[ClaimCheck] = []
     if _under_role(element, by_id, OWNING_ROLES):
         tokens.append("under_suggestions")
     if echo and element.role == "ListItem" and OPTION_CAPS & set(element.caps):
@@ -324,7 +352,7 @@ def _excluded(
 
 def _cited_tokens(
     eid: int, baseline: Observed, now: Observed, *, typed: Sequence[tuple[int, ...]], echo: bool
-) -> list[str]:
+) -> list[ClaimCheck]:
     by_id = {e.id: e for e in now.snapshot.elements}
     element = by_id.get(eid)
     if element is None:

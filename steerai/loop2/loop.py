@@ -433,6 +433,9 @@ class RiskVerdict:
     trigger: bool = False
     """[V2.50]: the action's watch is a trigger's (`action_class` in `TRIGGER_CLASSES`), decided
     by the same call as the risk handling."""
+    submit: bool = False
+    """#350: the action goes through the Enter table (an Enter on a field, or the submit rule
+    fired), decided by the same call; the watch holds it as a submit."""
 
 
 @dataclass
@@ -511,6 +514,7 @@ def action_risk(
         tally.submit_parent,
         "text_changed" if tally.refused else None,
         trigger=kind in TRIGGER_CLASSES,
+        submit=kind == "enter_field" or tally.submit_parent is not None,
     )
 
 

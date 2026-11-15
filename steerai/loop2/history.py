@@ -19,10 +19,9 @@ from steerai.action.dispositions import Delivery
 from steerai.loop2.claims import ClaimToken
 from steerai.loop2.consent import CommitToken
 from steerai.loop2.consent import RefusalToken as StrictRefusal
-from steerai.loop2.decision import WITHOUT_PARAM, Verb
-from steerai.loop2.owned import OwnedToken
+from steerai.loop2.decision import ValidateToken, Verb
 from steerai.loop2.query import EnterToken, RowId
-from steerai.loop2.verify import ProofToken
+from steerai.loop2.verify import ClaimCheck, ProofToken
 from steerai.world.effects import EffectClass, Token
 
 UIA_CONTROL_TYPES: Final = frozenset(
@@ -49,55 +48,44 @@ READ_BACK: Final = frozenset({"mismatch", "unread"})
 ENTER_TOKENS: Final = frozenset(get_args(EnterToken))
 ROWS: Final = frozenset(get_args(RowId))
 MAX_LINE: Final = 256
-VALIDATE_REFUSALS: Final = frozenset(
-    {
-        "ask_empty", "ask_with_actions", "ask_with_stop", "commit_cannot_apply", "desc_bad",
-        "empty_decision", "id_not_listed", "key_missing", "not_in_step", "option_missing",
-        "param_missing", "param_name_bad", "param_not_span", "param_unknown",
-        "stop_with_actions", "subgoal_duplicate", "subgoal_id_bad", "subgoal_unknown",
-        "subgoals_after_first", "subgoals_missing", "target_missing",
-        "target_on_untargeted_verb", "text_bad", "text_missing", "too_many_actions",
-        "too_many_subgoals", "type_text_and_param", "wanted_missing",
-        *WITHOUT_PARAM.values(),
-    }
-)  # fmt: skip
-"""What `decision.validate` refuses (the model's shape faults)."""
-RUNNER_REFUSALS: Final = frozenset(
-    {
-        "id_not_listed", "not_delivered", "press_not_at_focus", "press_target_changed",
-        "press_target_gone", "repeat_send",
-        "secure_field", "secure_unread",  # `loop.type_refusal`
-        "text_changed",  # `loop.action_risk`
-    }
-)  # fmt: skip
-"""What the runner itself refuses, with the type and risk rules' refusals."""
-REFUSAL_TOKENS: Final = (
-    VALIDATE_REFUSALS
-    | RUNNER_REFUSALS
-    | frozenset(get_args(StrictRefusal))
-    | frozenset(get_args(CommitToken))
-)
-"""#347 re-review: every refusal token a history line may carry (`Refused.token`); the strict
-tier's (step 4) included, so a step 4 refusal is never dropped."""
-STEP3_CLAIM_REJECTIONS: Final = frozenset(
-    {
-        "evidence_missing", "id_not_listed", "no_carrier", "no_change", "no_content",
-        "not_a_page", "not_in_delta", "outside_scope", "param_missing", "param_unproven",
-        "secure_field", "secure_unread", "state_mismatch", "state_unread", "tier_mismatch",
-        "too_much_evidence", "url_unread", "value_mismatch", "value_unread",
-        "evidence_reused", "kind_mismatch", "standard_only", "words_missing",  # `_refused`
-    }
-)  # fmt: skip
-"""What `verify.check_claim` and the runner's `_refused` reject a step 3 claim with."""
-CLAIM_RESULTS: Final = (
-    frozenset(get_args(ClaimToken))
-    | frozenset(get_args(OwnedToken))
-    | STEP3_CLAIM_REJECTIONS
-    | frozenset({"accepted", "standard_only"})
-)
-"""#347 re-review: every claim result a history line may carry (`ClaimResult.result`)."""
-PROVEN_HOW: Final = frozenset({"claim", *get_args(ProofToken)})
-"""How a subgoal was proven: a claim, or the auto proof's token (`Proven.how`)."""
+RunnerRefusal = Literal[
+    "id_not_listed",
+    "not_delivered",
+    "press_not_at_focus",
+    "press_target_changed",
+    "press_target_gone",
+    "repeat_send",
+]
+"""What the runner itself refuses (it imports `history`, so its Literal lives here)."""
+PolicyRefusal = Literal["secure_field", "secure_unread", "text_changed"]
+"""The type and risk rules' refusals (`loop.type_refusal`, `RiskVerdict.refusal`)."""
+RunnerClaim = Literal[
+    "evidence_reused", "kind_mismatch", "param_missing", "standard_only", "words_missing",
+    "accepted",
+]  # fmt: skip
+"""The runner's own claim results: `_refused`'s refusals, and a param proof held (`accepted`)."""
+RefusalWord = ValidateToken | RunnerRefusal | PolicyRefusal | StrictRefusal | CommitToken
+"""#349: a refusal token, by the producers' own Literals ([V2.49]: an enum)."""
+ClaimWord = ClaimCheck | ClaimToken | RunnerClaim
+"""#349: a claim result: the step 3 checks', the strict tier's (step 4) and the runner's."""
+ProvenHow = Literal["claim"] | ProofToken
+"""How a subgoal was proven: a claim, or the auto proof's token."""
+
+
+def _words(annotation: object) -> frozenset[str]:
+    """Every string a (union of) Literal type allows."""
+    out: set[str] = set()
+    for arg in get_args(annotation):
+        out |= {arg} if isinstance(arg, str) else _words(arg)
+    return frozenset(out)
+
+
+REFUSAL_TOKENS: Final = _words(RefusalWord)
+"""#347 re-review, #349: every refusal token a history line may carry (`Refused.token`)."""
+CLAIM_RESULTS: Final = _words(ClaimWord)
+"""Every claim result a history line may carry (`ClaimResult.result`)."""
+PROVEN_HOW: Final = _words(ProvenHow)
+"""Every way a subgoal may be proven (`Proven.how`)."""
 
 WorldMove = Literal["page", "target", "focus"]
 
@@ -138,7 +126,7 @@ class Refused:
     """A refusal: its token, and the refused element's task handle when there is one ([V2.47]
     (a)). `id_not_listed` never has one: the model's number may never have been issued."""
 
-    token: str
+    token: RefusalWord
     handle: int | None = None
 
 
@@ -157,7 +145,7 @@ class ClaimResult:
     proof held, the subgoal not yet closed) or `standard_only`."""
 
     subgoal: str
-    result: str
+    result: ClaimWord
 
 
 @dataclass(frozen=True)
@@ -165,7 +153,7 @@ class Proven:
     """A subgoal proven, and how (`claim`, or the auto proof that closed it)."""
 
     subgoal: str
-    how: str
+    how: ProvenHow
 
 
 @dataclass(frozen=True)
