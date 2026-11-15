@@ -337,9 +337,9 @@ class HelperProcess:
         env = environment_block(system_root=self._system_root, launcher=self._launcher)
         inherit = handles.all()
         with _INHERIT_LOCK:
-            for h in inherit:
-                w.set_inherit(h, True)
             try:
+                for h in inherit:  # #375 H1: inside the try, so a failure part-way is undone
+                    w.set_inherit(h, True)
                 try:
                     process, thread, _pid = w.create_process(
                         app,
@@ -361,8 +361,7 @@ class HelperProcess:
                     )
                     suspended = True
             finally:
-                for h in inherit:
-                    w.set_inherit(h, False)
+                self._no_inherit(inherit)
         self._process = self._own(process)
         self._own(thread)
         if suspended:
@@ -373,6 +372,18 @@ class HelperProcess:
                 raise
             w.resume(thread)
         self._close(thread)
+
+    def _no_inherit(self, handles: tuple[int, ...]) -> None:
+        """#375 H1: every handle is made non-inheritable again, each attempted even when one
+        fails; the first failure is raised once all were tried."""
+        failure: OSError | None = None
+        for h in handles:
+            try:
+                self._w.set_inherit(h, False)
+            except OSError as exc:
+                failure = failure or exc
+        if failure is not None:
+            raise failure
 
     def _wait_ready(self) -> None:
         w = self._w

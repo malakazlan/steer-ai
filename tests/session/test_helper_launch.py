@@ -144,6 +144,10 @@ class FakeWin32:
 
     behaviour: str = "ready"
     raise_at: str | None = None
+    enable_fails_at: int = 0
+    disable_fails_at: int = 0
+    enables: int = 0
+    disables: int = 0
     machine: tuple[int, int] = (UNKNOWN, AMD64)
     job_list_fails: bool = False
     assign_fails: bool = False
@@ -228,7 +232,16 @@ class FakeWin32:
 
     def set_inherit(self, handle: int, on: bool) -> None:
         self._maybe_raise("set_inherit")
-        (self.inheritable.add if on else self.inheritable.discard)(handle)
+        if on:
+            self.enables += 1
+            if self.enables == self.enable_fails_at:
+                raise OSError(5, "SetHandleInformation failed")
+            self.inheritable.add(handle)
+        else:
+            self.disables += 1
+            if self.disables == self.disable_fails_at:
+                raise OSError(5, "SetHandleInformation failed")
+            self.inheritable.discard(handle)
 
     def create_process(
         self,
@@ -551,3 +564,21 @@ def test_a_second_close_waits_until_the_first_has_released_everything() -> None:
     second.join(5)
     assert seen == [set()]
     assert len(w.named("set")) == 1
+
+
+# ---- #375 review H1 (HL-06): every enabled handle is made non-inheritable again ---------------
+
+
+def test_a_failed_enable_still_disables_the_handles_already_enabled() -> None:
+    w = FakeWin32(enable_fails_at=3)
+    with pytest.raises(SteerError, match="monitor_unavailable"):
+        _helper(w).start()
+    assert w.inheritable == set()
+
+
+def test_one_failing_disable_does_not_stop_the_others() -> None:
+    w = FakeWin32(disable_fails_at=1)
+    with pytest.raises(SteerError, match="monitor_unavailable"):
+        _helper(w).start()
+    assert w.disables == 5  # every disable was attempted
+    assert len(w.inheritable) == 1  # only the one whose disable failed
