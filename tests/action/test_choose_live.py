@@ -3,8 +3,9 @@ semantic executor, its UIA option source and live reads: a native `<select>` ins
 is chosen and the page's own status line says so; choosing the option already chosen sends
 nothing; a datalist input reads LeafNode and is refused `editable_combobox` with nothing sent; a
 select whose onchange submits its form stops the task `navigated` (W4-12). A listbox elsewhere
-on the page holds an option of the same name, which is never chosen (W4-13). Semantic UIA only:
-no input is injected."""
+on the page holds an option of the same name, which is never chosen (W4-13). Semantic UIA only.
+The window is brought to the front first (#205, #439): at most a tagged zero-distance
+mouse move inside `acquire_foreground`."""
 
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ from steerai.orchestrator.loop import Session
 from steerai.orchestrator.trace import ListTrace
 from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome, stop_chrome
 from steerai.probes.uia_snapshot import UiaClient
+from steerai.probes.win_input import acquire_foreground
 from steerai.probes.windows import wait_window_for_pid
 from steerai.verify.predicates import TitleMatches
 from steerai.world.model import Snapshot, WorldModel
@@ -107,6 +109,7 @@ def test_choose_picks_a_real_select_option(tmp_path: Path) -> None:
         window = wait_window_for_pid(
             proc.pid, title_contains="Google Chrome", image="chrome.exe", process=proc
         )
+        acquire_foreground(window.hwnd)
         client = UiaClient()
         model = WorldModel(client)
         _ready(model, window.hwnd)

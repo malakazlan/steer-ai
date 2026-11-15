@@ -23,6 +23,7 @@ from steerai.orchestrator.loop import Session
 from steerai.orchestrator.trace import ListTrace
 from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome, stop_chrome
 from steerai.probes.uia_snapshot import UiaClient
+from steerai.probes.win_input import acquire_foreground
 from steerai.probes.windows import wait_window_for_pid
 from steerai.verify.predicates import Appeared
 from steerai.world.model import Snapshot, WorldModel
@@ -86,6 +87,7 @@ def run_load_more(tmp_path: Path, port: int = 9345) -> tuple[StepResult, bool]:
         window = wait_window_for_pid(
             proc.pid, title_contains="Google Chrome", image="chrome.exe", process=proc
         )
+        acquire_foreground(window.hwnd)
         client = UiaClient()
         model = WorldModel(client)
         start = _ready(model, window.hwnd)
