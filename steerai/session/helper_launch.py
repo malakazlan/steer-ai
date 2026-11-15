@@ -218,6 +218,8 @@ class HelperProcess:
         self._config: Words | None = None
         self._status: Words | None = None
         self._closed = False
+        self._close_lock = threading.Lock()
+        """#375 H3 (HL-19): one close at a time; a second waits until the first has released."""
 
     # ---- what Steer reads ---------------------------------------------------------------------
 
@@ -269,20 +271,22 @@ class HelperProcess:
             raise _refuse(f"{type(exc).__name__} while starting the hook helper") from exc
 
     def close(self) -> None:
-        """Ask the helper to quit, wait a bounded time, then end its job; idempotent."""
-        if self._closed:
-            return
-        self._closed = True
-        w = self._w
-        process = self._process
-        try:
-            if process is not None and not w.has_exited(process):
-                w.set_event(self._quit)
-                w.wait_any((process,), CLOSE_TIMEOUT_MS)
-                if not w.has_exited(process) and self._job is not None:
-                    w.terminate_job(self._job)
-        finally:
-            self._release()  # #375 P3: whatever the wait did
+        """Ask the helper to quit, wait a bounded time, then end its job; idempotent, and a
+        second call returns only once the first has released everything."""
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+            w = self._w
+            process = self._process
+            try:
+                if process is not None and not w.has_exited(process):
+                    w.set_event(self._quit)
+                    w.wait_any((process,), CLOSE_TIMEOUT_MS)
+                    if not w.has_exited(process) and self._job is not None:
+                        w.terminate_job(self._job)
+            finally:
+                self._release()  # #375 P3: whatever the wait did
 
     # ---- internals -----------------------------------------------------------------------------
 

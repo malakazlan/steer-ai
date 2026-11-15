@@ -7,6 +7,7 @@ the windows-marked tests in `test_helper_process.py` (CI only)."""
 from __future__ import annotations
 
 import ast
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -514,3 +515,39 @@ def test_after_close_the_words_cannot_be_read() -> None:
         _ = helper.status
     with pytest.raises(RuntimeError):
         _ = helper.config
+
+
+# ---- #375 review H3 (HL-19): close is serialised ----------------------------------------------
+
+
+def test_a_second_close_waits_until_the_first_has_released_everything() -> None:
+    w = FakeWin32()
+    helper = _helper(w)
+    helper.start()
+    entered, release = threading.Event(), threading.Event()
+    real_wait = w.wait_any
+
+    def held_wait(handles: tuple[int, ...], timeout_ms: int) -> int | None:
+        entered.set()
+        release.wait(5)
+        return real_wait(handles, timeout_ms)
+
+    w.wait_any = held_wait  # type: ignore[method-assign]  # the first close is held inside it
+    first = threading.Thread(target=helper.close)
+    first.start()
+    assert entered.wait(5)
+    seen: list[set[int]] = []
+
+    def second_close() -> None:
+        helper.close()
+        seen.append(set(w.open_handles))
+
+    second = threading.Thread(target=second_close)
+    second.start()
+    second.join(0.2)
+    assert second.is_alive()  # blocked behind the first close, not returned early
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert seen == [set()]
+    assert len(w.named("set")) == 1
