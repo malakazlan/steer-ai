@@ -11,6 +11,7 @@ the screen fence is fresh for every call.
 from __future__ import annotations
 
 import json
+import math
 import re
 import secrets
 from collections.abc import Callable, Mapping, Sequence
@@ -33,12 +34,19 @@ from steerai.loop2.history import (
     record_ok,
     render,
 )
+from steerai.loop2.listing import Listing, RowClass
 from steerai.loop2.task import Status
 from steerai.loop2.text import clean_line, has_control
 from steerai.world.elements import format_lines
 from steerai.world.model import Snapshot
 
-PROMPT_VERSION = "controller-6"
+PROMPT_VERSION = "controller-7"
+PROMPT_TOKEN_CEILING = 50_000
+"""[V2.55] (2): the most input tokens a rendered prompt may hold before any model call. UNMEASURED
+(the model's context is far larger; v1's capped listings measured 3.7k-5.8k a turn)."""
+CHARS_PER_TOKEN = 3.0
+"""The estimate's divisor: conservative for text and markup (UNMEASURED; the listing-size probe's
+count_tokens calibrates it)."""
 ASK_PREFIX = "Steer asks: "
 ASK_MAX_CHARS = 200
 MAX_REPLY_BYTES = 64 * 1024
@@ -60,6 +68,8 @@ SYSTEM_RULES = (
     "- `focused` marks the element with the keyboard focus; `focus: elsewhere` means it is on "
     "something not listed (such as the address bar), `focus: unread` that it could not be "
     "read.\n"
+    "- `listing: shown S of E` means code left E-S elements out to fit; an element not listed "
+    "cannot be named.\n"
     "Rules:\n"
     "- Act only on ids in the current listing. Never name an element that is not listed.\n"
     "- The action log names an element by its id and role only; while it is listed, read its "
@@ -94,7 +104,15 @@ SYSTEM_RULES = (
 
 
 AskModel = Callable[[list[str], list[str]], str]
-ErrorCode = Literal["not_json", "schema", "rejected", "fence_in_data", "fence_bad", "unsafe_token"]
+ErrorCode = Literal[
+    "not_json",
+    "schema",
+    "rejected",
+    "fence_in_data",
+    "fence_bad",
+    "unsafe_token",
+    "prompt_too_large",
+]
 
 
 @dataclass(frozen=True)
@@ -125,10 +143,13 @@ class ControllerError(Exception):
 
 @dataclass(frozen=True)
 class ListingRow:
-    """One listing row: its tree depth and its text (id, role, name, states)."""
+    """One listing row: its tree depth and its text (id, role, name, states), the task handle it
+    shows (None: no handle) and its class, which a prompt guard drops by ([V2.55] (2))."""
 
     depth: int
     text: str
+    handle: int | None = None
+    row_class: RowClass = "rest"
 
 
 FocusState = Literal["elsewhere", "unread"]
@@ -141,21 +162,29 @@ not keep targeting it with a type."""
 
 
 def v2_listing(
-    snapshot: Snapshot, *, handles: Mapping[int, int], focus: tuple[int, ...] | None = None
+    snapshot: Snapshot,
+    *,
+    handles: Mapping[int, int],
+    focus: tuple[int, ...] | None = None,
+    listing: Listing | None = None,
 ) -> list[ListingRow]:
     """The v2 listing of `snapshot`: v1's line for every element, numbered by its task handle
     ([V2.38] RT-17: never the snapshot's ordinal), `-` for an element with no handle (it has no
     RuntimeId and cannot be acted on), with `secure_unread` added to a field whose secure flag
     was not read, and `focused` on the element whose RuntimeId is the keyboard focus ([V2.52]
-    (b))."""
+    (b)). With a `listing` ([V2.54]), only its rows, each with its class."""
+    shown = None if listing is None else dict(zip(listing.ids, listing.priorities, strict=True))
     rows: list[ListingRow] = []
     for e, line in zip(snapshot.elements, format_lines(snapshot.elements), strict=True):
+        if shown is not None and e.id not in shown:
+            continue
         handle = handles.get(e.id)
         body = line[len(f"{e.id} ") :]
         unread = f" {SECURE_UNREAD}" if e.id in snapshot.unread_secure else ""
         focused = f" {FOCUSED}" if focus and e.runtime_id == focus else ""
         text = f"{'-' if handle is None else handle} {body}{unread}{focused}"
-        rows.append(ListingRow(e.depth, text))
+        row_class: RowClass = "rest" if shown is None else shown[e.id]
+        rows.append(ListingRow(e.depth, text, handle, row_class))
     return rows
 
 
@@ -167,6 +196,42 @@ def focus_state(snapshot: Snapshot, focus: tuple[int, ...] | None) -> FocusState
     if any(e.runtime_id == focus for e in snapshot.elements):
         return None
     return "elsewhere"
+
+
+def prompt_tokens(system: Sequence[str], user: Sequence[str]) -> int:
+    """The prompt's size in tokens, estimated from its characters (`CHARS_PER_TOKEN`)."""
+    chars = sum(len(b) for b in system) + sum(len(b) for b in user)
+    return math.ceil(chars / CHARS_PER_TOKEN)
+
+
+_DROP_ORDER: tuple[RowClass, ...] = ("rest", "goal", "keep")
+
+
+def _fit(
+    rows: list[ListingRow], render: Callable[[Sequence[ListingRow]], tuple[list[str], list[str]]]
+) -> tuple[list[ListingRow], int]:
+    """[V2.55] (2): the rows that fit under the ceiling, cutting by class from the bottom of the
+    listing up, and how many were cut; `prompt_too_large` when even no rows would not fit."""
+    cut = 0
+    while True:
+        system, user = render(rows)
+        over = prompt_tokens(system, user) - PROMPT_TOKEN_CEILING
+        if over <= 0:
+            return rows, cut
+        victims = [
+            i for c in _DROP_ORDER for i in reversed(range(len(rows))) if rows[i].row_class == c
+        ]
+        if not victims:
+            raise ControllerError("prompt_too_large")
+        need = over * CHARS_PER_TOKEN
+        drop: set[int] = set()
+        for i in victims:
+            drop.add(i)
+            need -= len(rows[i].text) + 2 * rows[i].depth + 1
+            if need <= 0:
+                break
+        rows = [r for i, r in enumerate(rows) if i not in drop]
+        cut += len(drop)
 
 
 def repair_rate(records: Sequence[DecideRecord]) -> float:
@@ -244,6 +309,7 @@ def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
     young: bool = False,
     vocab: Vocab | None = None,
     focus: FocusState | None = None,
+    listing_note: str | None = None,
 ) -> tuple[list[str], list[str]]:
     """Return (system blocks, user blocks): stable, then append-only log, then the live turn.
     `vocab` is what the log's records may name (the task's subgoals and issued handles)."""
@@ -273,6 +339,7 @@ def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
             *(["screen: page growing"] if growing else []),
             *(["screen: page young"] if young else []),
             *([f"focus: {focus}"] if focus is not None else []),
+            *([listing_note] if listing_note is not None else []),
             f"<<<screen {screen_fence}",
             f"window: {_data(window_title, screen_fence)}",
             *(
@@ -353,27 +420,43 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     max_repairs: int = 1,
     issued: frozenset[int] = frozenset(),
     focus: FocusState | None = None,
+    listing_note: str | None = None,
+    on_fit: Callable[[frozenset[int], int], None] | None = None,
 ) -> tuple[Decision, DecideRecord]:
     """Ask, parse, validate; on failure repair with code tokens only, up to `max_repairs` times.
 
+    [V2.55] (2): before any call the rendered prompt is held under `PROMPT_TOKEN_CEILING`, rows
+    cut by class (`rest`, then `goal`, then `keep`) until it fits; the Decision is validated
+    against the handles actually sent, and `on_fit` hears them and the rows cut. A prompt that
+    cannot fit is never sent (`prompt_too_large`, no record: no call was made).
     A failure raises ControllerError carrying the DecideRecord of the calls spent.
     """
     screen = screen_fence if screen_fence is not None else secrets.token_hex(16)
-    system, user = build_prompt(
-        task_goal,
-        subgoal_lines,
-        action_log,
-        subgoal_status,
-        window_title,
-        listing_rows,
-        task_fence=task_fence,
-        screen_fence=screen,
-        unstable=unstable,
-        growing=growing,
-        young=young,
-        vocab=Vocab(dict(known_subgoals or {}), issued),
-        focus=focus,
-    )
+
+    def render(rows: Sequence[ListingRow]) -> tuple[list[str], list[str]]:
+        return build_prompt(
+            task_goal,
+            subgoal_lines,
+            action_log,
+            subgoal_status,
+            window_title,
+            rows,
+            task_fence=task_fence,
+            screen_fence=screen,
+            unstable=unstable,
+            growing=growing,
+            young=young,
+            vocab=Vocab(dict(known_subgoals or {}), issued),
+            focus=focus,
+            listing_note=listing_note,
+        )
+
+    rows, cut = _fit(list(listing_rows), render)
+    system, user = render(rows)
+    sent = frozenset(r.handle for r in rows if r.handle is not None)
+    listed_ids = listed_ids & sent if cut else listed_ids
+    if on_fit is not None:
+        on_fit(listed_ids, cut)
     error: ControllerError | None = None
     for attempt in range(max_repairs + 1):
         blocks = user

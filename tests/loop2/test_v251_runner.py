@@ -219,7 +219,7 @@ def test_the_new_refusals_are_closed_tokens_of_their_kinds() -> None:
 
 
 def test_the_prompt_says_to_focus_a_field_before_typing() -> None:
-    assert PROMPT_VERSION == "controller-6"
+    assert PROMPT_VERSION == "controller-7"
     assert "Focus a text field before you type into it" in SYSTEM_RULES
 
 

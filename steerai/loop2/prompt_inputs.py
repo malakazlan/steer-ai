@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from steerai.loop2.controller import FocusState, ListingRow, decide, focus_state, v2_listing
 from steerai.loop2.decide_port import DecideCalls
 from steerai.loop2.history import HistoryRecord
+from steerai.loop2.listing import LISTING_CAP, Listing, select_listing, words_of
 from steerai.loop2.loop import Decided, TurnView
 from steerai.loop2.task import Status, Subgoal, known_params
 
@@ -42,11 +43,22 @@ class ControllerInputs:
     young: bool
     focus: FocusState | None
     """[V2.52] (b): the header line's focus state; None when a listing row carries it."""
+    listing: Listing | None
+    """[V2.54]: the rows selected under the cap, with the turn's counts."""
+    listing_note: str | None
+    """[V2.54]: the header line saying what was cut; None when nothing was."""
 
 
-def controller_inputs(view: TurnView, *, goal: str) -> ControllerInputs:
+def controller_inputs(view: TurnView, *, goal: str, cap: int = LISTING_CAP) -> ControllerInputs:
     observed = view.observed
     snapshot = observed.snapshot
+    open_params = (
+        span.text for s in view.subgoals if s.id not in view.proven for span in s.params.values()
+    )
+    listing = select_listing(
+        snapshot, cap=cap, focus=observed.focus, keep=view.keep, goal_words=words_of(open_params)
+    )
+    rows = v2_listing(snapshot, handles=view.handles, focus=observed.focus, listing=listing)
     return ControllerInputs(
         task_goal=goal,
         subgoal_lines=tuple(_subgoal_line(s) for s in view.subgoals),
@@ -56,14 +68,16 @@ def controller_inputs(view: TurnView, *, goal: str) -> ControllerInputs:
             (s.id, "done" if s.id in view.proven else s.status) for s in view.subgoals
         ),
         window_title=snapshot.title,
-        listing_rows=tuple(v2_listing(snapshot, handles=view.handles, focus=observed.focus)),
-        listed_ids=frozenset(view.handles.values()),
+        listing_rows=tuple(rows),
+        listed_ids=frozenset(r.handle for r in rows if r.handle is not None),
         first_turn=view.first_turn,
         known_subgoals=None if view.first_turn else known_params(view.subgoals),
         unstable=not snapshot.stable,
         growing=observed.growing,
         young=observed.young,
         focus=focus_state(snapshot, observed.focus),
+        listing=listing,
+        listing_note=listing.note(),
     )
 
 
@@ -83,6 +97,7 @@ def make_decide(calls: DecideCalls, *, goal: str, task_fence: str) -> Callable[[
 
     def port(view: TurnView) -> Decided:
         inputs = controller_inputs(view, goal=goal)
+        fitted: list[tuple[frozenset[int], int]] = []
         (decision, _record), usage = calls.turn(
             lambda ask: decide(
                 ask,
@@ -101,8 +116,13 @@ def make_decide(calls: DecideCalls, *, goal: str, task_fence: str) -> Callable[[
                 young=inputs.young,
                 issued=inputs.issued,
                 focus=inputs.focus,
+                listing_note=inputs.listing_note,
+                on_fit=lambda shown, cut: fitted.append((shown, cut)),
             )
         )
-        return Decided(decision, usage)
+        listed, cut = fitted[-1] if fitted else (inputs.listed_ids, 0)
+        tokens = None if usage is None else usage.input_tokens
+        listing = None if inputs.listing is None else inputs.listing.turn(listed, cut, tokens)
+        return Decided(decision, usage, listing)
 
     return port

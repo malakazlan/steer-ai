@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Final, Literal
 
 from steerai.action.dispositions import Delivery
@@ -64,6 +64,7 @@ from steerai.loop2.history import (
     log_role,
     record_ok,
 )
+from steerai.loop2.listing import ListingTurn
 from steerai.loop2.loop import (
     COMMIT_RISK,
     READ_BACK_VERBS,
@@ -191,6 +192,15 @@ class _ActCounts:
     toggles_settled_on_reread: int = 0
     fields_not_empty: int = 0
     not_own_text: int = 0
+
+
+@dataclass
+class _ListingState:
+    """[V2.54]: the handles the last Decision was shown (None: every bound handle) and each
+    turn's listing counts."""
+
+    shown: frozenset[int] | None = None
+    turns: list[ListingTurn] = field(default_factory=list)
 
 
 class _End(Exception):  # noqa: N818 - a control-flow signal, not an error
@@ -351,6 +361,7 @@ class _Run:
         self.history_dropped = 0
         """[V2.47]: lines that failed the history pattern (`_note`)."""
         self.counts = _ActCounts()
+        self.listing = _ListingState()
         self.dispatched: list[Dispatch] = []
         self.model_calls = 0
         self.tokens = 0.0
@@ -435,6 +446,7 @@ class _Run:
             focus_losses=self.focus_losses,
             unread_automation_ids=self.unread_aids,
             history_dropped=self.history_dropped,
+            listings=tuple(self.listing.turns),
             focus_moved_after_press=self.counts.focus_moved_after_press,
             observations_focus_unread=self.counts.observations_focus_unread,
             observations_focus_elsewhere=self.counts.observations_focus_elsewhere,
@@ -587,6 +599,7 @@ class _Run:
             subgoals=self.subgoals,
             proven=frozenset(self.proven),
             issued=frozenset(self.handles.by_handle),
+            keep=self._always_keep(),
         )
         try:
             decided = self.ports.decide(view)
@@ -606,10 +619,22 @@ class _Run:
         else:
             self.tokens += sum(counts)
             self.by_category = [a + b for a, b in zip(self.by_category, counts, strict=True)]
+        self.listing.shown = None if decided.listing is None else decided.listing.listed
+        if decided.listing is not None:
+            self.listing.turns.append(decided.listing)
         return decided.decision
+
+    def _always_keep(self) -> frozenset[tuple[int, ...]]:
+        """[V2.54] (1): every element acted on in this task and every field holding pending text,
+        by RuntimeId (the focus is the observation's own)."""
+        acted = {d.runtime_id for d in self.dispatched if d.runtime_id}
+        pending = {p.typed.field for p in self.pending}
+        return frozenset(acted | pending)
 
     def _turn(self, decision: Decision, observed: Observed, fresh: Observed) -> Observed:
         listed = frozenset(self.handles.bind(observed).values())
+        if self.listing.shown is not None:  # [V2.54]: a cut element keeps its handle, unlisted
+            listed &= self.listing.shown
         first = not self.frozen
         goal = self.task.goal
         if first and decision.subgoals and not subgoal_tokens(decision, goal=goal):
