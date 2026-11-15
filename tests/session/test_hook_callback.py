@@ -298,14 +298,30 @@ def test_the_procedure_keeps_no_key_code_scan_code_time_or_position(
         for kind, wparam, info in zip(kinds, wparams, structs, strict=True):
             user32.procs[kind](HC_ACTION, wparam, ctypes.addressof(info))
             # scanned after every event: a later event must not be able to mask an earlier leak
-            state = {k: v for k, v in vars(monitor._core).items() if k != "_reference"}
+            # [V2.60] PR 1: the core is a classifier and a ledger; scan both, never their reprs
+            core = monitor._core
+            parts = (vars(core), vars(core._classifier), vars(core._ledger))
+            state = {
+                f"{i}{k}": v
+                for i, part in enumerate(parts)
+                for k, v in part.items()
+                if k not in {"_reference", "_classifier", "_ledger"}
+            }
             blob = repr(state) + repr(monitor.counts()) + repr(monitor.last_user_input())
             for sentinel in (VK_SENTINEL, SCAN_SENTINEL, TIME_SENTINEL, *PT_SENTINEL):
                 assert str(sentinel) not in blob, f"{sentinel} leaked into {blob}"
         assert monitor.counts() == {"user": 2, "steer": 2}
         # the dead band's reference is the one place a position lives, and it never leaves
-        assert monitor._core._reference == PT_SENTINEL
+        assert monitor._core._classifier._reference == PT_SENTINEL
         assert not any(isinstance(v, (list, tuple)) for v in state.values())
+        # #373 review: every scanned value is a scalar or a dict of scalars, so no composite
+        # field can hide its contents behind a default repr and make the scan vacuous
+        scalar = (int, float, str, bool, type(None))
+        assert all(
+            isinstance(v, scalar)
+            or (isinstance(v, dict) and all(isinstance(x, scalar) for x in v.values()))
+            for v in state.values()
+        ), state
     finally:
         monitor.close()
 
