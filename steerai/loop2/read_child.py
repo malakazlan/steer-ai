@@ -1051,6 +1051,214 @@ def run_windows(out_dir: Path) -> int:  # noqa: PLR0915  # pragma: no cover - li
     return 0
 
 
+def _front_snapshot(hwnd: int, cdp: Any, label: str) -> dict[str, object]:  # pragma: no cover
+    """At one point: the foreground (the bound window or other), the bound window's z, our own
+    `cover_of`, every visible, unminimised window above it that overlaps it (z, relation, class
+    token or `class_other`, rect; never a title), and Chrome's own visibilityState."""
+    import ctypes  # noqa: PLC0415 - Windows only
+    import os  # noqa: PLC0415
+
+    from steerai.probes.windows import window_cover  # noqa: PLC0415
+    from steerai.world.cover import cover_of  # noqa: PLC0415
+
+    foreground = int(ctypes.windll.user32.GetForegroundWindow() or 0)
+    windows = _all_windows(set(), os.getpid())
+    bound = next((w for w in windows if w["hwnd"] == hwnd), None)
+    z = None if bound is None else int(str(bound["z"]))
+    rect = None if bound is None else bound["rect"]
+    over: list[dict[str, object]] = []
+    if z is not None and isinstance(rect, list):
+        for w in windows:
+            other = w["rect"]
+            if int(str(w["z"])) >= z or not w["visible"] or w["minimized"] or w["cloaked"]:
+                continue
+            if not isinstance(other, list):
+                continue
+            if (
+                other[0] < rect[2]
+                and rect[0] < other[2]
+                and other[1] < rect[3]
+                and rect[1] < other[3]
+            ):
+                over.append(
+                    {k: w[k] for k in ("z", "relation", "class", "tool", "topmost", "rect")}
+                )
+    try:
+        cover: object = cover_of(window_cover(hwnd))
+    except OSError as exc:
+        cover = f"unread:{type(exc).__name__}"
+    try:
+        reply = cdp.call(
+            "Runtime.evaluate", {"expression": "document.visibilityState", "returnByValue": True}
+        )
+        visibility: object = reply.get("result", {}).get("value")
+    except Exception as exc:  # noqa: BLE001 - a diagnostic logs any DevTools failure as data
+        visibility = f"unread:{type(exc).__name__}"
+    return {
+        "point": label,
+        "foreground": "bound" if foreground == hwnd else "other",
+        "bound_z": z,
+        "cover_of": cover,
+        "overlapping_above": over,
+        "visibilityState": visibility,
+    }
+
+
+def run_front_child(  # pragma: no cover - live
+    hwnd: int, *, cdp_port: int, server_port: int, out: Path, trace: Path
+) -> int:
+    """The real child's setup on `hwnd`, then the start's `bring_to_front` with its own result
+    (and what v1's `acquire_foreground` returned under it), with a snapshot right before, right
+    after, 1 s and 3 s after. No other input; never a model call."""
+    from steerai.errors import SteerError  # noqa: PLC0415
+    from steerai.loop2.decide_port import TaskGenerations  # noqa: PLC0415
+    from steerai.loop2.live_world import (  # noqa: PLC0415
+        LiveConfig,
+        LiveWorld,
+        WindowsPlatform,
+        run_on_loop_thread,
+    )
+    from steerai.orchestrator.trace import JsonLinesTrace  # noqa: PLC0415
+    from steerai.probes.layer_b import _ours  # noqa: PLC0415
+    from steerai.probes.windows import process_name, window_pid  # noqa: PLC0415
+
+    acquired: list[str] = []
+
+    class Recording:
+        """v1's InputPort, with what `acquire_foreground` returned or raised recorded."""
+
+        def __init__(self, inner: Any) -> None:  # Any: v1's live InputPort
+            self._inner = inner
+
+        def __getattr__(self, name: str) -> Any:  # Any: the wrapped port's attribute
+            return getattr(self._inner, name)
+
+        def acquire_foreground(self, target: int) -> str:
+            try:
+                procedure = str(self._inner.acquire_foreground(target))
+            except OSError as exc:
+                acquired.append(f"refused:{type(exc).__name__}")
+                raise
+            acquired.append(procedure)
+            return procedure
+
+    class FrontPlatform(WindowsPlatform):
+        def inputs(self, client: Any) -> Any:  # Any: the UiaClient and the wrapped port
+            return Recording(super().inputs(client))
+
+        def provider(self) -> Any:  # Any: a never-called `Call`
+            return _never_called
+
+        def counter(self) -> Any:  # Any: a never-called `Counter`
+            return _never_called
+
+    pid = window_pid(hwnd)
+    config = LiveConfig(
+        task_id="front-child",
+        hwnd=hwnd,
+        kill_key="ctrl+alt+k",
+        trace_level="redacted",
+        trace=JsonLinesTrace(trace),
+        generations=TaskGenerations(),
+        clock=time.monotonic,
+        pause=time.sleep,
+        bound_pid=pid,
+        bound_image=process_name(pid).lower(),
+    )
+    platform = FrontPlatform()
+    cdp, _ = _ours(cdp_port, server_port)
+
+    def work() -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        with LiveWorld(config, platform) as world:
+            rows.append(_front_snapshot(hwnd, cdp, "before_bring_to_front"))
+            try:
+                world.bring_to_front()
+                result = "ok"
+            except SteerError as exc:
+                result = f"refused:{exc.message}"
+            rows.append({"bring_to_front": result, "acquire_foreground": list(acquired)})
+            rows.append(_front_snapshot(hwnd, cdp, "after_bring_to_front"))
+            time.sleep(1.0)
+            rows.append(_front_snapshot(hwnd, cdp, "after_1s"))
+            time.sleep(2.0)
+            rows.append(_front_snapshot(hwnd, cdp, "after_3s"))
+        return rows
+
+    try:
+        rows = run_on_loop_thread(work, release=platform.release_com)
+    finally:
+        cdp.close()
+    with out.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row) + "\n")
+    return 0
+
+
+def run_front(out_dir: Path) -> int:  # pragma: no cover - live
+    """One input-only child on 3d-a; then a fresh Chrome on 3d-b, a snapshot right after its
+    launch, and the front child (`run_front_child`) on it."""
+    import shutil  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    from steerai.probes import instant_search as fixture  # noqa: PLC0415 - live only
+    from steerai.probes.chrome_a11y import (  # noqa: PLC0415
+        CHROME_DEFAULT,
+        launch_chrome,
+        stop_chrome,
+    )
+    from steerai.probes.layer_b import _ours  # noqa: PLC0415
+    from steerai.probes.layer_b_pages import PageServer  # noqa: PLC0415
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
+
+    def emit(row: Mapping[str, object]) -> None:
+        sys.stdout.write(json.dumps(dict(row)) + "\n")
+        sys.stdout.flush()
+
+    for name, variant in (("0-input-only", "a"), ("1-front", "b")):
+        run_dir = out_dir / name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(prefix="steer-readchild-"))
+        with PageServer(fixture.pages()) as server:
+            port = fixture._free_port()
+            proc = launch_chrome(
+                CHROME_DEFAULT, tmp / "profile", port, f"http://127.0.0.1:{server.port}/{variant}"
+            )
+            try:
+                window = wait_window_for_pid(proc.pid, timeout_s=30.0, process=proc)
+                cdp, _ = _ours(port, server.port)
+                try:
+                    fixture._wait_ready(cdp)
+                    if name == "0-input-only":
+                        argv = [sys.executable, "-m", "steerai.loop2.read_child", "child",
+                                "--hwnd", str(window.hwnd), "--arm", "mta", "--then", "input",
+                                "--out", str(run_dir / "reads.jsonl"),
+                                "--trace", str(run_dir / "trace.jsonl")]  # fmt: skip
+                        subprocess.run(argv, capture_output=True, timeout=CHILD_CAP_S, check=False)  # noqa: S603
+                        emit({"cell": name, **_summary(run_dir / "reads.jsonl")})
+                        continue
+                    emit({"cell": name, **_front_snapshot(window.hwnd, cdp, "after_launch")})
+                    argv = [sys.executable, "-m", "steerai.loop2.read_child", "front",
+                            "--hwnd", str(window.hwnd), "--cdp-port", str(port),
+                            "--server-port", str(server.port),
+                            "--out", str(run_dir / "front.jsonl"),
+                            "--trace", str(run_dir / "trace.jsonl")]  # fmt: skip
+                    done = subprocess.run(  # noqa: S603 - our own module, a fixed argv
+                        argv, capture_output=True, text=True, timeout=CHILD_CAP_S, check=False
+                    )
+                    tail = done.stderr[-300:] if done.returncode else ""
+                    emit({"cell": name, "front_child_code": done.returncode, "stderr_tail": tail})
+                    for line in (run_dir / "front.jsonl").read_text(encoding="utf-8").splitlines():
+                        emit({"cell": name, **json.loads(line)})
+                finally:
+                    cdp.close()
+            finally:
+                stop_chrome(proc, tmp / "profile")
+                shutil.rmtree(tmp, ignore_errors=True)
+    return 0
+
+
 _TEE: Final = (
     "import subprocess, sys; out = open(sys.argv[1], 'w', encoding='utf-8'); "
     "raise SystemExit(subprocess.call(sys.argv[2:], stdout=out, stderr=subprocess.DEVNULL))"
@@ -1079,6 +1287,14 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911 - one per m
     plain = sub.add_parser("plain")
     plain.add_argument("--hwnd", type=int, required=True)
     plain.add_argument("--out", type=Path, required=True)
+    front = sub.add_parser("front")
+    front.add_argument("--hwnd", type=int, required=True)
+    front.add_argument("--cdp-port", type=int, required=True)
+    front.add_argument("--server-port", type=int, required=True)
+    front.add_argument("--out", type=Path, required=True)
+    front.add_argument("--trace", type=Path, required=True)
+    front_run = sub.add_parser("front-run")
+    front_run.add_argument("--out-dir", type=Path, required=True)
     windows = sub.add_parser("windows")
     windows.add_argument("--out-dir", type=Path, required=True)
     matrix = sub.add_parser("matrix")
@@ -1104,6 +1320,16 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911 - one per m
         )
     if args.mode == "plain":
         return run_plain(args.hwnd, out=args.out)
+    if args.mode == "front":
+        return run_front_child(
+            args.hwnd,
+            cdp_port=args.cdp_port,
+            server_port=args.server_port,
+            out=args.out,
+            trace=args.trace,
+        )
+    if args.mode == "front-run":
+        return run_front(args.out_dir)
     if args.mode == "windows":
         return run_windows(args.out_dir)
     if args.mode == "matrix":
