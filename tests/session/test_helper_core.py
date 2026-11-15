@@ -305,3 +305,29 @@ def test_an_ask_depth_within_the_bound_is_an_ask() -> None:
     _key(core, extra=0, at_ms=5_000)
     assert status.get("last_user") == 0
     assert status.get("callback_errors") == 0
+
+
+# ---- #375 review T3: the order inside one publish is pinned too ------------------------------
+
+
+def test_inside_one_publish_the_persons_time_is_stored_before_the_delivery() -> None:
+    """A person's event and the probe classified before one publish: the times it vouches for
+    are stored before `delivered` moves (§5.2), even within that single call."""
+    core, _cfg, status = _core()
+    order: list[str] = []
+    real_set = status.set
+
+    def set_spy(name: str, value: int) -> None:
+        order.append(name)
+        real_set(name, value)
+
+    status.set = set_spy  # type: ignore[method-assign]  # a spy on every store, in order
+    classifier = core._classifier
+    before = classifier.delivered("keyboard")
+    classifier.on_keyboard(flags=0, extra=0, now=float(3_000 * MS), vk=0x41)
+    classifier.on_keyboard(flags=LLKHF_UP, extra=RUN_TAG, now=float(3_001 * MS), vk=PROBE)
+    assert core._publish("keyboard", before)
+    delivered = order.index("delivered_keyboard")
+    assert order.index("last_user_qpc_keyboard") < delivered
+    assert order.index("last_user") < delivered
+    assert order.index("last_own_qpc_keyboard") < delivered
