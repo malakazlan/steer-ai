@@ -103,6 +103,10 @@ class Platform(Protocol):
         """[V2.57] LW-02: every input this process sends from now on carries `tag`."""
         ...
 
+    def restore_extra_info(self) -> None:
+        """#361 B3: v1's tag back on the process's input, at close and on a failed start."""
+        ...
+
     def acquire_session(self) -> str:
         """[V2.57] LW-02: the session-local single-instance mutex, before the monitor starts:
         `acquired`, or `abandoned` (a previous holder died; acquired too). Already held raises
@@ -277,7 +281,10 @@ class LiveWorld:
             except Exception as exc:  # any other start failure: no kill switch, no task
                 raise SteerError(ErrorCode.GATE_BLOCKED, "monitor_unavailable") from exc
         except BaseException:
-            platform.release_session()
+            try:
+                platform.restore_extra_info()  # #361 B3: no run's tag outlives its start
+            finally:
+                platform.release_session()
             raise
         return held, monitor
 
@@ -568,7 +575,10 @@ class LiveWorld:
             try:
                 self._monitor.close()
             finally:
-                self._platform.release_session()
+                try:
+                    self._platform.restore_extra_info()  # #361 B3: v1's tag for the process
+                finally:
+                    self._platform.release_session()
 
 
 _COM_HOLDERS = ("world", "semantic", "physical", "desk", "_observe", "_facts", "_client", "_debug")
@@ -675,6 +685,11 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
         from steerai.probes.win_input import use_extra_info  # noqa: PLC0415 - Windows only
 
         use_extra_info(tag)
+
+    def restore_extra_info(self) -> None:
+        from steerai.probes.win_input import STEER_EXTRA_INFO, use_extra_info  # noqa: PLC0415
+
+        use_extra_info(STEER_EXTRA_INFO)
 
     def acquire_session(self) -> str:
         import ctypes  # noqa: PLC0415 - Windows only
