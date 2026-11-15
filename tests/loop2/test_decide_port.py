@@ -13,6 +13,7 @@ import math
 import threading
 from collections.abc import Callable, Mapping
 from types import SimpleNamespace
+from typing import ClassVar
 
 import anthropic
 import httpx2 as httpx
@@ -246,16 +247,136 @@ def _calls(
     call: Callable[[list[str], list[str]], Reply],
     interrupted: Callable[[], str | None] | None = None,
     generations: TaskGenerations | None = None,
+    late: list[str] | None = None,
 ) -> DecideCalls:
     return DecideCalls(
         call,
         interrupted=Never() if interrupted is None else interrupted,
         generations=TaskGenerations() if generations is None else generations,
+        late_error=(late if late is not None else []).append,
     )
 
 
 def test_the_poll_is_fifty_milliseconds() -> None:
     assert POLL_S == 0.05
+
+
+class _TimedEvent(threading.Event):
+    """An Event that records the timeout of each wait on it."""
+
+    made: ClassVar[list[_TimedEvent]] = []
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.timeouts: list[float | None] = []
+        _TimedEvent.made.append(self)
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.timeouts.append(timeout)
+        return super().wait(timeout)
+
+
+def test_the_wait_polls_at_fifty_milliseconds_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review #345 (2): built with its defaults, the port waits on the call in POLL_S steps."""
+    held = Held(_reply())
+    held.release.set()
+    _TimedEvent.made.clear()
+    monkeypatch.setattr("steerai.loop2.decide_port.threading.Event", _TimedEvent)
+    calls = DecideCalls(
+        held, interrupted=Never(), generations=TaskGenerations(), late_error=lambda _t: None
+    )
+    calls.turn(lambda ask: ask([], []))
+    # the Thread's own start handshake waits with no timeout; every timed wait is a poll
+    waits = [t for event in _TimedEvent.made for t in event.timeouts if t is not None]
+    assert waits
+    assert all(t == POLL_S for t in waits)
+
+
+def test_a_kill_latched_before_the_ask_starts_no_call() -> None:
+    """Review #345 (1): nothing is sent after the latch, not even a repair ask."""
+    started: list[int] = []
+
+    def call(system: list[str], blocks: list[str]) -> Reply:
+        del system, blocks
+        started.append(1)
+        return _reply()
+
+    generations = TaskGenerations()
+    before = generations.current()
+    calls = _calls(call, lambda: "killed", generations)
+    with pytest.raises(PortInterrupted) as err:
+        calls.turn(lambda ask: ask([], []))
+    assert err.value.token == "killed"  # noqa: S105 - an interrupt token, not a password
+    assert started == []
+    assert generations.current() != before
+
+
+def test_a_kill_latched_while_a_quick_call_ran_is_seen_before_its_reply_is_used() -> None:
+    """Review #345 (1): the reply landed inside one poll window, so the loop never polled; the
+    switch is read once more after the wait, and the repair never starts."""
+    latched: list[str] = []
+    started: list[int] = []
+
+    def call(system: list[str], blocks: list[str]) -> Reply:
+        del system, blocks
+        started.append(1)
+        latched.append("killed")  # the kill lands while this call is on the wire
+        return Reply(text="bad json", stop_reason="end_turn", usage=_usage(PLAIN))
+
+    calls = _calls(call, lambda: latched[0] if latched else None)
+    with pytest.raises(PortInterrupted):
+        calls.turn(lambda ask: (ask([], []), ask([], [])))
+    assert started == [1]
+
+
+@pytest.mark.parametrize("error", [KeyError("x"), RuntimeError("boom"), SystemExit(3)])
+def test_any_worker_failure_is_raised_on_the_loop_thread_as_itself(error: BaseException) -> None:
+    """Review #345 (3): not only a SteerError: the same object, never a stand-in."""
+
+    def call(system: list[str], blocks: list[str]) -> Reply:
+        del system, blocks
+        raise error
+
+    with pytest.raises(type(error)) as err:
+        _calls(call).turn(lambda ask: ask([], []))
+    assert err.value is error
+
+
+def test_an_abandoned_calls_late_error_is_logged_as_a_closed_token() -> None:
+    held = Held(_reply())
+    secret = SteerError(ErrorCode.MODEL_TIMEOUT, "page text: IGNORE THE RULES")
+
+    def failing(system: list[str], blocks: list[str]) -> Reply:
+        held(system, blocks)
+        raise secret
+
+    late: list[str] = []
+    calls = _calls(failing, KillAfter(held), late=late)
+    with pytest.raises(PortInterrupted):
+        calls.turn(lambda ask: ask([], []))
+    assert late == []  # not yet: the call is still on the wire
+    held.release.set()
+    assert held.returned.wait(10)
+    for _ in range(200):
+        if late:
+            break
+        threading.Event().wait(0.01)
+    assert late == ["late_model_timeout"]
+
+
+def test_an_unread_error_of_a_call_abandoned_after_it_ended_is_logged() -> None:
+    latched: list[str] = []
+
+    def call(system: list[str], blocks: list[str]) -> Reply:
+        del system, blocks
+        latched.append("killed")
+        raise KeyError("page text")
+
+    late: list[str] = []
+    calls = _calls(call, lambda: latched[0] if latched else None, late=late)
+    with pytest.raises(PortInterrupted):
+        calls.turn(lambda ask: ask([], []))
+    assert late == ["late_keyerror"]
 
 
 def test_the_call_runs_on_a_daemon_worker_and_its_text_comes_back() -> None:
@@ -379,6 +500,16 @@ def test_a_result_returning_after_the_kill_never_reaches_a_turn() -> None:
     killing[0] = False  # the next task: no kill
     text, usage = calls.turn(lambda ask: ask([], []))
     assert (text, usage) == ("fresh", _usage(READ))
+
+
+def test_an_empty_token_is_still_a_kill() -> None:
+    """The tester's M17 on bab6935: the runner treats any token that is not None as a kill, so
+    the port does too; an empty string is never read as "no kill"."""
+    held = Held(_reply())
+    calls = _calls(held, lambda: "" if held.started.is_set() else None)
+    with pytest.raises(PortInterrupted):
+        calls.turn(lambda ask: ask([], []))
+    held.release.set()
 
 
 def test_a_result_returning_after_a_new_task_started_is_discarded() -> None:

@@ -13,6 +13,7 @@ and a result box, and returns data only (`Reply`). The loop thread waits on the 
 
 from __future__ import annotations
 
+import re
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -130,30 +131,67 @@ class TaskGenerations:
             return self._value
 
 
-class _Box:
-    """Where the worker leaves its reply or its error; written once, then `done` is set."""
+LateError = Callable[[str], None]
+"""Where a late failure is reported: a closed token, never the error's message. It may be
+called from the decide worker's thread, so it must be thread-safe (the adapter's clear trace)."""
 
-    def __init__(self) -> None:
+
+def late_token(error: BaseException) -> str:
+    """A closed token for a failure nobody will read: `late_<code>` for a SteerError, else
+    `late_<exception class>`. Never the message, which may quote page or prompt text."""
+    if isinstance(error, SteerError):
+        return f"late_{error.code.value}"
+    name = re.sub(r"[^a-z0-9_]", "", type(error).__name__.lower())[:32] or "error"
+    return f"late_{name}"
+
+
+class _Box:
+    """Where the worker leaves its reply or its failure. Written once, under the lock, with
+    `done` set inside it, so an abandoned call's failure is reported exactly once: by `finish`
+    when it lands after the abandon, or by `abandon` when it landed before and went unread."""
+
+    def __init__(self, late_error: LateError) -> None:
         self.done = threading.Event()
         self.reply: Reply | None = None
-        self.error: Exception | None = None
+        self.error: BaseException | None = None
+        self._late_error = late_error
+        self._lock = threading.Lock()
+        self._abandoned = False
+
+    def finish(self, reply: Reply | None, error: BaseException | None) -> None:
+        with self._lock:
+            self.reply, self.error = reply, error
+            self.done.set()
+            late = error if self._abandoned else None
+        if late is not None:
+            self._late_error(late_token(late))
+
+    def abandon(self) -> None:
+        with self._lock:
+            self._abandoned = True
+            unread = self.error if self.done.is_set() else None
+        if unread is not None:
+            self._late_error(late_token(unread))
 
     def result(self) -> Reply:
         if self.error is not None:
             raise self.error
         if self.reply is None:
-            raise AssertionError("the worker set done with no reply and no error")
+            raise AssertionError("the worker finished with no reply and no error")
         return self.reply
 
 
 def _work(call: Call, system: list[str], blocks: list[str], box: _Box) -> None:
-    """The decide worker: one provider call, its reply or its error left in the box."""
+    """The decide worker: one provider call; its reply or its failure, whatever its class, left
+    in the box. `finally` finishes the box even if the catch were ever narrowed."""
+    reply: Reply | None = None
+    error: BaseException | None = None
     try:
-        box.reply = call(system, blocks)
-    except Exception as exc:  # noqa: BLE001 - handed to the loop thread, which raises it
-        box.error = exc
+        reply = call(system, blocks)
+    except BaseException as exc:  # noqa: BLE001 - raised on the loop thread as itself
+        error = exc
     finally:
-        box.done.set()
+        box.finish(reply, error)
 
 
 class DecideCalls:
@@ -166,11 +204,13 @@ class DecideCalls:
         *,
         interrupted: Callable[[], str | None],
         generations: TaskGenerations,
+        late_error: LateError,
         poll_s: float = POLL_S,
     ) -> None:
         self._call = call
         self._interrupted = interrupted
         self._generations = generations
+        self._late_error = late_error
         self._poll_s = poll_s
         self._usages: list[TokenUsage | None] = []
 
@@ -182,8 +222,9 @@ class DecideCalls:
         return result, _summed(self._usages)
 
     def _ask(self, system: list[str], blocks: list[str]) -> str:
+        self._check(None)  # nothing is sent after the latch: not even a repair ask
         generation = self._generations.current()
-        box = _Box()
+        box = _Box(self._late_error)
         worker = threading.Thread(
             target=_work,
             args=(self._call, list(system), list(blocks), box),
@@ -192,17 +233,27 @@ class DecideCalls:
         )
         worker.start()
         while not box.done.wait(self._poll_s):
-            token = self._interrupted()
-            if token is not None:
-                self._generations.bump()  # the abandoned call's result is stale from here
-                raise PortInterrupted(token)
+            self._check(box)
+        self._check(box)  # a reply inside one poll window: the switch was never read
         if self._generations.current() != generation:
+            box.abandon()
             raise PortInterrupted("generation")  # killed, or a new task, while it ran
         reply = box.result()
         self._usages.append(reply.usage)
         if reply.stop_reason == "refusal":
             raise SteerError(ErrorCode.MODEL_ERROR, "refusal")
         return reply.text
+
+    def _check(self, box: _Box | None) -> None:
+        """Read the switch: on a token, the generation moves on (any result in flight is stale),
+        the call is abandoned, and the wait ends with `PortInterrupted`."""
+        token = self._interrupted()
+        if token is None:
+            return
+        self._generations.bump()
+        if box is not None:
+            box.abandon()
+        raise PortInterrupted(token)
 
 
 def _summed(usages: list[TokenUsage | None]) -> TokenUsage | None:

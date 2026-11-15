@@ -226,6 +226,8 @@ class TaskOutcome:
     """Why the task ended, as a pair ([V2.13] decision 5); `reason` is its one rendering."""
     dispatched: tuple[Dispatch, ...]
     model_calls: int
+    """Controller decisions asked for (one per `Ports.decide`, an abandoned or failed one
+    included), not provider calls: a decide's repair ask is a second provider call inside it."""
     strikes: tuple[tuple[StrikeReason, ...], ...]
     """The evidence: one entry per strike, with every reason that held in that turn."""
     read_costs: tuple[ReadCost, ...] = ()
