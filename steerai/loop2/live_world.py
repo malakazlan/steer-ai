@@ -515,6 +515,7 @@ class LiveWorld:
 
         def act_here(dispatch: Dispatch) -> ActResult:
             check()
+            self._same_window(None)  # #361 H7: the window may be replaced after the last read
             return act.act(dispatch)
 
         def read_value_here(element: Element) -> ValueFact | None:

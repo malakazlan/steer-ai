@@ -1432,3 +1432,32 @@ def test_a_window_that_is_not_the_one_listed_is_never_bound(listed: dict[str, ob
 def test_the_listed_window_binds() -> None:
     world, _ = _world(bound_pid=4242, bound_image="browser.exe")
     world.close()
+
+
+@pytest.mark.parametrize("verb", ["click", "press"])
+def test_a_window_replaced_after_the_last_read_gets_no_action(verb: str) -> None:
+    """#361 H7 (WIN-02): the identity changes after the last poll and before the act; nothing
+    reaches the window, through UIA or the keyboard: the act re-checks it first."""
+    platform = Platform()
+    handles: list[FakeHandle] = [
+        _Handle(control_type=TYPE_IDS.get(e.role, TYPE_IDS["Button"]), name=e.name) for e in PAGE
+    ]
+    platform.handles = handles
+    platform.fake_input.focused = FIELD.runtime_id
+    world, _ = _world(platform)
+    ports = world.ports(task())
+    ports.observe()
+    assert platform.identity is not None
+    platform.identity = dataclasses.replace(platform.identity, pid=1)
+    target = GO if verb == "click" else FIELD
+    extra = {} if verb == "click" else {"key": "Enter"}
+    sent = Dispatch(
+        act(verb, target=target.id, **extra), target.runtime_id, target.role, target.name, "R0",
+        None,
+    )  # fmt: skip
+    with pytest.raises(SteerError) as ended:
+        ports.act(sent)
+    assert (ended.value.code, ended.value.message) == (ErrorCode.APP_CRASHED, "window_changed")
+    assert sum(h.invoked for h in handles) == 0
+    assert platform.fake_input.bursts == []
+    assert platform.fake_input.clicks == []
