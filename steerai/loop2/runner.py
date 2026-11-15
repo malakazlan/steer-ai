@@ -985,7 +985,7 @@ class _Run:
             raise _End("blocked", Reason("audit_failed")) from None
         self.model_calls += 1
         self._spend(audited.usage)
-        if audited.veto:
+        if audited.veto or audited.reason != "outcome_shown":  # #404 principal 4: fail closed
             self.audit = ("vetoed", audited.reason)
             raise _End("blocked", Reason("audit_veto"))
         self.audit = ("allowed", audited.reason)

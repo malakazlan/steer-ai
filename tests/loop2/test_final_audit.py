@@ -288,3 +288,21 @@ def test_a_budget_spent_at_the_done_point_stops_the_audit_before_its_call(
     assert world.audits == []
     assert (outcome.status, outcome.reason) == ("blocked", "audit_failed")
     assert seen[-1] == world.events.count("decide") + 1  # the audit's own call is counted
+
+
+# ---- #404 principal 4: a contradictory reply fails closed --------------------------------------
+
+
+@pytest.mark.parametrize(
+    "contradiction",
+    [
+        Audited(veto=False, reason="outcome_not_shown"),
+        Audited(veto=False, reason="outcome_unclear"),
+    ],
+    ids=["allow_but_not_shown", "allow_but_unclear"],
+)
+def test_only_an_allow_that_says_the_outcome_is_shown_lets_done_stand(
+    contradiction: Audited,
+) -> None:
+    outcome = run_task(task(), _value_only(contradiction).ports())
+    assert (outcome.status, outcome.reason) == ("blocked", "audit_veto")
