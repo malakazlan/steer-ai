@@ -50,6 +50,14 @@ PROBE_DEADLINE_S = 0.25
 110 ms (probe `hook-latency-2026-11-04`)."""
 
 
+TAKEOVER = "takeover"
+OTHER_STEER_INPUT = "other_steer_input"
+"""[V2.58] (2): the latest foreign input carried v1's constant tag in a run with its own tag:
+another Steer, not a person at the keys."""
+TAKEOVER_TOKENS = frozenset({TAKEOVER, OTHER_STEER_INPUT})
+"""The closed tokens of a stop for someone else's input: a person, or another Steer."""
+
+
 class MonitorCore:
     def __init__(
         self,
@@ -63,6 +71,7 @@ class MonitorCore:
         self._started_at = started_at
         self._dead_band = dead_band_px
         self._last_user: float | None = None
+        self._last_kind = TAKEOVER
         self._last_steer: float = started_at
         self._probe_sent_at: float | None = None
         self._reference: tuple[int, int] | None = None
@@ -78,6 +87,9 @@ class MonitorCore:
         if extra == self._extra_info:
             self._steer(now)
             return
+        if extra == STEER_EXTRA_INFO:
+            self._other_steer(now)
+            return
         self._person(now, injected=bool(flags & LLKHF_INJECTED))
 
     def on_mouse(
@@ -88,6 +100,9 @@ class MonitorCore:
             self._steer(now)
             if message == WM_MOUSEMOVE:
                 self._reference = (x, y)
+            return
+        if extra == STEER_EXTRA_INFO:
+            self._other_steer(now)
             return
         injected = bool(flags & LLMHF_INJECTED)
         if message != WM_MOUSEMOVE:
@@ -138,6 +153,11 @@ class MonitorCore:
     def counts(self) -> dict[str, int]:
         return dict(self._counts)
 
+    def takeover_token(self) -> str:
+        """Who made the latest foreign input: `takeover` (a person) or `other_steer_input`
+        ([V2.58] (2))."""
+        return self._last_kind
+
     def kill_requested(self) -> bool:
         return self._kill
 
@@ -174,6 +194,14 @@ class MonitorCore:
             return
         self._count("injected_other" if injected else "user")
         self._last_user = now
+        self._last_kind = TAKEOVER
+
+    def _other_steer(self, now: float) -> None:
+        """[V2.58] (2): another Steer's input (v1's constant, in a run with its own tag). It
+        stops this one as a person's would (`last_user_input`), counted apart."""
+        self._count("other_steer")
+        self._last_user = now
+        self._last_kind = OTHER_STEER_INPUT
 
     def _count(self, kind: str) -> None:
         self._counts[kind] = self._counts.get(kind, 0) + 1
@@ -310,6 +338,9 @@ class HookMonitor:
 
     def last_user_input(self) -> float:
         return self._core.last_user_input()
+
+    def takeover_token(self) -> str:
+        return self._core.takeover_token()
 
     def counts(self) -> dict[str, int]:
         return self._core.counts()

@@ -35,6 +35,7 @@ from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.decision import Key
 from steerai.loop2.loop import PortInterrupted
 from steerai.loop2.world_ports import kill_sleep
+from steerai.session.monitor import TAKEOVER
 from steerai.world.elements import Box
 
 KEY_CHORDS: Final[Mapping[Key, str]] = {
@@ -75,6 +76,7 @@ class InputGuard:
         clock: Callable[[], float],
         pause: Callable[[float], None] = time.sleep,
         last_input: Callable[[], float] | None = None,
+        takeover_token: Callable[[], str] = lambda: TAKEOVER,
     ) -> None:
         self._inner = inner
         self._interrupted = interrupted
@@ -86,6 +88,8 @@ class InputGuard:
         self._armed: frozenset[tuple[int, ...]] | None = None
         self._last_input = last_input
         """[V2.57] LW-05: the person's last input on the same clock (the monitor's), or None."""
+        self._takeover_token = takeover_token
+        """[V2.58] (2): who made it, `takeover` or `other_steer_input` (the monitor's)."""
         self._act_started = 0.0
         self._last_click: float | None = None
 
@@ -117,7 +121,7 @@ class InputGuard:
             raise RefusalError(ErrorCode.GATE_BLOCKED, "not_armed")
         if self._last_input is not None and self._last_input() > self._act_started:
             # [V2.57] LW-05: the person took the keyboard or mouse during this act
-            raise RefusalError(ErrorCode.GATE_PENDING_USER, "takeover")
+            raise RefusalError(ErrorCode.GATE_PENDING_USER, self._takeover_token())
         focus, secure = self._focused()
         if focus not in self._armed:
             raise RefusalError(ErrorCode.FOCUS_LOST, "focus_moved")
@@ -228,10 +232,17 @@ class InputGuard:
 class GuardDesk:
     """`act_port.Desk` over the guard: what the act port reads before physical input."""
 
-    def __init__(self, guard: InputGuard, *, last_input: Callable[[], float]) -> None:
+    def __init__(
+        self,
+        guard: InputGuard,
+        *,
+        last_input: Callable[[], float],
+        takeover_token: Callable[[], str] = lambda: TAKEOVER,
+    ) -> None:
         self._guard = guard
         self._last_input = last_input
         """The person's last input, on the act port's clock (slice 7: the session monitor)."""
+        self._takeover_token = takeover_token
 
     def tap_refusal(self) -> str | None:
         """v1's `tap_refusal`; a check that cannot be read refuses (`tap_unreadable`)."""
@@ -242,6 +253,10 @@ class GuardDesk:
 
     def last_input(self) -> float:
         return self._last_input()
+
+    def takeover_token(self) -> str:
+        """[V2.58] (2): `takeover` or `other_steer_input`, as the monitor saw the last input."""
+        return self._takeover_token()
 
     def focused(self) -> tuple[int, ...] | None:
         """The live keyboard focus's RuntimeId; None when unread or empty."""

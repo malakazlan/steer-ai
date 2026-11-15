@@ -479,3 +479,22 @@ def test_a_self_probe_that_cannot_be_sent_does_not_raise_and_fails_closed(
         assert monitor.detail() == "monitor_lost"
     finally:
         monitor.close()
+
+
+def test_a_started_monitor_knows_its_runs_tag_and_names_another_steer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[V2.57] LW-02, [V2.58] (2): the core `start` builds carries the run's tag; v1's constant
+    is then another Steer."""
+    user32 = FakeUser32()
+    monitor = _started(monkeypatch, user32, extra_info=0x1234_5678)
+    try:
+        own = _key(flags=0, extra=0x1234_5678)
+        user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x100, ctypes.addressof(own))
+        assert monitor.counts() == {"steer": 1}
+        other = _key(flags=0, extra=STEER_EXTRA_INFO)
+        user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x100, ctypes.addressof(other))
+        assert monitor.counts() == {"steer": 1, "other_steer": 1}
+        assert monitor.takeover_token() == "other_steer_input"
+    finally:
+        monitor.close()

@@ -76,6 +76,7 @@ class Monitor(Protocol):
     def healthy(self) -> bool: ...
     def maintain(self) -> None: ...
     def last_user_input(self) -> float: ...
+    def takeover_token(self) -> str: ...
     def close(self) -> None: ...
 
 
@@ -214,7 +215,11 @@ class LiveWorld:
             del client, bindings
             raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "com_apartment")
         self._thread = threading.get_ident()
-        held = platform.acquire_session()  # [V2.57] LW-02: one Steer per session
+        try:
+            held = platform.acquire_session()  # [V2.57] LW-02: one Steer per session
+        except BaseException:
+            del client, bindings  # released here, before the refusal leaves the loop thread
+            raise
         self._input_tag = _run_tag()
         platform.use_extra_info(self._input_tag)
         try:
@@ -228,14 +233,7 @@ class LiveWorld:
             platform.release_session()
             raise SteerError(ErrorCode.GATE_BLOCKED, "monitor_unavailable") from exc
         self._monitor = monitor
-        self._closed = False
-        self._ported = False
-        self._trace_lock = threading.Lock()
-        """One lock for every clear-trace write: the decide worker writes late errors."""
-        self.debug_failure: str | None = None
-        self.trace_unwritable = 0
-        self.late_sink_failures = 0
-        self._latched: str | None = None
+        self._init_state()
         if held == "abandoned":
             self._token("session_abandoned")  # a previous Steer died holding it
         try:
@@ -244,6 +242,17 @@ class LiveWorld:
         except BaseException:
             self.close()
             raise
+
+    def _init_state(self) -> None:
+        """The world's own state, set once the monitor runs."""
+        self._closed = False
+        self._ported = False
+        self._trace_lock = threading.Lock()
+        """One lock for every clear-trace write: the decide worker writes late errors."""
+        self.debug_failure: str | None = None
+        self.trace_unwritable = 0
+        self.late_sink_failures = 0
+        self._latched: str | None = None
 
     def _debug_sink(self) -> DebugSink:
         config = self._config
@@ -274,8 +283,13 @@ class LiveWorld:
             clock=config.clock,
             pause=config.pause,
             last_input=self._monitor.last_user_input,
+            takeover_token=self._monitor.takeover_token,
         )
-        self.desk = GuardDesk(guard, last_input=self._monitor.last_user_input)
+        self.desk = GuardDesk(
+            guard,
+            last_input=self._monitor.last_user_input,
+            takeover_token=self._monitor.takeover_token,
+        )
         self.semantic = Executor(
             uia=ToggleGuard(control_types=bindings.control_types, interfaces=bindings.interfaces),
             windows=platform.window_state(),

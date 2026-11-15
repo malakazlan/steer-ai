@@ -203,3 +203,37 @@ def test_the_core_counts_only_its_runs_tag_as_steer() -> None:
     assert core.last_user_input() == 0.0  # its own key: not the person's
     core.on_keyboard(flags=0, extra=STEER_EXTRA_INFO, now=2.0)  # another instance's key
     assert core.last_user_input() == 2.0
+
+
+# ---- [V2.58] (2): v1's constant tag in a v2 run is another Steer, not a person ------------------
+
+
+def test_another_steers_input_stops_the_same_way_but_is_not_a_person() -> None:
+    from steerai.session.monitor import MonitorCore  # noqa: PLC0415 - this test only
+
+    core = MonitorCore(started_at=0.0, extra_info=0x1234_5678)
+    core.on_keyboard(flags=0, extra=STEER_EXTRA_INFO, now=2.0)
+    assert core.last_user_input() == 2.0  # the idle rule and the takeover stop as for a person
+    assert core.takeover_token() == "other_steer_input"
+    assert core.counts().get("other_steer") == 1
+    assert "user" not in core.counts()  # not a person at the keys
+    core.on_keyboard(flags=0, extra=0, now=3.0)
+    assert core.takeover_token() == "takeover"  # the latest foreign input was a person's
+
+
+def test_another_steers_click_is_other_steer_input_too() -> None:
+    from steerai.session.monitor import WM_LBUTTONDOWN, MonitorCore  # noqa: PLC0415
+
+    core = MonitorCore(started_at=0.0, extra_info=0x1234_5678)
+    core.on_mouse(message=WM_LBUTTONDOWN, flags=0, extra=STEER_EXTRA_INFO, pt=(5, 5), now=4.0)
+    assert (core.last_user_input(), core.takeover_token()) == (4.0, "other_steer_input")
+
+
+def test_in_v1_its_own_constant_is_still_its_own_input() -> None:
+    from steerai.session.monitor import MonitorCore  # noqa: PLC0415 - this test only
+
+    core = MonitorCore(started_at=0.0)
+    core.on_keyboard(flags=0, extra=STEER_EXTRA_INFO, now=2.0)
+    assert core.last_user_input() == 0.0
+    assert core.takeover_token() == "takeover"
+    assert "other_steer" not in core.counts()

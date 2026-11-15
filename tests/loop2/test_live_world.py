@@ -13,6 +13,7 @@ import re
 import threading
 import weakref
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -73,6 +74,7 @@ class Monitor:
         self.maintained = 0
         self.closed = 0
         self.last = 0.0
+        self.who = "takeover"
         self.raises: Exception | None = None
         """Raised by `maintain` and `healthy` (a hook thread that failed)."""
 
@@ -91,6 +93,9 @@ class Monitor:
 
     def last_user_input(self) -> float:
         return self.last
+
+    def takeover_token(self) -> str:
+        return self.who
 
     def close(self) -> None:
         self.closed += 1
@@ -317,6 +322,7 @@ def test_a_monitor_or_hot_key_that_cannot_start_never_starts(error: Exception) -
         _world(platform)
     assert failed.value.code is ErrorCode.GATE_BLOCKED
     assert failed.value.message.startswith("monitor_unavailable")
+    assert platform.calls.count("release_session") == 1  # [V2.57]: the session goes with it
 
 
 def test_a_debug_trace_without_dpapi_never_starts_and_the_monitor_is_closed() -> None:
@@ -1161,3 +1167,79 @@ def test_a_key_after_the_person_typed_during_the_act_is_a_takeover() -> None:
             world.physical._inputs.type_text("b")
     assert refused.value.detail == "takeover"
     assert platform.fake_input.bursts == ["text:1"]
+
+
+def test_another_steers_key_during_the_act_is_other_steer_input() -> None:
+    """[V2.58] (2): the guard refuses the same way, with the monitor's own token."""
+    from steerai.action.execution import RefusalError  # noqa: PLC0415 - this test only
+
+    world, platform = _world()
+    platform.fake_input.focused = FIELD.runtime_id
+    with world.desk.armed(frozenset({FIELD.runtime_id})):
+        platform.monitor.last = world.clock() + 1.0
+        platform.monitor.who = "other_steer_input"
+        with pytest.raises(RefusalError) as refused:
+            world.physical._inputs.type_text("b")
+    assert refused.value.detail == "other_steer_input"
+    assert world.desk.takeover_token() == "other_steer_input"
+
+
+# ---- [V2.58] (3): only the process that starts the monitor takes the session -------------------
+
+
+def test_the_chunked_runners_parent_never_takes_the_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.probes.test_suite_chunks import CHUNKS  # noqa: PLC0415 - its fakes
+    from tests.probes.test_suite_chunks import World as Chunks  # noqa: PLC0415
+
+    taken: list[str] = []
+    monkeypatch.setattr(WindowsPlatform, "acquire_session", lambda _self: taken.append("x"))
+    assert Chunks().run(CHUNKS, tmp_path) == 0
+    assert taken == []
+
+
+def test_the_session_is_taken_only_where_the_monitor_starts() -> None:
+    """Every call of `acquire_session` in the package is in one function that, after it, starts
+    the monitor: `LiveWorld.__init__`. A chunk parent, a CLI or a helper never takes it."""
+    import ast  # noqa: PLC0415 - this test only
+
+    package = Path(__file__).resolve().parents[2] / "steerai"
+    callers: list[str] = []
+    for path in package.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for function in ast.walk(tree):
+            if not isinstance(function, ast.FunctionDef):
+                continue
+            calls = [
+                node.func.attr
+                for node in ast.walk(function)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            ]
+            if "acquire_session" in calls:
+                callers.append(f"{path.name}:{function.name}")
+                assert calls.index("start_monitor") > calls.index("acquire_session")
+    assert callers == ["live_world.py:__init__"]
+
+
+def test_a_random_draw_of_zero_or_v1s_tag_is_drawn_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    import secrets  # noqa: PLC0415 - this test only
+
+    draws = iter([0x5354_4545, 0, 0x0BAD_CAFE])
+    monkeypatch.setattr(secrets, "randbits", lambda _bits: next(draws))
+    _, platform = _world()
+    assert platform.input_tag == 0x0BAD_CAFE
+
+
+def test_input_before_or_at_the_acts_start_is_not_a_takeover() -> None:
+    """LW-05 counts only input after the act armed: the idle rule already judged what came
+    before (here the person typed five seconds earlier, and once at the very instant)."""
+    world, platform = _world()
+    platform.fake_input.focused = FIELD.runtime_id
+    platform.monitor.last = world.clock() - 5.0
+    with world.desk.armed(frozenset({FIELD.runtime_id})):
+        world.physical._inputs.type_text("a")
+    platform.monitor.last = world.clock()
+    with world.desk.armed(frozenset({FIELD.runtime_id})):
+        world.physical._inputs.type_text("b")
+    assert platform.fake_input.bursts == ["text:1", "text:1"]

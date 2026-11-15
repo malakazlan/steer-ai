@@ -115,6 +115,7 @@ class Desk(Protocol):
 
     def tap_refusal(self) -> str | None: ...
     def last_input(self) -> float: ...
+    def takeover_token(self) -> str: ...
     def focused(self) -> tuple[int, ...] | None: ...
     def armed(self, focus: frozenset[tuple[int, ...]]) -> AbstractContextManager[None]: ...
 
@@ -245,7 +246,7 @@ class ActPort:
             if now - self._desk.last_input() >= IDLE_S:
                 return waited
             if now - started >= cap:
-                detail = "takeover" if cap >= MAX_WAIT_S else "wall_budget"
+                detail = self._desk.takeover_token() if cap >= MAX_WAIT_S else "wall_budget"
                 raise _Refused(ErrorCode.GATE_PENDING_USER, detail)
             kill_sleep(
                 min(WAIT_POLL_S, cap - (now - started)),
