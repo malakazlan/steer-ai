@@ -361,7 +361,8 @@ def _recorded_audit(
             raise
         finally:
             seen.in_audit = False
-        verdict: Verdict = "vetoed" if answer.veto else "allowed"
+        allowed = answer.sufficient and answer.reason == "facts_finish_request"  # as the runner
+        verdict: Verdict = "allowed" if allowed else "vetoed"
         seen.judges.append(_audit_call(verdict, answer.reason, started, seen, world))
         return answer
 

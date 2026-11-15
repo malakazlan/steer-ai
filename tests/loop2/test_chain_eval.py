@@ -369,8 +369,8 @@ def handle(prompt: str, name: str) -> int:
 
 
 SUB = {"id": "s1", "desc": "it is set", "params": {"name": "Ada Lovelace"}, "closes": "value"}
-ALLOW = json.dumps({"veto": False, "reason": "outcome_shown"})
-VETO = json.dumps({"veto": True, "reason": "outcome_not_shown"})
+ALLOW = json.dumps({"sufficient": True, "reason": "facts_finish_request"})
+VETO = json.dumps({"sufficient": False, "reason": "request_asks_more"})
 
 
 def _typed_and_claimed(field: str, words: str) -> list[Callable[[str], dict[str, Any]]]:
@@ -389,7 +389,7 @@ def test_a_must_pass_chain_the_audit_allows_is_done_and_counts_ok() -> None:
     record = run_chain(SHAPES["g22"], index=0, provider=provider)
     assert (record.status, record.outcome_shown) == ("done", True)
     assert [(j.judge, j.verdict, j.reason) for j in record.judges] == [
-        ("audit", "allowed", "outcome_shown")
+        ("audit", "allowed", "facts_finish_request")
     ]
     assert record.declared == (("value",),)
     assert ending("must_pass", record) == "ok"
