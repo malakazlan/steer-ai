@@ -79,7 +79,12 @@ class Platform(Protocol):
     def protect(self, data: bytes) -> bytes: ...
     def session_locked(self) -> bool | None: ...
     def input_desktop(self) -> str: ...
-    def observe(self, client: Any, hwnd: int) -> Snapshot: ...  # Any: the UiaClient
+    def observer(  # Any: the UiaClient
+        self, client: Any, clock: Callable[[], float]
+    ) -> Callable[[int], Snapshot]:
+        """One task's window reader, stamping `Snapshot.taken_at` on `clock` (packet §1)."""
+        ...
+
     def facts(self, client: Any) -> FactReader: ...  # Any: the UiaClient
     def windows(self, pid: int) -> tuple[int, ...]: ...
     def focused(  # Any: the UiaClient
@@ -189,6 +194,7 @@ class LiveWorld:
         self._lock = threading.Lock()
         self.late_sink_failures = 0
         self._client = client
+        self._observe = platform.observer(client, config.clock)
         self._facts = platform.facts(client)
         self._secure = SecureMemory()
         self._stamp = DocumentSince(clock=config.clock)
@@ -259,7 +265,7 @@ class LiveWorld:
 
     def _poll_read(self) -> Observed:
         """The window's snapshot with the task's sticky secure flags (packet §1)."""
-        snapshot = self._platform.observe(self._client, self._config.hwnd)
+        snapshot = self._observe(self._config.hwnd)
         return poll_tier(self._secure.apply(snapshot))
 
     def _full_from(self, observed: Observed) -> Observed:
@@ -396,14 +402,13 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
 
         return input_desktop_name()
 
-    def observe(self, client: Any, hwnd: int) -> Snapshot:  # Any: the UiaClient
-        model = getattr(self, "_model", None)
-        if model is None or getattr(self, "_model_client", None) is not client:
-            from steerai.world.model import WorldModel  # noqa: PLC0415 - Windows only
+    def observer(  # Any: the UiaClient
+        self, client: Any, clock: Callable[[], float]
+    ) -> Callable[[int], Snapshot]:
+        from steerai.world.model import WorldModel  # noqa: PLC0415 - Windows only
 
-            model = WorldModel(client, clock=time.monotonic)
-            self._model, self._model_client = model, client
-        return model.observe(hwnd, cap_s=5.0)
+        model = WorldModel(client, clock=clock)
+        return lambda hwnd: model.observe(hwnd, cap_s=5.0)
 
     def facts(self, client: Any) -> FactReader:  # Any: the UiaClient
         return _ComFacts(client)

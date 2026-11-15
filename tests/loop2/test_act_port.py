@@ -676,6 +676,14 @@ def test_a_tap_refusal_sends_nothing_and_returns_its_token(tap: str, code: Error
     assert _nothing_executed(rig)
 
 
+def test_a_person_idle_exactly_idle_s_is_idle() -> None:
+    """#354: the idle rule's boundary is inclusive, as v1's `wait_for_idle` (`>= IDLE_S`)."""
+    rig = _port(physical=Executor(ok("type")), desk=Desk(last_input=-IDLE_S))
+    rig.port.act(_dispatch("type", FIELD, **TYPE))
+    assert rig.clock.pauses == []
+    assert len(rig.physical.calls) == 1
+
+
 def test_an_idle_person_means_no_wait_and_no_fresh_look() -> None:
     rig = _port(physical=Executor(ok("type")))
     rig.port.act(_dispatch("type", FIELD, **TYPE))

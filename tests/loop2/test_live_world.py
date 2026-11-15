@@ -7,15 +7,17 @@ that could not stop on the person's key, or would write names in clear, never st
 from __future__ import annotations
 
 import dataclasses
+import json
 import re
 from typing import Any
 
 import pytest
 
+from steerai.action.dispositions import Delivery
 from steerai.action.execution import UiaBindings
 from steerai.action.executor import Executor
 from steerai.action.options import UiaOptions
-from steerai.action.physical import PhysicalExecutor
+from steerai.action.physical import PhysicalAction, PhysicalExecutor
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.act_guards import InputGuard, ToggleGuard
 from steerai.loop2.controller import PROMPT_VERSION
@@ -23,11 +25,26 @@ from steerai.loop2.decide_port import Reply, TaskGenerations
 from steerai.loop2.live_world import LiveConfig, LiveWorld, UiaElements, WindowsPlatform
 from steerai.loop2.live_world import Platform as LivePlatform
 from steerai.loop2.loop import Dispatch, TokenUsage
+from steerai.loop2.runner import run_task
 from steerai.orchestrator.trace import ListTrace
 from steerai.world.model import Snapshot
-from tests.action.fakes import TYPE_IDS, UIA_E_ELEMENTNOTAVAILABLE, FakeHandle, com_error
+from tests.action.fakes import (
+    TYPE_IDS,
+    UIA_E_ELEMENTNOTAVAILABLE,
+    FakeHandle,
+    FakeWindows,
+    com_error,
+)
+from tests.action.test_physical import (
+    TARGET_ID,
+    FakeInput,
+    _edit,
+    fast_clock,  # noqa: F401 - the v1 fixture, used by name
+)
+from tests.action.test_physical import _snapshot as physical_snapshot
 from tests.loop2.world_fakes import (
     FIELD,
+    GO,
     PAGE,
     PASSWORD,
     PRICE_READ_ON,
@@ -78,7 +95,12 @@ class Platform:
         self.bindings = UiaBindings(control_types=names, interfaces={})
         self.calls: list[str] = []
         self.protected: list[bytes] = []
+        self.prompts: list[list[str]] = []
+        self.click_named: str | None = None
         self.screen = snapshot(PAGE)
+        self.fake_input = FakeInput()
+        self.handles: list[FakeHandle] | None = None
+        """When set, each read is the screen with these live handles, stamped on the clock."""
 
     def dpi_aware(self) -> bool:
         self.calls.append("dpi")
@@ -113,9 +135,16 @@ class Platform:
             raise self.desktop
         return self.desktop
 
-    def observe(self, client: Any, hwnd: int) -> Snapshot:
-        del client, hwnd
-        return self.screen
+    def observer(self, client: Any, clock: Any) -> Any:  # Any: the clock, the reader
+        del client
+        self.observer_clock = clock
+
+        def read(_hwnd: int) -> Snapshot:
+            if self.handles is None:
+                return self.screen
+            return dataclasses.replace(self.screen, taken_at=clock(), handles=self.handles)
+
+        return read
 
     def facts(self, client: Any) -> Any:  # Any: a FactReader
         del client
@@ -127,17 +156,32 @@ class Platform:
 
     def focused(self, client: Any) -> Any:  # Any: one read of the focused element
         del client
-        return lambda: (FIELD.runtime_id, False)
+        return lambda: (self.fake_input.focused, False)
 
     def inputs(self, client: Any) -> Any:  # Any: v1's InputPort
         del client
-        return object()
+        return self.fake_input
 
     def window_state(self) -> Any:  # Any: v1's WindowState
-        return object()
+        return FakeWindows()
 
     def provider(self) -> Any:  # Any: the decide port's Call
-        return lambda _system, _blocks: Reply('{"stop": "cannot"}', "end_turn", TokenUsage(1, 1))
+        return self.reply
+
+    def reply(self, _system: list[str], blocks: list[str]) -> Reply:
+        self.prompts.append(blocks)
+        decision: dict[str, Any] = {"stop": "cannot"}
+        if len(self.prompts) == 1 and self.click_named is not None:
+            pattern = re.compile(rf'^\s*(\d+) Button "{self.click_named}"', re.M)
+            found = pattern.search(blocks[2])
+            assert found is not None, "the button is listed"
+            decision = {
+                "subgoals": [
+                    {"id": "s1", "desc": "go", "params": {"text": "red shoes"}, "closes": "page"}
+                ],
+                "actions": [{"verb": "click", "target": int(found.group(1)), "subgoal": "s1"}],
+            }
+        return Reply(json.dumps(decision), "end_turn", TokenUsage(1, 1))
 
 
 class _Facts:
@@ -497,3 +541,103 @@ def test_the_focused_facts_are_one_read_of_rid_and_is_password() -> None:
     focus, secure = UiaClient().focused_facts()
     assert isinstance(focus, tuple)
     assert secure is None or isinstance(secure, bool)
+
+
+# ---- #354: the guard's kill tests on the factory's own executors -------------------------------
+
+CLICK = PhysicalAction(verb="click", element_id=1)
+
+
+def _now(world: LiveWorld, shown: Snapshot) -> Snapshot:
+    """A snapshot read now on the world's clock (one clock: an older stamp is `snapshot_stale`)."""
+    return dataclasses.replace(shown, taken_at=world.clock())
+
+
+def test_a_kill_before_a_click_moves_nothing(
+    fast_clock: dict[str, float],  # noqa: F811 - the v1 fixture
+) -> None:
+    world, platform = _world()
+    platform.monitor.killed = True
+    result = world.physical.execute(CLICK, _now(world, physical_snapshot(FakeHandle())))
+    assert platform.fake_input.moves == []
+    assert platform.fake_input.clicks == []
+    assert result.delivery is Delivery.NOT_DELIVERED
+    assert result.evidence["detail"] == "killed"
+
+
+def test_a_kill_after_the_move_sends_no_click(
+    fast_clock: dict[str, float],  # noqa: F811 - the v1 fixture
+) -> None:
+    """v1's own blocker reads the switch before `Call.send` marks the click sent: a clean
+    `not_delivered`, and the guard behind it (rev 3.10 (e))."""
+    world, platform = _world()
+
+    def latch(_x: int, _y: int) -> None:
+        platform.monitor.killed = True
+
+    platform.fake_input.after_move = latch
+    result = world.physical.execute(CLICK, _now(world, physical_snapshot(FakeHandle())))
+    assert len(platform.fake_input.moves) == 1
+    assert platform.fake_input.clicks == []
+    assert result.delivery is Delivery.NOT_DELIVERED
+    assert result.code is ErrorCode.GATE_BLOCKED
+
+
+def test_a_kill_between_bursts_stops_the_typing(
+    fast_clock: dict[str, float],  # noqa: F811 - the v1 fixture
+) -> None:
+    world, platform = _world()
+    handle = _edit()
+    platform.fake_input.sink = handle
+
+    def latch(_inputs: FakeInput, index: int) -> None:
+        if index == 1:
+            platform.monitor.killed = True
+
+    platform.fake_input.after_burst = latch
+    typed = PhysicalAction(verb="type", element_id=1, text="abcdefghijkl")
+    with world.desk.armed(frozenset({TARGET_ID})):
+        result = world.physical.execute(typed, _now(world, physical_snapshot(handle, role="Edit")))
+    assert platform.fake_input.bursts == ["text:8"]
+    assert result.delivery is Delivery.DELIVERY_UNCERTAIN
+
+
+def test_keys_outside_an_armed_act_never_reach_the_window(
+    fast_clock: dict[str, float],  # noqa: F811 - the v1 fixture
+) -> None:
+    world, platform = _world()
+    handle = _edit()
+    typed = PhysicalAction(verb="type", element_id=1, text="abc")
+    result = world.physical.execute(typed, _now(world, physical_snapshot(handle, role="Edit")))
+    assert platform.fake_input.bursts == []
+    assert result.delivery is not Delivery.DELIVERED_VERIFIED
+
+
+# ---- one task end to end on one far-from-wall clock (packet §1) --------------------------------
+
+
+def test_one_task_runs_through_the_ports_on_one_clock() -> None:
+    """Observe, stamp, the decide port, v1's admission and the watch, all on the world's fake
+    monotonic clock far from wall time: the click is admitted (never `snapshot_stale`) and no
+    observation is out of the clock's domain."""
+    platform = Platform()
+    handles: list[FakeHandle] = [
+        _Handle(control_type=TYPE_IDS.get(e.role, TYPE_IDS["Button"]), name=e.name) for e in PAGE
+    ]
+    platform.handles = handles
+    platform.click_named = GO.name
+    world, _ = _world(platform)
+    outcome = run_task(task(), world.ports(task()))
+    world.close()
+    go = handles[[e.id for e in PAGE].index(GO.id)]
+    assert [d.action.verb for d in outcome.dispatched] == ["click"]
+    assert go.invoked == 1
+    assert outcome.reason not in {"clock_domain", "port_unstable_ui"}
+    assert platform.observer_clock is world.clock
+
+
+def test_the_desk_reads_the_persons_last_input_from_the_monitor() -> None:
+    """Rev 3.10 (c): the idle rule's last input is the monitor's, on the same clock."""
+    world, platform = _world()
+    platform.monitor.last = 1_000_123.5
+    assert world.desk.last_input() == 1_000_123.5
