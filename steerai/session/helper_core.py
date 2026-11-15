@@ -50,6 +50,9 @@ SLEEP_DIVERGENCE_MS: Final = 50
 """[V2.60] provisional: a loop whose QPC advanced this much more than the unbiased interrupt time
 (which excludes sleep, Microsoft Learn QueryUnbiasedInterruptTime) is a resume. The final value
 is max(50 ms, 3 x the no-sleep maximum), from P-sleep."""
+MAX_ASK_DEPTH: Final = 16
+"""#375 P5: the most nested asks Steer can have open. A larger word is an underflow (or a
+corrupt word): read as no ask, and counted as a callback error, so Steer loses the monitor."""
 WARM_ROUNDS: Final = 1000
 """HH-04: synthetic callbacks run once at start so the first real event finds its code paged in."""
 HELPER_MODULE: Final = "steerai.session.hook_helper"
@@ -197,7 +200,7 @@ class HelperCore:
     ) -> bool:
         """One keyboard event; True when it delivered a probe (the caller wakes Steer)."""
         self._lag(event_ms, entry_ms)
-        self._classifier.sync_ask_depth(self._config.get("ask_depth"))
+        self._sync_ask()
         before = self._classifier.delivered("keyboard")
         self._classifier.on_keyboard(flags=flags, extra=extra, now=float(entry_qpc), vk=vk)
         return self._publish("keyboard", before)
@@ -215,7 +218,7 @@ class HelperCore:
     ) -> bool:
         """One mouse event; True when it delivered a probe. `pt` reaches only the dead band."""
         self._lag(event_ms, entry_ms)
-        self._classifier.sync_ask_depth(self._config.get("ask_depth"))
+        self._sync_ask()
         before = self._classifier.delivered("mouse")
         self._classifier.on_mouse(
             message=message, flags=flags, extra=extra, pt=pt, now=float(entry_qpc)
@@ -261,6 +264,14 @@ class HelperCore:
         s.set("heartbeat_count", s.get("heartbeat_count") + 1)
 
     # ---- internals -----------------------------------------------------------------------------
+
+    def _sync_ask(self) -> None:
+        """K7: Steer's ask word, read directly; past `MAX_ASK_DEPTH` it is no ask (#375 P5)."""
+        depth = self._config.get("ask_depth")
+        if depth > MAX_ASK_DEPTH:
+            self.callback_error()
+            depth = 0
+        self._classifier.sync_ask_depth(depth)
 
     def _resumed(self, qpc: int) -> None:
         """HH-01: the wake input happened while the hooks were blind: counted as the person's."""

@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 
 from steerai.session.helper_core import (
+    MAX_ASK_DEPTH,
     SLEEP_DIVERGENCE_MS,
     HelperCore,
     config_error,
@@ -282,3 +283,25 @@ def test_a_callback_error_is_counted() -> None:
     core, _cfg, status = _core()
     core.callback_error()
     assert status.get("callback_errors") == 1
+
+
+# ---- #375 review P5: an underflowed ask word never hides a takeover ---------------------------
+
+
+@pytest.mark.parametrize("depth", [MAX_ASK_DEPTH + 1, 2**64 - 1])
+def test_an_ask_depth_past_the_bound_is_no_ask_and_a_callback_error(depth: int) -> None:
+    """2**64-1 is a decrement below zero; read as an open ask it would make every person's
+    input an answer. It is read as no ask, and counted, so Steer loses the monitor."""
+    core, cfg, status = _core()
+    cfg.set("ask_depth", depth)
+    _key(core, extra=0, at_ms=5_000)
+    assert unpack_last_user(status.get("last_user"))[0] == 5_000 * MS  # a takeover, not an answer
+    assert status.get("callback_errors") == 1
+
+
+def test_an_ask_depth_within_the_bound_is_an_ask() -> None:
+    core, cfg, status = _core()
+    cfg.set("ask_depth", MAX_ASK_DEPTH)
+    _key(core, extra=0, at_ms=5_000)
+    assert status.get("last_user") == 0
+    assert status.get("callback_errors") == 0
