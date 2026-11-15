@@ -22,10 +22,12 @@ semantic one over `ToggleGuard` and `UiaOptions(client)` (AP-54), the physical o
 
 from __future__ import annotations
 
+import gc
 import secrets
 import sys
 import threading
 import time
+import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -58,6 +60,10 @@ from steerai.world.secure import SecureMemory
 TraceLevel = Literal["redacted", "debug"]
 """`redacted`: a clear trace of closed tokens and counts only. `debug`: also the DPAPI debug
 sink, which may hold names and titles; it never starts without DPAPI (packet §1 traces)."""
+SESSION_MUTEX = "Local\\SteerV2Session"
+"""[V2.57] LW-02: one Steer per Windows session (the `Local\\` namespace)."""
+_WAIT_OBJECT_0 = 0x0
+_WAIT_ABANDONED = 0x80
 COINIT_MULTITHREADED = 0x0
 """`CoInitializeEx`'s MTA flag (objbase.h)."""
 DPAPI_PROBE = b"steer-v2-dpapi-probe"
@@ -71,6 +77,7 @@ class Monitor(Protocol):
     def healthy(self) -> bool: ...
     def maintain(self) -> None: ...
     def last_user_input(self) -> float: ...
+    def takeover_token(self) -> str: ...
     def close(self) -> None: ...
 
 
@@ -84,9 +91,30 @@ class Platform(Protocol):
         """The calling thread's COM apartment after `uia()`: `MTA`, `STA`, `MAINSTA` or `NA`."""
         ...
 
-    def start_monitor(self, kill_key: str, clock: Callable[[], float]) -> Monitor:
-        """The hook monitor on the world's clock: its `last_user_input` feeds the idle rule."""
+    def release_com(self) -> None:
+        """Balance `uia()`'s `CoInitializeEx` on this thread: one `CoUninitialize`, once."""
         ...
+
+    def start_monitor(self, kill_key: str, clock: Callable[[], float], extra_info: int) -> Monitor:
+        """The hook monitor on the world's clock (its `last_user_input` feeds the idle rule),
+        counting only input tagged `extra_info` as Steer's own."""
+        ...
+
+    def use_extra_info(self, tag: int) -> None:
+        """[V2.57] LW-02: every input this process sends from now on carries `tag`."""
+        ...
+
+    def restore_extra_info(self) -> None:
+        """#361 B3: v1's tag back on the process's input, at close and on a failed start."""
+        ...
+
+    def acquire_session(self) -> str:
+        """[V2.57] LW-02: the session-local single-instance mutex, before the monitor starts:
+        `acquired`, or `abandoned` (a previous holder died; acquired too). Already held raises
+        `GATE_BLOCKED` / `steer_already_running`."""
+        ...
+
+    def release_session(self) -> None: ...
 
     def protect(self, data: bytes) -> bytes: ...
     def session_locked(self) -> bool | None: ...
@@ -100,12 +128,30 @@ class Platform(Protocol):
 
     def facts(self, client: Any) -> FactReader: ...  # Any: the UiaClient
     def windows(self, pid: int) -> tuple[int, ...]: ...
+    def window_identity(self, hwnd: int) -> WindowIdentity | None:
+        """LW-03: what `hwnd` is now; None when any part of it cannot be read."""
+        ...
+
     def focused(  # Any: the UiaClient
         self, client: Any
     ) -> Callable[[], tuple[tuple[int, ...], bool | None]]: ...
     def inputs(self, client: Any) -> InputPort: ...  # Any: the UiaClient
     def window_state(self) -> WindowState: ...
     def provider(self) -> Call: ...
+
+
+@dataclass(frozen=True)
+class WindowIdentity:
+    """LW-03 ([V2.53] (1)): what the bound window is, read at binding: its process (pid and start
+    time, so a reused pid is not the same process), the image, whether the handle is a top-level
+    root (a reused handle can come back as a child window) and whether it is visible. The title,
+    minimized and cloaked states change in normal use and are not part of it."""
+
+    pid: int
+    started: int
+    image: str
+    root: bool
+    visible: bool
 
 
 @dataclass(frozen=True)
@@ -124,6 +170,10 @@ class LiveConfig:
     times: WorldTimes = field(default_factory=WorldTimes)
     debug_path: Path | None = None
     """Where the DPAPI debug file goes at level `debug`; none: no debug records are kept."""
+    bound_pid: int | None = None
+    """#361 H6: the pid of the window as it was listed; the binding's identity must match."""
+    bound_image: str | None = None
+    """#361 H6: the image of the listed window's process, lower case."""
 
 
 def enter_mta(co_initialize_ex: Callable[[int], int]) -> None:
@@ -192,15 +242,55 @@ class LiveWorld:
             del client, bindings
             raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "com_apartment")
         self._thread = threading.get_ident()
-        try:
-            monitor = platform.start_monitor(config.kill_key, config.clock)
-        except SteerError:
-            del client, bindings  # the UIA client is released before the task is refused
-            raise  # HookMonitor's own GATE_BLOCKED monitor_unavailable, with its reason
-        except Exception as exc:  # any other start failure: no kill switch, no task
+        bound = platform.window_identity(config.hwnd)  # LW-03: the binding's identity
+        if bound is None:
             del client, bindings
-            raise SteerError(ErrorCode.GATE_BLOCKED, "monitor_unavailable") from exc
+            raise SteerError(ErrorCode.APP_CRASHED, "window_unreadable")
+        if (config.bound_pid is not None and bound.pid != config.bound_pid) or (
+            config.bound_image is not None and bound.image != config.bound_image
+        ):  # #361 H6: the handle now names another process than the one listed
+            del client, bindings
+            raise SteerError(ErrorCode.APP_CRASHED, "window_changed")
+        self._bound = bound
+        try:
+            held, monitor = self._take_session(platform, config)
+        except BaseException:
+            del client, bindings  # released here, before the refusal leaves the loop thread
+            raise
         self._monitor = monitor
+        self._init_state()
+        if held == "abandoned":
+            self._token("session_abandoned")  # a previous Steer died holding it
+        try:
+            debug = self._debug_sink()
+            self._build(client, bindings, debug)
+        except BaseException:
+            self.close()
+            raise
+
+    def _take_session(self, platform: Platform, config: LiveConfig) -> tuple[str, Monitor]:
+        """[V2.57] LW-02: the session, then the run's tag, then the monitor on it. Any failure
+        after the session was taken releases it (#361 H12)."""
+        held = platform.acquire_session()  # one Steer per session
+        try:
+            self._input_tag = _run_tag()
+            platform.use_extra_info(self._input_tag)
+            try:
+                monitor = platform.start_monitor(config.kill_key, config.clock, self._input_tag)
+            except SteerError:
+                raise  # HookMonitor's own GATE_BLOCKED monitor_unavailable, with its reason
+            except Exception as exc:  # any other start failure: no kill switch, no task
+                raise SteerError(ErrorCode.GATE_BLOCKED, "monitor_unavailable") from exc
+        except BaseException:
+            try:
+                platform.restore_extra_info()  # #361 B3: no run's tag outlives its start
+            finally:
+                platform.release_session()
+            raise
+        return held, monitor
+
+    def _init_state(self) -> None:
+        """The world's own state, set once the monitor runs."""
         self._closed = False
         self._ported = False
         self._trace_lock = threading.Lock()
@@ -209,12 +299,6 @@ class LiveWorld:
         self.trace_unwritable = 0
         self.late_sink_failures = 0
         self._latched: str | None = None
-        try:
-            debug = self._debug_sink()
-            self._build(client, bindings, debug)
-        except BaseException:
-            self.close()
-            raise
 
     def _debug_sink(self) -> DebugSink:
         config = self._config
@@ -244,8 +328,14 @@ class LiveWorld:
             focused=platform.focused(client),
             clock=config.clock,
             pause=config.pause,
+            last_input=self._monitor.last_user_input,
+            takeover_token=self._monitor.takeover_token,
         )
-        self.desk = GuardDesk(guard, last_input=self._monitor.last_user_input)
+        self.desk = GuardDesk(
+            guard,
+            last_input=self._monitor.last_user_input,
+            takeover_token=self._monitor.takeover_token,
+        )
         self.semantic = Executor(
             uia=ToggleGuard(control_types=bindings.control_types, interfaces=bindings.interfaces),
             windows=platform.window_state(),
@@ -318,8 +408,21 @@ class LiveWorld:
     def _poll_read(self) -> Observed:
         """The window's snapshot with the task's sticky secure flags (packet §1)."""
         self._on_loop_thread()
-        snapshot = self._observe(self._config.hwnd)
+        try:
+            snapshot = self._observe(self._config.hwnd)
+        except (
+            Exception
+        ) as exc:  # re-raised: as `window_changed` if the window is not the bound one
+            self._same_window(exc)
+            raise
+        self._same_window(None)
         return poll_tier(self._secure.apply(snapshot))
+
+    def _same_window(self, cause: Exception | None) -> None:
+        """LW-03: one identity read per snapshot read, so no snapshot of another window is ever
+        used; changed or unreadable ends the task."""
+        if self._platform.window_identity(self._config.hwnd) != self._bound:
+            raise SteerError(ErrorCode.APP_CRASHED, "window_changed") from cause
 
     def _full_from(self, observed: Observed) -> Observed:
         """The full read's facts on a poll read's snapshot (packet §2.1)."""
@@ -389,15 +492,16 @@ class LiveWorld:
 
     # ---- the ports -------------------------------------------------------------------------------
 
-    def ports(self, task: Task) -> Ports:
-        """The task's `Ports`, built once; the header is the trace's first record."""
+    def ports(self, task: Task, *, header: Mapping[str, str] | None = None) -> Ports:
+        """The task's `Ports`, built once; the header, with the caller's own fields (the CLI's
+        limits), is the trace's first record, written once (#361 H13)."""
         if self._ported or self._closed:
             raise RuntimeError("a LiveWorld builds its ports once, for one task, before close")
         self._ported = True
         config = self._config
         clock = config.clock
         started = clock()
-        self._write(self.header(task))
+        self._write({**self.header(task), **(header or {})})
         act = ActPort(
             world=self.world,
             semantic=self.semantic,
@@ -419,6 +523,7 @@ class LiveWorld:
 
         def act_here(dispatch: Dispatch) -> ActResult:
             check()
+            self._same_window(None)  # #361 H7: the window may be replaced after the last read
             return act.act(dispatch)
 
         def read_value_here(element: Element) -> ValueFact | None:
@@ -452,7 +557,11 @@ class LiveWorld:
         self.close()
 
     def close(self) -> None:
-        """Task end: the monitor stops once; the debug records are protected and written."""
+        """Task end, on the loop thread only (rev 4.0c): the debug records are protected and
+        written, every attribute holding a COM object is dropped (so they are released here, on
+        their own thread, with no collection needed), and the monitor stops once."""
+        if threading.get_ident() != getattr(self, "_thread", threading.get_ident()):
+            raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "wrong_thread")
         if self._closed:
             return
         self._closed = True
@@ -461,7 +570,93 @@ class LiveWorld:
             if debug is not None:
                 self.debug_failure = debug.flush()  # its closed failure token, or None
         finally:
-            self._monitor.close()
+            for name in _COM_HOLDERS:
+                if hasattr(self, name):
+                    delattr(self, name)
+            try:
+                self._monitor.close()
+            finally:
+                try:
+                    self._platform.restore_extra_info()  # #361 B3: v1's tag for the process
+                finally:
+                    self._platform.release_session()
+
+
+_COM_HOLDERS = ("world", "semantic", "physical", "desk", "_observe", "_facts", "_client", "_debug")
+"""Rev 4.0c: the attributes that hold COM objects (directly, or through an executor, the guard
+or the world ports); `close` drops them on the loop thread."""
+
+
+def _run_tag() -> int:
+    """[V2.57] LW-02: a random nonzero 32-bit input tag for this run, never v1's."""
+    while True:
+        tag = secrets.randbits(32)
+        if tag not in {0, _V1_TAG}:
+            return tag
+
+
+_V1_TAG = 0x5354_4545
+"""v1's input tag (`win_input.STEER_EXTRA_INFO`); a v2 run never uses it."""
+
+
+def _without_frames(error: BaseException) -> BaseException:
+    """#361 H4: the error and every error chained to it, without their tracebacks, so no frame
+    of the task (nor a COM object it held) outlives the release. The caller re-raises it as
+    itself; its own traceback then starts at the caller."""
+    seen: set[int] = set()
+    pending: list[BaseException | None] = [error]
+    while pending:
+        link = pending.pop()
+        if link is None or id(link) in seen:
+            continue
+        seen.add(id(link))
+        link.__traceback__ = None
+        pending += [link.__cause__, link.__context__]
+    return error
+
+
+def run_on_loop_thread[T](
+    work: Callable[[], T],
+    *,
+    release: Callable[[], None],
+    interrupted: Callable[[], None] | None = None,
+) -> T:
+    """Run one task's `work` on its own loop thread (packet §1, rev 4.0c, rev 4.2).
+
+    `work` builds and closes its `LiveWorld` and returns plain data only, never an object
+    holding COM. When it ends, on that thread: a collection (a backstop for a COM object kept
+    alive by a cycle), then `release`, the platform's one `CoUninitialize`, exactly once and
+    never before the release step. An exception from `work` is re-raised here as itself, so a
+    decide worker's `SystemExit`, raised on the loop thread, ends the process from the caller
+    (#346 (2)). A Ctrl+C while joining is heard (`interrupted`) and the join goes on: the kill
+    hot key is the stop; the task's thread is never left running (#361 P2)."""
+    result: list[T] = []
+    failure: list[BaseException] = []
+
+    def loop() -> None:
+        try:
+            result.append(work())
+        except BaseException as exc:  # noqa: BLE001 - re-raised in the caller as itself
+            # #361 B2: the loop thread's frames as text (no frame, no COM object kept), so the
+            # caller's traceback still shows where the task failed
+            exc.add_note("".join(traceback.format_exception(exc)))
+            failure.append(_without_frames(exc))
+        finally:
+            gc.collect()
+            release()
+
+    thread = threading.Thread(target=loop, name="steer-v2-loop")
+    thread.start()
+    while True:
+        try:
+            thread.join()
+            break
+        except KeyboardInterrupt:  # #361 P2: never abandon the thread that holds COM
+            if interrupted is not None:
+                interrupted()
+    if failure:
+        raise failure[0]
+    return result[0]
 
 
 def _write_ahead_closed(_dispatch: Dispatch) -> str:
@@ -481,20 +676,68 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
     def uia(self) -> tuple[Any, UiaBindings]:  # Any: the UiaClient
         """UIA on this (the loop) thread, in the MTA: the thread enters the MTA first, and a
         comtypes not yet imported is told to initialise as MTA too (it reads the flag once)."""
-        import ctypes  # noqa: PLC0415 - Windows only
-
-        ole32 = ctypes.windll.ole32
+        ole32 = _ole32()
         enter_mta(lambda flags: int(ole32.CoInitializeEx(None, flags)))
+        self._entered = True
         if "comtypes" not in sys.modules:
             sys.coinit_flags = COINIT_MULTITHREADED  # type: ignore[attr-defined]  # comtypes reads it
         from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415 - Windows only
 
         return UiaClient(), UiaBindings.load()
 
-    def start_monitor(self, kill_key: str, clock: Callable[[], float]) -> Monitor:
+    def use_extra_info(self, tag: int) -> None:
+        from steerai.probes.win_input import use_extra_info  # noqa: PLC0415 - Windows only
+
+        use_extra_info(tag)
+
+    def restore_extra_info(self) -> None:
+        from steerai.probes.win_input import STEER_EXTRA_INFO, use_extra_info  # noqa: PLC0415
+
+        use_extra_info(STEER_EXTRA_INFO)
+
+    def acquire_session(self) -> str:
+        import ctypes  # noqa: PLC0415 - Windows only
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+        handle = kernel32.CreateMutexW(None, 0, SESSION_MUTEX)
+        if not handle:
+            raise SteerError(ErrorCode.GATE_BLOCKED, "session_mutex_unavailable")
+        waited = kernel32.WaitForSingleObject(handle, 0)
+        if waited == _WAIT_OBJECT_0:
+            self._session = handle
+            return "acquired"
+        if waited == _WAIT_ABANDONED:
+            self._session = handle
+            return "abandoned"
+        kernel32.CloseHandle(handle)
+        raise SteerError(ErrorCode.GATE_BLOCKED, "steer_already_running")
+
+    def release_session(self) -> None:
+        import ctypes  # noqa: PLC0415 - Windows only
+
+        handle = getattr(self, "_session", None)
+        if handle is None:
+            return
+        self._session = None
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.ReleaseMutex.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.ReleaseMutex(handle)
+        kernel32.CloseHandle(handle)
+
+    def release_com(self) -> None:
+        if getattr(self, "_entered", False):
+            self._entered = False
+            _ole32().CoUninitialize()
+
+    def start_monitor(self, kill_key: str, clock: Callable[[], float], extra_info: int) -> Monitor:
         from steerai.session.monitor import HookMonitor  # noqa: PLC0415 - Windows hooks
 
-        monitor = HookMonitor(kill_key=kill_key, monotonic=clock)
+        monitor = HookMonitor(kill_key=kill_key, monotonic=clock, extra_info=extra_info)
         monitor.start()
         return monitor
 
@@ -535,6 +778,25 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
     def facts(self, client: Any) -> FactReader:  # Any: the UiaClient
         return _ComFacts(client)
 
+    def window_identity(self, hwnd: int) -> WindowIdentity | None:
+        from steerai.probes.windows import window_identity  # noqa: PLC0415 - Windows only
+
+        facts = window_identity(hwnd)
+        if facts is None:
+            return None
+        pid, started, image = facts["pid"], facts["start"], facts["image"]
+        if not (isinstance(pid, int) and isinstance(started, int) and isinstance(image, str)):
+            return None  # the process start time or its image could not be read
+        if not image:
+            return None
+        return WindowIdentity(
+            pid=pid,
+            started=started,
+            image=image,
+            root=facts["root"] is True,
+            visible=facts["visible"] is True,
+        )
+
     def windows(self, pid: int) -> tuple[int, ...]:
         from steerai.probes.windows import list_top_windows  # noqa: PLC0415 - Windows only
 
@@ -566,6 +828,18 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
 
         client = anthropic.Anthropic(timeout=DEFAULT_TIMEOUT_S, max_retries=DEFAULT_MAX_RETRIES)
         return anthropic_call(client)
+
+
+def _ole32() -> Any:  # pragma: no cover - live, Windows only; Any: the ctypes DLL
+    """ole32 with the two calls the loop thread makes typed (argtypes, restype)."""
+    import ctypes  # noqa: PLC0415 - Windows only
+
+    ole32 = ctypes.windll.ole32
+    ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    ole32.CoInitializeEx.restype = ctypes.c_long
+    ole32.CoUninitialize.argtypes = []
+    ole32.CoUninitialize.restype = None
+    return ole32
 
 
 class _ComFacts:  # pragma: no cover - live, Windows only

@@ -11,6 +11,23 @@ from collections.abc import Sequence
 from ctypes import wintypes
 
 STEER_EXTRA_INFO = 0x5354_4545  # "STEE"
+_EXTRA_INFO = [STEER_EXTRA_INFO]
+"""The tag every record carries: v1's constant unless a v2 run set its own ([V2.57] LW-02)."""
+
+
+def use_extra_info(tag: int) -> None:
+    """[V2.57] LW-02: the process's input tag for this run, set once by a v2 run before any
+    input (v1 never calls this). A nonzero 32-bit value."""
+    if not 0 < tag < 1 << 32:
+        raise ValueError("an input tag is a nonzero 32-bit value")
+    _EXTRA_INFO[0] = tag
+
+
+def extra_info() -> int:
+    """The tag the record builders put on every event now."""
+    return _EXTRA_INFO[0]
+
+
 _INPUT_MOUSE = 0
 _MOUSEEVENTF_MOVE = 0x0001
 _MOUSEEVENTF_LEFTDOWN = 0x0002
@@ -63,7 +80,7 @@ _GA_ROOT = 2
 def build_mouse_input(*, dx: int, dy: int, flags: int) -> INPUT:
     record = INPUT()
     record.type = _INPUT_MOUSE
-    record.union.mi = MOUSEINPUT(dx, dy, 0, flags, 0, STEER_EXTRA_INFO)
+    record.union.mi = MOUSEINPUT(dx, dy, 0, flags, 0, extra_info())
     return record
 
 
@@ -74,7 +91,7 @@ def build_keyboard_input(*, vk: int, keyup: bool, scan: int = 0, extended: bool 
     record = INPUT()
     record.type = _INPUT_KEYBOARD
     flags = (_KEYEVENTF_KEYUP if keyup else 0) | (_KEYEVENTF_EXTENDEDKEY if extended else 0)
-    record.union.ki = KEYBDINPUT(vk, scan, flags, 0, STEER_EXTRA_INFO)
+    record.union.ki = KEYBDINPUT(vk, scan, flags, 0, extra_info())
     return record
 
 
@@ -313,7 +330,7 @@ def build_keyboard_unicode(unit: int, *, keyup: bool) -> INPUT:
     record = INPUT()
     record.type = _INPUT_KEYBOARD
     flags = _KEYEVENTF_UNICODE | (_KEYEVENTF_KEYUP if keyup else 0)
-    record.union.ki = KEYBDINPUT(0, unit, flags, 0, STEER_EXTRA_INFO)
+    record.union.ki = KEYBDINPUT(0, unit, flags, 0, extra_info())
     return record
 
 

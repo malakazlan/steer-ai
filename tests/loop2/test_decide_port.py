@@ -27,6 +27,7 @@ from steerai.loop2.decide_port import (
     Reply,
     TaskGenerations,
     anthropic_call,
+    late_token,
     parse_usage,
 )
 from steerai.loop2.loop import PortInterrupted, TokenUsage
@@ -351,16 +352,23 @@ def test_an_abandoned_calls_late_error_is_logged_as_a_closed_token() -> None:
         raise secret
 
     late: list[str] = []
-    calls = _calls(failing, KillAfter(held), late=late)
+    reported = threading.Event()
+
+    def sink(token: str) -> None:
+        late.append(token)
+        reported.set()
+
+    calls = DecideCalls(
+        failing,
+        interrupted=KillAfter(held),
+        generations=TaskGenerations(),
+        late_error=sink,
+    )
     with pytest.raises(PortInterrupted):
         calls.turn(lambda ask: ask([], []))
     assert late == []  # not yet: the call is still on the wire
     held.release.set()
-    assert held.returned.wait(10)
-    for _ in range(200):
-        if late:
-            break
-        threading.Event().wait(0.01)
+    assert reported.wait(10)  # #346 (3): the sink's own Event, never a wall-clock poll
     assert late == ["late_model_timeout"]
 
 
@@ -733,3 +741,22 @@ def test_a_controller_failure_before_any_call_counts_nothing() -> None:
     assert (outcome.status, outcome.reason) == ("stopped", "port_fence_bad")
     assert outcome.model_calls == 0
     assert not outcome.usage_incomplete
+
+
+# ---- #346 (1): the late token is strictly closed ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("error", "token"),
+    [
+        (SteerError(ErrorCode.MODEL_TIMEOUT, "x"), "late_model_timeout"),
+        (TimeoutError("x"), "late_timeouterror"),
+        (KeyError("x"), "late_keyerror"),
+        (type("PageQuotedError", (Exception,), {})("x"), "late_error"),
+        (type("ignore_the_rules", (Exception,), {})("x"), "late_error"),
+    ],
+)
+def test_a_late_token_names_only_a_closed_class(error: BaseException, token: str) -> None:
+    """An exception class from anywhere (a library, a page-built name) is never a token: only
+    the allowlist's classes are named; anything else is `late_error`."""
+    assert late_token(error) == token

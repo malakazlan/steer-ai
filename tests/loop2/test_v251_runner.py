@@ -236,3 +236,46 @@ def test_a_batch_focus_on_another_field_overrides_the_listing() -> None:
     assert [d.action.verb for d in world.dispatched] == ["focus"]
     assert f"refused:type_not_at_focus:{FIELD.id}" in world.views[-1].history
     assert outcome.focus_losses == 0
+
+
+def test_a_takeover_during_an_acts_bursts_stops_the_task() -> None:
+    """[V2.57] LW-05: the guard refused a burst for the person's input; whatever went out, the
+    task stops as a takeover."""
+    partial = ActionResult(
+        "type",
+        Delivery.DELIVERY_UNCERTAIN,
+        code=ErrorCode.VERIFY_FAILED,
+        evidence={"reason": "gate_pending_user", "phase": "call", "detail": "takeover"},
+    )
+    world = World(
+        [decision(TYPE, first=True)],
+        screen=observed(QUERY_PAGE, focus=FIELD.runtime_id),
+        results=[ActResult(partial, None)],
+    )
+    outcome = run_task(task(), world.ports())
+    assert (outcome.status, outcome.reason) == ("stopped", "takeover")
+    assert [d.action.verb for d in outcome.dispatched] == ["type"]
+
+
+@pytest.mark.parametrize(
+    "delivery", [Delivery.NOT_DELIVERED, Delivery.DELIVERY_UNCERTAIN], ids=["before", "during"]
+)
+def test_another_steers_input_stops_the_task_as_its_own_reason(delivery: Delivery) -> None:
+    """[V2.58] (2): stopped the same way as a takeover, reported as another Steer."""
+    refused = ActionResult(
+        "type", delivery, code=ErrorCode.GATE_PENDING_USER,
+        evidence={"detail": "other_steer_input"},
+    )  # fmt: skip
+    world = World(
+        [decision(TYPE, first=True)],
+        screen=observed(QUERY_PAGE, focus=FIELD.runtime_id),
+        results=[ActResult(refused, None)],
+    )
+    outcome = run_task(task(), world.ports())
+    assert (outcome.status, outcome.reason) == ("stopped", "other_steer_input")
+
+
+def test_the_stop_tokens_are_closed() -> None:
+    from steerai.session.monitor import TAKEOVER_TOKENS  # noqa: PLC0415 - this test only
+
+    assert frozenset({"takeover", "other_steer_input"}) == TAKEOVER_TOKENS

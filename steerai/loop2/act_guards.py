@@ -66,13 +66,15 @@ SECOND_UNCERTAIN: Final = "second_toggle_uncertain"
 class InputGuard:
     """v1's `InputPort`, with the switch read before every input-sending call (AP-01)."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - every collaborator is injected so the guard runs pure in tests
         self,
         inner: InputPort,
         *,
         interrupted: Callable[[], str | None],
         focused: Callable[[], tuple[tuple[int, ...], bool | None]],
         clock: Callable[[], float],
+        last_input: Callable[[], float],
+        takeover_token: Callable[[], str],
         pause: Callable[[float], None] = time.sleep,
     ) -> None:
         self._inner = inner
@@ -83,6 +85,11 @@ class InputGuard:
         self._clock = clock
         self._pause = pause
         self._armed: frozenset[tuple[int, ...]] | None = None
+        self._last_input = last_input
+        """[V2.57] LW-05: the person's last input on the same clock (the monitor's), or None."""
+        self._takeover_token = takeover_token
+        """[V2.58] (2): who made it, `takeover` or `other_steer_input` (the monitor's)."""
+        self._act_started = 0.0
         self._last_click: float | None = None
 
     # ---- the act port's arming -----------------------------------------------------------------
@@ -94,6 +101,7 @@ class InputGuard:
     @contextmanager
     def _arm(self, focus: frozenset[tuple[int, ...]]) -> Iterator[None]:
         self._armed = focus
+        self._act_started = self._clock()
         try:
             yield
         finally:
@@ -110,6 +118,9 @@ class InputGuard:
         self._switch()
         if self._armed is None:
             raise RefusalError(ErrorCode.GATE_BLOCKED, "not_armed")
+        if self._last_input() > self._act_started:
+            # [V2.57] LW-05: the person took the keyboard or mouse during this act
+            raise RefusalError(ErrorCode.GATE_PENDING_USER, self._takeover_token())
         focus, secure = self._focused()
         if focus not in self._armed:
             raise RefusalError(ErrorCode.FOCUS_LOST, "focus_moved")
@@ -220,10 +231,17 @@ class InputGuard:
 class GuardDesk:
     """`act_port.Desk` over the guard: what the act port reads before physical input."""
 
-    def __init__(self, guard: InputGuard, *, last_input: Callable[[], float]) -> None:
+    def __init__(
+        self,
+        guard: InputGuard,
+        *,
+        last_input: Callable[[], float],
+        takeover_token: Callable[[], str],
+    ) -> None:
         self._guard = guard
         self._last_input = last_input
         """The person's last input, on the act port's clock (slice 7: the session monitor)."""
+        self._takeover_token = takeover_token
 
     def tap_refusal(self) -> str | None:
         """v1's `tap_refusal`; a check that cannot be read refuses (`tap_unreadable`)."""
@@ -234,6 +252,10 @@ class GuardDesk:
 
     def last_input(self) -> float:
         return self._last_input()
+
+    def takeover_token(self) -> str:
+        """[V2.58] (2): `takeover` or `other_steer_input`, as the monitor saw the last input."""
+        return self._takeover_token()
 
     def focused(self) -> tuple[int, ...] | None:
         """The live keyboard focus's RuntimeId; None when unread or empty."""

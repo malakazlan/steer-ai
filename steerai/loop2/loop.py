@@ -314,6 +314,8 @@ class TaskOutcome:
     history_dropped: int = 0
     """[V2.47]: history lines off the history vocabulary (`history_line_ok`): dropped, never
     shown."""
+    wall_s: float = 0.0
+    """7b: the task's wall time on the ports' clock, start to end (use against `max_wall_s`)."""
     cost_usd: float | None = None
     """Each token category times its configured rate ([V2.40] Q3); None when no price is
     configured or a used category has no rate ([V2.37] P6): the cost budget is then reported

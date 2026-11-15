@@ -102,6 +102,7 @@ from steerai.loop2.verify import (
 )
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.orchestrator.loop import REUSE_FRESHNESS_S
+from steerai.session.monitor import TAKEOVER_TOKENS
 from steerai.verify.predicates import FIELD_ROLES
 from steerai.world.effects import EffectReport, Observed, ValueFact, listing_delta, top_document
 from steerai.world.elements import Element
@@ -435,6 +436,7 @@ class _Run:
         return TaskOutcome(
             status=status,
             cause=cause,
+            wall_s=self.ports.clock() - self.started,
             dispatched=tuple(d.redacted() for d in self.dispatched),
             model_calls=self.model_calls,
             strikes=tuple(self.strike_log),
@@ -1228,6 +1230,10 @@ class _Run:
         if element is not None:  # [V2.28] item 3: the target's own value, just before dispatch
             before = _with_value(observed, self._read_value(element, observed))
         act = self._act(sent)
+        detail = act.action.evidence.get("detail")
+        if isinstance(detail, str) and detail in TAKEOVER_TOKENS:
+            # [V2.57] LW-05, [V2.58] (2): a person, or another Steer, before or during the input
+            raise _End("stopped", Reason(detail))
         if act.delivery is Delivery.NOT_DELIVERED and not act.action.skipped:
             self._not_delivered(act, element)
             return None
@@ -1272,8 +1278,8 @@ class _Run:
         the task as the switch's would; its wall cap is the wall budget; a field that already
         held text goes back to the controller as its own token ([V2.51] (5)), counted."""
         detail = act.action.evidence.get("detail")
-        if detail == "takeover":
-            raise _End("stopped", Reason("takeover"))
+        if isinstance(detail, str) and detail in TAKEOVER_TOKENS:
+            raise _End("stopped", Reason(detail))
         if detail == "wall_budget":
             self._check_budgets()
         if detail == "field_not_empty":

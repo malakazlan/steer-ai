@@ -5,6 +5,8 @@ strike but no model fault, so it leaves the status to the stop."""
 
 from __future__ import annotations
 
+import pytest
+
 from steerai.action.dispositions import Delivery
 from steerai.loop2.runner import run_task
 from tests.loop2.world_fakes import (
@@ -54,3 +56,12 @@ def test_nothing_delivered_is_recorded_after_the_refusal() -> None:
     )
     outcome = run_task(task(), world.ports())
     assert (outcome.status, outcome.reason) == ("cannot", "after_refusal:not_delivered")
+
+
+def test_the_outcome_carries_the_tasks_wall_time_on_the_ports_clock() -> None:
+    """7b: the final JSON reports use against `max_wall_s` from the runner's own clock."""
+    world = World([decision(act("click", target=GO.id), first=True), decision(act("wait"))])
+    world.watch_s = 2.5
+    outcome = run_task(task(), world.ports())
+    assert outcome.wall_s == pytest.approx(world.now)
+    assert outcome.wall_s >= 2.5

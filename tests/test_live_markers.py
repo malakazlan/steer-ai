@@ -22,6 +22,11 @@ FAKED: frozenset[str] = frozenset(
         "action/test_keyboard.py::test_build_keyboard_unicode_at_the_word_boundary",
         # the v2 platform built, never used: no COM, no hook, no input
         "loop2/test_live_world.py::test_the_windows_platform_is_a_platform",
+        # LW-03: the v2 platform's identity over a monkeypatched v1 `window_identity`
+        "loop2/test_live_world.py::"
+        "test_the_windows_identity_is_v1s_facts_or_none_when_any_part_is_unread",
+        "loop2/test_live_world.py::test_the_windows_identity_of_a_gone_window_is_none",
+        "loop2/test_live_world.py::test_the_windows_identity_carries_root_and_visibility",
         # v1's foreground ladder and menu-mode reads over a monkeypatched user32
         "probes/test_acquire_foreground.py::test_already_foreground_touches_nothing",
         "probes/test_acquire_foreground.py::test_direct_call_when_windows_allows_it",

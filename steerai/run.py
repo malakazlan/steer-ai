@@ -1770,26 +1770,32 @@ def _closed(ledger: LedgerLike, out: _Out) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if _asks_v2(args):
+        return _loop_v2(args)
     try:
-        options = parse_args(sys.argv[1:] if argv is None else argv)
+        options = parse_args(args)
     except UsageError as exc:
         sys.stderr.write(f"usage error: {exc}\n")
         sys.stdout.write(json.dumps({"status": "error", "code": None, "detail": "usage"}) + "\n")
         return EXIT_USAGE
-    if options.loop == "v2":
-        return _loop_v2_refused()
+    if options.loop == "v2":  # an abbreviated flag: the v2 parser takes no abbreviations
+        return _loop_v2(args)
     return run(options, _real_deps(), stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr)
 
 
-def _loop_v2_refused() -> int:
-    """[V2.11] decision 8: `--loop v2` refuses to start while any step 3c interface is a stub.
-    The only place outside the package that imports `steerai.loop2`, and only on this branch."""
-    from steerai.loop2 import ready  # noqa: PLC0415 - the v1 path never imports loop2
+def _asks_v2(args: Sequence[str]) -> bool:
+    """`--loop v2` or `--loop=v2`, read before v1's parser, which knows none of v2's flags."""
+    follows = (args[i + 1] for i in range(len(args) - 1) if args[i] == "--loop")
+    return "--loop=v2" in args or "v2" in follows
 
-    detail = "loop v2 is not built yet: step 3" if not ready(3) else "loop v2 is not wired yet"
-    sys.stderr.write(f"error: {detail}\n")
-    sys.stdout.write(json.dumps({"status": "error", "code": None, "detail": "loop_v2"}) + "\n")
-    return EXIT_USAGE
+
+def _loop_v2(args: Sequence[str]) -> int:
+    """Slice 7b: `--loop v2` runs the v2 loop (`steerai.loop2.cli`). The only place outside the
+    package that imports `steerai.loop2`, and only on this branch ([V2.11] decision 8)."""
+    from steerai.loop2 import cli  # noqa: PLC0415 - the v1 path never imports loop2
+
+    return cli.main(args)
 
 
 if __name__ == "__main__":

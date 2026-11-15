@@ -113,6 +113,7 @@ class Desk:
         self.focus_after: list[tuple[int, ...] | None] = []
         self.tap = tap
         self.last = last_input
+        self.who = "takeover"
         self.taps = 0
         self.current: frozenset[tuple[int, ...]] | None = None
 
@@ -122,6 +123,9 @@ class Desk:
 
     def last_input(self) -> float:
         return self.last
+
+    def takeover_token(self) -> str:
+        return self.who
 
     def focused(self) -> tuple[int, ...] | None:
         if self.focus_after:
@@ -1024,6 +1028,8 @@ def _real_executors(*, guarded: bool) -> tuple[Any, Any]:
             interrupted=lambda: None,
             focused=lambda: ((), False),
             clock=lambda: 0.0,
+            last_input=lambda: -1.0,
+            takeover_token=lambda: "takeover",
         )
     else:
         uia = UiaBindings(control_types=names, interfaces={})
@@ -1064,3 +1070,14 @@ def test_the_act_port_refuses_an_unguarded_v1_executor(which: str) -> None:
         _build(semantic, physical)
     assert refused.value.code is ErrorCode.GATE_BLOCKED
     assert refused.value.message == f"unguarded_{which}"
+
+
+def test_another_steer_busy_past_the_wait_is_other_steer_input() -> None:
+    """[V2.58] (2): the idle rule's cap names who kept the machine busy."""
+    desk = Desk(last_input=0.0)
+    desk.who = "other_steer_input"
+    rig = _port(physical=Executor(ok("type")), desk=desk)
+    rig.clock.on_pause = lambda: setattr(desk, "last", rig.clock.now)
+    result = rig.port.act(_dispatch("type", FIELD, **TYPE))
+    assert _refused(result, ErrorCode.GATE_PENDING_USER, "other_steer_input")
+    assert _nothing_executed(rig)

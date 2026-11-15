@@ -11,7 +11,9 @@ import gc
 import json
 import re
 import threading
+import weakref
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -29,8 +31,10 @@ from steerai.loop2.live_world import (
     LiveConfig,
     LiveWorld,
     UiaElements,
+    WindowIdentity,
     WindowsPlatform,
     enter_mta,
+    run_on_loop_thread,
 )
 from steerai.loop2.live_world import Platform as LivePlatform
 from steerai.loop2.loop import Dispatch, PortInterrupted, TokenUsage
@@ -71,6 +75,7 @@ class Monitor:
         self.maintained = 0
         self.closed = 0
         self.last = 0.0
+        self.who = "takeover"
         self.raises: Exception | None = None
         """Raised by `maintain` and `healthy` (a hook thread that failed)."""
 
@@ -90,8 +95,15 @@ class Monitor:
     def last_user_input(self) -> float:
         return self.last
 
+    def takeover_token(self) -> str:
+        return self.who
+
     def close(self) -> None:
         self.closed += 1
+
+
+class _Client:
+    """A fake UIA client: weakly referable, so a test can see it released."""
 
 
 class Platform:
@@ -105,10 +117,18 @@ class Platform:
         self.locked: bool | Exception | None = False
         self.desktop: str | Exception = "Default"
         self.monitor = Monitor()
-        self.client = object()
+        self.client: _Client | None = _Client()
         names = {v: k for k, v in TYPE_IDS.items()}
         self.bindings = UiaBindings(control_types=names, interfaces={})
         self.calls: list[str] = []
+        self.session = "acquired"
+        self.tag_error: Exception | None = None
+        self.identity: WindowIdentity | None = WindowIdentity(
+            pid=4242, started=133_000_000_000_000_000, image="browser.exe", root=True, visible=True
+        )
+        self.identity_reads = 0
+        self.reads = 0
+        self.screen_error: Exception | None = None
         self.com_apartment = "MTA"
         self.protected: list[bytes] = []
         self.flush_raises = False
@@ -126,15 +146,45 @@ class Platform:
     def apartment(self) -> str:
         return self.com_apartment
 
+    def release_com(self) -> None:
+        self.calls.append("release_com")
+
+    def restore_extra_info(self) -> None:
+        self.calls.append("untag")
+
+    def use_extra_info(self, tag: int) -> None:
+        self.calls.append("tag")
+        self.input_tag = tag
+        if self.tag_error is not None:
+            raise self.tag_error
+
+    def acquire_session(self) -> str:
+        self.calls.append("session")
+        if self.session == "held":
+            raise SteerError(ErrorCode.GATE_BLOCKED, "steer_already_running")
+        return self.session
+
+    def release_session(self) -> None:
+        self.calls.append("release_session")
+
+    def window_identity(self, hwnd: int) -> WindowIdentity | None:
+        self.calls.append("identity")
+        self.identity_reads += 1
+        assert hwnd == 16
+        return self.identity
+
     def uia(self) -> tuple[Any, UiaBindings]:
         self.calls.append("uia")
         if self.uia_error is not None:
             raise self.uia_error
         return self.client, self.bindings
 
-    def start_monitor(self, kill_key: str, clock: Any) -> Monitor:  # Any: the world's clock
+    def start_monitor(  # Any: the world's clock
+        self, kill_key: str, clock: Any, extra_info: int
+    ) -> Monitor:
         self.calls.append(f"monitor:{kill_key}")
         self.monitor_clock = clock
+        self.monitor_tag = extra_info
         if self.monitor_error is not None:
             raise self.monitor_error
         return self.monitor
@@ -162,6 +212,9 @@ class Platform:
         self.observer_sleep = sleep
 
         def read(_hwnd: int) -> Snapshot:
+            self.reads += 1
+            if self.screen_error is not None:
+                raise self.screen_error
             if self.handles is None:
                 return self.screen
             return dataclasses.replace(self.screen, taken_at=clock(), handles=self.handles)
@@ -291,6 +344,7 @@ def test_a_monitor_or_hot_key_that_cannot_start_never_starts(error: Exception) -
         _world(platform)
     assert failed.value.code is ErrorCode.GATE_BLOCKED
     assert failed.value.message.startswith("monitor_unavailable")
+    assert platform.calls.count("release_session") == 1  # [V2.57]: the session goes with it
 
 
 def test_a_debug_trace_without_dpapi_never_starts_and_the_monitor_is_closed() -> None:
@@ -314,7 +368,9 @@ def test_a_redacted_trace_never_needs_dpapi() -> None:
 
 def test_the_checks_run_in_order_before_anything_else() -> None:
     _, platform = _world(trace_level="debug")
-    assert platform.calls[:4] == ["dpi", "uia", "monitor:ctrl+alt+k", "dpapi"]
+    assert platform.calls[:7] == [
+        "dpi", "uia", "identity", "session", "tag", "monitor:ctrl+alt+k", "dpapi",
+    ]  # fmt: skip
 
 
 # ---- the task's own state ---------------------------------------------------------------------
@@ -430,7 +486,7 @@ def test_the_semantic_executor_reads_options_through_the_client() -> None:
     world, platform = _world()
     options = world.semantic._options
     assert isinstance(options, UiaOptions)
-    assert options._client is platform.client
+    assert id(options._client) == id(platform.client)
 
 
 def test_both_executors_stop_on_the_switch_and_are_guarded() -> None:
@@ -777,28 +833,6 @@ def test_every_trace_write_holds_one_lock() -> None:
     assert len(trace.lines) == 2
 
 
-def _on_a_fresh_thread(work: Callable[[], object]) -> object:
-    """Run `work` on a new thread, as 7b runs a task on its own loop thread (packet §1). Every
-    COM object it made is released on that thread before it ends: a comtypes object collected
-    later on another thread crashes the interpreter in `Release` (seen: a segfault in GC)."""
-    out: list[object] = []
-
-    def run() -> None:
-        try:
-            out.append(work())
-        except BaseException as exc:  # noqa: BLE001 - handed back to the test thread
-            out.append(exc)
-        finally:
-            gc.collect()  # the thread's COM objects die here, on their own thread
-
-    thread = threading.Thread(target=run)
-    thread.start()
-    thread.join(timeout=30.0)
-    if isinstance(out[0], BaseException):
-        raise out[0]
-    return out[0]
-
-
 @pytest.mark.windows
 def test_the_windows_platform_constructs_and_closes() -> None:
     """The real side, on its own loop thread: UIA in the MTA, the hook monitor with its hot key,
@@ -806,16 +840,14 @@ def test_the_windows_platform_constructs_and_closes() -> None:
     from steerai.probes.windows import list_top_windows  # noqa: PLC0415 - Windows only
 
     hwnd = list_top_windows()[0].hwnd
+    platform = WindowsPlatform()
 
     def task() -> object:
-        world = LiveWorld(_config(hwnd=hwnd, kill_key="ctrl+alt+shift+f9"), WindowsPlatform())
-        try:
+        with LiveWorld(_config(hwnd=hwnd, kill_key="ctrl+alt+shift+f9"), platform) as world:
             return world.interrupted()
-        finally:
-            world.close()
-            del world
 
-    assert _on_a_fresh_thread(task) in {None, "session_locked", "secure_desktop"}
+    done = run_on_loop_thread(task, release=platform.release_com)
+    assert done in {None, "session_locked", "secure_desktop"}
 
 
 @pytest.mark.windows
@@ -831,7 +863,7 @@ def test_a_loop_threads_uia_client_is_in_the_mta() -> None:
         del client, bindings
         return platform.apartment()
 
-    assert _on_a_fresh_thread(build) == "MTA"
+    assert run_on_loop_thread(build, release=platform.release_com) == "MTA"
 
 
 def test_the_value_digest_key_is_random_per_task() -> None:
@@ -1010,3 +1042,519 @@ def test_the_apartment_refusal_is_never_renamed_uia_unavailable() -> None:
     with pytest.raises(SteerError) as failed:
         _world(platform)
     assert failed.value.message == "com_apartment"
+
+
+# ---- 7b: the loop thread and COM release (packet rev 4.0c, rev 4.2) ------------------------
+
+
+def test_the_work_runs_on_its_own_loop_thread_and_hands_back_its_result() -> None:
+    caller = threading.get_ident()
+    seen: list[int] = []
+
+    def work() -> str:
+        seen.append(threading.get_ident())
+        return "done"
+
+    assert run_on_loop_thread(work, release=lambda: None) == "done"
+    assert seen
+    assert seen[0] != caller
+
+
+def test_com_is_released_once_after_the_work_and_after_the_collection() -> None:
+    order: list[str] = []
+
+    def work() -> None:
+        order.append("work")
+
+    def release() -> None:
+        order.append("release")
+
+    run_on_loop_thread(work, release=release)
+    assert order == ["work", "release"]
+
+
+@pytest.mark.parametrize("error", [KeyError("bug"), SystemExit(3)], ids=["error", "exit"])
+def test_the_loops_exception_reaches_the_caller_as_itself(error: BaseException) -> None:
+    """#346 (2): a worker `SystemExit` raised on the loop thread ends the process from the
+    caller, never only its own thread; COM is still released."""
+    released: list[bool] = []
+
+    def work() -> None:
+        raise error
+
+    with pytest.raises(type(error)) as raised:
+        run_on_loop_thread(work, release=lambda: released.append(True))
+    assert raised.value is error
+    assert released == [True]
+
+
+def test_close_releases_the_client_without_a_collection_while_the_world_lives() -> None:
+    """Rev 4.0c: `close()` drops every COM-holding attribute; nothing but a cycle-free chain
+    held the client, so it dies at once, on this thread."""
+    platform = Platform()
+    world, _ = _world(platform)
+    client = platform.client
+    assert client is not None
+    ref = weakref.ref(client)
+    platform.client = None
+    del client
+    gc.disable()
+    try:
+        world.close()
+        assert ref() is None
+        assert world.interrupted is not None  # the world itself is alive
+    finally:
+        gc.enable()
+
+
+def test_close_refuses_any_thread_but_the_loop_thread() -> None:
+    platform = Platform()
+    world, _ = _world(platform)
+    seen: list[BaseException] = []
+
+    def elsewhere() -> None:
+        try:
+            world.close()
+        except SteerError as exc:
+            seen.append(exc)
+
+    other = threading.Thread(target=elsewhere)
+    other.start()
+    other.join(timeout=5.0)
+    assert [getattr(e, "message", "") for e in seen] == ["wrong_thread"]
+    assert platform.monitor.closed == 0
+    world.close()
+    assert platform.monitor.closed == 1
+
+
+# ---- [V2.57] LW-02: the session mutex and the run's own input tag ------------------------------
+
+
+def test_the_session_is_taken_and_the_tag_set_before_the_monitor_starts() -> None:
+    _, platform = _world(trace_level="debug")
+    order = [c for c in platform.calls if c in {"session", "tag"} or c.startswith("monitor")]
+    assert order == ["session", "tag", "monitor:ctrl+alt+k"]
+
+
+def test_a_second_steer_never_starts() -> None:
+    platform = Platform()
+    platform.session = "held"
+    with pytest.raises(SteerError) as refused:
+        _world(platform)
+    assert refused.value.message == "steer_already_running"
+    assert not any(c.startswith("monitor") for c in platform.calls)
+
+
+def test_an_abandoned_session_is_taken_and_traced() -> None:
+    platform = Platform()
+    platform.session = "abandoned"
+    trace = ListTrace()
+    _world(platform, trace=trace)
+    assert any('"token": "session_abandoned"' in line for line in trace.lines)
+
+
+def test_the_session_is_released_at_close_and_after_a_failed_start() -> None:
+    world, platform = _world()
+    world.close()
+    assert platform.calls.count("release_session") == 1
+    failing = Platform()
+    failing.dpapi_error = OSError("no DPAPI")
+    with pytest.raises(SteerError):
+        _world(failing, trace_level="debug")
+    assert failing.calls.count("release_session") == 1
+
+
+def test_each_run_has_its_own_random_tag_used_by_the_monitor_and_the_input() -> None:
+    first, a = _world()
+    second, b = _world()
+    assert a.input_tag == a.monitor_tag
+    assert b.input_tag == b.monitor_tag
+    assert a.input_tag != b.input_tag
+    for tag in (a.input_tag, b.input_tag):
+        assert 0 < tag < 1 << 32
+        assert tag != 0x5354_4545  # never v1's
+    del first, second
+
+
+# ---- [V2.57] LW-05: the person's input between bursts is a takeover ----------------------------
+
+
+def test_a_key_after_the_person_typed_during_the_act_is_a_takeover() -> None:
+    from steerai.action.execution import RefusalError  # noqa: PLC0415 - this test only
+
+    world, platform = _world()
+    platform.fake_input.focused = FIELD.runtime_id
+    with world.desk.armed(frozenset({FIELD.runtime_id})):
+        world.physical._inputs.type_text("a")  # the guard itself
+        platform.monitor.last = world.clock() + 1.0  # the person types after the act began
+        with pytest.raises(RefusalError) as refused:
+            world.physical._inputs.type_text("b")
+    assert refused.value.detail == "takeover"
+    assert platform.fake_input.bursts == ["text:1"]
+
+
+def test_another_steers_key_during_the_act_is_other_steer_input() -> None:
+    """[V2.58] (2): the guard refuses the same way, with the monitor's own token."""
+    from steerai.action.execution import RefusalError  # noqa: PLC0415 - this test only
+
+    world, platform = _world()
+    platform.fake_input.focused = FIELD.runtime_id
+    with world.desk.armed(frozenset({FIELD.runtime_id})):
+        platform.monitor.last = world.clock() + 1.0
+        platform.monitor.who = "other_steer_input"
+        with pytest.raises(RefusalError) as refused:
+            world.physical._inputs.type_text("b")
+    assert refused.value.detail == "other_steer_input"
+    assert world.desk.takeover_token() == "other_steer_input"
+
+
+# ---- [V2.58] (3): only the process that starts the monitor takes the session -------------------
+
+
+def test_the_chunked_runners_parent_never_takes_the_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.probes.test_suite_chunks import CHUNKS  # noqa: PLC0415 - its fakes
+    from tests.probes.test_suite_chunks import World as Chunks  # noqa: PLC0415
+
+    taken: list[str] = []
+    monkeypatch.setattr(WindowsPlatform, "acquire_session", lambda _self: taken.append("x"))
+    assert Chunks().run(CHUNKS, tmp_path) == 0
+    assert taken == []
+
+
+def test_the_session_is_taken_only_where_the_monitor_starts() -> None:
+    """Every call of `acquire_session` in the package is in one function that, after it, starts
+    the monitor: `LiveWorld._take_session`, which only `LiveWorld.__init__` calls. A chunk
+    parent, a CLI or a helper never takes it."""
+    import ast  # noqa: PLC0415 - this test only
+
+    package = Path(__file__).resolve().parents[2] / "steerai"
+    callers: list[str] = []
+    for path in package.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for function in ast.walk(tree):
+            if not isinstance(function, ast.FunctionDef):
+                continue
+            calls = [
+                node.func.attr
+                for node in ast.walk(function)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            ]
+            if "acquire_session" in calls:
+                callers.append(f"{path.name}:{function.name}")
+                assert calls.index("start_monitor") > calls.index("acquire_session")
+    assert callers == ["live_world.py:_take_session"]
+    source = (package / "loop2" / "live_world.py").read_text(encoding="utf-8")
+    init = source[source.index("    def __init__(self, config: LiveConfig") :]
+    init = init[: init.index(chr(10) + "    def ", 1)]
+    assert source.count("self._take_session(") == init.count("self._take_session(") == 1
+
+
+def test_a_random_draw_of_zero_or_v1s_tag_is_drawn_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    import secrets  # noqa: PLC0415 - this test only
+
+    draws = iter([0x5354_4545, 0, 0x0BAD_CAFE])
+    monkeypatch.setattr(secrets, "randbits", lambda _bits: next(draws))
+    _, platform = _world()
+    assert platform.input_tag == 0x0BAD_CAFE
+
+
+def test_input_before_or_at_the_acts_start_is_not_a_takeover() -> None:
+    """LW-05 counts only input after the act armed: the idle rule already judged what came
+    before (here the person typed five seconds earlier, and once at the very instant)."""
+    world, platform = _world()
+    platform.fake_input.focused = FIELD.runtime_id
+    platform.monitor.last = world.clock() - 5.0
+    with world.desk.armed(frozenset({FIELD.runtime_id})):
+        world.physical._inputs.type_text("a")
+    platform.monitor.last = world.clock()
+    with world.desk.armed(frozenset({FIELD.runtime_id})):
+        world.physical._inputs.type_text("b")
+    assert platform.fake_input.bursts == ["text:1", "text:1"]
+
+
+# ---- LW-03 ([V2.53] (1)): the bound window's identity, re-checked on every observation ----------
+
+
+def test_a_window_whose_identity_cannot_be_read_is_never_bound() -> None:
+    platform = Platform()
+    platform.identity = None
+    with pytest.raises(SteerError) as refused:
+        _world(platform)
+    assert (refused.value.code, refused.value.message) == (
+        ErrorCode.APP_CRASHED,
+        "window_unreadable",
+    )
+    assert "session" not in platform.calls  # refused before the session is taken
+
+
+def test_every_snapshot_read_re_checks_the_identity_read_at_binding() -> None:
+    world, platform = _world()
+    ports = world.ports(task())
+    bound = platform.identity_reads
+    ports.observe()
+    ports.observe()
+    assert platform.reads > 0
+    assert platform.identity_reads == bound + platform.reads
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        {"pid": 4243},
+        {"started": 133_000_000_000_000_001},
+        {"image": "other.exe"},
+        {"root": False},
+        {"visible": False},
+    ],
+    ids=["pid", "start", "image", "root", "visible"],
+)
+def test_a_changed_identity_ends_the_task(field: dict[str, object]) -> None:
+    world, platform = _world()
+    ports = world.ports(task())
+    ports.observe()
+    assert platform.identity is not None
+    platform.identity = dataclasses.replace(platform.identity, **field)  # type: ignore[arg-type]  # one field per case
+    with pytest.raises(SteerError) as ended:
+        ports.observe()
+    assert (ended.value.code, ended.value.message) == (ErrorCode.APP_CRASHED, "window_changed")
+
+
+def test_an_identity_unreadable_mid_task_ends_the_task() -> None:
+    world, platform = _world()
+    ports = world.ports(task())
+    platform.identity = None
+    with pytest.raises(SteerError) as ended:
+        ports.observe()
+    assert (ended.value.code, ended.value.message) == (ErrorCode.APP_CRASHED, "window_changed")
+
+
+def test_a_failed_read_of_a_replaced_window_is_window_changed() -> None:
+    world, platform = _world()
+    ports = world.ports(task())
+    platform.screen_error = SteerError(ErrorCode.PERCEPTION_DEGRADED, "uia_timeout")
+    assert platform.identity is not None
+    platform.identity = dataclasses.replace(platform.identity, pid=1)
+    with pytest.raises(SteerError) as ended:
+        ports.observe()
+    assert (ended.value.code, ended.value.message) == (ErrorCode.APP_CRASHED, "window_changed")
+
+
+def test_a_failed_read_of_the_same_window_keeps_its_own_error() -> None:
+    world, platform = _world()
+    ports = world.ports(task())
+    platform.screen_error = SteerError(ErrorCode.PERCEPTION_DEGRADED, "uia_timeout")
+    with pytest.raises(SteerError) as failed:
+        ports.observe()
+    assert failed.value.message == "uia_timeout"
+
+
+def test_the_runner_stops_on_a_changed_window() -> None:
+    from steerai.loop2.runner import run_task  # noqa: PLC0415 - this test only
+
+    world, platform = _world()
+    ports = world.ports(task())
+    assert platform.identity is not None
+    platform.identity = dataclasses.replace(platform.identity, pid=1)
+    outcome = run_task(task(), ports)
+    assert (outcome.status, outcome.reason) == ("stopped", "port_app_crashed")
+
+
+_FACTS: dict[str, object] = {
+    "hwnd": 16, "pid": 4242, "start": 133_000_000_000_000_000, "image": "browser.exe",
+    "title": "Shop", "visible": True, "root": True, "minimized": False, "cloaked": False,
+}  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("change", "readable"),
+    [
+        ({}, True),
+        ({"title": "Other", "minimized": True, "cloaked": None}, True),
+        ({"start": None}, False),
+        ({"image": ""}, False),
+        ({"pid": "4242"}, False),
+    ],
+    ids=["whole", "title_and_states_ignored", "start_unread", "image_unread", "pid_not_int"],
+)
+def test_the_windows_identity_is_v1s_facts_or_none_when_any_part_is_unread(
+    monkeypatch: pytest.MonkeyPatch, change: dict[str, object], readable: bool
+) -> None:
+    from steerai.probes import windows  # noqa: PLC0415 - v1's reader, replaced here
+
+    monkeypatch.setattr(windows, "window_identity", lambda _hwnd: {**_FACTS, **change})
+    expected = WindowIdentity(
+        pid=4242, started=133_000_000_000_000_000, image="browser.exe", root=True, visible=True
+    )
+    assert WindowsPlatform().window_identity(16) == (expected if readable else None)
+
+
+def test_the_windows_identity_of_a_gone_window_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    from steerai.probes import windows  # noqa: PLC0415 - v1's reader, replaced here
+
+    monkeypatch.setattr(windows, "window_identity", lambda _hwnd: None)
+    assert WindowsPlatform().window_identity(16) is None
+
+
+def test_the_windows_identity_carries_root_and_visibility(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reused handle that came back as a child window, or a hidden one, is a different
+    identity from the bound visible root."""
+    from steerai.probes import windows  # noqa: PLC0415 - v1's reader, replaced here
+
+    monkeypatch.setattr(
+        windows, "window_identity", lambda _hwnd: {**_FACTS, "root": False, "visible": False}
+    )
+    identity = WindowsPlatform().window_identity(16)
+    assert identity is not None
+    assert (identity.root, identity.visible) == (False, False)
+
+
+def test_a_tag_that_cannot_be_set_releases_the_session() -> None:
+    """#361 H12 (MTX-01): a failure between taking the session and starting the monitor."""
+    platform = Platform()
+    platform.tag_error = ValueError("an input tag is a nonzero 32-bit value")
+    with pytest.raises(ValueError, match="tag"):
+        _world(platform)
+    assert platform.calls.count("release_session") == 1
+    assert not any(c.startswith("monitor") for c in platform.calls)
+
+
+@pytest.mark.parametrize(
+    "listed", [{"bound_pid": 4243}, {"bound_image": "other.exe"}], ids=["pid", "image"]
+)
+def test_a_window_that_is_not_the_one_listed_is_never_bound(listed: dict[str, object]) -> None:
+    """#361 H6 (WIN-01): the handle was reused between the listing and the binding."""
+    platform = Platform()
+    with pytest.raises(SteerError) as refused:
+        _world(platform, **listed)
+    assert (refused.value.code, refused.value.message) == (ErrorCode.APP_CRASHED, "window_changed")
+    assert "session" not in platform.calls
+
+
+def test_the_listed_window_binds() -> None:
+    world, _ = _world(bound_pid=4242, bound_image="browser.exe")
+    world.close()
+
+
+@pytest.mark.parametrize("verb", ["click", "press"])
+def test_a_window_replaced_after_the_last_read_gets_no_action(verb: str) -> None:
+    """#361 H7 (WIN-02): the identity changes after the last poll and before the act; nothing
+    reaches the window, through UIA or the keyboard: the act re-checks it first."""
+    platform = Platform()
+    handles: list[FakeHandle] = [
+        _Handle(control_type=TYPE_IDS.get(e.role, TYPE_IDS["Button"]), name=e.name) for e in PAGE
+    ]
+    platform.handles = handles
+    platform.fake_input.focused = FIELD.runtime_id
+    world, _ = _world(platform)
+    ports = world.ports(task())
+    ports.observe()
+    assert platform.identity is not None
+    platform.identity = dataclasses.replace(platform.identity, pid=1)
+    target = GO if verb == "click" else FIELD
+    extra = {} if verb == "click" else {"key": "Enter"}
+    sent = Dispatch(
+        act(verb, target=target.id, **extra), target.runtime_id, target.role, target.name, "R0",
+        None,
+    )  # fmt: skip
+    with pytest.raises(SteerError) as ended:
+        ports.act(sent)
+    assert (ended.value.code, ended.value.message) == (ErrorCode.APP_CRASHED, "window_changed")
+    assert sum(h.invoked for h in handles) == 0
+    assert platform.fake_input.bursts == []
+    assert platform.fake_input.clicks == []
+
+
+def test_a_failed_tasks_frames_are_gone_before_com_is_released() -> None:
+    """#361 H4 (CLI-01): the failure's traceback, and a chained one, would keep `work`'s frame
+    and its COM-holding locals alive past `CoUninitialize`."""
+    refs: list[weakref.ref[_Client]] = []
+    alive_at_release: list[bool] = []
+
+    def work() -> None:
+        held = _Client()
+        refs.append(weakref.ref(held))
+        try:
+            raise OSError("a read failed")
+        except OSError as cause:
+            raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "uia_timeout") from cause
+
+    def release() -> None:
+        alive_at_release.append(refs[0]() is not None)
+
+    gc.disable()
+    try:
+        with pytest.raises(SteerError) as raised:
+            run_on_loop_thread(work, release=release)
+    finally:
+        gc.enable()
+    assert alive_at_release == [False]
+    assert raised.value.message == "uia_timeout"
+
+
+def _interrupt_the_first_join(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Ctrl+C reaches the main thread while it joins the loop thread (on 3.12 Windows it arrives
+    once `join` returns, bpo-29971); the first join of `steer-v2-loop` raises it."""
+    real = threading.Thread.join
+    raised: list[int] = []
+
+    def join(self: threading.Thread, timeout: float | None = None) -> None:
+        if self.name == "steer-v2-loop" and not raised:
+            raised.append(1)
+            raise KeyboardInterrupt
+        real(self, timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", join)
+    return raised
+
+
+def test_ctrl_c_during_the_join_keeps_joining_and_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#361 P2: the loop thread is never abandoned holding COM; the caller hears it."""
+    raised = _interrupt_the_first_join(monkeypatch)
+    heard: list[str] = []
+    released: list[bool] = []
+    result = run_on_loop_thread(
+        lambda: "done", release=lambda: released.append(True), interrupted=lambda: heard.append("x")
+    )
+    assert (result, raised, heard, released) == ("done", [1], ["x"], [True])
+
+
+class _RealTag(Platform):
+    """The fake platform, but the process-wide input tag is the real one (`win_input`): a
+    pure module global, no Windows call."""
+
+    def use_extra_info(self, tag: int) -> None:
+        from steerai.probes.win_input import use_extra_info  # noqa: PLC0415 - the real global
+
+        super().use_extra_info(tag)
+        use_extra_info(tag)
+
+    def restore_extra_info(self) -> None:
+        from steerai.probes.win_input import STEER_EXTRA_INFO, use_extra_info  # noqa: PLC0415
+
+        super().restore_extra_info()
+        use_extra_info(STEER_EXTRA_INFO)
+
+
+def test_close_gives_the_process_back_v1s_tag() -> None:
+    """#361 B3 (TAG-01): a run's random tag leaked into every later v1 record of the process
+    (CI: 6 v1 tests read 1259532006 for 0x53544545)."""
+    from steerai.probes.win_input import STEER_EXTRA_INFO, extra_info  # noqa: PLC0415
+
+    platform = _RealTag()
+    world, _ = _world(platform)
+    assert extra_info() == platform.input_tag != STEER_EXTRA_INFO
+    world.close()
+    assert extra_info() == STEER_EXTRA_INFO
+
+
+def test_a_failed_start_gives_the_process_back_v1s_tag() -> None:
+    from steerai.probes.win_input import STEER_EXTRA_INFO, extra_info  # noqa: PLC0415
+
+    platform = _RealTag()
+    platform.monitor_error = OSError("SetWindowsHookExW failed")
+    with pytest.raises(SteerError):
+        _world(platform)
+    assert extra_info() == STEER_EXTRA_INFO
+    assert platform.calls.count("untag") == 1

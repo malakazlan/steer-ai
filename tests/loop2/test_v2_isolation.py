@@ -100,16 +100,6 @@ def test_the_step_4_interfaces_keep_loop2_not_ready() -> None:
     assert step4 <= PENDING
 
 
-def test_loop_v2_refuses_to_start_while_it_is_not_wired(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Slice 7a builds the LiveWorld; 7b switches `--loop v2` on."""
-    assert main([*WHERE, "--loop", "v2"]) == 1
-    captured = capsys.readouterr()
-    assert "loop v2 is not wired yet" in captured.err
-    assert '"status": "error"' in captured.out
-
-
 PENDING_MARK = re.compile(r'@pending\(\s*"([^"]*)"\s*,\s*step=\d+\s*,?\s*\)')
 NAMES_INVARIANT = re.compile(r"§\d|\[V2\.\d+\]")
 INVARIANT_FILES = sorted(TESTS.glob("test_invariants_*.py"))
