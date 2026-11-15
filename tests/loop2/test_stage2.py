@@ -635,3 +635,21 @@ def test_a_host_stops_at_its_daily_cap_and_resumes_the_next_day() -> None:
 
 def test_the_policy_caps() -> None:
     assert DAILY_CAP == 12
+
+
+def test_an_unrated_task_is_not_run_and_not_counted() -> None:
+    """The coordinator's ruling (2026-11-15): out of the tables and out of acceptance until the
+    lead rules, and listed with its reason."""
+    table = _table()
+    gone = next(iter(table))
+    table.pop(gone)
+    tasks = site_tasks(table, unrated={gone: "target_after_opener"})
+    assert gone not in {t.stage.task_id for t in tasks}
+    summary = summarize(
+        tasks,
+        [],
+        not_started=0,
+        runs_per_task=3,
+        unrated={gone: "target_after_opener"},
+    )
+    assert summary.report["unrated"] == {gone: "target_after_opener"}
