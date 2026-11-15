@@ -368,6 +368,7 @@ LARGE_PAGE = """<!doctype html>
     (function (n, row, button) {
       if (n === TARGET) {
         var mark = document.createElement("span");
+        // [V2.40] Q7: the name keeps the param's words; the state is aria-pressed
         button.textContent = "Reserve item " + n;
         button.setAttribute("aria-pressed", "false");
         button.addEventListener("click", function (e) {
