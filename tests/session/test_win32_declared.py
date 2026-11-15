@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from steerai.session import helper_launch, hook_helper
+from steerai.session import helper_launch, helper_monitor, hook_helper
 
-DLLS = {"_k", "_a", "_k32", "_u32", "psapi", "k", "a", "u"}
+DLLS = {"_k", "_a", "_k32", "_u32", "_wts", "psapi", "k", "a", "u", "wts"}
 """The names the two modules hold a `ctypes.WinDLL` under (attributes of self, or locals)."""
 
 
@@ -47,7 +47,7 @@ def _called_and_declared(path: Path) -> tuple[set[str], set[str], set[str]]:
     return called, argtypes, restype
 
 
-@pytest.mark.parametrize("module", [helper_launch, hook_helper])
+@pytest.mark.parametrize("module", [helper_launch, hook_helper, helper_monitor])
 def test_every_foreign_function_called_is_declared(module: object) -> None:
     called, argtypes, restype = _called_and_declared(Path(module.__file__))  # type: ignore[attr-defined]  # a module
     assert called, "the walker found no foreign calls"
