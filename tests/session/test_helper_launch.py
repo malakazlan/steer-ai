@@ -142,6 +142,7 @@ class FakeWin32:
     """Records every call; on process creation, plays a helper that does `behaviour`."""
 
     behaviour: str = "ready"
+    raise_at: str | None = None
     machine: tuple[int, int] = (UNKNOWN, AMD64)
     job_list_fails: bool = False
     assign_fails: bool = False
@@ -153,6 +154,10 @@ class FakeWin32:
     next_handle: int = 100
     pid: int = 777
     exited: bool = False
+
+    def _maybe_raise(self, step: str) -> None:
+        if self.raise_at == step:
+            raise RuntimeError(f"an unexpected failure in {step}")
 
     def _new(self) -> int:
         self.next_handle += 4
@@ -166,19 +171,23 @@ class FakeWin32:
         return self.machine
 
     def user_security(self) -> object:
+        self._maybe_raise("user_security")
         self.calls.append(("security",))
         return object()
 
     def create_job(self, sa: object) -> int:
+        self._maybe_raise("create_job")
         del sa
         h = self._new()
         self.calls.append(("job", h))
         return h
 
     def limit_job(self, job: int) -> None:
+        self._maybe_raise("limit_job")
         self.calls.append(("limit", job))
 
     def create_section(self, sa: object, size: int) -> int:
+        self._maybe_raise("create_section")
         del sa
         h = self._new()
         self.buffers[h] = bytearray(size)
@@ -186,6 +195,7 @@ class FakeWin32:
         return h
 
     def map_view(self, section: int, size: int, *, writable: bool) -> memoryview:
+        self._maybe_raise("map_view")
         view = memoryview(self._buf(section))
         assert view.nbytes == size
         return view if writable else view.toreadonly()
@@ -195,12 +205,14 @@ class FakeWin32:
         self.calls.append(("unmap",))
 
     def create_event(self, sa: object, *, manual_reset: bool) -> int:
+        self._maybe_raise("create_event")
         del sa
         h = self._new()
         self.calls.append(("event", h, manual_reset))
         return h
 
     def duplicate(self, handle: int, access: int) -> int:
+        self._maybe_raise("duplicate")
         h = self._new()
         if handle in self.buffers or handle in self.alias:
             self.alias[h] = self.alias.get(handle, handle)
@@ -208,11 +220,13 @@ class FakeWin32:
         return h
 
     def duplicate_self(self, access: int) -> int:
+        self._maybe_raise("duplicate_self")
         h = self._new()
         self.calls.append(("dup_self", access, h))
         return h
 
     def set_inherit(self, handle: int, on: bool) -> None:
+        self._maybe_raise("set_inherit")
         (self.inheritable.add if on else self.inheritable.discard)(handle)
 
     def create_process(
@@ -225,6 +239,7 @@ class FakeWin32:
         inherit: tuple[int, ...],
         jobs: tuple[int, ...],
     ) -> tuple[int, int, int]:
+        self._maybe_raise("create_process")
         assert set(inherit) <= self.inheritable, "an inherited handle was not inheritable"
         self.calls.append(("create", app, cmdline, env, flags, inherit, jobs))
         if jobs and self.job_list_fails:
@@ -265,6 +280,7 @@ class FakeWin32:
             status.set("state", STATE_READY)
 
     def reset_event(self, handle: int) -> None:
+        self._maybe_raise("reset_event")
         self.calls.append(("reset", handle))
 
     def set_event(self, handle: int) -> None:
@@ -276,6 +292,7 @@ class FakeWin32:
         return 1 if self.exited else (None if self.behaviour == "hang" else 0)
 
     def process_id(self, process: int) -> int:
+        self._maybe_raise("process_id")
         del process
         return self.pid
 
@@ -439,3 +456,32 @@ def test_the_config_holds_the_runs_values_and_a_fresh_nonce() -> None:
     assert c.get("hook_timeout_ms") == 1000
     assert (c.get("nonce_lo"), c.get("nonce_hi")) != (h2.config.get("nonce_lo"),
                                                        h2.config.get("nonce_hi"))  # fmt: skip
+
+
+# ---- #375 review P2: any failure at any start step is a refusal (K16) -----------------------
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        "user_security",
+        "create_job",
+        "limit_job",
+        "create_section",
+        "map_view",
+        "create_event",
+        "duplicate",
+        "duplicate_self",
+        "set_inherit",
+        "create_process",
+        "reset_event",
+        "process_id",
+    ],
+)
+def test_a_non_os_error_at_any_win32_step_is_a_refusal_with_nothing_left(step: str) -> None:
+    w = FakeWin32(raise_at=step)
+    with pytest.raises(SteerError, match="monitor_unavailable"):
+        _helper(w).start()
+    assert w.open_handles == set()
+    if w.named("create"):
+        assert w.named("terminate_job") or w.named("terminate_process")

@@ -262,11 +262,10 @@ class HelperProcess:
             raise _refuse("the hook helper runs on native x64 only")
         try:
             self._start()
-        except SteerError:
+        except BaseException as exc:  # #375 P2: whatever went wrong, nothing is left (K16)
             self._abort()
-            raise
-        except OSError as exc:
-            self._abort()
+            if isinstance(exc, SteerError) or not isinstance(exc, Exception):
+                raise  # a refusal already, or an interrupt that must stay one
             raise _refuse(f"{type(exc).__name__} while starting the hook helper") from exc
 
     def close(self) -> None:
