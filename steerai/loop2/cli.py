@@ -339,6 +339,7 @@ def _unfinished(budgets: Budgets) -> dict[str, Any]:  # Any: the final JSON
     every use is null and said, never 0."""
     return {
         "paused_by": None,
+        "monitor_lost": False,
         "used": dict.fromkeys(_limits(budgets)),
         "tokens_incomplete": True,
         "cost_incomplete": True,
@@ -393,6 +394,7 @@ def _result(
             "max_wall_s": round(outcome.wall_s, 3) if wall_known else None,
             "max_cost_usd": cost if cost_known else None,
         },
+        "monitor_lost": reason == "monitor_lost" or bool(report.get("monitor_lost")),
         "tokens_incomplete": not tokens_known,
         "cost_incomplete": not cost_known,
         "wall_incomplete": not wall_known,

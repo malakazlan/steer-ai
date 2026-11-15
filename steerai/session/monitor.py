@@ -18,6 +18,7 @@ Rules (edge cases TK-01..49, probe `hook-latency-2026-11-04`):
 from __future__ import annotations
 
 import ctypes
+import math
 import sys
 import threading
 import time
@@ -33,10 +34,13 @@ from steerai.probes.win_input import (
     _send,
     _user32,
     build_keyboard_input,
+    key_up_probe,
     nudge_in_place,
 )
 
 LLKHF_INJECTED = 0x10
+LLKHF_UP = 0x80
+"""KBDLLHOOKSTRUCT flags: the transition state, set for a key-up (Microsoft Learn)."""
 LLMHF_INJECTED = 0x01
 WM_MOUSEMOVE = 0x0200
 WM_LBUTTONDOWN = 0x0201
@@ -58,14 +62,122 @@ TAKEOVER_TOKENS = frozenset({TAKEOVER, OTHER_STEER_INPUT})
 """The closed tokens of a stop for someone else's input: a person, or another Steer."""
 
 
+HOOKS = ("keyboard", "mouse")
+HOOK_TIMEOUT_CAP_MS = 1000
+"""Microsoft Learn, LowLevelKeyboardProc: on Windows 10 1709 and later the system uses 1000 ms
+for any LowLevelHooksTimeout larger than that."""
+MEASURER_MARGIN_S = 0.05
+"""[V2.59]: what the measurer adds on top of the hook timeout: the proof's poll interval
+(0.01 s) and two ticks of the 15.625 ms monotonic clock it reads, rounded up."""
+
+
+def parse_hook_timeout(raw: object) -> int | None:
+    """LowLevelHooksTimeout as Windows stores it (REG_SZ; a DWORD accepted), in ms, capped at
+    `HOOK_TIMEOUT_CAP_MS`; None when absent, zero or not a number (#364 H7: ASCII digits)."""
+    if isinstance(raw, str) and raw.strip().isascii() and raw.strip().isdigit():
+        value = int(raw.strip())
+    elif isinstance(raw, int) and not isinstance(raw, bool):
+        value = raw
+    else:
+        return None
+    return min(value, HOOK_TIMEOUT_CAP_MS) if value > 0 else None
+
+
+def probe_deadline_s(timeout_ms: int | None) -> float:
+    """[V2.59]: the probe's deadline, derived: the hook timeout read at start (unset is the
+    cap) plus `MEASURER_MARGIN_S`. An echo slower than that means Windows has likely dropped
+    the hook, so the monitor is lost."""
+    ms = HOOK_TIMEOUT_CAP_MS if timeout_ms is None else min(timeout_ms, HOOK_TIMEOUT_CAP_MS)
+    return ms / 1000 + MEASURER_MARGIN_S
+
+
+def read_hook_timeout_ms() -> int | None:  # pragma: no cover - live, Windows only
+    """HKCU\\Control Panel\\Desktop LowLevelHooksTimeout, parsed and capped."""
+    return parse_hook_timeout(_read_hooks_timeout())
+
+
+def _read_hooks_timeout() -> object:  # pragma: no cover - live, Windows only
+    """The registry value as stored; None when absent."""
+    import winreg  # noqa: PLC0415 - Windows only
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop") as key:
+            value, _kind = winreg.QueryValueEx(key, "LowLevelHooksTimeout")
+    except OSError:
+        return None
+    return value
+
+
+UNASSIGNED_VKS = frozenset({0x0E, 0x0F, *range(0x97, 0xA0), 0xE8})
+"""Microsoft Learn, Virtual-Key Codes (Winuser.h): 0x0E-0F, 0x97-9F and 0xE8 are Unassigned."""
+PROBE_VK = 0x0E
+"""[V2.57] LW-01: the keyboard hook's probe key, a key-up of an unassigned code, picked by probe
+(`steerai.probes.probe_key`, 2026-11-15, this machine): 20 tagged key-ups of each of the 12
+unassigned codes into our own empty Notepad changed nothing (text, caret, IME open status,
+layout, foreground; none left down; the hook saw all 20); the first that passes is 0x0E. The
+IME was closed and the layout en-US there: an open IME is unprobed."""
+LATENCY_BUCKETS_MS = 1000
+"""The latency histogram's last bucket: 1000 ms and over (the hook timeout's cap, Microsoft
+Learn LowLevelKeyboardProc: Windows 10 1709 and later allow at most 1000 ms)."""
+
+
+class HookLatency:
+    """[V2.57] LW-01: each callback's latency (event tick to entry tick, in ms) as a fixed
+    histogram: no event list, no timestamps, nothing that grows with the input."""
+
+    def __init__(self) -> None:
+        self._buckets = [0] * (LATENCY_BUCKETS_MS + 1)
+        self._events = 0
+
+    def record(self, ms: int) -> None:
+        self._buckets[min(max(ms, 0), LATENCY_BUCKETS_MS)] += 1
+        self._events += 1
+
+    def summary(self) -> tuple[int, int | None, int | None]:
+        """(events, p95 ms, p99 ms); None when nothing was recorded."""
+        if not self._events:
+            return 0, None, None
+        return self._events, self._quantile(0.95), self._quantile(0.99)
+
+    def at(self, q: float) -> int | None:
+        """The latency at quantile `q` (0 < q <= 1; 1 is the largest bucket seen); None when
+        nothing was recorded."""
+        if not 0 < q <= 1:
+            raise ValueError("a quantile is above 0 and at most 1")
+        return self._quantile(q) if self._events else None
+
+    def _quantile(self, q: float) -> int:
+        rank = math.ceil(q * self._events)
+        seen = 0
+        for ms, count in enumerate(self._buckets):
+            seen += count
+            if seen >= rank:
+                return ms
+        return LATENCY_BUCKETS_MS  # pragma: no cover - the counts always reach `rank`
+
+
 class MonitorCore:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - keyword-only knobs; v1 passes none of the v2 ones
         self,
         *,
         started_at: float,
         dead_band_px: int = DEAD_BAND_PX,
         extra_info: int = STEER_EXTRA_INFO,
+        per_hook: bool = False,
+        probe_vk: int = PROBE_VK,
+        deadline_s: float = PROBE_DEADLINE_S,
     ) -> None:
+        self._per_hook = per_hook
+        self._deadline_s = deadline_s
+        """[V2.59] (v2): the derived probe deadline; v1 keeps `PROBE_DEADLINE_S`."""
+        """[V2.57] LW-01 (v2): each hook proves itself; v1 keeps one proof for both."""
+        self._probe_vk = probe_vk
+        self._delivered = dict.fromkeys(HOOKS, 0)
+        """#364 P1: own events delivered per hook; the keyboard counts only the probe key's
+        key-up. A count, never a key code."""
+        self._base = dict.fromkeys(HOOKS, 0)
+        self._outstanding = 0
+        """Probes sent since the hooks were last proven; each must be delivered on both."""
         self._extra_info = extra_info
         """The tag of this process's own input: v1's constant, or a v2 run's own ([V2.57])."""
         self._started_at = started_at
@@ -73,6 +185,8 @@ class MonitorCore:
         self._last_user: float | None = None
         self._last_kind = TAKEOVER
         self._last_steer: float = started_at
+        self._last_by = dict.fromkeys(HOOKS, started_at)
+        """Each hook's last own event (LW-01)."""
         self._probe_sent_at: float | None = None
         self._reference: tuple[int, int] | None = None
         self._counts: dict[str, int] = {}
@@ -83,9 +197,10 @@ class MonitorCore:
 
     # ---- what the hook thread feeds -------------------------------------------------------------
 
-    def on_keyboard(self, *, flags: int, extra: int, now: float) -> None:
+    def on_keyboard(self, *, flags: int, extra: int, now: float, vk: int = 0) -> None:
         if extra == self._extra_info:
-            self._steer(now)
+            probe = vk == self._probe_vk and bool(flags & LLKHF_UP)
+            self._steer(now, "keyboard", delivered=probe)
             return
         if extra == STEER_EXTRA_INFO:
             self._other_steer(now)
@@ -97,7 +212,7 @@ class MonitorCore:
     ) -> None:
         x, y = pt
         if extra == self._extra_info:
-            self._steer(now)
+            self._steer(now, "mouse", delivered=True)
             if message == WM_MOUSEMOVE:
                 self._reference = (x, y)
             return
@@ -162,16 +277,44 @@ class MonitorCore:
         return self._kill
 
     def probe_due(self, *, now: float) -> bool:
+        if self._per_hook:
+            if self._outstanding and not self.probe_seen():
+                return False  # one probe in flight until both hooks saw it
+            return now - min(self._last_by.values()) >= PROBE_PERIOD_S
         if self._probe_sent_at is not None and self._probe_sent_at >= self._last_steer:
             return False  # one probe in flight
         return now - self._last_steer >= PROBE_PERIOD_S
 
+    def probe_seen(self) -> bool:
+        """LW-01, #364 P1: every probe sent since the last proof was delivered on both hooks
+        (counted, never by timestamp: an own event of the probe's tick is not proof, nor is a
+        late event of an earlier probe the proof of a later one)."""
+        return self._outstanding > 0 and not self._unproven()
+
+    def _unproven(self) -> tuple[str, ...]:
+        return tuple(
+            hook for hook in HOOKS if self._delivered[hook] - self._base[hook] < self._outstanding
+        )
+
+    def lost_hooks(self, *, now: float) -> tuple[str, ...]:
+        """LW-01: the hooks that have not seen the last probe past its deadline, in order."""
+        sent = self._probe_sent_at
+        if sent is None or not self._outstanding or now - sent <= self._deadline_s:
+            return ()
+        return self._unproven()
+
     def probe_sent(self, *, now: float) -> None:
+        if not self._outstanding or self.probe_seen():  # a new proof starts from here
+            self._base = dict(self._delivered)
+            self._outstanding = 0
+        self._outstanding += 1
         self._probe_sent_at = now
 
     def healthy(self, *, now: float, thread_alive: bool) -> bool:
         if not thread_alive or self._errors or self._loop_failed:
             return False
+        if self._per_hook:
+            return not self.lost_hooks(now=now)
         sent = self._probe_sent_at
         probe_missed = (
             sent is not None and self._last_steer < sent and now - sent > PROBE_DEADLINE_S
@@ -184,8 +327,11 @@ class MonitorCore:
 
     # ---- internals -----------------------------------------------------------------------------
 
-    def _steer(self, now: float) -> None:
+    def _steer(self, now: float, hook: str, *, delivered: bool) -> None:
         self._last_steer = now
+        self._last_by[hook] = now
+        if delivered:
+            self._delivered[hook] += 1
         self._count("steer")
 
     def _person(self, now: float, *, injected: bool) -> None:
@@ -271,20 +417,40 @@ class HookMonitor:
     run on the owning thread (TK-34); `start()` waits for ready-or-error (TK-13); `close()` is
     bounded (TK-12)."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - keyword-only knobs; v1 passes none of the v2 ones
         self,
         *,
         kill_key: str = DEFAULT_KILL_KEY,
         monotonic: Callable[[], float] = time.monotonic,
         dead_band_px: int = DEAD_BAND_PX,
         extra_info: int = STEER_EXTRA_INFO,
+        per_hook: bool = False,
+        probe_vk: int | None = None,
+        tick: Callable[[], int] | None = None,
+        probe_deadline_s: float = PROBE_DEADLINE_S,
     ) -> None:
+        if per_hook and probe_vk not in UNASSIGNED_VKS:
+            raise ValueError("the keyboard probe must be an unassigned virtual key")
+        self._per_hook = per_hook
+        """[V2.57] LW-01 (v2): each hook proves itself, and each callback's latency is kept."""
+        self._probe_vk = probe_vk
+        self._deadline_s = probe_deadline_s
+        self._tick = tick
+        """The system tick in ms (GetTickCount, the clock of the hook structs' `time`)."""
+        self._latency = HookLatency()
+        self._stall: dict[str, float] = {}
+        """#364 P3: a test seam, never set outside Windows tests."""
         self._mods, self._vk = parse_kill_key(kill_key)
         self._monotonic = monotonic
         self._dead_band = dead_band_px
         self._extra_info = extra_info
         self._core = MonitorCore(
-            started_at=monotonic(), dead_band_px=dead_band_px, extra_info=extra_info
+            started_at=monotonic(),
+            dead_band_px=dead_band_px,
+            extra_info=extra_info,
+            per_hook=per_hook,
+            probe_vk=PROBE_VK if probe_vk is None else probe_vk,
+            deadline_s=probe_deadline_s,
         )
         self._thread: threading.Thread | None = None
         self._thread_id = 0
@@ -305,8 +471,14 @@ class HookMonitor:
                 "monitor_unavailable: a previous hook thread did not stop; restart the process",
             )
         self._core = MonitorCore(
-            started_at=self._monotonic(), dead_band_px=self._dead_band, extra_info=self._extra_info
+            started_at=self._monotonic(),
+            dead_band_px=self._dead_band,
+            extra_info=self._extra_info,
+            per_hook=self._per_hook,
+            probe_vk=PROBE_VK if self._probe_vk is None else self._probe_vk,
+            deadline_s=self._deadline_s,
         )
+        self._latency = HookLatency()
         self._ready.clear()
         self._error = None
         self._procs = []
@@ -364,8 +536,22 @@ class HookMonitor:
         self._core.probe_sent(now=self._monotonic())
         try:
             nudge_in_place()
+            if self._per_hook and self._probe_vk is not None:
+                key_up_probe(self._probe_vk)  # LW-01: the keyboard hook's own proof
         except OSError:
             self._core.on_probe_failed()  # fails closed: the next boundary stops (D4)
+
+    def probe_seen(self) -> bool:
+        """LW-01: both hooks saw an own event since the last probe."""
+        return self._core.probe_seen()
+
+    def latency(self) -> tuple[int, int | None, int | None]:
+        """LW-01: (callbacks timed, p95 ms, p99 ms); v1 times none."""
+        return self._latency.summary()
+
+    def latency_at(self, q: float) -> int | None:
+        """The callback latency at quantile `q`, in ms (the probe's hook-side measurement)."""
+        return self._latency.at(q)
 
     def mark_ask_open(self) -> None:
         self._core.mark_ask_open()
@@ -388,10 +574,27 @@ class HookMonitor:
             *up,
         )
 
-    def unhook_for_test(self) -> None:
-        """Remove the hooks behind the core's back, the way the OS does on a timeout."""
+    def stall_next_for_test(self, hook: str, seconds: float) -> None:
+        """#364 P3: the next callback of `hook` (`keyboard` or `mouse`) blocks for `seconds`
+        before it returns: past LowLevelHooksTimeout the OS removes that hook silently, the
+        failure LW-01 must catch (Windows tests only)."""
+        if hook not in HOOKS:
+            raise ValueError("hook must be keyboard or mouse")
+        self._stall[hook] = seconds
+
+    def lost_hooks(self) -> tuple[str, ...]:
+        """LW-01: the hooks that missed the last probe past its deadline."""
+        return self._core.lost_hooks(now=self._monotonic())
+
+    def unhook_for_test(self, hook: str | None = None) -> None:
+        """Remove the hooks behind the core's back, the way the OS removes a hook: both, or
+        only `hook` (`keyboard` or `mouse`; #364: measured, a stalled callback alone does not
+        make Windows remove it, so the removal test removes it for real)."""
+        if hook is not None and hook not in HOOKS:
+            raise ValueError("hook must be keyboard or mouse")
         if self._thread_id:
-            _user32().PostThreadMessageW(self._thread_id, WM_APP_UNHOOK_KEEP_KEY, 0, 0)
+            which = 0 if hook is None else 1 + HOOKS.index(hook)
+            _user32().PostThreadMessageW(self._thread_id, WM_APP_UNHOOK_KEEP_KEY, which, 0)
             time.sleep(0.05)
 
     # ---- the thread ----------------------------------------------------------------------------
@@ -414,7 +617,7 @@ class HookMonitor:
                     user32.UnregisterHotKey(None, HOTKEY_ID)
                     hotkey = False
             elif msg.message == WM_APP_UNHOOK_KEEP_KEY:
-                _unhook_all(user32, hooks)
+                _unhook_some(user32, hooks, int(msg.wParam))
             else:
                 user32.TranslateMessage(ctypes.byref(msg))
                 user32.DispatchMessageW(ctypes.byref(msg))
@@ -467,6 +670,9 @@ class HookMonitor:
             wintypes.LPARAM,
         )
         kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+        if self._per_hook and self._tick is None:
+            kernel32.GetTickCount.restype = wintypes.DWORD
+            self._tick = kernel32.GetTickCount
         msg = wintypes.MSG()
         user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_NOREMOVE)  # creates the queue first
         self._thread_id = int(kernel32.GetCurrentThreadId())
@@ -490,11 +696,22 @@ class HookMonitor:
         core = self._core
         monotonic = self._monotonic
         struct = _MouseHook if mouse else _KeyboardHook
+        tick = self._tick if self._per_hook else None
+        latency = self._latency
+
+        stall = self._stall
+        hook = "mouse" if mouse else "keyboard"
 
         def proc(code: int, wparam: int, lparam: int) -> int:
             try:
+                entered = tick() if tick is not None else 0  # #364 H6: inside the try
+                if hook in stall:
+                    time.sleep(stall.pop(hook))  # the test seam: a callback that hangs
                 if code == HC_ACTION:
                     info = ctypes.cast(lparam, ctypes.POINTER(struct)).contents
+                    if tick is not None:  # LW-01: event tick to entry tick, wrap-safe
+                        late = (entered - int(info.time)) & 0xFFFF_FFFF
+                        latency.record(late if late < 0x8000_0000 else 0)
                     if mouse:
                         core.on_mouse(
                             message=int(wparam),
@@ -504,8 +721,11 @@ class HookMonitor:
                             now=monotonic(),
                         )
                     else:
-                        core.on_keyboard(
-                            flags=int(info.flags), extra=int(info.dwExtraInfo), now=monotonic()
+                        core.on_keyboard(  # the key code is compared there, never kept
+                            flags=int(info.flags),
+                            extra=int(info.dwExtraInfo),
+                            now=monotonic(),
+                            vk=int(info.vkCode),
                         )
             except Exception:  # noqa: BLE001 - the hook chain must go on; the core records it
                 core.on_callback_error()
@@ -538,4 +758,18 @@ class HookMonitor:
 
 def _unhook_all(user32: Any, hooks: list[int]) -> None:
     while hooks:
-        user32.UnhookWindowsHookEx(hooks.pop())
+        hook = hooks.pop()
+        if hook:
+            user32.UnhookWindowsHookEx(hook)
+
+
+def _unhook_some(user32: Any, hooks: list[int], which: int) -> None:
+    """The test seam's removal: 0 every hook; 1 the keyboard's, 2 the mouse's (hooks are
+    installed mouse first, keyboard second); a removed one stays as 0 in its place."""
+    if which == 0:
+        _unhook_all(user32, hooks)
+        return
+    index = {1: 1, 2: 0}.get(which)
+    if index is not None and index < len(hooks) and hooks[index]:
+        user32.UnhookWindowsHookEx(hooks[index])
+        hooks[index] = 0
