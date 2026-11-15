@@ -23,7 +23,6 @@ from typing import Any, Final, Literal, Protocol, TypeVar
 from steerai.errors import SteerError
 from steerai.loop2.loop import Dispatch, PortInterrupted
 from steerai.loop2.runner import LOAD_GUARD_S
-from steerai.verify.predicates import FIELD_ROLES
 from steerai.world.effects import Observed, ValueFact, top_document, value_fact
 from steerai.world.elements import Element
 from steerai.world.model import normalise_name
@@ -111,26 +110,19 @@ def kill_sleep(
 
 
 def watch_kind(dispatch: Dispatch) -> WatchKind:
-    """How the watch after a dispatch holds (§7.5, [V2.8], [V2.28] 1, [V2.41]):
-    - `submit`: the risk path routed the dispatch through the Enter table: an Enter on a field,
-      or a click that submits pending text. `Dispatch.submit` is that classification, set by the
-      risk path; reading it here is the one place it becomes a submit watch, so the two cannot
-      disagree ([V2.48] (1));
-    - `wait`: held like a trigger's, to `WAIT_S`;
-    - `trigger`: an action with no read-back: a click on anything that is not a field
-      (`FIELD_ROLES`, the predicate the Enter table and the risk rules use), and an Enter that
-      is not a submit;
-    - `plain`: everything else (the read-back verbs, focus, any other key)."""
-    action = dispatch.action
+    """How the watch after a dispatch holds (§7.5, [V2.8], [V2.28] 1, [V2.41], [V2.48], [V2.50]).
+    It reads only what the risk path decided and put on the dispatch, never the verb or the key
+    again, so the timing and the risk classes cannot disagree:
+    - `submit`: the risk path routed it through the Enter table (`Dispatch.submit`);
+    - `wait`: a wait (it sends nothing), held like a trigger to `WAIT_S`;
+    - `trigger`: the risk path classed it an activation with no read-back (`Dispatch.trigger`:
+      a click on a non-field, an Enter or a Space that activates an acting element);
+    - `plain`: everything else (the read-back verbs, focus, a press on a state-set element)."""
     if dispatch.submit:
         return "submit"
-    if action.verb == "wait":
+    if dispatch.action.verb == "wait":
         return "wait"
-    if action.verb == "click" and dispatch.role not in FIELD_ROLES:
-        return "trigger"
-    if action.verb == "press" and action.key == "Enter":
-        return "trigger"
-    return "plain"
+    return "trigger" if dispatch.trigger else "plain"
 
 
 class WorldPorts:

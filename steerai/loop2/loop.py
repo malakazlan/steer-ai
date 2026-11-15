@@ -90,6 +90,9 @@ class Dispatch:
     submit: bool = False
     """[V2.28] item 1: the action goes through the Enter table (an Enter on a field, or a
     submit of pending text), so the watch holds it to a conclusive report; set by code."""
+    trigger: bool = False
+    """[V2.50]: the risk path classed it an activation with no read-back (`RiskVerdict.trigger`),
+    so the watch holds it as a trigger; set by code."""
     text: str | None = dataclasses.field(default=None, repr=False)
     """RT-36: the text a `type` sends, resolved by code (the param's goal span, or the free
     text); the act port types it. Never in a repr, a trace or the outcome."""
@@ -334,6 +337,49 @@ NEIGHBOUR_ROLES: Final = frozenset({"RadioButton", "ListItem", "TabItem"})
 tier among the group's members. The group is the target and its siblings of the same role
 under the same parent (the radio group, the list, the tab list). Every ListItem counts as
 single-select (multi-select is not observed), which can only raise the tier."""
+ActionClass = Literal[
+    "enter_field", "activation", "enter_other", "state_press", "field_click", "activating_verb",
+    "other",
+]  # fmt: skip
+TRIGGER_CLASSES: Final[frozenset[ActionClass]] = frozenset({"activation", "enter_other"})
+"""[V2.50]: the classes that are an activation with no read-back: their watch is a trigger's."""
+_SUBMIT_RULE: Final[frozenset[ActionClass]] = frozenset(
+    {"activation", "field_click", "activating_verb"}
+)
+"""The classes the [V2.22] submit rule applies to (it excludes fields and state-set roles
+itself, `NOT_A_SUBMIT`)."""
+
+
+def action_class(action: ActionDoc, role: str) -> ActionClass:  # noqa: PLR0911 - one per class
+    """[V2.50]: how the risk path classes an action by its verb, key and target role; the one
+    call that gives both the risk handling (`action_risk`) and the watch timing (a trigger, by
+    `TRIGGER_CLASSES`). For a press, `role` is the element it goes to.
+    - `enter_field`: an Enter on a field: the Enter table (a submit);
+    - `activation`: a click on a non-field, an Enter on an acting role, a Space on a non-field
+      that is not state-set: it activates the element, with no read-back (a trigger);
+    - `enter_other`: an Enter on anything else: R2 ([V2.26] (3)); an Enter, so a trigger;
+    - `state_press`: a Space or an Enter on a state-set role: a state verb with a readable
+      state, not a trigger;
+    - `field_click`: a click on a field; `activating_verb`: focus and the state verbs (both
+      under the submit rule, neither a trigger); `other`: everything else."""
+    if action.verb == "press":
+        key = action.key
+        if key in SUBMIT_KEYS and role in STATE_SET_VERB:
+            return "state_press"
+        if key == "Enter":
+            if role in ENTER_FIELDS:
+                return "enter_field"
+            return "activation" if role in ACTING_ROLES else "enter_other"
+        if key == "Space" and role not in FIELD_ROLES:
+            return "activation"
+        return "other"
+    if action.verb == "click":
+        return "field_click" if role in FIELD_ROLES else "activation"
+    if action.verb in ACTIVATING_VERBS:
+        return "activating_verb"
+    return "other"
+
+
 NOT_A_SUBMIT: Final = FIELD_ROLES | frozenset(
     {"CheckBox", "RadioButton", "ListItem", "TabItem", "TreeItem"}
 )
@@ -363,6 +409,9 @@ class RiskVerdict:
     reasons: frozenset[AskReason] = frozenset()
     submit_parent: ParentKind | None = None
     refusal: Literal["text_changed"] | None = None
+    trigger: bool = False
+    """[V2.50]: the action's watch is a trigger's (`action_class` in `TRIGGER_CLASSES`), decided
+    by the same call as the risk handling."""
 
 
 @dataclass
@@ -426,15 +475,12 @@ def action_risk(
         tally.raise_to("R3")
     states = _states(observed, pending)
     denied = _ORDER[deny] >= _ORDER["R2"]
-    is_key = action.verb == "press"
-    if is_key and action.key == "Enter":
-        if element.role in ENTER_FIELDS:
-            _enter(tally, action, element, observed, states, denied=denied)
-        elif element.role in ACTING_ROLES:
-            _submit(tally, action, element, observed, states, denied=denied)
-        elif element.role not in STATE_SET_VERB:
-            tally.raise_to("R2")  # [V2.26] (3): an Enter on anything else, or no known target
-    elif action.verb in ACTIVATING_VERBS or (is_key and action.key == "Space"):
+    kind = action_class(action, element.role)  # [V2.50]: the one call, risk and timing
+    if kind == "enter_field":
+        _enter(tally, action, element, observed, states, denied=denied)
+    elif kind == "enter_other":
+        tally.raise_to("R2")  # [V2.26] (3): an Enter on anything else, or no known target
+    elif kind in _SUBMIT_RULE:
         _submit(tally, action, element, observed, states, denied=denied)
     if _ORDER[tally.risk] >= _ORDER["R2"] and _generated(action, states):
         tally.reasons.add("generated_text")
@@ -443,6 +489,7 @@ def action_risk(
         frozenset(tally.reasons),
         tally.submit_parent,
         "text_changed" if tally.refused else None,
+        trigger=kind in TRIGGER_CLASSES,
     )
 
 

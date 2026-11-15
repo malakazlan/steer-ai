@@ -778,7 +778,7 @@ class _Run:
         rated = self._risk(action, element, observed)
         if rated is None:
             return None
-        risk, submit = rated
+        risk, submit, trigger = rated
         if RISKS.index(risk) >= _R2:
             raise _End("blocked", Reason("commit_not_in_step"))
         text = self._text(action)
@@ -796,6 +796,7 @@ class _Run:
             risk=risk,
             provenance=_provenance(action),
             submit=submit,
+            trigger=trigger,
             text=text,
         )
         return self._dispatch(sent, element, observed, key)
@@ -923,11 +924,11 @@ class _Run:
 
     def _risk(
         self, action: ActionDoc, element: Element | None, observed: Observed
-    ) -> tuple[Risk, bool] | None:
+    ) -> tuple[Risk, bool, bool] | None:
         """The action's risk, and whether it is a submit that goes through the Enter table
         ([V2.28] item 1: an Enter on a field, or a click or key that submits pending text)."""
         if element is None:  # a wait sends nothing; validate refuses a commit on it (RT-42)
-            return COMMIT_RISK[action.commit], False
+            return COMMIT_RISK[action.commit], False, False
         verdict = action_risk(
             action, element, goal=self.task.goal, observed=observed, pending=self._pending(observed)
         )
@@ -935,7 +936,7 @@ class _Run:
             self._refuse(verdict.refusal, subgoal=action.subgoal)
             return None
         enter = action.verb == "press" and action.key == "Enter" and element.role in ENTER_FIELDS
-        return verdict.risk, enter or verdict.submit_parent is not None
+        return verdict.risk, enter or verdict.submit_parent is not None, verdict.trigger
 
     def _pending(self, observed: Observed) -> list[PendingText]:
         """[V2.37] P2, [V2.38] RT-03: every field typed into in this task that may still hold the

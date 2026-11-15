@@ -16,7 +16,7 @@ from collections.abc import Callable
 import pytest
 
 from steerai.errors import ErrorCode, SteerError
-from steerai.loop2.loop import Dispatch, PortInterrupted
+from steerai.loop2.loop import TRIGGER_CLASSES, Dispatch, PortInterrupted, action_class
 from steerai.loop2.runner import LOAD_GUARD_S, run_task
 from steerai.loop2.world_ports import (
     KILL_POLL_S,
@@ -144,6 +144,8 @@ def _dispatch(
         risk="R0",
         provenance="goal_span" if verb == "type" else None,
         submit=submit,
+        # [V2.50]: the trigger is what the risk path puts on the dispatch (`action_class`)
+        trigger=target is not None and action_class(action, target.role) in TRIGGER_CLASSES,
         text="red shoes" if verb == "type" else None,
     )
 
@@ -159,9 +161,10 @@ def test_a_click_on_a_field_is_not_a_trigger(role: str) -> None:
     assert watch_kind(_dispatch("click", field)) == "plain"
 
 
-def test_an_enter_is_a_trigger_and_another_key_is_not() -> None:
-    assert watch_kind(_dispatch("press", FIELD, key="Enter")) == "trigger"
-    assert watch_kind(_dispatch("press", FIELD, key="Tab")) == "plain"
+def test_an_enter_on_an_acting_element_is_a_trigger_and_another_key_is_not() -> None:
+    """[V2.50]: an Enter on a field is the Enter table's (a submit), on a Button a trigger."""
+    assert watch_kind(_dispatch("press", GO, key="Enter")) == "trigger"
+    assert watch_kind(_dispatch("press", GO, key="Tab")) == "plain"
 
 
 @pytest.mark.parametrize("verb", ["type", "focus", "check", "uncheck", "select", "expand"])
