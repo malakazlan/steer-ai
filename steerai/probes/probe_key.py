@@ -32,6 +32,7 @@ from typing import Any
 
 IDLE_S = 2.0
 SETTLE_S = 0.2
+ROUND_TRIPS = 250
 WM_IME_CONTROL = 0x0283
 IMC_GETOPENSTATUS = 0x0005
 UIA_VALUE_PATTERN = 10002
@@ -140,6 +141,11 @@ def _text_reader(edit: int) -> Callable[[], str]:
     return read
 
 
+def _steer_events(monitor: Any) -> int:  # Any: HookMonitor
+    """Own events seen by either hook; only key-ups are sent, so each is the keyboard's."""
+    return int(monitor.counts().get("steer", 0))
+
+
 def _person_events(monitor: Any) -> int:  # Any: HookMonitor
     counts = monitor.counts()
     return int(counts.get("user", 0)) + int(counts.get("injected_other", 0))
@@ -158,6 +164,53 @@ def _batch(vk: int, size: int, monitor: Any) -> int:  # Any: HookMonitor
     if _person_events(monitor) != person:
         raise Abort("person_input")
     return int(monitor.counts().get("steer", 0)) - int(before)
+
+
+def round_trip(vk: int, n: int, monitor: Any, *, busy: bool) -> Row:  # Any: HookMonitor
+    """#364 P2: `n` tagged key-ups of `vk`, each timed from the send until the keyboard hook
+    has counted it; with `busy`, a Python thread spins meanwhile (the GIL contended, as when
+    the loop thread works). Key-ups only; nothing else is sent."""
+    import threading  # noqa: PLC0415 - this probe only
+
+    from steerai.probes.win_input import key_up_probe  # noqa: PLC0415 - Windows only
+
+    stop = threading.Event()
+
+    def spin() -> None:
+        spins = 0
+        while not stop.is_set():
+            spins += 1
+
+    spinner = threading.Thread(target=spin, daemon=True)
+    if busy:
+        spinner.start()
+    samples: list[float] = []
+    try:
+        for _ in range(n):
+            person = _person_events(monitor)
+            before = _steer_events(monitor)
+            started = time.perf_counter()
+            key_up_probe(vk)
+            while _steer_events(monitor) == before:
+                if time.perf_counter() - started > 2.0:
+                    raise Abort("probe_not_seen")
+                time.sleep(0.0001)
+            samples.append((time.perf_counter() - started) * 1000)
+            if _person_events(monitor) != person:
+                raise Abort("person_input")
+            time.sleep(0.005)
+    finally:
+        stop.set()
+        if busy:
+            spinner.join()
+    samples.sort()
+    return {
+        "round_trip": "busy" if busy else "idle",
+        "n": n,
+        "p50_ms": round(samples[(n - 1) // 2], 3),
+        "p95_ms": round(samples[min(n - 1, int(0.95 * n))], 3),
+        "max_ms": round(samples[-1], 3),
+    }
 
 
 def run(candidates: Sequence[int], size: int, emit: Callable[[Row], None]) -> list[int]:
@@ -197,6 +250,19 @@ def run(candidates: Sequence[int], size: int, emit: Callable[[Row], None]) -> li
                   "changed": changed, "passes": ok})  # fmt: skip
             if ok:
                 accepted.append(vk)
+        if accepted:  # #364 P2: the chosen key's round trip, idle and with the GIL contended
+            for busy in (False, True):
+                if desk.foreground() != hwnd:
+                    raise Abort("foreground_left_notepad")
+                emit(round_trip(accepted[0], ROUND_TRIPS, monitor, busy=busy))
+            after = desk.state(hwnd, read_text)
+            emit(
+                {
+                    "after_round_trips_changed": sorted(
+                        k for k in baseline if after[k] != baseline[k]
+                    )
+                }
+            )
     finally:
         notepad.terminate()  # only our own pid
         try:
