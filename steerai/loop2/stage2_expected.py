@@ -54,6 +54,9 @@ _VERBS: Final[dict[object, Verb]] = {v: v for v in get_args(Verb)}
 _KEYS: Final[dict[object, Key]] = {k: k for k in get_args(Key)}
 _RISKS: Final[dict[object, Risk]] = {r: r for r in RISKS}
 SITE_SPACING_S: Final = 60.0
+DAILY_CAP: Final = 12
+"""[V2.65] (3): the most loads of one host in one day at the spacing; a host at the cap stops
+for the day."""
 """§2.3, [V2.63] Q4: the least time between two page loads of one host, controls included."""
 
 
@@ -134,21 +137,38 @@ def start_document(raw: str) -> StartDocument:
 
 
 class Spacer:
-    """§2.3: every load of a host waits until `spacing_s` after its last one, and is counted
-    (kill-aware: an interrupt raised in the sleep ends the wait as itself)."""
+    """§2.3: every load of a host waits until `spacing_s` after its last one, and is counted, in
+    all and per day ([V2.65] (3): at most `cap` a host a day). Kill-aware: an interrupt raised in
+    a sleep ends the wait as itself."""
 
     def __init__(
         self,
         clock: Callable[[], float],
         sleep: Callable[[float], None],
         spacing_s: float = SITE_SPACING_S,
+        *,
+        day: Callable[[], int] = lambda: 0,
+        cap: int = DAILY_CAP,
     ) -> None:
         self._clock = clock
         self._sleep = sleep
         self._spacing_s = spacing_s
         self._last: dict[str, float] = {}
+        self._today: dict[tuple[int, str], int] = {}
+        self._cap = cap
+        self.day = day
+        """The calendar day now (an ordinal): the cap and a control's repeat read it."""
         self.loads: dict[str, int] = {}
         """Loads per host so far: the volume the summary reports."""
+
+    def at_cap(self, host: str) -> bool:
+        return self._today.get((self.day(), host), 0) >= self._cap
+
+    def wait_next_day(self) -> None:
+        """Every pending host is at its cap: wait, kill-aware, until the day turns."""
+        today = self.day()
+        while self.day() == today:
+            self._sleep(self._spacing_s)
 
     def wait(self, host: str) -> None:
         last = self._last.get(host)
@@ -161,6 +181,8 @@ class Spacer:
     def loaded(self, host: str) -> None:
         self._last[host] = self._clock()
         self.loads[host] = self.loads.get(host, 0) + 1
+        key = (self.day(), host)
+        self._today[key] = self._today.get(key, 0) + 1
 
 
 def real_site_tasks() -> tuple[Task, ...]:

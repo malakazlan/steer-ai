@@ -44,6 +44,7 @@ from typing import Any, Final, Literal
 from steerai.loop2.stage1 import (
     FLOOR_MB,
     MAX_RERUNS,
+    SITE_VOIDS,
     TASK_CAP_S,
     Classified,
     RunRecord,
@@ -59,6 +60,7 @@ from steerai.loop2.stage1 import (
     wait_until_ready,
 )
 from steerai.loop2.stage2_expected import (
+    DAILY_CAP,
     START_EXPRESSION,
     DecidingFacts,
     SiteRow,
@@ -234,7 +236,7 @@ def interleaved(tasks: Iterable[SiteTask]) -> list[SiteTask]:
     return order
 
 
-def run_stage(  # noqa: PLR0913 - the tasks, then keyword-only knobs
+def run_stage(  # noqa: PLR0913, PLR0915 - the tasks, then keyword-only knobs
     tasks: Sequence[SiteTask],
     *,
     runs: int,
@@ -255,6 +257,8 @@ def run_stage(  # noqa: PLR0913 - the tasks, then keyword-only knobs
     attempts = dict.fromkeys((t.stage.task_id for t in tasks), 0)
     scored = dict(attempts)
     walled: set[str] = set()
+    controlled: dict[str, int] = {}  # host: the day of its last control
+    voided: set[str] = set()  # hosts with a site void since their last control
     classified: list[Classified] = []
     not_started = 0
     while True:
@@ -267,11 +271,26 @@ def run_stage(  # noqa: PLR0913 - the tasks, then keyword-only knobs
         ]
         if not pending:
             break
-        failed, walls = _controls(pending, control=control, spacer=spacer, emit=emit)
+        open_now = [t for t in pending if not spacer.at_cap(t.host)]
+        if not open_now:
+            spacer.wait_next_day()  # [V2.65] (3): every pending host is at its cap today
+            continue
+        due = _controls_due(
+            open_now,
+            attempts=attempts,
+            scored=scored,
+            controlled=controlled,
+            voided=voided,
+            today=spacer.day(),
+        )
+        failed, walls = _controls(due, control=control, spacer=spacer, emit=emit)
+        for host in {t.host for t in due}:
+            controlled[host] = spacer.day()
+            voided.discard(host)
         walled |= walls
-        for task in interleaved(pending):
+        for task in interleaved(open_now):
             task_id = task.stage.task_id
-            if task.host in walled:
+            if task.host in walled or spacer.at_cap(task.host):
                 continue
             attempts[task_id] += 1
             run = attempts[task_id]
@@ -295,6 +314,8 @@ def run_stage(  # noqa: PLR0913 - the tasks, then keyword-only knobs
             scored[task_id] += got.verdict not in ("void", "monitor_lost")
             emit({"task": task_id, "run": run, "verdict": got.verdict, "reason": got.reason,
                   "monitor_lost": got.monitor_lost, "memory": got.memory})  # fmt: skip
+            if got.verdict == "void" and got.reason in SITE_VOIDS:
+                voided.add(task.host)
             if got.verdict == "void" and got.reason == "bot_wall":
                 walled.add(task.host)
     own_wall = {c.task_id for c in classified if c.verdict == "void" and c.reason == "bot_wall"}
@@ -304,6 +325,27 @@ def run_stage(  # noqa: PLR0913 - the tasks, then keyword-only knobs
         if t.host in walled and scored[t.stage.task_id] < runs and t.stage.task_id not in own_wall
     ]
     return classified, not_started
+
+
+def _controls_due(  # noqa: PLR0913 - the batch, then each fact a control's repeat reads
+    batch: Sequence[SiteTask],
+    *,
+    attempts: Mapping[str, int],
+    scored: Mapping[str, int],
+    controlled: Mapping[str, int],
+    voided: set[str],
+    today: int,
+) -> list[SiteTask]:
+    """[V2.65] (3): the batch's tasks whose host's control runs now: a host's first batch in the
+    session, then only after a site void on it, or for a re-run (an earlier attempt not scored)
+    on a later day than its last control."""
+    due: list[SiteTask] = []
+    for task in batch:
+        host = task.host
+        rerun = attempts[task.stage.task_id] > scored[task.stage.task_id]
+        if host not in controlled or host in voided or (rerun and controlled[host] != today):
+            due.append(task)
+    return due
 
 
 def _controls(
@@ -330,17 +372,21 @@ def _controls(
 
 
 def volume_bound(tasks: Sequence[SiteTask], *, runs: int) -> dict[str, int]:
-    """Per host, the most loads the stage can make before any wall confirmation: each task's
-    runs and re-runs, and one control in each batch (#403 blocker 6, against the policy's
-    "about 8 loads per host"). Wall confirmations are not in it: at most one per attempt, and
-    only after a wall on the task's own host."""
-    batches = runs + MAX_RERUNS
+    """Per host, the most loads the stage can make before any wall confirmation ([V2.65] (3)):
+    each task's runs and re-runs, a control in the host's first batch, and at most one more per
+    re-run batch. Wall confirmations are not in it: at most one per attempt, and only after a
+    wall on the task's own host."""
     bound: dict[str, int] = {}
     for task in tasks:
-        bound[task.host] = bound.get(task.host, 0) + batches
+        bound[task.host] = bound.get(task.host, 0) + runs + MAX_RERUNS
     for host in {t.host for t in tasks if t.controlled}:
-        bound[host] += batches
+        bound[host] += 1 + MAX_RERUNS
     return bound
+
+
+def days_bound(bound: Mapping[str, int]) -> dict[str, int]:
+    """The days each host's bound needs at `DAILY_CAP` loads a day ([V2.65] (3))."""
+    return {host: -(-loads // DAILY_CAP) for host, loads in bound.items()}
 
 
 def summarize(
@@ -366,7 +412,9 @@ def summarize(
     summary.report["no_control"] = [t.stage.task_id for t in tasks if not t.controlled]
     summary.report["harness_loads_per_host"] = dict(loads or {})
     summary.report["harness_loads_per_host_max"] = max((loads or {}).values(), default=0)
-    summary.report["harness_loads_bound"] = volume_bound(tasks, runs=runs_per_task)
+    bound = volume_bound(tasks, runs=runs_per_task)
+    summary.report["harness_loads_bound"] = bound
+    summary.report["harness_days_bound"] = days_bound(bound)
     return summary
 
 

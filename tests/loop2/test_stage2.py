@@ -34,6 +34,7 @@ from steerai.loop2.stage2 import (
     volume_bound,
 )
 from steerai.loop2.stage2_expected import (
+    DAILY_CAP,
     SITE_SPACING_S,
     DecidingFacts,
     SiteRow,
@@ -282,8 +283,9 @@ def test_run_one_of_every_task_comes_before_run_two_of_any() -> None:
 
 def test_every_load_of_a_host_is_spaced_and_controls_count_as_loads() -> None:
     tasks = [site("a1", "a.test")]
-    _, _, _, clock = _run(tasks, lambda t, n: SiteRecord(record(t.stage.task_id, n), None))
-    assert len(clock.slept) == 5  # control, run, control, run, control, run: 5 waits
+    _, _, loads, clock = _run(tasks, lambda t, n: SiteRecord(record(t.stage.task_id, n), None))
+    assert loads == [("control", "a.test")] + [("run", "a1")] * 3
+    assert len(clock.slept) == 3  # control, then three runs: every load after the first waited
     assert all(s == pytest.approx(SITE_SPACING_S) for s in clock.slept)
 
 
@@ -350,8 +352,8 @@ def test_a_run_not_started_is_counted_and_re_run() -> None:
     )
     assert not_started == 1
     assert sum(c.verdict == "pass" for c in got) == 3
-    # 4 batches each ran a control; the run that never started loaded nothing (#403 blocker)
-    assert spacer.loads == {"a.test": 4 + 3}
+    # [V2.65] (3): one control, in the first batch; the run never started loaded nothing
+    assert spacer.loads == {"a.test": 1 + 3}
 
 
 # ---- the tasks from the committed table ---------------------------------------------------------
@@ -528,9 +530,11 @@ def test_the_loads_per_host_are_counted_and_reported() -> None:
         spacer=spacer,
     )
     summary = summarize(tasks, got, not_started=not_started, runs_per_task=3, loads=spacer.loads)
-    assert summary.report["harness_loads_per_host"] == {"a.test": 6}
-    assert summary.report["harness_loads_per_host_max"] == 6
-    assert summary.report["harness_loads_bound"] == volume_bound(tasks, runs=3) == {"a.test": 12}
+    assert summary.report["harness_loads_per_host"] == {"a.test": 4}
+    assert summary.report["harness_loads_per_host_max"] == 4
+    # [V2.65] (3): 3 runs and 3 re-runs, one control first and one per re-run batch at most
+    assert summary.report["harness_loads_bound"] == volume_bound(tasks, runs=3) == {"a.test": 10}
+    assert summary.report["harness_days_bound"] == {"a.test": 1}
 
 
 def test_the_volume_bound_per_host_from_the_task_data() -> None:
@@ -539,3 +543,95 @@ def test_the_volume_bound_per_host_from_the_task_data() -> None:
     bound = volume_bound(site_tasks(_table()), runs=3)
     assert set(bound) == {t.host for t in site_tasks(_table())}
     assert all(n >= 3 + MAX_RERUNS for n in bound.values())
+
+
+# ---- [V2.65] (3): a control once per host per session; at most 12 loads a host a day ----------
+
+
+class Days:
+    """The calendar day on the fake clock: a day is 86,400 s."""
+
+    def __init__(self, clock: Clock) -> None:
+        self.clock = clock
+
+    def __call__(self) -> int:
+        return int(self.clock() // 86_400)
+
+
+def _staged(tasks: list[SiteTask], attempt: Any, *, control: Any = lambda _h: "pass") -> Any:
+    clock = Clock()
+    loads: list[tuple[int, str, str]] = []
+    days = Days(clock)
+    spacer = Spacer(clock, clock.sleep, day=days)
+
+    def logged(t: SiteTask, n: int) -> Any:
+        loads.append((days(), "run", t.host))
+        return attempt(t, n)
+
+    def ctl(host: str) -> Any:
+        loads.append((days(), "control", host))
+        return control(host)
+
+    got, _ = run_stage(
+        tasks, runs=3, attempt=logged, control=ctl, confirm=lambda _t: False, spacer=spacer
+    )
+    return got, loads, clock, spacer
+
+
+def test_a_control_repeats_after_a_site_void_on_its_host() -> None:
+    tasks = [site("a1", "a.test")]
+    outcomes = iter(["site_down", None, None, None])
+
+    def attempt(t: SiteTask, n: int) -> SiteRecord:
+        void = next(outcomes)
+        return SiteRecord(record("a1", n, final=None if void else DONE), void)
+
+    _, loads, _, _ = _staged(tasks, attempt)
+    kinds = [kind for _, kind, _ in loads]
+    assert kinds == ["control", "run", "control", "run", "run", "run"]
+
+
+def test_a_control_repeats_for_a_re_run_on_a_later_day() -> None:
+    """A re-run batch on a new day controls again; a later batch on the same day does not."""
+    tasks = [site("a1", "a.test")]
+    clock_ref: list[Clock] = []
+    outcomes = iter(["monitor_lost", None, None, None])
+
+    def attempt(t: SiteTask, n: int) -> SiteRecord:
+        lost = next(outcomes) == "monitor_lost"
+        if lost:
+            clock_ref[0].now += 86_400.0  # the next batch falls on the next day
+        final = {**DONE, "monitor_lost": True} if lost else DONE
+        return SiteRecord(record("a1", n, final=final), None)
+
+    clock = Clock()
+    clock_ref.append(clock)
+    days = Days(clock)
+    loads: list[tuple[int, str]] = []
+
+    def logged(t: SiteTask, n: int) -> SiteRecord:
+        loads.append((days(), "run"))
+        return attempt(t, n)
+
+    def ctl(_host: str) -> ControlResult:
+        loads.append((days(), "control"))
+        return "pass"
+
+    run_stage(tasks, runs=3, attempt=logged, control=ctl, confirm=lambda _t: False,
+              spacer=Spacer(clock, clock.sleep, day=days))  # fmt: skip
+    assert [k for _, k in loads] == ["control", "run", "control", "run", "run", "run"]
+
+
+def test_a_host_stops_at_its_daily_cap_and_resumes_the_next_day() -> None:
+    tasks = [site(f"a{i}", "a.test") for i in range(5)]  # 15 runs and a control on one host
+    _, loads, _, spacer = _staged(tasks, lambda t, n: SiteRecord(record(t.stage.task_id, n), None))
+    per_day: dict[int, int] = {}
+    for day, _, _ in loads:
+        per_day[day] = per_day.get(day, 0) + 1
+    assert all(n <= DAILY_CAP for n in per_day.values())
+    assert len(per_day) == 2  # 16 loads at 12 a day: two days
+    assert sum(per_day.values()) == 16 == spacer.loads["a.test"]
+
+
+def test_the_policy_caps() -> None:
+    assert DAILY_CAP == 12
