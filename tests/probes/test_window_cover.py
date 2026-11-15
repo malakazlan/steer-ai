@@ -20,7 +20,7 @@ def test_a_window_in_front_has_none_above() -> None:
 
 
 def test_a_bound_window_never_enumerated_is_an_unread_cover() -> None:
-    """Gone or on another desktop: never "nothing above"; the caller reads it as cover_unread."""
+    """Gone or on another desktop: never "nothing above"; the caller reads it as the `unread` cover."""
     with pytest.raises(OSError, match="not_enumerated"):
         windows_above([0x30, 0x20], BOUND)
 

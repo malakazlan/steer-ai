@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import gc
 import math
+import os
 import secrets
 import sys
 import threading
@@ -33,7 +34,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Final, Literal, Protocol
 
 from steerai.action.execution import UiaBindings, WindowState, code_for
 from steerai.action.executor import Executor
@@ -55,7 +56,7 @@ from steerai.orchestrator.loop import IDLE_S, WAIT_POLL_S
 from steerai.orchestrator.trace import Trace
 from steerai.planner.claude_planner import DEFAULT_MODEL, EFFORT
 from steerai.session.monitor import probe_deadline_s
-from steerai.world.cover import CoverFacts, cover_of
+from steerai.world.cover import CoverFacts, CoverToken, above_counts, cover_of
 from steerai.world.effects import Observed, ValueFact, poll_tier, top_document
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
@@ -80,6 +81,13 @@ COINIT_MULTITHREADED = 0x0
 DPAPI_PROBE = b"steer-v2-dpapi-probe"
 ShowCommand = Literal["minimize"]
 NudgeKind = Literal["move1px", "minrestore"]
+COVER_DETAILS: Final[Mapping[CoverToken, str]] = {
+    "covered": "window_covered",
+    "minimized": "window_minimized",
+    "cloaked": "window_cloaked",
+    "unread": "cover_unread",
+}
+"""[V2.67] C: a start refused for a cover names which one (never an unread cloak as cloaked)."""
 DEFAULT_NUDGE: NudgeKind = "move1px"
 """[V2.64] (5): the gentle nudge first; it worked on 10 of 10 normal and snapped windows in the
 evidence run (2026-11-15, Chrome 157). A maximised window still gets `minrestore`."""
@@ -205,6 +213,10 @@ class Platform(Protocol):
 
     def window_cover(self, hwnd: int) -> CoverFacts:
         """[V2.62] one read of `hwnd`'s cover facts (`probes.windows.window_cover`)."""
+        ...
+
+    def process_image(self, pid: int) -> str:
+        """[V2.67] C: a process's image name, read only for the debug trace."""
         ...
 
     def window_placement(self, hwnd: int) -> WindowPlacement:
@@ -456,6 +468,8 @@ class LiveWorld:
         """[V2.57] LW-01: monitor_lost is final for the task: never re-installed and resumed."""
         self.monitor_lost = 0
         self.front_nudged: NudgeKind | None = None
+        self.cover_seen: tuple[CoverToken, dict[str, int] | None] | None = None
+        """[V2.67] C: the last cover read (token, the windows above), for the report."""
         """[V2.64] the nudge the start applied, or None."""
 
     def _debug_sink(self) -> DebugSink:
@@ -567,8 +581,9 @@ class LiveWorld:
     def _check_in_front(self, hwnd: int) -> None:
         if self._inputs.foreground_hwnd() != hwnd:
             raise SteerError(ErrorCode.FOCUS_LOST, "not_in_front")
-        if self._cover() is not None:
-            raise SteerError(ErrorCode.FOCUS_LOST, "window_covered")
+        cover = self._cover()
+        if cover is not None:
+            raise SteerError(ErrorCode.FOCUS_LOST, COVER_DETAILS[cover])
 
     def _needs_nudge(self, hwnd: int) -> bool | None:
         """[V2.64] (4) the trigger, a shape and never a name: a browser frame (its address bar
@@ -670,14 +685,35 @@ class LiveWorld:
             except PortInterrupted:
                 return False
 
-    def _cover(self) -> str | None:
+    def _cover(self) -> CoverToken | None:
         """[V2.62] why the bound window is covered (`world.cover.cover_of`), or None; a read that
-        fails is `cover_unread`, never "visible"."""
+        fails is `unread`, never "visible" and never "cloaked" ([V2.67] C). A cover is kept for
+        the report and written to the clear trace with closed facts about the windows above
+        (how many, how many ours); their image names go only to the debug trace."""
         try:
             facts = self._platform.window_cover(self._config.hwnd)
         except Exception:  # noqa: BLE001 - any failed read fails closed: a cover
-            return "cover_unread"
-        return cover_of(facts)
+            return self._covered("unread", None)
+        token = cover_of(facts)
+        return None if token is None else self._covered(token, facts)
+
+    def _covered(self, token: CoverToken, facts: CoverFacts | None) -> CoverToken:
+        ours = frozenset(p for p in (self._config.bound_pid, os.getpid()) if p)
+        counts = None if facts is None else above_counts(facts, ours=ours)
+        self.cover_seen = (token, counts)
+        self._write({"event": "cover", "token": token, **(counts or {})})
+        if facts is not None and self._config.trace_level == "debug":
+            images = [self._image(pid) for pid in facts.above_pids]
+            self._debug.record("cover_above", {"images": images})
+        return token
+
+    def _image(self, pid: int) -> str:
+        if not pid:
+            return "unread"
+        try:
+            return self._platform.process_image(pid)
+        except OSError:
+            return "unread"
 
     # ---- the switch (packet §2.10) ---------------------------------------------------------------
 
@@ -892,7 +928,18 @@ class LiveWorld:
             "debug_failure": self.debug_failure,
             "monitor_lost": self.monitor_lost,
             "front_nudged": self.front_nudged,  # [V2.64] Three: the start's one nudge, or None
+            **self._cover_report(),  # [V2.67] C: the last cover seen, closed facts only
             **dict(zip(_LATENCY_KEYS, self._monitor.latency(), strict=True)),
+        }
+
+    def _cover_report(self) -> dict[str, int | str | None]:
+        if self.cover_seen is None:
+            return {"cover": None, "cover_above": None, "cover_above_ours": None}
+        token, counts = self.cover_seen
+        return {
+            "cover": token,
+            "cover_above": None if counts is None else counts["above"],
+            "cover_above_ours": None if counts is None else counts["above_ours"],
         }
 
     def header(self, task: Task) -> Mapping[str, str]:
@@ -1359,6 +1406,11 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
         from steerai.probes.windows import window_cover  # noqa: PLC0415 - Windows only
 
         return window_cover(hwnd)
+
+    def process_image(self, pid: int) -> str:
+        from steerai.probes.windows import process_name  # noqa: PLC0415 - Windows only
+
+        return process_name(pid)
 
     def window_identity(self, hwnd: int) -> WindowIdentity | None:
         from steerai.probes.windows import window_identity  # noqa: PLC0415 - Windows only
