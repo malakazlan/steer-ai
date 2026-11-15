@@ -220,7 +220,24 @@
     }
   },
   "m1": {
-    "unrated": "target_after_opener"
+    "read_sha256": "3443172ed781c4b1f364fa8ca1727d3ad1292ab21edbd1154988c3e53836c0d3",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": "MenuItem",
+      "button_search_landmark": false,
+      "risk": "R0",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "m1",
+      "outcome": "never_done",
+      "reason": null,
+      "risk": "R0",
+      "proof": null,
+      "why": "About shows only as content: step 4 (rated on the Help menu's opened read)"
+    }
   },
   "n1": {
     "read_sha256": "5a18f54f2ed254cb67ea591c3d28a0a323eda7d507a6eb906e818479c3f35bf1",
@@ -563,7 +580,24 @@
     }
   },
   "r4": {
-    "unrated": "target_after_opener"
+    "read_sha256": "1d2c1cfb219bed5c1d65bb800f5f7ef64a0629c8549c4949446dfc5cfe5627a3",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": "MenuItem",
+      "button_search_landmark": false,
+      "risk": "R0",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "r4",
+      "outcome": "never_done",
+      "reason": null,
+      "risk": "R0",
+      "proof": null,
+      "why": "an export shows only as content: step 4 (rated on the Export menu's opened read)"
+    }
   },
   "r5": {
     "read_sha256": "8923c3ab032356aff9a6c24f4a167494ff3e30cda7a098087c3043b86790c284",
@@ -672,7 +706,24 @@
     }
   },
   "u5": {
-    "unrated": "target_after_opener"
+    "read_sha256": "a4d70906818e017b157067a6a55b7bc070170c90d6b62c24a65c520f34bcfded",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "u5",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "state",
+      "why": "a menu radio: a selection state read (rated on the Sort menu's opened read)"
+    }
   },
   "wp1": {
     "read_sha256": "aab5e4a9064fb686ac0bb827ea28b8baedc620b678e0fbea8b1b6f57bcc1bfba",
