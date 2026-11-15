@@ -147,3 +147,13 @@ def test_the_guard_sees_a_constructor_reached_through_its_module(tmp_path: Path)
     sample = tmp_path / "test_sample.py"
     sample.write_text(chr(10).join(lines) + chr(10), encoding="utf-8")
     assert _unmarked(sample, tmp_path) == ["test_sample.py::test_live calls ['UiaClient']"]
+
+
+def test_the_runtime_trap_is_armed_in_an_unmarked_test() -> None:
+    """The runtime half (tests/conftest.py): here, unmarked, every real-input primitive is the
+    trap, so a live call the syntactic guard missed fails before any event leaves the process."""
+    from steerai.probes import win_input  # noqa: PLC0415 - this test only
+    from steerai.session import monitor  # noqa: PLC0415 - this test only
+
+    primitives = [vars(win_input)["_send"], vars(monitor)["_send"], vars(monitor)["_user32"]]
+    assert [p.__name__ for p in primitives] == ["trap"] * 3

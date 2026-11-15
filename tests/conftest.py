@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import steerai.session.monitor  # noqa: F401 - imported before any trap: it copies `_send`
 from steerai.probes.chrome_a11y import CHROME_DEFAULT, ColdStart, measure_cold_start
 
 COLD_START = pytest.StashKey[ColdStart]()
@@ -33,6 +34,31 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(skip_live)
         if "probe" in item.keywords and "probe" not in selected:
             item.add_marker(skip_probe)
+
+
+_LIVE_MARKS = ("windows", "live", "probe")
+_REAL_INPUT = (
+    ("steerai.probes.win_input._send", "SendInput"),
+    ("steerai.session.monitor._send", "SendInput (the monitor's self-probe)"),
+    ("steerai.session.monitor._user32", "the real user32 behind the hooks and the kill hot key"),
+)
+"""The primitives that reach the person's real input (the monitor holds its own imports of
+both); a test that is not marked live never calls them unfaked."""
+
+
+@pytest.fixture(autouse=True)
+def _real_input_trap(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The runtime half of the marker guard (tests/test_live_markers.py, #359 review): a test
+    with none of the live marks that reaches real input fails at once, before any event or hook
+    leaves the process. A test that fakes these calls replaces the trap with its own fake."""
+    if any(mark in request.node.keywords for mark in _LIVE_MARKS):
+        return
+    for target, what in _REAL_INPUT:
+
+        def trap(*_args: object, _what: str = what, **_kwargs: object) -> None:
+            pytest.fail(f"an unmarked test reached {_what}; mark it windows, live or probe")
+
+        monkeypatch.setattr(target, trap)
 
 
 def _needs_chrome(item: pytest.Item) -> bool:
