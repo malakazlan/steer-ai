@@ -68,7 +68,7 @@ def _fits(variant: dict[str, Any], doc: dict[str, object]) -> bool:  # Any: a sc
 
 
 def test_the_prompt_version_is_bumped() -> None:
-    assert PROMPT_VERSION == "controller-10"
+    assert PROMPT_VERSION == "controller-11"
 
 
 def test_only_the_first_turn_offers_subgoals() -> None:
