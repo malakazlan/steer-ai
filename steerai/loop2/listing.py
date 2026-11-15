@@ -1,18 +1,22 @@
 """The v2 listing's cap ([V2.54], [V2.55]; packet rev 4.1): which elements of a snapshot the
 model is shown, in tree order, with each row's class.
 
-1. **Always-keep** (`keep`), up to `2 * cap`: the keyboard focus, every element acted on in this
-   task while it exists, the fields holding pending text, and (when the lead rules) what is new
-   since the last turn. Over the ceiling, chosen by v1's order (on-screen interactive first);
-   `keep_at_ceiling` says so.
-2. **Goal words** (`goal`), up to `cap // 3`: elements whose name holds a word of an open
-   subgoal's params (the person's own words); `goal_at_subcap` says the class was cut.
+1. **Always-keep** (`keep`), up to `2 * cap` rows: the keyboard focus, every element acted on in
+   this task while it exists, the fields holding pending text, and what is new or changed since
+   the model last looked. Chosen by v1's order (on-screen interactive first); `keep_at_ceiling`
+   says the class passed the cap or an element of it was cut.
+2. **Goal words** (`goal`), up to `cap // 3` rows: elements whose name holds a word of an open
+   subgoal's params (the person's own words), most distinct words first, then v1's order;
+   `goal_at_subcap` says the class was cut.
 3. **v1's prune** (`rest`) for what is left of `cap`: on-screen interactive and named elements
    with their ancestors, then offscreen elements nearest the window (`world.elements.prune`).
 
-A kept element brings its parent, so a row's indentation stays true. A cut element keeps its task
-handle but has no row: `validate` refuses it as `id_not_listed`. The verifier and the auto proofs
-read the full snapshot, never this.
+The listing is closed upward (#359 review): an element is shown with its whole chain of
+ancestors up to the nearest row already shown, and every row so added is charged to that
+element's class, so no class passes its budget and a row's indentation is its true depth. An
+element whose chain does not fit its class's room is cut, never shown orphaned. A cut element
+keeps its task handle but has no row: `validate` refuses it as `id_not_listed`. The verifier and
+the auto proofs read the full snapshot, never this.
 """
 
 from __future__ import annotations
@@ -63,16 +67,20 @@ class Listing:
             listed=listed,
         )
 
-    def note(self) -> str | None:
-        """The turn's header line when anything was cut ([V2.54]): the counts, the cap and both
-        sub-limits; and whether the always-keep class alone was over the cap."""
-        if self.cut == 0 and not self.keep_at_ceiling:
+    def note(self, prompt_cut: int = 0) -> str | None:
+        """The turn's header line when anything was cut ([V2.54]): the rows actually sent (after
+        the prompt guard cut `prompt_cut` of them), the cap and both sub-limits; whether the
+        always-keep class alone was over the cap; and the guard's own cut."""
+        shown = len(self.ids) - prompt_cut
+        if shown >= self.eligible and not self.keep_at_ceiling:
             return None
         line = (
-            f"listing: shown {len(self.ids)} of {self.eligible} (cap {self.cap}, always-keep up "
+            f"listing: shown {shown} of {self.eligible} (cap {self.cap}, always-keep up "
             f"to {2 * self.cap}, goal words up to {self.cap // 3})"
         )
-        return f"{line}; always-keep over cap" if self.keep_at_ceiling else line
+        if self.keep_at_ceiling:
+            line = f"{line}; always-keep over cap"
+        return f"{line}; the prompt size limit cut {prompt_cut}" if prompt_cut else line
 
 
 @dataclass(frozen=True)
@@ -113,41 +121,66 @@ def select_listing(
     wanted_keep = keep | ({focus} if focus else set())
     keep_all = [e for e in elements if e.runtime_id and e.runtime_id in wanted_keep]
     keep_all.sort(key=lambda e: _keep_rank(e, order))
-    keep_ceiling = 2 * cap
-    kept = keep_all[:keep_ceiling]
-    goal_all = [
-        e
-        for e in elements
-        if goal_words and e.id not in {k.id for k in kept} and _holds_word(e, goal_words)
-    ]
-    goal_room = max(0, min(cap // 3, cap - len(kept)))
-    goal = goal_all[:goal_room]
-    classes: dict[int, RowClass] = {}
-    for e in kept:
-        classes[e.id] = "keep"
-    for e in goal:
-        classes.setdefault(e.id, "goal")
-    for e in [*kept, *goal]:
-        parent = by_id.get(e.parent_id) if e.parent_id is not None else None
-        if parent is not None:
-            classes.setdefault(parent.id, classes[e.id])
-    room = cap - len(classes)
-    for element_id in sorted(order, key=order.__getitem__):
-        if room <= 0:
-            break
-        if element_id not in classes:
-            classes[element_id] = "rest"
-            room -= 1
-    ids = tuple(e.id for e in elements if e.id in classes)
-    eligible = len(set(order) | {e.id for e in keep_all} | {e.id for e in goal_all})
+    shown: dict[int, RowClass] = {}
+    keep_cut = _fill(keep_all, shown, by_id, "keep", 2 * cap)
+    keep_rows = len(shown)
+    goal_all = [e for e in elements if goal_words and _holds_word(e, goal_words)]
+    goal_all.sort(key=lambda e: _goal_rank(e, goal_words, order))
+    goal_cut = _fill(goal_all, shown, by_id, "goal", max(0, min(cap // 3, cap - keep_rows)))
+    rest = [by_id[i] for i in sorted(order, key=order.__getitem__)]
+    _fill(rest, shown, by_id, "rest", cap - len(shown))
+    ids = tuple(e.id for e in elements if e.id in shown)
+    eligible = len(set(order) | {e.id for e in keep_all} | {e.id for e in goal_all} | set(shown))
     return Listing(
         ids=ids,
-        priorities=tuple(classes[i] for i in ids),
+        priorities=tuple(shown[i] for i in ids),
         eligible=eligible,
         cap=cap,
-        keep_at_ceiling=len(keep_all) > cap,
-        goal_at_subcap=len(goal_all) > len(goal),
+        keep_at_ceiling=keep_rows > cap or keep_cut > 0,
+        goal_at_subcap=goal_cut > 0,
     )
+
+
+def _fill(
+    candidates: list[Element],
+    shown: dict[int, RowClass],
+    by_id: dict[int, Element],
+    row_class: RowClass,
+    room: int,
+) -> int:
+    """Show each candidate in turn with its ancestors up to the nearest shown row, all charged to
+    `row_class`'s `room`; one whose chain does not fit is cut (and the next is tried). Returns how
+    many candidates were cut."""
+    cut = 0
+    for element in candidates:
+        if element.id in shown:
+            continue
+        chain = _unshown_chain(element, shown, by_id)
+        if len(chain) > room:
+            cut += 1
+            continue
+        for member in chain:
+            shown[member.id] = row_class
+        room -= len(chain)
+    return cut
+
+
+def _unshown_chain(
+    element: Element, shown: dict[int, RowClass], by_id: dict[int, Element]
+) -> list[Element]:
+    """`element` and its ancestors up to the nearest shown one; a parent cycle in a hostile tree
+    ends at the first repeat."""
+    chain = [element]
+    seen = {element.id}
+    parent_id = element.parent_id
+    while parent_id is not None and parent_id in by_id and parent_id not in shown:
+        if parent_id in seen:
+            break
+        seen.add(parent_id)
+        parent = by_id[parent_id]
+        chain.append(parent)
+        parent_id = parent.parent_id
+    return chain
 
 
 def _v1_order(elements: list[Element]) -> dict[int, int]:
@@ -168,5 +201,18 @@ def _keep_rank(element: Element, order: dict[int, int]) -> tuple[bool, bool, int
     )
 
 
+def _goal_rank(
+    element: Element, words: frozenset[str], order: dict[int, int]
+) -> tuple[int, int, int]:
+    """#359 review (2): the goal class by the number of distinct goal words matched, most first,
+    then v1's order: a row that names the target outranks a run of rows sharing one word."""
+    matched = len(words & _words(element))
+    return (-matched, order.get(element.id, len(order)), element.id)
+
+
 def _holds_word(element: Element, words: frozenset[str]) -> bool:
-    return not words.isdisjoint(w.casefold() for w in _WORD.findall(element.name))
+    return not words.isdisjoint(_words(element))
+
+
+def _words(element: Element) -> frozenset[str]:
+    return frozenset(w.casefold() for w in _WORD.findall(element.name))
