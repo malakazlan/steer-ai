@@ -116,8 +116,27 @@ def test_a_monotonic_reading_is_never_persisted() -> None:
     assert json.loads(snapshot_to_json(snapshot))["taken_at"] == WALL
 
 
+V1_JSON = (
+    '{"version":2,"id":"SNAPSHOT_ID","hwnd":16,"process":"","title":"","taken_at":1700000000.0,'
+    '"node_count":1,"stable":true,"minimized":false,"pid":0,"cap":150,"elements":[{"id":1,'
+    '"depth":0,"role":"Button","name":"Send","box":[10,10,110,50],"offscreen":false,'
+    '"enabled":true,"automation_id":"","runtime_id":[7,1],"parent_id":null,"secure":false,'
+    '"caps":[]}]}'
+)
+"""The write-ahead JSON of this fixture as main printed it before this change (origin/main
+d96f2a9, 2026-11-15). Only the snapshot `id` is random per snapshot, so it is filled in."""
+
+
 @pytest.mark.usefixtures("window")
 def test_v1_snapshots_persist_exactly_as_before() -> None:
     snapshot = WorldModel(cast(UiaClient, _Client(FakeHandle()))).observe(HWND)
     assert snapshot.wall_at is None
-    assert json.loads(snapshot_to_json(snapshot))["taken_at"] == WALL
+    assert snapshot_to_json(snapshot) == V1_JSON.replace("SNAPSHOT_ID", snapshot.id)
+
+
+@pytest.mark.usefixtures("window")
+def test_a_v2_snapshot_persists_in_the_same_format_with_wall_time() -> None:
+    """The injected clock changes no key: `taken_at` holds the wall reading, and no `wall_at`
+    or monotonic field is added to the record."""
+    snapshot = WorldModel(cast(UiaClient, _Client(FakeHandle())), clock=lambda: MONO).observe(HWND)
+    assert snapshot_to_json(snapshot) == V1_JSON.replace("SNAPSHOT_ID", snapshot.id)

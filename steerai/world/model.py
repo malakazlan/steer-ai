@@ -177,7 +177,9 @@ def snapshot_from_json(text: str) -> Snapshot:
 
     The unread sets ([V2.26] (2)) are not in the record, so they come back empty: the JSON is
     v1's write-ahead format and stays byte-identical, and v2 decides only on live snapshots
-    (a v2 task never resumes, [V2.15] Q9)."""
+    (a v2 task never resumes, [V2.15] Q9). A restored `taken_at` is therefore always wall time
+    (the record holds `wall_at` when the snapshot was stamped on another clock), never a
+    monotonic reading."""
     try:
         payload = json.loads(text)
     except ValueError as exc:
