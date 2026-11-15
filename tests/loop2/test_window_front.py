@@ -18,7 +18,7 @@ from steerai.errors import ErrorCode, SteerError
 from steerai.loop2 import cli
 from steerai.loop2.act_guards import GuardDesk, InputGuard
 from steerai.loop2.live_world import START_IDLE_S, LiveConfig, LiveWorld
-from steerai.loop2.loop import WindowCovered, render_reason
+from steerai.loop2.loop import PortInterrupted, WindowCovered, render_reason
 from steerai.loop2.runner import run_task
 from steerai.loop2.world_ports import WorldPorts, WorldTimes
 from steerai.orchestrator.loop import IDLE_S
@@ -409,3 +409,28 @@ def test_the_cli_brings_the_window_in_front_before_the_task(tmp_path: Path) -> N
     run.platform.fake_input.foreground = OTHER
     run()
     assert run.platform.fake_input.foreground == BOUND
+
+
+def test_a_kill_is_read_before_the_cover_so_it_counts_as_a_kill() -> None:
+    """Principal review of #380: the switch first; a killed task whose window is also covered
+    ends `killed`, never `window_covered`."""
+    clock = Clock()
+    screen = Screen(observed(), clock)
+    ports = WorldPorts(
+        poll_read=screen.poll_read,
+        full_from=screen.full_from,
+        interrupted=lambda: "killed",
+        clock=clock,
+        pause=clock.pause,
+        touches=FirstTouches(),
+        times=WorldTimes(),
+        live=Live(),
+        key=KEY,
+        trace=lambda _t: None,
+        cover=lambda: "covered",
+    )
+    with pytest.raises(PortInterrupted) as stopped:
+        ports.observe()
+    assert str(stopped.value) == "killed"
+    with pytest.raises(PortInterrupted):
+        ports.settle(observed(), 10.0)

@@ -155,13 +155,17 @@ class WorldPorts:
 
     def _check_cover(self) -> None:
         """[V2.62]: a covered window ends the task before anything waits for its page (a
-        covered Chrome exposes no page however long it is waited on)."""
+        covered Chrome exposes no page however long it is waited on). The switch is read first,
+        so a kill (or the lock) is counted as itself, never as a cover."""
+        token = self._interrupted()
+        if token is not None:
+            raise PortInterrupted(token)
         if self._cover is None:
             return
-        token = self._cover()
-        if token is not None:
-            self._trace(f"cover_{token}")
-            raise WindowCovered(token)
+        cover = self._cover()
+        if cover is not None:
+            self._trace(f"cover_{cover}")
+            raise WindowCovered(cover)
 
     def observe(self) -> Observed:
         """[V2.31]: through `first_observation`, which holds a process's first touch in this task
