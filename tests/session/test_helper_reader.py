@@ -201,3 +201,11 @@ def test_a_negative_age_within_a_tick_is_just_now() -> None:
     got = last_user_seconds(word=word, qpc_now=5 * FREQ, freq=FREQ, clock_now=50.0,
                             clock_resolution=0.015625, started_at=40.0)  # fmt: skip
     assert got == pytest.approx(50.0 + 0.015625)
+
+
+@pytest.mark.parametrize("word", [2, 2**63, 2**64 - 1])
+def test_any_nonzero_kill_word_is_a_kill(word: int) -> None:
+    """#383 HM-06: the kill fails closed; only 0 is no kill."""
+    s = _status()
+    s.set("kill", word)
+    assert _read(s, ReaderState()).killed

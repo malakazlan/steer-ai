@@ -414,3 +414,10 @@ def test_close_closes_the_helper_once() -> None:
     rig.monitor.close()
     rig.monitor.close()
     assert rig.helper.closed == 1
+
+
+def test_any_nonzero_kill_word_is_requested() -> None:
+    """#383 HM-06."""
+    rig = _rig()
+    rig.helper.status_w.set("kill", 7)
+    assert rig.monitor.kill_requested()

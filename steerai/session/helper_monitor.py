@@ -140,7 +140,7 @@ class HelperMonitor:
 
     def kill_requested(self) -> bool:
         """K4: the kill word, read directly; layer 1 acknowledges it the first time."""
-        if self._helper.status.get("kill") != 1:
+        if self._helper.status.get("kill") == 0:  # #383 HM-06: nonzero is a kill
             return False
         if not self._acked:
             self._helper.config.set("kill_ack", 1)
