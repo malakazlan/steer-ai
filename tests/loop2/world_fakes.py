@@ -281,10 +281,12 @@ class World:
     settle_advance_s: float = 0.0
     """How far the clock moves during each settle (a hold that takes time)."""
     audit_reply: Audited | BaseException = field(
-        default_factory=lambda: Audited(veto=False, reason="outcome_shown", usage=TokenUsage(20, 2))
+        default_factory=lambda: Audited(
+            sufficient=True, reason="facts_finish_request", usage=TokenUsage(20, 2)
+        )
     )
-    """[V2.64] One: what the final audit answers (an allow by default, so a self-written task
-    still ends done for one more call), or the failure it raises."""
+    """[V2.64] One, [V2.69] One: what the final audit answers (an allow by default, so a task
+    that reaches done still ends done for one more call), or the failure it raises."""
     audits: list[AuditView] = field(default_factory=list)
     interrupt_after_audit: bool = False
     """Report `interruption` once the audit has been asked."""

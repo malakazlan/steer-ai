@@ -38,7 +38,7 @@ from steerai.errors import (
 from steerai.loop2 import ready as ready_step
 from steerai.loop2.decide_port import TaskGenerations
 from steerai.loop2.live_world import LiveConfig, LiveWorld, Platform, run_on_loop_thread
-from steerai.loop2.loop import TaskOutcome
+from steerai.loop2.loop import AUDIT_COUNTS, TaskOutcome
 from steerai.loop2.price import STALE_DAYS, PriceFile, load_price
 from steerai.loop2.runner import run_task
 from steerai.loop2.task import Budgets, Envelope, Task
@@ -521,6 +521,7 @@ def _result(
             "history_dropped": outcome.history_dropped,
             "turn_trace_dropped": outcome.turn_trace_dropped,  # [V2.67] D
             "pre_task_draft_clicks": outcome.pre_task_draft_clicks,  # [V2.64] Two
+            **{name: getattr(outcome, name) for name in AUDIT_COUNTS},  # [V2.69] One
             "saved_calls": outcome.saved_calls,  # [V2.67] A
             "submit_parents": dict(outcome.submit_parents),
         },
