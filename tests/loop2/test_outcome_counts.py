@@ -34,6 +34,7 @@ OUTCOME = TaskOutcome(
     focus_losses=7,
     history_dropped=8,
     pre_task_draft_clicks=9,
+    saved_calls=10,
     submit_parents=(("document", 1), ("main", 0), ("narrower", 2)),
 )
 COUNTS = {
@@ -46,6 +47,7 @@ COUNTS = {
     "focus_losses": 7,
     "history_dropped": 8,
     "pre_task_draft_clicks": 9,
+    "saved_calls": 10,
     "submit_parents": {"document": 1, "main": 0, "narrower": 2},
 }
 

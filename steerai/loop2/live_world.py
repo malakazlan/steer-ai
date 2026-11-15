@@ -31,6 +31,7 @@ import time
 import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -807,44 +808,37 @@ class LiveWorld:
             kill_sleep(seconds, interrupted=self.interrupted, pause=self._config.pause)
             return
         # HH-08: wait on the helper (its wake or its exit) in steps, re-reading the switch
-        # between them, for the whole time asked on the world's clock
-        deadline = self._config.clock() + (seconds if math.isfinite(seconds) else 0.0)
-        while True:
-            token = self.interrupted()
-            if token is not None:
-                raise PortInterrupted(token)
-            left = deadline - self._config.clock()
-            if left <= 0:
-                return
-            self._helper_step(helper, min(left, KILL_POLL_S))
+        # between them. #398 HH4-05, HH4-04: the steps are `kill_sleep`'s own, counted down
+        # rather than timed on the world's 15.625 ms clock, so they add up to the time asked
+        kill_sleep(seconds, interrupted=self.interrupted, pause=partial(self._helper_step, helper))
 
     def _pause(self, seconds: float) -> None:
         """[V2.60] HH-08 for every hold (#385 principal 3: WorldPorts, the input guard, the act
-        port): with the helper, a pause waits on it in kill-aware steps for its whole time on
-        the world's clock, ending early only for a kill, which the caller's next switch read
-        raises. Without it, the plain `config.pause`."""
+        port): with the helper, a pause waits on it in kill-aware steps for its whole time,
+        counted down as `kill_sleep` counts (#398 HH4-05), ending early only for a kill, which
+        the caller's next switch read raises. Without it, the plain `config.pause`."""
         helper = self._helper_monitor
         if helper is None:
             self._config.pause(seconds)
             return
-        clock = self._config.clock
-        deadline = clock() + (seconds if math.isfinite(seconds) else 0.0)
-        while self._kill_token() is None:
-            left = deadline - clock()
-            if left <= 0:
-                return
-            self._helper_step(helper, min(left, KILL_POLL_S))
+        left = seconds if math.isfinite(seconds) else 0.0
+        while left > 0 and self._kill_token() is None:
+            step = min(left, KILL_POLL_S)
+            self._helper_step(helper, step)
+            left -= step
 
     def _helper_step(self, helper: HelperWorldMonitor, step: float) -> None:
         """One kill-aware step on the helper (HH-08). A wait that returns early with no kill
         (a probe's wake, the helper's exit, a stuck event) sleeps the rest of the step plainly,
-        so no wait spins (#385 HH4-03); a kill returns at once for the caller's switch read."""
-        clock = self._config.clock
-        started = clock()
+        so no wait spins (#385 HH4-03); a kill returns at once for the caller's switch read.
+        #398 HH4-05: the step is timed on the gap clock (QPC), and the rest is never more than
+        the step, whatever that clock reads."""
+        gap = self._config.gap_clock
+        started = gap()
         helper.wait(step)
         if self._kill_token() is not None:
             return
-        rest = step - (clock() - started)
+        rest = min(step, step - (gap() - started))
         if rest > 0:
             self._config.pause(rest)
 
@@ -897,6 +891,7 @@ class LiveWorld:
             "late_sink_failures": self.late_sink_failures,
             "debug_failure": self.debug_failure,
             "monitor_lost": self.monitor_lost,
+            "front_nudged": self.front_nudged,  # [V2.64] Three: the start's one nudge, or None
             **dict(zip(_LATENCY_KEYS, self._monitor.latency(), strict=True)),
         }
 

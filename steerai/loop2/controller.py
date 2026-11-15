@@ -22,11 +22,14 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from steerai.loop2.decision import (
     CHECKED_KINDS,
+    NO_COMMIT_VERBS,
     NOT_IN_STEP_VERBS,
     STEP,
     STEP_KINDS,
     STEP_VERBS,
     SUBGOAL_ID,
+    UNTARGETED,
+    ClaimKind,
     Decision,
     Verb,
     validate,
@@ -45,7 +48,7 @@ from steerai.world.capabilities import TOKENS as CAPABILITY_TOKENS
 from steerai.world.elements import format_lines, safe_name
 from steerai.world.model import Snapshot
 
-PROMPT_VERSION = "controller-8"
+PROMPT_VERSION = "controller-9"
 PROMPT_TOKEN_CEILING = 50_000
 """[V2.55] (2): the most input tokens a rendered prompt may hold before any model call. A policy
 limit, six times the largest capped prompt measured (8,339 tokens, count_tokens on claude-opus-5,
@@ -442,17 +445,111 @@ def _status_line(sid: str, status: str) -> str:
     return f"{sid} {status}"
 
 
-def _prompt_schema() -> dict[str, Any]:  # Any: a JSON schema document
-    """The Decision schema as the prompt shows it: only the step's verbs are offered
+def _prompt_schema(*, first_turn: bool) -> dict[str, Any]:  # Any: a JSON schema document
+    """The Decision schema as the prompt shows it. Only the step's verbs are offered
     (`decision.STEP_VERBS`, [V2.44] (1)), and only the step's claim kinds (`STEP_KINDS`, #386).
-    The parsed types keep every verb and kind, so a model that sends another one anyway gets the
-    step-limit refusal."""
+    [V2.65]: the shape errors are not offered at all. Only the first turn's schema has the
+    subgoals field; an action is a union by verb (`_action_variant`) and a claim a union by kind
+    (`_claim_variant`), each variant holding only its own fields. The parsed types keep every
+    verb, kind and field, so a model that sends another one anyway gets its refusal (`validate`,
+    the backstop)."""
     schema = Decision.model_json_schema()
-    verb = schema["$defs"]["ActionDoc"]["properties"]["verb"]
-    verb["enum"] = [v for v in verb["enum"] if v in STEP_VERBS[STEP]]
-    kind = schema["$defs"]["Claim"]["properties"]["kind"]  # #386: one kind table per step
-    kind["enum"] = [k for k in kind["enum"] if k in STEP_KINDS[STEP]]
+    defs = schema["$defs"]
+    claim_fields = defs.pop("Claim")["properties"]
+    kinds = [k for k in get_args(ClaimKind) if k in STEP_KINDS[STEP]]  # #386: per step
+    for kind in kinds:
+        defs[f"Claim_{kind}"] = _claim_variant(kind, claim_fields)
+    schema["properties"]["claims"]["items"] = {
+        "oneOf": [{"$ref": f"#/$defs/Claim_{k}"} for k in kinds]
+    }
+    fields = defs.pop("ActionDoc")["properties"]
+    defs["Commit"] = _required(fields["commit"])  # one copy, referenced by every variant
+    verbs = [v for v in get_args(Verb) if v in STEP_VERBS[STEP]]
+    for verb in verbs:
+        defs[_variant_name(verb)] = _action_variant(verb, fields)
+    schema["properties"]["actions"]["items"] = {
+        "oneOf": [{"$ref": f"#/$defs/{_variant_name(v)}"} for v in verbs]
+    }
+    if not first_turn:
+        del schema["properties"]["subgoals"]
+        del defs["SubgoalDoc"]
     return schema
+
+
+def _variant_name(verb: str) -> str:
+    return f"Action_{verb}"
+
+
+def _action_variant(
+    verb: str,
+    fields: Mapping[str, Any],  # Any: JSON schema parts
+) -> dict[str, Any]:  # Any: a JSON schema document
+    """[V2.65]: one verb's action: its own fields only, its needed ones required. A target for
+    every verb but press and wait, a key for press, an option for choose, text or a param (one,
+    never both) for type, and a commit for every verb that can commit (`NO_COMMIT_VERBS`)."""
+    needed = ["target"] if verb not in UNTARGETED else []
+    needed += {"press": ["key"], "choose": ["option"]}.get(verb, [])
+    optional = ["text", "param"] if verb == "type" else []
+    optional += [] if verb in NO_COMMIT_VERBS else ["commit"]
+    properties: dict[str, Any] = {  # Any: JSON schema parts
+        "verb": {"const": verb},
+        "subgoal": _required(fields["subgoal"]),
+        **{name: _required(fields[name]) for name in needed},
+        **{name: _required(fields[name]) for name in optional if name != "commit"},
+        **({"commit": {"$ref": "#/$defs/Commit"}} if "commit" in optional else {}),
+    }
+    variant: dict[str, Any] = {  # Any: JSON schema parts
+        "additionalProperties": False,
+        "properties": properties,
+        "required": ["verb", "subgoal", *needed],
+        "type": "object",
+    }
+    if verb == "type":
+        variant["oneOf"] = [{"required": ["text"]}, {"required": ["param"]}]
+        properties["text"] = {**properties["text"], "minLength": 1}  # "" is no text
+    return variant
+
+
+CLAIM_FIELDS: Final[Mapping[str, tuple[tuple[str, ...], tuple[str, ...]]]] = {
+    "value": (("evidence", "param"), ()),
+    "state": (("evidence", "wanted"), ("param",)),
+    "navigated": ((), ("evidence",)),
+}
+"""[V2.65]: each step claim kind's (required, optional) fields beside `subgoal` and `kind`, as
+the claim checks read them (`verify.check_claim`): value and state cite exactly one element; a
+value names its param; a state names the wanted state, its param only a hint ([V2.39] (2));
+navigated may cite rows. A kind added to `STEP_KINDS` needs its row here first."""
+
+
+def _claim_variant(
+    kind: str,
+    fields: Mapping[str, Any],  # Any: JSON schema parts
+) -> dict[str, Any]:  # Any: a JSON schema document
+    """[V2.65]: one claim kind: its own fields only, its needed ones required."""
+    needed, optional = CLAIM_FIELDS[kind]
+    properties: dict[str, Any] = {  # Any: JSON schema parts
+        "subgoal": _required(fields["subgoal"]),
+        "kind": {"const": kind},
+        **{name: _required(fields[name]) for name in (*needed, *optional)},
+    }
+    if "evidence" in needed:  # value and state read exactly one element
+        properties["evidence"] = {**properties["evidence"], "minItems": 1, "maxItems": 1}
+    return {
+        "additionalProperties": False,
+        "properties": properties,
+        "required": ["subgoal", "kind", *needed],
+        "type": "object",
+    }
+
+
+def _required(field: Mapping[str, Any]) -> dict[str, Any]:  # Any: JSON schema parts
+    """A field's schema with its null branch, its null default and its title removed (the
+    property name says it)."""
+    branches = [b for b in field.get("anyOf", []) if b != {"type": "null"}]
+    out = {k: v for k, v in field.items() if k not in {"anyOf", "default", "title"}}
+    if len(branches) == 1:
+        out.update(branches[0])
+    return out
 
 
 def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
@@ -476,7 +573,7 @@ def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
     """Return (system blocks, user blocks): stable, then append-only log, then the live turn.
     `vocab` is what the log's records may name (the task's subgoals and issued handles)."""
     _check_fences(task_fence, screen_fence)
-    schema_json = json.dumps(_prompt_schema(), sort_keys=True)
+    schema_json = json.dumps(_prompt_schema(first_turn=not subgoal_lines), sort_keys=True)
     subgoals = (
         [
             "subgoals:",
@@ -741,6 +838,10 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     the ceiling (`_fit`); `on_sent` hears each call's prompt bytes.
     A failure raises ControllerError carrying the DecideRecord of the calls spent.
     """
+    if first_turn == bool(subgoal_lines):
+        # [V2.65]: the schema shown is chosen by the subgoal lines (`build_prompt`) and the
+        # reply is validated by `first_turn`; a caller where they disagree is a bug, never sent
+        raise ValueError("first_turn_mismatch")
     screen = screen_fence if screen_fence is not None else secrets.token_hex(16)
 
     def render(rows: Sequence[ListingRow]) -> tuple[list[str], list[str]]:
