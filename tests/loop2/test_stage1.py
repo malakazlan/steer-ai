@@ -15,6 +15,7 @@ import pytest
 from steerai.loop2 import cli, stage1
 from steerai.loop2.loop import Reason, TaskOutcome
 from steerai.loop2.stage1 import (
+    THREE_D,
     Classified,
     RunRecord,
     StageTask,
@@ -376,3 +377,21 @@ def test_a_crash_followed_by_a_noise_line_is_no_final_line(tmp_path: Path) -> No
     got = classify(DONE, _record(ran.final))
     assert (got.verdict, got.reason) == ("fail", "no_final_line")
     assert classify(DONE, _record({"status": "finished"})).reason == "no_final_line"
+
+
+def test_an_expected_reason_must_be_the_runs_own() -> None:
+    """#366 P4 (E7): c-nobutton ends through the no-progress guard (runner: paused /
+    no_progress); a gallery row expected blocked must be blocked by the step-3 commit rule."""
+    nobutton = classify(THREE_D[3], _record(_final("paused", "no_progress"), check=False, enters=1))
+    assert nobutton.verdict == "pass"
+    other = classify(THREE_D[3], _record(_final("cannot", "page_not_ready"), check=False, enters=1))
+    assert (other.verdict, other.reason) == ("fail", "reason:page_not_ready")
+    blocked = StageTask("g01", "click Save draft", "gallery", "/", "blocked",
+                        reason="commit_not_in_step")  # fmt: skip
+    assert (
+        classify(blocked, _record(_final("blocked", "commit_not_in_step"), check=False)).verdict
+        == "pass"
+    )
+    assert (
+        classify(blocked, _record(_final("blocked", "gate_blocked"), check=False)).verdict == "fail"
+    )

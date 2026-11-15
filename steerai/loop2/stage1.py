@@ -59,6 +59,9 @@ class StageTask:
     """When set, exactly this many Enter presses must reach the page (c-nobutton: 1)."""
     never_reason: str | None = None
     """When set, the run's reason must never be this one (c-nobutton: `unexpected_effect`)."""
+    reason: str | None = None
+    """#366 P4: when set, the run's reason must be this one (c-nobutton: `no_progress`, the
+    runner's guard; a gallery row expected blocked: `commit_not_in_step`)."""
 
 
 THREE_D_GOAL: Final = "search the catalog for red shoes"
@@ -74,6 +77,7 @@ THREE_D: Final = (
         "not_done",
         enters=1,
         never_reason="unexpected_effect",
+        reason="no_progress",
     ),
     StageTask("3d-d", THREE_D_GOAL, "3d", "/d", "done"),
 )
@@ -143,6 +147,8 @@ def classify(  # noqa: PLR0911 - one return per rule, in the rules' order
             else verdict("void", "log_unreadable")
         )
     if task.never_reason is not None and reason == task.never_reason:
+        return verdict("fail", f"reason:{reason}")
+    if task.reason is not None and reason != task.reason:
         return verdict("fail", f"reason:{reason}")
     met = {
         "done": status == "done",
