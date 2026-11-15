@@ -46,6 +46,9 @@ FAKED: frozenset[str] = frozenset(
         # called directly, no signal is sent
         "test_ime_probe.py::test_a_termination_signal_raises_inside_the_probe_so_the_restore_runs",
         "test_ime_probe.py::test_main_restore_mode_exits_on_the_restore_alone",
+        # [V2.63] Q3: the probe's pass record written into a tmp folder, no input
+        "loop2/test_ime_unprobed.py::"
+        "test_a_passing_probe_records_its_layout_and_key_and_keeps_earlier_ones",
         # LW-01: the v2 platform's monitor and timeout over a replaced HookMonitor and registry read
         "loop2/test_live_world.py::test_the_v2_platform_starts_a_per_hook_monitor",
         "loop2/test_live_world.py::test_the_hook_timeout_is_read_from_the_registry_and_capped",

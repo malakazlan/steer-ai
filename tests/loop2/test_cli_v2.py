@@ -68,6 +68,10 @@ def _price_file(tmp_path: Path, **changes: object) -> Path:
     return path
 
 
+def _no_record_read() -> dict[str, Any] | None:  # Any: JSON values
+    raise AssertionError("an en-US-only machine never reads the IME probe record")
+
+
 class Run:
     """One `--loop v2` run over fakes: the windows, the platform and the streams."""
 
@@ -89,6 +93,8 @@ class Run:
             platform=lambda: self.platform,
             today=lambda: TODAY,
             image_of=lambda _pid: self.image,
+            input_methods=lambda: [0x0409_0409],  # en-US only: the IME record is never read
+            ime_record=_no_record_read,
             ready=lambda _step: self.ready,
             clock=self.clock,
             pause=self.clock.pause,
