@@ -27,7 +27,7 @@ from tests.loop2.world_fakes import (
 def test_the_target_value_is_read_from_the_target_just_before_dispatch() -> None:
     world = World([decision(act("click", target=GO.id), first=True)])
     run_task(task(), world.ports())
-    assert world.reads == [GO.runtime_id]
+    assert world.reads == [FIELD.runtime_id, GO.runtime_id]  # [V2.64] Two: the scope, then GO
     assert world.events.index("read") < world.events.index("act")
 
 

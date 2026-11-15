@@ -1,0 +1,697 @@
+{
+  "b1": {
+    "read_sha256": "3482f6ac2656299909cb7091a6ca3004ffdeeaa15a5418a099e90c9e54f3d9d5",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "b1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "state",
+      "why": "a tab: a selection state read"
+    }
+  },
+  "c1": {
+    "read_sha256": "3482f6ac2656299909cb7091a6ca3004ffdeeaa15a5418a099e90c9e54f3d9d5",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "c1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "value",
+      "why": "a select: its value"
+    }
+  },
+  "calc1": {
+    "read_sha256": "09512d38a78917561bb019f97965190433c8e7a0cc7e5bb41926c3e5d3dd1502",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": "Button",
+      "button_search_landmark": false,
+      "risk": "R0",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "calc1",
+      "outcome": "never_done",
+      "reason": null,
+      "risk": "R0",
+      "proof": null,
+      "why": "the result shows only as the display's text: step 4"
+    }
+  },
+  "d1": {
+    "read_sha256": "3482f6ac2656299909cb7091a6ca3004ffdeeaa15a5418a099e90c9e54f3d9d5",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": "Button",
+      "button_search_landmark": false,
+      "risk": "R3",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "d1",
+      "outcome": "blocked",
+      "reason": "commit_not_in_step",
+      "risk": "R3",
+      "proof": null,
+      "why": "a removed item shows only as content: step 4"
+    }
+  },
+  "f1": {
+    "read_sha256": "3482f6ac2656299909cb7091a6ca3004ffdeeaa15a5418a099e90c9e54f3d9d5",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "textbox",
+      "search_landmark": false,
+      "button_role": "Button",
+      "button_search_landmark": false,
+      "risk": "R2",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "f1",
+      "outcome": "blocked",
+      "reason": "commit_not_in_step",
+      "risk": "R2",
+      "proof": null,
+      "why": "a sent form shows only as text: step 4"
+    }
+  },
+  "hn1": {
+    "read_sha256": "ad338f0fd0a5e34aabb76f21cdd30e4871edff7384bb41c54d1110972033e489",
+    "facts": {
+      "field_role": "Document",
+      "aria_role": null,
+      "search_landmark": false,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R0",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "hn1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R0",
+      "proof": "value",
+      "why": "the editor's text: its value (native; the value read is unmeasured on v2)"
+    }
+  },
+  "ib1": {
+    "read_sha256": "2079fe901a15af1c038e4911fb7eae7e9efc22c239571c0062daf285f525c72c",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "textbox",
+      "search_landmark": false,
+      "button_role": "Button",
+      "button_search_landmark": false,
+      "risk": "R2",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "ib1",
+      "outcome": "blocked",
+      "reason": "commit_not_in_step",
+      "risk": "R2",
+      "proof": null,
+      "why": "a sent message shows only as text: step 4"
+    }
+  },
+  "ib2": {
+    "read_sha256": "2079fe901a15af1c038e4911fb7eae7e9efc22c239571c0062daf285f525c72c",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": "Hyperlink",
+      "button_search_landmark": false,
+      "risk": "R0",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "ib2",
+      "outcome": "never_done",
+      "reason": null,
+      "risk": "R0",
+      "proof": null,
+      "why": "an opened chat shows only as content: step 4"
+    }
+  },
+  "ib3": {
+    "read_sha256": "2079fe901a15af1c038e4911fb7eae7e9efc22c239571c0062daf285f525c72c",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": "Hyperlink",
+      "button_search_landmark": false,
+      "risk": "R0",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "ib3",
+      "outcome": "never_done",
+      "reason": null,
+      "risk": "R0",
+      "proof": null,
+      "why": "an opened chat shows only as content: step 4"
+    }
+  },
+  "ib4": {
+    "read_sha256": "17798de09e3f6eff76b057f0ed1630ed970aab1ce621f728d29cccc35dd1599a",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "textbox",
+      "search_landmark": false,
+      "button_role": "Button",
+      "button_search_landmark": false,
+      "risk": "R2",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "ib4",
+      "outcome": "blocked",
+      "reason": "commit_not_in_step",
+      "risk": "R2",
+      "proof": null,
+      "why": "a sent message shows only as text: step 4"
+    }
+  },
+  "l1": {
+    "read_sha256": "3482f6ac2656299909cb7091a6ca3004ffdeeaa15a5418a099e90c9e54f3d9d5",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": "Button",
+      "button_search_landmark": false,
+      "risk": "R0",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "l1",
+      "outcome": "never_done",
+      "reason": null,
+      "risk": "R0",
+      "proof": null,
+      "why": "more items show only as content: step 4"
+    }
+  },
+  "m1": {
+    "unrated": "target_after_opener"
+  },
+  "n1": {
+    "read_sha256": "5a18f54f2ed254cb67ea591c3d28a0a323eda7d507a6eb906e818479c3f35bf1",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "n1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "state",
+      "why": "a checkbox: a toggle state read"
+    }
+  },
+  "n2": {
+    "read_sha256": "5a18f54f2ed254cb67ea591c3d28a0a323eda7d507a6eb906e818479c3f35bf1",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "n2",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "state",
+      "why": "a tri-state: a toggle state read"
+    }
+  },
+  "n3": {
+    "read_sha256": "5a18f54f2ed254cb67ea591c3d28a0a323eda7d507a6eb906e818479c3f35bf1",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "n3",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "value",
+      "why": "a select: its value"
+    }
+  },
+  "n4": {
+    "read_sha256": "5a18f54f2ed254cb67ea591c3d28a0a323eda7d507a6eb906e818479c3f35bf1",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R2",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "n4",
+      "outcome": "blocked",
+      "reason": "commit_not_in_step",
+      "risk": "R2",
+      "proof": "state",
+      "why": "a radio: a selection state read"
+    }
+  },
+  "n5": {
+    "read_sha256": "5a18f54f2ed254cb67ea591c3d28a0a323eda7d507a6eb906e818479c3f35bf1",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "n5",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "state",
+      "why": "a disclosure: an expand state read"
+    }
+  },
+  "n6": {
+    "read_sha256": "5a18f54f2ed254cb67ea591c3d28a0a323eda7d507a6eb906e818479c3f35bf1",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": "Button",
+      "button_search_landmark": false,
+      "risk": "R0",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "n6",
+      "outcome": "never_done",
+      "reason": null,
+      "risk": "R0",
+      "proof": null,
+      "why": "more comments show only as content: step 4"
+    }
+  },
+  "n7": {
+    "read_sha256": "5a18f54f2ed254cb67ea591c3d28a0a323eda7d507a6eb906e818479c3f35bf1",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "n7",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "state",
+      "why": "a listbox option: a selection state read"
+    }
+  },
+  "np1": {
+    "read_sha256": "ad338f0fd0a5e34aabb76f21cdd30e4871edff7384bb41c54d1110972033e489",
+    "facts": {
+      "field_role": "Document",
+      "aria_role": null,
+      "search_landmark": false,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R0",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "np1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R0",
+      "proof": "value",
+      "why": "the editor's text: its value (native; the value read is unmeasured on v2)"
+    }
+  },
+  "np2": {
+    "read_sha256": "ad338f0fd0a5e34aabb76f21cdd30e4871edff7384bb41c54d1110972033e489",
+    "facts": {
+      "field_role": "Document",
+      "aria_role": null,
+      "search_landmark": false,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R0",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "np2",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R0",
+      "proof": "value",
+      "why": "the editor's text: its value (native; the value read is unmeasured on v2)"
+    }
+  },
+  "q1": {
+    "read_sha256": "fe0d021bd5679d3cb479682f5414b897979543507528bc3f8996c5c5be9fb4ef",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "q1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "state",
+      "why": "a disclosure: an expand state read"
+    }
+  },
+  "q2": {
+    "read_sha256": "fe0d021bd5679d3cb479682f5414b897979543507528bc3f8996c5c5be9fb4ef",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "q2",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "state",
+      "why": "a listbox option: a selection state read"
+    }
+  },
+  "q3": {
+    "read_sha256": "fe0d021bd5679d3cb479682f5414b897979543507528bc3f8996c5c5be9fb4ef",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "q3",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "value",
+      "why": "two selects: their values"
+    }
+  },
+  "q4": {
+    "read_sha256": "fe0d021bd5679d3cb479682f5414b897979543507528bc3f8996c5c5be9fb4ef",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "q4",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "state",
+      "why": "a tab: a selection state read"
+    }
+  },
+  "q5": {
+    "read_sha256": "fe0d021bd5679d3cb479682f5414b897979543507528bc3f8996c5c5be9fb4ef",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R2",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "q5",
+      "outcome": "blocked",
+      "reason": "commit_not_in_step",
+      "risk": "R2",
+      "proof": "state",
+      "why": "a checkbox: a toggle state read"
+    }
+  },
+  "r1": {
+    "read_sha256": "8923c3ab032356aff9a6c24f4a167494ff3e30cda7a098087c3043b86790c284",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "r1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "state",
+      "why": "a radio: a selection state read"
+    }
+  },
+  "r2": {
+    "read_sha256": "8923c3ab032356aff9a6c24f4a167494ff3e30cda7a098087c3043b86790c284",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "r2",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "state",
+      "why": "a switch: a toggle state read"
+    }
+  },
+  "r3": {
+    "read_sha256": "8923c3ab032356aff9a6c24f4a167494ff3e30cda7a098087c3043b86790c284",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "r3",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "value",
+      "why": "a select with groups: its value"
+    }
+  },
+  "r4": {
+    "unrated": "target_after_opener"
+  },
+  "r5": {
+    "read_sha256": "8923c3ab032356aff9a6c24f4a167494ff3e30cda7a098087c3043b86790c284",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R2",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "r5",
+      "outcome": "blocked",
+      "reason": "commit_not_in_step",
+      "risk": "R2",
+      "proof": "state",
+      "why": "a checkbox: a toggle state read"
+    }
+  },
+  "s1": {
+    "read_sha256": "3482f6ac2656299909cb7091a6ca3004ffdeeaa15a5418a099e90c9e54f3d9d5",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "s1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "state",
+      "why": "a checkbox: a toggle state read"
+    }
+  },
+  "t1": {
+    "read_sha256": "3482f6ac2656299909cb7091a6ca3004ffdeeaa15a5418a099e90c9e54f3d9d5",
+    "facts": {
+      "field_role": "Edit",
+      "aria_role": "textbox",
+      "search_landmark": false,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R2",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "t1",
+      "outcome": "blocked",
+      "reason": "commit_not_in_step",
+      "risk": "R2",
+      "proof": null,
+      "why": "an added item shows only as content: step 4"
+    }
+  },
+  "u1": {
+    "unrated": "pressed_unread"
+  },
+  "u2": {
+    "read_sha256": "288d7b957ea254db6c9f79b79c1890ea64898ed08b9b5740134407528edcb6d5",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "u2",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "state",
+      "why": "a switch: a toggle state read"
+    }
+  },
+  "u3": {
+    "unrated": "target_after_opener"
+  },
+  "u4": {
+    "read_sha256": "288d7b957ea254db6c9f79b79c1890ea64898ed08b9b5740134407528edcb6d5",
+    "facts": {
+      "field_role": null,
+      "aria_role": null,
+      "search_landmark": null,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R1",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "u4",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R1",
+      "proof": "state",
+      "why": "a grid row: a selection state read"
+    }
+  },
+  "u5": {
+    "unrated": "target_after_opener"
+  },
+  "wp1": {
+    "read_sha256": "aab5e4a9064fb686ac0bb827ea28b8baedc620b678e0fbea8b1b6f57bcc1bfba",
+    "facts": {
+      "field_role": "Document",
+      "aria_role": null,
+      "search_landmark": false,
+      "button_role": null,
+      "button_search_landmark": null,
+      "risk": "R0",
+      "unread": []
+    },
+    "expected": {
+      "task_id": "wp1",
+      "outcome": "done",
+      "reason": null,
+      "risk": "R0",
+      "proof": "value",
+      "why": "the document's text: its value (native; the value read is unmeasured on v2)"
+    }
+  }
+}

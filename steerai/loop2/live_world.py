@@ -47,7 +47,7 @@ from steerai.loop2.controller import PROMPT_VERSION
 from steerai.loop2.decide_port import Call, Counter, DecideCalls, TaskGenerations
 from steerai.loop2.listing import LISTING_CAP
 from steerai.loop2.loop import ActResult, Dispatch, PortInterrupted, Ports
-from steerai.loop2.prompt_inputs import make_decide
+from steerai.loop2.prompt_inputs import make_audit, make_decide
 from steerai.loop2.task import Task
 from steerai.loop2.world_ports import KILL_POLL_S, WorldPorts, WorldTimes, kill_sleep
 from steerai.orchestrator.loop import IDLE_S, WAIT_POLL_S
@@ -971,6 +971,7 @@ class LiveWorld:
             return world.read_state(element, wanted)
 
         return Ports(
+            audit=make_audit(calls, goal=task.goal, task_fence=self.task_fence),
             decide=make_decide(
                 calls,
                 goal=task.goal,

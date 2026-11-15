@@ -250,6 +250,37 @@ class Decided:
     """[V2.61]: the turn's calls held more input tokens than the guard's bound said."""
 
 
+AuditReason = Literal["outcome_shown", "outcome_not_shown", "outcome_unclear"]
+"""[V2.64] One: what the final audit says of the request's outcome (closed)."""
+ProofLine = tuple[str, str, str, str, bool]
+"""One proven subgoal for the audit: (subgoal id, closes, how, kind, closed only by value or
+state claims)."""
+
+
+@dataclass(frozen=True)
+class AuditView:
+    """[V2.64] One, rev 4.5: what the final audit sees: the final observation (its listing), the
+    task handles bound on it, and the proof tokens. The request comes from the task."""
+
+    observed: Observed
+    handles: Mapping[int, int]
+    proofs: tuple[ProofLine, ...]
+    keep: frozenset[tuple[int, ...]] = frozenset()
+    """#404 principal 2: decide's always-keep set plus every cited element, by RuntimeId: the
+    audit's listing is selected as decide's is, with these kept under the cap."""
+    words: frozenset[str] = frozenset()
+    """The subgoals' param words, for the goal-word class of the listing."""
+
+
+@dataclass(frozen=True)
+class Audited:
+    """The audit's answer: a veto or not, its closed reason, and the call's usage."""
+
+    veto: bool
+    reason: AuditReason
+    usage: TokenUsage | None = None
+
+
 @dataclass(frozen=True)
 class Ports:
     decide: Callable[[TurnView], Decided]
@@ -287,6 +318,9 @@ class Ports:
     fact_of: Callable[[str], ValueFact]
     """The value fact a field holding exactly this text reads as (the session key and the
     normalisation `read_value` uses), so a value claim compares digests, never text."""
+    audit: Callable[[AuditView], Audited] | None = None
+    """[V2.64] One: the final audit, called only when every proof is self-written; None means
+    there is none, so such a task fails closed (`audit_failed`), never ends done unaudited."""
 
 
 WatchKind = Literal["plain", "trigger", "submit", "wait"]
@@ -389,11 +423,17 @@ class TaskOutcome:
     Stage 1 runs with caching off and asserts every cache counter here is zero."""
     exact_counts: int = 0
     """[V2.61]: turns on which the prompt guard spent an exact count (near the ceiling)."""
+    audit: tuple[str, str] | None = None
+    """[V2.64] One: the final audit's (`allowed` | `vetoed` | `failed`, reason token); None when
+    no audit ran (some proof was not self-written, or the task did not reach done)."""
     query_combobox_listed: bool = False
     """[V2.64] Two: a query-class ComboBox (searchbox AriaRole, or under a Search landmark) was
     among the rows the model was shown."""
     typed_into_combobox: bool = False
     """[V2.64] Two: a type targeted a ComboBox (whether it was then sent or refused)."""
+    pre_task_draft_clicks: int = 0
+    """[V2.64] Two: non-field clicks whose submit scope held a filled field with no pending-text
+    record (text Steer did not type: a draft from before the task, or the page's own)."""
     partial_page_calls: int = 0
     """[V2.35]: model calls made on a partial page (the observation growing, or its Document
     younger than the load guard), counted where every call is."""

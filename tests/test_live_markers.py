@@ -14,7 +14,7 @@ LIVE_CALLS = frozenset(
 )
 """Constructors of the real Windows side."""
 LIVE_MODULES = frozenset(
-    {"win_input", "probe_key", "stage1", "ime_probe", "unstick_probe", "mta_act"}
+    {"win_input", "probe_key", "stage1", "ime_probe", "choose_probe", "unstick_probe", "mta_act"}
 )
 """A call through one of these modules (`win_input.click_at(...)`) is live."""
 MARKS = frozenset({"windows", "live", "probe"})
