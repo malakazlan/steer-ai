@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import datetime
 import hashlib
 import itertools
 import json
@@ -62,6 +63,27 @@ _VERBS: Final[dict[object, Verb]] = {v: v for v in get_args(Verb)}
 _KEYS: Final[dict[object, Key]] = {k: k for k in get_args(Key)}
 _RISKS: Final[dict[object, Risk]] = {r: r for r in RISKS}
 SITE_SPACING_S: Final = 60.0
+DAILY_CAP: Final = 12
+DAY_WAIT_CHUNK_S: Final = 3600.0
+"""#413 blocker 1: the wait for the day to turn sleeps at most this long at a time."""
+DAY_WAIT_LIMIT_S: Final = 26 * 3600.0
+"""#413 blocker 1: a day that has not turned after this long is refused (fail closed)."""
+
+
+class DayDidNotTurn(RuntimeError):  # noqa: N818 - a refusal, named for its reason
+    """Every pending host was at its cap and the calendar day did not turn in the bound."""
+
+    def __init__(self) -> None:
+        super().__init__("day_did_not_turn")
+
+
+def calendar_day() -> int:
+    """Today on the local calendar, as an ordinal: the production day source (#413 blocker 1)."""
+    return datetime.date.today().toordinal()  # noqa: DTZ011 - the local day the cap counts
+
+
+"""[V2.65] (3): the most loads of one host in one day at the spacing; a host at the cap stops
+for the day."""
 """§2.3, [V2.63] Q4: the least time between two page loads of one host, controls included."""
 
 
@@ -142,21 +164,44 @@ def start_document(raw: str) -> StartDocument:
 
 
 class Spacer:
-    """§2.3: every load of a host waits until `spacing_s` after its last one, and is counted
-    (kill-aware: an interrupt raised in the sleep ends the wait as itself)."""
+    """§2.3: every load of a host waits until `spacing_s` after its last one, and is counted, in
+    all and per day ([V2.65] (3): at most `cap` a host a day). Kill-aware: an interrupt raised in
+    a sleep ends the wait as itself."""
 
     def __init__(
         self,
         clock: Callable[[], float],
         sleep: Callable[[float], None],
         spacing_s: float = SITE_SPACING_S,
+        *,
+        day: Callable[[], int] = calendar_day,
+        cap: int = DAILY_CAP,
     ) -> None:
         self._clock = clock
         self._sleep = sleep
         self._spacing_s = spacing_s
         self._last: dict[str, float] = {}
+        self._today: dict[tuple[int, str], int] = {}
+        self._cap = cap
+        self.day = day
+        """The calendar day now (an ordinal): the cap and a control's repeat read it."""
         self.loads: dict[str, int] = {}
         """Loads per host so far: the volume the summary reports."""
+
+    def at_cap(self, host: str) -> bool:
+        return self._today.get((self.day(), host), 0) >= self._cap
+
+    def wait_next_day(self) -> None:
+        """Every pending host is at its cap: wait, kill-aware, until the day turns, in sleeps of
+        at most `DAY_WAIT_CHUNK_S`; a day that has not turned after `DAY_WAIT_LIMIT_S` is refused
+        (`DayDidNotTurn`), never waited on forever."""
+        today = self.day()
+        waited = 0.0
+        while self.day() == today:
+            if waited >= DAY_WAIT_LIMIT_S:
+                raise DayDidNotTurn
+            self._sleep(DAY_WAIT_CHUNK_S)
+            waited += DAY_WAIT_CHUNK_S
 
     def wait(self, host: str) -> None:
         last = self._last.get(host)
@@ -169,6 +214,8 @@ class Spacer:
     def loaded(self, host: str) -> None:
         self._last[host] = self._clock()
         self.loads[host] = self.loads.get(host, 0) + 1
+        key = (self.day(), host)
+        self._today[key] = self._today.get(key, 0) + 1
 
 
 # ---- [V2.65] (1) option (b): a target revealed by one scripted click on its opener ---------------

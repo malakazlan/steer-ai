@@ -5,6 +5,7 @@ Only each read's SHA-256 and its deciding facts are committed; the reads stay lo
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import hashlib
 import json
 from pathlib import Path
@@ -18,10 +19,12 @@ from steerai.loop2.stage2_expected import (
     SITE_SPACING_S,
     TABLE,
     UNRATED_REASONS,
+    DayDidNotTurn,
     DecidingFacts,
     SiteRow,
     Spacer,
     StartDocument,
+    calendar_day,
     deciding_facts,
     dump_table,
     load_acts,
@@ -464,3 +467,35 @@ def test_the_committed_2b_table_holds_no_page_text() -> None:
     for row in load_table(table).values():
         assert len(row.read_sha256) == 64
     assert "Search Wikipedia" not in table
+
+
+# ---- #413 blocker 1: the day turns in production, and the wait for it is bounded ----------------
+
+
+def test_a_spacer_counts_days_on_the_calendar_by_default() -> None:
+    clock = Clock()
+    spacer = Spacer(clock, clock.sleep)
+    assert spacer.day is calendar_day
+    assert calendar_day() == datetime.date.today().toordinal()  # noqa: DTZ011 - the local day
+
+
+def test_the_wait_for_the_day_to_turn_sleeps_an_hour_at_most_each_time() -> None:
+    clock = Clock()
+
+    def days() -> int:  # the fake calendar
+        return int(clock() // 86_400)
+
+    clock.now = 86_400 * 5 + 100.0
+    spacer = Spacer(clock, clock.sleep, day=days)
+    spacer.wait_next_day()
+    assert days() == 6
+    assert max(clock.slept) <= 3600.0
+
+
+def test_a_day_that_never_turns_is_refused_after_a_bounded_wait() -> None:
+    clock = Clock()
+    spacer = Spacer(clock, clock.sleep, day=lambda: 7)
+    with pytest.raises(DayDidNotTurn, match="day_did_not_turn"):
+        spacer.wait_next_day()
+    assert len(clock.slept) <= 27
+    assert sum(clock.slept) <= 27 * 3600.0
