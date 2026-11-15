@@ -32,8 +32,15 @@ def test_one_token_behind_every_refusal_strike_is_the_cause() -> None:
         [(REFUSED, ONE), (("same_action_same_effect", "state_seen"), frozenset())],
         [(("state_seen",), ONE)],
     ],
-    ids=["none", "two_causes", "two_tokens", "effect_none", "claim_rejected", "same_action",
-         "no_refusal"],  # fmt: skip
+    ids=[
+        "none",
+        "two_causes",
+        "two_tokens",
+        "effect_none",
+        "claim_rejected",
+        "same_action",
+        "no_refusal",
+    ],
 )
 def test_anything_else_is_mixed(
     strikes: list[tuple[tuple[StrikeReason, ...], frozenset[str]]],

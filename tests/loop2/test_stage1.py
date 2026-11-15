@@ -21,10 +21,12 @@ from steerai.loop2.stage1 import (
     RunRecord,
     StageTask,
     Verdict,
+    _closed_reason,
     accept,
     child_argv,
     classify,
     precheck,
+    reason_matches,
     run_child,
     run_task_runs,
     wait_for_exit,
@@ -426,20 +428,20 @@ def test_an_expected_reason_class_matches_its_detailed_endings() -> None:
 
 
 def test_an_expectation_that_names_a_detail_matches_only_itself() -> None:
-    assert stage1.reason_matches("no_progress", "no_progress:intake_insufficient")
-    assert not stage1.reason_matches("no_progress", "no_progressive")
-    assert not stage1.reason_matches("after_refusal:press_not_at_focus", "after_refusal:press")
-    assert stage1.reason_matches("commit_not_in_step", "commit_not_in_step")
-    assert not stage1.reason_matches("no_progress", None)
+    assert reason_matches("no_progress", "no_progress:intake_insufficient")
+    assert not reason_matches("no_progress", "no_progressive")
+    assert not reason_matches("after_refusal:press_not_at_focus", "after_refusal:press")
+    assert reason_matches("commit_not_in_step", "commit_not_in_step")
+    assert not reason_matches("no_progress", None)
 
 
 def test_a_detailed_reason_stays_closed_in_the_report() -> None:
     """[V2.70], #428 (2): the report keeps `reason:<class>:<token>` and drops anything else."""
-    assert stage1._closed_reason("reason:no_progress:intake_insufficient") == (
+    assert _closed_reason("reason:no_progress:intake_insufficient") == (
         "reason:no_progress:intake_insufficient"
     )
-    assert stage1._closed_reason("reason:no_progress:Red Shoes") == "reason:other"
-    assert stage1._closed_reason("reason:a:b:c") == "reason:other"
+    assert _closed_reason("reason:no_progress:Red Shoes") == "reason:other"
+    assert _closed_reason("reason:a:b:c") == "reason:other"
 
 
 # ---- #366 P1: 3 of 3, re-runs, and a refused precheck is said -----------------------------------
