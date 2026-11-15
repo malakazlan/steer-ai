@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import contextlib
 import json
 import math
 import subprocess
@@ -243,6 +242,13 @@ def page_check(task: StageTask, raw: str) -> bool:
     raise ValueError(f"no page check for {task.fixture} task {task.task_id}")
 
 
+CHROME_LOST: Final = "chrome_lost"
+"""#459: the run's own Chrome went away under the harness (its DevTools connection closed). With
+no done claimed it is an infrastructure void, re-run within the bound and counted toward the
+1-in-10 void limit; a done it leaves unread fails closed as `done_log_unread:chrome_lost`. The
+same token as `chrome_a11y.CHROME_LOST`, which a test pins."""
+
+
 @dataclass(frozen=True)
 class RunRecord:
     """What one run left: the child's final line and the fixture's own facts."""
@@ -262,6 +268,10 @@ class RunRecord:
     """The child's exit code; None when killed."""
     memory: Json | None = None
     """[V2.63]: the working-set sampler's summary over the child's run (`run_sampled`)."""
+    kill_failure: str | None = None
+    """#431: the cap's kill did not end the child (`ChildRun.kill_failure`)."""
+    lost: str | None = None
+    """#459: the run's own Chrome went away under the harness (`CHROME_LOST`); None when not."""
 
 
 @dataclass(frozen=True)
@@ -288,7 +298,8 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
     if not record.fixture_ok:
         return verdict("void", "fixture_failed_before_start")
     if record.killed:
-        return verdict("fail", "cap_killed")
+        failure = record.kill_failure
+        return verdict("fail", "cap_killed" if failure is None else f"cap_killed:{failure}")
     final = record.final
     if final is None or final.get("status") not in STATUSES:  # #366 E2: the CLI's own line
         return verdict("fail", "no_final_line")
@@ -301,6 +312,12 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
     if final.get("status") == "error":  # #438: an error after the task began stays Steer's
         return verdict("fail", "error_after_start")
     status, reason = final.get("status"), final.get("reason")
+    if record.lost is not None:  # #459: the browser went away under the harness
+        # a done that cannot be checked is where a false done would hide: it fails closed,
+        # its cause kept; anything else is the machine's, a void (the coordinator's ruling)
+        if status == "done":
+            return verdict("fail", f"done_log_unread:{record.lost}")
+        return verdict("void", record.lost)
     if status == "done":  # done is never void and never hidden behind a lost monitor
         if not record.log_read:
             return verdict("fail", "done_log_unread")
@@ -542,6 +559,8 @@ def _closed_reason(reason: str | None) -> str | None:  # noqa: PLR0911 - one ret
         return f"{head}:{kept_code}:{kept_detail}"
     if head == "enters":
         return reason if tail.isdigit() or tail == "None" else f"{head}:other"
+    if head == "done_log_unread":
+        return reason if tail == CHROME_LOST else f"{head}:other"
     if head == "reason":
         return reason if _token(tail) else f"{head}:other"
     if head.startswith("expected_"):
@@ -1149,6 +1168,9 @@ class ChildRun:
     final: Json | None
     killed: bool
     code: int | None
+    kill_failure: str | None = None
+    """#431: why the kill did not end the child (`kill_failed:<code>`, `kill_timeout`,
+    `kill_raised:<type>`, `child_survived`); None when it did, or no kill was needed."""
 
 
 def child_argv(task: StageTask, *, hwnd: int, price: Path, trace: Path) -> list[str]:
@@ -1165,21 +1187,48 @@ def run_child(
     cap_s: float,
     out: Path,
     start: Callable[[list[str], Path], Child],
-    kill: Callable[[int], None],
+    kill: Callable[[int], str | None],
 ) -> ChildRun:
     """Run the child to its end or its cap (then its whole tree is killed), and read its final
-    JSON line from `out`; a last line that is not one JSON object is no final line."""
+    JSON line from `out`; a last line that is not one JSON object is no final line. On any
+    other exit path (a Ctrl+C, any exception while waiting) the child this call started is
+    killed the same way before the exception goes on: a stopped run never leaves its task
+    running. A kill that did not end the child is never a clean stop: on the cap it is the
+    run's `kill_failure`; on another exit path it is a note on the original exception, which
+    is re-raised as itself. A `start` that raises started nothing and kills nothing. Residual:
+    a second Ctrl+C during the bounded kill wait interrupts that wait (the kill itself was
+    already sent)."""
     child = start(argv, out)
     killed = False
+    failure: str | None = None
     try:
         code: int | None = child.wait(timeout=cap_s)
     except subprocess.TimeoutExpired:
         killed = True
-        kill(child.pid)
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            child.wait(timeout=KILL_WAIT_S)  # bounded: a tree that will not die is not waited on
+        failure = _end(child, kill)
         code = None
-    return ChildRun(None if killed else _last_json(out), killed, code)
+    except BaseException as exc:
+        stopped = _end(child, kill)
+        if stopped is not None:
+            exc.add_note(f"child kill: {stopped}")
+        raise
+    return ChildRun(None if killed else _last_json(out), killed, code, failure)
+
+
+def _end(child: Child, kill: Callable[[int], str | None]) -> str | None:
+    """Kill the child's tree by the pid of the handle `start` gave, then wait for it, bounded
+    by `KILL_WAIT_S`. None when the child ended; else why not (closed tokens): the kill's own
+    report, `kill_raised:<type>` when the kill call raised, or `child_survived` when the child
+    outlived the bounded wait."""
+    try:
+        failed = kill(child.pid)
+    except Exception as exc:  # noqa: BLE001 - reported as a token, never masks the caller's stop
+        failed = f"kill_raised:{type(exc).__name__}"
+    try:
+        child.wait(timeout=KILL_WAIT_S)
+    except subprocess.TimeoutExpired:
+        return "child_survived"
+    return failed
 
 
 def _last_json(out: Path) -> Json | None:
@@ -1304,6 +1353,7 @@ def _live_3d(
     from steerai.probes import instant_search as fixture  # noqa: PLC0415 - live only
     from steerai.probes.chrome_a11y import (  # noqa: PLC0415
         CHROME_DEFAULT,
+        ChromeLost,
         launch_chrome,
         stop_chrome,
     )
@@ -1338,15 +1388,21 @@ def _live_3d(
             time.sleep(fixture.SETTLE_S)
             try:
                 entries = fixture.parse_log(fixture._read_log(cdp, base))
+            except ChromeLost:  # #459: the browser went away; a void, never a crash
+                return RunRecord(task.task_id, run, ran.final, True, False, None, None,
+                                 killed=ran.killed, code=ran.code, memory=memory,
+                                 kill_failure=ran.kill_failure, lost=CHROME_LOST)  # fmt: skip
             except (OSError, RuntimeError, ValueError):
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
-                                 killed=ran.killed, code=ran.code, memory=memory)  # fmt: skip
+                                 killed=ran.killed, code=ran.code, memory=memory,
+                             kill_failure=ran.kill_failure)  # fmt: skip
             finally:
                 cdp.close()
             enters = sum(e.ev == "enter" for e in entries)
             passed = fixture.passes(variant, entries)  # type: ignore[arg-type]  # a variant's path
             return RunRecord(task.task_id, run, ran.final, True, True, passed, enters,
-                             killed=ran.killed, code=ran.code, memory=memory)  # fmt: skip
+                             killed=ran.killed, code=ran.code, memory=memory,
+                             kill_failure=ran.kill_failure)  # fmt: skip
         finally:
             stop_chrome(proc, tmp / "profile")
             shutil.rmtree(tmp, ignore_errors=True)
@@ -1368,6 +1424,7 @@ def _live_page(
     from steerai.probes import instant_search  # noqa: PLC0415 - live only
     from steerai.probes.chrome_a11y import (  # noqa: PLC0415
         CHROME_DEFAULT,
+        ChromeLost,
         launch_chrome,
         stop_chrome,
     )
@@ -1414,13 +1471,19 @@ def _live_page(
                 if not isinstance(raw, str):
                     raise ValueError("the page log is not text")
                 check = page_check(task, raw)
+            except ChromeLost:  # #459: the browser went away; a void, never a crash
+                return RunRecord(task.task_id, run, ran.final, True, False, None, None,
+                                 killed=ran.killed, code=ran.code, memory=memory,
+                                 kill_failure=ran.kill_failure, lost=CHROME_LOST)  # fmt: skip
             except (OSError, RuntimeError, ValueError):
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
-                                 killed=ran.killed, code=ran.code, memory=memory)  # fmt: skip
+                                 killed=ran.killed, code=ran.code, memory=memory,
+                             kill_failure=ran.kill_failure)  # fmt: skip
             finally:
                 cdp.close()
             return RunRecord(task.task_id, run, ran.final, True, True, check, None,
-                             killed=ran.killed, code=ran.code, memory=memory)  # fmt: skip
+                             killed=ran.killed, code=ran.code, memory=memory,
+                             kill_failure=ran.kill_failure)  # fmt: skip
         finally:
             stop_chrome(proc, tmp / "profile")
             shutil.rmtree(tmp, ignore_errors=True)

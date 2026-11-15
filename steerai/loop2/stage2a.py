@@ -75,6 +75,8 @@ TABLE: Final = Path(__file__).with_name("stage2a_expected.json")
 TABLE_SHA256: Final = "d5a1311b948debb02148d7fe3e4d145cb073c894cba95f2dfd59d356ac5cf3c2"
 """#408 blocker 1: the committed table's pin. A run takes only this table, so moving a task into
 `unrated` (out of acceptance) can never be done by a table passed on the command line."""
+ACTS_SHA256: Final = "1e15dac3e4a242a9b00c730da34273f72f8a17f5973edf9fb6a4105090bbd7b9"
+"""#428 (8): the committed 2a acts file's pin, checked with the table."""
 CALC_WAIT_S: Final = 20.0
 """How long the calculator's window may take to show (unmeasured; the v1 suite's own wait)."""
 OUT_OF_STEP_FILE: Final = Path(__file__).with_name("stage2a_out_of_step.json")
@@ -171,6 +173,8 @@ def check_table(text: str) -> None:
     if hashlib.sha256(text.encode("utf-8")).hexdigest() != TABLE_SHA256:
         raise ValueError("table: not the committed 2a table")
     acts = ACTS.read_text(encoding="utf-8")
+    if hashlib.sha256(acts.encode("utf-8")).hexdigest() != ACTS_SHA256:
+        raise ValueError("acts: not the committed 2a acts")
     if set(load_table(text)) != set(load_acts(acts)) or load_unrated(text) != load_unrated(acts):
         raise ValueError("table: its rated and unrated tasks are not the committed acts' own")
 
@@ -486,7 +490,8 @@ def _live_local(  # pragma: no cover - live
             except (InvalidRun, OSError, RuntimeError, ValueError):
                 check, log_read = None, False
             return RunRecord(task.task_id, run, ran.final, True, log_read, check, None,
-                             killed=ran.killed, code=ran.code, memory=memory)  # fmt: skip
+                             killed=ran.killed, code=ran.code, memory=memory,
+                             kill_failure=ran.kill_failure)  # fmt: skip
     except (InvalidRun, OSError, TimeoutError, RuntimeError):
         return RunRecord(task.task_id, run, None, False, False, None, None)
 
