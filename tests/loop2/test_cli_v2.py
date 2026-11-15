@@ -528,3 +528,18 @@ def test_a_steer_error_after_the_task_keeps_its_outcome(
     result = run.result()
     assert result["error"] == "wrong_thread"
     assert result["used"]["max_model_calls"] >= 1  # the task's own counts survive
+
+
+def test_a_lost_monitor_is_reported_apart_from_steers_own_stops(tmp_path: Path) -> None:
+    """[V2.59]: stage 1 counts runs ending monitor_lost on their own (more than 1 in 10
+    rejects the stage), never mixed with Steer's stops."""
+    run = Run(tmp_path)
+    run.platform.monitor.ok = False
+    run()
+    lost = run.result()
+    assert (lost["status"], lost["reason"], lost["monitor_lost"]) == (
+        "stopped", "monitor_lost", True,
+    )  # fmt: skip
+    clean = Run(tmp_path)
+    clean()
+    assert clean.result()["monitor_lost"] is False
