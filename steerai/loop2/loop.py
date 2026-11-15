@@ -476,6 +476,9 @@ class TaskOutcome:
     turn_trace_dropped: int = 0
     """[V2.67] D: turn records that failed the no-free-text check (`turn_trace.closed`): dropped,
     never written in part, and counted so a gap in the trace never reads as a clean run."""
+    turn_trace_errors: int = 0
+    """#463 (1): turns whose record could not be built or written (an exception in
+    `turn_record` or the sink): counted apart from the drops, so a bug is never hidden as one."""
     wall_s: float = 0.0
     """7b: the task's wall time on the ports' clock, start to end (use against `max_wall_s`)."""
     cost_usd: float | None = None
