@@ -297,7 +297,9 @@ class HelperProcess:
         with self._close_lock:
             if self._closed:
                 return
-            self._end()
+            failure = self._end()
+            if failure is not None:
+                raise failure  # #388: a failed end wait is reported, never dropped
 
     # ---- lifecycle ------------------------------------------------------------------------------
 

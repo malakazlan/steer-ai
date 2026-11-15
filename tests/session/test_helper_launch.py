@@ -837,3 +837,23 @@ def test_a_terminate_during_close_waits_for_it_and_then_does_nothing() -> None:
     ender.join(5)
     assert not w.named("terminate_job")
     assert not w.named("terminate_process")
+
+
+def test_terminate_raises_a_failed_end_wait_and_close_still_releases() -> None:
+    """#388 principal: `_end` returns its failed wait; `terminate` raises it, never drops it."""
+    w = FakeWin32()
+    helper = _helper(w)
+    helper.start()
+    real_wait = w.wait_any
+
+    def wait(handles: tuple[int, ...], timeout_ms: int) -> int | None:
+        if handles == (w.process,) and w.named("terminate_job"):
+            raise OSError(6, "the handle is invalid")
+        return real_wait(handles, timeout_ms)
+
+    w.wait_any = wait  # type: ignore[method-assign]  # the wait after the end fails
+    with pytest.raises(OSError, match="invalid"):
+        helper.terminate()
+    assert w.named("terminate_job")
+    helper.close()
+    assert w.open_handles == set()
