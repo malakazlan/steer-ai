@@ -36,9 +36,11 @@ from steerai.loop2.history import (
     Proven,
     RefusalWord,
 )
-from steerai.loop2.loop import PORT_DETAILS, TokenUsage, WatchKind
+from steerai.loop2.loop import PORT_DETAILS, RiskWhy, TokenUsage, WatchKind
 from steerai.loop2.owned import OwnedToken
+from steerai.loop2.task import Commit
 from steerai.loop2.verify import CheckToken, ProofToken
+from steerai.orchestrator.contracts import RISKS
 from steerai.world.effects import Carrier
 
 Event = Literal["turn"]
@@ -232,6 +234,9 @@ KEY_TOKENS: Final[Mapping[str, frozenset[str]]] = {
     "detail": ACT_DETAILS,
     "result": ACT_RESULTS,
     "repair_tokens": REPAIR_TOKENS,
+    "commit": _words(Commit),
+    "risk": frozenset(RISKS),
+    "why": _words(RiskWhy),
 }
 """Keys whose strings must come from one closed set, not from any of them: a refusal is a
 refusal token, never a verb or a carrier."""
@@ -241,6 +246,8 @@ KEYS: Final = frozenset(
         "event", "turn", "listed", "cut", "growing", "young", "focus", "decision",
         "refusals", "watch", "tokens", "history", "proofs",
         "refusal", "detail", "acts", "result", "repair", "repair_tokens",
+        # each action's declared commit, its rated tier and the rule that set it
+        "commit", "risk", "why",
         # the decision's shape (`decision_shape`)
         "attempt", "rejections", "subgoals", "closes", "params", "actions", "verb",
         "in_step", "param", "text", "key", "claims", "kind", "evidence", "ask", "stop",

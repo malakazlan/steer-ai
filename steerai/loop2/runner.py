@@ -88,6 +88,7 @@ from steerai.loop2.loop import (
     ProofLine,
     Provenance,
     Reason,
+    RiskWhy,
     Status,
     TaskOutcome,
     TokenUsage,
@@ -280,6 +281,10 @@ class _Turn:
     acts: list[ActFact] = field(default_factory=list)
     repair: bool = False
     repair_tokens: tuple[str, ...] = ()
+    at: int = 0
+    """[V2.67] D: the position in the batch of the action being handled."""
+    ratings: dict[int, tuple[Risk, RiskWhy | None]] = field(default_factory=dict)
+    """[V2.67] D: each rated action's tier and the rule that set it, by batch position."""
     traced: bool = False
     """[V2.67] D: this turn's record went to the trace port (or was dropped): once only."""
     watches: list[WatchFacts] = field(default_factory=list)
@@ -1083,6 +1088,7 @@ class _Run:
         for index, action in enumerate(actions):
             self._check_interrupt()
             acts = len(self.turn.acts)
+            self.turn.at = index
             try:
                 result = self._one(action, listed, observed)
             finally:
@@ -1340,10 +1346,13 @@ class _Run:
         """The action's risk, and whether it is a submit that goes through the Enter table
         ([V2.28] item 1: an Enter on a field, or a click or key that submits pending text)."""
         if element is None:  # a wait sends nothing; validate refuses a commit on it (RT-42)
-            return COMMIT_RISK[action.commit], False, False
+            risk = COMMIT_RISK[action.commit]
+            self.turn.ratings[self.turn.at] = (risk, None if risk == "R0" else "commit_declared")
+            return risk, False, False
         verdict = action_risk(
             action, element, goal=self.task.goal, observed=observed, pending=self._pending(observed)
         )
+        self.turn.ratings[self.turn.at] = (verdict.risk, verdict.why)  # [V2.67] D
         if verdict.submit_parent is not None:  # [V2.25]: counted where it fires, once an action
             self.submit_parents[verdict.submit_parent] += 1
         if verdict.refusal is not None:
@@ -1756,7 +1765,7 @@ class _Run:
                 growing=seen.growing,
                 young=seen.young,
                 focus=focus_state(seen.snapshot, seen.focus),
-                decision=turn.shape,
+                decision=_rated(turn.shape, turn.ratings),
                 refusals=tuple(turn.refusals),
                 acts=tuple(turn.acts),
                 repair=turn.repair,
@@ -1864,6 +1873,20 @@ def refusal_of(tokens: Sequence[str]) -> tuple[RefusalKind, str]:
             if found == kind:
                 return kind, token
     raise ValueError("a refusal needs a token")
+
+
+def _rated(
+    shape: Mapping[str, Any] | None, ratings: Mapping[int, tuple[Risk, RiskWhy | None]]
+) -> dict[str, Any] | None:  # Any: JSON values (`decision_shape`)
+    """[V2.67] D: the decision's shape with each action's rated tier and the rule that set it;
+    None for an action the batch never rated (it ended first, or it was refused before)."""
+    if shape is None:
+        return None
+    actions = [
+        {**a, "risk": ratings.get(i, (None, None))[0], "why": ratings.get(i, (None, None))[1]}
+        for i, a in enumerate(shape["actions"])
+    ]
+    return {**shape, "actions": actions}
 
 
 def _step_subgoal(decision: Decision) -> str | None:

@@ -780,6 +780,7 @@ def decision_shape(
                 "param": named(a.subgoal, a.param),
                 "text": bool(a.text),
                 "key": a.key,
+                "commit": a.commit,  # [V2.67] D
             }
             for a in decision.actions
         ],
