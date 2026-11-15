@@ -48,6 +48,7 @@ from steerai.loop2.guards import (
     same_action,
 )
 from steerai.loop2.history import (
+    REFUSAL_TOKENS,
     ClaimResult,
     ClaimWord,
     Entered,
@@ -569,7 +570,11 @@ class _Run:
                 continue
             self.turn = _Turn()  # [V2.67] A: a close at turn start is this turn's progress
             self._judge_turn_start(observed)
-            decision = self._decide(observed)
+            try:
+                decision = self._decide(observed)
+            except ControllerError as rejected:
+                observed = self._rejected_turn(rejected, observed)
+                continue
             self._check_interrupt()  # #326, [V2.40] Q4: a Decision after the kill is discarded
             fresh = self._observe()
             if fresh.read_cost is not None:
@@ -590,6 +595,20 @@ class _Run:
                 # in full with nothing refused, is no strike (more may arrive)
                 self.turn.neutral = self.turn.neutral or not self.turn.refused
             observed = self._record_strike(observed)
+
+    def _rejected_turn(self, rejected: ControllerError, observed: Observed) -> Observed:
+        """[V2.68]: a Decision the controller still rejected after its repair is a refused turn,
+        never the end of the task. Its tokens are refusals (history lines and counts), the turn
+        takes one strike, and nothing is frozen, so an intake turn stays one; the task ends
+        through the strike limit or a budget. An error with no call made, or with no token the
+        history can show, keeps the port-failure path."""
+        self._check_interrupt()
+        tokens = [t for t in rejected.tokens if t in REFUSAL_TOKENS]
+        if rejected.code != "rejected" or rejected.record is None or not tokens:
+            raise rejected
+        # on the turn the loop opened ([V2.67] A): a close at its start still counts
+        self._refuse(*tokens)  # type: ignore[arg-type]  # each one checked against the set above
+        return self._record_strike(observed)
 
     def _observe(self) -> Observed:
         return self._in_domain(self.ports.observe())
@@ -662,6 +681,7 @@ class _Run:
             proven=frozenset(self.proven),
             issued=frozenset(self.handles.by_handle),
             keep=self._always_keep(),
+            calls_left=self.task.budgets.max_model_calls - self.model_calls,
             **self._delta(observed),
         )
         self.listing.seen = observed
@@ -672,9 +692,11 @@ class _Run:
                 self.rejections = tuple(t for t in exc.tokens if TOKEN.fullmatch(t))
                 self.exact_counts += exc.exact_counted
                 self.estimates_low += exc.estimate_low
-            if isinstance(exc, ControllerError) and exc.record is None:
+            record = exc.record if isinstance(exc, ControllerError) else None
+            if isinstance(exc, ControllerError) and record is None:
                 raise  # no call was made: nothing billed
-            self.model_calls += 1
+            # invariant 9, [V2.68]: every model call the turn made, a repair included
+            self.model_calls += 1 if record is None else record.calls
             self.partial_page_calls += observed.growing or observed.young
             counts = _counts(exc.usage) if isinstance(exc, ControllerError) else None
             if counts is None:
@@ -686,7 +708,7 @@ class _Run:
                 self.tokens += sum(counts)
                 self.by_category = [a + b for a, b in zip(self.by_category, counts, strict=True)]
             raise
-        self.model_calls += 1
+        self.model_calls += decided.calls  # invariant 9, [V2.68]: a repaired turn is two calls
         self.partial_page_calls += observed.growing or observed.young  # [V2.35]: counted
         self.exact_counts += decided.exact_counted
         self.estimates_low += decided.estimate_low
