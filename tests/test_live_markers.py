@@ -26,6 +26,8 @@ FAKED: frozenset[str] = frozenset(
         "test_probe_key.py::test_the_json_load_parses_a_payload_of_about_200_kb",
         "test_probe_key.py::test_each_load_runs_until_stopped",
         "test_probe_key.py::test_an_unknown_load_is_refused",
+        "test_probe_key.py::test_the_fast_switch_loads_set_the_interval_only_inside_and_restore_it",
+        "test_probe_key.py::test_echoes_over_the_deadline_are_counted",
         # LW-01: the v2 platform's monitor and timeout over a replaced HookMonitor and registry read
         "loop2/test_live_world.py::test_the_v2_platform_starts_a_per_hook_monitor",
         "loop2/test_live_world.py::test_the_hook_timeout_is_read_from_the_registry_and_capped",

@@ -46,3 +46,22 @@ def test_each_load_runs_until_stopped(load: str) -> None:
 def test_an_unknown_load_is_refused() -> None:
     with pytest.raises(ValueError, match="load"), probe_key.load_running("disk"):
         pass
+
+
+def test_the_fast_switch_loads_set_the_interval_only_inside_and_restore_it() -> None:
+    """[V2.59] (iv): the spinner and the parse again with sys.setswitchinterval(0.001)."""
+    import sys  # noqa: PLC0415 - this test only
+
+    before = sys.getswitchinterval()
+    assert {"spin_fast", "json_fast"} <= set(probe_key.LOADS)
+    with probe_key.load_running("spin_fast") as worked:
+        assert sys.getswitchinterval() == pytest.approx(0.001)
+        import time  # noqa: PLC0415 - this test only
+
+        time.sleep(0.02)
+    assert worked() > 0
+    assert sys.getswitchinterval() == before
+
+
+def test_echoes_over_the_deadline_are_counted() -> None:
+    assert probe_key.over_deadline([1.0, 300.0, 1050.0, 1051.0], deadline_ms=1050.0) == 1

@@ -35,7 +35,10 @@ from typing import Any
 IDLE_S = 2.0
 SETTLE_S = 0.2
 ROUND_TRIPS = 250
-LOADS = ("none", "spin", "json")
+LOADS = ("none", "spin", "json", "spin_fast", "json_fast")
+"""[V2.59]: (i) idle, (ii) a pure-Python spinner, (iii) a decide worker's parse, and (iv) the
+two again with `sys.setswitchinterval(FAST_SWITCH_S)`, set inside the phase only."""
+FAST_SWITCH_S = 0.001
 JSON_PAYLOAD_BYTES = 200_000
 JSON_PAUSE_S = 0.002
 WM_IME_CONTROL = 0x0283
@@ -205,9 +208,13 @@ def load_running(load: str) -> Iterator[Callable[[], int]]:
             work[0] += 1
             time.sleep(JSON_PAUSE_S)
 
+    kind = load.removesuffix("_fast")
+    switch = sys.getswitchinterval()
+    if load.endswith("_fast"):
+        sys.setswitchinterval(FAST_SWITCH_S)
     thread = None
-    if load != "none":
-        thread = threading.Thread(target=spin if load == "spin" else parse, daemon=True)
+    if kind != "none":
+        thread = threading.Thread(target=spin if kind == "spin" else parse, daemon=True)
         thread.start()
     try:
         yield lambda: work[0]
@@ -215,9 +222,17 @@ def load_running(load: str) -> Iterator[Callable[[], int]]:
         stop.set()
         if thread is not None:
             thread.join()
+        sys.setswitchinterval(switch)
 
 
-def round_trip(vk: int, n: int, monitor: Any, *, load: str) -> Row:  # Any: HookMonitor
+def over_deadline(samples_ms: Sequence[float], *, deadline_ms: float) -> int:
+    """[V2.59]: how many echoes took longer than the derived probe deadline."""
+    return sum(1 for ms in samples_ms if ms > deadline_ms)
+
+
+def round_trip(  # Any: HookMonitor
+    vk: int, n: int, monitor: Any, *, load: str, deadline_ms: float
+) -> Row:
     """#364 P2: `n` tagged key-ups of `vk`, each timed from the send until the keyboard hook
     has counted it, under `load`; next to it, the hook's own latency (event tick to callback
     entry) from the monitor's histogram. Key-ups only; nothing else is sent."""
@@ -245,6 +260,8 @@ def round_trip(vk: int, n: int, monitor: Any, *, load: str) -> Row:  # Any: Hook
         "p50_ms": round(samples[(n - 1) // 2], 3),
         "p95_ms": round(samples[min(n - 1, int(0.95 * n))], 3),
         "max_ms": round(samples[-1], 3),
+        "over_deadline": over_deadline(samples, deadline_ms=deadline_ms),
+        "deadline_ms": deadline_ms,
         "hook_events": monitor.latency()[0],
         "hook_p50_ms": monitor.latency_at(0.5),
         "hook_p95_ms": monitor.latency_at(0.95),
@@ -254,15 +271,20 @@ def round_trip(vk: int, n: int, monitor: Any, *, load: str) -> Row:  # Any: Hook
 
 def _phases(vk: int, desk: _Desk, hwnd: int, emit: Callable[[Row], None]) -> None:
     """One round-trip phase per load, each with its own per-hook monitor timing itself."""
-    from steerai.session.monitor import HookMonitor  # noqa: PLC0415 - Windows hooks
+    from steerai.session.monitor import (  # noqa: PLC0415 - Windows hooks
+        HookMonitor,
+        probe_deadline_s,
+        read_hook_timeout_ms,
+    )
 
+    deadline_ms = round(probe_deadline_s(read_hook_timeout_ms()) * 1000, 3)
     for load in LOADS:
         if desk.foreground() != hwnd:
             raise Abort("foreground_left_notepad")
         phase = HookMonitor(per_hook=True, probe_vk=vk)
         phase.start()
         try:
-            emit(round_trip(vk, ROUND_TRIPS, phase, load=load))
+            emit(round_trip(vk, ROUND_TRIPS, phase, load=load, deadline_ms=deadline_ms))
         finally:
             phase.close()
 
