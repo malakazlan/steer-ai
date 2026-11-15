@@ -221,6 +221,9 @@ class TaskOutcome:
     focus_losses: int = 0
     """[V2.43] (2): Decisions discarded because focus left a press's target after the listing
     showed it there (counted on its own)."""
+    unread_automation_ids: int = 0
+    """[V2.26] (2), V2 §6.1, #301: the elements whose automation id was not read, summed over
+    every observation the loop took in; counted on the pooled set, the decision stays open."""
     cost_usd: float | None = None
     """Tokens times the configured price; None when no price is configured ([V2.37] P6): the
     cost budget is then reported "not configured", never as enforced."""

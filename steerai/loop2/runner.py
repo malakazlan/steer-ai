@@ -182,6 +182,9 @@ class _Turn:
     staleness rule applies to this read."""
     moved: Moved = "page"
     """What moved: the page (top Document or URL), the named target, or the focus."""
+    moved_after_send: bool = False
+    """The world moved after a send in this turn: the turn is scored normally and the stale
+    streak is left as it was, neither raised nor reset ([V2.43] confirmation)."""
 
 
 class _Handles:
@@ -336,6 +339,8 @@ class _Run:
         """[V2.43] (2): targets re-rendered after the observation the model saw."""
         self.focus_losses = 0
         """[V2.43] (2): focus moved off a press's target after the listing showed it there."""
+        self.unread_aids = 0
+        """#301: unread automation ids over every observation taken in (`_in_domain`)."""
 
     # ---- the outcome ----------------------------------------------------------------------
 
@@ -362,6 +367,7 @@ class _Run:
             stale_observations=self.stale_count,
             target_changes=self.target_changes,
             focus_losses=self.focus_losses,
+            unread_automation_ids=self.unread_aids,
         )
 
     def _cost(self) -> float | None:
@@ -420,7 +426,8 @@ class _Run:
             if self.turn.stale_read is not None:
                 observed = self._stale(self.turn.stale_read, moved=self.turn.moved)
                 continue
-            self.stale_streak = 0  # a turn that ran with nothing moved under it ends the streak
+            if not self.turn.moved_after_send:
+                self.stale_streak = 0  # a turn that ran with nothing moved under it ends it
             waits = bool(decision.actions) and all(a.verb == "wait" for a in decision.actions)
             if loading and waits and self.turn.sent == len(decision.actions):
                 # [V2.31], [V2.35] (2), P3: a wait chosen on a growing or young page, dispatched
@@ -473,6 +480,7 @@ class _Run:
         beyond `CLOCK_DOMAIN_S`, or not finite, is another clock (small skew is clamped by the
         load guard)."""
         observed = self.ports.stamp(observed)
+        self.unread_aids += observed.snapshot.unread_automation_id_count  # #301: counted
         now = self.ports.clock()
         if not abs(now - observed.snapshot.taken_at) <= CLOCK_DOMAIN_S:
             raise _End("stopped", Reason("clock_domain"))
@@ -718,7 +726,7 @@ class _Run:
         if element is None and action.verb != "wait":
             return None
         if element is not None and self._old(observed):
-            again = self._read_again(element, listed)
+            again = self._read_again(element, listed, press=action.verb == "press")
             if again is None:
                 return None  # the page moved under it (`_moved`)
             observed, element = again  # everything below uses the read it is sent against
@@ -757,7 +765,9 @@ class _Run:
         UNMEASURED; the read-cost probe measures it), from its read's completion."""
         return self.ports.clock() - observed.snapshot.taken_at > REUSE_FRESHNESS_S
 
-    def _read_again(self, element: Element, listed: Observed) -> tuple[Observed, Element] | None:
+    def _read_again(
+        self, element: Element, listed: Observed, *, press: bool
+    ) -> tuple[Observed, Element] | None:
         """[V2.42] RT-19: one fresh read (never a model call). The same element (its RuntimeId,
         held once, same role and name) and the top Document and URL unchanged since the decided-on
         observation: dispatch on it. Otherwise the staleness rule applies (`_Turn.stale_read`).
@@ -769,6 +779,9 @@ class _Run:
             normalise_name(element.name),
         )
         if same and not stale_observation(listed, read):
+            if press and not press_allowed(focus=read.focus, last_acted=found[0].runtime_id):
+                self._moved("focus", read)  # the re-read shows focus moved: never press blind
+                return None
             return read, found[0]
         self._moved("page", read)
         return None
@@ -781,6 +794,7 @@ class _Run:
         never forgotten (principal re-review: staleness applies when nothing was dispatched)."""
         if self.turn.sent > 0:
             self._count_moved(what)
+            self.turn.moved_after_send = True
             return
         self.turn.stale_read = self._observe() if read is None else read
         self.turn.moved = what
