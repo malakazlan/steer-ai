@@ -453,3 +453,36 @@ def test_odd_values_in_a_final_never_crash_the_summary_and_are_said() -> None:
     report = accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="t").report
     json.dumps(report, allow_nan=False)
     assert report["listing"]["incomplete"] == 1
+
+
+# ---- #366 small fixes ---------------------------------------------------------------------------
+
+
+def test_a_capped_run_reads_cap_killed() -> None:
+    record = RunRecord("a", 1, None, True, False, None, None, killed=True, code=None)
+    got = classify(DONE, record)
+    assert (got.verdict, got.reason) == ("fail", "cap_killed")
+
+
+def test_the_wait_after_a_kill_is_bounded(tmp_path: Path) -> None:
+    class Stuck(_Child):
+        def wait(self, timeout: float | None = None) -> int:
+            raise subprocess.TimeoutExpired("steer", timeout or 0.0)
+
+    out = tmp_path / "out.jsonl"
+    killed: list[int] = []
+    child = Stuck(out, [])
+    ran = run_child(["steer"], cap_s=1.0, out=out, start=lambda _a, _o: child, kill=killed.append)
+    assert (ran.killed, ran.code, killed) == (True, None, [4321])
+
+
+def test_the_harness_imports_nothing_that_holds_the_session_or_the_hooks() -> None:
+    source = Path(stage1.__file__).read_text(encoding="utf-8")
+    modules: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            modules.add(node.module)
+        elif isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+    banned = ("steerai.session", "steerai.loop2.live_world", "steerai.platform", "monitor")
+    assert not [m for m in modules if m.startswith(banned) or m.endswith("monitor")]

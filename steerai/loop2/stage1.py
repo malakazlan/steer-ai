@@ -21,15 +21,16 @@ real input through the child; only in a window the coordinator has cleared with 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final, Literal, Protocol
+from typing import Any, Final, Literal, Protocol, get_args
 
 Expect = Literal["done", "blocked", "never_done", "not_done"]
 Verdict = Literal["pass", "fail", "false_done", "void", "monitor_lost"]
@@ -44,6 +45,8 @@ TASK_CAP_S: Final = 600.0
 INTERNAL: Final = frozenset({"internal_stub_reached", "internal_error"})
 MIN_RUNS_PER_TASK: Final = 3
 """#366 P1: acceptance is 3 of 3 at least ([V2.27] stage 1, as v1's bar)."""
+KILL_WAIT_S: Final = 10.0
+"""How long the harness waits for a killed child's tree to go before it moves on."""
 MAX_RERUNS: Final = 3
 """#366 P1: a task's void, monitor_lost or not-started runs are re-run up to this many times."""
 STATUSES: Final = frozenset({"done", "blocked", "asked", "paused", "stopped", "cannot", "error"})
@@ -102,6 +105,10 @@ class RunRecord:
     check: bool | None
     """The fixture's own pass check (None when the log was not read)."""
     enters: int | None
+    killed: bool = False
+    """The child hit its cap and its tree was killed (#366)."""
+    code: int | None = None
+    """The child's exit code; None when killed."""
 
 
 @dataclass(frozen=True)
@@ -114,7 +121,7 @@ class Classified:
     final: Json | None
 
 
-def classify(  # noqa: PLR0911 - one return per rule, in the rules' order
+def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' order
     task: StageTask, record: RunRecord
 ) -> Classified:
     """One run's verdict ([V2.41] void, [V2.59] monitor_lost, false_done, the expected outcome)."""
@@ -126,6 +133,8 @@ def classify(  # noqa: PLR0911 - one return per rule, in the rules' order
     # #366 P2: the rules in this order
     if not record.fixture_ok:
         return verdict("void", "fixture_failed_before_start")
+    if record.killed:
+        return verdict("fail", "cap_killed")
     final = record.final
     if final is None or final.get("status") not in STATUSES:  # #366 E2: the CLI's own line
         return verdict("fail", "no_final_line")
@@ -195,7 +204,7 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
     if runs_per_task < MIN_RUNS_PER_TASK:
         raise ValueError(f"acceptance needs at least {MIN_RUNS_PER_TASK} runs per task")
     total = len(runs)
-    verdicts = {v: sum(r.verdict == v for r in runs) for v in Verdict.__args__}  # type: ignore[attr-defined]  # a Literal's members
+    verdicts = {v: sum(r.verdict == v for r in runs) for v in get_args(Verdict)}
     per_task: dict[str, list[Verdict]] = {t.task_id: [] for t in tasks}
     for r in runs:
         per_task.setdefault(r.task_id, []).append(r.verdict)
@@ -305,14 +314,14 @@ def _quantile(values: Sequence[object], q: float) -> float | None:
     return round(numbers[min(len(numbers) - 1, math.ceil(q * len(numbers)) - 1)], 3)
 
 
-def _max(values: object) -> float | None:
-    numbers = [v for v in values if isinstance(v, int | float)]  # type: ignore[attr-defined]  # an iterable of numbers
+def _max(values: Iterable[float | None]) -> float | None:
+    numbers = [v for v in values if v is not None]
     return max(numbers) if numbers else None
 
 
-def _counts(items: object) -> dict[str, int]:
+def _counts(items: Iterable[object]) -> dict[str, int]:
     out: dict[str, int] = {}
-    for item in items:  # type: ignore[attr-defined]  # an iterable of tokens
+    for item in items:
         out[str(item)] = out.get(str(item), 0) + 1
     return out
 
@@ -374,7 +383,8 @@ def run_child(
     except subprocess.TimeoutExpired:
         killed = True
         kill(child.pid)
-        child.wait()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            child.wait(timeout=KILL_WAIT_S)  # bounded: a tree that will not die is not waited on
         code = None
     return ChildRun(None if killed else _last_json(out), killed, code)
 
@@ -394,8 +404,8 @@ def _last_json(out: Path) -> Json | None:
 
 
 def _start(argv: list[str], out: Path) -> Child:  # pragma: no cover - live
-    handle = out.open("w", encoding="utf-8")
-    return subprocess.Popen(argv, stdout=handle, stderr=subprocess.DEVNULL)  # noqa: S603 - our own CLI, a fixed argv
+    with out.open("w", encoding="utf-8") as handle:  # the child holds its own copy
+        return subprocess.Popen(argv, stdout=handle, stderr=subprocess.DEVNULL)  # noqa: S603 - our own CLI, a fixed argv
 
 
 # ---- the live run (Windows; real input through the child) ---------------------------------------
@@ -410,7 +420,8 @@ def _idle_s() -> float:  # pragma: no cover - live, Windows only
 
     last = LastInput()
     last.cbSize = ctypes.sizeof(LastInput)
-    ctypes.windll.user32.GetLastInputInfo(ctypes.byref(last))
+    if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(last)):
+        return 0.0  # #366 E11: unread is not idle
     tick = int(ctypes.windll.kernel32.GetTickCount()) & 0xFFFF_FFFF
     return float((tick - int(last.dwTime)) & 0xFFFF_FFFF) / 1000
 
@@ -456,12 +467,14 @@ def _live_3d(
             try:
                 entries = fixture.parse_log(fixture._read_log(cdp, base))
             except (OSError, RuntimeError, ValueError):
-                return RunRecord(task.task_id, run, ran.final, True, False, None, None)
+                return RunRecord(task.task_id, run, ran.final, True, False, None, None,
+                                 killed=ran.killed, code=ran.code)  # fmt: skip
             finally:
                 cdp.close()
             enters = sum(e.ev == "enter" for e in entries)
             passed = fixture.passes(variant, entries)  # type: ignore[arg-type]  # a variant's path
-            return RunRecord(task.task_id, run, ran.final, True, True, passed, enters)
+            return RunRecord(task.task_id, run, ran.final, True, True, passed, enters,
+                             killed=ran.killed, code=ran.code)  # fmt: skip
         finally:
             stop_chrome(proc, tmp / "profile")
             shutil.rmtree(tmp, ignore_errors=True)
