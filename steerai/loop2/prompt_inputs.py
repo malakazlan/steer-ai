@@ -13,15 +13,29 @@ decide worker (`DecideCalls`).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+import math
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Final
 
-from steerai.loop2.controller import FocusState, ListingRow, decide, focus_state, v2_listing
+from steerai.loop2.controller import (
+    TOKENS_PER_BYTE,
+    ControllerError,
+    FocusState,
+    ListingRow,
+    decide,
+    focus_state,
+    v2_listing,
+)
 from steerai.loop2.decide_port import DecideCalls
 from steerai.loop2.history import HistoryRecord
 from steerai.loop2.listing import LISTING_CAP, Listing, select_listing, words_of
-from steerai.loop2.loop import Decided, TurnView
+from steerai.loop2.loop import Decided, TokenUsage, TurnView
 from steerai.loop2.task import Status, Subgoal, known_params
+
+CALIBRATION_MARGIN: Final = 1.1
+"""[V2.61]: a turn whose true input tokens beat the bound tightens the task's tokens per byte to
+the turn's own ratio times this margin (the margin of `TOKENS_PER_BYTE` over the measured worst)."""
 
 
 @dataclass(frozen=True)
@@ -111,39 +125,75 @@ def _subgoal_line(subgoal: Subgoal) -> str:
 def make_decide(calls: DecideCalls, *, goal: str, task_fence: str) -> Callable[[TurnView], Decided]:
     """`Ports.decide` for one task: each turn's inputs through `controller.decide`, with the
     turn's summed usage. `task_fence` is fixed for the task, so the stable blocks stay
-    byte-identical across calls; the screen fence is fresh per call (the controller's)."""
+    byte-identical across calls; the screen fence is fresh per call (the controller's).
+    [V2.61]: the guard may spend one exact count a turn (`DecideCalls.count`); each turn's true
+    input tokens are held against the bound of the bytes it sent, and a bound that was low is
+    flagged and tightens the ratio for the rest of the task (`calibrated`)."""
+    per_byte = TOKENS_PER_BYTE
 
     def port(view: TurnView) -> Decided:
+        nonlocal per_byte
         inputs = controller_inputs(view, goal=goal)
         fitted: list[tuple[frozenset[int], int]] = []
-        (decision, _record), usage = calls.turn(
-            lambda ask: decide(
-                ask,
-                task_goal=inputs.task_goal,
-                subgoal_lines=inputs.subgoal_lines,
-                action_log=inputs.action_log,
-                subgoal_status=inputs.subgoal_status,
-                window_title=inputs.window_title,
-                listing_rows=inputs.listing_rows,
-                listed_ids=inputs.listed_ids,
-                first_turn=inputs.first_turn,
-                task_fence=task_fence,
-                known_subgoals=inputs.known_subgoals,
-                unstable=inputs.unstable,
-                growing=inputs.growing,
-                young=inputs.young,
-                issued=inputs.issued,
-                focus=inputs.focus,
-                listing_note=inputs.listing_note,
-                changes_note=inputs.changes_note,
-                on_fit=lambda shown, cut: fitted.append((shown, cut)),
-                listing_note_after=None if inputs.listing is None else inputs.listing.note,
-                keep_cap=LISTING_CAP if inputs.listing is None else inputs.listing.cap,
+        sent: list[int] = []
+        spent = False
+
+        def exact(system: list[str], user: list[str]) -> int | None:
+            nonlocal spent
+            spent = True
+            return calls.count(system, user)
+
+        try:
+            (decision, _record), usage = calls.turn(
+                lambda ask: decide(
+                    ask,
+                    task_goal=inputs.task_goal,
+                    subgoal_lines=inputs.subgoal_lines,
+                    action_log=inputs.action_log,
+                    subgoal_status=inputs.subgoal_status,
+                    window_title=inputs.window_title,
+                    listing_rows=inputs.listing_rows,
+                    listed_ids=inputs.listed_ids,
+                    first_turn=inputs.first_turn,
+                    task_fence=task_fence,
+                    known_subgoals=inputs.known_subgoals,
+                    unstable=inputs.unstable,
+                    growing=inputs.growing,
+                    young=inputs.young,
+                    issued=inputs.issued,
+                    focus=inputs.focus,
+                    listing_note=inputs.listing_note,
+                    changes_note=inputs.changes_note,
+                    on_fit=lambda shown, cut: fitted.append((shown, cut)),
+                    listing_note_after=None if inputs.listing is None else inputs.listing.note,
+                    keep_cap=LISTING_CAP if inputs.listing is None else inputs.listing.cap,
+                    tokens_per_byte=per_byte,
+                    count_exact=exact,
+                    on_sent=sent.append,
+                )
             )
-        )
+        except ControllerError as failed:
+            per_byte, failed.estimate_low = calibrated(per_byte, sent, failed.usage)
+            failed.exact_counted = spent
+            raise
+        per_byte, low = calibrated(per_byte, sent, usage)
         listed, cut = fitted[-1] if fitted else (inputs.listed_ids, 0)
         tokens = None if usage is None else usage.input_tokens
         listing = None if inputs.listing is None else inputs.listing.turn(listed, cut, tokens)
-        return Decided(decision, usage, listing)
+        return Decided(decision, usage, listing, exact_counted=spent, estimate_low=low)
 
     return port
+
+
+def calibrated(
+    per_byte: float, sent: Sequence[int], usage: TokenUsage | None
+) -> tuple[float, bool]:
+    """[V2.61]: the tokens per byte for the next turn, and whether this turn's bound was low.
+    The truth is every input category the provider reported over the turn's calls; the bound is
+    each call's bytes at `per_byte`. Unknown usage, or no call, leaves the ratio as it was."""
+    if usage is None or not sent:
+        return per_byte, False
+    truth = usage.input_tokens + usage.cache_write_5m + usage.cache_write_1h + usage.cache_read
+    if truth <= sum(math.ceil(size * per_byte) for size in sent):
+        return per_byte, False
+    return max(per_byte, truth / sum(sent) * CALIBRATION_MARGIN), True
