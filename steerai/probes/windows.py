@@ -592,17 +592,28 @@ def window_cover(hwnd: int) -> CoverFacts:  # pragma: no cover - live, Windows o
     monitor's work area. Read-only."""
     user32 = _cover_user32()
     found: list[Rect] = []
+    owners: list[int] = []
     for above in windows_above(_z_order(user32), hwnd):
         rect = _occluding_rect(user32, above)
         if rect is not None:
             found.append(rect)
+            owners.append(_owner(above))
     return CoverFacts(
         minimized=bool(user32.IsIconic(hwnd)),
         cloaked=is_cloaked(hwnd),
         rect=_fit(user32, hwnd, _window_rect(user32, hwnd) or (0, 0, 0, 0)),
         above=tuple(found),
         screen=_virtual_screen(user32),
+        above_pids=tuple(owners),
     )
+
+
+def _owner(hwnd: int) -> int:  # pragma: no cover - live, Windows only
+    """The window's process id, 0 when it cannot be read ([V2.67] C)."""
+    try:
+        return window_pid(hwnd)
+    except OSError:
+        return 0
 
 
 def _virtual_screen(user32: ctypes.WinDLL) -> Rect:  # pragma: no cover - live
