@@ -40,6 +40,7 @@ from steerai.session.hook_layout import (
     LAYOUT_VERSION,
     STATE_FAILED,
     STATE_READY,
+    STATES,
     Words,
     config_size,
     config_words,
@@ -393,7 +394,11 @@ class HelperProcess:
         while True:
             w.reset_event(self._wake)
             state = status.get("state")
+            if state not in STATES:  # #375 H7 (HL-21): not a state the helper can write
+                raise _refuse(f"the hook helper reported an unknown state ({state})")
             if state == STATE_READY:
+                if w.has_exited(process):  # #375 H2 (HL-12): ready, then gone
+                    raise _refuse("the hook helper exited after reporting ready")
                 self._check_identity()
                 return
             if state == STATE_FAILED:
@@ -414,8 +419,11 @@ class HelperProcess:
     def _check_identity(self) -> None:
         """The words were written by the helper this run: its pid and the run's nonce."""
         status, config = self.status, self.config
+        pid = self._w.process_id(self.process_handle)
+        if pid == 0:  # #375 H8: GetProcessId failed; no identity to compare
+            raise _refuse("the hook helper's process id could not be read")
         same = (
-            status.get("pid") == self._w.process_id(self.process_handle)
+            status.get("pid") == pid
             and status.get("nonce_echo_lo") == config.get("nonce_lo")
             and status.get("nonce_echo_hi") == config.get("nonce_hi")
         )

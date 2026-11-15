@@ -292,6 +292,14 @@ class FakeWin32:
         elif self.behaviour == "wrong_pid":
             status.set("pid", self.pid + 1)
             status.set("state", STATE_READY)
+        else:  # #375 review: the ready check's single-fault cases
+            right_pid = self.behaviour in {"wrong_nonce", "ready_then_exit", "pid_zero"}
+            right_nonce = self.behaviour in {"pid_only", "ready_then_exit", "pid_zero"}
+            status.set("pid", 0 if self.behaviour == "pid_zero" else self.pid + (not right_pid))
+            status.set("nonce_echo_lo", config.get("nonce_lo") + (not right_nonce))
+            status.set("nonce_echo_hi", config.get("nonce_hi"))
+            status.set("state", 99 if self.behaviour == "bad_state" else STATE_READY)
+            self.exited = self.behaviour == "ready_then_exit"
 
     def reset_event(self, handle: int) -> None:
         self._maybe_raise("reset_event")
@@ -308,7 +316,7 @@ class FakeWin32:
     def process_id(self, process: int) -> int:
         self._maybe_raise("process_id")
         del process
-        return self.pid
+        return 0 if self.behaviour == "pid_zero" else self.pid
 
     def has_exited(self, process: int) -> bool:
         del process
@@ -582,3 +590,27 @@ def test_one_failing_disable_does_not_stop_the_others() -> None:
         _helper(w).start()
     assert w.disables == 5  # every disable was attempted
     assert len(w.inheritable) == 1  # only the one whose disable failed
+
+
+# ---- #375 review: the ready check, one fault at a time (T1/T2, H2, H7, H8) --------------------
+
+
+@pytest.mark.parametrize(
+    "behaviour",
+    ["wrong_nonce", "pid_only", "ready_then_exit", "bad_state", "pid_zero"],
+)
+def test_a_ready_with_any_single_fault_is_a_refusal(behaviour: str) -> None:
+    """T1/T2: the pid and the nonce are each checked alone; H2: ready but exited; H7: a state
+    outside the enum refuses at once; H8: `GetProcessId` returning 0 is no identity."""
+    w = FakeWin32(behaviour=behaviour)
+    with pytest.raises(SteerError, match="monitor_unavailable"):
+        _helper(w).start()
+    assert w.open_handles == set()
+
+
+def test_an_invalid_state_refuses_without_waiting() -> None:
+    w = FakeWin32(behaviour="bad_state")
+    with pytest.raises(SteerError, match="monitor_unavailable"):
+        _helper(w).start()
+    pairs = [c for c in w.named("wait") if isinstance(c[1], tuple) and len(c[1]) == 2]
+    assert not pairs  # never waited for ready
