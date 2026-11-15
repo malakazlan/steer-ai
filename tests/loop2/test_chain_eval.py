@@ -229,7 +229,7 @@ def _rec(
         declared=(("value",),),
         outcome_shown=status == "done" if shown is None else shown,
         outage=outage,
-        outage_code=(reason or "port_")[len("port_"):] if outage else None,
+        outage_code=(reason or "port_")[len("port_") :] if outage else None,
         arm=arm,  # type: ignore[arg-type]  # a test token
     )
 
@@ -323,9 +323,15 @@ def test_a_must_veto_shape_at_its_chain_cap_is_inconclusive_and_blocks_live_use(
 
 
 def test_an_allowing_verdict_on_a_must_veto_shape_is_a_false_allow() -> None:
-    passed_then_vetoed = _rec("blocked", "audit_veto", [("intake", "passed"), ("audit", "vetoed")])
-    vetoed = [_rec("blocked", "audit_veto", [("audit", "vetoed")])] * (VERDICT_TARGET - 2)
-    out = score(SHAPES["g23"], [passed_then_vetoed, *vetoed])
+    """The intake passing the reach arm's scripted insufficient set is a scored false allow."""
+    scripted = JudgeCall("intake", "passed", None, 5.0, scripted=True, declared=("value",))
+    passed_then_vetoed = _rec(
+        "blocked", "audit_veto", [("audit", "vetoed")], arm="reach", calls=[scripted]
+    )
+    vetoed = [_rec("blocked", "audit_veto", [("audit", "vetoed")], arm="reach")] * (
+        VERDICT_TARGET - 2
+    )
+    out = score(SHAPES["g23"], [passed_then_vetoed, *vetoed], arm="reach")
     assert (out.verdicts, out.false_allows) == (VERDICT_TARGET, 1)
     assert not out.passed
 
@@ -856,7 +862,9 @@ def test_a_shape_with_no_reach_has_no_reach_arm() -> None:
 # ---- #454 round 2 (1): what a must-veto shape scores ---------------------------------------------
 
 
-def _judge(judge: str, verdict: str, *, scripted: bool = False, declared: str = "value") -> JudgeCall:
+def _judge(
+    judge: str, verdict: str, *, scripted: bool = False, declared: str = "value"
+) -> JudgeCall:
     return JudgeCall(judge, verdict, None, 5.0, scripted=scripted,  # type: ignore[arg-type]
                      declared=tuple(declared.split(",")))  # fmt: skip
 
@@ -885,7 +893,7 @@ def test_one_scored_verdict_per_chain_per_judge_is_a_single_switch(
     assert score(SHAPES["g23"], [twice]).verdicts == 1
 
 
-# ---- (2): a Decision no model made is guarded in production ---------------------------------------
+# ---- (2): a Decision no model made is guarded in production --------------------------------------
 
 
 def test_a_decided_with_no_call_must_report_no_usage() -> None:
@@ -930,7 +938,7 @@ def test_the_report_lists_every_ledger_start_and_abort_on_the_same_wording(tmp_p
     ledger = Ledger(tmp_path / "ledger.jsonl")
     head = _wired()
     ledger.start("pilot", head)
-    ledger.aborted("pilot", "g22", 0, "free", "RuntimeError", head)
+    ledger.aborted("pilot", "g22", 0, "free", error="RuntimeError", head=head)
     ledger.start("pilot", _wired(commit="b" * 40))  # a re-roll after a no-op commit
     other = _wired(controller="controller-0")
     ledger.start("pilot", other)  # another wording: not listed
@@ -943,10 +951,12 @@ def test_the_report_lists_every_ledger_start_and_abort_on_the_same_wording(tmp_p
     ]  # fmt: skip
 
 
-# ---- (4): a scripted intake reject is recorded, once the intake check is wired --------------------
+# ---- (4): a scripted intake reject is recorded, once the intake check is wired -------------------
 
 
-@pytest.mark.skipif(chain_eval.INTAKE_PROMPT_VERSION is None, reason="the intake check is not wired")
+@pytest.mark.skipif(
+    chain_eval.INTAKE_PROMPT_VERSION is None, reason="the intake check is not wired"
+)
 def test_a_scripted_intake_reject_is_recorded_in_a_chain() -> None:
     class Intake(Scripted):
         def __call__(self, system: list[str], blocks: list[str]) -> Reply:
@@ -983,7 +993,8 @@ def test_a_reach_set_the_validator_refuses_is_refused() -> None:
     view = TurnView(observed=seen, log=(), first_turn=True,
                     handles={e.id: e.id for e in seen.snapshot.elements})  # fmt: skip
     spec = {"subgoals": [{"closes": "value", "params": {"query": "not in the request"}}],
-            "actions": [{"verb": "type", "control": "Find articles", "param": "query"}]}  # fmt: skip
+            "actions": [{"verb": "type", "control": "Find articles",
+                         "param": "query"}]}  # fmt: skip
     with pytest.raises(ValueError, match="reach_decision_invalid"):
         chain_eval.reach_decision(spec, view, goal=SHAPES["g23"].request)
 
