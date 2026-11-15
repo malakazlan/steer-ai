@@ -332,6 +332,7 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
     infra = verdicts["void"] - len(site)
     measured = {k: vs for k, vs in scored.items() if k not in unmeasured}
     counted = [r for r in runs if r.final is not None and r.final.get("status") != "error"]
+    large_ids = {t.task_id for t in tasks if t.fixture == "large"}
     finals = [r.final for r in counted if r.final is not None]
     gates = {
         "controls": controls is None or (controls[1] > 0 and controls[0] == controls[1]),
@@ -343,7 +344,7 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
         "cache_zero": not any(_cache_spent(r.final) for r in counted),
         "internal": not any(r.reason == "internal" for r in runs),
         # #366 P5: the target listed on the turn it is acted on is not checked yet: fail closed
-        "large_listed": not any(t.fixture == "large" for t in tasks),
+        "large_listed": all(_listed_when_acted(r.final) for r in counted if r.task_id in large_ids),
     }
     valid = len(per_task) - len(unmeasured)
     if min_valid_tasks is not None:
@@ -384,6 +385,28 @@ def _memory(runs: Sequence[Classified], floor_mb: int | None) -> dict[str, Any]:
             default=None,
         ),
     }
+
+
+def _listed_when_acted(final: Json | None) -> bool:
+    """#366 P5: every listing turn that dispatched said all its targets were among the handles
+    it showed, and a run that ended done dispatched under at least one. Anything unread (no
+    rows, a missing or non-bool `acted_listed`, a count that is not whole) fails closed."""
+    rows = None if final is None else final.get("listings")
+    if not isinstance(rows, list):
+        return False
+    acted_any = False
+    for row in rows:
+        if not isinstance(row, Mapping):
+            return False
+        acted = _whole(row.get("acted"))
+        listed = row.get("acted_listed")
+        if acted is None or not isinstance(listed, bool):
+            return False
+        if acted > 0:
+            acted_any = True
+            if not listed:
+                return False
+    return acted_any or final is None or final.get("status") != "done"
 
 
 def _cache_spent(final: Json | None) -> bool:
@@ -509,6 +532,7 @@ def _run_facts(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures
         if final.get("url_reads") is not None:
             tally(final.get("url_reads"), urls, URL_READS)
     counts, counts_odd = _outcome_counts(finals)
+    combobox, combobox_odd = _combobox_facts(finals)
     refusals, refusals_odd = _refusal_counts(finals)
     return {
         "read_cost": {
@@ -522,7 +546,8 @@ def _run_facts(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures
         "url_reads": urls,
         "refusals": refusals,
         "counts": counts,
-        "run_facts_incomplete": odd + counts_odd + refusals_odd,
+        "combobox": combobox,
+        "run_facts_incomplete": odd + counts_odd + combobox_odd + refusals_odd,
     }
 
 
@@ -544,6 +569,28 @@ def _refusal_counts(finals: Sequence[Json]) -> tuple[dict[str, int], int]:
             else:
                 sums[token] = sums.get(token, 0) + got
     return {k: v for k, v in sums.items() if v}, odd
+
+
+COMBOBOX_FACTS: Final = ("query_class_listed", "typed_into")
+
+
+def _combobox_facts(finals: Sequence[Json]) -> tuple[dict[str, int], int]:
+    """[V2.64] Two: how many runs held each ComboBox fact; a value that is not a bool is said
+    (odd), never counted; a missing or null block is skipped."""
+    held = dict.fromkeys(COMBOBOX_FACTS, 0)
+    odd = 0
+    for final in finals:
+        block = final.get("combobox")
+        if not isinstance(block, Mapping):
+            odd += block is not None
+            continue
+        for key in COMBOBOX_FACTS:
+            value = block.get(key)
+            if not isinstance(value, bool):
+                odd += 1
+            else:
+                held[key] += value
+    return held, odd
 
 
 def _outcome_counts(finals: Sequence[Json]) -> tuple[dict[str, Any], int]:  # Any: JSON figures
@@ -605,7 +652,13 @@ def _gate_failures(  # noqa: PLR0913 - the gates and every list they name
         "tasks": [
             k for k, vs in scored.items() if not vs.count("pass") == runs_per_task == len(vs)
         ],
-        "large_listed": [t.task_id for t in tasks if t.fixture == "large"],
+        "large_listed": ids(
+            lambda r: (
+                _counted(r)
+                and r.task_id in {t.task_id for t in tasks if t.fixture == "large"}
+                and not _listed_when_acted(r.final)
+            )
+        ),
         "controls": ["controls"],
     }
     return {gate: named.get(gate, []) for gate, ok in gates.items() if not ok}

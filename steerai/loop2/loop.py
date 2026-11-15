@@ -426,6 +426,11 @@ class TaskOutcome:
     audit: tuple[str, str] | None = None
     """[V2.64] One: the final audit's (`allowed` | `vetoed` | `failed`, reason token); None when
     no audit ran (some proof was not self-written, or the task did not reach done)."""
+    query_combobox_listed: bool = False
+    """[V2.64] Two: a query-class ComboBox (searchbox AriaRole, or under a Search landmark) was
+    among the rows the model was shown."""
+    typed_into_combobox: bool = False
+    """[V2.64] Two: a type targeted a ComboBox (whether it was then sent or refused)."""
     partial_page_calls: int = 0
     """[V2.35]: model calls made on a partial page (the observation growing, or its Document
     younger than the load guard), counted where every call is."""

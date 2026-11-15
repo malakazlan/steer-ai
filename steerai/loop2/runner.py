@@ -99,6 +99,7 @@ from steerai.loop2.query import (
     field_state,
     query_outcome,
     search_facts,
+    search_landmark_of,
     top_document_replaced,
 )
 from steerai.loop2.task import GoalSpan, Subgoal, Task, known_params
@@ -426,6 +427,9 @@ class _Run:
         """[V2.64] One: how each subgoal was proven (a claim, or the auto proof's token)."""
         self.audit: tuple[str, str] | None = None
         """[V2.64] One: the final audit's outcome and reason, when it ran."""
+        self.query_combobox_listed = False
+        self.typed_into_combobox = False
+        """[V2.64] Two: the two ComboBox facts of the task, no judgement."""
         """#301: unread automation ids over every observation taken in (`_in_domain`)."""
         self.partial_page_calls = 0
         """[V2.35]: model calls made on a growing or young observation (`_decide`)."""
@@ -486,6 +490,8 @@ class _Run:
             unread_automation_ids=self.unread_aids,
             url_reads=tuple(self.url_reads.items()),
             audit=self.audit,
+            query_combobox_listed=self.query_combobox_listed,
+            typed_into_combobox=self.typed_into_combobox,
             partial_page_calls=self.partial_page_calls,
             refusals=tuple(self.refusal_counts.items()),
             submit_parents=tuple(self.submit_parents.items()),
@@ -675,6 +681,10 @@ class _Run:
         self.estimates_low += decided.estimate_low
         self._spend(decided.usage)
         self.listing.shown = None if decided.listing is None else decided.listing.listed
+        if not self.query_combobox_listed:
+            self.query_combobox_listed = _query_combobox_listed(
+                observed, view.handles, self.listing.shown
+            )
         if decided.listing is not None:
             self.listing.turns.append(decided.listing)
         return decided.decision
@@ -1030,6 +1040,8 @@ class _Run:
         """Gate, dispatch and watch one action; None when it was refused (the batch ends)."""
         self.fresh = {}  # one read per element per action ([V2.29] Q2)
         element = self._target(action, listed, observed)
+        if action.verb == "type" and element is not None and element.role == "ComboBox":
+            self.typed_into_combobox = True  # [V2.64] Two: targeted, sent or refused
         if element is None and action.verb != "wait":
             return None
         if element is not None and self._old(observed):
@@ -1489,10 +1501,18 @@ class _Run:
         read = None if now is None else self._read_value(now, after)
         return field_state(pending.value, read, present=now is not None)
 
+    def _mark_acted(self, target: int | None) -> None:
+        """#366 P5: the dispatched target's handle on the turn whose Decision named it."""
+        turns = self.listing.turns
+        if target is None or not turns:
+            return
+        turns[-1] = replace(turns[-1], acted=turns[-1].acted | {target})
+
     def _act(self, sent: Dispatch) -> ActResult:
         """[V2.25] (c): one local retry when nothing was sent, under the same decision, unless
         the person stopped the task in between (RT-15)."""
         self.dispatched.append(sent)  # before the call: an act that raises may still have landed
+        self._mark_acted(sent.action.target)
         act = self.ports.act(sent)
         if may_retry(risk=sent.risk, verified=False, report=None, act=act.action):
             self._check_interrupt()
@@ -1663,6 +1683,23 @@ class _Run:
 
 
 # ---- pure helpers -----------------------------------------------------------------------------
+
+
+def _query_combobox_listed(
+    observed: Observed, handles: Mapping[int, int], shown: frozenset[int] | None
+) -> bool:
+    """[V2.64] Two: a ComboBox among the rows shown (every bound handle when `shown` is None)
+    whose AriaRole is `searchbox` or that sits under a Search landmark."""
+    roles = observed.aria_roles or {}
+    for element in observed.snapshot.elements:
+        if element.role != "ComboBox" or element.id not in handles:
+            continue
+        if shown is not None and handles[element.id] not in shown:
+            continue
+        rid = element.runtime_id
+        if roles.get(rid) == "searchbox" or search_landmark_of(observed, rid) is not None:
+            return True
+    return False
 
 
 def _no_page(observed: Observed) -> bool:
