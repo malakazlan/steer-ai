@@ -47,6 +47,11 @@ FAKED: frozenset[str] = frozenset(
         "test_an_exception_in_the_hook_thread_before_ready_is_a_start_refusal",
         "session/test_hook_callback.py::"
         "test_a_self_probe_that_cannot_be_sent_does_not_raise_and_fails_closed",
+        # LW-01: the constructor refuses the probe key before any hook or thread exists
+        "session/test_hook_callback.py::test_the_probe_key_is_an_unassigned_virtual_key",
+        # LW-01: the v2 monitor over the fake user32 (`_patch`), on a moving fake clock
+        "session/test_hook_callback.py::"
+        "test_the_monitor_reports_whether_both_hooks_saw_the_probe",
     }
 )
 """Tests that call these names over fakes (a monkeypatched user32, a fake hook thread), read and
