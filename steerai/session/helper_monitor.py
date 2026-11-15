@@ -222,10 +222,12 @@ class HelperMonitor:
         )
 
     def session_change(self) -> str | None:
-        """§5.6: a lock, connect or desktop transition during the task, as its stop token. It
-        fails closed (#383 blocker 5): a last poll older than the deadline is a stop."""
+        """§5.6: a lock, connect or desktop transition during the task, as its stop token. A
+        last poll older than the deadline still stops the task (#383 blocker 5), as the
+        monitor's loss (`healthy`: `stale_session_poll`), never as a lock this poll did not see
+        (#398); the world's own lock read is taken before this one (LW-17/18)."""
         if self._poll_age() > self._deadline_s:
-            return "session_locked"
+            return None
         if self._transitions["lock"] or self._transitions["connect"]:
             return "session_locked"
         if self._transitions["desktop"]:
