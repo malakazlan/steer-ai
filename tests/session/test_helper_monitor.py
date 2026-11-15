@@ -18,6 +18,7 @@ from steerai.session import helper_monitor
 from steerai.session.helper_core import KILL_ACK_S, write_config
 from steerai.session.helper_launch import CLOSE_TIMEOUT_MS
 from steerai.session.helper_monitor import WATCH_PERIOD_MS, HelperMonitor
+from steerai.session.hook_classifier import TAKEOVER
 from steerai.session.hook_layout import (
     HISTOGRAMS,
     KIND_OTHER_STEER,
@@ -44,6 +45,7 @@ class FakeHelper:
     status_buf: bytearray = field(default_factory=lambda: bytearray(status_size()))
     config_buf: bytearray = field(default_factory=lambda: bytearray(config_size()))
     exited: bool = False
+    exited_raises: OSError | None = None
     terminated: int = 0
     closed: int = 0
     wakes: list[int] = field(default_factory=list)
@@ -65,6 +67,8 @@ class FakeHelper:
 
     @property
     def status(self) -> Words:
+        if self.closed:
+            raise RuntimeError("the helper is not started")  # as `HelperProcess` once released
         words = status_words(memoryview(self.status_buf).toreadonly())
         if self.on_get is None:
             return words
@@ -91,6 +95,8 @@ class FakeHelper:
         return PID
 
     def has_exited(self) -> bool:
+        if self.exited_raises is not None:
+            raise self.exited_raises
         return self.exited
 
     def wait_exit(self, timeout_ms: int) -> bool:
@@ -642,7 +648,14 @@ def _naps(monitor: HelperMonitor) -> list[float | None]:
 
 @pytest.mark.parametrize(
     ("seconds", "ms"),
-    [(float("nan"), 0), (-1.0, 0), (float("inf"), 1000), (1e12, 1000), (0.0004, 0)],
+    [
+        (float("nan"), 0),
+        (-1.0, 0),
+        (float("inf"), 1000),
+        (1e12, 1000),
+        (0.0004, 1),  # #385: rounded up, never a zero wait for a time asked
+        (0.2501, 251),
+    ],
 )
 def test_a_kill_aware_wait_is_clamped(seconds: float, ms: int) -> None:
     rig = _rig()
@@ -675,6 +688,81 @@ def test_a_failed_wake_wait_is_a_loss_and_naps_its_time() -> None:
     rig.helper.wake_fails = True
     rig.monitor.wait(0.25)
     assert naps == [0.25]
+    assert not rig.monitor.healthy()
+
+
+# ---- #383 principal note 1 (PR 4): nothing reads the words after close -------------------------
+
+
+def test_after_close_the_monitor_is_lost_and_reads_no_words() -> None:
+    """The real words are unmapped by then: a read would be an access violation."""
+    rig = _rig()
+    rig.monitor.close()
+    assert not rig.monitor.healthy()
+    rig.monitor.maintain()
+    assert not rig.monitor.probe_seen()
+    assert rig.probes == []
+    assert rig.helper.terminated == 0  # a close is not a helper-caused loss
+
+
+def test_the_counts_fetch_the_words_on_every_read() -> None:
+    """Never a view kept from construction (a stale mapping)."""
+    rig = _rig()
+    fresh = bytearray(len(rig.helper.status_buf))
+    rig.helper.status_buf = fresh
+    rig.helper.status_w.set("delivered_keyboard", 5)
+    assert rig.monitor._counts.delivered("keyboard") == 5
+
+
+# ---- #385 HH4-14: every public method is safe after close -------------------------------------
+
+_PUBLIC = sorted(
+    name
+    for name, value in vars(HelperMonitor).items()
+    if callable(value) and not name.startswith("_")
+)
+_AFTER_CLOSE: dict[str, tuple[tuple[object, ...], object]] = {
+    "kill_requested": ((), False),  # nothing to acknowledge; the "closed" loss stops the task
+    "healthy": ((), False),
+    "maintain": ((), None),
+    "probe_now": ((), None),
+    "probe_seen": ((), False),
+    "last_user_input": ((), None),  # input "just now" (the clock): every send is refused
+    "takeover_token": ((), TAKEOVER),
+    "session_change": ((), "session_locked"),
+    "latency": ((), (0, None, None)),
+    "wait": ((0.0,), None),
+    "close": ((), None),
+    "watch_once": ((), None),
+}
+
+
+def test_the_after_close_list_names_every_public_method() -> None:
+    assert sorted(_AFTER_CLOSE) == _PUBLIC
+
+
+@pytest.mark.parametrize("name", _PUBLIC)
+def test_every_public_method_is_safe_after_close(name: str) -> None:
+    """No method reads the unmapped words, raises, or sends a probe once closed."""
+    rig = _rig()
+    rig.monitor.close()
+    rig.at(100.0 + 10 * DEADLINE_S)  # long after: the last poll is stale too
+    args, expected = _AFTER_CLOSE[name]
+    if name == "last_user_input":
+        expected = rig.t[0]
+    assert getattr(rig.monitor, name)(*args) == expected
+    assert rig.probes == []
+    assert rig.helper.terminated == 0
+
+
+def test_a_liveness_read_that_raises_inside_a_wait_is_a_loss() -> None:
+    """#385 principal note: `has_exited` raising inside `wait` loses the monitor and naps."""
+    rig = _rig()
+    naps = _naps(rig.monitor)
+    rig.helper.exited_raises = OSError(6, "the handle is invalid")
+    rig.monitor.wait(0.25)
+    assert naps == [0.25]
+    assert rig.helper.wakes == []
     assert not rig.monitor.healthy()
 
 

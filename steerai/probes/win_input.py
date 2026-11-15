@@ -77,21 +77,25 @@ VK_MENU = 0x12  # ALT
 _GA_ROOT = 2
 
 
-def build_mouse_input(*, dx: int, dy: int, flags: int) -> INPUT:
+def build_mouse_input(*, dx: int, dy: int, flags: int, tag: int | None = None) -> INPUT:
+    """`tag`: a tag bound by the caller (#385 HH4-11); None is the process tag now."""
     record = INPUT()
     record.type = _INPUT_MOUSE
-    record.union.mi = MOUSEINPUT(dx, dy, 0, flags, 0, extra_info())
+    record.union.mi = MOUSEINPUT(dx, dy, 0, flags, 0, extra_info() if tag is None else tag)
     return record
 
 
 _KEYEVENTF_EXTENDEDKEY = 0x0001
 
 
-def build_keyboard_input(*, vk: int, keyup: bool, scan: int = 0, extended: bool = False) -> INPUT:
+def build_keyboard_input(
+    *, vk: int, keyup: bool, scan: int = 0, extended: bool = False, tag: int | None = None
+) -> INPUT:
+    """`tag`: a tag bound by the caller (#385 HH4-11); None is the process tag now."""
     record = INPUT()
     record.type = _INPUT_KEYBOARD
     flags = (_KEYEVENTF_KEYUP if keyup else 0) | (_KEYEVENTF_EXTENDEDKEY if extended else 0)
-    record.union.ki = KEYBDINPUT(vk, scan, flags, 0, extra_info())
+    record.union.ki = KEYBDINPUT(vk, scan, flags, 0, extra_info() if tag is None else tag)
     return record
 
 
@@ -289,13 +293,13 @@ def _send(user32: ctypes.WinDLL, *records: INPUT) -> None:
         raise OSError(f"SendInput sent {sent}/{len(records)}: error {ctypes.get_last_error()}")
 
 
-def key_up_probe(vk: int) -> None:
+def key_up_probe(vk: int, *, tag: int | None = None) -> None:
     """[V2.57] LW-01: one tagged key-up of an unassigned virtual key, the v2 monitor's keyboard
     hook probe (a key-up with no key-down; the key is chosen by probe, see `monitor.PROBE_VK`)."""
-    _send(_user32(), build_keyboard_input(vk=vk, keyup=True))
+    _send(_user32(), build_keyboard_input(vk=vk, keyup=True, tag=tag))
 
 
-def nudge_in_place() -> None:
+def nudge_in_place(*, tag: int | None = None) -> None:
     """A tagged absolute move to the cursor's current position: reaches a low-level hook as
     Steer's own event and leaves the cursor still (probe `hook-latency-2026-11-04`: a
     zero-delta relative move never reaches a hook)."""
@@ -308,6 +312,7 @@ def nudge_in_place() -> None:
             dx=ax,
             dy=ay,
             flags=_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE | _MOUSEEVENTF_VIRTUALDESK,
+            tag=tag,
         ),
     )
 

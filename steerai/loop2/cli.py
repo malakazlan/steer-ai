@@ -83,6 +83,8 @@ class V2Options:
     max_actions: int
     max_tokens: int
     max_wall_s: float
+    hook_helper: bool = False
+    """[V2.60]: the hooks in their own helper process (`--hook-helper`); off by default."""
 
 
 @dataclass(frozen=True)
@@ -146,6 +148,11 @@ def parse_v2(argv: Sequence[str]) -> V2Options:
     parser.add_argument("--max-actions", type=_positive_int, default=actions)
     parser.add_argument("--max-tokens", type=_positive_int, default=tokens)
     parser.add_argument("--max-wall-s", type=_positive_seconds, default=wall)
+    parser.add_argument(
+        "--hook-helper",
+        action="store_true",
+        help="run the hooks and the kill key in a helper process ([V2.60])",
+    )
     try:
         args = parser.parse_args(list(argv))
     except argparse.ArgumentError as exc:
@@ -166,6 +173,7 @@ def parse_v2(argv: Sequence[str]) -> V2Options:
         max_actions=args.max_actions,
         max_tokens=args.max_tokens,
         max_wall_s=args.max_wall_s,
+        hook_helper=bool(args.hook_helper),
     )
 
 
@@ -309,6 +317,7 @@ def _run(options: V2Options, deps: V2Deps, out: _Out, price: PriceFile, window: 
         pause=deps.pause,
         bound_pid=window.pid,
         bound_image=deps.image_of(window.pid),
+        hook_helper=options.hook_helper,
     )
     platform = deps.platform()
 

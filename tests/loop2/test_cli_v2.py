@@ -619,3 +619,26 @@ def test_the_final_line_carries_the_per_class_watch_deadline_counts(
         "plain": {"watches": 2, "deadline": 0}, "trigger": {"watches": 3, "deadline": 1},
         "submit": {"watches": 1, "deadline": 1}, "wait": {"watches": 0, "deadline": 0},
     }  # fmt: skip
+
+
+# ---- [V2.60] PR 4: `--hook-helper` -------------------------------------------------------------
+
+
+def test_the_hook_helper_flag_is_off_by_default_and_parsed() -> None:
+    assert parse_v2([*WHERE]).hook_helper is False
+    assert parse_v2([*WHERE, "--hook-helper"]).hook_helper is True
+
+
+def test_the_hook_helper_flag_reaches_the_world_and_its_header(tmp_path: Path) -> None:
+    from tests.loop2.test_live_world_helper import HelperPlatform  # noqa: PLC0415 - this test
+
+    run = Run(tmp_path, HelperPlatform())
+    run("--hook-helper")
+    assert run.header()["hook_monitor"] == "helper"
+    assert any(c.startswith("helper:") for c in run.platform.calls)
+
+
+def test_without_the_flag_the_header_says_in_process(tmp_path: Path) -> None:
+    run = Run(tmp_path)
+    run()
+    assert run.header()["hook_monitor"] == "in_process"
