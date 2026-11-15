@@ -30,6 +30,7 @@ from steerai.loop2.history import (
     Proven,
     render,
 )
+from steerai.loop2.listing import ListingTurn
 from steerai.loop2.loop import PORT_DETAILS, ActResult, TokenUsage
 from steerai.loop2.runner import run_task
 from steerai.loop2.turn_trace import (
@@ -55,6 +56,7 @@ from tests.loop2.world_fakes import (
     FIELD,
     GO,
     PAGE,
+    URL,
     World,
     act,
     decision,
@@ -563,3 +565,76 @@ def test_an_action_the_batch_never_rated_has_no_tier() -> None:
     world = World([decision(first, act("click", target=GO.id), first=True)])
     actions = _first_actions(world)
     assert [a["risk"] for a in actions] == ["R2", None]
+
+
+# ---- #435 review: facts of this turn only; one record per turn on every path --------------------
+
+SEEN_LISTING = ListingTurn(eligible=40, shown=30, cut=10, keep_at_ceiling=False,
+                           goal_at_subcap=False, prompt_cut=0, prompt_tokens=900,
+                           listed=frozenset({GO.id}))  # fmt: skip
+
+
+def _records(world: World, ports: Any = None) -> list[dict[str, Any]]:  # Any: Ports, JSON
+    records: list[dict[str, Any]] = []  # Any: JSON
+    run_task(task(), dataclasses.replace(ports or world.ports(), turn_trace=_into(records)))
+    assert all(closed(r) for r in records)
+    return records
+
+
+def test_a_failed_decide_writes_its_listing_counts_as_unknown() -> None:
+    spent = DecideRecord("v", 2, True, True, rejections=("schema",))
+    failed = ControllerError("rejected", ("id_not_listed",), record=spent)
+    world = World([decision(act("wait"), first=True)])
+    world.decide_raises = failed
+    (record,) = _records(world)
+    assert (record["listed"], record["cut"]) == (None, None)
+
+
+def test_a_turn_whose_decide_reports_no_listing_never_takes_an_earlier_one() -> None:
+    world = World(
+        [decision(act("click", target=GO.id), first=True), Decision(stop="cannot")],
+        effects=[report("content_changed")],
+    )
+    ports = world.ports()
+    real = ports.decide
+    shown = iter([SEEN_LISTING, None])
+
+    def decide(view: Any) -> Any:  # Any: the port's own TurnView and Decided
+        return dataclasses.replace(real(view), listing=next(shown))
+
+    first, second = _records(world, dataclasses.replace(ports, decide=decide))
+    assert (first["listed"], first["cut"]) == (30, 10)
+    assert (second["listed"], second["cut"]) == (None, None)
+
+
+def test_an_audited_done_tasks_last_record_is_numbered_as_its_decision() -> None:
+    from tests.loop2.test_final_audit import ALLOW, _value_only  # noqa: PLC0415
+
+    records = _records(_value_only(ALLOW))
+    assert [r["turn"] for r in records] == [1, 2]
+    assert all(r["turn"] == r["decision"]["turn"] for r in records)
+
+
+def test_a_turn_discarded_as_stale_after_its_decide_is_written_once() -> None:
+    moved = dataclasses.replace(observed(), url=URL + "next", document_url=URL + "next")
+    world = World(
+        [decision(act("click", target=GO.id), first=True), Decision(stop="cannot")],
+        observations=[observed(), moved],
+    )
+    records = _records(world)
+    assert world.dispatched == []
+    assert [r["turn"] for r in records] == [1, 2]
+
+
+def test_a_turn_whose_target_read_finds_the_page_moved_is_written_once() -> None:
+    from steerai.orchestrator.loop import REUSE_FRESHNESS_S  # noqa: PLC0415
+
+    moved = dataclasses.replace(observed(), url=URL + "next", document_url=URL + "next")
+    world = World(
+        [decision(act("click", target=GO.id), first=True)],
+        observations=[observed(), observed(), moved],
+    )
+    world.observe_lag_s = REUSE_FRESHNESS_S + 1.0
+    records = _records(world)
+    assert world.dispatched == []
+    assert [r["turn"] for r in records] == [1, 2]
