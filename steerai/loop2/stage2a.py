@@ -46,14 +46,22 @@ from steerai.loop2.stage1 import (
     run_task_runs,
     wait_until_ready,
 )
+from steerai.loop2.stage1_expected import Act
 from steerai.loop2.stage2_expected import (
+    OPENERS,
+    OpenerError,
+    Revealed,
     SiteRow,
     TableRow,
+    click_opener,
     dump_table,
+    full_read,
     load_acts,
     load_table,
     load_unrated,
+    opened_read_path,
     table_from_reads,
+    wait_revealed,
 )
 from steerai.probes.layer_b_pages import REPLY_TEXT, InvalidRun
 from steerai.probes.task_suite import H2, H3, H4, H5, H6, HELD_OUT, TASKS, Task
@@ -340,6 +348,60 @@ def _opened(task: Task) -> Any:
     raise ValueError(f"no 2a start for {task.task_id}")
 
 
+def save_opened(out: Path) -> int:  # pragma: no cover - live, Windows only
+    """[V2.65] (1) (b), the local tasks behind an opener: each page opened read-only, the opener
+    clicked once by the harness through the page's accessibility tree, and the revealed state
+    read when it settles (`<task_id>.opened.json`). Nothing is typed or submitted."""
+    from steerai.probes.memory_guard import EXIT_LOW_MEMORY, free_physical_mb  # noqa: PLC0415
+    from steerai.world.read_json import observed_to_json  # noqa: PLC0415
+
+    out.mkdir(parents=True, exist_ok=True)
+    for task in local_tasks():
+        opener = OPENERS.get(task.task_id)
+        if opener is None:
+            continue
+        if free_physical_mb() < FLOOR_MB:
+            sys.stdout.write(json.dumps({"task": task.task_id, "refused": "low_memory"}) + "\n")
+            return EXIT_LOW_MEMORY
+        row: dict[str, object] = {"task": task.task_id}
+        try:
+            with _opened(task) as (hwnd, port):
+                if port is None:
+                    raise InvalidRun("opener_needs_a_page")
+                revealed = _revealed(hwnd, port, opener)
+        except (InvalidRun, OpenerError) as exc:
+            sys.stdout.write(json.dumps({**row, "invalid": str(exc)}) + "\n")
+            continue
+        except (OSError, TimeoutError, RuntimeError) as exc:
+            sys.stdout.write(json.dumps({**row, "error": type(exc).__name__}) + "\n")
+            continue
+        if revealed is None:
+            sys.stdout.write(json.dumps({**row, "revealed": False}) + "\n")
+            continue
+        path = opened_read_path(out, task.task_id)
+        path.write_bytes((observed_to_json(revealed.read) + "\n").encode("utf-8"))
+        sys.stdout.write(json.dumps({**row, "revealed": True, "new": revealed.new_roles}) + "\n")
+    return 0
+
+
+def _revealed(hwnd: int, port: int, opener: Act) -> Revealed | None:  # pragma: no cover - live
+    """One opener click on the page at `port`, then its revealed state; the UIA client and the
+    DevTools session are released when this returns."""
+    from steerai.probes.chrome_a11y import CdpSession, page_ws_url  # noqa: PLC0415
+    from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415
+
+    client = UiaClient()
+    cdp = CdpSession(page_ws_url(port))
+    try:
+        before = full_read(client, hwnd)
+        click_opener(cdp.call, opener)
+        return wait_revealed(
+            lambda: full_read(client, hwnd), before, clock=time.monotonic, sleep=time.sleep
+        )
+    finally:
+        cdp.close()
+
+
 def save_reads(out: Path) -> int:  # pragma: no cover - live, Windows only
     """The `--save-reads` pass: each distinct start once, read-only, no input; a read per task
     id, kept out of the repo."""
@@ -426,6 +488,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
     parser = argparse.ArgumentParser(prog="python -m steerai.loop2.stage2a")
     parser.add_argument("--save-reads", type=Path, help="live, read-only: save each start read")
     parser.add_argument("--rate", type=Path, help="the saved reads: write the 2a table")
+    parser.add_argument("--save-opened", type=Path, help="live: the reads behind each opener")
     parser.add_argument("--table", type=Path)
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--out", type=Path)
@@ -433,6 +496,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
     if args.save_reads is not None:
         return save_reads(args.save_reads)
+    if args.save_opened is not None:
+        return save_opened(args.save_opened)
     if args.rate is not None:
         text = ACTS.read_text(encoding="utf-8")
         rows = rate_2a(load_acts(text), args.rate)

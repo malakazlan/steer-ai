@@ -29,7 +29,7 @@ import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Final, Literal, get_args
+from typing import Any, Final, Literal, get_args
 
 from steerai.loop2.decision import Key, Verb
 from steerai.loop2.form import beside
@@ -41,12 +41,14 @@ from steerai.loop2.stage1_expected import (
     ProofKind,
     outcome_of,
     rate,
+    target_in,
     targets_in,
 )
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.probes.task_suite import H2, H3, H4, H5, H6, HELD_OUT, TASKS, Task
 from steerai.world.effects import Observed
 from steerai.world.elements import Element
+from steerai.world.model import normalise_name
 from steerai.world.read_json import observed_from_json
 
 ACTS: Final = Path(__file__).with_name("stage2_acts.json")
@@ -164,6 +166,142 @@ class Spacer:
     def loaded(self, host: str) -> None:
         self._last[host] = self._clock()
         self.loads[host] = self.loads.get(host, 0) + 1
+
+
+# ---- [V2.65] (1) option (b): a target revealed by one scripted click on its opener ---------------
+
+OPENERS_FILE: Final = Path(__file__).with_name("stage2_openers.json")
+OPENER_VERBS: Final = frozenset({"click", "expand"})
+AX_ROLES: Final[Mapping[str, str]] = {
+    "Button": "button",
+    "TreeItem": "treeitem",
+    "MenuItem": "menuitem",
+    "Hyperlink": "link",
+    "TabItem": "tab",
+}
+"""A UIA control type as Chrome's accessibility tree names the same element's role."""
+REVEAL_LIMIT_S: Final = 12.0
+"""How long a revealed state may take to settle after the opener's click (unmeasured)."""
+REVEAL_POLL_S: Final = 0.5
+_CLICK: Final = "function () { this.click(); }"
+
+
+class OpenerError(RuntimeError):
+    """The opener was not found exactly once: it is never clicked, and the task stays unrated."""
+
+
+def load_openers(text: str) -> dict[str, Act]:
+    """`{task_id: {"verb", "role", "name"}}`: one named click or expand each, nothing else; a
+    `ValueError` naming `openers` for anything else."""
+    raw = json.loads(text)
+    if not isinstance(raw, dict):
+        raise ValueError("openers: not an object")
+    openers: dict[str, Act] = {}
+    for task_id, entry in raw.items():
+        if not isinstance(entry, dict) or set(entry) != {"verb", "role", "name"}:
+            raise ValueError(f"openers: {task_id} needs exactly verb, role and name")
+        verb, role, name = entry["verb"], entry["role"], entry["name"]
+        if (
+            verb not in OPENER_VERBS
+            or role not in AX_ROLES
+            or not isinstance(name, str)
+            or not name
+        ):
+            raise ValueError(f"openers: {task_id} is not one named click or expand")
+        openers[str(task_id)] = Act(_VERBS[verb], role, name)
+    return openers
+
+
+OPENERS: Final[Mapping[str, Act]] = load_openers(OPENERS_FILE.read_text(encoding="utf-8"))
+
+
+Cdp = Callable[..., Mapping[str, Any]]
+"""A DevTools call: `(method, params) -> result` (Any: JSON)."""
+
+
+def click_opener(cdp: Cdp, opener: Act) -> None:
+    """The harness's own scripted click (never Steer's input): the one element of the opener's
+    role and name in the page's accessibility tree, clicked through its own `click()`. Not found
+    exactly once is an `OpenerError`; nothing is typed, submitted or answered."""
+    wanted = normalise_name(opener.name)
+    role = AX_ROLES[opener.role]
+    nodes = cdp("Accessibility.getFullAXTree", {}).get("nodes", [])
+    found = [
+        n["backendDOMNodeId"]
+        for n in nodes
+        if isinstance(n, Mapping)
+        and not n.get("ignored")
+        and n.get("role", {}).get("value") == role
+        and normalise_name(str(n.get("name", {}).get("value", ""))) == wanted
+        and isinstance(n.get("backendDOMNodeId"), int)
+    ]
+    if not found:
+        raise OpenerError("opener_not_found")
+    if len(found) > 1:
+        raise OpenerError("opener_ambiguous")
+    target = cdp("DOM.resolveNode", {"backendNodeId": found[0]})
+    object_id = target.get("object", {}).get("objectId")
+    if not isinstance(object_id, str):
+        raise OpenerError("opener_not_resolved")
+    cdp("Runtime.callFunctionOn", {"objectId": object_id, "functionDeclaration": _CLICK})
+
+
+def opened_read_path(reads: Path, task_id: str) -> Path:
+    """A task behind an opener is rated on its opened read; every other on its start read."""
+    return reads / (f"{task_id}.opened.json" if task_id in OPENERS else f"{task_id}.json")
+
+
+def opener_start_facts(
+    opener: Act, start: Observed, committed: DecidingFacts
+) -> DecidingFacts | None:
+    """The run's start check for a task behind an opener: its target is not on the start page,
+    so the start page must show the opener exactly once, and the committed facts (read on the
+    opened page) stand; None when it does not (the start page differs)."""
+    try:
+        target_in(opener, start)
+    except ValueError:
+        return None
+    return committed
+
+
+@dataclass(frozen=True)
+class Revealed:
+    read: Observed
+    new_roles: dict[str, int]
+    """How many new elements of each role the opener revealed (closed values, no names)."""
+
+
+def wait_revealed(
+    read: Callable[[], Observed],
+    before: Observed,
+    *,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+    limit_s: float = REVEAL_LIMIT_S,
+) -> Revealed | None:
+    """The revealed state once it shows the same new elements (by role and name, against the
+    read before the click) on two reads in a row within `limit_s`; None when it does not: the
+    reveal is not deterministic and the task stays unrated."""
+    seen_before = {(e.role, normalise_name(e.name)) for e in before.snapshot.elements}
+    deadline = clock() + limit_s
+    last: tuple[tuple[str, str], ...] | None = None
+    while clock() < deadline:
+        now = read()
+        new = tuple(
+            sorted(
+                (e.role, normalise_name(e.name))
+                for e in now.snapshot.elements
+                if (e.role, normalise_name(e.name)) not in seen_before
+            )
+        )
+        if new and new == last:
+            roles: dict[str, int] = {}
+            for role, _name in new:
+                roles[role] = roles.get(role, 0) + 1
+            return Revealed(now, roles)
+        last = new
+        sleep(REVEAL_POLL_S)
+    return None
 
 
 def real_site_tasks() -> tuple[Task, ...]:
@@ -433,9 +571,77 @@ def table_from_reads(
     if unknown:
         raise ValueError(f"acts: not tasks of this group: {unknown}")
     return [
-        table_row(task_id, row, goals[task_id], (reads / f"{task_id}.json").read_bytes())
+        table_row(task_id, row, goals[task_id], opened_read_path(reads, task_id).read_bytes())
         for task_id, row in acts.items()
     ]
+
+
+def full_read(client: Any, hwnd: int) -> Observed:  # pragma: no cover - live; Any: UiaClient
+    """The window's full read as the v2 loop takes it (read-only)."""
+    import secrets  # noqa: PLC0415 - live only
+
+    from steerai.probes.shadow_v2 import _ComFacts  # noqa: PLC0415 - COM failures as OSError
+    from steerai.world.model import WorldModel  # noqa: PLC0415 - Windows only
+    from steerai.world.observe2 import read_observed  # noqa: PLC0415 - Windows only
+
+    return read_observed(
+        WorldModel(client).observe(hwnd, cap_s=5.0),
+        _ComFacts(client),
+        key=secrets.token_bytes(32),
+        windows=lambda: (hwnd,),
+    )
+
+
+def save_opened(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live, Windows only
+    """[V2.65] (1) (b): each real-site task behind an opener, once, in a fresh throwaway
+    profile, spaced and capped per host: the start page read, the opener clicked once by the
+    harness, and the revealed state read when it settles (`<task_id>.opened.json`). Nothing is
+    typed or submitted; a reveal that does not settle leaves the task unrated."""
+    from steerai.probes.live_browser import live_page  # noqa: PLC0415 - Windows only
+    from steerai.probes.memory_guard import EXIT_LOW_MEMORY, LowMemory  # noqa: PLC0415
+    from steerai.world.read_json import observed_to_json  # noqa: PLC0415
+
+    out.mkdir(parents=True, exist_ok=True)
+    spacer = Spacer(time.monotonic, time.sleep)
+    for task in real_site_tasks():
+        opener = OPENERS.get(task.task_id)
+        if opener is None:
+            continue
+        host = urllib.parse.urlsplit(task.start).netloc
+        spacer.wait(host)
+        spacer.loaded(host)
+        row: dict[str, object] = {"task": task.task_id}
+        try:
+            with live_page(task.start, floor_mb=floor_mb, settle_s=6.0) as page:
+                reply = page.cdp.call(
+                    "Runtime.evaluate", {"expression": START_EXPRESSION, "returnByValue": True}
+                )
+                document = start_document(str(reply.get("result", {}).get("value", "")))
+                row |= {"status": document.status, "error_page": document.error_page}
+                before = full_read(page.client, page.hwnd)
+                click_opener(page.cdp.call, opener)
+                revealed = wait_revealed(
+                    lambda: full_read(page.client, page.hwnd),
+                    before,
+                    clock=time.monotonic,
+                    sleep=time.sleep,
+                )
+        except LowMemory as refused:
+            sys.stdout.write(json.dumps({**row, "refused": str(refused)}) + "\n")
+            return EXIT_LOW_MEMORY
+        except OpenerError as exc:
+            sys.stdout.write(json.dumps({**row, "opener": str(exc)}) + "\n")
+            continue
+        except (OSError, TimeoutError, RuntimeError) as exc:
+            sys.stdout.write(json.dumps({**row, "error": type(exc).__name__}) + "\n")
+            continue
+        if revealed is None:
+            sys.stdout.write(json.dumps({**row, "revealed": False}) + "\n")
+            continue
+        path = opened_read_path(out, task.task_id)
+        path.write_bytes((observed_to_json(revealed.read) + "\n").encode("utf-8"))
+        sys.stdout.write(json.dumps({**row, "revealed": True, "new": revealed.new_roles}) + "\n")
+    return 0
 
 
 def save_reads(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live, Windows only
@@ -495,6 +701,7 @@ def save_reads(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live, 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Stage 2's expected outcomes.")
     parser.add_argument("--save-reads", type=Path, help="live: save each start page's read here")
+    parser.add_argument("--save-opened", type=Path, help="live: the reads behind each opener")
     parser.add_argument("--min-free-mb", type=int, default=4096)
     parser.add_argument("--acts", type=Path, default=ACTS)
     parser.add_argument("--reads", type=Path, help="the saved reads' local directory")
@@ -502,6 +709,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.save_reads is not None:  # pragma: no cover - live
         return save_reads(args.save_reads, floor_mb=args.min_free_mb)
+    if args.save_opened is not None:  # pragma: no cover - live
+        return save_opened(args.save_opened, floor_mb=args.min_free_mb)
     if args.reads is None:
         parser.error("--reads is required to compute the table")
     rows = table_from_reads(load_acts(args.acts.read_text(encoding="utf-8")), args.reads)
