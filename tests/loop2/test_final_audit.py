@@ -20,7 +20,7 @@ from steerai.loop2.controller import (
     parse_audit,
 )
 from steerai.loop2.decision import Claim, Decision, SubgoalDoc
-from steerai.loop2.loop import Audited, AuditView, PortInterrupted, TokenUsage
+from steerai.loop2.loop import Audited, AuditView, PortInterrupted, ProofLine, TokenUsage
 from steerai.loop2.runner import run_task
 from tests.loop2.world_fakes import (
     FIELD,
@@ -38,7 +38,14 @@ from tests.loop2.world_fakes import (
 
 ALLOW = Audited(sufficient=True, reason="facts_finish_request", usage=TokenUsage(50, 5))
 VETO = Audited(sufficient=False, reason="request_asks_more", usage=TokenUsage(50, 5))
-LINE = (1, "value", "claim", "value", ("value_read", "equals_param"), ((1, "red shoes"),))
+LINE: ProofLine = (
+    1,
+    "value",
+    "claim",
+    "value",
+    ("value_read", "equals_param"),
+    ((1, "red shoes"),),
+)
 
 
 def _value_only(audit: Any) -> World:  # Any: an Audited, an exception or a callable

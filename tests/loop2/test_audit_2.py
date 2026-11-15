@@ -188,6 +188,7 @@ def test_an_allowed_done_counts_one_allowed_audit_call() -> None:
     assert outcome.status == "done"
     assert (outcome.audit_allowed, outcome.audit_vetoed, outcome.audit_failed) == (1, 0, 0)
     assert outcome.audit_calls == 1
+    assert outcome.audit_tokens == 55  # the allowed call's 50 + 5 (#452 tester B2)
 
 
 def test_a_vetoed_task_counts_one_vetoed_audit_call() -> None:
@@ -252,8 +253,10 @@ def test_a_spent_token_budget_before_the_audit_pauses_with_its_token() -> None:
         ("red Shoes", "RED SHOES"),
         ("red  shoes", "red\u00a0shoes"),
         ("\uff5a\uff51\uff57\uff49\uff44\uff45", "zqwide"),
+        ("no 5", "\u2116 5"),
+        ("40 \u00b0c", "40 \u2103"),
     ],
-    ids=["eszett", "eszett_upper", "dotted_i", "case", "spaces", "nfkc"],
+    ids=["eszett", "eszett_upper", "dotted_i", "case", "spaces", "nfkc", "numero", "celsius"],
 )
 def test_a_whole_echo_is_masked_whatever_its_case_and_form(typed: str, echo: str) -> None:
     """Principal 2, tester G1/G2: both sides are folded the same way (NFKC, whitespace, full
