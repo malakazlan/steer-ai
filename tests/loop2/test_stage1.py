@@ -173,7 +173,7 @@ def test_a_refused_start_is_an_infrastructure_void() -> None:
     be scored; it counts toward the 1-in-10 void limit."""
     final = {"status": "error", "code": "gate_blocked", "detail": "price_missing"}
     got = classify(DONE, _record(final, check=False))
-    assert (got.verdict, got.reason) == ("void", "start_refused:price_missing")
+    assert (got.verdict, got.reason) == ("void", "start_refused:gate_blocked:price_missing")
 
 
 # ---- acceptance ------------------------------------------------------------------------------

@@ -27,6 +27,7 @@ real input through the child; only in a window the coordinator has cleared with 
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import json
 import math
@@ -277,12 +278,10 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
         return verdict("fail", "internal")
     # [V2.67] C: a run that never began cannot be scored: an infrastructure void, its cause
     # split in the report and counted toward the 1-in-10 void limit (supersedes the fail rule)
-    if final.get("status") == "error":
-        return verdict("void", f"start_refused:{final.get('detail')}"[:REASON_CAP])
-    if not _started(final):  # LiveWorld refused to start: no use at all
-        detail = final.get("detail")
-        named = f":{detail}" if isinstance(detail, str) and detail else ""
-        return verdict("void", f"start_refused:{final.get('code')}{named}"[:REASON_CAP])
+    if not _started(final):  # refused before the task began: no use at all
+        return verdict("void", _refused_start(final))
+    if final.get("status") == "error":  # #438: an error after the task began stays Steer's
+        return verdict("fail", "error_after_start")
     status, reason = final.get("status"), final.get("reason")
     if status == "done":  # done is never void and never hidden behind a lost monitor
         if not record.log_read:
@@ -316,6 +315,14 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
 
 REASON_CAP: Final = 80
 """A start refusal's reason, code and detail, cut to this many characters."""
+
+
+def _refused_start(final: Json) -> str:
+    """A refused start's reason: `start_refused:<code>` and its detail when it has one, as the
+    child wrote them (the report keeps closed values only: `_closed_reason`)."""
+    detail = final.get("detail")
+    named = f":{detail}" if isinstance(detail, str) and detail else ""
+    return f"start_refused:{final.get('code')}{named}"[:REASON_CAP]
 
 
 def _started(final: Json | None) -> bool:
@@ -495,7 +502,7 @@ def _r2_dispatched(run: Classified) -> bool:
     return any(exact[r] != 0 for r in RISKS[RISKS.index("R2") :])
 
 
-def _closed_reason(reason: str | None) -> str | None:
+def _closed_reason(reason: str | None) -> str | None:  # noqa: PLR0911 - one return per field
     """#428 (2): a run's reason as closed tokens only. A reason that carries a field of the
     child's own line keeps it only when it is one of the closed values that field can hold (an
     error code, a count, a status, a reason token); anything else is `other`, so no page text
@@ -504,7 +511,12 @@ def _closed_reason(reason: str | None) -> str | None:
         return reason
     head, _, tail = reason.partition(":")
     if head == "start_refused":
-        return reason if tail in _START_DETAILS else f"{head}:other"
+        code, sep, detail = tail.partition(":")
+        if not sep:
+            return reason if tail in _START_DETAILS else f"{head}:other"
+        kept_code = code if code in _START_CODES else "other"
+        kept_detail = detail if detail in START_DETAILS else "other"
+        return f"{head}:{kept_code}:{kept_detail}"
     if head == "enters":
         return reason if tail.isdigit() or tail == "None" else f"{head}:other"
     if head == "reason":
@@ -521,6 +533,8 @@ def _token(text: str) -> bool:
     return REASON_TOKEN.fullmatch(bare) is not None
 
 
+_START_CODES: Final = frozenset({c.value for c in ErrorCode} | {"None"})
+"""#438: the codes a refused start's line may carry: an error code, or none."""
 _START_DETAILS: Final = frozenset(
     {c.value for c in ErrorCode} | START_DETAILS | {"internal_error", "None"}
 )
@@ -1155,18 +1169,74 @@ def _last_json(out: Path) -> Json | None:
     return final if isinstance(final, dict) else None
 
 
-STDERR_NAME: Final = "stderr.txt"
-"""[V2.67] C: the child's stderr, kept beside its final line in the run's own dir (local run data:
-the CLI's notes, escaped; a traceback on an internal error)."""
+STDERR_NAME: Final = "stderr.dpapi"
+"""[V2.67] C, #438: the child's stderr, kept beside its final line only protected (DPAPI, one
+base64 line, as the debug trace): it can quote a title (a traceback's message, the CLI's list of
+candidate windows), so it is never written in plaintext."""
+STDERR_UNPROTECTED: Final = b"unprotected: dropped\n"
+"""What the file holds when DPAPI failed: the stderr is dropped, never written clear."""
+MAX_STDERR_BYTES: Final = 256 * 1024
+"""The most stderr kept (the rest is dropped): a bound on memory, not a measured size."""
+STDERR_JOIN_S: Final = 5.0
+"""How long the reader may take to finish after the child ended (unmeasured)."""
 
 
-def _start(argv: list[str], out: Path, *, popen: Callable[..., Child] = subprocess.Popen) -> Child:
-    """The child with its stdout to `out` and its stderr to `STDERR_NAME` beside it."""
-    with (
-        out.open("w", encoding="utf-8") as handle,  # the child holds its own copies
-        out.with_name(STDERR_NAME).open("w", encoding="utf-8") as errors,
-    ):
-        return popen(argv, stdout=handle, stderr=errors)
+class _GuardedChild:
+    """A child whose stderr is read into memory as it comes (so the pipe never fills) and,
+    once the child has ended, written protected beside its final line, exactly once."""
+
+    def __init__(  # Any: a subprocess.Popen (its stderr a binary pipe), or a test's fake
+        self, proc: Any, path: Path, protect: Callable[[bytes], bytes]
+    ) -> None:
+        self.pid = proc.pid
+        self._proc, self._path, self._protect = proc, path, protect
+        self._chunks: list[bytes] = []
+        self._kept = False
+        self._reader = threading.Thread(target=self._read, name="steer-stage1-stderr", daemon=True)
+        self._reader.start()
+
+    def _read(self) -> None:
+        pipe, size = self._proc.stderr, 0
+        if pipe is None:
+            return
+        while chunk := pipe.read(4096):
+            if size < MAX_STDERR_BYTES:
+                self._chunks.append(chunk[: MAX_STDERR_BYTES - size])
+                size += len(chunk)
+
+    def wait(self, timeout: float | None = None) -> int:
+        code = int(self._proc.wait(timeout=timeout))  # a timeout raises before anything is kept
+        self._keep()
+        return code
+
+    def _keep(self) -> None:
+        if self._kept:
+            return
+        self._kept = True
+        self._reader.join(timeout=STDERR_JOIN_S)
+        try:
+            line = base64.b64encode(self._protect(b"".join(self._chunks))) + b"\n"
+        except OSError:
+            line = STDERR_UNPROTECTED
+        self._path.write_bytes(line)
+
+
+def _start(
+    argv: list[str],
+    out: Path,
+    *,
+    popen: Callable[..., Any] = subprocess.Popen,  # Any: a Popen or a test's fake
+    protect: Callable[[bytes], bytes] | None = None,
+) -> Child:
+    """The child with its stdout to `out` and its stderr, protected, to `STDERR_NAME` beside
+    it once it has ended (`_GuardedChild`). `protect` defaults to DPAPI for the current user."""
+    if protect is None:
+        from steerai.debug_trace import protect_for_user  # noqa: PLC0415 - DPAPI, Windows
+
+        protect = protect_for_user
+    with out.open("w", encoding="utf-8") as handle:  # the child holds its own copy
+        proc = popen(argv, stdout=handle, stderr=subprocess.PIPE)
+    return _GuardedChild(proc, out.with_name(STDERR_NAME), protect)
 
 
 # ---- the live run (Windows; real input through the child) ---------------------------------------

@@ -8,6 +8,9 @@ in the report."""
 
 from __future__ import annotations
 
+import base64
+import io
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +31,14 @@ def test_a_refused_start_is_a_void_naming_its_code_and_its_detail() -> None:
 def test_a_price_error_before_the_start_is_a_void_too() -> None:
     final = {"status": "error", "code": "gate_blocked", "detail": "price_missing"}
     got = classify(DONE, _record(final, check=False))
-    assert (got.verdict, got.reason) == ("void", "start_refused:price_missing")
+    assert (got.verdict, got.reason) == ("void", "start_refused:gate_blocked:price_missing")
+
+
+def test_an_error_line_with_a_use_block_stays_a_fail() -> None:
+    """#438 blocker 3: an error after the task began (its line has `used`) is never a void."""
+    final = {**_final(), "status": "error", "code": "gate_blocked", "detail": "x"}
+    got = classify(DONE, _record(final, check=False))
+    assert (got.verdict, got.reason) == ("fail", "error_after_start")
 
 
 def test_an_internal_error_is_still_a_fail_not_a_void() -> None:
@@ -43,7 +53,44 @@ def test_every_run_refused_at_start_fails_the_void_gate_with_its_causes() -> Non
     summary = accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="t")
     assert summary.gates["void"] is False
     assert summary.accepted is False
-    assert summary.report["void_causes"] == {"start_refused:price_missing": 6}
+    # a price message is free text: its detail is `other`, its code kept (#429, #438)
+    assert summary.report["void_causes"] == {"start_refused:gate_blocked:other": 6}
+
+
+def test_a_hostile_detail_never_becomes_a_report_key() -> None:
+    """#438 blocker 2: the detail comes from the child's raw line; only a closed one is kept."""
+    hostile = {"status": "blocked", "code": "focus_lost", "detail": "Inbox (3) - you@example.com"}
+    bad_code = {"status": "blocked", "code": "<script>", "detail": "page_hidden"}
+    runs = [classify(DONE, _record(hostile, check=False, run=1)),
+            classify(DONE, _record(bad_code, check=False, run=2)),
+            classify(DONE, _record(PAGE_HIDDEN, check=False, run=3))]  # fmt: skip
+    causes = accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="t").report["void_causes"]
+    assert causes == {
+        "start_refused:focus_lost:other": 1,
+        "start_refused:other:page_hidden": 1,
+        "start_refused:focus_lost:page_hidden": 1,
+    }
+
+
+def test_every_world_start_refusal_detail_is_a_closed_start_detail() -> None:
+    """#438 blocker 2: each refusal `LiveWorld` can raise before the task (a literal message)
+    is in `errors.START_DETAILS`, so the cause split keeps it; a new one fails here first."""
+    import ast  # noqa: PLC0415
+    import inspect  # noqa: PLC0415
+
+    from steerai.errors import START_DETAILS  # noqa: PLC0415
+    from steerai.loop2 import live_world  # noqa: PLC0415
+
+    raised = {
+        str(node.args[1].value)
+        for node in ast.walk(ast.parse(inspect.getsource(live_world)))
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "SteerError"
+        and len(node.args) == 2
+        and isinstance(node.args[1], ast.Constant)
+    }
+    assert raised, "the scan found no refusal"
+    assert raised <= START_DETAILS, sorted(raised - START_DETAILS)
 
 
 def test_a_refused_start_with_no_detail_names_its_code_alone() -> None:
@@ -148,22 +195,51 @@ def test_a_refused_start_dispatched_nothing_so_it_is_not_an_r2_failure() -> None
 # ---- [V2.67] C: the child's stderr is kept in its run dir ---------------------------------------
 
 
-def test_the_childs_stderr_is_kept_beside_its_final_line(tmp_path: Path) -> None:
+def test_the_childs_stderr_reaches_its_file_only_through_dpapi(tmp_path: Path) -> None:
+    """#438 blocker 1: the child's stderr can quote a title (a traceback's message, a list of
+    windows); it is kept beside its final line only protected, never in plaintext."""
     from steerai.loop2.stage1 import STDERR_NAME, _start  # noqa: PLC0415
 
-    seen: dict[str, Any] = {}
+    title = "Secret Title - Inbox"
+    protected: list[bytes] = []
+
+    def protect(data: bytes) -> bytes:
+        protected.append(data)
+        return b"blob"
 
     class Popen:
         pid = 1
 
-        def __init__(self, argv: list[str], **kw: Any) -> None:  # Any: Popen's keywords
-            seen.update(kw, argv=argv)
-            seen["stderr_name"] = Path(kw["stderr"].name).name
-            seen["stdout_name"] = Path(kw["stdout"].name).name
+        def __init__(self, argv: list[str], **kw: Any) -> None:  # noqa: ARG002 - Any: Popen's keywords
+            assert Path(kw["stdout"].name).name == "final.jsonl"
+            assert kw["stderr"] is subprocess.PIPE
+            self.stderr = io.BytesIO(f"ValueError: {title}\n".encode())
 
         def wait(self, timeout: float | None = None) -> int:  # noqa: ARG002 - the Child protocol
             return 0
 
-    _start(["steer"], tmp_path / "final.jsonl", popen=Popen)
-    assert (seen["stdout_name"], seen["stderr_name"]) == ("final.jsonl", STDERR_NAME)
-    assert (tmp_path / STDERR_NAME).exists()
+    child = _start(["steer"], tmp_path / "final.jsonl", popen=Popen, protect=protect)
+    assert child.wait(timeout=1.0) == 0
+    kept = (tmp_path / STDERR_NAME).read_bytes()
+    assert title.encode() not in kept
+    assert kept == base64.b64encode(b"blob") + b"\n"
+    assert any(title.encode() in data for data in protected)
+
+
+def test_a_stderr_that_cannot_be_protected_is_dropped_never_written_clear(tmp_path: Path) -> None:
+    from steerai.loop2.stage1 import STDERR_NAME, STDERR_UNPROTECTED, _start  # noqa: PLC0415
+
+    def protect(_data: bytes) -> bytes:
+        raise OSError("no DPAPI")
+
+    class Popen:
+        pid = 1
+
+        def __init__(self, argv: list[str], **kw: Any) -> None:  # noqa: ARG002 - Popen's shape
+            self.stderr = io.BytesIO(b"Secret Title\n")
+
+        def wait(self, timeout: float | None = None) -> int:  # noqa: ARG002 - the Child protocol
+            return 0
+
+    _start(["steer"], tmp_path / "final.jsonl", popen=Popen, protect=protect).wait(timeout=1.0)
+    assert (tmp_path / STDERR_NAME).read_bytes() == STDERR_UNPROTECTED
