@@ -67,7 +67,9 @@ TOK_FIRST, TOK_IDLE, TOK_WAIT = "tok_first", "tok_idle", "tok_wait"
 
 
 def _desk(guard: InputGuard) -> GuardDesk:
-    return GuardDesk(guard, last_input=lambda: 0.0, takeover_token=lambda: "takeover")
+    return GuardDesk(
+        guard, last_input=lambda: 0.0, takeover_token=lambda: "takeover", prove=lambda: None
+    )
 
 
 def test_a_tap_refusal_stops_a_press() -> None:
@@ -181,19 +183,12 @@ class _TaxonomyFailure(FakeInput):
 
 
 def test_a_taxonomy_error_in_the_tap_check_refuses() -> None:
-    desk = GuardDesk(
-        _guard(_TaxonomyFailure()), last_input=lambda: 0.0, takeover_token=lambda: "takeover"
-    )
+    desk = _desk(_guard(_TaxonomyFailure()))
     assert desk.tap_refusal() == "tap_unreadable"
 
 
 def test_a_taxonomy_error_in_the_focus_read_is_unread() -> None:
-    assert (
-        GuardDesk(
-            _guard(_TaxonomyFailure()), last_input=lambda: 0.0, takeover_token=lambda: "takeover"
-        ).focused()
-        is None
-    )
+    assert _desk(_guard(_TaxonomyFailure())).focused() is None
 
 
 # ---- 7: the double-click wait is the remainder, not the whole time -------------------------------

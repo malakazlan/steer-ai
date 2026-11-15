@@ -10,6 +10,7 @@ import ctypes
 import queue
 import sys
 import threading
+import time
 from collections.abc import Callable
 from ctypes import wintypes
 from typing import Any
@@ -22,8 +23,11 @@ from steerai.session import monitor as monitor_module
 from steerai.session.monitor import (
     HC_ACTION,
     HOTKEY_ID,
+    LLKHF_INJECTED,
+    LLKHF_UP,
     LLMHF_INJECTED,
     PROBE_PERIOD_S,
+    PROBE_VK,
     WH_KEYBOARD_LL,
     WH_MOUSE_LL,
     WM_APP_UNHOOK,
@@ -496,5 +500,260 @@ def test_a_started_monitor_knows_its_runs_tag_and_names_another_steer(
         user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x100, ctypes.addressof(other))
         assert monitor.counts() == {"steer": 1, "other_steer": 1}
         assert monitor.takeover_token() == "other_steer_input"
+    finally:
+        monitor.close()
+
+
+# ---- [V2.57] LW-01: the v2 monitor's per-hook probe and its callback latency -------------------
+
+
+def _v2_started(
+    monkeypatch: pytest.MonkeyPatch, user32: FakeUser32, *, tick: int = 1000
+) -> HookMonitor:
+    return _started(monkeypatch, user32, per_hook=True, probe_vk=PROBE_VK, tick=lambda: tick)
+
+
+def test_the_v2_probe_proves_each_hook_with_its_own_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[object] = []
+    monkeypatch.setattr(monitor_module, "nudge_in_place", lambda: sent.append("nudge"))
+    monkeypatch.setattr(monitor_module, "key_up_probe", lambda vk: sent.append(("key_up", vk)))
+    monitor = _v2_started(monkeypatch, FakeUser32())
+    try:
+        monitor.probe_now()
+    finally:
+        monitor.close()
+    assert sent == ["nudge", ("key_up", PROBE_VK)]
+    v1 = _started(monkeypatch, FakeUser32())
+    try:
+        sent.clear()
+        v1.probe_now()
+    finally:
+        v1.close()
+    assert sent == ["nudge"]  # v1's probe is unchanged
+
+
+def test_a_key_probe_that_cannot_be_sent_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refused(_vk: int) -> None:
+        raise OSError("SendInput sent 0/1: error 5")
+
+    monkeypatch.setattr(monitor_module, "nudge_in_place", lambda: None)
+    monkeypatch.setattr(monitor_module, "key_up_probe", refused)
+    monitor = _v2_started(monkeypatch, FakeUser32())
+    try:
+        monitor.probe_now()
+        assert monitor.healthy() is False
+    finally:
+        monitor.close()
+
+
+@pytest.mark.parametrize("vk", [None, 0x41, 0x10, 0x88])
+def test_the_probe_key_is_an_unassigned_virtual_key(vk: int | None) -> None:
+    """Microsoft Learn, Virtual-Key Codes: 0x0E-0F, 0x97-9F and 0xE8 are Unassigned; a letter,
+    a modifier or a Reserved code is never the probe."""
+    with pytest.raises(ValueError, match="probe"):
+        HookMonitor(per_hook=True, probe_vk=vk)
+
+
+def test_the_monitor_reports_whether_both_hooks_saw_the_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(monitor_module, "nudge_in_place", lambda: None)
+    monkeypatch.setattr(monitor_module, "key_up_probe", lambda _vk: None)
+    user32 = FakeUser32()
+    clock = {"t": 100.0}
+    _patch(monkeypatch, user32)
+    monitor = HookMonitor(
+        monotonic=lambda: clock["t"], per_hook=True, probe_vk=PROBE_VK, tick=lambda: 1000
+    )
+    monitor.start()
+    try:
+        clock["t"] += 1.0  # the probe goes out after the hooks' start
+        monitor.probe_now()
+        clock["t"] += 0.01
+        assert monitor.probe_seen() is False
+        mouse = _mouse(flags=LLMHF_INJECTED, extra=STEER_EXTRA_INFO)
+        user32.procs[WH_MOUSE_LL](HC_ACTION, WM_MOUSEMOVE, ctypes.addressof(mouse))
+        assert monitor.probe_seen() is False
+        other = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=STEER_EXTRA_INFO)  # another key
+        user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x101, ctypes.addressof(other))
+        assert monitor.probe_seen() is False  # #364 P1: only the probe key's key-up proves it
+        key = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=STEER_EXTRA_INFO)
+        key.vkCode = PROBE_VK
+        user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x101, ctypes.addressof(key))
+        assert monitor.probe_seen() is True
+    finally:
+        monitor.close()
+
+
+def test_the_v2_monitor_records_each_callbacks_latency(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[V2.57] LW-01: event time (the struct's tick) against entry time (the tick on entry), in
+    milliseconds, kept only as a fixed histogram; a wrapped tick counter still subtracts."""
+    user32 = FakeUser32()
+    monitor = _v2_started(monkeypatch, user32, tick=TIME_SENTINEL + 10)
+    try:
+        for late in (0, 10):
+            key = _key(flags=0, extra=0)
+            key.time = TIME_SENTINEL + 10 - late
+            user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x100, ctypes.addressof(key))
+        assert monitor.latency() == (2, 10, 10)
+    finally:
+        monitor.close()
+    user32 = FakeUser32()
+    wrapped = _v2_started(monkeypatch, user32, tick=5)
+    try:
+        key = _key(flags=0, extra=0)
+        key.time = 0xFFFF_FFFF - 4  # ten milliseconds before the tick counter wrapped
+        user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x100, ctypes.addressof(key))
+        assert wrapped.latency() == (1, 10, 10)
+    finally:
+        wrapped.close()
+
+
+def test_latency_percentiles_from_the_histogram() -> None:
+    from steerai.session.monitor import HookLatency  # noqa: PLC0415 - this test only
+
+    latency = HookLatency()
+    assert latency.summary() == (0, None, None)
+    for ms in [1] * 95 + [20] * 4 + [5000]:
+        latency.record(ms)
+    assert latency.summary() == (100, 1, 20)  # rank 95 is 1 ms, rank 99 is 20 ms
+    latency.record(-3)  # a tick from before the counter wrapped is never negative
+    assert latency.summary()[0] == 101
+
+
+def test_v1_records_no_latency(monkeypatch: pytest.MonkeyPatch) -> None:
+    user32 = FakeUser32()
+    monitor = _started(monkeypatch, user32, tick=lambda: 1000)  # a tick given, v1 still times none
+    try:
+        key = _key(flags=0, extra=0)
+        user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x100, ctypes.addressof(key))
+        assert monitor.latency() == (0, None, None)
+    finally:
+        monitor.close()
+
+
+def test_a_tick_that_raises_still_passes_the_event_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#364 H6: the entry tick is read inside the procedure's try: the chain goes on and the
+    failure is recorded, never raised into the hook chain."""
+
+    def broken_tick() -> int:
+        raise OSError("GetTickCount")
+
+    user32 = FakeUser32()
+    _patch(monkeypatch, user32)
+    monitor = HookMonitor(
+        monotonic=lambda: 100.0, per_hook=True, probe_vk=PROBE_VK, tick=broken_tick
+    )
+    monitor.start()
+    try:
+        key = _key(flags=0, extra=0)
+        assert user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x100, ctypes.addressof(key)) == (
+            NEXT_HOOK_RESULT
+        )
+        assert monitor.counts().get("callback_errors") == 1
+    finally:
+        monitor.close()
+
+
+def test_the_stall_seam_blocks_only_the_named_hooks_next_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#364 P3: the seam the Windows removal test uses, proved here over the fake user32."""
+    user32 = FakeUser32()
+    monitor = _v2_started(monkeypatch, user32)
+
+    def timed(kind: int, wparam: int, info: ctypes.Structure) -> float:
+        started = time.perf_counter()
+        user32.procs[kind](HC_ACTION, wparam, ctypes.addressof(info))
+        return time.perf_counter() - started
+
+    try:
+        monitor.stall_next_for_test("keyboard", 0.2)
+        assert timed(WH_MOUSE_LL, WM_MOUSEMOVE, _mouse(flags=0, extra=0)) < 0.2
+        assert timed(WH_KEYBOARD_LL, 0x100, _key(flags=0, extra=0)) >= 0.2
+        assert timed(WH_KEYBOARD_LL, 0x100, _key(flags=0, extra=0)) < 0.2  # once only
+        with pytest.raises(ValueError, match="hook"):
+            monitor.stall_next_for_test("touch", 1.0)
+    finally:
+        monitor.close()
+
+
+def test_the_latency_histogram_answers_any_quantile_and_its_max() -> None:
+    """For the probe's hook-side measurement: p50, p95 and the largest bucket seen."""
+    from steerai.session.monitor import HookLatency  # noqa: PLC0415 - this test only
+
+    latency = HookLatency()
+    assert latency.at(0.5) is None
+    for ms in [1] * 50 + [7] * 45 + [30] * 4 + [250]:
+        latency.record(ms)
+    assert (latency.at(0.5), latency.at(0.95), latency.at(1.0)) == (1, 7, 250)
+    for q in (0.0, 1.5):
+        with pytest.raises(ValueError, match="quantile"):
+            latency.at(q)
+
+
+def test_an_event_stamped_after_the_entry_tick_is_zero_not_a_second(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#364 tester T1 (f2_nohalf): the struct's tick one past the entry tick wraps to 2^32-1;
+    it is skew, recorded as 0 ms, never as the 1000 ms overflow bucket."""
+    user32 = FakeUser32()
+    monitor = _v2_started(monkeypatch, user32, tick=TIME_SENTINEL)
+    try:
+        key = _key(flags=0, extra=0)
+        key.time = TIME_SENTINEL + 1
+        user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x100, ctypes.addressof(key))
+        assert monitor.latency() == (1, 0, 0)
+    finally:
+        monitor.close()
+
+
+def test_the_unhook_seam_can_remove_one_hook_the_way_windows_would(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#364 CI: Windows did not remove a hook after stalled callbacks (measured: 1 to 8 stalls
+    of 2 s, every later probe delivered), so the removal test removes it for real, one hook."""
+    user32 = FakeUser32()
+    monitor = _v2_started(monkeypatch, user32)
+    try:
+        monitor.unhook_for_test("keyboard")
+        assert WH_KEYBOARD_LL not in user32.procs
+        assert WH_MOUSE_LL in user32.procs
+        with pytest.raises(ValueError, match="hook"):
+            monitor.unhook_for_test("touch")
+    finally:
+        monitor.close()
+
+
+def test_a_stalled_probe_that_counts_late_cannot_prove_a_probe_sent_after_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows passes a timed-out event on, but the stalled callback still runs and counts it
+    late; that late count proves its own probe only, never one sent after it."""
+    monkeypatch.setattr(monitor_module, "nudge_in_place", lambda: None)
+    monkeypatch.setattr(monitor_module, "key_up_probe", lambda _vk: None)
+    user32 = FakeUser32()
+    clock = {"t": 100.0}
+    _patch(monkeypatch, user32)
+    monitor = HookMonitor(
+        monotonic=lambda: clock["t"], per_hook=True, probe_vk=PROBE_VK, tick=lambda: 1000
+    )
+    monitor.start()
+    try:
+        clock["t"] += 1.0
+        monitor.probe_now()  # A, whose callbacks stall
+        clock["t"] += 0.01
+        monitor.probe_now()  # B, sent while A is still out
+        key = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=STEER_EXTRA_INFO)
+        key.vkCode = PROBE_VK
+        move = _mouse(flags=LLMHF_INJECTED, extra=STEER_EXTRA_INFO)
+        user32.procs[WH_MOUSE_LL](HC_ACTION, WM_MOUSEMOVE, ctypes.addressof(move))
+        user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x101, ctypes.addressof(key))  # A, late
+        assert monitor.probe_seen() is False
+        user32.procs[WH_MOUSE_LL](HC_ACTION, WM_MOUSEMOVE, ctypes.addressof(move))
+        user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x101, ctypes.addressof(key))  # B
+        assert monitor.probe_seen() is True
     finally:
         monitor.close()

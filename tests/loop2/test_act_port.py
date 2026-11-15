@@ -114,6 +114,8 @@ class Desk:
         self.tap = tap
         self.last = last_input
         self.who = "takeover"
+        self.proofs = 0
+        self.lost = False
         self.taps = 0
         self.current: frozenset[tuple[int, ...]] | None = None
 
@@ -126,6 +128,11 @@ class Desk:
 
     def takeover_token(self) -> str:
         return self.who
+
+    def prove_hooks(self) -> None:
+        self.proofs += 1
+        if self.lost:
+            raise PortInterrupted("monitor_lost")
 
     def focused(self) -> tuple[int, ...] | None:
         if self.focus_after:
@@ -1080,4 +1087,77 @@ def test_another_steer_busy_past_the_wait_is_other_steer_input() -> None:
     rig.clock.on_pause = lambda: setattr(desk, "last", rig.clock.now)
     result = rig.port.act(_dispatch("type", FIELD, **TYPE))
     assert _refused(result, ErrorCode.GATE_PENDING_USER, "other_steer_input")
+    assert _nothing_executed(rig)
+
+
+# ---- [V2.57] LW-01: a fresh probe before each send's idle decision ---------------------------
+
+
+def test_each_send_proves_both_hooks_before_its_idle_decision() -> None:
+    desk = Desk()
+    rig = _port(physical=Executor(ok("type")), desk=desk)
+    rig.port.act(_dispatch("type", FIELD, **TYPE))
+    assert desk.proofs == 1
+
+
+def test_a_hook_lost_before_the_idle_decision_sends_nothing() -> None:
+    desk = Desk()
+    desk.lost = True
+    rig = _port(physical=Executor(ok("type")), desk=desk)
+    with pytest.raises(PortInterrupted) as lost:
+        rig.port.act(_dispatch("type", FIELD, **TYPE))
+    assert [lost.value.token] == ["monitor_lost"]
+    assert _nothing_executed(rig)
+
+
+# ---- #364 H4: the proof as late as possible, then one last switch and idle check ----------------
+
+
+class _LoggingDesk(Desk):
+    def __init__(self, log: list[str], **kw: Any) -> None:  # Any: Desk's own knobs
+        super().__init__(**kw)
+        self.log = log
+
+    def last_input(self) -> float:
+        self.log.append("idle")
+        return super().last_input()
+
+    def prove_hooks(self) -> None:
+        self.log.append("prove")
+        super().prove_hooks()
+
+
+def test_v2_59_safety_order_echo_then_last_idle_check_then_send() -> None:
+    """[V2.59]: the safety property is this order. The probe's echo, then the last idle check,
+    then the send: low-level hooks deliver in order, so the echo proves every earlier event of
+    the person's already reached the callback, and the idle check after it sees them all."""
+    log: list[str] = []
+    desk = _LoggingDesk(log)
+    physical = Executor(ok("type"))
+    physical.during = lambda: log.append("send")
+
+    def switch() -> str | None:
+        log.append("switch")
+        return None
+
+    rig = _port(physical=physical, desk=desk, interrupted=switch)
+    rig.port.act(_dispatch("type", FIELD, **TYPE))
+    proof = log.index("prove")
+    assert "idle" in log[:proof]  # the idle wait came first
+    assert log[proof + 1 :] == ["switch", "idle", "send"]  # then one last look, then the send
+
+
+def test_the_persons_input_during_the_proof_refuses_the_act() -> None:
+    log: list[str] = []
+    desk = _LoggingDesk(log, last_input=-100.0)
+    original = desk.prove_hooks
+
+    def proof_while_the_person_types() -> None:
+        original()
+        desk.last = 1e9  # the person typed while the probe was out
+
+    desk.prove_hooks = proof_while_the_person_types  # type: ignore[method-assign]  # one test
+    rig = _port(physical=Executor(ok("type")), desk=desk)
+    result = rig.port.act(_dispatch("type", FIELD, **TYPE))
+    assert _refused(result, ErrorCode.GATE_PENDING_USER, "takeover")
     assert _nothing_executed(rig)

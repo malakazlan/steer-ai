@@ -76,6 +76,9 @@ class Monitor:
         self.closed = 0
         self.last = 0.0
         self.who = "takeover"
+        self.probes = 0
+        self.seen = True
+        self.timed: tuple[int, int | None, int | None] = (0, None, None)
         self.raises: Exception | None = None
         """Raised by `maintain` and `healthy` (a hook thread that failed)."""
 
@@ -97,6 +100,15 @@ class Monitor:
 
     def takeover_token(self) -> str:
         return self.who
+
+    def probe_now(self) -> None:
+        self.probes += 1
+
+    def probe_seen(self) -> bool:
+        return self.seen
+
+    def latency(self) -> tuple[int, int | None, int | None]:
+        return self.timed
 
     def close(self) -> None:
         self.closed += 1
@@ -123,6 +135,7 @@ class Platform:
         self.calls: list[str] = []
         self.session = "acquired"
         self.tag_error: Exception | None = None
+        self.hook_timeout: int | None = None
         self.identity: WindowIdentity | None = WindowIdentity(
             pid=4242, started=133_000_000_000_000_000, image="browser.exe", root=True, visible=True
         )
@@ -167,6 +180,9 @@ class Platform:
     def release_session(self) -> None:
         self.calls.append("release_session")
 
+    def hook_timeout_ms(self) -> int | None:
+        return self.hook_timeout
+
     def window_identity(self, hwnd: int) -> WindowIdentity | None:
         self.calls.append("identity")
         self.identity_reads += 1
@@ -180,11 +196,12 @@ class Platform:
         return self.client, self.bindings
 
     def start_monitor(  # Any: the world's clock
-        self, kill_key: str, clock: Any, extra_info: int
+        self, kill_key: str, clock: Any, extra_info: int, deadline_s: float
     ) -> Monitor:
         self.calls.append(f"monitor:{kill_key}")
         self.monitor_clock = clock
         self.monitor_tag = extra_info
+        self.monitor_deadline = deadline_s
         if self.monitor_error is not None:
             raise self.monitor_error
         return self.monitor
@@ -548,6 +565,9 @@ def test_the_run_header_names_the_model_effort_prompt_trace_and_price() -> None:
         "listing_cap": "150",
         "always_keep_ceiling": "300",
         "goal_word_subcap": "50",
+        "hook_timeout_ms": "unset",
+        "probe_deadline_ms": "1050",
+        "probe_key_ime": "closed_only",  # [V2.59]: an open IME is probed before stage 2
     }
 
 
@@ -895,7 +915,15 @@ def test_a_trace_that_cannot_be_written_never_raises_and_is_counted() -> None:
 def test_the_report_has_every_counter() -> None:
     world, _ = _world()
     world.close()
-    assert world.report() == {"trace_unwritable": 0, "late_sink_failures": 0, "debug_failure": None}
+    assert world.report() == {
+        "trace_unwritable": 0,
+        "late_sink_failures": 0,
+        "debug_failure": None,
+        "monitor_lost": 0,
+        "hook_events": 0,
+        "hook_latency_p95_ms": None,
+        "hook_latency_p99_ms": None,
+    }
 
 
 def test_the_world_is_a_context_manager_that_always_closes() -> None:
@@ -1558,3 +1586,221 @@ def test_a_failed_start_gives_the_process_back_v1s_tag() -> None:
         _world(platform)
     assert extra_info() == STEER_EXTRA_INFO
     assert platform.calls.count("untag") == 1
+
+
+# ---- [V2.57] LW-01: per-hook health in the v2 world ---------------------------------------------
+
+
+def test_a_lost_monitor_stays_lost_and_is_counted_once() -> None:
+    """monitor_lost ends the task in step 3: never re-installed and resumed, because a person
+    may have typed while the hook was gone."""
+    world, platform = _world()
+    platform.monitor.ok = False
+    assert world.interrupted() == "monitor_lost"
+    platform.monitor.ok = True  # a later own event would make the core look healthy again
+    assert world.interrupted() == "monitor_lost"
+    assert world.report()["monitor_lost"] == 1
+
+
+def test_the_desk_proves_both_hooks_with_a_fresh_probe() -> None:
+    world, platform = _world()
+    world.desk.prove_hooks()
+    assert platform.monitor.probes == 1
+    assert world.interrupted() is None
+
+
+def test_a_probe_not_seen_by_both_hooks_in_time_is_a_lost_monitor() -> None:
+    from steerai.session.monitor import probe_deadline_s  # noqa: PLC0415 - this test only
+
+    platform = Platform()
+    platform.hook_timeout = 300
+    world, _ = _world(platform)
+    platform.monitor.seen = False
+    started = world.clock()
+    with pytest.raises(PortInterrupted) as lost:
+        world.desk.prove_hooks()
+    assert [lost.value.token] == ["monitor_lost"]
+    waited = world.clock() - started
+    assert probe_deadline_s(300) <= waited < probe_deadline_s(300) + 0.05  # [V2.59]
+    assert world.interrupted() == "monitor_lost"
+    assert world.report()["monitor_lost"] == 1
+
+
+def test_the_report_carries_the_callback_latency() -> None:
+    world, platform = _world()
+    platform.monitor.timed = (1200, 3, 16)
+    report = world.report()
+    keys = ("hook_events", "hook_latency_p95_ms", "hook_latency_p99_ms")
+    assert tuple(report[k] for k in keys) == (1200, 3, 16)
+
+
+@pytest.mark.parametrize(("timeout", "shown"), [(None, "unset"), (300, "300")])
+def test_the_header_names_the_hook_timeout(timeout: int | None, shown: str) -> None:
+    platform = Platform()
+    platform.hook_timeout = timeout
+    world, _ = _world(platform)
+    assert world.header(task())["hook_timeout_ms"] == shown
+
+
+def test_the_v2_platform_starts_a_per_hook_monitor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real platform's monitor proves each hook with the probe key; nothing is started."""
+    from steerai.session import monitor as monitor_module  # noqa: PLC0415 - this test only
+
+    built: list[dict[str, object]] = []
+
+    class Recorded:
+        def __init__(self, **kwargs: object) -> None:
+            built.append(kwargs)
+
+        def start(self) -> None:
+            built.append({"started": True})
+
+    monkeypatch.setattr(monitor_module, "HookMonitor", Recorded)
+    WindowsPlatform().start_monitor("ctrl+alt+k", lambda: 0.0, 0x1234_5678, 1.05)
+    assert built[0]["per_hook"] is True
+    assert built[0]["probe_deadline_s"] == 1.05
+    assert built[0]["probe_vk"] == monitor_module.PROBE_VK
+    assert built[0]["extra_info"] == 0x1234_5678
+
+
+def test_the_hook_timeout_is_read_from_the_registry_and_capped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Microsoft Learn, LowLevelKeyboardProc: HKCU\\Control Panel\\Desktop LowLevelHooksTimeout,
+    in ms; Windows 10 1709 and later use 1000 for any value larger."""
+    from steerai.session import monitor as hooks  # noqa: PLC0415 - this test only
+
+    for raw, shown in (
+        ("300", 300), (5000, 1000), (None, None), ("x", None),
+        (chr(0xB2), None), (chr(0xFF13), None),  # #364 H7: isdigit() but no int() here
+    ):  # fmt: skip
+        monkeypatch.setattr(hooks, "_read_hooks_timeout", lambda raw=raw: raw)
+        assert WindowsPlatform().hook_timeout_ms() == shown
+
+
+# ---- #362: the close order, and a failure right after the monitor started ----------------------
+
+
+def test_close_runs_in_its_order() -> None:
+    """COM holders dropped first (on this thread), then the monitor stopped, then v1's tag
+    back, then the session released: no hook outlives the session, no tag outlives the run."""
+    platform = Platform()
+    world, _ = _world(platform)
+    seen: list[str] = []
+
+    def monitor_close() -> None:
+        seen.append("monitor" if not hasattr(world, "world") else "monitor_before_com")
+
+    platform.monitor.close = monitor_close  # type: ignore[method-assign]  # a recording fake
+    platform.calls.clear()
+    world.close()
+    assert seen == ["monitor"]
+    assert platform.calls == ["untag", "release_session"]
+
+
+@pytest.mark.parametrize("step", ["_init_state", "_token"])
+def test_a_failure_right_after_the_monitor_started_closes_the_world(
+    monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
+    """#362: `_init_state` and the abandoned-session token run inside the close-on-failure
+    try, so the monitor, the tag and the session are all given back."""
+    platform = Platform()
+    platform.session = "abandoned"
+
+    def broken(*_args: object) -> None:
+        raise RuntimeError(step)
+
+    monkeypatch.setattr(LiveWorld, step, broken)
+    with pytest.raises(RuntimeError, match=step):
+        _world(platform)
+    assert platform.monitor.closed == 1
+    assert platform.calls.count("untag") == 1
+    assert platform.calls.count("release_session") == 1
+
+
+def test_a_monitor_lost_twice_is_counted_once() -> None:
+    world, platform = _world()
+    platform.monitor.ok = False
+    assert world.interrupted() == "monitor_lost"
+    platform.monitor.seen = False
+    with pytest.raises(PortInterrupted):
+        world.desk.prove_hooks()
+    assert world.report()["monitor_lost"] == 1
+
+
+# ---- #364 H1/H2/H3/H5: the fresh proof's own guards --------------------------------------------
+
+
+def test_after_monitor_lost_a_recovered_hook_proves_nothing() -> None:
+    """H1 (LW-06): the latch is read first; a hook that answers again is not trusted."""
+    world, platform = _world()
+    platform.monitor.ok = False
+    assert world.interrupted() == "monitor_lost"
+    platform.monitor.ok = True
+    with pytest.raises(PortInterrupted) as lost:
+        world.desk.prove_hooks()
+    assert [lost.value.token] == ["monitor_lost"]
+    assert platform.monitor.probes == 0  # not even probed
+
+
+def test_a_seen_probe_on_an_unhealthy_monitor_is_lost() -> None:
+    """H2 (LW-31): callback errors, a dead thread or a failed loop count, not just the probe."""
+    world, platform = _world()
+    platform.monitor.ok = False  # e.g. a callback error; the probe itself arrived
+    with pytest.raises(PortInterrupted) as lost:
+        world.desk.prove_hooks()
+    assert [lost.value.token] == ["monitor_lost"]
+    assert world.report()["monitor_lost"] == 1
+
+
+def test_a_probe_that_could_not_be_sent_is_lost_at_once() -> None:
+    """H5: `on_probe_failed` makes the monitor unhealthy; no waiting out the deadline."""
+    world, platform = _world()
+    platform.monitor.seen = False
+
+    def failed() -> None:
+        platform.monitor.probes += 1
+        platform.monitor.ok = False
+
+    platform.monitor.probe_now = failed  # type: ignore[method-assign]  # a recording fake
+    started = world.clock()
+    with pytest.raises(PortInterrupted):
+        world.desk.prove_hooks()
+    assert world.clock() == started
+
+
+@pytest.mark.parametrize("when", ["before", "after_the_last_poll"])
+def test_a_kill_during_the_proof_wins(when: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """H3 (LW-05): killed, never monitor_lost, whenever the kill lands, even after the last
+    poll and before the deadline check; nothing latched or counted as a loss."""
+    from steerai.session.monitor import probe_deadline_s  # noqa: PLC0415 - this test only
+
+    world, platform = _world()
+    platform.monitor.seen = False
+    if when == "before":
+        platform.monitor.killed = True
+    else:
+
+        def last_poll(_seconds: float) -> None:  # the wait ends; then the kill lands
+            world._config.pause(probe_deadline_s(None))
+            platform.monitor.killed = True
+
+        monkeypatch.setattr(world, "_kill_aware_sleep", last_poll)
+    with pytest.raises(PortInterrupted) as stopped:
+        world.desk.prove_hooks()
+    assert [stopped.value.token] == ["killed"]
+    assert world.report()["monitor_lost"] == 0
+
+
+# ---- [V2.59]: the deadline in force, from the system --------------------------------------------
+
+
+@pytest.mark.parametrize("timeout", [None, 300])
+def test_the_monitor_and_the_header_get_the_derived_deadline(timeout: int | None) -> None:
+    from steerai.session.monitor import probe_deadline_s  # noqa: PLC0415 - this test only
+
+    platform = Platform()
+    platform.hook_timeout = timeout
+    world, _ = _world(platform)
+    assert platform.monitor_deadline == probe_deadline_s(timeout)
+    assert world.header(task())["probe_deadline_ms"] == str(round(probe_deadline_s(timeout) * 1000))

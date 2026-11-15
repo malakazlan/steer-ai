@@ -11,7 +11,7 @@ from pathlib import Path
 TESTS = Path(__file__).resolve().parent
 LIVE_CALLS = frozenset({"UiaClient", "WindowsPlatform", "LiveInput", "LiveWindows", "HookMonitor"})
 """Constructors of the real Windows side."""
-LIVE_MODULES = frozenset({"win_input"})
+LIVE_MODULES = frozenset({"win_input", "probe_key"})
 """A call through one of these modules (`win_input.click_at(...)`) is live."""
 MARKS = frozenset({"windows", "live", "probe"})
 FAKED: frozenset[str] = frozenset(
@@ -22,6 +22,15 @@ FAKED: frozenset[str] = frozenset(
         "action/test_keyboard.py::test_build_keyboard_unicode_at_the_word_boundary",
         # the v2 platform built, never used: no COM, no hook, no input
         "loop2/test_live_world.py::test_the_windows_platform_is_a_platform",
+        # the probe-key module's pure helpers: a JSON payload and a load thread, no input
+        "test_probe_key.py::test_the_json_load_parses_a_payload_of_about_200_kb",
+        "test_probe_key.py::test_each_load_runs_until_stopped",
+        "test_probe_key.py::test_an_unknown_load_is_refused",
+        "test_probe_key.py::test_the_fast_switch_loads_set_the_interval_only_inside_and_restore_it",
+        "test_probe_key.py::test_echoes_over_the_deadline_are_counted",
+        # LW-01: the v2 platform's monitor and timeout over a replaced HookMonitor and registry read
+        "loop2/test_live_world.py::test_the_v2_platform_starts_a_per_hook_monitor",
+        "loop2/test_live_world.py::test_the_hook_timeout_is_read_from_the_registry_and_capped",
         # LW-03: the v2 platform's identity over a monkeypatched v1 `window_identity`
         "loop2/test_live_world.py::"
         "test_the_windows_identity_is_v1s_facts_or_none_when_any_part_is_unread",
@@ -47,6 +56,13 @@ FAKED: frozenset[str] = frozenset(
         "test_an_exception_in_the_hook_thread_before_ready_is_a_start_refusal",
         "session/test_hook_callback.py::"
         "test_a_self_probe_that_cannot_be_sent_does_not_raise_and_fails_closed",
+        # LW-01: the constructor refuses the probe key before any hook or thread exists
+        "session/test_hook_callback.py::test_the_probe_key_is_an_unassigned_virtual_key",
+        # LW-01: the v2 monitor over the fake user32 (`_patch`), on a moving fake clock
+        "session/test_hook_callback.py::test_the_monitor_reports_whether_both_hooks_saw_the_probe",
+        "session/test_hook_callback.py::test_a_tick_that_raises_still_passes_the_event_on",
+        "session/test_hook_callback.py::"
+        "test_a_stalled_probe_that_counts_late_cannot_prove_a_probe_sent_after_it",
     }
 )
 """Tests that call these names over fakes (a monkeypatched user32, a fake hook thread), read and

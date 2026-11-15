@@ -45,12 +45,13 @@ from steerai.loop2.act_port import ActPort
 from steerai.loop2.controller import PROMPT_VERSION
 from steerai.loop2.decide_port import Call, DecideCalls, TaskGenerations
 from steerai.loop2.listing import LISTING_CAP
-from steerai.loop2.loop import ActResult, Dispatch, Ports
+from steerai.loop2.loop import ActResult, Dispatch, PortInterrupted, Ports
 from steerai.loop2.prompt_inputs import make_decide
 from steerai.loop2.task import Task
 from steerai.loop2.world_ports import WorldPorts, WorldTimes, kill_sleep
 from steerai.orchestrator.trace import Trace
 from steerai.planner.claude_planner import DEFAULT_MODEL, EFFORT
+from steerai.session.monitor import probe_deadline_s
 from steerai.world.effects import Observed, ValueFact, poll_tier, top_document
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
@@ -78,6 +79,15 @@ class Monitor(Protocol):
     def maintain(self) -> None: ...
     def last_user_input(self) -> float: ...
     def takeover_token(self) -> str: ...
+    def probe_now(self) -> None: ...
+    def probe_seen(self) -> bool:
+        """[V2.57] LW-01: both hooks saw an own event since the last probe."""
+        ...
+
+    def latency(self) -> tuple[int, int | None, int | None]:
+        """LW-01: (callbacks timed, p95 ms, p99 ms)."""
+        ...
+
     def close(self) -> None: ...
 
 
@@ -95,7 +105,9 @@ class Platform(Protocol):
         """Balance `uia()`'s `CoInitializeEx` on this thread: one `CoUninitialize`, once."""
         ...
 
-    def start_monitor(self, kill_key: str, clock: Callable[[], float], extra_info: int) -> Monitor:
+    def start_monitor(
+        self, kill_key: str, clock: Callable[[], float], extra_info: int, deadline_s: float
+    ) -> Monitor:
         """The hook monitor on the world's clock (its `last_user_input` feeds the idle rule),
         counting only input tagged `extra_info` as Steer's own."""
         ...
@@ -128,6 +140,10 @@ class Platform(Protocol):
 
     def facts(self, client: Any) -> FactReader: ...  # Any: the UiaClient
     def windows(self, pid: int) -> tuple[int, ...]: ...
+    def hook_timeout_ms(self) -> int | None:
+        """LW-01: the effective LowLevelHooksTimeout in ms, or None when it is not set."""
+        ...
+
     def window_identity(self, hwnd: int) -> WindowIdentity | None:
         """LW-03: what `hwnd` is now; None when any part of it cannot be read."""
         ...
@@ -258,10 +274,10 @@ class LiveWorld:
             del client, bindings  # released here, before the refusal leaves the loop thread
             raise
         self._monitor = monitor
-        self._init_state()
-        if held == "abandoned":
-            self._token("session_abandoned")  # a previous Steer died holding it
-        try:
+        try:  # #362: everything after the monitor started closes the world on a failure
+            self._init_state()
+            if held == "abandoned":
+                self._token("session_abandoned")  # a previous Steer died holding it
             debug = self._debug_sink()
             self._build(client, bindings, debug)
         except BaseException:
@@ -271,12 +287,16 @@ class LiveWorld:
     def _take_session(self, platform: Platform, config: LiveConfig) -> tuple[str, Monitor]:
         """[V2.57] LW-02: the session, then the run's tag, then the monitor on it. Any failure
         after the session was taken releases it (#361 H12)."""
+        # [V2.59]: the probe deadline from the system's hook timeout, read once at start
+        self._probe_deadline_s = probe_deadline_s(platform.hook_timeout_ms())
         held = platform.acquire_session()  # one Steer per session
         try:
             self._input_tag = _run_tag()
             platform.use_extra_info(self._input_tag)
             try:
-                monitor = platform.start_monitor(config.kill_key, config.clock, self._input_tag)
+                monitor = platform.start_monitor(
+                    config.kill_key, config.clock, self._input_tag, self._probe_deadline_s
+                )
             except SteerError:
                 raise  # HookMonitor's own GATE_BLOCKED monitor_unavailable, with its reason
             except Exception as exc:  # any other start failure: no kill switch, no task
@@ -299,6 +319,9 @@ class LiveWorld:
         self.trace_unwritable = 0
         self.late_sink_failures = 0
         self._latched: str | None = None
+        self._lost = False
+        """[V2.57] LW-01: monitor_lost is final for the task: never re-installed and resumed."""
+        self.monitor_lost = 0
 
     def _debug_sink(self) -> DebugSink:
         config = self._config
@@ -335,6 +358,7 @@ class LiveWorld:
             guard,
             last_input=self._monitor.last_user_input,
             takeover_token=self._monitor.takeover_token,
+            prove=self._prove_hooks,
         )
         self.semantic = Executor(
             uia=ToggleGuard(control_types=bindings.control_types, interfaces=bindings.interfaces),
@@ -379,12 +403,49 @@ class LiveWorld:
             self._latched = self._session_signal()
         if self._latched is not None:
             return self._latched
+        if self._lost:
+            return "monitor_lost"
         try:
             monitor.maintain()
             healthy = monitor.healthy()
         except Exception:  # noqa: BLE001 - a monitor that cannot answer is lost (fail closed)
-            return "monitor_lost"
-        return None if healthy else "monitor_lost"
+            healthy = False
+        if healthy:
+            return None
+        self._lose()
+        return "monitor_lost"
+
+    def _lose(self) -> None:
+        """LW-01: latch monitor_lost for the task, counted once."""
+        if not self._lost:
+            self._lost = True
+            self.monitor_lost += 1
+
+    def _prove_hooks(self) -> None:
+        """[V2.57] LW-01: just before each send, a fresh probe both hooks must see within the
+        derived deadline ([V2.59]) on the world's clock, waited out kill-aware; else the monitor
+        is lost and the send never happens."""
+        monitor = self._monitor
+        if monitor.kill_requested():  # #364 H3: the kill wins at every point
+            raise PortInterrupted("killed")
+        if self._lost:  # #364 H1: a hook that answers again after a loss is not trusted
+            raise PortInterrupted("monitor_lost")
+        monitor.probe_now()
+        started = self._config.clock()
+        while True:
+            if monitor.kill_requested():
+                raise PortInterrupted("killed")
+            if not monitor.healthy():  # #364 H2, H5: errors, a dead thread, a failed send
+                self._lose()
+                raise PortInterrupted("monitor_lost")
+            if monitor.probe_seen():
+                return
+            if self._config.clock() - started >= self._probe_deadline_s:
+                if monitor.kill_requested():  # a kill after the last poll still wins
+                    raise PortInterrupted("killed")
+                self._lose()
+                raise PortInterrupted("monitor_lost")
+            self._kill_aware_sleep(PROVE_POLL_S)
 
     def _session_signal(self) -> str | None:
         """The lock, then the input desktop; a read that fails (any error) or is unknown is the
@@ -467,6 +528,8 @@ class LiveWorld:
             "trace_unwritable": self.trace_unwritable,
             "late_sink_failures": self.late_sink_failures,
             "debug_failure": self.debug_failure,
+            "monitor_lost": self.monitor_lost,
+            **dict(zip(_LATENCY_KEYS, self._monitor.latency(), strict=True)),
         }
 
     def header(self, task: Task) -> Mapping[str, str]:
@@ -484,6 +547,9 @@ class LiveWorld:
             "listing_cap": str(LISTING_CAP),
             "always_keep_ceiling": str(2 * LISTING_CAP),
             "goal_word_subcap": str(LISTING_CAP // 3),
+            "hook_timeout_ms": _shown(self._platform.hook_timeout_ms()),
+            "probe_deadline_ms": str(round(self._probe_deadline_s * 1000)),
+            "probe_key_ime": "closed_only",  # [V2.59]: verified with the IME closed only
         }
         if price is not None:
             record["price_source"] = price.source
@@ -562,7 +628,7 @@ class LiveWorld:
         their own thread, with no collection needed), and the monitor stops once."""
         if threading.get_ident() != getattr(self, "_thread", threading.get_ident()):
             raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "wrong_thread")
-        if self._closed:
+        if getattr(self, "_closed", False):  # unset: `_init_state` itself failed
             return
         self._closed = True
         try:
@@ -585,6 +651,15 @@ class LiveWorld:
 _COM_HOLDERS = ("world", "semantic", "physical", "desk", "_observe", "_facts", "_client", "_debug")
 """Rev 4.0c: the attributes that hold COM objects (directly, or through an executor, the guard
 or the world ports); `close` drops them on the loop thread."""
+
+
+_LATENCY_KEYS = ("hook_events", "hook_latency_p95_ms", "hook_latency_p99_ms")
+PROVE_POLL_S = 0.01
+"""LW-01: how often the fresh probe's arrival is checked (unmeasured; the deadline decides)."""
+
+
+def _shown(value: int | None) -> str:
+    return "unset" if value is None else str(value)
 
 
 def _run_tag() -> int:
@@ -734,12 +809,26 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
             self._entered = False
             _ole32().CoUninitialize()
 
-    def start_monitor(self, kill_key: str, clock: Callable[[], float], extra_info: int) -> Monitor:
-        from steerai.session.monitor import HookMonitor  # noqa: PLC0415 - Windows hooks
+    def start_monitor(
+        self, kill_key: str, clock: Callable[[], float], extra_info: int, deadline_s: float
+    ) -> Monitor:
+        from steerai.session.monitor import PROBE_VK, HookMonitor  # noqa: PLC0415 - Windows hooks
 
-        monitor = HookMonitor(kill_key=kill_key, monotonic=clock, extra_info=extra_info)
+        monitor = HookMonitor(
+            kill_key=kill_key,
+            monotonic=clock,
+            extra_info=extra_info,
+            per_hook=True,  # [V2.57] LW-01
+            probe_vk=PROBE_VK,
+            probe_deadline_s=deadline_s,  # [V2.59]
+        )
         monitor.start()
         return monitor
+
+    def hook_timeout_ms(self) -> int | None:
+        from steerai.session.monitor import read_hook_timeout_ms  # noqa: PLC0415 - Windows only
+
+        return read_hook_timeout_ms()
 
     def protect(self, data: bytes) -> bytes:
         from steerai.debug_trace import protect_for_user  # noqa: PLC0415 - DPAPI
