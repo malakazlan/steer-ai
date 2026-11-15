@@ -290,12 +290,12 @@ class World:
     interrupt_after_settle: bool = False
     """Report `interruption` once a settle has run (the person's kill during the wait)."""
     decide_raises: Exception | None = None
+    """When set, every controller call raises it (a port failure or `PortInterrupted`)."""
     decide_errors: list[Exception | None] = field(default_factory=list)
     """Per controller call, in order: raise this one (None: decide as usual)."""
     decide_calls: list[int] = field(default_factory=list)
     """Per answered controller call, in order: how many model calls the turn made (a repaired
     turn is two); then one."""
-    """When set, every controller call raises it (a port failure or `PortInterrupted`)."""
     watch_timeouts: list[bool] = field(default_factory=list)
     """Each watch's `timed_out` in turn, when set (else the submit rule's own)."""
     watch_raises: Exception | None = None

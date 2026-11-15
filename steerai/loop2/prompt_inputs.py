@@ -187,6 +187,7 @@ def make_decide(
                     on_sent=sent.append,
                     on_rejected=on_rejected,
                     turn=turns,
+                    max_calls=view.calls_left,
                 )
             )
         except ControllerError as failed:

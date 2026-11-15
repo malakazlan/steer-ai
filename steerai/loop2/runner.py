@@ -673,6 +673,7 @@ class _Run:
             proven=frozenset(self.proven),
             issued=frozenset(self.handles.by_handle),
             keep=self._always_keep(),
+            calls_left=self.task.budgets.max_model_calls - self.model_calls,
             **self._delta(observed),
         )
         self.listing.seen = observed

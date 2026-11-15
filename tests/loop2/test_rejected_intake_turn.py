@@ -87,3 +87,27 @@ def test_a_rejected_turn_counts_its_two_calls(budget: int) -> None:
     else:
         # the stop right after a refusal keeps it as its reason ([V2.37] P5)
         assert (outcome.model_calls, outcome.reason) == (3, "after_refusal:subgoal_id_bad")
+
+
+def test_repairs_and_retries_never_stack_past_the_strike_limit() -> None:
+    """[V2.69]: decide's repair inside a turn plus the runner's retry across turns: ten
+    rejections end at the strike limit, three turns of at most two calls each."""
+    world = World([])
+    world.decide_errors = [_rejected("subgoal_id_bad")] * 10
+    outcome = run_task(task(), world.ports())
+    assert (outcome.status, outcome.reason) == ("paused", "no_progress")
+    assert len(world.views) == 3
+    assert outcome.model_calls == 6
+
+
+@pytest.mark.parametrize(("budget", "used_first", "left"), [(3, 2, 1), (4, 2, 2), (2, 1, 1)])
+def test_each_turn_is_told_the_calls_it_has_left(budget: int, used_first: int, left: int) -> None:
+    """Invariant 9 hard cap: decide is given the calls left so its repair never overruns."""
+    world = World(
+        [Decision(subgoals=SUBS, actions=[act("click", target=GO.id)]), Decision(stop="blocked")],
+        effects=[report("content_changed")],
+    )
+    world.decide_calls = [used_first, 1]
+    run_task(task(_budget(budget)), world.ports())
+    assert world.views[0].calls_left == budget
+    assert world.views[1].calls_left == left
