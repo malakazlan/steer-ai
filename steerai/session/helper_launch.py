@@ -275,12 +275,14 @@ class HelperProcess:
         self._closed = True
         w = self._w
         process = self._process
-        if process is not None and not w.has_exited(process):
-            w.set_event(self._quit)
-            w.wait_any((process,), CLOSE_TIMEOUT_MS)
-            if not w.has_exited(process) and self._job is not None:
-                w.terminate_job(self._job)
-        self._release()
+        try:
+            if process is not None and not w.has_exited(process):
+                w.set_event(self._quit)
+                w.wait_any((process,), CLOSE_TIMEOUT_MS)
+                if not w.has_exited(process) and self._job is not None:
+                    w.terminate_job(self._job)
+        finally:
+            self._release()  # #375 P3: whatever the wait did
 
     # ---- internals -----------------------------------------------------------------------------
 
@@ -420,6 +422,8 @@ class HelperProcess:
             self._w.close(handle)
 
     def _release(self) -> None:
+        self._status = None  # #375 P4: no `Words` over unmapped memory
+        self._config = None
         while self._views:
             self._w.unmap(self._views.pop())
         while self._owned:

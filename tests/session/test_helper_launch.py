@@ -485,3 +485,32 @@ def test_a_non_os_error_at_any_win32_step_is_a_refusal_with_nothing_left(step: s
     assert w.open_handles == set()
     if w.named("create"):
         assert w.named("terminate_job") or w.named("terminate_process")
+
+
+# ---- #375 review P3, P4: close always releases, and nothing reads unmapped memory -------------
+
+
+def test_close_releases_everything_even_when_its_wait_fails() -> None:
+    w = FakeWin32()
+    helper = _helper(w)
+    helper.start()
+
+    def broken_wait(handles: tuple[int, ...], timeout_ms: int) -> int | None:
+        raise OSError(6, "the handle is invalid")
+
+    w.wait_any = broken_wait  # type: ignore[method-assign]  # a wait that fails
+    with pytest.raises(OSError, match="invalid"):
+        helper.close()
+    assert w.open_handles == set()
+
+
+def test_after_close_the_words_cannot_be_read() -> None:
+    """P4: `Words` over unmapped memory would be an access violation."""
+    w = FakeWin32()
+    helper = _helper(w)
+    helper.start()
+    helper.close()
+    with pytest.raises(RuntimeError):
+        _ = helper.status
+    with pytest.raises(RuntimeError):
+        _ = helper.config
