@@ -120,18 +120,22 @@ class _Desk:
         info = _GuiThreadInfo()
         info.cbSize = ctypes.sizeof(_GuiThreadInfo)
         self._u.GetGUIThreadInfo(thread, ctypes.byref(info))
-        ime = self._imm.ImmGetDefaultIMEWnd(hwnd)
         rect = info.rcCaret
         return {
             "foreground": self.foreground(),
             "text_empty": read_text() == "",
             "caret": [rect.left, rect.top, rect.right, rect.bottom],
             "caret_hwnd": int(info.hwndCaret or 0),
-            "ime_open": int(self._u.SendMessageW(ime, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0))
-            if ime
-            else None,
+            "ime_open": self._ime_open(hwnd),
             "layout": int(self._u.GetKeyboardLayout(thread) or 0),
         }
+
+    def _ime_open(self, hwnd: int) -> int | str | None:
+        """The IME's open status through the window's default IME window; None with none."""
+        ime = self._imm.ImmGetDefaultIMEWnd(hwnd)
+        if not ime:
+            return None
+        return int(self._u.SendMessageW(ime, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0))
 
 
 def _text_reader(edit: int) -> Callable[[], str]:
