@@ -74,6 +74,18 @@ def _refuse(why: str) -> SteerError:
     return SteerError(ErrorCode.GATE_BLOCKED, f"monitor_unavailable: {why}")
 
 
+def kill_chord(kill_key: str) -> tuple[int, int]:
+    """The kill chord as the helper's config holds it: (modifier flags, virtual key). The chord
+    is checked by the in-process monitor's own rules (TK-18): ValueError when refused."""
+    from steerai.session.monitor import (  # noqa: PLC0415 - Steer's side only
+        MOD_FLAGS,
+        parse_kill_key,
+    )
+
+    mods, vk = parse_kill_key(kill_key)
+    return sum(MOD_FLAGS[m] for m in mods), vk
+
+
 def interpreter_and_launcher(
     *,
     prefix: str,

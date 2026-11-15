@@ -282,6 +282,17 @@ class Platform:
             raise self.uia_error
         return self.client, self.bindings
 
+    def start_helper_monitor(
+        self,
+        kill_key: str,
+        clock: Any,  # Any: the world's clock
+        extra_info: int,
+        deadline_s: float,
+        hook_timeout_ms: int | None,
+    ) -> Any:  # Any: a helper monitor; these tests never start one
+        del clock, extra_info, deadline_s, hook_timeout_ms
+        raise AssertionError(f"the hook helper is off in these tests ({kill_key})")
+
     def start_monitor(  # Any: the world's clock
         self, kill_key: str, clock: Any, extra_info: int, deadline_s: float
     ) -> Monitor:
@@ -671,6 +682,7 @@ def test_the_run_header_names_the_model_effort_prompt_trace_and_price() -> None:
         "hook_timeout_ms": "unset",
         "probe_deadline_ms": "1050",
         "probe_key_ime": "closed_only",  # [V2.59]: an open IME is probed before stage 2
+        "hook_monitor": "in_process",  # [V2.60]: the helper only with `--hook-helper`
     }
 
 
@@ -1381,6 +1393,7 @@ def test_the_session_is_taken_only_where_the_monitor_starts() -> None:
 
     package = Path(__file__).resolve().parents[2] / "steerai"
     callers: list[str] = []
+    starts: set[str] = set()
     for path in package.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for function in ast.walk(tree):
@@ -1393,8 +1406,11 @@ def test_the_session_is_taken_only_where_the_monitor_starts() -> None:
             ]
             if "acquire_session" in calls:
                 callers.append(f"{path.name}:{function.name}")
-                assert calls.index("start_monitor") > calls.index("acquire_session")
+                assert calls.index("_start_monitor") > calls.index("acquire_session")
+            if function.name == "_start_monitor":  # [V2.60]: the in-process one, or the helper's
+                starts.update(c for c in calls if c.startswith("start_"))
     assert callers == ["live_world.py:_take_session"]
+    assert starts == {"start_monitor", "start_helper_monitor"}
     source = (package / "loop2" / "live_world.py").read_text(encoding="utf-8")
     init = source[source.index("    def __init__(self, config: LiveConfig") :]
     init = init[: init.index(chr(10) + "    def ", 1)]

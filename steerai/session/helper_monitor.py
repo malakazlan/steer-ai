@@ -29,7 +29,7 @@ from collections.abc import Callable
 from ctypes import wintypes
 from typing import Any, Final, Protocol
 
-from steerai.session.helper_core import KILL_ACK_S
+from steerai.session.helper_core import KILL_ACK_S, KILL_EXIT_CODE
 from steerai.session.helper_launch import CLOSE_TIMEOUT_MS
 from steerai.session.helper_reader import (
     ReaderState,
@@ -85,15 +85,15 @@ class _WordCounts:
     """`ProbeLedger`'s view of the words: delivery counts and own-event times in seconds on the
     QPC timeline."""
 
-    def __init__(self, status: Words, freq: int) -> None:
-        self._status = status
+    def __init__(self, helper: HelperView, freq: int) -> None:
+        self._helper = helper  # the words fetched on every read, never kept (#383 note 1)
         self._freq = freq
 
     def delivered(self, hook: str) -> int:
-        return self._status.get(f"delivered_{hook}")
+        return self._helper.status.get(f"delivered_{hook}")
 
     def last_own(self, hook: str) -> float:
-        return self._status.get(f"last_own_qpc_{hook}") / self._freq
+        return self._helper.status.get(f"last_own_qpc_{hook}") / self._freq
 
     def last_steer(self) -> float:
         return max(self.last_own(h) for h in HOOKS)
@@ -129,7 +129,7 @@ class HelperMonitor:
         config = helper.config
         self._nonce = (config.get("nonce_lo"), config.get("nonce_hi"))
         self._pid = helper.pid()
-        self._counts = _WordCounts(helper.status, freq)
+        self._counts = _WordCounts(helper, freq)
         self._ledger = ProbeLedger(per_hook=True, deadline_s=deadline_s)
         self._loop_state = ReaderState()
         self._watch_state = ReaderState()
@@ -157,7 +157,10 @@ class HelperMonitor:
     # ---- what the loop reads --------------------------------------------------------------------
 
     def kill_requested(self) -> bool:
-        """K4: the kill word, read directly; layer 1 acknowledges it the first time."""
+        """K4: the kill word, read directly; layer 1 acknowledges it the first time. Once
+        closed nothing is read (#385 HH4-14): False, and the "closed" loss stops the task."""
+        if self._closed:
+            return False
         if self._helper.status.get("kill") == 0:  # #383 HM-06: nonzero is a kill
             return False
         if not self._acked:
@@ -186,10 +189,14 @@ class HelperMonitor:
         return "lost_hooks:" + ",".join(lost) if lost else None
 
     def maintain(self) -> None:
+        if self._closed:
+            return  # #383 note 1: the words are unmapped once closed
         if self._ledger.probe_due(now=self._now(), counts=self._counts):
             self.probe_now()
 
     def probe_now(self) -> None:
+        if self._closed:
+            return  # #385 HH4-14: no probe for a closed helper
         self._ledger.probe_sent(now=self._now(), counts=self._counts)
         try:
             self._probe()
@@ -197,15 +204,19 @@ class HelperMonitor:
             self._probe_failed = True  # fails closed: the next health check is false
 
     def probe_seen(self) -> bool:
-        return self._ledger.probe_seen(counts=self._counts)
+        return not self._closed and self._ledger.probe_seen(counts=self._counts)
 
     def last_user_input(self) -> float:
+        if self._closed:
+            return self._clock()  # #385 HH4-14: input "just now", so every send is refused
         word = self._helper.status.get("last_user")  # HH-10: the word first, then the clocks
         return last_user_seconds(word=word, qpc_now=self._qpc(), freq=self._freq,
                                  clock_now=self._clock(), clock_resolution=self._resolution,
                                  started_at=self._started_at)  # fmt: skip
 
     def takeover_token(self) -> str:
+        if self._closed:
+            return TAKEOVER
         return (
             OTHER_STEER_INPUT if is_other_steer(self._helper.status.get("last_user")) else TAKEOVER
         )
@@ -222,7 +233,9 @@ class HelperMonitor:
         return None
 
     def latency(self) -> tuple[int, int | None, int | None]:
-        """The helper's latency histogram: (events, p95 ms, p99 ms)."""
+        """The helper's latency histogram: (events, p95 ms, p99 ms); none once closed."""
+        if self._closed:
+            return 0, None, None
         status = self._helper.status
         events = status.get("latency_events")
         if not events:
@@ -233,13 +246,16 @@ class HelperMonitor:
         """HH-08: a kill-aware wait wakes on the helper's `wake` or its exit. #383 HM-20: the
         time is clamped; once the helper is closed or gone, or its wait fails, the time is
         napped instead, so a caller's loop of waits never spins."""
-        ms = int(min(seconds, MAX_WAIT_MS / 1000) * 1000) if seconds > 0 else 0
-        if self._closed or self._helper.has_exited():
+        ms = math.ceil(min(seconds, MAX_WAIT_MS / 1000) * 1000) if seconds > 0 else 0
+        if self._closed:
             self._nap.wait(ms / 1000)
             return
         try:
+            if self._helper.has_exited():
+                self._nap.wait(ms / 1000)
+                return
             self._helper.wait_wake(ms)
-        except OSError as exc:
+        except OSError as exc:  # a liveness read or the wait itself failed (#385)
             self._lose(f"wake_wait_failed:{exc.errno}")
             self._nap.wait(ms / 1000)
 
@@ -247,6 +263,9 @@ class HelperMonitor:
         if self._closed:
             return
         self._closed = True
+        with self._lock:
+            if self._lost is None:
+                self._lost = "closed"  # #383 note 1: latched, so no health check reads the words
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=WATCH_JOIN_S)
@@ -256,6 +275,8 @@ class HelperMonitor:
 
     def watch_once(self) -> None:
         """One watchdog step: its own validated read, the kill layer, the session reads."""
+        if self._closed:
+            return
         read = self._read(self._watch_state)
         if read.killed:
             self._kill_layer()
@@ -352,6 +373,38 @@ class HelperMonitor:
             if seen >= rank:
                 return ms
         return LATENCY_BUCKETS - 1
+
+
+# ---- the Windows clocks and the last kill layer's exit (Windows only) ---------------------------
+
+
+def qpc_clock() -> tuple[Callable[[], int], int]:  # pragma: no cover - live, Windows only
+    """QueryPerformanceCounter and its frequency (Microsoft Learn: fixed at boot)."""
+    k: Any = ctypes.WinDLL("kernel32", use_last_error=True)  # Any: a ctypes DLL
+    k.QueryPerformanceCounter.argtypes = (ctypes.POINTER(ctypes.c_int64),)
+    k.QueryPerformanceCounter.restype = wintypes.BOOL
+    k.QueryPerformanceFrequency.argtypes = (ctypes.POINTER(ctypes.c_int64),)
+    k.QueryPerformanceFrequency.restype = wintypes.BOOL
+    freq = ctypes.c_int64()
+    if not k.QueryPerformanceFrequency(ctypes.byref(freq)) or freq.value <= 0:
+        raise OSError(ctypes.get_last_error(), "QueryPerformanceFrequency failed")
+
+    def qpc() -> int:
+        value = ctypes.c_int64()
+        k.QueryPerformanceCounter(ctypes.byref(value))
+        return int(value.value)
+
+    return qpc, int(freq.value)
+
+
+def end_this_process() -> None:  # pragma: no cover - live, Windows only
+    """[V2.60] Q1 layer 2: end Steer for the person's kill that its loop never acknowledged."""
+    k: Any = ctypes.WinDLL("kernel32", use_last_error=True)  # Any: a ctypes DLL
+    k.GetCurrentProcess.argtypes = ()
+    k.GetCurrentProcess.restype = wintypes.HANDLE
+    k.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    k.TerminateProcess.restype = wintypes.BOOL
+    k.TerminateProcess(k.GetCurrentProcess(), KILL_EXIT_CODE)
 
 
 # ---- the session and desktop reads (Windows only; on the watchdog thread) -----------------------

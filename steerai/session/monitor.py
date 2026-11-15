@@ -288,7 +288,9 @@ class MonitorCore:
 
 DEFAULT_KILL_KEY = "ctrl+alt+shift+s"
 _VK_F12 = 0x7B
-_MOD_FLAGS = {"alt": 0x0001, "ctrl": 0x0002, "shift": 0x0004, "win": 0x0008}
+MOD_FLAGS = {"alt": 0x0001, "ctrl": 0x0002, "shift": 0x0004, "win": 0x0008}
+"""RegisterHotKey's fsModifiers (Microsoft Learn): MOD_ALT, MOD_CONTROL, MOD_SHIFT,
+MOD_WIN. The one copy: the helper's kill chord uses it too (#385)."""
 _MOD_NOREPEAT = 0x4000
 HOTKEY_ID = 0x05EE
 
@@ -674,7 +676,7 @@ class HookMonitor:
                 self._error = f"monitor_unavailable: SetWindowsHookEx failed (error {error})"
                 return
             hooks.append(int(hook))
-        flags = sum(_MOD_FLAGS[m] for m in self._mods) | _MOD_NOREPEAT
+        flags = sum(MOD_FLAGS[m] for m in self._mods) | _MOD_NOREPEAT
         if not user32.RegisterHotKey(None, HOTKEY_ID, flags, self._vk):
             error = ctypes.get_last_error()
             self._error = (
