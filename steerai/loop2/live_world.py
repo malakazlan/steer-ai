@@ -27,6 +27,7 @@ import secrets
 import sys
 import threading
 import time
+import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -636,6 +637,9 @@ def run_on_loop_thread[T](
         try:
             result.append(work())
         except BaseException as exc:  # noqa: BLE001 - re-raised in the caller as itself
+            # #361 B2: the loop thread's frames as text (no frame, no COM object kept), so the
+            # caller's traceback still shows where the task failed
+            exc.add_note("".join(traceback.format_exception(exc)))
             failure.append(_without_frames(exc))
         finally:
             gc.collect()

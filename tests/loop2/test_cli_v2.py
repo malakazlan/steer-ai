@@ -486,6 +486,7 @@ def test_an_unexpected_error_is_internal_error_on_one_line(
     assert run() == EXIT_ERROR
     assert (run.result()["status"], run.result()["detail"]) == ("error", "internal_error")
     assert "RuntimeError" in run.stderr.getvalue()
+    assert "in broken" in run.stderr.getvalue()  # #361 B2: the loop thread's own frames
     assert run.platform.calls.count("release_com") == 1
 
 
