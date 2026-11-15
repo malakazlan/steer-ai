@@ -314,6 +314,14 @@ def test_the_procedure_keeps_no_key_code_scan_code_time_or_position(
         # the dead band's reference is the one place a position lives, and it never leaves
         assert monitor._core._classifier._reference == PT_SENTINEL
         assert not any(isinstance(v, (list, tuple)) for v in state.values())
+        # #373 review: every scanned value is a scalar or a dict of scalars, so no composite
+        # field can hide its contents behind a default repr and make the scan vacuous
+        scalar = (int, float, str, bool, type(None))
+        assert all(
+            isinstance(v, scalar)
+            or (isinstance(v, dict) and all(isinstance(x, scalar) for x in v.values()))
+            for v in state.values()
+        ), state
     finally:
         monitor.close()
 

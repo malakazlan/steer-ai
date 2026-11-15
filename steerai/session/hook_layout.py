@@ -7,7 +7,10 @@ Two sections, one writer each:
 
 Every field is one 8-byte aligned word, read and written directly: no seqlock, so the hook
 callback never waits on anything Steer must finish (rev 2 P2), and a reader never retries (HH-13).
-Pairs that must agree share one word (`last_user`: the QPC time in bits 0-62, the kind in bit 63).
+That an aligned 8-byte store or load through this view is one untorn access, seen in program
+order by the other process, is probe P6 (packet §3.4, §13), not yet a measured fact.
+Pairs that must agree share one word (`last_user`: the QPC time in its low 63 bits, the kind in
+the top bit).
 
 K15: the helper records timestamps and counters only. The status list is fixed and pinned by a
 test; no field can carry a key code, a scan code, a position or wheel data. The two histograms
@@ -165,7 +168,9 @@ def status_offset(name: str) -> int:
 
 def pack_last_user(qpc: int, kind: int) -> int:
     """The person's last input as one word: the QPC time (63 bits) and who made it."""
-    if not 0 <= qpc < _KIND_BIT:
+    if qpc == 0:
+        raise ValueError("a zero time is the no-input sentinel")
+    if not 0 < qpc < _KIND_BIT:
         raise ValueError("the time must fit in 63 bits")
     if kind not in {KIND_TAKEOVER, KIND_OTHER_STEER}:
         raise ValueError("unknown kind")
