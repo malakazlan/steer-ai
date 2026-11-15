@@ -289,6 +289,12 @@ def _send(user32: ctypes.WinDLL, *records: INPUT) -> None:
         raise OSError(f"SendInput sent {sent}/{len(records)}: error {ctypes.get_last_error()}")
 
 
+def key_up_probe(vk: int) -> None:
+    """[V2.57] LW-01: one tagged key-up of an unassigned virtual key, the v2 monitor's keyboard
+    hook probe (a key-up with no key-down; the key is chosen by probe, see `monitor.PROBE_VK`)."""
+    _send(_user32(), build_keyboard_input(vk=vk, keyup=True))
+
+
 def nudge_in_place() -> None:
     """A tagged absolute move to the cursor's current position: reaches a low-level hook as
     Steer's own event and leaves the cursor still (probe `hook-latency-2026-11-04`: a
