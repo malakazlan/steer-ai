@@ -44,11 +44,22 @@ from steerai.loop2.stage1 import (
     run_task_runs,
     wait_until_ready,
 )
-from steerai.loop2.stage2_expected import TableRow, load_table
+from steerai.loop2.stage2_expected import (
+    SiteRow,
+    TableRow,
+    dump_table,
+    load_acts,
+    load_table,
+    table_from_reads,
+)
 from steerai.probes.layer_b_pages import REPLY_TEXT
 from steerai.probes.task_suite import H2, H3, H4, H5, H6, HELD_OUT, TASKS, Task
 
 LABEL: Final = "2a"
+ACTS: Final = Path(__file__).with_name("stage2a_acts.json")
+"""Each 2a task's acts, by role and name as its saved start read shows them."""
+TABLE: Final = Path(__file__).with_name("stage2a_expected.json")
+"""The committed 2a table: each read's SHA-256, its deciding facts and the expected outcome."""
 OUT_OF_STEP_FILE: Final = Path(__file__).with_name("stage2a_out_of_step.json")
 _STEP_7: Final = "step 7:"
 
@@ -122,6 +133,15 @@ def local_stage_tasks(table: Mapping[str, TableRow]) -> tuple[StageTask, ...]:
         )
         for t in local_tasks()
     )
+
+
+def rate_2a(acts: Mapping[str, SiteRow], reads: Path) -> list[TableRow]:
+    """The 2a table from the saved reads (`<reads>/<task_id>.json`); every 2a task needs its
+    acts row (`no_acts`)."""
+    missing = [t.task_id for t in local_tasks() if t.task_id not in acts]
+    if missing:
+        raise ValueError(f"no_acts: {missing}")
+    return table_from_reads(acts, reads, tasks=local_tasks())
 
 
 def summarize(
@@ -336,6 +356,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
 
     parser = argparse.ArgumentParser(prog="python -m steerai.loop2.stage2a")
     parser.add_argument("--save-reads", type=Path, help="live, read-only: save each start read")
+    parser.add_argument("--rate", type=Path, help="the saved reads: write the 2a table")
     parser.add_argument("--table", type=Path)
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--out", type=Path)
@@ -343,6 +364,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
     if args.save_reads is not None:
         return save_reads(args.save_reads)
+    if args.rate is not None:
+        rows = rate_2a(load_acts(ACTS.read_text(encoding="utf-8")), args.rate)
+        TABLE.write_bytes(dump_table(rows).encode("utf-8"))
+        return 0
     if args.table is None or args.out is None or args.price_file is None:
         parser.error("--table, --out and --price-file are required for a run")
     stages = local_stage_tasks(load_table(args.table.read_text(encoding="utf-8")))

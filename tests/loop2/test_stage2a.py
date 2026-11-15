@@ -14,13 +14,20 @@ import pytest
 from steerai.loop2 import stage2a
 from steerai.loop2.stage1 import FLOOR_MB
 from steerai.loop2.stage1_expected import Expected
-from steerai.loop2.stage2_expected import DecidingFacts, TableRow, table_from_reads
+from steerai.loop2.stage2_expected import (
+    DecidingFacts,
+    TableRow,
+    load_acts,
+    load_table,
+    table_from_reads,
+)
 from steerai.loop2.stage2a import (
     LABEL,
     OUT_OF_STEP,
     load_out_of_step,
     local_stage_tasks,
     local_tasks,
+    rate_2a,
     read_groups,
     start_key,
     summarize,
@@ -141,3 +148,21 @@ def test_the_2a_table_is_built_by_stage_2s_own_table_builder(tmp_path: Path) -> 
     assert [r.task_id for r in rows] == [task.task_id]
     with pytest.raises(ValueError, match="acts"):
         table_from_reads({"no-such-task": TYPE_ENTER}, tmp_path, tasks=local_tasks())
+
+
+def test_the_committed_acts_cover_every_2a_task() -> None:
+    acts = load_acts(stage2a.ACTS.read_text(encoding="utf-8"))
+    assert set(acts) == {t.task_id for t in local_tasks()}
+
+
+def test_rating_refuses_a_2a_task_with_no_acts(tmp_path: Path) -> None:
+    acts = load_acts(stage2a.ACTS.read_text(encoding="utf-8"))
+    acts.pop(next(iter(acts)))
+    with pytest.raises(ValueError, match="no_acts"):
+        rate_2a(acts, tmp_path)
+
+
+def test_the_committed_table_loads_and_rates_every_2a_task() -> None:
+    table = load_table(stage2a.TABLE.read_text(encoding="utf-8"))
+    assert set(table) == {t.task_id for t in local_tasks()}
+    assert local_stage_tasks(table)
