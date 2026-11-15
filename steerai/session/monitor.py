@@ -337,7 +337,7 @@ class HookMonitor:
     run on the owning thread (TK-34); `start()` waits for ready-or-error (TK-13); `close()` is
     bounded (TK-12)."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - keyword-only knobs; v1 passes none of the v2 ones
         self,
         *,
         kill_key: str = DEFAULT_KILL_KEY,
