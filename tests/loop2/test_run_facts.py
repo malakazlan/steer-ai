@@ -176,7 +176,8 @@ def test_each_listing_row_adds_the_root_chain_and_the_prompt_bytes_only(
     row = _line(monkeypatch, tmp_path, OUTCOME)["listings"][0]
     assert row == {"eligible": 10, "shown": 8, "cut": 2, "keep_at_ceiling": False,
                    "goal_at_subcap": True, "prompt_cut": 0, "prompt_tokens": 900,
-                   "root_depth": 7, "prompt_bytes": 4000}  # fmt: skip
+                   "root_depth": 7, "prompt_bytes": 4000, "acted": 0,
+                   "acted_listed": True}  # fmt: skip
 
 
 def test_a_run_with_no_full_read_summarises_to_nulls(

@@ -35,6 +35,7 @@ def ready(step: int) -> bool:
         runner,
         stage1,
         stage1_expected,
+        stage2_expected,
         task,
         text,
         unstick_probe,
