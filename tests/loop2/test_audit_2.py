@@ -200,15 +200,15 @@ FREE = "zqfreetext"
 
 
 def test_free_text_steer_typed_never_reaches_the_audit() -> None:
-    """A free `type` text echoed by a heading and the window title is replaced by a fixed token
-    before the audit sees the page."""
+    """A free `type` text echoed whole by a result row and the window title is replaced by a fixed
+    token before the audit sees the page (a part-echo is the eval's measured escape rate)."""
     from tests.loop2.world_fakes import element  # noqa: PLC0415 - this test only
 
     subs = [SubgoalDoc(id="s1", desc="results", params={"text": "red shoes"}, closes="page")]
     echo = element(40, "Text", f"Results for {FREE}", (9, 40), 1)
     after = page([RESULT, echo], title=f"{FREE} - Shop")
     world = World(
-        [Decision(subgoals=subs, actions=[act("type", target=FIELD.id, text=f"red shoes {FREE}")])],
+        [Decision(subgoals=subs, actions=[act("type", target=FIELD.id, text=FREE)])],
         effects=[report("own_value", "url_changed_in_place")],
         screen=dataclasses.replace(before(), focus=FIELD.runtime_id),
     )

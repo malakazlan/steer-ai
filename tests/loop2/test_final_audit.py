@@ -1,7 +1,8 @@
-"""[V2.64] One, packet rev 4.5: the final audit is mandatory when every proof in the task is
-self-written (a value or state proof on an element Steer itself acted on). It sees the request,
-the proof tokens and the final listing, can only veto, and costs one call only on such tasks.
-Every failure is a veto (`audit_failed`); a veto ends `blocked` / `audit_veto`."""
+"""[V2.64] One, packet rev 4.5, re-pinned for audit-2 ([V2.68] One, [V2.69] One and Four): the
+final audit runs on every task about to end done. It sees the request, the verified proof facts
+and the final listing, and answers sufficiency; only (sufficient, facts_finish_request) lets done
+stand. A failure is `audit_failed`, a veto `audit_veto` (both `blocked`); a budget spent before
+it is `paused` with the budget's token and no call."""
 
 from __future__ import annotations
 
@@ -35,8 +36,9 @@ from tests.loop2.world_fakes import (
     task,
 )
 
-ALLOW = Audited(veto=False, reason="outcome_shown", usage=TokenUsage(50, 5))
-VETO = Audited(veto=True, reason="outcome_not_shown", usage=TokenUsage(50, 5))
+ALLOW = Audited(sufficient=True, reason="facts_finish_request", usage=TokenUsage(50, 5))
+VETO = Audited(sufficient=False, reason="request_asks_more", usage=TokenUsage(50, 5))
+LINE = (1, "value", "claim", "value", ("value_read", "equals_param"), ((1, "red shoes"),))
 
 
 def _value_only(audit: Any) -> World:  # Any: an Audited, an exception or a callable
@@ -67,7 +69,7 @@ def test_a_value_only_task_the_audit_allows_is_done_for_one_more_call() -> None:
     outcome = run_task(task(), world.ports())
     assert outcome.status == "done"
     assert outcome.model_calls == world.events.count("decide") + 1
-    assert outcome.audit == ("allowed", "outcome_shown")
+    assert outcome.audit == ("allowed", "facts_finish_request")
 
 
 @pytest.mark.parametrize(
@@ -80,11 +82,12 @@ def test_a_failed_audit_is_a_veto(failure: Exception) -> None:
     assert (outcome.status, outcome.reason) == ("blocked", "audit_failed")
 
 
-def test_with_no_model_call_left_the_audit_is_not_made_and_vetoes() -> None:
+def test_with_no_model_call_left_the_audit_is_not_made_and_the_task_pauses() -> None:
+    """[V2.69] Four (was blocked/audit_failed under audit-1)."""
     world = _value_only(ALLOW)
     tight = task(dataclasses.replace(task().budgets, max_model_calls=2))  # two decides spend it
     outcome = run_task(tight, world.ports())
-    assert (outcome.status, outcome.reason) == ("blocked", "audit_failed")
+    assert (outcome.status, outcome.reason) == ("paused", "max_model_calls")
     assert world.audits == []
 
 
@@ -167,7 +170,7 @@ def test_the_audit_sees_the_proof_tokens_and_the_final_listing() -> None:
     run_task(task(), world.ports())
     view = world.audits[0]
     assert isinstance(view, AuditView)
-    assert view.proofs == (("s1", "value", "claim", "value", True),)
+    assert view.proofs == (LINE,)
     assert FIELD.runtime_id in view.keep
     assert view.observed.snapshot.elements
 
@@ -181,17 +184,17 @@ def test_the_audit_prompt_holds_no_desc_no_param_words_and_nothing_outside_the_f
     rows = [ListingRow(0, '1 Document "Catalog"', 1, "root")]
     system, user = build_audit_prompt(
         "search the catalog for red shoes",
-        [("s1", "value", "claim", "value", True)],
+        [LINE],
         "Catalog", rows, task_fence="taskfence01", screen_fence="f" * 32,
     )  # fmt: skip
     text = "\n".join(user)
-    assert "s1 closes=value proven=claim:value value_or_state" in text
-    assert text.count("red shoes") == 1  # the request only, inside the task fence
+    assert "subgoal 1 closes=value proven=claim:value value_read:equals_param" in text
+    assert text.count("red shoes") == 2  # the request and the param's span, both fenced
     assert "taskfence01" in text
     assert "f" * 32 in text
-    assert AUDIT_PROMPT_VERSION == "audit-1"
+    assert AUDIT_PROMPT_VERSION == "audit-2"
     schema = json.loads(system[1])
-    assert set(schema["properties"]) == {"veto", "reason"}
+    assert set(schema["properties"]) == {"sufficient", "reason"}
 
 
 # ---- #404 principal 2: the audit's listing is bounded as decide's ------------------------
@@ -211,7 +214,8 @@ def test_make_audit_carries_no_desc_and_nothing_from_the_page_outside_the_listin
 
     def provider(_system: list[str], blocks: list[str]) -> Reply:
         sent.append(blocks)
-        return Reply('{"veto": false, "reason": "outcome_shown"}', "end_turn", TokenUsage(5, 1))
+        reply = '{"sufficient": true, "reason": "facts_finish_request"}'
+        return Reply(reply, "end_turn", TokenUsage(5, 1))
 
     many = [element(100 + i, "Button", f"Item {i}", (9, 100 + i), 1) for i in range(400)]
     far = dataclasses.replace(element(999, "Button", OFF_LISTING, (9, 999), 1), offscreen=True)
@@ -223,11 +227,11 @@ def test_make_audit_carries_no_desc_and_nothing_from_the_page_outside_the_listin
     view = AuditView(
         observed=seen,
         handles=handles,
-        proofs=(("s1", "value", "claim", "value", True),),
+        proofs=(LINE,),
         keep=frozenset({FIELD.runtime_id}),
         words=frozenset({"red", "shoes"}),
     )
-    assert audit(view).veto is False
+    assert audit(view).sufficient is True
     text = "\n".join(sent[0])
     assert SENTINEL_DESC not in text
     assert OFF_LISTING not in text
@@ -247,14 +251,15 @@ def test_an_audit_prompt_over_the_bound_is_failed_with_no_call(
 
     def provider(_system: list[str], _blocks: list[str]) -> Reply:
         called.append(1)
-        return Reply('{"veto": false, "reason": "outcome_shown"}', "end_turn", TokenUsage(5, 1))
+        reply = '{"sufficient": true, "reason": "facts_finish_request"}'
+        return Reply(reply, "end_turn", TokenUsage(5, 1))
 
     calls = DecideCalls(provider, interrupted=lambda: None, generations=TaskGenerations(),
                         late_error=lambda _t: None)  # fmt: skip
     audit = make_audit(calls, goal="type red shoes", task_fence="taskfence01")
     seen = observed(PAGE)
     view = AuditView(observed=seen, handles={e.id: e.id for e in PAGE},
-                     proofs=(("s1", "value", "claim", "value", True),))  # fmt: skip
+                     proofs=(LINE,))  # fmt: skip
     with pytest.raises(ControllerError) as refused:
         audit(view)
     assert refused.value.code == "prompt_too_large"
@@ -293,12 +298,14 @@ def test_with_one_model_call_left_the_audit_runs_and_the_task_is_done() -> None:
     assert (outcome.status, outcome.model_calls) == ("done", DECIDES + 1)
 
 
-def test_with_no_model_call_left_the_audit_is_failed_with_no_call() -> None:
+def test_with_no_model_call_left_the_audit_makes_no_call_and_pauses() -> None:
+    """[V2.69] Four (was blocked/audit_failed under audit-1): no call, the budget's token."""
     world = _value_only(ALLOW)
     outcome = run_task(_calls_budget(DECIDES), world.ports())
     assert world.audits == []
-    assert (outcome.status, outcome.reason) == ("blocked", "audit_failed")
+    assert (outcome.status, outcome.reason) == ("paused", "max_model_calls")
     assert outcome.model_calls == DECIDES
+    assert outcome.audit_budget_stops == 1
 
 
 # ---- #404 principal 4: a contradictory reply fails closed --------------------------------------
@@ -307,12 +314,13 @@ def test_with_no_model_call_left_the_audit_is_failed_with_no_call() -> None:
 @pytest.mark.parametrize(
     "contradiction",
     [
-        Audited(veto=False, reason="outcome_not_shown"),
-        Audited(veto=False, reason="outcome_unclear"),
+        Audited(sufficient=True, reason="request_asks_more"),
+        Audited(sufficient=True, reason="unclear"),
+        Audited(sufficient=False, reason="facts_finish_request"),
     ],
-    ids=["allow_but_not_shown", "allow_but_unclear"],
+    ids=["sufficient_but_asks_more", "sufficient_but_unclear", "insufficient_but_finishes"],
 )
-def test_only_an_allow_that_says_the_outcome_is_shown_lets_done_stand(
+def test_only_sufficient_with_facts_finish_request_lets_done_stand(
     contradiction: Audited,
 ) -> None:
     outcome = run_task(task(), _value_only(contradiction).ports())
@@ -322,8 +330,9 @@ def test_only_an_allow_that_says_the_outcome_is_shown_lets_done_stand(
 # ---- #404 principal 5: the rev 4.5 tests still missing ------------------------------------------
 
 
-def test_an_auto_proof_is_never_audited(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Rev 4.5 test 3: a page subgoal closed by the auto proof."""
+def test_an_auto_proof_is_audited_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[V2.69] One (was rev 4.5 test 3, "never audited"): a page subgoal closed by the auto proof
+    is audited like every task about to end done; its veto stands."""
     monkeypatch.setattr("steerai.loop2.runner.judge", judged_by(lambda *_a, **_k: "url_query"))
     subs = [SubgoalDoc(id="s1", desc="results", params={"text": "red shoes"}, closes="page")]
     world = World(
@@ -334,15 +343,14 @@ def test_an_auto_proof_is_never_audited(monkeypatch: pytest.MonkeyPatch) -> None
     world.later = world.after
     world.audit_reply = VETO
     outcome = run_task(task(), world.ports())
-    assert outcome.status == "done"
-    assert world.audits == []
+    assert (outcome.status, outcome.reason) == ("blocked", "audit_veto")
+    assert len(world.audits) == 1
 
 
-def test_a_mixed_task_value_plus_navigated_is_never_audited(
+def test_a_mixed_task_value_plus_navigated_is_audited_too(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Rev 4.5 test 4: one value proof and one page proof (the type under the page subgoal, closed
-    by the auto proof)."""
+    """[V2.69] One (was rev 4.5 test 4, "never audited"): one value proof and one page proof."""
     monkeypatch.setattr("steerai.loop2.runner.judge", judged_by(lambda *_a, **_k: "url_query"))
     subs = [
         SubgoalDoc(id="s1", desc="field", params={"text": "red shoes"}, closes="value"),
@@ -362,19 +370,20 @@ def test_a_mixed_task_value_plus_navigated_is_never_audited(
     world.later = world.after
     world.audit_reply = VETO
     outcome = run_task(task(), world.ports())
-    assert outcome.status == "done"
-    assert world.audits == []
+    assert (outcome.status, outcome.reason) == ("blocked", "audit_veto")
+    assert len(world.audits) == 1
 
 
 @pytest.mark.parametrize(
     ("reply", "code"),
     [
-        ('{"veto": false, "reason": "looks_fine"}', "schema"),
-        ('{"veto": false}', "schema"),
-        ('{"veto": "no", "reason": "outcome_shown"}', "schema"),
+        ('{"sufficient": true, "reason": "looks_fine"}', "schema"),
+        ('{"sufficient": true}', "schema"),
+        ('{"sufficient": "yes", "reason": "facts_finish_request"}', "schema"),
+        ('{"veto": false, "reason": "outcome_shown"}', "schema"),
         ("not json at all", "not_json"),
     ],
-    ids=["unknown_reason", "no_reason", "veto_not_bool", "unparsed"],
+    ids=["unknown_reason", "no_reason", "sufficient_not_bool", "the_old_schema", "unparsed"],
 )
 def test_parse_audit_refuses_anything_but_its_schema(reply: str, code: str) -> None:
     """Rev 4.5 test 6, on the parser itself."""
@@ -385,7 +394,9 @@ def test_parse_audit_refuses_anything_but_its_schema(reply: str, code: str) -> N
 
 def test_the_audits_tokens_are_counted_in_used() -> None:
     """Rev 4.5 test 10."""
-    world = _value_only(Audited(veto=False, reason="outcome_shown", usage=TokenUsage(500, 7)))
+    world = _value_only(
+        Audited(sufficient=True, reason="facts_finish_request", usage=TokenUsage(500, 7))
+    )
     outcome = run_task(task(), world.ports())
     decides = world.events.count("decide")
     assert outcome.usage.input_tokens == decides * 100 + 500

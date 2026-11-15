@@ -67,6 +67,7 @@ from steerai.loop2.history import (
 )
 from steerai.loop2.listing import ListingTurn, words_of
 from steerai.loop2.loop import (
+    AUDIT_COUNTS,
     COMMIT_RISK,
     PARENT_KINDS,
     READ_BACK_VERBS,
@@ -429,6 +430,11 @@ class _Run:
         """[V2.64] One: how each subgoal was proven (a claim, or the auto proof's token)."""
         self.audit: tuple[str, str] | None = None
         """[V2.64] One: the final audit's outcome and reason, when it ran."""
+        self.audit_counts: dict[str, int] = dict.fromkeys(AUDIT_COUNTS, 0)
+        """[V2.69] One, packet rev 4 item 4: the audit's counts (`_audit`)."""
+        self.free_texts: list[str] = []
+        """Packet rev 5 item 5: the free text of each `type` Steer sent with `text` (not a
+        param), kept in memory only, masked out of the audit's view."""
         self.query_combobox_listed = False
         self.typed_into_combobox = False
         """[V2.64] Two: the two ComboBox facts of the task, no judgement."""
@@ -498,6 +504,7 @@ class _Run:
             unread_automation_ids=self.unread_aids,
             url_reads=tuple(self.url_reads.items()),
             audit=self.audit,
+            **self.audit_counts,
             query_combobox_listed=self.query_combobox_listed,
             typed_into_combobox=self.typed_into_combobox,
             partial_page_calls=self.partial_page_calls,
@@ -937,21 +944,19 @@ class _Run:
         self._note(Proven(subgoal.id, how))
 
     def _check_done(self, observed: Observed) -> None:
-        """A task with zero subgoals never ends `done` ([V2.11] decision 1). [V2.64] One: when
-        the task is closed only by value or state claims (rev 4.6), the final audit runs
-        first, and only its pass ends done."""
+        """A task with zero subgoals never ends `done` ([V2.11] decision 1). [V2.69] One: every
+        task about to end done is audited first, whatever closed its subgoals, and only the
+        audit's allow ends done."""
         if self.subgoals and all(s.id in self.proven for s in self.subgoals):
-            lines = self._proof_lines()
-            if all(line[4] for line in lines):
-                self._audit(observed, lines)
+            self._audit(observed, self._proof_lines())
             raise _End("done", None)
 
     def _proof_lines(self) -> tuple[ProofLine, ...]:
-        """Each proven subgoal: id, closes, how, kind, and whether it was closed only by value or
-        state claims (rev 4.6: on any element, whoever set it; an editable ComboBox exposes its
-        child Edit's Value, so "an element Steer acted on" was a trigger a mirror could skip)."""
+        """[V2.68], packet rev 5 §5: each proven subgoal by position (never its id): closes, how,
+        kind, the closed token of what code read, and its params by sorted position with their
+        spans of the request."""
         lines: list[ProofLine] = []
-        for subgoal in self.subgoals:
+        for position, subgoal in enumerate(self.subgoals, 1):
             how = self.proven_how.get(subgoal.id, "claim")
             proofs = self.proofs.get(subgoal.id, {})
             kinds = {p.kind for p in proofs.values()}
@@ -960,13 +965,19 @@ class _Run:
                 if proofs
                 else ("navigated" if how == "claim" else how)
             )
-            own = how == "claim" and bool(proofs) and kinds <= {"value", "state"}
-            lines.append((subgoal.id, subgoal.closes, how, kind, own))
+            params = tuple(
+                (n, subgoal.params[name].text) for n, name in enumerate(sorted(subgoal.params), 1)
+            )
+            lines.append(
+                (position, subgoal.closes, how, kind, _read_token(subgoal, how, proofs), params)
+            )
         return tuple(lines)
 
     def _audit(self, observed: Observed, lines: tuple[ProofLine, ...]) -> None:
-        """[V2.64] One: one veto-only call. No port, no call left in the budget, a failed or
-        unparsed call: `audit_failed`; a veto: `audit_veto`. Both end `blocked`, never done."""
+        """[V2.64] One, [V2.68] One, [V2.69] One and Four (audit-2): one sufficiency call. A spent
+        budget: no call, `paused` with its token. No port, or a prompt over its bound: no call,
+        `audit_failed`. A failed or unparsed call: `audit_failed`. Anything but sufficient with
+        `facts_finish_request`: `audit_veto`. Each ends not done."""
         audit = self.ports.audit
         used = Usage(  # #404 principal 3: every budget, checked as decide checks it before a call
             actions=len(self.dispatched),
@@ -975,7 +986,12 @@ class _Run:
             wall_s=self.ports.clock() - self.started,
             tokens=self.tokens,
         )
-        if audit is None or budget_hit(self.task.budgets, used) is not None:
+        hit = budget_hit(self.task.budgets, used)
+        if hit is not None:  # [V2.69] Four: never "done but unaudited"
+            self.audit_counts["audit_budget_stops"] += 1
+            raise _End("paused", Reason(hit))
+        if audit is None:
+            self.audit_counts["audit_no_call"] += 1
             self.audit = ("failed", "audit_failed")
             raise _End("blocked", Reason("audit_failed"))
         cited = {
@@ -987,6 +1003,7 @@ class _Run:
         words = words_of(span.text for s in self.subgoals for span in s.params.values())
         view = AuditView(
             observed=observed,
+            typed=tuple(self.free_texts),
             handles=self.handles.bind(observed),
             proofs=lines,
             keep=self._always_keep() | cited,
@@ -997,9 +1014,12 @@ class _Run:
         except (PortInterrupted, SteerError, ControllerError) as exc:
             if isinstance(exc, ControllerError) and exc.record is None:
                 # refused before any call (the bound, a fence in the data): no call is counted
+                self.audit_counts["audit_no_call"] += 1
                 self.audit = ("failed", "audit_no_call")
                 raise _End("blocked", Reason("audit_failed")) from None
             self.model_calls += 1
+            self.audit_counts["audit_calls"] += 1
+            self.audit_counts["audit_failed"] += 1
             if isinstance(exc, PortInterrupted):
                 self.tokens = math.nan  # abandoned: billed, never reported ([V2.41] (1))
                 self.usage_incomplete = True
@@ -1008,10 +1028,15 @@ class _Run:
             self.audit = ("failed", "audit_failed")
             raise _End("blocked", Reason("audit_failed")) from None
         self.model_calls += 1
+        self.audit_counts["audit_calls"] += 1
         self._spend(audited.usage)
-        if audited.veto or audited.reason != "outcome_shown":  # #404 principal 4: fail closed
+        if audited.usage is not None:
+            self.audit_counts["audit_tokens"] += sum(_counts(audited.usage) or ())
+        if not audited.sufficient or audited.reason != "facts_finish_request":  # fail closed
+            self.audit_counts["audit_vetoed"] += 1
             self.audit = ("vetoed", audited.reason)
             raise _End("blocked", Reason("audit_veto"))
+        self.audit_counts["audit_allowed"] += 1
         self.audit = ("allowed", audited.reason)
 
     # ---- the batch ------------------------------------------------------------------------
@@ -1571,6 +1596,8 @@ class _Run:
             subgoal.params[param].text if param is not None and param in subgoal.params else None
         )
         self.ever.append(_Ever(element.runtime_id, subgoal.id, words))
+        if param is None and sent.text:  # packet rev 5 item 5: masked out of the audit's view
+            self.free_texts.append(sent.text)
 
     def _after(self, after: Observed) -> Observed:
         """[V2.11] decision 6: reuse the watch's after only when it is full, stable and fresh."""
@@ -1902,3 +1929,14 @@ def _digest(observed: Observed) -> str:
     pattern states, so ticking another box is new state (RT-09)."""
     rows = sorted((e.runtime_id, e.role, e.name, e.caps) for e in observed.snapshot.elements)
     return hashlib.sha256(repr(rows).encode()).hexdigest()
+
+
+def _read_token(subgoal: Subgoal, how: str, proofs: Mapping[str, _Proof]) -> tuple[str, str]:
+    """[V2.68] One: what code verified for a proven subgoal, as a closed (kind, detail) pair that
+    the audit's prompt renders (`kind:detail`); no string is built here (#347 decision B)."""
+    if subgoal.closes == "value":
+        return ("value_read", "equals_param")
+    if subgoal.closes == "state":
+        wanted = {p.wanted for p in proofs.values() if p.wanted is not None}
+        return ("state_read", next(iter(wanted)) if len(wanted) == 1 else "mixed")
+    return ("navigated", how)

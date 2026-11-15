@@ -13,8 +13,11 @@ decide worker (`DecideCalls`).
 
 from __future__ import annotations
 
+import dataclasses
 import math
+import re
 import secrets
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
@@ -39,6 +42,7 @@ from steerai.loop2.history import HistoryRecord
 from steerai.loop2.listing import LISTING_CAP, Listing, select_listing, words_of
 from steerai.loop2.loop import Audited, AuditView, Decided, TokenUsage, TurnView
 from steerai.loop2.task import Status, Subgoal, known_params
+from steerai.world.effects import Observed
 
 CALIBRATION_MARGIN: Final = 1.1
 """[V2.61]: a turn whose true input tokens beat the bound tightens the task's tokens per byte to
@@ -211,7 +215,7 @@ def make_audit(calls: DecideCalls, *, goal: str, task_fence: str) -> Callable[[A
     or unparsed call raises (`ControllerError` carries its usage): the runner vetoes."""
 
     def port(view: AuditView) -> Audited:
-        observed = view.observed
+        observed = masked(view.observed, view.typed)
         snapshot = observed.snapshot
         listing = select_listing(  # #404 principal 2: decide's cap and keep set
             snapshot, cap=LISTING_CAP, focus=observed.focus, keep=view.keep, goal_words=view.words
@@ -227,7 +231,7 @@ def make_audit(calls: DecideCalls, *, goal: str, task_fence: str) -> Callable[[A
         except ControllerError as failed:
             failed.record = DecideRecord(AUDIT_PROMPT_VERSION, 1, False, True)  # a call was made
             raise
-        return Audited(doc.veto, doc.reason, usage)
+        return Audited(doc.sufficient, doc.reason, usage)
 
     return port
 
@@ -256,3 +260,38 @@ def calibrated(
     if truth <= sum(math.ceil(size * per_byte) for size in sent):
         return per_byte, False
     return max(per_byte, truth / sum(sent) * CALIBRATION_MARGIN), True
+
+
+TYPED_TEXT: Final = "[typed_text]"
+"""Packet rev 5 item 5: what a free text Steer typed reads as in the audit's view."""
+
+
+def masked(observed: Observed, texts: Sequence[str]) -> Observed:
+    """Packet rev 5 item 5: every free text Steer typed in this task, replaced in each element's
+    name and in the window title by `TYPED_TEXT` (matched after NFKC folding and whitespace
+    collapsing, ignoring case), so a page that echoes it whole never hands the audit model text.
+    A part echo is not caught; the chain eval measures how often one escapes."""
+    folded = sorted({_fold(t) for t in texts if t.strip()}, key=len, reverse=True)
+    if not folded:
+        return observed
+    pattern = re.compile("|".join(re.escape(t) for t in folded), re.IGNORECASE)
+
+    def mask(text: str) -> str:
+        return pattern.sub(TYPED_TEXT, _fold_keep_case(text))
+
+    snapshot = observed.snapshot
+    elements = type(snapshot.elements)(
+        dataclasses.replace(e, name=mask(e.name)) for e in snapshot.elements
+    )
+    title = None if snapshot.title is None else mask(snapshot.title)
+    return dataclasses.replace(
+        observed, snapshot=dataclasses.replace(snapshot, elements=elements, title=title)
+    )
+
+
+def _fold(text: str) -> str:
+    return _fold_keep_case(text).casefold()
+
+
+def _fold_keep_case(text: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", text).split())
