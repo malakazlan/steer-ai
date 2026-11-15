@@ -53,6 +53,7 @@ from steerai.loop2.guards import (
     budget_hit,
     made_progress,
     same_action,
+    single_cause,
 )
 from steerai.loop2.history import (
     REFUSAL_TOKENS,
@@ -443,6 +444,8 @@ class _Run:
         """The shakedown's #3: the last rejected turn's closed tokens, for the final line."""
         self.strikes = Strikes(STRIKE_LIMIT)
         self.strike_log: list[tuple[StrikeReason, ...]] = []
+        self.strike_words: list[frozenset[str]] = []
+        """[V2.69] Two: each strike's refusal tokens, beside `strike_log`, for the single cause."""
         self.refusal: tuple[RefusalKind, str] | None = None
         self.typed: list[_Typed] = []
         self.pending: list[_Pending] = []
@@ -1967,10 +1970,12 @@ class _Run:
         reasons = self.strikes.record(facts)
         if reasons:
             self.strike_log.append(reasons)
+            self.strike_words.append(frozenset(f.refusal for f in self.turn.refusals))
         if self.strikes.paused:
             held = self._hold(observed)
-            if held is None:
-                raise _End("paused", Reason("no_progress"))
+            if held is None:  # [V2.69] Two: one cause behind every strike is named
+                cause = single_cause(zip(self.strike_log, self.strike_words, strict=True))
+                raise _End("paused", Reason("no_progress", detail=cause))
             return held
         return observed
 

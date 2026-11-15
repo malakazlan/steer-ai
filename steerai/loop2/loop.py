@@ -58,17 +58,24 @@ class Reason:
 
     token: str
     after_refusal: bool = False
+    detail: str | None = None
+    """[V2.69] Two, [V2.70]: diagnostic detail on the reason class, a closed token (the single
+    cause of a `no_progress`), rendered `<token>:<detail>`."""
 
     def __post_init__(self) -> None:
         if REASON_TOKEN.fullmatch(self.token) is None:
             raise ValueError("reason_token")
+        if self.detail is not None and REASON_TOKEN.fullmatch(self.detail) is None:
+            raise ValueError("reason_detail")
 
 
 def render_reason(reason: Reason | None) -> str | None:
-    """`<token>`, or `after_refusal:<token>` for a model fault; None for no reason."""
+    """`<token>`, `<token>:<detail>`, or `after_refusal:<token>` for a model fault; None for no
+    reason."""
     if reason is None:
         return None
-    return f"after_refusal:{reason.token}" if reason.after_refusal else reason.token
+    token = reason.token if reason.detail is None else f"{reason.token}:{reason.detail}"
+    return f"after_refusal:{token}" if reason.after_refusal else token
 
 
 Provenance = Literal["goal_span", "generated"]

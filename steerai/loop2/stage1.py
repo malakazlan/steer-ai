@@ -322,9 +322,9 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
         )
     if task.never_reason is not None and reason == task.never_reason:
         return verdict("fail", f"reason:{reason}")
-    if task.reason is not None and reason != task.reason:
+    if task.reason is not None and not reason_matches(task.reason, reason):
         return verdict("fail", f"reason:{reason}")
-    if task.reasons and reason not in task.reasons:
+    if task.reasons and not any(reason_matches(r, reason) for r in task.reasons):
         return verdict("fail", f"reason:{reason}")
     met = {
         "done": status == "done",
@@ -552,8 +552,18 @@ def _closed_reason(reason: str | None) -> str | None:  # noqa: PLR0911 - one ret
 
 
 def _token(text: str) -> bool:
-    bare = text.removeprefix("after_refusal:")
-    return REASON_TOKEN.fullmatch(bare) is not None
+    """A run's reason: a token, `after_refusal:<token>`, or `<class>:<token>` ([V2.70])."""
+    parts = text.removeprefix("after_refusal:").split(":")
+    return len(parts) <= 2 and all(REASON_TOKEN.fullmatch(p) is not None for p in parts)
+
+
+def reason_matches(expected: str, got: object) -> bool:
+    """[V2.70]: an expected ending scored by its reason class: `no_progress` matches
+    `no_progress` and any `no_progress:<token>` (diagnostic detail); an expectation that names
+    a detail matches only itself."""
+    if not isinstance(got, str):
+        return False
+    return got == expected or (":" not in expected and got.startswith(expected + ":"))
 
 
 _START_CODES: Final = frozenset({c.value for c in ErrorCode} | {"None"})
