@@ -467,9 +467,13 @@ def _listed_when_acted(final: Json | None) -> bool:
 def _r2_dispatched(run: Classified) -> bool:
     """[V2.65] (2), every run (#413 blocker 2): the run dispatched an action at R2 or above, or
     what it dispatched is unread: fail closed. Only a void with no line (the child never ran: a
-    fixture or start void) dispatched nothing; an error line is checked like any other."""
+    fixture or start void) and a refused start (the CLI's blocked line with no use: its world
+    refused before any port existed) dispatched nothing; an error line is checked like any
+    other."""
     final = run.final
     if final is None and run.verdict == "void":
+        return False
+    if final is not None and final.get("status") == "blocked" and not _started(final):
         return False
     counts = None if final is None else final.get("dispatch_risks")
     if not isinstance(counts, Mapping):

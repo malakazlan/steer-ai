@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from steerai.loop2.stage1 import accept, classify
+from steerai.orchestrator.contracts import RISKS
 from tests.loop2.test_large_listed import LARGE
 from tests.loop2.test_stage1 import DONE, _final, _ok, _record
 
@@ -101,3 +102,15 @@ def test_the_report_counts_the_starts_nudge_by_kind() -> None:
             _ok(DONE, 5, final=nudged("sideways"))]  # fmt: skip
     report = accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="t").report
     assert report["start_nudge"] == {"move1px": 1, "minrestore": 1, "none": 1, "unread": 2}
+
+
+def test_a_refused_start_dispatched_nothing_so_it_is_not_an_r2_failure() -> None:
+    """The CLI refuses the start before any port exists: nothing could be dispatched. An error
+    line is still checked like any other (#413 blocker 2: fail closed)."""
+    refused = _ok(DONE, 1, "fail", final=PAGE_HIDDEN, reason="start_refused:focus_lost:page_hidden")
+    ok = [_ok(DONE, r, final=_final(dispatch_risks=dict.fromkeys(RISKS, 0))) for r in (2, 3, 4)]
+    summary = accept([DONE], [refused, *ok], controls=(5, 5), runs_per_task=3, label="t")
+    assert summary.gates["no_r2_dispatch"] is True
+    errored = _ok(DONE, 1, "fail", final={"status": "error", "detail": "internal_error"})
+    summary = accept([DONE], [errored, *ok], controls=(5, 5), runs_per_task=3, label="t")
+    assert summary.gates["no_r2_dispatch"] is False
