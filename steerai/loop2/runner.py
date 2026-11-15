@@ -179,6 +179,9 @@ class _Turn:
     staleness rule applies to this read."""
     moved: Moved = "page"
     """What moved: the page (top Document or URL), the named target, or the focus."""
+    moved_after_send: bool = False
+    """The world moved after a send in this turn: the turn is scored normally and the stale
+    streak is left as it was, neither raised nor reset ([V2.43] confirmation)."""
 
 
 class _Handles:
@@ -414,7 +417,8 @@ class _Run:
             if self.turn.stale_read is not None:
                 observed = self._stale(self.turn.stale_read, moved=self.turn.moved)
                 continue
-            self.stale_streak = 0  # a turn that ran with nothing moved under it ends the streak
+            if not self.turn.moved_after_send:
+                self.stale_streak = 0  # a turn that ran with nothing moved under it ends it
             waits = bool(decision.actions) and all(a.verb == "wait" for a in decision.actions)
             if loading and waits and self.turn.sent == len(decision.actions):
                 # [V2.31], [V2.35] (2), P3: a wait chosen on a growing or young page, dispatched
@@ -752,6 +756,7 @@ class _Run:
         never forgotten (principal re-review: staleness applies when nothing was dispatched)."""
         if self.turn.sent > 0:
             self._count_moved(what)
+            self.turn.moved_after_send = True
             return
         self.turn.stale_read = self._observe() if read is None else read
         self.turn.moved = what

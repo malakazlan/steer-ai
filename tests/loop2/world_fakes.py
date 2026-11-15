@@ -270,6 +270,8 @@ class World:
     autocomplete: dict[tuple[int, ...], ValueFact] = field(default_factory=dict)
     """The value a field holds once the watch after a type has run (the page completed what Steer
     typed, RT-33)."""
+    read_log: list[Observed] = field(default_factory=list)
+    """Every observation `observe` returned, in order (the very objects)."""
     observe_lag_s: float = 0.0
     """When set, each observe is stamped at its completion and the clock then moves on by this
     much before the read is used (slow processing after a read, RT-19)."""
@@ -305,11 +307,13 @@ class World:
         self._arrive()
         if self.observations:
             self.screen = self.observations.pop(0)
-        if not self.observe_lag_s:
-            return self.screen
-        stamped = dataclasses.replace(self.screen.snapshot, taken_at=self.now)
-        self.now += self.observe_lag_s
-        return dataclasses.replace(self.screen, snapshot=stamped)
+        seen = self.screen
+        if self.observe_lag_s:
+            stamped = dataclasses.replace(self.screen.snapshot, taken_at=self.now)
+            self.now += self.observe_lag_s
+            seen = dataclasses.replace(self.screen, snapshot=stamped)
+        self.read_log.append(seen)
+        return seen
 
     def _act(self, sent: Dispatch) -> ActResult:
         self.events.append("act")

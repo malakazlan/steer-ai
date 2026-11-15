@@ -11,8 +11,10 @@ from typing import Any
 import pytest
 
 from steerai.action.dispositions import Delivery
+from steerai.loop2 import runner
 from steerai.loop2.decision import Claim, Decision, SubgoalDoc, validate
 from steerai.loop2.guards import ActionKey, same_action
+from steerai.loop2.loop import action_risk as loop_action_risk
 from steerai.loop2.runner import refusal_of, run_task
 from steerai.loop2.task import Budgets, TokenPrice
 from steerai.orchestrator.loop import REUSE_FRESHNESS_S
@@ -567,3 +569,67 @@ def test_a_move_after_a_send_in_the_batch_is_scored_and_the_send_remembered() ->
     assert "focus_lost" in world.views[1].history
     assert "refused:repeat_send" in world.views[-1].history
     assert outcome.focus_losses == 1
+
+
+# ---- the lead's [V2.43] confirmation ------------------------------------------------------------
+
+
+def test_a_mixed_turn_leaves_the_stale_streak_as_it_was() -> None:
+    """A stale turn (streak 1), then a mixed turn (a type is sent, then focus leaves the field
+    before the press), then a stale turn again: the mixed turn neither raised nor reset the
+    streak, so the second stale turn is the second in a row: a strike."""
+
+    def at(url: str, focus: tuple[int, ...]) -> Observed:
+        seen = observed(QUERY_PAGE, focus=focus)
+        return dataclasses.replace(seen, url=url, document_url=url)
+
+    a, b, c = URL + "a", URL + "b", URL + "c"
+    world = World(
+        [
+            decision(act("click", target=GO.id), first=True),
+            decision(  # the first decision was discarded as stale: this one takes the subgoals
+                act("type", target=FIELD.id, param="text"), act("press", key="Enter"), first=True
+            ),
+            decision(act("click", target=GO.id)),
+        ],
+        effects=[report("own_value")],
+        observations=[
+            at(a, FIELD.runtime_id),
+            at(b, FIELD.runtime_id),  # the page moved under the first decision: stale
+            at(b, FIELD.runtime_id),
+            at(c, FIELD.runtime_id),  # moved again under the third: stale
+        ],
+        after=at(b, MENU.runtime_id),  # after the type, focus is on the menu: a mixed turn
+    )
+    outcome = run_task(task(), world.ports())
+    history = [t for v in world.views for t in v.history]
+    assert "focus_lost" in history
+    assert outcome.stale_observations == 2
+    assert any("refused" in reasons for reasons in outcome.strikes)
+
+
+def test_the_risk_is_rated_on_the_very_read_the_dispatch_is_sent_against(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RT-19, the lead's confirmation: one read serves the refusal, the risk, the key and the
+    dispatch. The observation the risk is rated on is the same object the re-read returned,
+    and the element rated is that read's own element."""
+    rated: list[tuple[object, object]] = []
+    real = loop_action_risk
+
+    def spy(action: object, element: object, **kw: object) -> object:
+        rated.append((kw["observed"], element))
+        return real(action, element, **kw)  # type: ignore[arg-type]  # pass-through spy
+
+    monkeypatch.setattr(runner, "action_risk", spy)
+    reread = observed()
+    world = World(
+        [decision(act("click", target=GO.id), first=True)],
+        observations=[observed(), observed(), reread],
+    )
+    world.observe_lag_s = REUSE_FRESHNESS_S + 1.0
+    run_task(task(), world.ports())
+    assert len(world.dispatched) == 1
+    rated_on, element = rated[0]
+    assert rated_on is world.read_log[2]
+    assert any(e is element for e in world.read_log[2].snapshot.elements)
