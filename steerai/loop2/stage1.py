@@ -87,9 +87,13 @@ stop_chrome already killed their tree and waited up to 10 s for the browser)."""
 EXIT_POLL_S: Final = 0.5
 MAX_RERUNS: Final = 3
 """#366 P1: a task's void, monitor_lost or not-started runs are re-run up to this many times."""
-SITE_VOIDS: Final = frozenset({"site_changed", "bot_wall", "site_control_failed"})
+SITE_VOIDS: Final = frozenset(
+    {"site_down", "start_page_differs", "site_changed", "bot_wall", "site_control_failed"}
+)
 """[V2.63] Q5: voids that are the site's, not Steer's or the machine's: reported apart, never in
-the 1-in-10 void rate. Every other void (and a run not started) is infrastructure."""
+the 1-in-10 void rate. Every other void (and a run not started) is infrastructure. `site_down`
+and `start_page_differs` are the site's too (the coordinator's note under [V2.63], 2026-11-15),
+decided only from the harness's own read before the run."""
 NO_RETRY_VOIDS: Final = frozenset({"bot_wall"})
 """[V2.63] Q4: a bot wall voids its site for the rest of the stage, with no retry against it."""
 STATUSES: Final = frozenset({"done", "blocked", "asked", "paused", "stopped", "cannot", "error"})
