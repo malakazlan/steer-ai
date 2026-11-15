@@ -6,6 +6,7 @@ traceback exit. The live edges are faked; the harness's own run function is the 
 from __future__ import annotations
 
 import dataclasses
+import json
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,7 @@ import pytest
 from websockets.exceptions import ConnectionClosedError
 
 from steerai.loop2 import stage1
-from steerai.loop2.stage1 import CHROME_LOST, StageTask, classify, run_task_runs
+from steerai.loop2.stage1 import CHROME_LOST, StageTask, accept, classify, run_task_runs
 from steerai.probes import (
     chrome_a11y,
     instant_search,
@@ -59,9 +60,24 @@ def test_closing_a_lost_connection_does_not_raise() -> None:
     _lost_session().close()
 
 
-def test_a_lost_chrome_is_a_void_with_its_closed_cause() -> None:
-    got = classify(DONE, dataclasses.replace(_record(_final()), log_read=False, lost=CHROME_LOST))
+BLOCKED_LINE = _final("blocked", "controller_stop")
+"""Steer did not claim done: a lost Chrome is then the machine's, a void."""
+
+
+def test_a_lost_chrome_when_steer_did_not_claim_done_is_a_void_with_its_cause() -> None:
+    lost = dataclasses.replace(_record(BLOCKED_LINE), log_read=False, check=None, lost=CHROME_LOST)
+    got = classify(DONE, lost)
     assert (got.verdict, got.reason) == ("void", CHROME_LOST)
+
+
+def test_a_done_that_cannot_be_read_because_chrome_is_gone_stays_a_fail() -> None:
+    """The coordinator's ruling: a done we cannot verify is where a false done would hide; it
+    fails closed (`done_log_unread`), its cause kept visible, never a void that drops out."""
+    lost = dataclasses.replace(_record(_final()), log_read=False, check=None, lost=CHROME_LOST)
+    got = classify(DONE, lost)
+    assert (got.verdict, got.reason) == ("fail", f"done_log_unread:{CHROME_LOST}")
+    report = accept([DONE], [got], controls=(5, 5), runs_per_task=3, label="t").report
+    assert report["fail_reasons"] == {f"done_log_unread:{CHROME_LOST}": 1}
 
 
 def test_the_3d_run_voids_when_chrome_goes_away_before_the_log_is_read(
@@ -95,7 +111,7 @@ def test_the_3d_run_voids_when_chrome_goes_away_before_the_log_is_read(
             return 0
 
     def start(_argv: list[str], out: Path) -> Child:
-        out.write_text(__import__("json").dumps(_final()) + "\n", encoding="utf-8")
+        out.write_text(json.dumps(BLOCKED_LINE) + "\n", encoding="utf-8")
         return Child()
 
     monkeypatch.setattr(layer_b_pages, "PageServer", Server)
@@ -117,8 +133,8 @@ def test_the_3d_run_voids_when_chrome_goes_away_before_the_log_is_read(
 
 def test_the_set_goes_on_after_a_chrome_lost_void() -> None:
     """A void is re-run within the bound: the task still gets its scored runs."""
-    records = iter([dataclasses.replace(_record(_final()), log_read=False, lost=CHROME_LOST),
-                    _record(), _record(), _record()])  # fmt: skip
+    lost = dataclasses.replace(_record(BLOCKED_LINE), log_read=False, check=None, lost=CHROME_LOST)
+    records = iter([lost, _record(), _record(), _record()])
     runs, not_started = run_task_runs(DONE, runs=3, attempt=lambda _run: next(records))
     assert [r.verdict for r in runs] == ["void", "pass", "pass", "pass"]
     assert not_started == 0
