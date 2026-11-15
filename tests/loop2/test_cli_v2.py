@@ -46,6 +46,13 @@ TODAY = date(2026, 11, 15)
 WHERE = ["--loop", "v2", "--goal", "search the shop for red shoes", "--hwnd", "16"]
 
 
+@pytest.fixture(autouse=True)
+def _localappdata(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """#361 B1: the default price file lives under LOCALAPPDATA, which a Linux CI runner does
+    not set; every test here runs with its own, and the H11 test removes it itself."""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+
 def _price_file(tmp_path: Path, **changes: object) -> Path:
     doc: dict[str, object] = {
         "model": DEFAULT_MODEL,
@@ -479,6 +486,7 @@ def test_an_unexpected_error_is_internal_error_on_one_line(
     assert run() == EXIT_ERROR
     assert (run.result()["status"], run.result()["detail"]) == ("error", "internal_error")
     assert "RuntimeError" in run.stderr.getvalue()
+    assert "in broken" in run.stderr.getvalue()  # #361 B2: the loop thread's own frames
     assert run.platform.calls.count("release_com") == 1
 
 

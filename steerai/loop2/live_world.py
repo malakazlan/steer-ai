@@ -27,6 +27,7 @@ import secrets
 import sys
 import threading
 import time
+import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -101,6 +102,10 @@ class Platform(Protocol):
 
     def use_extra_info(self, tag: int) -> None:
         """[V2.57] LW-02: every input this process sends from now on carries `tag`."""
+        ...
+
+    def restore_extra_info(self) -> None:
+        """#361 B3: v1's tag back on the process's input, at close and on a failed start."""
         ...
 
     def acquire_session(self) -> str:
@@ -277,7 +282,10 @@ class LiveWorld:
             except Exception as exc:  # any other start failure: no kill switch, no task
                 raise SteerError(ErrorCode.GATE_BLOCKED, "monitor_unavailable") from exc
         except BaseException:
-            platform.release_session()
+            try:
+                platform.restore_extra_info()  # #361 B3: no run's tag outlives its start
+            finally:
+                platform.release_session()
             raise
         return held, monitor
 
@@ -568,7 +576,10 @@ class LiveWorld:
             try:
                 self._monitor.close()
             finally:
-                self._platform.release_session()
+                try:
+                    self._platform.restore_extra_info()  # #361 B3: v1's tag for the process
+                finally:
+                    self._platform.release_session()
 
 
 _COM_HOLDERS = ("world", "semantic", "physical", "desk", "_observe", "_facts", "_client", "_debug")
@@ -626,6 +637,9 @@ def run_on_loop_thread[T](
         try:
             result.append(work())
         except BaseException as exc:  # noqa: BLE001 - re-raised in the caller as itself
+            # #361 B2: the loop thread's frames as text (no frame, no COM object kept), so the
+            # caller's traceback still shows where the task failed
+            exc.add_note("".join(traceback.format_exception(exc)))
             failure.append(_without_frames(exc))
         finally:
             gc.collect()
@@ -675,6 +689,11 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
         from steerai.probes.win_input import use_extra_info  # noqa: PLC0415 - Windows only
 
         use_extra_info(tag)
+
+    def restore_extra_info(self) -> None:
+        from steerai.probes.win_input import STEER_EXTRA_INFO, use_extra_info  # noqa: PLC0415
+
+        use_extra_info(STEER_EXTRA_INFO)
 
     def acquire_session(self) -> str:
         import ctypes  # noqa: PLC0415 - Windows only

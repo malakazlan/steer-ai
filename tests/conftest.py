@@ -4,6 +4,7 @@
 import os
 import sys
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,19 @@ def _real_input_trap(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyP
             pytest.fail(f"an unmarked test reached {_what}; mark it windows, live or probe")
 
         monkeypatch.setattr(target, trap)
+
+
+@pytest.fixture(autouse=True)
+def _v1_tag_after_each_test() -> Iterator[None]:
+    """#361 B3: a run's random input tag is process-wide; a test that leaves it set fails here,
+    at its source, never in a later v1 test that reads 0x53544545. The tag is put back so the
+    leak is reported once."""
+    from steerai.probes import win_input  # noqa: PLC0415 - read after the test
+
+    yield
+    leaked = win_input.extra_info()
+    win_input.use_extra_info(win_input.STEER_EXTRA_INFO)
+    assert leaked == win_input.STEER_EXTRA_INFO, f"the input tag leaked: {leaked:#x}"
 
 
 def _needs_chrome(item: pytest.Item) -> bool:

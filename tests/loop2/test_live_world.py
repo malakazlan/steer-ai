@@ -149,6 +149,9 @@ class Platform:
     def release_com(self) -> None:
         self.calls.append("release_com")
 
+    def restore_extra_info(self) -> None:
+        self.calls.append("untag")
+
     def use_extra_info(self, tag: int) -> None:
         self.calls.append("tag")
         self.input_tag = tag
@@ -1515,3 +1518,43 @@ def test_ctrl_c_during_the_join_keeps_joining_and_says_so(monkeypatch: pytest.Mo
         lambda: "done", release=lambda: released.append(True), interrupted=lambda: heard.append("x")
     )
     assert (result, raised, heard, released) == ("done", [1], ["x"], [True])
+
+
+class _RealTag(Platform):
+    """The fake platform, but the process-wide input tag is the real one (`win_input`): a
+    pure module global, no Windows call."""
+
+    def use_extra_info(self, tag: int) -> None:
+        from steerai.probes.win_input import use_extra_info  # noqa: PLC0415 - the real global
+
+        super().use_extra_info(tag)
+        use_extra_info(tag)
+
+    def restore_extra_info(self) -> None:
+        from steerai.probes.win_input import STEER_EXTRA_INFO, use_extra_info  # noqa: PLC0415
+
+        super().restore_extra_info()
+        use_extra_info(STEER_EXTRA_INFO)
+
+
+def test_close_gives_the_process_back_v1s_tag() -> None:
+    """#361 B3 (TAG-01): a run's random tag leaked into every later v1 record of the process
+    (CI: 6 v1 tests read 1259532006 for 0x53544545)."""
+    from steerai.probes.win_input import STEER_EXTRA_INFO, extra_info  # noqa: PLC0415
+
+    platform = _RealTag()
+    world, _ = _world(platform)
+    assert extra_info() == platform.input_tag != STEER_EXTRA_INFO
+    world.close()
+    assert extra_info() == STEER_EXTRA_INFO
+
+
+def test_a_failed_start_gives_the_process_back_v1s_tag() -> None:
+    from steerai.probes.win_input import STEER_EXTRA_INFO, extra_info  # noqa: PLC0415
+
+    platform = _RealTag()
+    platform.monitor_error = OSError("SetWindowsHookExW failed")
+    with pytest.raises(SteerError):
+        _world(platform)
+    assert extra_info() == STEER_EXTRA_INFO
+    assert platform.calls.count("untag") == 1
