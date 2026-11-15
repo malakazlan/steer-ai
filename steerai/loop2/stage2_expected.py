@@ -19,6 +19,7 @@ the harness re-reads the start page and compares these facts only (`site_changed
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import itertools
 import json
@@ -57,6 +58,24 @@ _KEYS: Final[dict[object, Key]] = {k: k for k in get_args(Key)}
 _RISKS: Final[dict[object, Risk]] = {r: r for r in RISKS}
 SITE_SPACING_S: Final = 60.0
 DAILY_CAP: Final = 12
+DAY_WAIT_CHUNK_S: Final = 3600.0
+"""#413 blocker 1: the wait for the day to turn sleeps at most this long at a time."""
+DAY_WAIT_LIMIT_S: Final = 26 * 3600.0
+"""#413 blocker 1: a day that has not turned after this long is refused (fail closed)."""
+
+
+class DayDidNotTurn(RuntimeError):  # noqa: N818 - a refusal, named for its reason
+    """Every pending host was at its cap and the calendar day did not turn in the bound."""
+
+    def __init__(self) -> None:
+        super().__init__("day_did_not_turn")
+
+
+def calendar_day() -> int:
+    """Today on the local calendar, as an ordinal: the production day source (#413 blocker 1)."""
+    return datetime.date.today().toordinal()  # noqa: DTZ011 - the local day the cap counts
+
+
 """[V2.65] (3): the most loads of one host in one day at the spacing; a host at the cap stops
 for the day."""
 """§2.3, [V2.63] Q4: the least time between two page loads of one host, controls included."""
@@ -149,7 +168,7 @@ class Spacer:
         sleep: Callable[[float], None],
         spacing_s: float = SITE_SPACING_S,
         *,
-        day: Callable[[], int] = lambda: 0,
+        day: Callable[[], int] = calendar_day,
         cap: int = DAILY_CAP,
     ) -> None:
         self._clock = clock
@@ -167,10 +186,16 @@ class Spacer:
         return self._today.get((self.day(), host), 0) >= self._cap
 
     def wait_next_day(self) -> None:
-        """Every pending host is at its cap: wait, kill-aware, until the day turns."""
+        """Every pending host is at its cap: wait, kill-aware, until the day turns, in sleeps of
+        at most `DAY_WAIT_CHUNK_S`; a day that has not turned after `DAY_WAIT_LIMIT_S` is refused
+        (`DayDidNotTurn`), never waited on forever."""
         today = self.day()
+        waited = 0.0
         while self.day() == today:
-            self._sleep(self._spacing_s)
+            if waited >= DAY_WAIT_LIMIT_S:
+                raise DayDidNotTurn
+            self._sleep(DAY_WAIT_CHUNK_S)
+            waited += DAY_WAIT_CHUNK_S
 
     def wait(self, host: str) -> None:
         last = self._last.get(host)
