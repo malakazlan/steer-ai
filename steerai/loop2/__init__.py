@@ -32,6 +32,7 @@ def ready(step: int) -> bool:
         query,
         record,
         runner,
+        stage1,
         task,
         text,
         verify,
