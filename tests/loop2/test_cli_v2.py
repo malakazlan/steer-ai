@@ -46,6 +46,13 @@ TODAY = date(2026, 11, 15)
 WHERE = ["--loop", "v2", "--goal", "search the shop for red shoes", "--hwnd", "16"]
 
 
+@pytest.fixture(autouse=True)
+def _localappdata(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """#361 B1: the default price file lives under LOCALAPPDATA, which a Linux CI runner does
+    not set; every test here runs with its own, and the H11 test removes it itself."""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+
 def _price_file(tmp_path: Path, **changes: object) -> Path:
     doc: dict[str, object] = {
         "model": DEFAULT_MODEL,
