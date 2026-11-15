@@ -272,6 +272,8 @@ class World:
     """How far the clock moves during each settle (a hold that takes time)."""
     interrupt_after_settle: bool = False
     """Report `interruption` once a settle has run (the person's kill during the wait)."""
+    decide_raises: Exception | None = None
+    """When set, every controller call raises it (a port failure or `PortInterrupted`)."""
     interrupt_in_decide: int | None = None
     """Report `interruption` from this controller call on (1-based): the kill arrives while
     that call is waiting on the model, so its Decision comes back after the kill (#326)."""
@@ -300,6 +302,8 @@ class World:
             self.values.update(self.later_values)
             self.states.update(self.later_states)
         self.sent_at_call.append(len(self.dispatched))
+        if self.decide_raises is not None:
+            raise self.decide_raises
         decision = self.decisions.pop(0) if self.decisions else Decision(stop="cannot")
         return Decided(decision, self.usage)
 

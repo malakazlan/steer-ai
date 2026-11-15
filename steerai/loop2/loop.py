@@ -160,6 +160,17 @@ class TokenUsage:
     cache_read: int = 0
 
 
+class PortInterrupted(Exception):  # noqa: N818 - the packet's name ([V2.40] Q4)
+    """A port abandoned its wait because `interrupted()` reported a token, or because its result
+    belongs to a task generation that is no longer current ([V2.40] Q4, [V2.41] (1)). It carries
+    no authority: the runner re-reads `interrupted()`, and only the latched switch stops the task
+    as killed."""
+
+    def __init__(self, token: str) -> None:
+        super().__init__(token)
+        self.token = token
+
+
 @dataclass(frozen=True)
 class Decided:
     """What the decide port returns: the Decision and the call's usage; None when the usage was
@@ -215,6 +226,8 @@ class TaskOutcome:
     """Why the task ended, as a pair ([V2.13] decision 5); `reason` is its one rendering."""
     dispatched: tuple[Dispatch, ...]
     model_calls: int
+    """Controller decisions asked for (one per `Ports.decide`, an abandoned or failed one
+    included), not provider calls: a decide's repair ask is a second provider call inside it."""
     strikes: tuple[tuple[StrikeReason, ...], ...]
     """The evidence: one entry per strike, with every reason that held in that turn."""
     read_costs: tuple[ReadCost, ...] = ()

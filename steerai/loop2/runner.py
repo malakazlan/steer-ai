@@ -52,6 +52,7 @@ from steerai.loop2.loop import (
     ActResult,
     Dispatch,
     PendingText,
+    PortInterrupted,
     Ports,
     Provenance,
     Reason,
@@ -350,10 +351,21 @@ class _Run:
             self._loop()
         except _End as end:
             return self._outcome(end.status, end.cause)
+        except PortInterrupted:
+            return self._after_port_interrupt()
         except (SteerError, ControllerError) as exc:  # RT-16: a port failed; keep the evidence
             code = exc.code.value if isinstance(exc.code, ErrorCode) else exc.code
             return self._outcome("stopped", Reason(f"port_{code}"[:64]))
         raise AssertionError("the loop ends only through _End")  # pragma: no cover
+
+    def _after_port_interrupt(self) -> TaskOutcome:
+        """[V2.40] Q4: `PortInterrupted` has no authority. The switch is read again: latched, the
+        task stops with its token; not latched, the port failed (`interrupted_unlatched`)."""
+        try:
+            self._check_interrupt()
+        except _End as end:
+            return self._outcome(end.status, end.cause)
+        return self._outcome("stopped", Reason("port_interrupted_unlatched"))
 
     def _outcome(self, status: Status, cause: Reason | None) -> TaskOutcome:
         return TaskOutcome(
@@ -509,7 +521,16 @@ class _Run:
             first_turn=not self.frozen,
             handles=self.handles.bind(observed),
         )
-        decided = self.ports.decide(view)
+        try:
+            decided = self.ports.decide(view)
+        except (PortInterrupted, SteerError, ControllerError) as exc:
+            if not (isinstance(exc, ControllerError) and exc.record is None):
+                # [V2.41] (1): an abandoned or failed call is billed but never reported: it is
+                # counted, and the usage is a lower bound, never zero
+                self.model_calls += 1
+                self.tokens = math.nan
+                self.usage_incomplete = True
+            raise
         self.model_calls += 1
         counts = _counts(decided.usage)
         if counts is None:
