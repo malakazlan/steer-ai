@@ -16,7 +16,7 @@ from collections.abc import Callable
 import pytest
 
 from steerai.errors import ErrorCode, SteerError
-from steerai.loop2.loop import TRIGGER_CLASSES, Dispatch, PortInterrupted, action_class
+from steerai.loop2.loop import TRIGGER_CLASSES, Dispatch, PortInterrupted, action_class, watch_kind
 from steerai.loop2.runner import LOAD_GUARD_S, run_task
 from steerai.loop2.world_ports import (
     KILL_POLL_S,
@@ -24,7 +24,6 @@ from steerai.loop2.world_ports import (
     WorldPorts,
     WorldTimes,
     kill_sleep,
-    watch_kind,
 )
 from steerai.verify.predicates import FIELD_ROLES
 from steerai.world.effects import Observed, poll_tier, value_fact

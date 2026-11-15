@@ -19,13 +19,13 @@ import hashlib
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, get_args
 
 from steerai.action.dispositions import Delivery
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.actuate import may_retry, press_allowed, type_focus_ok
 from steerai.loop2.batch import batch_continues
-from steerai.loop2.controller import ControllerError, focus_state
+from steerai.loop2.controller import TOKEN, ControllerError, focus_state
 from steerai.loop2.decision import (
     CLAIM_CLOSES,
     NOT_IN_STEP_VERBS,
@@ -79,8 +79,10 @@ from steerai.loop2.loop import (
     TaskOutcome,
     TokenUsage,
     TurnView,
+    WatchKind,
     action_risk,
     type_refusal,
+    watch_kind,
 )
 from steerai.loop2.query import (
     EnterOutcome,
@@ -353,7 +355,7 @@ def enter_outcome(
 
 
 class _Run:
-    def __init__(self, task: Task, ports: Ports) -> None:
+    def __init__(self, task: Task, ports: Ports) -> None:  # noqa: PLR0915 - the run's state, one field each
         self.task = task
         self.ports = ports
         self.subgoals: tuple[Subgoal, ...] = task.subgoals
@@ -372,6 +374,10 @@ class _Run:
         """[V2.40] Q3, [V2.45]: input, output, 5-minute write, 1-hour write and read, over every
         reported call."""
         self.usage_incomplete = False
+        self.watch_counts: dict[WatchKind, list[int]] = {k: [0, 0] for k in get_args(WatchKind)}
+        """[V2.48]: per class, the watches and those that ended at their deadline."""
+        self.rejections: tuple[str, ...] = ()
+        """The shakedown's #3: the last rejected turn's closed tokens, for the final line."""
         self.strikes = Strikes(STRIKE_LIMIT)
         self.strike_log: list[tuple[StrikeReason, ...]] = []
         self.refusal: tuple[RefusalKind, str] | None = None
@@ -443,6 +449,8 @@ class _Run:
             tokens=self.tokens,
             cost_usd=self._cost(),
             usage_incomplete=self.usage_incomplete,
+            watch_deadlines=tuple((k, w, d) for k, (w, d) in self.watch_counts.items()),
+            rejections=self.rejections,
             usage=TokenUsage(*self.by_category),
             read_costs=tuple(self.read_costs),
             stale_observations=self.stale_count,
@@ -610,12 +618,20 @@ class _Run:
         try:
             decided = self.ports.decide(view)
         except (PortInterrupted, SteerError, ControllerError) as exc:
-            if not (isinstance(exc, ControllerError) and exc.record is None):
+            if isinstance(exc, ControllerError):
+                self.rejections = tuple(t for t in exc.tokens if TOKEN.fullmatch(t))
+            if isinstance(exc, ControllerError) and exc.record is None:
+                raise  # no call was made: nothing billed
+            self.model_calls += 1
+            counts = _counts(exc.usage) if isinstance(exc, ControllerError) else None
+            if counts is None:
                 # [V2.41] (1): an abandoned or failed call is billed but never reported: it is
                 # counted, and the usage is a lower bound, never zero
-                self.model_calls += 1
                 self.tokens = math.nan
                 self.usage_incomplete = True
+            else:  # a rejected turn's calls reported their usage: counted, never unknown
+                self.tokens += sum(counts)
+                self.by_category = [a + b for a, b in zip(self.by_category, counts, strict=True)]
             raise
         self.model_calls += 1
         counts = _counts(decided.usage)
@@ -1242,6 +1258,11 @@ class _Run:
             self.turn.focused = element.runtime_id
         pending_before = list(self.pending)  # each pending field as found just before dispatch
         watched = self.ports.watch(before, sent)
+        # [V2.48]: counted only once the watch returned; one that raised (a kill, a port error)
+        # never reached a deadline verdict and is in neither count
+        counted = self.watch_counts[watch_kind(sent)]
+        counted[0] += 1
+        counted[1] += watched.timed_out
         self.read_costs.append(watched.read_cost)
         self.turn.sent += 1
         report = watched.report

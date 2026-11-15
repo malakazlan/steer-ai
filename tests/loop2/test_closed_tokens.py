@@ -22,8 +22,7 @@ from steerai.loop2.history import (
     RefusalWord,
     Refused,
 )
-from steerai.loop2.loop import Dispatch, action_class, action_risk
-from steerai.loop2.world_ports import watch_kind
+from steerai.loop2.loop import Dispatch, action_class, action_risk, watch_kind
 from steerai.world.elements import Element
 from tests.loop2.test_action_risk import BOX, BOX_GO, SEARCHY, pending, screen
 from tests.loop2.test_action_risk import SHOWN as SHOWN_FOR_RISK
