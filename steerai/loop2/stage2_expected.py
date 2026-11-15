@@ -84,6 +84,46 @@ class TableRow:
     expected: Expected
 
 
+START_EXPRESSION: Final = (
+    "JSON.stringify({uri: document.documentURI, title: document.title, status: "
+    "(performance.getEntriesByType('navigation')[0] || {}).responseStatus || 0})"
+)
+"""The start document over DevTools: its URI (Chrome's error page is `chrome-error:`), title, and
+the main document's HTTP status (`responseStatus`; how it reads on real sites is unmeasured until
+the save-reads slot records it)."""
+
+
+@dataclass(frozen=True)
+class StartDocument:
+    status: int | None
+    """The main document's HTTP status; None when unread (0, missing or not a number)."""
+    error_page: bool
+    title: str
+
+    @property
+    def loaded(self) -> bool:
+        """A 2xx or 3xx main document that is not Chrome's own error page; unread is not."""
+        ok = self.status is not None and 200 <= self.status < 400
+        return ok and not self.error_page
+
+
+def start_document(raw: str) -> StartDocument:
+    """`START_EXPRESSION`'s JSON read back; anything unreadable is an unread status."""
+    try:
+        page = json.loads(raw)
+    except ValueError:
+        page = {}
+    if not isinstance(page, dict):
+        page = {}
+    status = page.get("status")
+    known = isinstance(status, int) and not isinstance(status, bool) and status > 0
+    return StartDocument(
+        status if known else None,
+        str(page.get("uri", "")).startswith("chrome-error:"),
+        str(page.get("title", "")),
+    )
+
+
 def real_site_tasks() -> tuple[Task, ...]:
     """The pooled set's real-site tasks (dev, H1-H6), in set order, each once: the rows whose
     start is a web address. The sets are data; nothing here names a site."""
@@ -239,6 +279,10 @@ def save_reads(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live, 
         by_start.setdefault(task.start, []).append(task.task_id)
     for start, task_ids in by_start.items():
         with live_page(start, floor_mb=floor_mb, settle_s=6.0) as page:
+            reply = page.cdp.call(
+                "Runtime.evaluate", {"expression": START_EXPRESSION, "returnByValue": True}
+            )
+            document = start_document(str(reply.get("result", {}).get("value", "")))
             snapshot = WorldModel(page.client).observe(page.hwnd, cap_s=5.0)
             read = read_observed(
                 snapshot,
@@ -249,7 +293,10 @@ def save_reads(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live, 
         text = (observed_to_json(read) + "\n").encode("utf-8")
         for task_id in task_ids:
             (out / f"{task_id}.json").write_bytes(text)
-        sys.stdout.write(json.dumps({"tasks": task_ids, "elements": len(snapshot.elements)}) + "\n")
+        row = {"tasks": task_ids, "elements": len(snapshot.elements)}
+        # stage 2 §2.2 step 3, unmeasured until here: the status reading on each real site
+        row |= {"status": document.status, "error_page": document.error_page}
+        sys.stdout.write(json.dumps(row) + "\n")
     return 0
 
 
