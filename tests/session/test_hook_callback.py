@@ -560,9 +560,16 @@ def test_the_monitor_reports_whether_both_hooks_saw_the_probe(
     monkeypatch.setattr(monitor_module, "nudge_in_place", lambda: None)
     monkeypatch.setattr(monitor_module, "key_up_probe", lambda _vk: None)
     user32 = FakeUser32()
-    monitor = _v2_started(monkeypatch, user32)
+    clock = {"t": 100.0}
+    _patch(monkeypatch, user32)
+    monitor = HookMonitor(
+        monotonic=lambda: clock["t"], per_hook=True, probe_vk=PROBE_VK, tick=lambda: 1000
+    )
+    monitor.start()
     try:
+        clock["t"] += 1.0  # the probe goes out after the hooks' start
         monitor.probe_now()
+        clock["t"] += 0.01
         assert monitor.probe_seen() is False
         mouse = _mouse(flags=LLMHF_INJECTED, extra=STEER_EXTRA_INFO)
         user32.procs[WH_MOUSE_LL](HC_ACTION, WM_MOUSEMOVE, ctypes.addressof(mouse))
