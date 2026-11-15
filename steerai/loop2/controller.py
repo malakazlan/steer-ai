@@ -235,9 +235,10 @@ def _fit(
     keep_cap: int,
 ) -> tuple[list[ListingRow], int]:
     """[V2.55] (2): the rows that fit under the ceiling, cutting by class from the bottom of the
-    listing up, and how many were cut. Always-keep rows go only beyond `keep_cap` (#359 review);
-    `prompt_too_large` when the rest would still not fit. Bottom-up inside a class, after every
-    lower class, keeps the listing closed upward: a row's descendants go before it."""
+    listing up, and how many were cut. Always-keep rows go only beyond `keep_cap` (#359 review)
+    and root-chain rows never (#360); `prompt_too_large` when the rest would still not fit.
+    Bottom-up inside a class, after every lower class, keeps the listing closed upward: a row's
+    descendants go before it."""
     cut = 0
     while True:
         system, user = render(rows)
