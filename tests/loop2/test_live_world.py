@@ -7,6 +7,7 @@ that could not stop on the person's key, or would write names in clear, never st
 from __future__ import annotations
 
 import dataclasses
+import gc
 import json
 import re
 import threading
@@ -24,7 +25,13 @@ from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.act_guards import InputGuard, ToggleGuard
 from steerai.loop2.controller import PROMPT_VERSION
 from steerai.loop2.decide_port import Reply, TaskGenerations
-from steerai.loop2.live_world import LiveConfig, LiveWorld, UiaElements, WindowsPlatform
+from steerai.loop2.live_world import (
+    LiveConfig,
+    LiveWorld,
+    UiaElements,
+    WindowsPlatform,
+    enter_mta,
+)
 from steerai.loop2.live_world import Platform as LivePlatform
 from steerai.loop2.loop import Dispatch, PortInterrupted, TokenUsage
 from steerai.loop2.runner import run_task
@@ -767,17 +774,61 @@ def test_every_trace_write_holds_one_lock() -> None:
     assert len(trace.lines) == 2
 
 
+def _on_a_fresh_thread(work: Callable[[], object]) -> object:
+    """Run `work` on a new thread, as 7b runs a task on its own loop thread (packet §1). Every
+    COM object it made is released on that thread before it ends: a comtypes object collected
+    later on another thread crashes the interpreter in `Release` (seen: a segfault in GC)."""
+    out: list[object] = []
+
+    def run() -> None:
+        try:
+            out.append(work())
+        except BaseException as exc:  # noqa: BLE001 - handed back to the test thread
+            out.append(exc)
+        finally:
+            gc.collect()  # the thread's COM objects die here, on their own thread
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    thread.join(timeout=30.0)
+    if isinstance(out[0], BaseException):
+        raise out[0]
+    return out[0]
+
+
 @pytest.mark.windows
 def test_the_windows_platform_constructs_and_closes() -> None:
-    """The real side: UIA, the hook monitor with its hot key, then a clean close."""
+    """The real side, on its own loop thread: UIA in the MTA, the hook monitor with its hot key,
+    then a clean close."""
     from steerai.probes.windows import list_top_windows  # noqa: PLC0415 - Windows only
 
     hwnd = list_top_windows()[0].hwnd
-    world = LiveWorld(_config(hwnd=hwnd, kill_key="ctrl+alt+shift+f9"), WindowsPlatform())
-    try:
-        assert world.interrupted() in {None, "session_locked", "secure_desktop"}
-    finally:
-        world.close()
+
+    def task() -> object:
+        world = LiveWorld(_config(hwnd=hwnd, kill_key="ctrl+alt+shift+f9"), WindowsPlatform())
+        try:
+            return world.interrupted()
+        finally:
+            world.close()
+            del world
+
+    assert _on_a_fresh_thread(task) in {None, "session_locked", "secure_desktop"}
+
+
+@pytest.mark.windows
+def test_a_loop_threads_uia_client_is_in_the_mta() -> None:
+    """The #355 CI failure's root cause: `uia_snapshot._create_client` imports comtypes before
+    `load_uia_module` sets `sys.coinit_flags`, so comtypes initialises its importing thread as an
+    STA (measured: a fresh interpreter reads MAINSTA after `UiaClient()`). The v2 platform enters
+    the MTA itself before UIA is created, on the loop thread."""
+    platform = WindowsPlatform()
+
+    def build() -> object:
+        client, bindings = platform.uia()
+        del client, bindings
+        return platform.apartment()
+
+    assert _on_a_fresh_thread(build) == "MTA"
 
 
 def test_the_value_digest_key_is_random_per_task() -> None:
@@ -922,3 +973,37 @@ def test_the_act_and_the_live_reads_refuse_another_thread(call: str) -> None:
     other.start()
     other.join(timeout=5.0)
     assert [getattr(e, "message", "") for e in seen] == ["wrong_thread"]
+
+
+# ---- the MTA entry (the #355 CI root cause) ----------------------------------------------------
+
+
+@pytest.mark.parametrize("result", [0, 1], ids=["S_OK", "S_FALSE"])
+def test_a_thread_that_enters_the_mta_may_use_uia(result: int) -> None:
+    flags: list[int] = []
+
+    def co_initialize_ex(flag: int) -> int:
+        flags.append(flag)
+        return result
+
+    enter_mta(co_initialize_ex)
+    assert flags == [0]  # COINIT_MULTITHREADED
+
+
+@pytest.mark.parametrize(
+    "result", [0x80010106 - (1 << 32), 0x80004005 - (1 << 32)], ids=["CHANGED_MODE", "E_FAIL"]
+)
+def test_a_thread_already_in_an_sta_or_failing_never_uses_uia(result: int) -> None:
+    """RPC_E_CHANGED_MODE: the thread is already an STA; any failure is never MTA (fail closed)."""
+    with pytest.raises(SteerError) as refused:
+        enter_mta(lambda _flag: result)
+    assert refused.value.code is ErrorCode.PERCEPTION_DEGRADED
+    assert refused.value.message == "com_apartment"
+
+
+def test_the_apartment_refusal_is_never_renamed_uia_unavailable() -> None:
+    platform = Platform()
+    platform.uia_error = SteerError(ErrorCode.PERCEPTION_DEGRADED, "com_apartment")
+    with pytest.raises(SteerError) as failed:
+        _world(platform)
+    assert failed.value.message == "com_apartment"

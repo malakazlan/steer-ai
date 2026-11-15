@@ -23,6 +23,7 @@ semantic one over `ToggleGuard` and `UiaOptions(client)` (AP-54), the physical o
 from __future__ import annotations
 
 import secrets
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -56,6 +57,8 @@ from steerai.world.secure import SecureMemory
 TraceLevel = Literal["redacted", "debug"]
 """`redacted`: a clear trace of closed tokens and counts only. `debug`: also the DPAPI debug
 sink, which may hold names and titles; it never starts without DPAPI (packet §1 traces)."""
+COINIT_MULTITHREADED = 0x0
+"""`CoInitializeEx`'s MTA flag (objbase.h)."""
 DPAPI_PROBE = b"steer-v2-dpapi-probe"
 """Protected once at construction at level `debug`: DPAPI must work before a name is kept."""
 
@@ -122,6 +125,20 @@ class LiveConfig:
     """Where the DPAPI debug file goes at level `debug`; none: no debug records are kept."""
 
 
+def enter_mta(co_initialize_ex: Callable[[int], int]) -> None:
+    """Put the calling thread in the COM MTA before any UIA object exists on it (packet §1).
+
+    `CoInitializeEx(COINIT_MULTITHREADED)` returns S_OK (0) or S_FALSE (1, already in the MTA).
+    Anything else is never the MTA: RPC_E_CHANGED_MODE means the thread is already an STA. That
+    is refused (`com_apartment`), never worked around. Root cause of #355's CI failure: v1's
+    `uia_snapshot._create_client` imports comtypes before `load_uia_module` sets
+    `sys.coinit_flags`, so comtypes makes its importing thread an STA (a fresh interpreter reads
+    MAINSTA after `UiaClient()`); the v2 loop thread enters the MTA itself first."""
+    result = co_initialize_ex(COINIT_MULTITHREADED) & 0xFFFFFFFF
+    if result not in (0, 1):
+        raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "com_apartment")
+
+
 class UiaElements:
     """`world_ports.LiveElements` over UIA: v1's live reads plus the identity read (role, name,
     IsPassword) the world ports re-check before any read (packet §2.7)."""
@@ -166,6 +183,8 @@ class LiveWorld:
             raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "dpi_context")
         try:
             client, bindings = platform.uia()
+        except SteerError:
+            raise  # `com_apartment` from `enter_mta`, as it is
         except Exception as exc:  # creation fails as a COMError (no stubs) or OSError
             raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "uia_unavailable") from exc
         if platform.apartment() != "MTA":  # LW-12, packet §1 threads
@@ -456,6 +475,14 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
         return ensure_per_monitor_v2()
 
     def uia(self) -> tuple[Any, UiaBindings]:  # Any: the UiaClient
+        """UIA on this (the loop) thread, in the MTA: the thread enters the MTA first, and a
+        comtypes not yet imported is told to initialise as MTA too (it reads the flag once)."""
+        import ctypes  # noqa: PLC0415 - Windows only
+
+        ole32 = ctypes.windll.ole32
+        enter_mta(lambda flags: int(ole32.CoInitializeEx(None, flags)))
+        if "comtypes" not in sys.modules:
+            sys.coinit_flags = COINIT_MULTITHREADED  # type: ignore[attr-defined]  # comtypes reads it
         from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415 - Windows only
 
         return UiaClient(), UiaBindings.load()
