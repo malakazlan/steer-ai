@@ -137,8 +137,9 @@ class TurnTrace:
     """What one turn did, for the redacted trace: closed facts and numbers only."""
 
     turn: int
-    listed: int
-    cut: int
+    listed: int | None
+    """The rows this turn's listing showed; None: unknown (no listing was reported)."""
+    cut: int | None
     growing: bool
     young: bool
     focus: FocusState | None

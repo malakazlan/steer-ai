@@ -275,7 +275,10 @@ class _Turn:
     seen: Observed | None = None
     """[V2.67] D: the observation the model saw this turn."""
     shape: dict[str, Any] | None = None  # Any: JSON values (`decision_shape`)
+    number: int = 0
+    """[V2.67] D: the model call that made this turn, fixed when the turn is made."""
     listing: ListingTurn | None = None
+    """This turn's own listing, as its decide reported it; None: unknown."""
     usage: TokenUsage | None = None
     refusals: list[RefusalFact] = field(default_factory=list)
     acts: list[ActFact] = field(default_factory=list)
@@ -445,6 +448,8 @@ class _Run:
         self.last_usage: TokenUsage | None = None
         self.last_repair: tuple[bool, tuple[str, ...]] = (False, ())
         """[V2.67] D: the last Decision's repair round and its rejection tokens."""
+        self.last_listing: ListingTurn | None = None
+        """[V2.67] D: the last Decision's own listing (None: its decide reported none)."""
         self.turn_trace_dropped = 0
         """[V2.67] D: turn records the no-free-text check dropped."""
         self.read_costs: list[ReadCost] = []
@@ -617,7 +622,8 @@ class _Run:
                     turn=self.model_calls,
                     attempt=0,
                 ),
-                listing=self.listing.turns[-1] if self.listing.turns else None,
+                number=self.model_calls,
+                listing=self.last_listing,
                 usage=self.last_usage,
                 repair=self.last_repair[0],
                 repair_tokens=self.last_repair[1],
@@ -733,6 +739,7 @@ class _Run:
             record = record if isinstance(record, DecideRecord) else None
             self.turn = _Turn(  # [V2.67] D: the failed turn is traced too
                 seen=observed,
+                number=self.model_calls,
                 usage=exc.usage if isinstance(exc, ControllerError) else None,
                 repair=record is not None and record.repaired,
                 repair_tokens=() if record is None else record.rejections,
@@ -752,6 +759,7 @@ class _Run:
         self.partial_page_calls += observed.growing or observed.young  # [V2.35]: counted
         self.last_usage = decided.usage
         self.last_repair = (decided.calls > 1, decided.rejections)
+        self.last_listing = decided.listing
         self.exact_counts += decided.exact_counted
         self.estimates_low += decided.estimate_low
         self._spend(decided.usage)
@@ -1759,9 +1767,9 @@ class _Run:
         listing = turn.listing
         record = turn_record(
             TurnTrace(
-                turn=self.model_calls,
-                listed=0 if listing is None else listing.shown,
-                cut=0 if listing is None else listing.cut,
+                turn=turn.number,
+                listed=None if listing is None else listing.shown,
+                cut=None if listing is None else listing.cut,
                 growing=seen.growing,
                 young=seen.young,
                 focus=focus_state(seen.snapshot, seen.focus),
