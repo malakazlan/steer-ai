@@ -160,3 +160,9 @@ def test_a_word_out_of_range_is_refused() -> None:
     words = config_words(memoryview(bytearray(config_size())))
     with pytest.raises(ValueError, match="word"):
         words.set("ask_depth", -1)
+
+
+def test_a_zero_time_is_refused_because_zero_means_no_input_yet() -> None:
+    """#373 review: 0 is the "no input from anyone yet" sentinel, so it is never packed."""
+    with pytest.raises(ValueError, match="zero"):
+        pack_last_user(0, KIND_TAKEOVER)
