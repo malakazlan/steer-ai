@@ -620,7 +620,20 @@ class LiveWorld:
             left = deadline - self._config.clock()
             if left <= 0:
                 return
-            helper.wait(min(left, KILL_POLL_S))
+            self._helper_step(helper, min(left, KILL_POLL_S))
+
+    def _helper_step(self, helper: HelperWorldMonitor, step: float) -> None:
+        """One kill-aware step on the helper (HH-08). A wait that returns early with no kill
+        (a probe's wake, the helper's exit, a stuck event) sleeps the rest of the step plainly,
+        so no wait spins (#385 HH4-03); a kill returns at once for the caller's switch read."""
+        clock = self._config.clock
+        started = clock()
+        helper.wait(step)
+        if self._kill_token() is not None:
+            return
+        rest = step - (clock() - started)
+        if rest > 0:
+            self._config.pause(rest)
 
     def _start_monitor(self, platform: Platform, config: LiveConfig) -> Monitor:
         """The in-process hook monitor, or with `hook_helper` the helper's ([V2.60])."""

@@ -27,6 +27,8 @@ class HelperMonitor(Monitor):
         self.waits: list[float] = []
         self.clock = clock
         self.kill_after_waits: int | None = None
+        self.returns_at_once = False
+        """The helper exited, or its event is stuck: each wait returns at once."""
         self.kill_raises: Exception | None = None
         self.kill_reads = 0
         self.kill_raises_from = 1
@@ -43,7 +45,10 @@ class HelperMonitor(Monitor):
 
     def wait(self, seconds: float) -> None:
         self.waits.append(seconds)
-        self.clock.pause(seconds)
+        if len(self.waits) > 1000:
+            raise AssertionError("the sleep spun on the helper's wait")
+        if not self.returns_at_once:
+            self.clock.pause(seconds)
         if self.kill_after_waits is not None and len(self.waits) >= self.kill_after_waits:
             self.killed = True
 
@@ -206,3 +211,16 @@ def test_a_kill_read_that_raises_while_proving_is_monitor_lost(raises_from: int)
         world._prove_hooks()
     assert stopped.value.args == ("monitor_lost",)
     assert world.monitor_lost == 1
+
+
+def test_a_helper_wait_that_returns_at_once_never_spins_the_sleep() -> None:
+    """#385 HH4-03: an early return with no kill sleeps the rest of the step plainly."""
+    platform = HelperPlatform()
+    world, _ = _world(platform, hook_helper=True)
+    helper = platform.helper
+    assert helper is not None
+    helper.returns_at_once = True
+    started = world.clock()
+    world._kill_aware_sleep(0.5)
+    assert world.clock() - started >= 0.5
+    assert len(helper.waits) <= round(0.5 / KILL_POLL_S) + 1
