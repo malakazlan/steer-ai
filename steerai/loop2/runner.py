@@ -454,6 +454,7 @@ class _Run:
                     return observed
                 if self.ports.clock() <= started:
                     break  # the clock did not move across the hold
+        self._check_budgets()  # a budget that ended the wait is the end, not `page_not_ready`
         if _window_gone(observed):
             raise _End("stopped", Reason("window_gone"))
         raise _End("cannot", Reason("page_not_ready"))

@@ -792,3 +792,18 @@ def test_the_deadline_counts_from_when_the_page_went_blank() -> None:
     outcome = run_task(task(), world.ports())
     assert outcome.reason == "page_not_ready"
     assert world.now >= 20.0 + FIRST_READY_S - 1e-6
+
+
+def test_a_wall_budget_that_ends_the_blank_page_wait_is_max_wall() -> None:
+    """The wall budget runs out during the hold, before the first-ready deadline: the task pauses
+    on the budget (`max_wall`), never `page_not_ready`."""
+    budgets = Budgets(**(GOOD | {"max_wall_s": 3.0}))
+    world = World(
+        [decision(act("click", target=GO.id), first=True), Decision(stop="cannot")],
+        effects=[report("navigated")],
+        after=FRAME_ONLY,
+        settled=FRAME_ONLY,
+    )
+    world.settle_advance_s = 0.5
+    outcome = run_task(task(budgets), world.ports())
+    assert (outcome.status, outcome.reason) == ("paused", "max_wall")
