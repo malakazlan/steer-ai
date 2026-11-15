@@ -386,6 +386,10 @@ class LiveWorld:
         self._lost = False
         """[V2.57] LW-01: monitor_lost is final for the task: never re-installed and resumed."""
         self.monitor_lost = 0
+        self._watch_due = False
+        """[V2.64] Two: the first loss came with a probe outstanding, so `close` hands the open
+        monitor to a `LossWatch` instead of closing it."""
+        self.loss_watch: LossWatch | None = None
 
     def _debug_sink(self) -> DebugSink:
         config = self._config
@@ -547,10 +551,19 @@ class LiveWorld:
         return "killed" if killed else None
 
     def _lose(self) -> None:
-        """LW-01: latch monitor_lost for the task, counted once."""
+        """LW-01: latch monitor_lost for the task, counted once. [V2.64] Two: a first loss with a
+        probe outstanding (sent, not yet seen by both hooks) is watched after the task."""
         if not self._lost:
             self._lost = True
             self.monitor_lost += 1
+            self._watch_due = self._probe_outstanding()
+
+    def _probe_outstanding(self) -> bool:
+        """A read that fails is no probe outstanding: that loss is not watched."""
+        try:
+            return not self._monitor.probe_seen()
+        except Exception:  # noqa: BLE001 - an unread probe is not watched; the loss stands
+            return False
 
     def _prove_hooks(self) -> None:
         """[V2.57] LW-01: just before each send, a fresh probe both hooks must see within the
@@ -847,7 +860,10 @@ class LiveWorld:
                 if hasattr(self, name):
                     delattr(self, name)
             try:
-                self._monitor.close()
+                if getattr(self, "_watch_due", False):  # [V2.64] Two: the CLI watches it
+                    self.loss_watch = LossWatch(self._monitor)
+                else:
+                    self._monitor.close()
             finally:
                 try:
                     self._platform.restore_extra_info()  # #361 B3: v1's tag for the process
@@ -858,6 +874,49 @@ class LiveWorld:
 _COM_HOLDERS = ("world", "semantic", "physical", "desk", "_observe", "_facts", "_client", "_debug")
 """Rev 4.0c: the attributes that hold COM objects (directly, or through an executor, the guard
 or the world ports); `close` drops them on the loop thread."""
+
+
+LOSS_WATCH_S = 3.0
+"""[V2.64] Two: how long a loss is watched after the task for the outstanding probe's echo."""
+LossVerdict = Literal["slow", "gone"]
+"""[V2.64] Two: an echo within the watch is a slow hook; none, a gone one. A watch ended by a
+kill or an unread fact has no verdict (the harness reads "unknown")."""
+
+
+class LossWatch:
+    """[V2.64] Two: a monitor kept open past the task after a loss with a probe outstanding.
+    Run once after the final line is out: it never delays the task's result. It closes the
+    monitor whatever happens; `close` alone gives it back unwatched."""
+
+    def __init__(self, monitor: Monitor) -> None:
+        self._monitor = monitor
+        self._closed = False
+
+    def run(
+        self, clock: Callable[[], float], pause: Callable[[float], None]
+    ) -> tuple[LossVerdict, int] | None:
+        """Poll every `KILL_POLL_S` for up to `LOSS_WATCH_S`: (verdict, ms since the start), or
+        None when a kill or a read that fails ends the watch. The kill hot key stays live."""
+        started = clock()
+        try:
+            while True:
+                if self._monitor.kill_requested():
+                    return None
+                waited = clock() - started
+                if self._monitor.probe_seen():
+                    return "slow", round(waited * 1000)
+                if waited >= LOSS_WATCH_S:
+                    return "gone", round(waited * 1000)
+                pause(min(KILL_POLL_S, LOSS_WATCH_S - waited))
+        except Exception:  # noqa: BLE001 - an unread fact ends the watch with no verdict
+            return None
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._monitor.close()
 
 
 _LATENCY_KEYS = ("hook_events", "hook_latency_p95_ms", "hook_latency_p99_ms")

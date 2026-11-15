@@ -323,9 +323,11 @@ def _run(options: V2Options, deps: V2Deps, out: _Out, price: PriceFile, window: 
 
     done: dict[str, TaskOutcome] = {}
     started: list[bool] = []
+    worlds: list[LiveWorld] = []
 
     def work() -> tuple[TaskOutcome, dict[str, int | str | None]]:
         with LiveWorld(config, platform) as world:
+            worlds.append(world)  # [V2.64] Two: its loss watch is read after the final line
             world.bring_to_front()  # [V2.62]: a refusal here is a start refusal, its own reason
             started.append(True)
             limits = _limits_header(task.budgets, price)
@@ -341,6 +343,30 @@ def _run(options: V2Options, deps: V2Deps, out: _Out, price: PriceFile, window: 
             del ports  # rev 4.0c: nothing holding COM outlives the world on this thread
             return outcome, world.report()
 
+    try:
+        return _run_and_emit(
+            work, platform=platform, task=task, options=options, out=out, done=done, started=started
+        )
+    finally:
+        watch = worlds[0].loss_watch if worlds else None
+        if watch is not None:  # [V2.64] Two: after the final line, never before it
+            watched = watch.run(deps.clock, deps.pause)
+            if watched is not None:
+                verdict, after_ms = watched
+                out.emit({"loss_watch": {"verdict": verdict, "after_ms": after_ms}}, options)
+
+
+def _run_and_emit(  # noqa: PLR0913 - the run's parts, passed on as they are
+    work: Callable[[], tuple[TaskOutcome, dict[str, int | str | None]]],
+    *,
+    platform: Platform,
+    task: Task,
+    options: V2Options,
+    out: _Out,
+    done: dict[str, TaskOutcome],
+    started: list[bool],
+) -> int:
+    """Run the task on the loop thread and emit its final line; the exit code."""
     interrupts: list[bool] = []
     try:
         outcome, report = run_on_loop_thread(
@@ -566,6 +592,7 @@ class _Out:
     def emit(self, payload: Mapping[str, Any], options: V2Options) -> None:  # Any: JSON values
         line = json.dumps({"task_id": options.task_id, **payload}, sort_keys=True, allow_nan=False)
         self._stdout.write(line + "\n")
+        self._stdout.flush()  # [V2.64] Two: the line is out before any loss watch runs
 
     def error(self, code: ErrorCode | None, detail: str, *, task_id: str | None) -> int:
         payload = {
