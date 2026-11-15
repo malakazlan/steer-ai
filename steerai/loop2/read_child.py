@@ -1165,7 +1165,7 @@ FIRST_READ_S: Final = 10.0
 VISIBLE_POLL_S: Final = 0.05
 
 
-def run_first_read_child(  # noqa: PLR0913 - one live child  # pragma: no cover
+def run_first_read_child(  # noqa: PLR0913, PLR0915 - one live child  # pragma: no cover
     hwnd: int, *, cdp_port: int, server_port: int, wait_visible: bool, out: Path, trace: Path
 ) -> int:
     """The real child's setup, then `bring_to_front`; from the raise, Chrome's own
@@ -1184,7 +1184,15 @@ def run_first_read_child(  # noqa: PLR0913 - one live child  # pragma: no cover
     visible_at: list[float] = []
     seen_visible = threading.Event()
 
+    watch_errors: list[str] = []
+
     def watch_visibility(raised: float) -> None:
+        try:
+            watch(raised)
+        except Exception as exc:  # noqa: BLE001 - a diagnostic records its own failure as data
+            watch_errors.append(f"{type(exc).__name__}: {exc}"[:200])
+
+    def watch(raised: float) -> None:
         cdp, _ = _ours(cdp_port, server_port)
         try:
             while time.monotonic() - raised < FIRST_READ_S + 5.0:
@@ -1228,6 +1236,7 @@ def run_first_read_child(  # noqa: PLR0913 - one live child  # pragma: no cover
                 "first_read_s": reads[0]["t"] if reads else None,
                 "first_page_s": first_page_s(reads),
                 "reads": len(reads),
+                "watch_errors": watch_errors,
             }
         })  # fmt: skip
         return rows
@@ -1304,6 +1313,7 @@ def run_first_read(out_dir: Path) -> int:  # pragma: no cover - live
                     emit({
                         "cell": name,
                         "code": done.returncode,
+                        "stderr_tail": done.stderr[-300:],
                         "before": {k: before[k] for k in ("foreground", "cover_of")},
                         **rows[0],
                         **rows[-1],
