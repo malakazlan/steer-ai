@@ -3,12 +3,14 @@ Session failed it in every arm of the [V2.57a] apartment comparison, and whether
 fails it too.
 
 One throwaway Chrome on the gallery page. Arm `v1`: the ComboBoxes as UIA names them and their
-live values, then the one step through v1's own Session, its whole result kept (gate outcome,
-codes, the action and the evidence). The page is reloaded. Arm `v2`: the same read, then the same
-single step through v2's `ActPort` on a `LiveWorld` (no model call), its `ActResult` and the
-value read after. Each arm runs in its own child process (one COM apartment each) and first
-shows the page (raise; the 1-px nudge only if Chrome holds it hidden). The page's own log gives
-the g12 events after each arm. Sends real input to our own window only.
+live values, then the one step through v1's own Session (its executor built as v1's run builds
+it, with the option source: without one a choose refuses `no_option_source`, 2026-11-15), its
+whole result kept (gate outcome, codes, the action and the evidence). The page is reloaded.
+Arm `v2`: the same read, then the same single step through v2's `ActPort` on a `LiveWorld` (no
+model call), its `ActResult` and the value read after. Each arm runs in its own child process
+(one COM apartment each) and first shows the page (raise; the 1-px nudge only if Chrome holds
+it hidden). The page's own log gives the g12 events after each arm. Sends real input to our own
+window only.
 
 Run: `python -m steerai.probes.choose_probe run --out-dir D`.
 """
@@ -147,6 +149,7 @@ def _v1(hwnd: int) -> dict[str, object]:  # pragma: no cover - live
     from steerai.action.execution import UiaBindings  # noqa: PLC0415
     from steerai.action.executor import Executor  # noqa: PLC0415
     from steerai.action.live_reads import UiaLiveReads, twin_value_of  # noqa: PLC0415
+    from steerai.action.options import UiaOptions  # noqa: PLC0415
     from steerai.action.physical import PhysicalExecutor  # noqa: PLC0415
     from steerai.orchestrator.contracts import OPTION_PARAM, Step, Target  # noqa: PLC0415
     from steerai.orchestrator.gate import Ask, Gate  # noqa: PLC0415
@@ -170,7 +173,7 @@ def _v1(hwnd: int) -> dict[str, object]:  # pragma: no cover - live
         task_id="g12-probe",
         hwnd=hwnd,
         observer=model,
-        semantic=Executor(),
+        semantic=Executor(options=UiaOptions(client)),  # as v1's run builds it
         physical=PhysicalExecutor(),
         gate=Gate(confirmer=Person(), own_pid=0, task_id="g12-probe"),
         ledger=Ledger(
