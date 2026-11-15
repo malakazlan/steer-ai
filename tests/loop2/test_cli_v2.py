@@ -390,3 +390,21 @@ def test_run_py_reads_the_loop_flag_before_v1s_parser(argv: list[str], asks: boo
     from steerai.run import _asks_v2  # noqa: PLC0415 - this test only
 
     assert _asks_v2(argv) is asks
+
+
+def test_an_unknown_wall_time_is_null_and_said(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#361 H8 (JSN-01): a clock that broke gives an infinite wall time; the line is still
+    written, with the wall time null and flagged."""
+    broken = TaskOutcome(
+        status="paused", cause=Reason("max_wall"), dispatched=(), model_calls=1, strikes=(),
+        tokens=10.0, cost_usd=0.0, wall_s=float("inf"),
+    )  # fmt: skip
+    monkeypatch.setattr(cli, "run_task", lambda _task, _ports: broken)
+    run = Run(tmp_path)
+    run()
+    result = run.result()
+    assert result["used"]["max_wall_s"] is None
+    assert result["wall_incomplete"] is True
+    assert result["paused_by"] == "max_wall"
