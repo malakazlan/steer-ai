@@ -28,6 +28,7 @@ from steerai.loop2.stage2_expected import (
     opened_read_path,
     opener_start_facts,
     opener_table_row,
+    reveal_targets,
     wait_revealed,
 )
 from steerai.world.effects import Observed
@@ -248,3 +249,58 @@ def test_a_new_attempt_removes_the_earlier_opened_read(tmp_path: Path) -> None:
     target = fresh_opened(tmp_path, "mdn1")
     assert target == stale
     assert not stale.exists()  # an unstable reveal now leaves no file to be rated
+
+
+# ---- #424 (3): the click and the start check count copies by one rule ---------------------------
+
+
+def nested(child: dict[str, Any], parent: dict[str, Any]) -> dict[str, Any]:  # Any: JSON
+    return {**child, "parentId": parent["nodeId"]}
+
+
+def test_a_copy_nested_in_a_same_named_opener_is_one_opener() -> None:
+    """As `outermost` folds a same-named element inside another for the start check, the click
+    folds it too: the outer one is clicked."""
+    outer = ax("button", "Search the site", 7)
+    cdp = Cdp([outer, nested(ax("button", "Search the site", 8), outer)])
+    click_opener(cdp, OPEN_SEARCH)
+    assert cdp.calls[-2][1] == {"backendNodeId": 7}
+
+
+def test_a_tree_item_inside_a_same_named_tree_item_is_another_item() -> None:
+    """`outermost` never folds a TreeItem (a folder in a same-named folder): neither does the
+    click, so two are ambiguous and nothing is clicked."""
+    outer = ax("treeitem", "Reports", 3)
+    cdp = Cdp([outer, nested(ax("treeitem", "Reports", 4), outer)])
+    with pytest.raises(OpenerError, match="opener_ambiguous"):
+        click_opener(cdp, Act("expand", "TreeItem", "Reports"))
+
+
+# ---- #424 (4): the reveal must show the task's own target -----------------------------------
+
+
+def test_a_stable_reveal_without_the_target_is_not_taken() -> None:
+    """A cookie banner settles too: only a reveal that shows the row's own target counts."""
+    clock = Clock()
+    banner = observed([DOC, FIELD, element(50, "Button", "Accept cookies", (9, 50), 1)])
+    target = (Act("type", "Edit", "Find", param="x"),)
+    got = wait_revealed(
+        reads(banner, banner), BEFORE, clock=clock, sleep=clock.sleep, targets=target
+    )
+    assert got is None
+
+
+def test_a_stable_reveal_with_the_target_is_taken() -> None:
+    clock = Clock()
+    target = (Act("type", "Edit", "Find", param="x"), Act("press", "", "", key="Enter"))
+    got = wait_revealed(reads(AFTER, AFTER), BEFORE, clock=clock, sleep=clock.sleep, targets=target)
+    assert got is not None
+
+
+def test_the_reveal_targets_are_the_acts_after_the_opener() -> None:
+    row = SiteRow(
+        (OPEN_SEARCH, Act("type", "Edit", "Find", param="x"), Act("press", "", "", key="Enter")),
+        "navigated",
+        "w",
+    )
+    assert reveal_targets(row) == (Act("type", "Edit", "Find", param="x"),)

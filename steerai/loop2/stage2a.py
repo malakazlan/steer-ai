@@ -60,6 +60,7 @@ from steerai.loop2.stage2_expected import (
     load_acts,
     load_table,
     load_unrated,
+    reveal_targets,
     table_from_reads,
     wait_revealed,
 )
@@ -357,6 +358,7 @@ def save_opened(out: Path) -> int:  # pragma: no cover - live, Windows only
     from steerai.world.read_json import observed_to_json  # noqa: PLC0415
 
     out.mkdir(parents=True, exist_ok=True)
+    acted = load_acts(ACTS.read_text(encoding="utf-8"))
     for task in local_tasks():
         opener = OPENERS.get(task.task_id)
         if opener is None:
@@ -370,7 +372,9 @@ def save_opened(out: Path) -> int:  # pragma: no cover - live, Windows only
             with _opened(task) as (hwnd, port):
                 if port is None:
                     raise InvalidRun("opener_needs_a_page")
-                revealed = _revealed(hwnd, port, opener)
+                row_acts = acted.get(task.task_id)
+                targets = () if row_acts is None else reveal_targets(row_acts)
+                revealed = _revealed(hwnd, port, opener, targets)
         except (InvalidRun, OpenerError) as exc:
             sys.stdout.write(json.dumps({**row, "invalid": str(exc)}) + "\n")
             continue
@@ -385,7 +389,9 @@ def save_opened(out: Path) -> int:  # pragma: no cover - live, Windows only
     return 0
 
 
-def _revealed(hwnd: int, port: int, opener: Act) -> Revealed | None:  # pragma: no cover - live
+def _revealed(  # pragma: no cover - live
+    hwnd: int, port: int, opener: Act, targets: Sequence[Act]
+) -> Revealed | None:
     """One opener click on the page at `port`, then its revealed state; the UIA client and the
     DevTools session are released when this returns."""
     from steerai.probes.chrome_a11y import CdpSession, page_ws_url  # noqa: PLC0415
@@ -397,7 +403,11 @@ def _revealed(hwnd: int, port: int, opener: Act) -> Revealed | None:  # pragma: 
         before = full_read(client, hwnd)
         click_opener(cdp.call, opener)
         return wait_revealed(
-            lambda: full_read(client, hwnd), before, clock=time.monotonic, sleep=time.sleep
+            lambda: full_read(client, hwnd),
+            before,
+            clock=time.monotonic,
+            sleep=time.sleep,
+            targets=targets,
         )
     finally:
         cdp.close()
