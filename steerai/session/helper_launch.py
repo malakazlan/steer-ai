@@ -274,6 +274,31 @@ class HelperProcess:
             raise RuntimeError("the helper is not started")
         return self._process
 
+    def pid(self) -> int:
+        return self._w.process_id(self.process_handle)
+
+    def has_exited(self) -> bool:
+        return self._w.has_exited(self.process_handle)
+
+    def wait_exit(self, timeout_ms: int) -> bool:
+        """The watchdog's wait: True when the helper exited within `timeout_ms`."""
+        return self._w.wait_any((self.process_handle,), timeout_ms) == 0
+
+    def wait_wake(self, timeout_ms: int) -> None:
+        """HH-08, HH-15: a kill-aware wait wakes on `wake` or the helper's exit; `wake` is a
+        hint only, reset once woken, and the caller re-reads the words."""
+        self._w.wait_any((self._wake, self.process_handle), timeout_ms)
+        self._w.reset_event(self._wake)
+
+    def terminate(self) -> None:
+        """P4 (rev 2): a helper-caused loss ends the helper at once: through its job, else its
+        process, then a bounded wait for it to be gone (#375 H5). It takes the close lock and does
+        nothing once closed (#383 blocker 6): the handles are released by then."""
+        with self._close_lock:
+            if self._closed:
+                return
+            self._end()
+
     # ---- lifecycle ------------------------------------------------------------------------------
 
     def start(self) -> None:

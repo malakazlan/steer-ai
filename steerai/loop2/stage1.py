@@ -14,6 +14,12 @@ A run is `pass`, `fail` (with its reason), `false_done` (Steer said done, the fi
 before Steer acted), or `monitor_lost` ([V2.59]: tallied apart). `accept` computes every gate
 and every reported figure from the classified runs.
 
+[V2.63] Q5, the contract for stage 2's classifier: a site void (`SITE_VOIDS`) comes only from
+observations independent of Steer's result, such as a wall signature on the page or a control
+probe run before the task, never from Steer's own outcome. A site void keeps a task out of the
+tasks gate only when none of its runs scored a fail or a false_done (a scored failure is never
+hidden behind one), and every site-void reason's rate is reported so over-assignment shows.
+
 Live: `uv run python -m steerai.loop2.stage1 --set 3d --runs 3 --out <dir>` (Windows; sends
 real input through the child; only in a window the coordinator has cleared with the person).
 """
@@ -26,14 +32,18 @@ import json
 import math
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Literal, Protocol, get_args
 
+from steerai.loop2.guards import StrikeReason
+from steerai.loop2.loop import URL_READS
 from steerai.loop2.stage1_expected import LARGE_TASKS, Expected, large_expected
 from steerai.probes.gallery_page import large_passes, parse_large_log
+from steerai.probes.process_tree import Sample, summarize
 from steerai.probes.task_suite import GALLERY, h2_event
 
 Expect = Literal["done", "blocked", "never_done", "not_done"]
@@ -41,7 +51,13 @@ Verdict = Literal["pass", "fail", "false_done", "void", "monitor_lost"]
 Json = Mapping[str, Any]  # Any: a JSON object from the child's final line
 
 FLOOR_MB: Final = 4096
-"""The packet's preflight floor: a Chrome and a UIA walk need room ([V2.14] decision 4)."""
+"""The packet's preflight floor: a Chrome and a UIA walk need room ([V2.14] decision 4). Stage 2
+keeps it until a heavy real page is measured under the sampler ([V2.63])."""
+STAGE1_FLOOR_MB: Final = 3072
+"""[V2.63]: stage 1 (local fixtures only) runs on this floor; the browser tree peaked near
+1.1 GB. Recorded on every row, with the working-set sampler on (`run_sampled`)."""
+SAMPLE_EVERY_S: Final = 0.5
+"""The sampler's period, as `probes.working_set`."""
 IDLE_FLOOR_S: Final = 2.0
 """The person must have been idle this long before a run starts (the probe's own gate)."""
 TASK_CAP_S: Final = 600.0
@@ -70,6 +86,11 @@ stop_chrome already killed their tree and waited up to 10 s for the browser)."""
 EXIT_POLL_S: Final = 0.5
 MAX_RERUNS: Final = 3
 """#366 P1: a task's void, monitor_lost or not-started runs are re-run up to this many times."""
+SITE_VOIDS: Final = frozenset({"site_changed", "bot_wall", "site_control_failed"})
+"""[V2.63] Q5: voids that are the site's, not Steer's or the machine's: reported apart, never in
+the 1-in-10 void rate. Every other void (and a run not started) is infrastructure."""
+NO_RETRY_VOIDS: Final = frozenset({"bot_wall"})
+"""[V2.63] Q4: a bot wall voids its site for the rest of the stage, with no retry against it."""
 STATUSES: Final = frozenset({"done", "blocked", "asked", "paused", "stopped", "cannot", "error"})
 """The statuses the v2 CLI's final line can carry; anything else is not its line."""
 
@@ -185,6 +206,8 @@ class RunRecord:
     """The child hit its cap and its tree was killed (#366)."""
     code: int | None = None
     """The child's exit code; None when killed."""
+    memory: Json | None = None
+    """[V2.63]: the working-set sampler's summary over the child's run (`run_sampled`)."""
 
 
 @dataclass(frozen=True)
@@ -195,6 +218,7 @@ class Classified:
     reason: str | None
     monitor_lost: bool
     final: Json | None
+    memory: Json | None = None
 
 
 def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' order
@@ -204,7 +228,7 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
 
     def verdict(v: Verdict, reason: str | None = None) -> Classified:
         lost = v == "monitor_lost"
-        return Classified(record.task_id, record.run, v, reason, lost, record.final)
+        return Classified(record.task_id, record.run, v, reason, lost, record.final, record.memory)
 
     # #366 P2: the rules in this order
     if not record.fixture_ok:
@@ -262,6 +286,9 @@ class Summary:
     accepted: bool
     gates: dict[str, bool]
     report: dict[str, Any] = field(default_factory=dict)  # Any: JSON figures
+    conclusive: bool = True
+    """[V2.63] Q5: the void and monitor rates and the valid-task minimum held; when False the
+    result is `inconclusive` (re-run the whole stage; keep this one), never a rejection."""
 
 
 def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates read
@@ -272,13 +299,18 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
     runs_per_task: int,
     label: str,
     not_started: int = 0,
+    floor_mb: int | None = None,
+    min_valid_tasks: int | None = None,
 ) -> Summary:
     """Packet rev 4.3 §3: every gate from the classified runs, and every reported figure.
 
     `controls` is (passed, total) of the 3d positive controls, None when no 3d task ran. A task
     passes only with `runs_per_task` passes (#366 P1: 3 of 3; void, monitor_lost and
     not-started runs are re-run, and still count in the 1-in-10 rates). `label` names the set,
-    so a partial set is never read as stage 1."""
+    so a partial set is never read as stage 1.
+    [V2.63] Q5: site voids are apart from the void rate; a task short of its counted runs
+    through a site void is unmeasured (not valid, not failed); with `min_valid_tasks`, fewer
+    valid tasks than that leave the stage inconclusive, as the void and monitor rates do."""
     if runs_per_task < MIN_RUNS_PER_TASK:
         raise ValueError(f"acceptance needs at least {MIN_RUNS_PER_TASK} runs per task")
     total = len(runs)
@@ -288,28 +320,69 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
         per_task.setdefault(r.task_id, []).append(r.verdict)
     # false_done has its own gate; void and monitor_lost are not scored ([V2.41], [V2.59])
     scored = {k: [v for v in vs if v in ("pass", "fail")] for k, vs in per_task.items()}
+    site = [r for r in runs if r.verdict == "void" and r.reason in SITE_VOIDS]
+    site_ids = {r.task_id for r in site}
+    failed = {r.task_id for r in runs if r.verdict in ("fail", "false_done")}
+    unmeasured = [
+        k
+        for k, vs in scored.items()
+        if k in site_ids and k not in failed and len(vs) < runs_per_task
+    ]
+    infra = verdicts["void"] - len(site)
+    measured = {k: vs for k, vs in scored.items() if k not in unmeasured}
     counted = [r for r in runs if r.final is not None and r.final.get("status") != "error"]
     finals = [r.final for r in counted if r.final is not None]
     gates = {
         "controls": controls is None or (controls[1] > 0 and controls[0] == controls[1]),
-        "tasks": all(vs.count("pass") == runs_per_task == len(vs) for vs in scored.values()),
+        "tasks": all(vs.count("pass") == runs_per_task == len(vs) for vs in measured.values()),
         "false_done": verdicts["false_done"] == 0,
         # a run not started was not Steer's either: it counts with the voids ([V2.41])
-        "void": (verdicts["void"] + not_started) * 10 <= total + not_started,
+        "void": (infra + not_started) * 10 <= total - len(site) + not_started,
         "monitor_lost": verdicts["monitor_lost"] * 10 <= total,
         "cache_zero": not any(_cache_spent(r.final) for r in counted),
         "internal": not any(r.reason == "internal" for r in runs),
         # #366 P5: the target listed on the turn it is acted on is not checked yet: fail closed
         "large_listed": not any(t.fixture == "large" for t in tasks),
     }
+    valid = len(per_task) - len(unmeasured)
+    if min_valid_tasks is not None:
+        gates["valid_tasks"] = valid >= min_valid_tasks
+    conclusive = gates["void"] and gates["monitor_lost"] and gates.get("valid_tasks", True)
+    accepted = all(gates.values())
     report = {
-        "gate_failures": _gate_failures(gates, tasks, runs, scored, runs_per_task),
+        "result": "inconclusive" if not conclusive else "accepted" if accepted else "rejected",
+        "gate_failures": _gate_failures(
+            gates, tasks, runs, measured, runs_per_task, unmeasured=unmeasured
+        ),
         "set": label,
         "runs_per_task": runs_per_task,
         "not_started": not_started,
         **_report(runs, finals, verdicts, per_task, total),
+        "memory": _memory(runs, floor_mb),
+        "site_voids": _counts(r.reason for r in site),
+        "site_void_rates": {  # report only: a classifier over-assigning site voids shows here
+            k: round(n / total, 3) for k, n in _counts(r.reason for r in site).items()
+        },
+        "valid_tasks": valid,
+        "site_invalid_tasks": unmeasured,
     }
-    return Summary(all(gates.values()), gates, report)
+    kept = total - len(site)
+    report["void_rate"] = round(infra / kept, 3) if kept else None  # infrastructure only
+    return Summary(accepted, gates, report, conclusive)
+
+
+def _memory(runs: Sequence[Classified], floor_mb: int | None) -> dict[str, Any]:  # Any: JSON
+    """[V2.63]: the floor the runs started on, and the sampler's worst readings over them."""
+    sampled = [r.memory for r in runs if isinstance(r.memory, Mapping) and r.memory.get("samples")]
+    return {
+        "floor_mb": floor_mb,
+        "runs_sampled": len(sampled),
+        "peak_tree_ws_mb_max": _max(_finite(m.get("peak_tree_ws_mb")) for m in sampled),
+        "min_free_mb_min": min(
+            (f for m in sampled if (f := _whole(m.get("min_free_mb"))) is not None),
+            default=None,
+        ),
+    }
 
 
 def _cache_spent(final: Json | None) -> bool:
@@ -350,17 +423,105 @@ def _watch_deadlines(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON fig
     return {"watch_deadlines": sums, "watch_deadlines_incomplete": odd}
 
 
+STRIKE_REASONS: Final = frozenset(get_args(StrikeReason))
+COUNTED_FACTS: Final = ("stale_observations", "unread_automation_ids")
+
+
+def _run_facts(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures
+    """Stage 2 plan §6 (3): the final lines' run facts over the runs. Counts are summed; the
+    read cost's per-run summaries are combined without pretending to a pooled quantile (the
+    median of the runs' p50, the largest p95 and max). As the watch deadlines: a count that is
+    not a whole number, or a key that is not a closed token, is counted in
+    `run_facts_incomplete`, never summed; a block that is missing or null (the unfinished line)
+    is skipped."""
+    odd = 0
+    cost = {"observations": 0, "full_reads": 0}
+    p50s: list[float] = []
+    p95s: list[float] = []
+    maxes: list[float] = []
+    strike_count = 0
+    by_reason = dict.fromkeys(sorted(STRIKE_REASONS), 0)
+    counted = dict.fromkeys(COUNTED_FACTS, 0)
+    urls: dict[str, int] = dict.fromkeys(URL_READS, 0)
+
+    def whole(value: object) -> int | None:
+        nonlocal odd
+        got = _whole(value)
+        odd += got is None
+        return got
+
+    def number(value: object, into: list[float]) -> None:
+        nonlocal odd
+        if value is None:
+            return  # a run with no full read has no milliseconds: not odd
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not math.isfinite(value)
+        ):
+            odd += 1
+        else:
+            into.append(float(value))
+
+    def tally(block: object, into: dict[str, int], closed: Iterable[str]) -> None:
+        nonlocal odd
+        if not isinstance(block, Mapping):
+            odd += block is not None
+            return
+        allowed = set(closed)
+        for key, value in block.items():
+            if key not in allowed:
+                odd += 1
+            elif (got := whole(value)) is not None:
+                into[key] += got
+
+    for final in finals:
+        read = final.get("read_cost")
+        if isinstance(read, Mapping):
+            for key in ("observations", "full_reads"):
+                if (got := whole(read.get(key))) is not None:
+                    cost[key] += got
+            number(read.get("p50_ms"), p50s)
+            number(read.get("p95_ms"), p95s)
+            number(read.get("max_ms"), maxes)
+        struck = final.get("strikes")
+        if isinstance(struck, Mapping):
+            if (got := whole(struck.get("count"))) is not None:
+                strike_count += got
+            tally(struck.get("by_reason"), by_reason, STRIKE_REASONS)
+        for key in COUNTED_FACTS:
+            value = final.get(key)
+            if value is not None and (got := whole(value)) is not None:
+                counted[key] += got
+        if final.get("url_reads") is not None:
+            tally(final.get("url_reads"), urls, URL_READS)
+    return {
+        "read_cost": {
+            **cost,
+            "run_p50_ms_p50": _quantile(p50s, 0.5),
+            "run_p95_ms_max": _max(p95s),
+            "max_ms": _max(maxes),
+        },
+        "strikes": {"count": strike_count, "by_reason": {k: v for k, v in by_reason.items() if v}},
+        **counted,
+        "url_reads": urls,
+        "run_facts_incomplete": odd,
+    }
+
+
 def _counted(run: Classified) -> bool:
     """A run whose final line is a task's own (not a refused start)."""
     return run.final is not None and run.final.get("status") != "error"
 
 
-def _gate_failures(
+def _gate_failures(  # noqa: PLR0913 - the gates and every list they name
     gates: Mapping[str, bool],
     tasks: Sequence[StageTask],
     runs: Sequence[Classified],
     scored: Mapping[str, Sequence[str]],
     runs_per_task: int,
+    *,
+    unmeasured: Sequence[str] = (),
 ) -> dict[str, list[str]]:
     """#366: each failed gate with the runs (`task#run`) or tasks that failed it."""
 
@@ -369,7 +530,8 @@ def _gate_failures(
 
     named = {
         "false_done": ids(lambda r: r.verdict == "false_done"),
-        "void": ids(lambda r: r.verdict == "void"),
+        "void": ids(lambda r: r.verdict == "void" and r.reason not in SITE_VOIDS),
+        "valid_tasks": list(unmeasured),
         "monitor_lost": ids(lambda r: r.verdict == "monitor_lost"),
         "cache_zero": ids(lambda r: _counted(r) and _cache_spent(r.final)),
         "internal": ids(lambda r: r.reason == "internal"),
@@ -411,6 +573,17 @@ def _report(
             "cut_total": sum(_whole(t.get("cut")) or 0 for t in listings),
             "prompt_cut_total": sum(_whole(t.get("prompt_cut")) or 0 for t in listings),
             "prompt_tokens_p95": _quantile([t.get("prompt_tokens") for t in listings], 0.95),
+            "goal_at_subcap": sum(t.get("goal_at_subcap") is True for t in listings),
+            "root_depth_max": max(
+                (d for t in listings if (d := _whole(t.get("root_depth"))) is not None),
+                default=None,
+            ),
+            "root_depth_unread": sum(_whole(t.get("root_depth")) is None for t in listings),
+            "prompt_bytes_p95": _quantile([t.get("prompt_bytes") for t in listings], 0.95),
+            "prompt_bytes_max": max(
+                (b for t in listings if (b := _whole(t.get("prompt_bytes"))) is not None),
+                default=None,
+            ),
             "incomplete": sum(  # #366 E10: a turn with any count unread or not a number
                 any(_whole(t.get(k)) is None for k in LISTING_COUNTS) for t in listings
             ),
@@ -425,6 +598,7 @@ def _report(
         "monitor_lost_rate": round(verdicts.get("monitor_lost", 0) / total, 3) if total else None,
         "fail_reasons": _counts(r.reason for r in runs if r.verdict == "fail"),
         **_watch_deadlines(finals),
+        **_run_facts(finals),
     }
 
 
@@ -444,6 +618,12 @@ def _whole(value: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
     return int(value) if math.isfinite(value) else None
+
+
+def _finite(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        return None
+    return float(value)
 
 
 def _quantile(values: Sequence[object], q: float) -> float | None:
@@ -472,17 +652,23 @@ def _counts(items: Iterable[object]) -> dict[str, int]:
 # ---- the re-run loop and the wait for the person (#366: pure, the attempt injected) ----------
 
 
-def run_task_runs(
+def run_task_runs(  # noqa: PLR0913 - the task, then keyword-only knobs
     task: StageTask,
     *,
     runs: int,
     attempt: Callable[[int], RunRecord | str],
     emit: Callable[[Mapping[str, Any]], None] = lambda _row: None,  # Any: JSON values
+    row: Mapping[str, Any] | None = None,  # Any: JSON values
+    classifier: Callable[[RunRecord], Classified] | None = None,
 ) -> tuple[list[Classified], int]:
     """One task's runs until `runs` are scored or `runs + MAX_RERUNS` were attempted: a void,
     a monitor_lost and a run not started (`attempt` returns its reason) are not scored and are
     re-run, within the bound; a task that runs out fails closed in `accept` (too few passes).
-    Returns the classified runs and how many were not started."""
+    Returns the classified runs and how many were not started. `row` joins every emitted row
+    ([V2.63]: the floor the run started on). `classifier` replaces stage 1's `classify` (stage
+    2's own void rules). A void in `NO_RETRY_VOIDS` ends the task's runs: no retry against a
+    bot wall ([V2.63] Q4)."""
+    facts = dict(row or {})
     classified: list[Classified] = []
     scored = not_started = run = 0
     while scored < runs and run < runs + MAX_RERUNS:
@@ -490,14 +676,23 @@ def run_task_runs(
         record = attempt(run)
         if isinstance(record, str):
             not_started += 1
-            emit({"task": task.task_id, "run": run, "not_started": record})
+            emit({"task": task.task_id, "run": run, "not_started": record, **facts})
             continue
-        got = classify(task, record)
+        got = classify(task, record) if classifier is None else classifier(record)
         classified.append(got)
         scored += got.verdict not in ("void", "monitor_lost")
         emit({"task": got.task_id, "run": got.run, "verdict": got.verdict,
-              "reason": got.reason, "monitor_lost": got.monitor_lost})  # fmt: skip
+              "reason": got.reason, "monitor_lost": got.monitor_lost, "memory": got.memory,
+              **facts})  # fmt: skip
+        if got.verdict == "void" and got.reason in NO_RETRY_VOIDS:
+            break
     return classified, not_started
+
+
+def site_voided(task: StageTask) -> Classified:
+    """[V2.63] Q4: a task of a site already behind a bot wall, never run (run 0): void for the
+    rest of the stage, unmeasured in the summary."""
+    return Classified(task.task_id, 0, "void", "bot_wall", False, None)
 
 
 def wait_until_ready(
@@ -541,10 +736,12 @@ def wait_for_exit(
 # ---- the precheck --------------------------------------------------------------------------------
 
 
-def precheck(*, free_mb: Callable[[], int], idle_s: Callable[[], float]) -> str | None:
+def precheck(
+    *, free_mb: Callable[[], int], idle_s: Callable[[], float], floor_mb: int = FLOOR_MB
+) -> str | None:
     """None to start the run; else the reason it is not started. An unread reading refuses."""
     try:
-        if free_mb() < FLOOR_MB:
+        if free_mb() < floor_mb:
             return "low_memory"
     except OSError:
         return "low_memory"
@@ -552,6 +749,51 @@ def precheck(*, free_mb: Callable[[], int], idle_s: Callable[[], float]) -> str 
     if not (math.isfinite(idle) and idle >= IDLE_FLOOR_S):
         return "person_active"
     return None
+
+
+# ---- the working-set sampler ([V2.63]) -----------------------------------------------------------
+
+Reading = tuple[int, tuple[float, float, int]]
+"""Free physical MB, and (summed working set MB, summed peak MB, processes) of a tree."""
+
+
+def run_sampled[T](
+    work: Callable[[], T],
+    *,
+    read: Callable[[], Reading],
+    every_s: float = SAMPLE_EVERY_S,
+    clock: Callable[[], float] = time.monotonic,
+) -> tuple[T, dict[str, Any]]:  # Any: JSON values
+    """`work` with the sampler on: a reading before it, one every `every_s` while it runs (a
+    daemon thread), one after; summarised as `probes.working_set` does. A reading that raises
+    OSError is skipped, never guessed. A failure of `work` is its own and ends the sampling."""
+    samples: list[Sample] = []
+    lock = threading.Lock()
+    started = clock()
+    stop = threading.Event()
+
+    def take() -> None:
+        try:
+            free, (total, peak, count) = read()
+        except OSError:
+            return
+        with lock:
+            samples.append(Sample(round(clock() - started, 2), free, total, peak, count))
+
+    def loop() -> None:
+        while not stop.wait(every_s):
+            take()
+
+    take()
+    sampler = threading.Thread(target=loop, name="steer-stage1-sampler", daemon=True)
+    sampler.start()
+    try:
+        result = work()
+    finally:
+        stop.set()
+        sampler.join()
+    take()
+    return result, summarize(samples)
 
 
 # ---- the child run -------------------------------------------------------------------------------
@@ -638,6 +880,16 @@ def _idle_s() -> float:  # pragma: no cover - live, Windows only
     return float((tick - int(last.dwTime)) & 0xFFFF_FFFF) / 1000
 
 
+def _tree_reading() -> Reading:  # pragma: no cover - live, Windows only
+    """Free memory, and the working set of this harness's own tree (the child, its Chrome)."""
+    import os  # noqa: PLC0415
+
+    from steerai.probes.memory_guard import free_physical_mb  # noqa: PLC0415
+    from steerai.probes.process_tree import read_tree  # noqa: PLC0415
+
+    return free_physical_mb(), read_tree(os.getpid())
+
+
 def _live_3d(
     task: StageTask, run: int, *, out_dir: Path, price: Path
 ) -> RunRecord:  # pragma: no cover - live
@@ -671,22 +923,26 @@ def _live_3d(
                 fixture._wait_ready(cdp)
             except (OSError, TimeoutError, RuntimeError):
                 return RunRecord(task.task_id, run, None, False, False, None, None)
-            ran = run_child(
-                child_argv(task, hwnd=window.hwnd, price=price, trace=run_dir / "trace.jsonl"),
-                cap_s=TASK_CAP_S, out=run_dir / "final.jsonl", start=_start, kill=kill_tree,
+            ran, memory = run_sampled(
+                lambda: run_child(
+                    child_argv(task, hwnd=window.hwnd, price=price,
+                               trace=run_dir / "trace.jsonl"),
+                    cap_s=TASK_CAP_S, out=run_dir / "final.jsonl", start=_start, kill=kill_tree,
+                ),
+                read=_tree_reading,
             )  # fmt: skip
             time.sleep(fixture.SETTLE_S)
             try:
                 entries = fixture.parse_log(fixture._read_log(cdp, base))
             except (OSError, RuntimeError, ValueError):
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
-                                 killed=ran.killed, code=ran.code)  # fmt: skip
+                                 killed=ran.killed, code=ran.code, memory=memory)  # fmt: skip
             finally:
                 cdp.close()
             enters = sum(e.ev == "enter" for e in entries)
             passed = fixture.passes(variant, entries)  # type: ignore[arg-type]  # a variant's path
             return RunRecord(task.task_id, run, ran.final, True, True, passed, enters,
-                             killed=ran.killed, code=ran.code)  # fmt: skip
+                             killed=ran.killed, code=ran.code, memory=memory)  # fmt: skip
         finally:
             stop_chrome(proc, tmp / "profile")
             shutil.rmtree(tmp, ignore_errors=True)
@@ -740,9 +996,13 @@ def _live_page(
                     time.sleep(0.1)
             except (OSError, TimeoutError, RuntimeError):
                 return RunRecord(task.task_id, run, None, False, False, None, None)
-            ran = run_child(
-                child_argv(task, hwnd=window.hwnd, price=price, trace=run_dir / "trace.jsonl"),
-                cap_s=TASK_CAP_S, out=run_dir / "final.jsonl", start=_start, kill=kill_tree,
+            ran, memory = run_sampled(
+                lambda: run_child(
+                    child_argv(task, hwnd=window.hwnd, price=price,
+                               trace=run_dir / "trace.jsonl"),
+                    cap_s=TASK_CAP_S, out=run_dir / "final.jsonl", start=_start, kill=kill_tree,
+                ),
+                read=_tree_reading,
             )  # fmt: skip
             time.sleep(PAGE_SETTLE_S)
             try:
@@ -752,11 +1012,11 @@ def _live_page(
                 check = page_check(task, raw)
             except (OSError, RuntimeError, ValueError):
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
-                                 killed=ran.killed, code=ran.code)  # fmt: skip
+                                 killed=ran.killed, code=ran.code, memory=memory)  # fmt: skip
             finally:
                 cdp.close()
             return RunRecord(task.task_id, run, ran.final, True, True, check, None,
-                             killed=ran.killed, code=ran.code)  # fmt: skip
+                             killed=ran.killed, code=ran.code, memory=memory)  # fmt: skip
         finally:
             stop_chrome(proc, tmp / "profile")
             shutil.rmtree(tmp, ignore_errors=True)
@@ -805,20 +1065,22 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
 
         def attempt(run: int, task: StageTask = task) -> RunRecord | str:
             ready = wait_until_ready(
-                lambda: precheck(free_mb=free_physical_mb, idle_s=_idle_s),
+                lambda: precheck(free_mb=free_physical_mb, idle_s=_idle_s,
+                                 floor_mb=STAGE1_FLOOR_MB),
                 sleep=time.sleep, clock=time.monotonic,
             )  # fmt: skip
             if ready is not None:
                 return ready
             return live(task, run, out_dir=args.out, price=args.price_file)
 
-        runs, refused = run_task_runs(task, runs=args.runs, attempt=attempt, emit=_emit)
+        runs, refused = run_task_runs(task, runs=args.runs, attempt=attempt, emit=_emit,
+                                      row={"floor_mb": STAGE1_FLOOR_MB})  # fmt: skip
         classified += runs
         not_started += refused
     label = args.set if args.runs >= MIN_RUNS_PER_TASK else f"{args.set}-shakedown"
     summary = accept(tasks, classified, controls=controls,
                      runs_per_task=max(args.runs, MIN_RUNS_PER_TASK), label=label,
-                     not_started=not_started)  # fmt: skip
+                     not_started=not_started, floor_mb=STAGE1_FLOOR_MB)  # fmt: skip
     _emit({"summary": {"accepted": summary.accepted, "gates": summary.gates, **summary.report}})
     return 0 if summary.accepted else 1
 

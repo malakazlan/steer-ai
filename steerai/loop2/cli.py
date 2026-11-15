@@ -20,7 +20,7 @@ import sys
 import time
 import traceback
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -52,6 +52,7 @@ from steerai.run import (
     resolve_window,
 )
 from steerai.session.monitor import DEFAULT_KILL_KEY, parse_kill_key
+from steerai.world.reads import ReadCost
 
 DEFAULT_BUDGETS: Final = (20, 40, 400_000, 300.0)
 """[V2.53] (3), provisional: model calls, actions, tokens, wall seconds."""
@@ -95,6 +96,10 @@ class V2Deps:
     today: Callable[[], date]
     image_of: Callable[[int], str]
     """A process's image name, lower case (v1's `process_name`): bound with the listed pid."""
+    input_methods: Callable[[], Sequence[int]]
+    """[V2.63] Q3: the installed input locales (HKLs); OSError when unread."""
+    ime_record: Callable[[], Mapping[str, Any] | None]
+    """[V2.63] Q3: the open-IME probe's recorded pass on this machine (`ime_gate`)."""
     ready: Callable[[int], bool] = ready_step
     clock: Callable[[], float] = field(default=time.monotonic)
     pause: Callable[[float], None] = field(default=time.sleep)
@@ -203,7 +208,9 @@ def bind_window(
 
 
 def real_deps() -> V2Deps:
+    from steerai.loop2.ime_gate import read_record, steer_dir  # noqa: PLC0415
     from steerai.loop2.live_world import WindowsPlatform  # noqa: PLC0415 - Windows only
+    from steerai.probes.ime_probe import installed_layouts  # noqa: PLC0415 - Windows only
     from steerai.probes.windows import (  # noqa: PLC0415 - Windows only
         console_exclusions,
         list_top_windows,
@@ -216,10 +223,12 @@ def real_deps() -> V2Deps:
         platform=WindowsPlatform,
         today=date.today,
         image_of=lambda pid: process_name(pid).lower(),
+        input_methods=installed_layouts,
+        ime_record=lambda: read_record(steer_dir()),
     )
 
 
-def main(
+def main(  # noqa: PLR0911 - one return per start refusal, in order
     argv: Sequence[str],
     *,
     deps: V2Deps | None = None,
@@ -240,6 +249,13 @@ def main(
         price = load_price(options.price_file, model=DEFAULT_MODEL, today=deps.today())
     except SteerError as exc:
         return out.error(exc.code, exc.message, task_id=options.task_id)
+    refused = _ime_refused(deps)
+    if refused is not None:
+        out.note(
+            "error: a Chinese, Japanese or Korean IME is installed and the open-IME probe has no "
+            "recorded pass on this machine: run python -m steerai.probes.ime_probe first"
+        )
+        return out.error(ErrorCode.GATE_BLOCKED, refused, task_id=options.task_id)
     try:
         window = bind_window(
             deps.list_windows(), deps.exclusions(), hwnd=options.hwnd, title=options.window
@@ -251,6 +267,18 @@ def main(
         out.note(f"usage error: {exc}")
         return out.error(None, "usage", task_id=options.task_id)
     return _run(options, deps, out, price, window)
+
+
+def _ime_refused(deps: V2Deps) -> str | None:
+    """[V2.63] Q3, before anything is built: an installed input method list that cannot be read
+    proves nothing either, so it refuses the same way."""
+    from steerai.loop2.ime_gate import UNPROBED, ime_refusal  # noqa: PLC0415 - at start only
+
+    try:
+        installed = deps.input_methods()
+    except OSError:
+        return UNPROBED
+    return ime_refusal(installed, deps.ime_record)
 
 
 def _run(options: V2Options, deps: V2Deps, out: _Out, price: PriceFile, window: WindowInfo) -> int:
@@ -289,6 +317,7 @@ def _run(options: V2Options, deps: V2Deps, out: _Out, price: PriceFile, window: 
 
     def work() -> tuple[TaskOutcome, dict[str, int | str | None]]:
         with LiveWorld(config, platform) as world:
+            world.bring_to_front()  # [V2.62]: a refusal here is a start refusal, its own reason
             started.append(True)
             limits = _limits_header(task.budgets, price)
             out.note("header: " + json.dumps({**world.header(task), **limits}, sort_keys=True))
@@ -348,7 +377,42 @@ def _unfinished(budgets: Budgets) -> dict[str, Any]:  # Any: the final JSON
         "limits": _limits(budgets),
         "listings": [],
         "focus": None,
+        **dict.fromkeys(RUN_FACTS),  # unknown, said
     }
+
+
+RUN_FACTS: Final = (
+    "read_cost",
+    "strikes",
+    "stale_observations",
+    "unread_automation_ids",
+    "url_reads",
+)
+"""Stage 2 plan §6 (3): the run facts the final line carries beside the use and the listings."""
+
+
+def read_cost_summary(costs: Sequence[ReadCost]) -> dict[str, float | int | None]:
+    """The full-read cost per observation (each observation's milliseconds per full read, from
+    the reads that produced it), summarised: never the list, so the line stays small."""
+    per = sorted(c.full_ms / c.full_reads for c in costs if c.full_reads > 0)
+
+    def at(q: float) -> float | None:
+        return round(per[min(len(per) - 1, math.ceil(q * len(per)) - 1)], 1) if per else None
+
+    return {
+        "observations": len(per),
+        "full_reads": sum(c.full_reads for c in costs),
+        "p50_ms": at(0.5),
+        "p95_ms": at(0.95),
+        "max_ms": round(per[-1], 1) if per else None,
+    }
+
+
+def _counted(items: Iterable[str]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for item in items:
+        out[item] = out.get(item, 0) + 1
+    return out
 
 
 def _limits(budgets: Budgets) -> dict[str, int | float]:
@@ -404,6 +468,14 @@ def _result(
             "write_1h": outcome.usage.cache_write_1h,
             "read": outcome.usage.cache_read,
         },
+        "read_cost": read_cost_summary(outcome.read_costs),
+        "strikes": {
+            "count": len(outcome.strikes),
+            "by_reason": _counted(r for reasons in outcome.strikes for r in reasons),
+        },
+        "stale_observations": outcome.stale_observations,
+        "unread_automation_ids": outcome.unread_automation_ids,
+        "url_reads": dict(outcome.url_reads),
         "watch_deadlines": {  # [V2.48]: per class, watches and those ended at the deadline
             kind: {"watches": watches, "deadline": hits}
             for kind, watches, hits in outcome.watch_deadlines
@@ -421,6 +493,8 @@ def _result(
                 "goal_at_subcap": t.goal_at_subcap,
                 "prompt_cut": t.prompt_cut,
                 "prompt_tokens": t.prompt_tokens,
+                "root_depth": t.root_depth,
+                "prompt_bytes": t.prompt_bytes,
             }
             for t in outcome.listings
         ],

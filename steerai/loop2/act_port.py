@@ -59,7 +59,7 @@ from steerai.loop2.act_guards import (
     ToggleGuard,
 )
 from steerai.loop2.actuate import key_targets
-from steerai.loop2.loop import ActResult, Dispatch, PortInterrupted
+from steerai.loop2.loop import ActResult, Dispatch, PortInterrupted, WindowCovered
 from steerai.loop2.world_ports import KILL_POLL_S, kill_sleep
 from steerai.orchestrator.loop import IDLE_S, MAX_WAIT_S, WAIT_POLL_S
 from steerai.verify.predicates import FIELD_ROLES
@@ -121,7 +121,14 @@ class Desk(Protocol):
         ...
 
     def focused(self) -> tuple[int, ...] | None: ...
+    def root_at(self, x: int, y: int) -> int:
+        """[V2.62]: the root window under a screen point; 0 when unread."""
+        ...
+
     def armed(self, focus: frozenset[tuple[int, ...]]) -> AbstractContextManager[None]: ...
+    def idle_checked(self) -> None:
+        """#383 blocker 2: an idle check just passed (the guard's re-read is timed from it)."""
+        ...
 
 
 class Executes(Protocol[A_contra]):
@@ -175,8 +182,8 @@ class ActPort:
             raise PortInterrupted(token)
         try:
             return self._act(dispatch)
-        except PortInterrupted:
-            raise  # raised only by the waits before anything is sent
+        except (PortInterrupted, WindowCovered):
+            raise  # raised only by the waits and the fresh look before anything is sent
         except _Refused as refused:
             return ActResult(_not_sent(verb, refused.code, refused.detail), None)
         except Exception as exc:  # noqa: BLE001 - [V2.51] (2): fail closed, never raise
@@ -247,6 +254,7 @@ class ActPort:
             raise PortInterrupted(token)
         if self._clock() - self._desk.last_input() < IDLE_S:
             raise _Refused(ErrorCode.GATE_PENDING_USER, self._desk.takeover_token())
+        self._desk.idle_checked()
 
     def _wait_for_idle(self) -> bool:
         """v1's `wait_for_idle` in kill-aware steps: True when it waited. A person busy past
@@ -260,6 +268,7 @@ class ActPort:
                 raise PortInterrupted(token)
             now = self._clock()
             if now - self._desk.last_input() >= IDLE_S:
+                self._desk.idle_checked()
                 return waited
             if now - started >= cap:
                 detail = self._desk.takeover_token() if cap >= MAX_WAIT_S else "wall_budget"
@@ -350,10 +359,21 @@ class ActPort:
         if verb == "type":
             sent = PhysicalAction("type", element.id, text=dispatch.text)
         else:
+            self._hit_test(element, snapshot)
             chord = KEY_CHORDS[dispatch.action.key]  # type: ignore[index]  # checked first
             sent = PhysicalAction("press", element.id, chord=chord)
         with self._desk.armed(allowed):
             return self._executed(self._physical.execute(sent, snapshot))
+
+    def _hit_test(self, element: Element, snapshot: Snapshot) -> None:
+        """[V2.62]: a press goes to the focused target only while the bound window is the root
+        window under the target's centre (v1 hit-tests a click and a type itself, `covered`; a
+        chord has no point in v1). A target with no area has no point: refused the same."""
+        left, top, right, bottom = element.box
+        if right <= left or bottom <= top:
+            raise _Refused(ErrorCode.ELEMENT_NOT_ACTIONABLE, "covered")
+        if self._desk.root_at((left + right) // 2, (top + bottom) // 2) != snapshot.hwnd:
+            raise _Refused(ErrorCode.ELEMENT_NOT_ACTIONABLE, "covered")
 
     # ---- after something was sent --------------------------------------------------------------
 

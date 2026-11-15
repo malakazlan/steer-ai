@@ -35,6 +35,7 @@ from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.decision import Key
 from steerai.loop2.loop import PortInterrupted
 from steerai.loop2.world_ports import kill_sleep
+from steerai.orchestrator.loop import IDLE_S
 from steerai.world.elements import Box
 
 KEY_CHORDS: Final[Mapping[Key, str]] = {
@@ -53,6 +54,13 @@ KEY_CHORDS: Final[Mapping[Key, str]] = {
     "Backspace": "backspace",
 }
 """AP-12: each `Key` to one of v1's named keys, no modifier; a test locks it to the Literal."""
+REREAD_AFTER_S: Final = 0.015625
+"""[V2.60] HH-09: one tick of the world clock (`time.monotonic()`, GetTickCount64 at 15.625 ms,
+meas 2026-11-15). A send that comes a tick or more after the last idle read that passed re-reads
+it first; the gap itself is measured on the gap clock (QPC), never on the world clock."""
+MAX_REREADS: Final = 3
+"""Rev 2 §5.3: a re-read that itself comes too late (the thread lost the CPU) is re-read, at most
+this many times; then the send is refused."""
 TOGGLE_STATES: Final = frozenset({0, 1, 2})
 """UIA ToggleState (UIAutomationCore.h): Off 0, On 1, Indeterminate 2."""
 TOGGLE_LIMIT: Final = 2
@@ -76,8 +84,12 @@ class InputGuard:
         last_input: Callable[[], float],
         takeover_token: Callable[[], str],
         pause: Callable[[float], None] = time.sleep,
+        gap_clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self._inner = inner
+        self._gap_clock = gap_clock
+        """#383 blocker 3: the re-read's gap, on QPC (`perf_counter` is QueryPerformanceCounter
+        on CPython 3.12 Windows, meas `time.get_clock_info`), not the 15.625 ms world clock."""
         self._interrupted = interrupted
         self._focused = focused
         """ONE read of the focused element (slice 7): its RuntimeId and its live IsPassword
@@ -91,6 +103,9 @@ class InputGuard:
         """[V2.58] (2): who made it, `takeover` or `other_steer_input` (the monitor's)."""
         self._act_started = 0.0
         self._last_click: float | None = None
+        self._idle_read_at: float | None = None
+        """HH-09: on the gap clock, when the idle rule last passed: the act port's check
+        (`idle_checked`) or the guard's own re-read. None: never, so the next send re-reads."""
 
     # ---- the act port's arming -----------------------------------------------------------------
 
@@ -114,8 +129,35 @@ class InputGuard:
         if token is not None:
             raise RefusalError(ErrorCode.GATE_BLOCKED, token)
 
+    def idle_checked(self) -> None:
+        """#383 blocker 2: the act port's idle check just passed; the re-read is timed from
+        here."""
+        self._idle_read_at = self._gap_clock()
+
+    def _fresh_idle(self) -> None:
+        """[V2.60] HH-09, before every send, armed or not (#383 blocker 1): a send a tick or
+        more after the last idle read that passed (or with none, or with the gap clock gone
+        backwards) re-reads the idle rule; the person's input within `IDLE_S` refuses it, and so
+        does an idle rule that cannot be read (HM-15). A re-read that is itself late is re-read,
+        `MAX_REREADS` times at most. The residual is the bytecodes between this read and the
+        call (measured as M7)."""
+        for _ in range(MAX_REREADS):
+            stamp = self._idle_read_at
+            if stamp is not None and 0 <= self._gap_clock() - stamp < REREAD_AFTER_S:
+                return
+            read_at = self._gap_clock()  # a read is only as fresh as its start
+            try:
+                last = self._last_input()
+            except Exception as exc:  # HM-15: an unread idle rule refuses, never raises
+                raise RefusalError(ErrorCode.GATE_BLOCKED, "idle_unread") from exc
+            if self._clock() - last < IDLE_S:
+                raise RefusalError(ErrorCode.GATE_PENDING_USER, self._takeover_token())
+            self._idle_read_at = read_at
+        raise RefusalError(ErrorCode.GATE_PENDING_USER, self._takeover_token())
+
     def _keyboard(self) -> None:
         self._switch()
+        self._fresh_idle()
         if self._armed is None:
             raise RefusalError(ErrorCode.GATE_BLOCKED, "not_armed")
         if self._last_input() > self._act_started:
@@ -132,15 +174,24 @@ class InputGuard:
     # ---- the sending calls -----------------------------------------------------------------------
 
     def acquire_foreground(self, hwnd: int) -> str:
+        """[V2.62]: Steer never raises the bound window mid-task. The task start brought it in
+        front (`LiveWorld`); here a window still in front is `already`, and one that is not is
+        refused as v1's own acquire refuses (an OSError: v1's `foreground_refused`), with
+        nothing sent."""
         self._switch()
-        return self._inner.acquire_foreground(hwnd)
+        self._fresh_idle()
+        if self._inner.foreground_hwnd() != hwnd:
+            raise OSError("not_in_front")
+        return "already"
 
     def move_cursor(self, x: int, y: int) -> None:
         self._switch()
+        self._fresh_idle()
         self._inner.move_cursor(x, y)
 
     def click_at(self, x: int, y: int) -> None:
         self._switch()
+        self._fresh_idle()
         self._inner.click_at(x, y)
         self._last_click = self._clock()
 
@@ -271,8 +322,21 @@ class GuardDesk:
             return None
         return focus or None  # an empty RuntimeId is unread, as `focus_state` reads it
 
+    def root_at(self, x: int, y: int) -> int:
+        """[V2.62]: the root window under a screen point (v1's `root_hwnd_at`); 0 when unread,
+        which is never the bound window."""
+        try:
+            return self._guard.root_hwnd_at(x, y)
+        except (OSError, SteerError):
+            return 0
+
     def armed(self, focus: frozenset[tuple[int, ...]]) -> AbstractContextManager[None]:
         return self._guard.armed(focus)
+
+    def idle_checked(self) -> None:
+        """#383 blocker 2: the act port's idle check passed; the guard times its re-read from
+        here."""
+        self._guard.idle_checked()
 
 
 class ToggleGuard(UiaBindings):

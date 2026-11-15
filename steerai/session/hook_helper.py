@@ -29,6 +29,7 @@ from steerai.session.helper_core import (
     EXIT_FAILED,
     EXIT_MAP,
     EXIT_OK,
+    KILL_EXIT_CODE,
     HelperCore,
     config_error,
     parse_helper_argv,
@@ -85,6 +86,7 @@ class HelperPlatform(Protocol):
     def wait(self, timeout_ms: int, parent: int, quit_event: int) -> str: ...
     def pump(self) -> Iterator[str]: ...
     def wake(self, handle: int) -> None: ...
+    def terminate_parent(self, handle: int) -> bool: ...
     def release(self) -> None: ...
 
 
@@ -138,6 +140,19 @@ class _Handlers:
             self._core.callback_error()
 
 
+def _end_steer_if_overdue(
+    core: HelperCore, platform: HelperPlatform, parent: int, *, now: int
+) -> bool:
+    """[V2.60] Q1 layer 3, the only place the helper ends Steer: True once it has. A failed
+    `TerminateProcess` is counted and tried again on the next pass (#383 HM-08)."""
+    if not core.kill_overdue(qpc=now):
+        return False
+    if platform.terminate_parent(parent):
+        return True
+    core.end_steer_failed()
+    return False
+
+
 def run_helper(args: list[str], platform: HelperPlatform) -> int:  # noqa: PLR0915 - the steps
     """The helper's whole life; returns its exit code. Every failure after the status section
     is mapped is published as `state = failed` with the code of the step it happened in."""
@@ -153,6 +168,7 @@ def run_helper(args: list[str], platform: HelperPlatform) -> int:  # noqa: PLR09
         return EXIT_MAP
     step = ERROR_INTERNAL
     failed = False
+    ended_steer = False
     try:
         step = ERROR_MAP
         view = platform.map_config(handles.config)
@@ -184,10 +200,13 @@ def run_helper(args: list[str], platform: HelperPlatform) -> int:  # noqa: PLR09
                 break
             for event in platform.pump():
                 if event == "hotkey":
-                    core.hotkey()
+                    core.hotkey(qpc=platform.qpc())
                     platform.wake(handles.wake)
             step = ERROR_INTERNAL
-            core.loop(qpc=platform.qpc(), unbiased_100ns=platform.unbiased())
+            now = platform.qpc()
+            core.loop(qpc=now, unbiased_100ns=platform.unbiased())
+            if not ended_steer:
+                ended_steer = _end_steer_if_overdue(core, platform, handles.parent, now=now)
     except Exception:  # noqa: BLE001 - no stderr: the code in the status words is the report
         failed = True
         status.set("error", step)
@@ -475,6 +494,11 @@ class WindowsHelperPlatform:  # pragma: no cover - live, Windows only (tests/ses
 
     def wake(self, handle: int) -> None:
         self._k32.SetEvent(handle)
+
+    def terminate_parent(self, handle: int) -> bool:
+        """[V2.60] Q1 layer 3: end Steer for the person's unacknowledged kill; False when
+        `TerminateProcess` failed (#383 HM-08)."""
+        return bool(self._k32.TerminateProcess(handle, KILL_EXIT_CODE))
 
     def release(self) -> None:
         while self._hooks:
