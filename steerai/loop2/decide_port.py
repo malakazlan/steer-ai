@@ -33,6 +33,10 @@ _COUNTS: Final = (
     "cache_read_input_tokens",
 )
 _TTL: Final = ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
+_NOT_COUNTERS: Final = frozenset({"cache_creation", "output_tokens_details"})
+"""Usage fields that are breakdowns of a count already read: `cache_creation` splits the writes,
+and `output_tokens_details` decomposes `output_tokens`, the inclusive total (SDK 2.4.0's
+`Usage` docstring). Neither adds tokens."""
 
 T = TypeVar("T")
 
@@ -52,24 +56,54 @@ decide worker, so it must hold no port, no executor and no COM object."""
 
 
 def parse_usage(raw: Mapping[str, object]) -> TokenUsage | None:
-    """The API's usage object (as JSON) as a `TokenUsage`; None when any of the four counts is
-    missing or not a whole number of tokens, zero or more, or when the `cache_creation` breakdown
-    is present but does not split `cache_creation_input_tokens` exactly (measured 2026-11-15 on
-    claude-opus-5: all four counts and the breakdown are sent, 0 when unused)."""
+    """[V2.45]: the API's usage object (as JSON) as a `TokenUsage`, the writes split by lifetime.
+    None (incomplete, never a guess) when:
+    - any of the four counts is missing or not a whole number of tokens, zero or more;
+    - a write cannot be split: no `cache_creation` breakdown, or one that does not split
+      `cache_creation_input_tokens` exactly into the two lifetimes;
+    - any other field holds a count that is not zero (an unknown counter is never dropped).
+    Measured on claude-opus-5, 2026-11-15: all four counts and the breakdown are sent, 0 unused."""
     counts = [_count(raw.get(name)) for name in _COUNTS]
     fresh, output, written, read = counts
     if fresh is None or output is None or written is None or read is None:
         return None
-    ttl: tuple[int, int] | None = None
-    breakdown = raw.get("cache_creation")
-    if breakdown is not None:
-        if not isinstance(breakdown, Mapping):
-            return None
-        five, hour = (_count(breakdown.get(name)) for name in _TTL)
-        if five is None or hour is None or five + hour != written:
-            return None
-        ttl = (five, hour)
-    return TokenUsage(fresh, output, written, read, ttl)
+    lifetimes = _lifetimes(raw.get("cache_creation"), written)
+    if lifetimes is None:
+        return None
+    known = {*_COUNTS, *_NOT_COUNTERS}
+    if any(not _counts_nothing(value) for key, value in raw.items() if key not in known):
+        return None
+    five, hour = lifetimes
+    return TokenUsage(
+        input_tokens=fresh,
+        output_tokens=output,
+        cache_write_5m=five,
+        cache_write_1h=hour,
+        cache_read=read,
+    )
+
+
+def _lifetimes(breakdown: object, written: int) -> tuple[int, int] | None:
+    """The writes as (5 minutes, 1 hour); None when they cannot be split exactly."""
+    if breakdown is None:
+        return (0, 0) if written == 0 else None
+    if not isinstance(breakdown, Mapping) or set(breakdown) != set(_TTL):
+        return None
+    five, hour = (_count(breakdown.get(name)) for name in _TTL)
+    if five is None or hour is None or five + hour != written:
+        return None
+    return five, hour
+
+
+def _counts_nothing(value: object) -> bool:
+    """An unknown field that counts nothing: absent, a label, a zero, or only such values."""
+    if value is None or isinstance(value, str):
+        return True
+    if isinstance(value, Mapping):
+        return all(_counts_nothing(v) for v in value.values())
+    if isinstance(value, bool):
+        return False
+    return isinstance(value, int | float) and value == 0
 
 
 def _count(value: object) -> int | None:
@@ -175,16 +209,12 @@ def _summed(usages: list[TokenUsage | None]) -> TokenUsage | None:
     known = [u for u in usages if u is not None]
     if not usages or len(known) != len(usages):
         return None
-    ttls = [u.cache_creation_ttl for u in known if u.cache_creation_ttl is not None]
-    ttl = None  # one call with no breakdown: the turn has none
-    if len(ttls) == len(known):
-        ttl = (sum(five for five, _ in ttls), sum(hour for _, hour in ttls))
     return TokenUsage(
         input_tokens=sum(u.input_tokens for u in known),
         output_tokens=sum(u.output_tokens for u in known),
-        cache_creation_input_tokens=sum(u.cache_creation_input_tokens for u in known),
-        cache_read_input_tokens=sum(u.cache_read_input_tokens for u in known),
-        cache_creation_ttl=ttl,
+        cache_write_5m=sum(u.cache_write_5m for u in known),
+        cache_write_1h=sum(u.cache_write_1h for u in known),
+        cache_read=sum(u.cache_read for u in known),
     )
 
 

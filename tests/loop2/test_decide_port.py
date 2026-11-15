@@ -32,7 +32,7 @@ from steerai.loop2.loop import PortInterrupted, TokenUsage
 from steerai.loop2.runner import run_task
 from tests.loop2.world_fakes import World, task
 
-# ---- the usage object, as measured on the wire (claude-opus-5, 2026-11-15) ---------------------
+# ---- the usage object ([V2.45]) -----------------------------------------------------------------
 
 PLAIN: Mapping[str, object] = {
     "input_tokens": 15,
@@ -40,40 +40,99 @@ PLAIN: Mapping[str, object] = {
     "cache_read_input_tokens": 0,
     "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0},
     "output_tokens": 4,
+    "output_tokens_details": {"thinking_tokens": 0},
     "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
 }
+"""Recorded verbatim from the wire (claude-opus-5, SDK 2.4.0, 2026-11-15): a call with no cache.
+Counts only: no key, no prompt text, no reply text."""
 WRITE_5M: Mapping[str, object] = {
     "input_tokens": 13,
     "cache_creation_input_tokens": 8503,
     "cache_read_input_tokens": 0,
     "cache_creation": {"ephemeral_5m_input_tokens": 8503, "ephemeral_1h_input_tokens": 0},
     "output_tokens": 4,
+    "output_tokens_details": {"thinking_tokens": 0},
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
 }
+"""Recorded verbatim: the same call that wrote a 5-minute cache entry."""
 READ: Mapping[str, object] = {
     "input_tokens": 13,
     "cache_creation_input_tokens": 0,
     "cache_read_input_tokens": 8503,
     "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0},
     "output_tokens": 4,
+    "output_tokens_details": {"thinking_tokens": 0},
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
 }
+"""Recorded verbatim: the next call, reading that entry."""
+RECORDED = (PLAIN, WRITE_5M, READ)
 
 
-def test_the_four_counts_and_the_ttl_breakdown_are_read() -> None:
-    assert parse_usage(WRITE_5M) == TokenUsage(
-        input_tokens=13,
-        output_tokens=4,
-        cache_creation_input_tokens=8503,
-        cache_read_input_tokens=0,
-        cache_creation_ttl=(8503, 0),
+def _total(raw: Mapping[str, object]) -> int:
+    """The API's own total (prompt-caching docs, read 2026-11-15): input_tokens +
+    cache_creation_input_tokens + cache_read_input_tokens, plus the output."""
+    names = (
+        "input_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "output_tokens",
     )
+    counts = [raw[name] for name in names]
+    assert all(isinstance(c, int) for c in counts)
+    return sum(c for c in counts if isinstance(c, int))
 
 
-def test_a_usage_without_the_ttl_breakdown_has_none() -> None:
-    raw = {k: v for k, v in READ.items() if k != "cache_creation"}
+@pytest.mark.parametrize("raw", RECORDED)
+def test_a_recorded_usage_sums_to_the_apis_total_with_nothing_counted_twice(
+    raw: Mapping[str, object],
+) -> None:
+    """[V2.45]: the categories partition the API's total. The writes come from the breakdown and
+    never also from `cache_creation_input_tokens`."""
     usage = parse_usage(raw)
     assert usage is not None
-    assert usage.cache_creation_ttl is None
-    assert usage.cache_read_input_tokens == 8503
+    categories = (
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_write_5m,
+        usage.cache_write_1h,
+        usage.cache_read,
+    )
+    assert sum(categories) == _total(raw)
+
+
+def test_a_recorded_five_minute_write_is_read_by_lifetime() -> None:
+    assert parse_usage(WRITE_5M) == TokenUsage(
+        input_tokens=13, output_tokens=4, cache_write_5m=8503, cache_write_1h=0, cache_read=0
+    )
+    assert parse_usage(READ) == TokenUsage(input_tokens=13, output_tokens=4, cache_read=8503)
+
+
+def test_a_one_hour_write_is_its_own_category() -> None:
+    raw = dict(WRITE_5M)
+    raw["cache_creation_input_tokens"] = 300
+    raw["cache_creation"] = {"ephemeral_5m_input_tokens": 100, "ephemeral_1h_input_tokens": 200}
+    usage = parse_usage(raw)
+    assert usage is not None
+    assert (usage.cache_write_5m, usage.cache_write_1h) == (100, 200)
+
+
+def test_a_write_with_no_lifetime_breakdown_is_no_usage() -> None:
+    """A write that cannot be split by lifetime cannot be priced: incomplete, never guessed."""
+    raw = {k: v for k, v in WRITE_5M.items() if k != "cache_creation"}
+    assert parse_usage(raw) is None
+    raw["cache_creation"] = None
+    assert parse_usage(raw) is None
+
+
+def test_no_write_needs_no_breakdown() -> None:
+    raw = {k: v for k, v in READ.items() if k != "cache_creation"}
+    assert parse_usage(raw) == TokenUsage(input_tokens=13, output_tokens=4, cache_read=8503)
 
 
 @pytest.mark.parametrize(
@@ -97,21 +156,55 @@ def test_a_missing_or_invalid_count_is_no_usage(field: str, bad: object) -> None
         {"ephemeral_5m_input_tokens": 8503},  # a field missing
         {"ephemeral_5m_input_tokens": 8503, "ephemeral_1h_input_tokens": -1},
         {"ephemeral_5m_input_tokens": True, "ephemeral_1h_input_tokens": 8502},
+        {"ephemeral_5m_input_tokens": 8503, "ephemeral_1h_input_tokens": 0, "ephemeral_24h": 7},
         "8503",
     ],
 )
-def test_a_ttl_breakdown_that_disagrees_with_the_total_is_no_usage(breakdown: object) -> None:
+def test_a_breakdown_that_disagrees_with_the_total_is_no_usage(breakdown: object) -> None:
     raw = dict(WRITE_5M)
     raw["cache_creation"] = breakdown
     assert parse_usage(raw) is None
 
 
-def test_a_null_breakdown_is_absent() -> None:
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("audio_input_tokens", 5),
+        ("server_tool_use", {"web_search_requests": 1}),
+        ("new_counter", 0.5),
+        ("new_counters", [1]),
+    ],
+)
+def test_an_unknown_counter_fails_closed(key: str, value: object) -> None:
+    """[V2.45]: a counter the parser does not know is never dropped: the usage is incomplete."""
     raw = dict(PLAIN)
-    raw["cache_creation"] = None
+    raw[key] = value
+    assert parse_usage(raw) is None
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("server_tool_use", None),
+        ("server_tool_use", {"web_search_requests": 0, "web_fetch_requests": 0}),
+        ("audio_input_tokens", 0),
+        ("region_label", "global"),
+    ],
+)
+def test_an_unknown_field_that_counts_nothing_is_ignored(key: str, value: object) -> None:
+    raw = dict(PLAIN)
+    raw[key] = value
+    assert parse_usage(raw) == parse_usage(PLAIN)
+
+
+def test_the_output_breakdown_is_inside_the_output_count() -> None:
+    """The SDK documents `output_tokens` as the inclusive total and `output_tokens_details` as
+    its decomposition: thinking tokens are never added again."""
+    raw = dict(PLAIN)
+    raw["output_tokens_details"] = {"thinking_tokens": 3}
     usage = parse_usage(raw)
     assert usage is not None
-    assert usage.cache_creation_ttl is None
+    assert usage.output_tokens == 4
 
 
 # ---- the calls: a daemon worker, data only, a kill-aware wait -----------------------------------
@@ -186,21 +279,8 @@ def test_the_turn_sums_usage_over_its_calls_repairs_included() -> None:
     calls = _calls(_serve(_reply(raw=WRITE_5M), _reply(raw=READ)))
     _, usage = calls.turn(lambda ask: (ask([], []), ask([], [])))
     assert usage == TokenUsage(
-        input_tokens=26,
-        output_tokens=8,
-        cache_creation_input_tokens=8503,
-        cache_read_input_tokens=8503,
-        cache_creation_ttl=(8503, 0),
+        input_tokens=26, output_tokens=8, cache_write_5m=8503, cache_write_1h=0, cache_read=8503
     )
-
-
-def test_one_call_with_no_breakdown_leaves_the_turn_without_one() -> None:
-    bare = {k: v for k, v in READ.items() if k != "cache_creation"}
-    calls = _calls(_serve(_reply(raw=WRITE_5M), _reply(raw=bare)))
-    _, usage = calls.turn(lambda ask: (ask([], []), ask([], [])))
-    assert usage is not None
-    assert usage.cache_creation_ttl is None
-    assert usage.cache_creation_input_tokens == 8503
 
 
 def test_one_call_with_no_usage_makes_the_turn_usage_none() -> None:
