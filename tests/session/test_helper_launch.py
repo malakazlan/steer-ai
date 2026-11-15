@@ -30,6 +30,7 @@ from steerai.session.helper_launch import (
     creation_flags,
     environment_block,
     interpreter_and_launcher,
+    kill_chord,
     machine_ok,
     this_interpreter,
 )
@@ -798,6 +799,20 @@ def test_terminate_ends_the_helper_checked_and_waits_for_it() -> None:
     assert w.calls[-1] == ("wait", (w.process,), CLOSE_TIMEOUT_MS)
 
 
+# ---- PR 4: the kill chord as the helper's config takes it ---------------------------------------
+
+
+def test_the_kill_chord_is_the_modifier_flags_and_the_key() -> None:
+    """RegisterHotKey's fsModifiers: MOD_ALT 1, MOD_CONTROL 2, MOD_SHIFT 4, MOD_WIN 8."""
+    assert kill_chord("ctrl+alt+shift+s") == (0x7, 0x53)
+    assert kill_chord("win+f9") == (0x8, 0x78)
+
+
+def test_a_kill_chord_the_monitor_refuses_is_refused_here_too() -> None:
+    with pytest.raises(ValueError, match="modifier"):
+        kill_chord("s")
+
+
 # ---- #383 blocker 6: ending the helper never races its close ----------------------------------
 
 
@@ -837,6 +852,13 @@ def test_a_terminate_during_close_waits_for_it_and_then_does_nothing() -> None:
     ender.join(5)
     assert not w.named("terminate_job")
     assert not w.named("terminate_process")
+
+
+def test_the_modifier_flags_have_one_copy() -> None:
+    """#385 principal note: RegisterHotKey's fsModifiers are defined once, in the monitor."""
+    package = Path(__file__).resolve().parents[2] / "steerai"
+    sources = [p.read_text(encoding="utf-8") for p in package.rglob("*.py")]
+    assert sum(s.count('"win": 0x0008') for s in sources) == 1
 
 
 def test_terminate_raises_a_failed_end_wait_and_close_still_releases() -> None:
