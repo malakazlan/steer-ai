@@ -360,6 +360,7 @@ RUN_FACTS: Final = (
     "stale_observations",
     "unread_automation_ids",
     "url_reads",
+    "partial_page_calls",
 )
 """Stage 2 plan §6 (3): the run facts the final line carries beside the use and the listings."""
 
@@ -449,6 +450,7 @@ def _result(
         "stale_observations": outcome.stale_observations,
         "unread_automation_ids": outcome.unread_automation_ids,
         "url_reads": dict(outcome.url_reads),
+        "partial_page_calls": outcome.partial_page_calls,  # [V2.35]
         "watch_deadlines": {  # [V2.48]: per class, watches and those ended at the deadline
             kind: {"watches": watches, "deadline": hits}
             for kind, watches, hits in outcome.watch_deadlines

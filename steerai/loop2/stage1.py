@@ -424,7 +424,7 @@ def _watch_deadlines(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON fig
 
 
 STRIKE_REASONS: Final = frozenset(get_args(StrikeReason))
-COUNTED_FACTS: Final = ("stale_observations", "unread_automation_ids")
+COUNTED_FACTS: Final = ("stale_observations", "unread_automation_ids", "partial_page_calls")
 
 
 def _run_facts(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures

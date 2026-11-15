@@ -389,6 +389,9 @@ class TaskOutcome:
     Stage 1 runs with caching off and asserts every cache counter here is zero."""
     exact_counts: int = 0
     """[V2.61]: turns on which the prompt guard spent an exact count (near the ceiling)."""
+    partial_page_calls: int = 0
+    """[V2.35]: model calls made on a partial page (the observation growing, or its Document
+    younger than the load guard), counted where every call is."""
     url_reads: tuple[tuple[UrlRead, int], ...] = ()
     """Stage 2 plan §5: every observation taken in, counted by `url_read`, in `URL_READS`
     order."""
