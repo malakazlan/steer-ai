@@ -114,6 +114,10 @@ TAUGHT: Final[Mapping[str, Taught]] = {
     "commit_undeclared": ("rule", "Declare `commit` for any action that changes someone else's"),
     "focus_needs_field": ("rule", "`focus` is for text fields only"),
     "id_not_listed": ("rule", "Act only on ids in the current listing."),
+    "intake_insufficient": (
+        "rule",
+        "refused:intake_insufficient means your subgoals would not finish the request",
+    ),
     "key_missing": _requires("Action_press", "key"),
     "not_own_text": ("rule", "Backspace edits only text you typed"),
     "option_missing": _requires("Action_choose", "option"),
