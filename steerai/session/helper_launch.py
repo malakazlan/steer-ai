@@ -370,6 +370,7 @@ class HelperProcess:
             try:
                 for h in inherit:  # #375 H1: inside the try, so a failure part-way is undone
                     w.set_inherit(h, True)
+                suspended = False
                 try:
                     process, thread, _pid = w.create_process(
                         app,
@@ -379,9 +380,8 @@ class HelperProcess:
                         inherit=inherit,
                         jobs=(job,),
                     )
-                    self._owned_now(process, thread, in_job=True)
-                    suspended = False
                 except OSError:  # P4: no JOB_LIST here; create suspended, assign, resume
+                    suspended = True
                     process, thread, _pid = w.create_process(
                         app,
                         cmdline=cmdline,
@@ -390,8 +390,8 @@ class HelperProcess:
                         inherit=inherit,
                         jobs=(),
                     )
-                    self._owned_now(process, thread, in_job=False)
-                    suspended = True
+                # outside the try: an ownership failure never triggers the second create (#388)
+                self._owned_now(process, thread, in_job=not suspended)
             finally:
                 self._no_inherit(inherit)
         if suspended:

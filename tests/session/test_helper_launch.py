@@ -737,3 +737,18 @@ def test_a_suspended_helper_outside_the_job_is_ended_when_resetting_inheritance_
     assert w.named("terminate_process")
     assert not w.named("assign")
     assert w.open_handles == set()
+
+
+def test_owning_the_handles_that_fails_never_starts_a_second_helper() -> None:
+    """#388 principal note: only `create_process` itself falls back to the suspended create."""
+    w = FakeWin32()
+    helper = _helper(w)
+
+    def own_fails(process: int, thread: int, *, in_job: bool) -> None:
+        del process, thread, in_job
+        raise OSError(8, "not enough memory")
+
+    helper._owned_now = own_fails  # type: ignore[method-assign]  # the ownership step fails
+    with pytest.raises(SteerError, match="monitor_unavailable"):
+        helper.start()
+    assert len(w.named("create")) == 1
