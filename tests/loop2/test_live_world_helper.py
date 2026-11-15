@@ -20,6 +20,7 @@ from steerai.loop2.loop import PortInterrupted
 from steerai.loop2.world_ports import KILL_POLL_S
 from tests.loop2.test_live_world import Monitor, Platform, _config, _world
 from tests.loop2.world_fakes import task
+from tests.session.test_helper_monitor import DEADLINE_S, _rig
 
 
 class HelperMonitor(Monitor):
@@ -368,3 +369,50 @@ def test_the_windows_platform_runs_on_the_helper_end_to_end() -> None:
         assert win32.wait_any((watch,), 3000) == 0  # the helper is gone after close
     finally:
         win32.close(watch)
+
+
+# ---- #398: a stale watchdog poll is the monitor's loss, never a session token -----------------
+
+
+class RigPlatform(HelperPlatform):
+    """The real `HelperMonitor` over the session tests' fake helper process."""
+
+    def __init__(self, monitor: Any) -> None:  # Any: the real monitor, typed loosely here
+        super().__init__()
+        self.real = monitor
+
+    def start_helper_monitor(self, *_args: Any) -> Any:  # Any: the platform's arguments
+        return self.real
+
+
+def test_a_stale_watchdog_poll_stops_the_task_as_monitor_lost() -> None:
+    rig = _rig()
+    rig.heartbeat()
+    world, _ = _world(RigPlatform(rig.monitor), hook_helper=True)
+    assert world.interrupted() is None
+    rig.at(100.0 + DEADLINE_S + 0.01)
+    rig.heartbeat()  # the helper is fine; the watchdog is not
+    assert world.interrupted() == "monitor_lost"
+    assert world.interrupted() == "monitor_lost"
+    assert world.monitor_lost == 1
+
+
+def test_after_the_helper_closes_the_switch_reads_monitor_lost() -> None:
+    """#385 final review (3): a closed helper's stale poll is not a lock."""
+    rig = _rig()
+    rig.heartbeat()
+    world, _ = _world(RigPlatform(rig.monitor), hook_helper=True)
+    rig.monitor.close()
+    rig.at(100.0 + 10 * DEADLINE_S)
+    assert world.interrupted() == "monitor_lost"
+
+
+def test_the_worlds_own_lock_read_still_wins_over_a_stale_poll() -> None:
+    """LW-17/18: the lock is the cause; a monitor lost behind it is only a symptom."""
+    rig = _rig()
+    rig.heartbeat()
+    platform = RigPlatform(rig.monitor)
+    world, _ = _world(platform, hook_helper=True)
+    rig.at(100.0 + DEADLINE_S + 0.01)
+    platform.locked = True
+    assert world.interrupted() == "session_locked"
