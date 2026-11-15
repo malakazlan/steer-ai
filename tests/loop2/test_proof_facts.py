@@ -132,8 +132,8 @@ def test_positions_are_the_traces_own_zero_based_ones() -> None:
 def test_the_results_carrier_when_not_held_says_unread_before() -> None:
     """Principal 2: the observer counts only rows absent before, so a results carrier that does
     not hold has no before half to report (None, documented as such)."""
-    proof = _after_action(_attempts(_typed(dataclasses.replace(page([], url=QUERY_URL),
-                                                               focus=FIELD.runtime_id))))  # fmt: skip
+    no_rows = dataclasses.replace(page([], url=QUERY_URL), focus=FIELD.runtime_id)
+    proof = _after_action(_attempts(_typed(no_rows)))
     (param,) = proof["params"]
     held = {c["carrier"]: (c["held"], c["absent_before"]) for c in param["carriers"]}
     assert held["results"] == (False, None)

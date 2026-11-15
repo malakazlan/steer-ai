@@ -491,9 +491,9 @@ class _Run:
         self.judged: Observed | None = None
         """§7.1: the last read the auto proof judged (`_auto_proofs`)."""
         self.saved_calls = 0
+        """[V2.67] A: turns the turn-start judgement closed the task, so no model call was made."""
         self.next_read: ProofRead = "turn_start"
         """[V2.67] D: what the next turn-start judgement runs on (`_stale` marks a re-read)."""
-        """[V2.67] A: turns the turn-start judgement closed the task, so no model call was made."""
         self.pre_task_draft_clicks = 0
         """[V2.64] Two: counted at each non-field click (`_pre_task_draft`)."""
         """[V2.35]: model calls made on a growing or young observation (`_decide`)."""
@@ -1725,7 +1725,7 @@ class _Run:
             skipped = "poll"
         elif not observed.snapshot.stable:
             skipped = "unstable"
-        for position, subgoal in enumerate(self.subgoals, 1):
+        for position, subgoal in enumerate(self.subgoals):  # the trace's 0-based positions
             if subgoal.id in self.proven or subgoal.id not in self.baselines:
                 continue
             if subgoal.closes != "page":
@@ -2119,7 +2119,7 @@ def _attempt(  # noqa: PLR0913, PLR0917 - one attempt's facts, positional for br
                 for c, held, was in facts
             ),
         )
-        for n, (_name, facts) in enumerate(judged.params, 1)
+        for n, (_name, facts) in enumerate(judged.params)  # sorted by name, as decision_shape
     )
     return ProofAttempt(
         subgoal=position,
