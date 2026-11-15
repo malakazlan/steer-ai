@@ -1,0 +1,461 @@
+{
+  "np1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Document",
+        "name": "Text Editor",
+        "param": "hello from steer"
+      }
+    ],
+    "proof": "value",
+    "why": "the editor's text: its value (native; the value read is unmeasured on v2)"
+  },
+  "np2": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Document",
+        "name": "Text Editor",
+        "param": "the quick brown fox"
+      }
+    ],
+    "proof": "value",
+    "why": "the editor's text: its value (native; the value read is unmeasured on v2)"
+  },
+  "hn1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Document",
+        "name": "Text Editor",
+        "param": "meeting moved to 3pm, room 4"
+      }
+    ],
+    "proof": "value",
+    "why": "the editor's text: its value (native; the value read is unmeasured on v2)"
+  },
+  "wp1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Document",
+        "name": "Rich Text Window",
+        "param": "quarterly plan draft"
+      }
+    ],
+    "proof": "value",
+    "why": "the document's text: its value (native; the value read is unmeasured on v2)"
+  },
+  "ib1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Message",
+        "param": "ok thanks"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Send"
+      }
+    ],
+    "proof": null,
+    "why": "a sent message shows only as text: step 4"
+  },
+  "ib2": {
+    "acts": [
+      {
+        "verb": "click",
+        "role": "Hyperlink",
+        "name": "Sara Ahmed · invoice attached · 1d"
+      }
+    ],
+    "proof": null,
+    "why": "an opened chat shows only as content: step 4"
+  },
+  "ib3": {
+    "acts": [
+      {
+        "verb": "click",
+        "role": "Hyperlink",
+        "name": "Bilal · see you tomorrow · 5d"
+      }
+    ],
+    "proof": null,
+    "why": "an opened chat shows only as content: step 4"
+  },
+  "ib4": {
+    "acts": [
+      {
+        "verb": "click",
+        "role": "Hyperlink",
+        "name": "Sara Ahmed · invoice attached · 1d"
+      },
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Message",
+        "param": "see you tomorrow"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Send"
+      }
+    ],
+    "proof": null,
+    "why": "a sent message shows only as text: step 4"
+  },
+  "f1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Name",
+        "param": "Amir Khan"
+      },
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Email",
+        "param": "amir@example.com"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Send message"
+      }
+    ],
+    "proof": null,
+    "why": "a sent form shows only as text: step 4"
+  },
+  "s1": {
+    "acts": [
+      {
+        "verb": "check",
+        "role": "CheckBox",
+        "name": "Dark mode"
+      }
+    ],
+    "proof": "state",
+    "why": "a checkbox: a toggle state read"
+  },
+  "c1": {
+    "acts": [
+      {
+        "verb": "choose",
+        "role": "ComboBox",
+        "name": "Country",
+        "option": "Pakistan"
+      }
+    ],
+    "proof": "value",
+    "why": "a select: its value"
+  },
+  "t1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "New task",
+        "param": "buy milk"
+      },
+      {
+        "verb": "press",
+        "role": "",
+        "name": "",
+        "key": "Enter"
+      }
+    ],
+    "proof": null,
+    "why": "an added item shows only as content: step 4"
+  },
+  "d1": {
+    "acts": [
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Delete call mom"
+      }
+    ],
+    "proof": null,
+    "why": "a removed item shows only as content: step 4"
+  },
+  "m1": {
+    "unrated": "target_after_opener"
+  },
+  "b1": {
+    "acts": [
+      {
+        "verb": "select",
+        "role": "TabItem",
+        "name": "Billing"
+      }
+    ],
+    "proof": "state",
+    "why": "a tab: a selection state read"
+  },
+  "l1": {
+    "acts": [
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Load more"
+      }
+    ],
+    "proof": null,
+    "why": "more items show only as content: step 4"
+  },
+  "calc1": {
+    "acts": [
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "One"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Two"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Multiply by"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Seven"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Equals"
+      }
+    ],
+    "proof": null,
+    "why": "the result shows only as the display's text: step 4"
+  },
+  "n1": {
+    "acts": [
+      {
+        "verb": "check",
+        "role": "CheckBox",
+        "name": "Weekly digest"
+      }
+    ],
+    "proof": "state",
+    "why": "a checkbox: a toggle state read"
+  },
+  "n2": {
+    "acts": [
+      {
+        "verb": "check",
+        "role": "CheckBox",
+        "name": "Select all"
+      }
+    ],
+    "proof": "state",
+    "why": "a tri-state: a toggle state read"
+  },
+  "n3": {
+    "acts": [
+      {
+        "verb": "choose",
+        "role": "ComboBox",
+        "name": "Shipping country",
+        "option": "France"
+      }
+    ],
+    "proof": "value",
+    "why": "a select: its value"
+  },
+  "n4": {
+    "acts": [
+      {
+        "verb": "select",
+        "role": "RadioButton",
+        "name": "Annual"
+      }
+    ],
+    "proof": "state",
+    "why": "a radio: a selection state read"
+  },
+  "n5": {
+    "acts": [
+      {
+        "verb": "expand",
+        "role": "Button",
+        "name": "Shipping questions"
+      }
+    ],
+    "proof": "state",
+    "why": "a disclosure: an expand state read"
+  },
+  "n6": {
+    "acts": [
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Show more comments"
+      }
+    ],
+    "proof": null,
+    "why": "more comments show only as content: step 4"
+  },
+  "n7": {
+    "acts": [
+      {
+        "verb": "select",
+        "role": "ListItem",
+        "name": "Kyoto"
+      }
+    ],
+    "proof": "state",
+    "why": "a listbox option: a selection state read"
+  },
+  "q1": {
+    "acts": [
+      {
+        "verb": "expand",
+        "role": "Button",
+        "name": "Returns policy"
+      }
+    ],
+    "proof": "state",
+    "why": "a disclosure: an expand state read"
+  },
+  "q2": {
+    "acts": [
+      {
+        "verb": "select",
+        "role": "ListItem",
+        "name": "Swahili"
+      }
+    ],
+    "proof": "state",
+    "why": "a listbox option: a selection state read"
+  },
+  "q3": {
+    "acts": [
+      {
+        "verb": "choose",
+        "role": "ComboBox",
+        "name": "Country",
+        "option": "Japan"
+      },
+      {
+        "verb": "choose",
+        "role": "ComboBox",
+        "name": "City",
+        "option": "Osaka"
+      }
+    ],
+    "proof": "value",
+    "why": "two selects: their values"
+  },
+  "q4": {
+    "acts": [
+      {
+        "verb": "select",
+        "role": "TabItem",
+        "name": "Security"
+      }
+    ],
+    "proof": "state",
+    "why": "a tab: a selection state read"
+  },
+  "q5": {
+    "acts": [
+      {
+        "verb": "check",
+        "role": "CheckBox",
+        "name": "I agree to the terms"
+      }
+    ],
+    "proof": "state",
+    "why": "a checkbox: a toggle state read"
+  },
+  "r1": {
+    "acts": [
+      {
+        "verb": "select",
+        "role": "RadioButton",
+        "name": "Express"
+      }
+    ],
+    "proof": "state",
+    "why": "a radio: a selection state read"
+  },
+  "r2": {
+    "acts": [
+      {
+        "verb": "check",
+        "role": "Button",
+        "name": "Dark mode"
+      }
+    ],
+    "proof": "state",
+    "why": "a switch: a toggle state read"
+  },
+  "r3": {
+    "acts": [
+      {
+        "verb": "choose",
+        "role": "ComboBox",
+        "name": "Time zone",
+        "option": "Europe/Berlin"
+      }
+    ],
+    "proof": "value",
+    "why": "a select with groups: its value"
+  },
+  "r4": {
+    "unrated": "target_after_opener"
+  },
+  "r5": {
+    "acts": [
+      {
+        "verb": "uncheck",
+        "role": "CheckBox",
+        "name": "Subscribe to the newsletter"
+      }
+    ],
+    "proof": "state",
+    "why": "a checkbox: a toggle state read"
+  },
+  "u1": {
+    "unrated": "pressed_unread"
+  },
+  "u2": {
+    "acts": [
+      {
+        "verb": "check",
+        "role": "Button",
+        "name": "Auto-save"
+      }
+    ],
+    "proof": "state",
+    "why": "a switch: a toggle state read"
+  },
+  "u3": {
+    "unrated": "target_after_opener"
+  },
+  "u4": {
+    "acts": [
+      {
+        "verb": "select",
+        "role": "DataItem",
+        "name": "Invoice 2042"
+      }
+    ],
+    "proof": "state",
+    "why": "a grid row: a selection state read"
+  },
+  "u5": {
+    "unrated": "target_after_opener"
+  }
+}

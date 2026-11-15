@@ -129,21 +129,26 @@ def host_of(task: Task) -> str:
 
 
 def site_tasks(
-    table: Mapping[str, TableRow], acts: Mapping[str, SiteRow] | None = None
+    table: Mapping[str, TableRow],
+    acts: Mapping[str, SiteRow] | None = None,
+    *,
+    unrated: Mapping[str, str] | None = None,
 ) -> tuple[SiteTask, ...]:
     """Group 2b: every real-site task with its committed expected outcome. A task the table does
     not rate is a `ValueError` (`unrated`): no task runs without its outcome written first."""
-    unrated = [t.task_id for t in real_site_tasks() if t.task_id not in table]
-    if unrated:
-        raise ValueError(f"unrated tasks: {unrated}")
+    held = set(unrated or {})  # the lead rules on these first: not run, not counted
+    rated = [t for t in real_site_tasks() if t.task_id not in held]
+    missing_rows = [t.task_id for t in rated if t.task_id not in table]
+    if missing_rows:
+        raise ValueError(f"unrated tasks: {missing_rows}")
     known = set(table) if acts is None else set(acts)
-    missing = [t.task_id for t in real_site_tasks() if t.task_id not in known]
+    missing = [t.task_id for t in rated if t.task_id not in known]
     if missing:
         raise ValueError(f"no_acts: {missing}")
     tasks = []
-    for task in real_site_tasks():
-        rated = table[task.task_id]
-        expected = rated.expected
+    for task in rated:
+        row = table[task.task_id]
+        expected = row.expected
         stage = StageTask(
             task.task_id,
             task.goal,
@@ -156,7 +161,7 @@ def site_tasks(
             SiteTask(
                 stage,
                 host_of(task),
-                rated.facts,
+                row.facts,
                 controlled=control_url(task) is not None,
                 suite=task,
                 row=None if acts is None else acts.get(task.task_id),
@@ -343,13 +348,14 @@ def volume_bound(tasks: Sequence[SiteTask], *, runs: int) -> dict[str, int]:
     return bound
 
 
-def summarize(
+def summarize(  # noqa: PLR0913 - the runs, then keyword-only figures
     tasks: Sequence[SiteTask],
     classified: Sequence[Classified],
     *,
     not_started: int,
     runs_per_task: int,
     loads: Mapping[str, int] | None = None,
+    unrated: Mapping[str, str] | None = None,
 ) -> Summary:
     """Stage 1's `accept` with stage 2's floor and valid-task minimum; the tasks with no control
     are listed apart (rev 4.4a (c)): unverifiable against a site change, never a scored pass."""
@@ -364,6 +370,7 @@ def summarize(
         min_valid_tasks=MIN_VALID_TASKS,
     )
     summary.report["no_control"] = [t.stage.task_id for t in tasks if not t.controlled]
+    summary.report["unrated"] = dict(unrated or {})
     summary.report["harness_loads_per_host"] = dict(loads or {})
     summary.report["harness_loads_per_host_max"] = max((loads or {}).values(), default=0)
     summary.report["harness_loads_bound"] = volume_bound(tasks, runs=runs_per_task)
