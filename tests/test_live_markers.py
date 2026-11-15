@@ -11,7 +11,7 @@ from pathlib import Path
 TESTS = Path(__file__).resolve().parent
 LIVE_CALLS = frozenset({"UiaClient", "WindowsPlatform", "LiveInput", "LiveWindows", "HookMonitor"})
 """Constructors of the real Windows side."""
-LIVE_MODULES = frozenset({"win_input", "probe_key", "stage1"})
+LIVE_MODULES = frozenset({"win_input", "probe_key", "stage1", "ime_probe"})
 """A call through one of these modules (`win_input.click_at(...)`) is live."""
 MARKS = frozenset({"windows", "live", "probe"})
 FAKED: frozenset[str] = frozenset(
@@ -28,6 +28,14 @@ FAKED: frozenset[str] = frozenset(
         "test_probe_key.py::test_an_unknown_load_is_refused",
         "test_probe_key.py::test_the_fast_switch_loads_set_the_interval_only_inside_and_restore_it",
         "test_probe_key.py::test_echoes_over_the_deadline_are_counted",
+        # [V2.59] the open-IME probe's pure helpers and its exit codes over a fake run: no input
+        "test_ime_probe.py::test_a_layout_is_given_in_hex",
+        "test_ime_probe.py::test_a_layout_that_is_not_a_hkl_is_refused",
+        "test_ime_probe.py::"
+        "test_a_verdict_passes_only_when_nothing_moved_and_the_hook_saw_every_key_up",
+        "test_ime_probe.py::test_ime_layouts_are_the_chinese_japanese_and_korean_input_locales",
+        "test_ime_probe.py::test_main_reports_any_other_abort_as_an_abort",
+        "test_ime_probe.py::test_main_says_not_applicable_when_no_ime_is_installed",
         # LW-01: the v2 platform's monitor and timeout over a replaced HookMonitor and registry read
         "loop2/test_live_world.py::test_the_v2_platform_starts_a_per_hook_monitor",
         "loop2/test_live_world.py::test_the_hook_timeout_is_read_from_the_registry_and_capped",
