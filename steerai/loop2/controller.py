@@ -29,6 +29,7 @@ from steerai.loop2.decision import (
     STEP_VERBS,
     SUBGOAL_ID,
     UNTARGETED,
+    ClaimKind,
     Decision,
     Verb,
     validate,
@@ -448,13 +449,19 @@ def _prompt_schema(*, first_turn: bool) -> dict[str, Any]:  # Any: a JSON schema
     """The Decision schema as the prompt shows it. Only the step's verbs are offered
     (`decision.STEP_VERBS`, [V2.44] (1)), and only the step's claim kinds (`STEP_KINDS`, #386).
     [V2.65]: the shape errors are not offered at all. Only the first turn's schema has the
-    subgoals field, and an action is a union by verb, each variant holding only its verb's fields
-    (`_action_variant`). The parsed types keep every verb, kind and field, so a model that sends
-    another one anyway gets its refusal (`validate`, the backstop)."""
+    subgoals field; an action is a union by verb (`_action_variant`) and a claim a union by kind
+    (`_claim_variant`), each variant holding only its own fields. The parsed types keep every
+    verb, kind and field, so a model that sends another one anyway gets its refusal (`validate`,
+    the backstop)."""
     schema = Decision.model_json_schema()
     defs = schema["$defs"]
-    kind = defs["Claim"]["properties"]["kind"]  # #386: one kind table per step
-    kind["enum"] = [k for k in kind["enum"] if k in STEP_KINDS[STEP]]
+    claim_fields = defs.pop("Claim")["properties"]
+    kinds = [k for k in get_args(ClaimKind) if k in STEP_KINDS[STEP]]  # #386: per step
+    for kind in kinds:
+        defs[f"Claim_{kind}"] = _claim_variant(kind, claim_fields)
+    schema["properties"]["claims"]["items"] = {
+        "oneOf": [{"$ref": f"#/$defs/Claim_{k}"} for k in kinds]
+    }
     fields = defs.pop("ActionDoc")["properties"]
     defs["Commit"] = _required(fields["commit"])  # one copy, referenced by every variant
     verbs = [v for v in get_args(Verb) if v in STEP_VERBS[STEP]]
@@ -500,6 +507,38 @@ def _action_variant(
     if verb == "type":
         variant["oneOf"] = [{"required": ["text"]}, {"required": ["param"]}]
     return variant
+
+
+CLAIM_FIELDS: Final[Mapping[str, tuple[tuple[str, ...], tuple[str, ...]]]] = {
+    "value": (("evidence", "param"), ()),
+    "state": (("evidence", "wanted"), ("param",)),
+    "navigated": ((), ("evidence",)),
+}
+"""[V2.65]: each step claim kind's (required, optional) fields beside `subgoal` and `kind`, as
+the claim checks read them (`verify.check_claim`): value and state cite exactly one element; a
+value names its param; a state names the wanted state, its param only a hint ([V2.39] (2));
+navigated may cite rows. A kind added to `STEP_KINDS` needs its row here first."""
+
+
+def _claim_variant(
+    kind: str,
+    fields: Mapping[str, Any],  # Any: JSON schema parts
+) -> dict[str, Any]:  # Any: a JSON schema document
+    """[V2.65]: one claim kind: its own fields only, its needed ones required."""
+    needed, optional = CLAIM_FIELDS[kind]
+    properties: dict[str, Any] = {  # Any: JSON schema parts
+        "subgoal": _required(fields["subgoal"]),
+        "kind": {"const": kind},
+        **{name: _required(fields[name]) for name in (*needed, *optional)},
+    }
+    if "evidence" in needed:  # value and state read exactly one element
+        properties["evidence"] = {**properties["evidence"], "minItems": 1, "maxItems": 1}
+    return {
+        "additionalProperties": False,
+        "properties": properties,
+        "required": ["subgoal", "kind", *needed],
+        "type": "object",
+    }
 
 
 def _required(field: Mapping[str, Any]) -> dict[str, Any]:  # Any: JSON schema parts

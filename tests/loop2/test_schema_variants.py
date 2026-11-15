@@ -12,6 +12,7 @@ from steerai.loop2.controller import PROMPT_VERSION, build_prompt
 from steerai.loop2.decision import (
     NO_COMMIT_VERBS,
     STEP,
+    STEP_KINDS,
     STEP_VERBS,
     UNTARGETED,
     Decision,
@@ -152,3 +153,64 @@ def test_every_shape_the_schema_offers_is_one_validate_accepts() -> None:
             }
         )
         assert validate(decision, listed_ids=frozenset({1}), goal=GOAL, first_turn=True) == []
+
+
+# ---- claims: a union by kind, each holding only its kind's fields ------------------------------
+
+
+def _claim_variants(schema: dict[str, Any]) -> dict[str, dict[str, Any]]:  # Any: schema parts
+    items = schema["properties"]["claims"]["items"]
+    out = {}
+    for ref in items["oneOf"]:
+        variant = schema["$defs"][ref["$ref"].rsplit("/", 1)[1]]
+        out[variant["properties"]["kind"]["const"]] = variant
+    return out
+
+
+def test_a_claim_is_a_union_by_kind_with_only_that_kinds_fields() -> None:
+    for schema in (FIRST, LATER):
+        variants = _claim_variants(schema)
+        assert set(variants) == set(STEP_KINDS[STEP])
+        assert "Claim" not in schema["$defs"]
+        for variant in variants.values():
+            assert variant["additionalProperties"] is False
+            assert {"subgoal", "kind"} <= set(variant["required"])
+            assert "answer" not in variant["properties"]  # the answer kind is not in step 3
+        value, state, nav = variants["value"], variants["state"], variants["navigated"]
+        assert {"param", "evidence"} <= set(value["required"])
+        assert "wanted" not in value["properties"]
+        assert {"wanted", "evidence"} <= set(state["required"])
+        assert "param" in state["properties"]  # a hint: optional ([V2.39] (2))
+        assert "param" not in state["required"]
+        assert set(nav["properties"]) == {"subgoal", "kind", "evidence"}
+        for one in (value, state):
+            evidence = one["properties"]["evidence"]
+            assert (evidence["minItems"], evidence["maxItems"]) == (1, 1)
+
+
+def test_a_value_claim_cannot_leave_out_its_param() -> None:
+    value = _claim_variants(LATER)["value"]
+    assert not _fits(value, {"subgoal": "s1", "kind": "value", "evidence": [3]})
+    assert _fits(value, {"subgoal": "s1", "kind": "value", "evidence": [3], "param": "text"})
+
+
+def _minimal_claim(kind: str) -> dict[str, object]:
+    doc: dict[str, object] = {"subgoal": "s1", "kind": kind}
+    if kind in {"value", "state"}:
+        doc["evidence"] = [1]
+    if kind == "value":
+        doc["param"] = "text"
+    if kind == "state":
+        doc["wanted"] = "on"
+    return doc
+
+
+def test_every_claim_shape_the_schema_offers_is_one_validate_accepts() -> None:
+    variants = _claim_variants(LATER)
+    for kind, variant in variants.items():
+        doc = _minimal_claim(kind)
+        assert _fits(variant, doc), kind
+        decision = Decision.model_validate({"claims": [doc]})
+        tokens = validate(decision, listed_ids=frozenset({1}), goal=GOAL, first_turn=False,
+                          known_subgoals={"s1": frozenset({"text"})})  # fmt: skip
+        assert tokens == [], (kind, tokens)
