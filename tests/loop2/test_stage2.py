@@ -6,6 +6,7 @@ voids a site for the rest of the stage, and the summary's 24-of-30 and 4096 MB f
 from __future__ import annotations
 
 import ast
+import dataclasses
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -13,23 +14,33 @@ from typing import Any
 import pytest
 
 from steerai.loop2 import stage2
-from steerai.loop2.stage1 import FLOOR_MB, MAX_RERUNS, RunRecord, StageTask
+from steerai.loop2.stage1 import FLOOR_MB, MAX_RERUNS, SITE_VOIDS, RunRecord, StageTask
 from steerai.loop2.stage1_expected import Expected
 from steerai.loop2.stage2 import (
     MIN_VALID_TASKS,
-    SITE_SPACING_S,
+    ControlResult,
     SiteRecord,
     SiteTask,
-    Spacer,
     StartPage,
     classify_site,
+    harness_failed,
     interleaved,
+    invalid_run_void,
+    needs_confirmation,
     run_stage,
     site_tasks,
     start_void,
     summarize,
+    volume_bound,
 )
-from steerai.loop2.stage2_expected import DecidingFacts, TableRow, real_site_tasks
+from steerai.loop2.stage2_expected import (
+    SITE_SPACING_S,
+    DecidingFacts,
+    SiteRow,
+    Spacer,
+    TableRow,
+    real_site_tasks,
+)
 
 FACTS = DecidingFacts("Edit", "searchbox", True, None, None, "R1")
 OTHER = DecidingFacts("Edit", None, False, None, None, "R2")
@@ -84,26 +95,115 @@ def test_the_start_voids_in_their_order(start: StartPage, void: str) -> None:
 
 def test_a_start_void_is_the_runs_verdict_and_never_a_fail() -> None:
     got = classify_site(
-        site("t1", "a.test").stage, SiteRecord(record("t1", 1, final=None), "site_changed")
+        site("t1", "a.test"), SiteRecord(record("t1", 1, final=None), "site_changed")
     )
     assert (got.verdict, got.reason) == ("void", "site_changed")
 
 
-def test_a_wall_on_the_independent_read_is_a_bot_wall() -> None:
-    """An observation independent of Steer's result: the harness's own read shows the wall."""
+def test_with_no_site_void_stage_1s_rules_decide() -> None:
+    got = classify_site(site("t1", "a.test"), SiteRecord(record("t1", 1), None))
+    assert got.verdict == "pass"
+    false = RunRecord("t1", 1, DONE, True, True, False, None)
+    assert classify_site(site("t1", "a.test"), SiteRecord(false, None)).verdict == "false_done"
+
+
+# ---- #403 blocker 1: a wall after the run is the site's only when confirmed ---------------------
+
+
+def walled(final: Mapping[str, Any] | None = DONE, *, killed: bool = False) -> RunRecord:
+    """The after-read showed a wall: the log is unread."""
+    return RunRecord("t1", 1, final, True, False, None, None, killed=killed)
+
+
+def test_a_confirmed_wall_on_the_tasks_own_host_is_a_bot_wall() -> None:
     got = classify_site(
-        site("t1", "a.test").stage, SiteRecord(record("t1", 1), None, wall_after=True)
+        site("t1", "a.test"), SiteRecord(walled(), None, wall_host="a.test"), confirmed=True
     )
     assert (got.verdict, got.reason) == ("void", "bot_wall")
 
 
-def test_with_no_site_void_stage_1s_rules_decide() -> None:
-    got = classify_site(site("t1", "a.test").stage, SiteRecord(record("t1", 1), None))
-    assert got.verdict == "pass"
-    false = RunRecord("t1", 1, DONE, True, True, False, None)
-    assert (
-        classify_site(site("t1", "a.test").stage, SiteRecord(false, None)).verdict == "false_done"
+def test_a_wall_on_another_host_is_scored() -> None:
+    """Steer navigated elsewhere and met a wall there: Steer's result, never the site's."""
+    got = classify_site(
+        site("t1", "a.test"), SiteRecord(walled(), None, wall_host="b.test"), confirmed=True
     )
+    assert got.verdict == "fail"
+
+
+def test_an_unconfirmed_wall_with_done_is_a_fail() -> None:
+    got = classify_site(
+        site("t1", "a.test"), SiteRecord(walled(), None, wall_host="a.test"), confirmed=False
+    )
+    assert (got.verdict, got.reason) == ("fail", "done_log_unread")
+
+
+def test_a_cap_kill_with_a_wall_is_a_fail() -> None:
+    """Stage 1's Steer-caused results come first, whatever the after-read shows."""
+    got = classify_site(
+        site("t1", "a.test"),
+        SiteRecord(walled(None, killed=True), None, wall_host="a.test"),
+        confirmed=True,
+    )
+    assert (got.verdict, got.reason) == ("fail", "cap_killed")
+
+
+@pytest.mark.parametrize(
+    "final",
+    [
+        {"status": "nonsense"},  # no_final_line
+        {"status": "done", "reason": "internal_error", "used": {"max_actions": 1}},  # internal
+        {"status": "error", "detail": "x"},  # start_refused
+    ],
+)
+def test_every_steer_caused_result_wins_over_a_confirmed_wall(final: Mapping[str, Any]) -> None:
+    got = classify_site(
+        site("t1", "a.test"), SiteRecord(walled(final), None, wall_host="a.test"), confirmed=True
+    )
+    assert got.verdict == "fail"
+
+
+def test_the_wall_is_confirmed_only_when_it_would_count() -> None:
+    assert needs_confirmation(site("t1", "a.test"), SiteRecord(walled(), None, wall_host="a.test"))
+    assert not needs_confirmation(
+        site("t1", "a.test"), SiteRecord(walled(), None, wall_host="b.test")
+    )
+    assert not needs_confirmation(
+        site("t1", "a.test"),
+        SiteRecord(walled(None, killed=True), None, wall_host="a.test"),
+    )
+    assert not needs_confirmation(site("t1", "a.test"), SiteRecord(record("t1", 1), None))
+
+
+# ---- #403 blocker 2: the void of a run that never started, by the run's own token -------------
+
+
+@pytest.mark.parametrize(
+    ("token", "void"),
+    [
+        ("page_not_loaded", "site_down"),
+        ("bot_check", "bot_wall"),
+        ("result_link_preexisting", "start_page_differs"),
+        ("page_targets:2", None),
+        ("anything_else", None),
+    ],
+)
+def test_an_invalid_run_maps_to_a_site_void_by_its_token_only(token: str, void: str | None) -> None:
+    assert invalid_run_void(token) == void
+
+
+def test_a_harness_failure_before_the_page_read_is_an_infrastructure_void() -> None:
+    """Launch, window, DevTools or UIA failing is the machine's, never `site_down`."""
+    got = classify_site(site("t1", "a.test"), SiteRecord(harness_failed("t1", 1), None))
+    assert (got.verdict, got.reason) == ("void", "fixture_failed_before_start")
+    assert got.reason not in SITE_VOIDS
+
+
+def test_an_unread_start_page_is_an_infrastructure_void() -> None:
+    """#401 note: an unread AriaRole or landmark map is unread, never `site_changed`."""
+    unread = dataclasses.replace(FACTS, unread=("aria_role",))
+    void = start_void(StartPage(loaded=True, wall=False, facts=unread), FACTS)
+    assert void == "start_page_unread"
+    assert void not in SITE_VOIDS
 
 
 # ---- the spacing per host, on a fake clock ------------------------------------------------------
@@ -142,7 +242,8 @@ def _run(
     attempt: Any,  # Any: the test's attempt callable
     *,
     runs: int = 3,
-    control: Any = lambda _host: True,  # Any: the test's control callable
+    control: Any = lambda _host: "pass",  # Any: the test's control callable
+    confirm: Any = lambda _task: False,  # Any: the test's wall confirmation
 ) -> tuple[list[Any], int, list[tuple[str, str]], Clock]:
     clock = Clock()
     loads: list[tuple[str, str]] = []
@@ -151,15 +252,21 @@ def _run(
         loads.append(("run", t.stage.task_id))
         return attempt(t, n)
 
-    def logged_control(host: str) -> bool:
+    def logged_control(host: str) -> ControlResult:
         loads.append(("control", host))
-        return bool(control(host))
+        result: ControlResult = control(host)
+        return result
+
+    def logged_confirm(t: SiteTask) -> bool:
+        loads.append(("confirm", t.host))
+        return bool(confirm(t))
 
     got, not_started = run_stage(
         tasks,
         runs=runs,
         attempt=logged_attempt,
         control=logged_control,
+        confirm=logged_confirm,
         spacer=Spacer(clock, clock.sleep),
     )
     return got, not_started, loads, clock
@@ -182,10 +289,10 @@ def test_every_load_of_a_host_is_spaced_and_controls_count_as_loads() -> None:
 
 def test_a_failed_control_voids_that_sites_runs_in_the_batch_unstarted() -> None:
     tasks = [site("a1", "a.test"), site("b1", "b.test")]
-    batches = iter([False] + [True] * 10)
+    batches = iter(["fail"] + ["pass"] * 10)
 
-    def control(host: str) -> bool:
-        return next(batches) if host == "a.test" else True
+    def control(host: str) -> str:
+        return next(batches) if host == "a.test" else "pass"
 
     got, _, loads, _ = _run(
         tasks, lambda t, n: SiteRecord(record(t.stage.task_id, n), None), control=control
@@ -246,6 +353,7 @@ def _table(outcome: str = "done") -> dict[str, TableRow]:
             t.task_id,
             "0" * 64,
             FACTS,
+            # the test passes each outcome as a plain str; Expected wants the Outcome literal
             Expected(t.task_id, outcome, reason, "R1", "navigated", "why"),  # type: ignore[arg-type]
         )
         for t in real_site_tasks()
@@ -311,3 +419,111 @@ def test_each_batch_runs_in_the_interleaved_order() -> None:
     tasks = [site("a1", "a.test"), site("a2", "a.test"), site("b1", "b.test")]
     got, _, _, _ = _run(tasks, lambda t, n: SiteRecord(record(t.stage.task_id, n), None), runs=3)
     assert [c.task_id for c in got[:3]] == ["a1", "b1", "a2"]
+
+
+# ---- #403 blockers 3-6, and the notes -----------------------------------------------------------
+
+
+def test_a_task_with_no_acts_row_is_refused_when_acts_are_given() -> None:
+    table = _table()
+    acts = {t.task_id: SiteRow((), None, "why") for t in real_site_tasks()}
+    acts.pop(next(iter(acts)))
+    with pytest.raises(ValueError, match="no_acts"):
+        site_tasks(table, acts)
+
+
+def test_a_walled_task_that_already_scored_is_site_voided() -> None:
+    """a2 passed run 1; a1 then walls the host in batch 2: a2 is short of its runs and must be
+    unmeasured, never failed for runs it could not have."""
+    tasks = [site("a1", "a.test"), site("a2", "a.test")]
+
+    def attempt(t: SiteTask, n: int) -> SiteRecord:
+        if t.stage.task_id == "a1" and n == 2:
+            return SiteRecord(record("a1", n, final=None), "bot_wall")
+        return SiteRecord(record(t.stage.task_id, n), None)
+
+    got, _, _, _ = _run(tasks, attempt)
+    a2 = [(c.run, c.verdict, c.reason) for c in got if c.task_id == "a2"]
+    assert a2 == [(1, "pass", None), (0, "void", "bot_wall")]
+    summary = summarize(
+        [*tasks, *[site(f"b{i}", f"b{i}.test") for i in range(MIN_VALID_TASKS)]],
+        got,
+        not_started=0,
+        runs_per_task=3,
+    )
+    assert "a2" in summary.report["site_invalid_tasks"]
+
+
+def test_a_wall_on_the_control_walls_the_host_with_no_retry() -> None:
+    tasks = [site("a1", "a.test"), site("b1", "b.test")]
+    got, _, loads, _ = _run(
+        tasks,
+        lambda t, n: SiteRecord(record(t.stage.task_id, n), None),
+        control=lambda host: "wall" if host == "a.test" else "pass",
+    )
+    assert loads.count(("control", "a.test")) == 1
+    assert ("run", "a1") not in loads
+    assert [(c.run, c.verdict, c.reason) for c in got if c.task_id == "a1"] == [
+        (0, "void", "bot_wall")
+    ]
+
+
+def test_a_wall_after_the_run_is_confirmed_by_a_spaced_harness_load() -> None:
+    tasks = [site("a1", "a.test")]
+
+    def attempt(t: SiteTask, n: int) -> SiteRecord:
+        return SiteRecord(
+            RunRecord("a1", n, DONE, True, False, None, None), None, wall_host="a.test"
+        )
+
+    got, _, loads, clock = _run(tasks, attempt, confirm=lambda _t: True)
+    assert loads == [("control", "a.test"), ("run", "a1"), ("confirm", "a.test")]
+    assert [(c.verdict, c.reason) for c in got] == [("void", "bot_wall")]
+    assert len(clock.slept) == 2  # the run and the confirmation each waited out the spacing
+
+
+def test_a_control_runs_only_for_a_host_with_a_task_in_the_batch() -> None:
+    tasks = [site("a1", "a.test"), site("b1", "b.test")]
+
+    def attempt(t: SiteTask, n: int) -> SiteRecord:
+        down = t.stage.task_id == "a1" and n > 1
+        return SiteRecord(record(t.stage.task_id, n, final=None if down else DONE),
+                          "site_down" if down else None)  # fmt: skip
+
+    _, _, loads, _ = _run(tasks, attempt, runs=1)
+    assert loads.count(("control", "b.test")) == 1  # b1 scored in batch 1: no more controls
+
+
+def test_re_runs_are_spaced_too() -> None:
+    tasks = [site("a1", "a.test")]
+    _, _, _, clock = _run(
+        tasks, lambda _t, n: SiteRecord(record("a1", n, final=None), "site_down"), runs=1
+    )
+    # 1 + MAX_RERUNS batches of control then run: every load after the first waited
+    assert len(clock.slept) == 2 * (1 + MAX_RERUNS) - 1
+    assert all(s == pytest.approx(SITE_SPACING_S) for s in clock.slept)
+
+
+def test_the_loads_per_host_are_counted_and_reported() -> None:
+    tasks = [site("a1", "a.test")]
+    clock = Clock()
+    spacer = Spacer(clock, clock.sleep)
+    got, not_started = run_stage(
+        tasks,
+        runs=3,
+        attempt=lambda _t, n: SiteRecord(record("a1", n), None),
+        control=lambda _h: "pass",
+        confirm=lambda _t: False,
+        spacer=spacer,
+    )
+    summary = summarize(tasks, got, not_started=not_started, runs_per_task=3, loads=spacer.loads)
+    assert summary.report["loads_per_host"] == {"a.test": 6}
+    assert summary.report["loads_per_host_max"] == 6
+
+
+def test_the_volume_bound_per_host_from_the_task_data() -> None:
+    """Every run, re-run and control a host can take, before any wall confirmation: what the
+    policy's "about 8 loads per host" comes to on the pooled set."""
+    bound = volume_bound(site_tasks(_table()), runs=3)
+    assert set(bound) == {t.host for t in site_tasks(_table())}
+    assert all(n >= 3 + MAX_RERUNS for n in bound.values())

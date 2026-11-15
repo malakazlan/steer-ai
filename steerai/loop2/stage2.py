@@ -32,13 +32,14 @@ the coordinator has cleared).
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 import urllib.parse
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from steerai.loop2.stage1 import (
     FLOOR_MB,
@@ -61,18 +62,27 @@ from steerai.loop2.stage2_expected import (
     START_EXPRESSION,
     DecidingFacts,
     SiteRow,
+    Spacer,
     TableRow,
     deciding_facts,
     load_acts,
     load_table,
     real_site_tasks,
-    site_changed,
+    site_check,
     start_document,
 )
 from steerai.probes.task_suite import CHALLENGE_TITLES, Task, control_url
 
-SITE_SPACING_S: Final = 60.0
-"""§2.3, [V2.63] Q4: the least time between two page loads of one host, controls included."""
+ControlResult = Literal["pass", "fail", "wall"]
+INVALID_RUN_VOIDS: Final[Mapping[str, str]] = {
+    "page_not_loaded": "site_down",
+    "bot_check": "bot_wall",
+    "result_link_preexisting": "start_page_differs",
+}
+"""#403 blocker 2: a run that never started is a site void only by the harness's own token; any
+other failure before the page read (launch, window, DevTools, UIA) is the machine's."""
+STEER_CAUSED: Final = ("cap_killed", "no_final_line", "internal", "start_refused:", "enters:")
+"""Stage 1's results that are Steer's whatever the page shows: they come before any wall."""
 MIN_VALID_TASKS: Final = 24
 """[V2.63] Q5: a conclusive stage needs at least this many of the 30 tasks not site-voided."""
 LABEL: Final = "2b"
@@ -109,8 +119,9 @@ class SiteRecord:
     record: RunRecord
     start: str | None
     """The start-page check's void, if any (the child was never started)."""
-    wall_after: bool = False
-    """The harness's own read after the run showed a wall."""
+    wall_host: str | None = None
+    """The host of the page that showed a wall to the read after the run (that read is of the
+    page Steer left, so it is not independent on its own: `classify_site`)."""
 
 
 def host_of(task: Task) -> str:
@@ -125,6 +136,10 @@ def site_tasks(
     unrated = [t.task_id for t in real_site_tasks() if t.task_id not in table]
     if unrated:
         raise ValueError(f"unrated tasks: {unrated}")
+    known = set(table) if acts is None else set(acts)
+    missing = [t.task_id for t in real_site_tasks() if t.task_id not in known]
+    if missing:
+        raise ValueError(f"no_acts: {missing}")
     tasks = []
     for task in real_site_tasks():
         rated = table[task.task_id]
@@ -159,49 +174,50 @@ def start_void(start: StartPage, committed: DecidingFacts) -> str | None:
         return "bot_wall"
     if start.facts is None:
         return "start_page_differs"
-    if site_changed(committed, start.facts):
-        return "site_changed"
-    return None
+    check = site_check(committed, start.facts)
+    if check == "unread":
+        return "start_page_unread"  # the harness's read failed: infrastructure, never the site's
+    return "site_changed" if check == "changed" else None
 
 
-def classify_site(task: StageTask, site: SiteRecord) -> Classified:
-    """The site's voids in front of stage 1's own rules; each from an observation independent of
-    Steer's result ([V2.63] Q5)."""
+def invalid_run_void(token: str) -> str | None:
+    """#403 blocker 2: the site void a never-started run's `InvalidRun` token names; None for any
+    other token (the run's void is then the machine's)."""
+    return INVALID_RUN_VOIDS.get(token)
+
+
+def harness_failed(task_id: str, run: int) -> RunRecord:
+    """A run whose harness failed before the start page was read: stage 1's infrastructure void
+    (`fixture_failed_before_start`)."""
+    return RunRecord(task_id, run, None, False, False, None, None)
+
+
+def _steer_caused(got: Classified) -> bool:
+    return got.verdict == "fail" and (got.reason or "").startswith(STEER_CAUSED)
+
+
+def needs_confirmation(task: SiteTask, site: SiteRecord) -> bool:
+    """A wall after the run counts only on the task's own host and only over no Steer-caused
+    result; only then is the harness's confirming load spent."""
+    if site.start is not None or site.wall_host != task.host:
+        return False
+    return not _steer_caused(classify(task.stage, site.record))
+
+
+def classify_site(task: SiteTask, site: SiteRecord, *, confirmed: bool = False) -> Classified:
+    """The site's voids in front of stage 1's own rules, each from an observation independent of
+    Steer's result ([V2.63] Q5). A wall after the run is the page Steer left, so it is a
+    `bot_wall` only on the task's own host, over no Steer-caused result, and `confirmed` by a
+    spaced, fresh-profile harness load (#403 blocker 1); otherwise the run is classified with its
+    log unread."""
     record = site.record
     if site.start is not None:
         return Classified(record.task_id, record.run, "void", site.start, False, None, None)
-    if site.wall_after:
+    if confirmed and needs_confirmation(task, site):
         return Classified(
             record.task_id, record.run, "void", "bot_wall", False, record.final, record.memory
         )
-    return classify(task, record)
-
-
-class Spacer:
-    """§2.3: every load of a host waits until `spacing_s` after its last one (kill-aware: an
-    interrupt raised in the sleep ends the wait as itself)."""
-
-    def __init__(
-        self,
-        clock: Callable[[], float],
-        sleep: Callable[[float], None],
-        spacing_s: float = SITE_SPACING_S,
-    ) -> None:
-        self._clock = clock
-        self._sleep = sleep
-        self._spacing_s = spacing_s
-        self._last: dict[str, float] = {}
-
-    def wait(self, host: str) -> None:
-        last = self._last.get(host)
-        if last is None:
-            return
-        left = last + self._spacing_s - self._clock()
-        if left > 0:
-            self._sleep(left)
-
-    def loaded(self, host: str) -> None:
-        self._last[host] = self._clock()
+    return classify(task.stage, record)
 
 
 def interleaved(tasks: Iterable[SiteTask]) -> list[SiteTask]:
@@ -223,15 +239,19 @@ def run_stage(  # noqa: PLR0913 - the tasks, then keyword-only knobs
     *,
     runs: int,
     attempt: Callable[[SiteTask, int], SiteRecord | str],
-    control: Callable[[str], bool],
+    control: Callable[[str], ControlResult],
+    confirm: Callable[[SiteTask], bool],
     spacer: Spacer,
     emit: Callable[[Mapping[str, Any]], None] = lambda _row: None,  # Any: JSON values
 ) -> tuple[list[Classified], int]:
     """Batches in round robin until each task has `runs` scored runs or `runs + MAX_RERUNS`
-    attempts. Each batch first runs each pending site's control (a site whose tasks have none
-    runs none); a failed one voids that site's runs in the batch, unstarted. A bot wall voids
-    its site for the rest of the stage: its tasks never run again, and a task of it that never
-    ran is `site_voided` (run 0). Returns the classified runs and how many were not started."""
+    attempts. Each batch first runs the control of each site with a task in the batch (a site
+    whose tasks have none runs none); a failed one voids that site's runs in the batch,
+    unstarted. A wall after a run is confirmed by `confirm`, a spaced harness load, when it would
+    count. A bot wall (at the start, confirmed after a run, or on the control) voids its site for
+    the rest of the stage: its tasks never run again, and each of them still short of its
+    scored runs is `site_voided` (run 0). Returns the classified runs and how many were not
+    started."""
     attempts = dict.fromkeys((t.stage.task_id for t in tasks), 0)
     scored = dict(attempts)
     walled: set[str] = set()
@@ -247,7 +267,8 @@ def run_stage(  # noqa: PLR0913 - the tasks, then keyword-only knobs
         ]
         if not pending:
             break
-        failed = _controls(pending, control=control, spacer=spacer, emit=emit)
+        failed, walls = _controls(pending, control=control, spacer=spacer, emit=emit)
+        walled |= walls
         for task in interleaved(pending):
             task_id = task.stage.task_id
             if task.host in walled:
@@ -264,15 +285,23 @@ def run_stage(  # noqa: PLR0913 - the tasks, then keyword-only knobs
                     not_started += 1
                     emit({"task": task_id, "run": run, "not_started": result})
                     continue
-                got = classify_site(task.stage, result)
+                confirmed = False
+                if needs_confirmation(task, result):
+                    spacer.wait(task.host)
+                    confirmed = confirm(task)
+                    spacer.loaded(task.host)
+                got = classify_site(task, result, confirmed=confirmed)
             classified.append(got)
             scored[task_id] += got.verdict not in ("void", "monitor_lost")
             emit({"task": task_id, "run": run, "verdict": got.verdict, "reason": got.reason,
                   "monitor_lost": got.monitor_lost, "memory": got.memory})  # fmt: skip
             if got.verdict == "void" and got.reason == "bot_wall":
                 walled.add(task.host)
+    own_wall = {c.task_id for c in classified if c.verdict == "void" and c.reason == "bot_wall"}
     classified += [
-        site_voided(t.stage) for t in tasks if t.host in walled and not attempts[t.stage.task_id]
+        site_voided(t.stage)
+        for t in tasks
+        if t.host in walled and scored[t.stage.task_id] < runs and t.stage.task_id not in own_wall
     ]
     return classified, not_started
 
@@ -280,20 +309,37 @@ def run_stage(  # noqa: PLR0913 - the tasks, then keyword-only knobs
 def _controls(
     pending: Sequence[SiteTask],
     *,
-    control: Callable[[str], bool],
+    control: Callable[[str], ControlResult],
     spacer: Spacer,
     emit: Callable[[Mapping[str, Any]], None],  # Any: JSON values
-) -> set[str]:
-    """The batch's per-site controls (§2.4): the hosts whose control failed."""
+) -> tuple[set[str], set[str]]:
+    """The batch's per-site controls (§2.4): the hosts whose control failed, and those whose
+    control met a wall (#403 blocker 5: walled for the stage, no retry)."""
     failed: set[str] = set()
+    walls: set[str] = set()
     for host in dict.fromkeys(t.host for t in interleaved(pending) if t.controlled):
         spacer.wait(host)
-        ok = control(host)
+        result = control(host)
         spacer.loaded(host)
-        emit({"control": host, "passed": ok})
-        if not ok:
+        emit({"control": host, "result": result})
+        if result == "fail":
             failed.add(host)
-    return failed
+        elif result == "wall":
+            walls.add(host)
+    return failed, walls
+
+
+def volume_bound(tasks: Sequence[SiteTask], *, runs: int) -> dict[str, int]:
+    """Per host, the most loads the stage can make before any wall confirmation: each task's
+    runs and re-runs, and one control in each batch (#403 blocker 6, against the policy's
+    "about 8 loads per host")."""
+    batches = runs + MAX_RERUNS
+    bound: dict[str, int] = {}
+    for task in tasks:
+        bound[task.host] = bound.get(task.host, 0) + batches
+    for host in {t.host for t in tasks if t.controlled}:
+        bound[host] += batches
+    return bound
 
 
 def summarize(
@@ -302,6 +348,7 @@ def summarize(
     *,
     not_started: int,
     runs_per_task: int,
+    loads: Mapping[str, int] | None = None,
 ) -> Summary:
     """Stage 1's `accept` with stage 2's floor and valid-task minimum; the tasks with no control
     are listed apart (rev 4.4a (c)): unverifiable against a site change, never a scored pass."""
@@ -316,6 +363,8 @@ def summarize(
         min_valid_tasks=MIN_VALID_TASKS,
     )
     summary.report["no_control"] = [t.stage.task_id for t in tasks if not t.controlled]
+    summary.report["loads_per_host"] = dict(loads or {})
+    summary.report["loads_per_host_max"] = max((loads or {}).values(), default=0)
     return summary
 
 
@@ -339,12 +388,15 @@ def _start_page(site: SiteTask, port: int, hwnd: int) -> StartPage:  # pragma: n
     if not loaded or wall or site.row is None or site.suite is None:
         return StartPage(loaded, wall, None)
     client = UiaClient()
-    read = read_observed(
-        WorldModel(client).observe(hwnd, cap_s=5.0),
-        _ComFacts(client),
-        key=secrets.token_bytes(32),
-        windows=lambda: (hwnd,),
-    )
+    try:
+        read = read_observed(
+            WorldModel(client).observe(hwnd, cap_s=5.0),
+            _ComFacts(client),
+            key=secrets.token_bytes(32),
+            windows=lambda: (hwnd,),
+        )
+    finally:
+        del client  # its COM objects are released here, on this thread
     try:
         facts: DecidingFacts | None = deciding_facts(site.row, site.suite.goal, read)
     except ValueError:  # the act's target is missing: not the expected start page
@@ -352,7 +404,7 @@ def _start_page(site: SiteTask, port: int, hwnd: int) -> StartPage:  # pragma: n
     return StartPage(loaded, wall, facts)
 
 
-def _live_site(  # pragma: no cover - live
+def _live_site(  # noqa: PLR0911 - one return per way a run ends  # pragma: no cover - live
     site: SiteTask, run: int, *, out_dir: Path, price: Path
 ) -> SiteRecord:
     """One run: the start page in a throwaway Chrome, its read-only check, the child on its
@@ -370,6 +422,7 @@ def _live_site(  # pragma: no cover - live
         SETTLE_LIMIT_S,
         _launch_one,
         _not_shown_before,
+        _read,
         _read_page,
         _settled,
         _stop_one,
@@ -385,6 +438,9 @@ def _live_site(  # pragma: no cover - live
     def unread(start: str) -> SiteRecord:
         return SiteRecord(RunRecord(task_id, run, None, True, False, None, None), start)
 
+    def failed() -> SiteRecord:
+        return SiteRecord(harness_failed(task_id, run), None)
+
     tmp = Path(tempfile.mkdtemp(prefix="steer-stage2-"))
     run_dir = out_dir / f"{task_id}-{run}"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -394,15 +450,19 @@ def _live_site(  # pragma: no cover - live
         try:
             window = wait_window_for_pid(proc.pid, image="chrome.exe", process=proc)
             page_ws_url(port)
+        except (OSError, TimeoutError, RuntimeError):
+            return failed()  # launch, window or DevTools: the machine's (#403 blocker 2)
+        try:
             _settled(port, SETTLE_LIMIT_S)
             time.sleep(3.0)
             void = start_void(_start_page(site, port, window.hwnd), site.facts)
             if void is None:
                 _not_shown_before(suite, port)
-        except InvalidRun:
-            return unread("start_page_differs")
+        except InvalidRun as exc:
+            token = invalid_run_void(str(exc))
+            return failed() if token is None else unread(token)
         except (OSError, TimeoutError, RuntimeError):
-            return unread("site_down")
+            return failed()  # a DevTools or UIA read failed: the machine's
         if void is not None:
             return unread(void)
         ran, memory = run_sampled(
@@ -419,10 +479,12 @@ def _live_site(  # pragma: no cover - live
                              killed=ran.killed, code=ran.code, memory=memory)  # fmt: skip
 
         try:
+            left = json.loads(_read(port, _WALL_EXPRESSION, "after") or "{}")
+            if str(left.get("title", "")) in CHALLENGE_TITLES:
+                wall_host = urllib.parse.urlsplit(str(left.get("href", ""))).netloc
+                return SiteRecord(record(False, None), None, wall_host=wall_host)
             observed = _read_page(port, "page", links=bool(suite.result_link))
-        except InvalidRun as exc:
-            return SiteRecord(record(False, None), None, wall_after=str(exc) == "bot_check")
-        except (OSError, RuntimeError, ValueError):
+        except (InvalidRun, OSError, RuntimeError, ValueError):
             return SiteRecord(record(False, None), None)
         return SiteRecord(record(True, passed(suite, "done", observed)), None)
     finally:
@@ -430,14 +492,60 @@ def _live_site(  # pragma: no cover - live
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _control(tasks: Sequence[SiteTask], host: str) -> bool:  # pragma: no cover - live
-    """The site's control this batch: its first controlled task's own control (`task_suite`)."""
+_WALL_EXPRESSION: Final = "JSON.stringify({href: location.href, title: document.title})"
+
+
+def _control(tasks: Sequence[SiteTask], host: str) -> ControlResult:  # pragma: no cover - live
+    """The site's control this batch: its first controlled task's own control (`task_suite`); a
+    bot check on it is a wall."""
     from steerai.probes.task_suite import controls  # noqa: PLC0415 - live only
 
     first = next(t for t in tasks if t.host == host and t.controlled and t.suite is not None)
     assert first.suite is not None  # noqa: S101 - narrowed by the filter above
     lines = controls([first.suite])
-    return bool(lines) and "control passes" in lines[0]
+    line = lines[0] if lines else ""
+    if "control passes" in line:
+        return "pass"
+    return "wall" if "(bot_check)" in line else "fail"
+
+
+def _confirm_wall(site: SiteTask) -> bool:  # pragma: no cover - live
+    """#403 blocker 1: a fresh-profile harness load of the task's control page (else its start
+    page) shows the wall too."""
+    import shutil  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    from steerai.probes.chrome_a11y import CHROME_DEFAULT, page_ws_url  # noqa: PLC0415
+    from steerai.probes.layer_b import WINDOW, _free_port  # noqa: PLC0415
+    from steerai.probes.task_suite import (  # noqa: PLC0415 - live only
+        CONTROL_ARGS,
+        SETTLE_LIMIT_S,
+        _launch_one,
+        _read,
+        _settled,
+        _stop_one,
+    )
+
+    suite = site.suite
+    if suite is None:
+        return False
+    url = control_url(suite) or suite.start
+    tmp = Path(tempfile.mkdtemp(prefix="steer-wall-"))
+    port = _free_port()
+    proc = _launch_one(
+        CHROME_DEFAULT, tmp / "profile", port, url, window_size=WINDOW, extra_args=CONTROL_ARGS
+    )
+    try:
+        page_ws_url(port)
+        _settled(port, SETTLE_LIMIT_S)
+        time.sleep(4.0)
+        page = json.loads(_read(port, _WALL_EXPRESSION, "confirm") or "{}")
+        return str(page.get("title", "")) in CHALLENGE_TITLES
+    except (OSError, TimeoutError, RuntimeError, ValueError):
+        return False  # unconfirmed: the run is scored, never voided on a guess
+    finally:
+        _stop_one(proc, tmp / "profile")
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, Windows only
@@ -446,14 +554,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
 
     parser = argparse.ArgumentParser(prog="python -m steerai.loop2.stage2")
     parser.add_argument("--table", type=Path, required=True, help="the committed expected table")
-    parser.add_argument("--acts", type=Path, default=None, help="the acts data file")
+    parser.add_argument("--acts", type=Path, required=True, help="the acts data file")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--price-file", type=Path, required=True)
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
-    from steerai.loop2.stage2_expected import ACTS  # noqa: PLC0415
-
-    acts = load_acts((args.acts or ACTS).read_text(encoding="utf-8"))
+    acts = load_acts(args.acts.read_text(encoding="utf-8"))
     tasks = site_tasks(load_table(args.table.read_text(encoding="utf-8")), acts)
 
     def attempt(site: SiteTask, run: int) -> SiteRecord | str:
@@ -466,15 +572,23 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
             return ready
         return _live_site(site, run, out_dir=args.out, price=args.price_file)
 
+    spacer = Spacer(time.monotonic, time.sleep)
     classified, not_started = run_stage(
         tasks,
         runs=args.runs,
         attempt=attempt,
         control=lambda host: _control(tasks, host),
-        spacer=Spacer(time.monotonic, time.sleep),
+        confirm=_confirm_wall,
+        spacer=spacer,
         emit=lambda row: _emit({**row, "floor_mb": FLOOR_MB}),
     )
-    summary = summarize(tasks, classified, not_started=not_started, runs_per_task=max(args.runs, 3))
+    summary = summarize(
+        tasks,
+        classified,
+        not_started=not_started,
+        runs_per_task=max(args.runs, 3),
+        loads=spacer.loads,
+    )
     _emit({"summary": {"accepted": summary.accepted, "gates": summary.gates, **summary.report}})
     return 0 if summary.accepted else 1
 
