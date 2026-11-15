@@ -36,6 +36,10 @@ FAKED: frozenset[str] = frozenset(
         "test_ime_probe.py::test_ime_layouts_are_the_chinese_japanese_and_korean_input_locales",
         "test_ime_probe.py::test_main_reports_any_other_abort_as_an_abort",
         "test_ime_probe.py::test_main_says_not_applicable_when_no_ime_is_installed",
+        # #379 review 3: the bounded IME read over a fake SendMessageTimeoutW
+        "test_ime_probe.py::test_an_ime_read_answered_is_its_open_status",
+        "test_ime_probe.py::test_an_ime_read_that_times_out_is_unanswered_never_a_wait",
+        "test_ime_probe.py::test_with_no_ime_window_there_is_nothing_to_read",
         # LW-01: the v2 platform's monitor and timeout over a replaced HookMonitor and registry read
         "loop2/test_live_world.py::test_the_v2_platform_starts_a_per_hook_monitor",
         "loop2/test_live_world.py::test_the_hook_timeout_is_read_from_the_registry_and_capped",

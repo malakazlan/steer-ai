@@ -6,6 +6,8 @@ window, no hook."""
 
 from __future__ import annotations
 
+import ast
+import inspect
 import io
 import json
 from collections.abc import Callable
@@ -15,6 +17,7 @@ from typing import Any
 import pytest
 
 from steerai.probes import ime_probe
+from steerai.probes.probe_key import IMC_GETOPENSTATUS
 from steerai.session.monitor import PROBE_VK
 
 EN_US = 0x0409_0409
@@ -81,10 +84,11 @@ class FakeDesk:
         self.idle = 10.0
         self.fg = 100
         self.layout = EN_US
-        self.ime_open = 0
+        self.ime_open: int | str = 0
         self.opens = True
         self.closing_answers = True
         self.restores = True
+        self.hangs_after_close = False
         self.text_empty = True
 
     def idle_s(self) -> float:
@@ -116,6 +120,9 @@ class FakeDesk:
         self.log.append(f"open {edit} {int(open_)}")
         if not open_ and not self.closing_answers:
             raise ime_probe.Abort("ime_control_unanswered")
+        if not open_ and self.hangs_after_close:
+            self.ime_open = "unanswered"
+            return
         if self.opens or not open_:
             self.ime_open = int(open_)
 
@@ -319,6 +326,52 @@ def test_main_passes_when_the_probe_key_passed() -> None:
     code, rows = _main(lambda: [PROBE_VK])
     assert code == 0
     assert rows[-1]["probe_vk_passes"] is True
+
+
+def test_a_readback_the_ime_never_answered_is_a_failed_restore() -> None:
+    probe = Probe()
+    probe.desk.hangs_after_close = True
+    with pytest.raises(ime_probe.RestoreFailed):
+        probe.run([PROBE_VK])
+    assert probe.log[-1] == "close"
+
+
+# ---- every IME read is bounded ([V2.59] #379 review 3) -------------------------------------------
+
+
+def test_an_ime_read_that_times_out_is_unanswered_never_a_wait() -> None:
+    sent: list[tuple[int, int, int, int]] = []
+
+    def send(hwnd: int, message: int, wparam: int, lparam: int) -> tuple[bool, int]:
+        sent.append((hwnd, message, wparam, lparam))
+        return False, 0
+
+    assert ime_probe.read_open_status(send, 77) == "unanswered"
+    assert sent == [(77, ime_probe.WM_IME_CONTROL, IMC_GETOPENSTATUS, 0)]
+
+
+def test_an_ime_read_answered_is_its_open_status() -> None:
+    assert ime_probe.read_open_status(lambda *_a: (True, 1), 77) == 1
+    assert ime_probe.read_open_status(lambda *_a: (True, 0), 77) == 0
+
+
+def test_with_no_ime_window_there_is_nothing_to_read() -> None:
+    def never(*_a: int) -> tuple[bool, int]:
+        raise AssertionError("no window, no message")
+
+    assert ime_probe.read_open_status(never, 0) is None
+
+
+def test_the_probes_desk_reads_the_ime_only_through_the_bounded_read() -> None:
+    """`probe_key`'s desk reads the open status with a plain SendMessageW; this probe's own desk
+    replaces that read, and nothing in this module sends a message without a timeout."""
+    tree = ast.parse(inspect.getsource(ime_probe))
+    desk = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "_ImeDesk")
+    assert "_ime_open" in {n.name for n in desk.body if isinstance(n, ast.FunctionDef)}
+    calls = {n.func.attr for n in ast.walk(tree)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}  # fmt: skip
+    assert "SendMessageW" not in calls
+    assert "SendMessageTimeoutW" in calls
 
 
 def test_main_exits_with_its_own_code_when_the_restore_failed() -> None:

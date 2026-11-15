@@ -35,7 +35,15 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from typing import Any, Final, Protocol
 
-from steerai.probes.probe_key import IDLE_S, ROUND_TRIPS, SETTLE_S, Abort, _Desk, _text_reader
+from steerai.probes.probe_key import (
+    IDLE_S,
+    IMC_GETOPENSTATUS,
+    ROUND_TRIPS,
+    SETTLE_S,
+    Abort,
+    _Desk,
+    _text_reader,
+)
 from steerai.session.monitor import PROBE_VK
 
 __all__ = [
@@ -70,6 +78,21 @@ Row = dict[str, Any]  # Any: JSON values
 class RestoreFailed(Exception):  # noqa: N818 - the probe's own outcome, said as its name
     """The input locale or the IME's open status did not read back as it was before the probe.
     Raised from the restore, so it is what the run ends with even after an abort."""
+
+
+SendTimeout = Callable[[int, int, int, int], tuple[bool, int]]
+"""SendMessageTimeoutW with abort-if-hung and `SEND_TIMEOUT_MS`: whether the window answered, and
+its answer."""
+
+
+def read_open_status(send: SendTimeout, ime: int) -> int | str | None:
+    """The IME's open status from its default IME window, bounded: `unanswered` when the window
+    did not answer in time (a hung IME never holds the probe or its restore), None with no IME
+    window."""
+    if not ime:
+        return None
+    answered, result = send(ime, WM_IME_CONTROL, IMC_GETOPENSTATUS, 0)
+    return int(result) if answered else "unanswered"
 
 
 def primary_language(hkl: int) -> int:
@@ -336,15 +359,23 @@ class _ImeDesk(_Desk):
         if not self._user.PostMessageW(edit, WM_INPUTLANGCHANGEREQUEST, 0, hkl):
             raise OSError(ctypes.get_last_error(), "PostMessageW")
 
+    def _send_timeout(self, hwnd: int, message: int, wparam: int, lparam: int) -> tuple[bool, int]:
+        result = ctypes.c_size_t(0)
+        sent = self._user.SendMessageTimeoutW(hwnd, message, wparam, lparam, SMTO_ABORTIFHUNG,
+                                              SEND_TIMEOUT_MS, ctypes.byref(result))  # fmt: skip
+        return bool(sent), int(result.value)
+
+    def _ime_open(self, hwnd: int) -> int | str | None:
+        """Replaces `probe_key`'s plain SendMessageW read: every IME read here is bounded, the
+        baseline and the post-restore readback included."""
+        return read_open_status(self._send_timeout, int(self._imm.ImmGetDefaultIMEWnd(hwnd) or 0))
+
     def set_ime_open(self, edit: int, open_: bool) -> None:
         ime = self._imm.ImmGetDefaultIMEWnd(edit)
         if not ime:
             raise Abort("no_ime_window")
-        result = ctypes.c_size_t(0)
-        sent = self._user.SendMessageTimeoutW(ime, WM_IME_CONTROL, IMC_SETOPENSTATUS,
-                                              int(open_), SMTO_ABORTIFHUNG, SEND_TIMEOUT_MS,
-                                              ctypes.byref(result))  # fmt: skip
-        if not sent:
+        answered, _ = self._send_timeout(int(ime), WM_IME_CONTROL, IMC_SETOPENSTATUS, int(open_))
+        if not answered:
             raise Abort("ime_control_unanswered")
 
 
