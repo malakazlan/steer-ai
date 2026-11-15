@@ -701,18 +701,46 @@ def test_a_site_void_on_one_host_repeats_only_that_hosts_control() -> None:
 CALENDAR_TEST = "test_a_spacer_counts_days_on_the_calendar_by_default"
 
 
-def _bare_spacers(source: str, name: str = "t.py") -> list[str]:
-    """Every `Spacer(...)` in `source` (module level, a def or an async def; by its own name, an
-    alias of it, or `module.Spacer`) built without `day=`, or with `day=calendar_day`; the one
-    test of the calendar default is exempt."""
-    tree = ast.parse(source)
-    aliases = {"Spacer"} | {
+def _names_of(tree: ast.Module, target: str) -> set[str]:
+    """`target` and every name bound to it: an import alias (`import ... as x`), a module's
+    attribute (`mod.target`), and a rebinding (`x = target`, `x = mod.target`, `x = y` of a
+    name already bound), to a fixpoint."""
+    names = {target} | {
         a.asname or a.name
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom)
         for a in node.names
-        if a.name == "Spacer"
+        if a.name == target
     }
+    while True:
+        more = {
+            t.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign) and _refers(node.value, names, target)
+            for t in node.targets
+            if isinstance(t, ast.Name)
+        }
+        if more <= names:
+            return names
+        names |= more
+
+
+def _refers(node: ast.expr | None, names: set[str], target: str) -> bool:
+    return (isinstance(node, ast.Name) and node.id in names) or (
+        isinstance(node, ast.Attribute) and node.attr == target
+    )
+
+
+def _bare_spacers(source: str, name: str = "t.py") -> list[str]:
+    """Every `Spacer` built in `source` (module level, a def or an async def; by its own name,
+    an import alias, a rebound name, `module.Spacer`, or through `partial(Spacer, ...)`) without
+    `day=`, or with the calendar (`calendar_day`, an alias or a rebinding of it, or
+    `module.calendar_day`); the one test of the calendar default is exempt. Known limit
+    (#466 (1)): a call that passes `**kw` is flagged even when the mapping holds a day (the
+    check cannot see into it: fail closed)."""
+    tree = ast.parse(source)
+    spacers = _names_of(tree, "Spacer")
+    calendars = _names_of(tree, "calendar_day")
     exempt: set[int] = set()
     for fn in ast.walk(tree):
         if isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef) and fn.name == CALENDAR_TEST:
@@ -722,15 +750,15 @@ def _bare_spacers(source: str, name: str = "t.py") -> list[str]:
         if not isinstance(call, ast.Call) or id(call) in exempt:
             continue
         func = call.func
-        spacer = (isinstance(func, ast.Name) and func.id in aliases) or (
-            isinstance(func, ast.Attribute) and func.attr == "Spacer"
-        )
-        if not spacer:
+        partial = getattr(func, "id", getattr(func, "attr", None)) == "partial"
+        if partial:
+            built = bool(call.args) and _refers(call.args[0], spacers, "Spacer")
+        else:
+            built = _refers(func, spacers, "Spacer")
+        if not built:
             continue
         day = next((k.value for k in call.keywords if k.arg == "day"), None)
-        named = getattr(day, "id", None) or getattr(day, "attr", None)
-        calendar = isinstance(day, ast.Name | ast.Attribute) and named == "calendar_day"
-        if day is None or calendar:
+        if day is None or _refers(day, calendars, "calendar_day"):
             bare.append(f"{name}:{call.lineno}")
     return bare
 
@@ -756,15 +784,35 @@ def test_no_stage_test_reads_the_real_calendar() -> None:
         "import steerai.loop2.stage2_expected as se\ndef t():\n    se.Spacer(c, s)\n",
         "def t():\n    Spacer(c, s, day=calendar_day)\n",
         "def t():\n    Spacer(c, s, day=se.calendar_day)\n",
+        # #466 (1): the common bypasses
+        "from steerai.loop2.stage2_expected import calendar_day as cd\n"
+        "def t():\n    Spacer(c, s, day=cd)\n",  # an aliased calendar import
+        "def t():\n    cd = calendar_day\n    Spacer(c, s, day=cd)\n",  # a rebound calendar
+        "def t():\n    S = Spacer\n    S(c, s)\n",  # a rebound Spacer
+        "S = Spacer\ndef t():\n    S(c, s)\n",  # rebound at module level
+        "def t():\n    S = se.Spacer\n    S(c, s)\n",  # rebound from the module
+        "from functools import partial\ndef t():\n    partial(Spacer, c, s)()\n",
+        "import functools\ndef t():\n    functools.partial(Spacer, c)(s)\n",
+        "def t():\n    partial(Spacer, c, s, day=calendar_day)()\n",
+        "def t():\n    Spacer(c, s, **kw)\n",  # the known limit: `**kw` is flagged
     ],
 )
 def test_the_calendar_check_sees_every_form(source: str) -> None:
-    """#428 (3): module-level calls, async defs, aliases, attribute forms and the calendar."""
+    """#428 (3), #466 (1): module-level calls, async defs, aliases, attribute forms, the
+    calendar, an aliased or rebound calendar, a rebound `Spacer` and `partial(Spacer, ...)`."""
     assert _bare_spacers(source)
 
 
-def test_the_calendar_check_passes_a_spacer_given_its_day() -> None:
-    assert _bare_spacers("def t():\n    Spacer(c, s, day=days)\n") == []
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def t():\n    Spacer(c, s, day=days)\n",
+        "def t():\n    S = Spacer\n    S(c, s, day=days)\n",
+        "from functools import partial\ndef t():\n    partial(Spacer, c, s, day=days)()\n",
+    ],
+)
+def test_the_calendar_check_passes_a_spacer_given_its_day_in_any_form(source: str) -> None:
+    assert _bare_spacers(source) == []
 
 
 def test_an_attempt_never_starts_without_its_whole_budget_left_today() -> None:
@@ -867,7 +915,8 @@ def test_a_run_where_every_attempt_confirms_fits_its_days_bound() -> None:
 
 
 def test_an_uncontrolled_host_needs_only_an_attempts_loads() -> None:
-    """With 2 a day, an uncontrolled task runs today: no control's load is reserved for it."""
+    """With a cap of one attempt's loads a day (`ATTEMPT_LOADS`), an uncontrolled task runs
+    today: no control's load is reserved for it."""
     clock = Clock()
     days = Days(clock)
     ran: list[int] = []
@@ -905,3 +954,41 @@ def test_a_run_that_crosses_midnight_counts_on_the_day_it_started() -> None:
     clock.now -= 86_400.0  # back on the day it started
     assert days() == start
     assert spacer.remaining("a.test") == 2
+
+
+def test_a_control_that_crosses_midnight_counts_on_the_day_it_started() -> None:
+    """#466 (3): the control's load is stamped with the day it began, like the run's."""
+    clock = Clock()
+    days = Days(clock)
+    spacer = Spacer(clock, clock.sleep, day=days, cap=3)
+
+    def ctl(_host: str) -> ControlResult:
+        clock.now += 86_400.0  # the control ends after midnight
+        return "pass"
+
+    run_stage([site("a1", "a.test")], runs=1,
+              attempt=lambda t, n: SiteRecord(record(t.stage.task_id, n), None),
+              control=ctl, confirm=lambda _t: False, spacer=spacer)  # fmt: skip
+    clock.now -= 86_400.0  # back on the day the control started
+    assert spacer.remaining("a.test") == 3 - 1  # the control, and only it, on day 0
+    clock.now += 86_400.0
+    assert spacer.remaining("a.test") == 3 - 1  # the run, after midnight, on day 1
+
+
+def test_a_confirmation_that_crosses_midnight_counts_on_the_day_it_started() -> None:
+    """#466 (3): a wall confirmation's load is stamped with the day it began."""
+    clock = Clock()
+    days = Days(clock)
+    spacer = Spacer(clock, clock.sleep, day=days, cap=3)
+
+    def confirm(_t: SiteTask) -> bool:
+        clock.now += 86_400.0  # the confirmation ends after midnight
+        return False
+
+    run_stage([site("a1", "a.test", controlled=False)], runs=1,
+              attempt=lambda t, _n: SiteRecord(walled(), None, wall_host=t.host),
+              control=lambda _h: "pass", confirm=confirm, spacer=spacer)  # fmt: skip
+    clock.now -= 86_400.0  # back on the day the run and its confirmation started
+    assert spacer.remaining("a.test") == 3 - 2  # the run and its confirmation, both on day 0
+    clock.now += 86_400.0
+    assert spacer.remaining("a.test") == 3
