@@ -35,6 +35,7 @@ from steerai.loop2.decision import (
     subgoal_tokens,
     validate,
 )
+from steerai.loop2.form import STATE_SET_VERB
 from steerai.loop2.guards import (
     ActionKey,
     StrikeReason,
@@ -49,6 +50,7 @@ from steerai.loop2.history import (
     ClaimResult,
     ClaimWord,
     Entered,
+    FocusMovedAfterPress,
     HistoryRecord,
     LoadGuard,
     LogEntry,
@@ -322,6 +324,8 @@ class _Run:
         self.log: list[HistoryRecord] = []
         """[V2.46]: action entries and history events, in order (`TurnView.log`)."""
         self.history_dropped = 0
+        self.focus_moved_after_press = 0
+        """[V2.43] (1): presses on a state-set element after which focus was off the target."""
         """[V2.47]: lines that failed the history pattern (`_note`)."""
         self.dispatched: list[Dispatch] = []
         self.model_calls = 0
@@ -405,6 +409,7 @@ class _Run:
             focus_losses=self.focus_losses,
             unread_automation_ids=self.unread_aids,
             history_dropped=self.history_dropped,
+            focus_moved_after_press=self.focus_moved_after_press,
         )
 
     def _cost(self) -> float | None:
@@ -1107,6 +1112,9 @@ class _Run:
         if element is not None:
             self.last_acted = _Acted(element.runtime_id, element.role, element.name)
         self._note(self._log_entry(sent, act, report))
+        if element is not None and _focus_left(sent, element, watched.after):
+            self.focus_moved_after_press += 1  # [V2.43] (1): seen and counted, no extra read
+            self._note(FocusMovedAfterPress(self._handle_of(element)))
         if not report.classes <= {"none", "unknown"}:
             self.refusal = None  # [V2.12]: progress resets the refusal that decides the status
         if sent.submit:
@@ -1448,6 +1456,17 @@ def _matches(typed: _Typed, observed: Observed) -> list[Element]:
     if by_rid:
         return by_rid
     return [e for e in elements if e.runtime_id and _identity(e) == typed.identity]
+
+
+def _focus_left(sent: Dispatch, element: Element, after: Observed) -> bool:
+    """[V2.43] (1): a Space or an Enter on a state-set element, and the watch's after-read shows
+    the focus elsewhere. An arrow is exempt (it moves focus by design); an unread focus is never
+    counted as moved."""
+    action = sent.action
+    pressed = action.verb == "press" and action.key in {"Space", "Enter"}
+    if not pressed or element.role not in STATE_SET_VERB or after.focus is None:
+        return False
+    return after.focus != element.runtime_id
 
 
 def _with_value(observed: Observed, value: ValueFact | None) -> Observed:

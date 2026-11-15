@@ -269,6 +269,9 @@ class TaskOutcome:
     unread_automation_ids: int = 0
     """[V2.26] (2), V2 §6.1, #301: the elements whose automation id was not read, summed over
     every observation the loop took in; counted on the pooled set, the decision stays open."""
+    focus_moved_after_press: int = 0
+    """[V2.43] (1), #298: presses (Space or Enter on a state-set element) after which the watch's
+    after-read showed the focus off the target."""
     history_dropped: int = 0
     """[V2.47]: history lines off the history vocabulary (`history_line_ok`): dropped, never
     shown."""
