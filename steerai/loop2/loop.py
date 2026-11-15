@@ -320,6 +320,9 @@ class TaskOutcome:
     """Each token category times its configured rate ([V2.40] Q3); None when no price is
     configured or a used category has no rate ([V2.37] P6): the cost budget is then reported
     "not configured", never as enforced, never 0.0."""
+    rejections: tuple[str, ...] = ()
+    """The controller's rejection tokens of the turn that ended the task (closed tokens only),
+    so a stopped run says why; empty otherwise."""
     usage_incomplete: bool = False
     """[V2.41] (1): some call's usage was missing or invalid: `tokens` and `cost_usd` are then a
     lower bound, never complete. A decide that raises (abandoned on a kill, or failed) is counted

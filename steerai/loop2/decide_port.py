@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Any, Final, TypeVar
 
 from steerai.errors import ErrorCode, SteerError
-from steerai.loop2.controller import AskModel
+from steerai.loop2.controller import AskModel, ControllerError
 from steerai.loop2.loop import PortInterrupted, TokenUsage
 from steerai.planner.claude_planner import DEFAULT_MAX_TOKENS, DEFAULT_MODEL, EFFORT
 
@@ -235,7 +235,11 @@ class DecideCalls:
         """Run one controller turn with this `ask_model`; its result and the summed usage of
         its calls (None when a call reported none, or no call was made)."""
         self._usages = []
-        result = run(self._ask)
+        try:
+            result = run(self._ask)
+        except ControllerError as rejected:  # the shakedown's #2: its calls' usage goes with it
+            rejected.usage = _summed(self._usages)
+            raise
         return result, _summed(self._usages)
 
     def _ask(self, system: list[str], blocks: list[str]) -> str:
