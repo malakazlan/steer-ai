@@ -5,7 +5,7 @@ from collections.abc import Mapping
 import pytest
 from pydantic import ValidationError
 
-from steerai.loop2.decision import ActionDoc, Claim, Decision, SubgoalDoc, validate
+from steerai.loop2.decision import ActionDoc, Claim, Decision, SubgoalDoc, ValidateToken, validate
 
 GOAL = "write hello world to the note"
 LISTED = frozenset({1, 2, 3})
@@ -18,7 +18,7 @@ def check(
     *,
     first_turn: bool = False,
     known_subgoals: Mapping[str, frozenset[str]] | None = None,
-) -> list[str]:
+) -> list[ValidateToken]:
     return validate(
         decision,
         listed_ids=LISTED,

@@ -35,7 +35,6 @@ from steerai.loop2.decision import (
     subgoal_tokens,
     validate,
 )
-from steerai.loop2.form import ENTER_FIELDS
 from steerai.loop2.guards import (
     ActionKey,
     StrikeReason,
@@ -48,12 +47,16 @@ from steerai.loop2.guards import (
 )
 from steerai.loop2.history import (
     ClaimResult,
+    ClaimWord,
     Entered,
     HistoryRecord,
     LoadGuard,
     LogEntry,
     Proven,
+    ProvenHow,
+    RefusalWord,
     Refused,
+    RunnerClaim,
     Vocab,
     WorldMoved,
     log_role,
@@ -666,7 +669,7 @@ class _Run:
 
     def _refused(
         self, claim: Claim, subgoal: Subgoal, param: str | None, observed: Observed
-    ) -> str | None:
+    ) -> RunnerClaim | None:
         """Code's refusals before the claim check, first match wins: a commit subgoal is never
         closed in step 3 (RT-06); the claim's kind must prove the subgoal's closing kind
         ([V2.39]); a value or state claim must name one param, by an element that proves no
@@ -720,7 +723,7 @@ class _Run:
                 return False
         return True
 
-    def _reject(self, subgoal: Subgoal, tokens: Sequence[str]) -> None:
+    def _reject(self, subgoal: Subgoal, tokens: Sequence[ClaimWord]) -> None:
         self._notes(ClaimResult(subgoal.id, t) for t in tokens)
         self.turn.claim_rejected = True
 
@@ -750,7 +753,7 @@ class _Run:
         address = None if first is None else (first.document_url or first.url)
         return address is not None and address.lower().startswith("file:")
 
-    def _tick(self, subgoal: Subgoal, *, how: str) -> None:
+    def _tick(self, subgoal: Subgoal, *, how: ProvenHow) -> None:
         """A proven subgoal. RT-06, §8.8: a commit subgoal is never closed in step 3 (a standard
         proof never closes it; the strict tier is step 4)."""
         if subgoal.commit != "none":
@@ -983,8 +986,7 @@ class _Run:
         if verdict.refusal is not None:
             self._refuse(verdict.refusal, subgoal=action.subgoal, handle=self._handle_of(element))
             return None
-        enter = action.verb == "press" and action.key == "Enter" and element.role in ENTER_FIELDS
-        return verdict.risk, enter or verdict.submit_parent is not None, verdict.trigger
+        return verdict.risk, verdict.submit, verdict.trigger  # #350: one classification
 
     def _pending(self, observed: Observed) -> list[PendingText]:
         """[V2.37] P2, [V2.38] RT-03: every field typed into in this task that may still hold the
@@ -1242,7 +1244,9 @@ class _Run:
 
     # ---- refusals, guards -----------------------------------------------------------------
 
-    def _refuse(self, *tokens: str, subgoal: str | None = None, handle: int | None = None) -> None:
+    def _refuse(
+        self, *tokens: RefusalWord, subgoal: str | None = None, handle: int | None = None
+    ) -> None:
         """[V2.11] decision 4, [V2.37] P5: nothing dispatched is a refusal with a token and a
         strike; it replaces the latest refusal, whatever its kind. [V2.42] RT-29: several tokens
         take the kind by priority and every token is recorded. RT-30: a policy or step-limit

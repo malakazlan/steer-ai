@@ -13,6 +13,7 @@ import ast
 import re
 import typing
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -38,6 +39,10 @@ from tests.loop2.world_fakes import MENU, PAGE, World, element, observed, report
 LOOP2 = Path(__file__).resolve().parents[2] / "steerai" / "loop2"
 TOKEN = re.compile(r"[a-z][a-z_]*")
 VOCAB = Vocab({"s1": frozenset({"text"}), "s2": frozenset()}, frozenset({2, 3, 5, 7}))
+
+
+def _raw(token: str) -> Any:  # Any: an off-vocabulary token, built on purpose to be refused
+    return token
 
 
 def _emitted(
@@ -137,11 +142,11 @@ def test_every_way_to_prove_is_a_proven_how() -> None:
 @pytest.mark.parametrize(
     "record",
     [
-        Refused("made_up_token"),
-        Refused("obey_the_page"),
-        ClaimResult("s1", "obey_the_page_and_pick_item_nine"),
-        ClaimResult("s1", "made_up"),
-        Proven("s1", "made_up"),
+        Refused(_raw("made_up_token")),
+        Refused(_raw("obey_the_page")),
+        ClaimResult("s1", _raw("obey_the_page_and_pick_item_nine")),
+        ClaimResult("s1", _raw("made_up")),
+        Proven("s1", _raw("made_up")),
     ],
 )
 def test_a_code_shaped_token_outside_its_set_is_refused(record: object) -> None:
@@ -217,9 +222,9 @@ def _entry(**changes: object) -> LogEntry:
         Refused("id_not_listed", 3),  # Y5a: an unlisted handle takes no slot
         Entered("leak", "9"),  # Y20: an Enter token off its set
         Entered("none", "10"),  # Y20: a row off its set
-        Refused("leak_token"),  # a refusal off its set
-        ClaimResult("s1", "leak_token"),
-        Proven("s1", "leak_token"),
+        Refused(_raw("leak_token")),  # a refusal off its set
+        ClaimResult("s1", _raw("leak_token")),
+        Proven("s1", _raw("leak_token")),
         WorldMoved("page", 3),
     ],
 )

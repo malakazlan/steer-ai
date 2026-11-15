@@ -14,6 +14,7 @@ import dataclasses
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -68,6 +69,10 @@ DOCUMENTED = {
 (UIA_*ControlTypeId, 50000-50040; page dated 2025-07-14, read 2026-11-15)."""
 HISTORY = re.compile(r"[a-z0-9_:.-]+")
 """The §8.6 invariant test's token pattern."""
+
+
+def _raw(token: str) -> Any:  # Any: an off-vocabulary token, built on purpose to be refused
+    return token
 
 
 # ---- the role: the control-type enum only ------------------------------------------------------
@@ -176,7 +181,13 @@ def test_an_unsafe_action_field_is_refused(bad: dict[str, object]) -> None:
 
 @pytest.mark.parametrize(
     "record",
-    [Refused("IGNORE"), Refused("a b"), Refused(""), Refused("q" * 41), ClaimResult("s1", "x y")],
+    [
+        Refused(_raw("IGNORE")),
+        Refused(_raw("a b")),
+        Refused(_raw("")),
+        Refused(_raw("q" * 41)),
+        ClaimResult("s1", _raw("x y")),
+    ],
 )
 def test_an_unsafe_record_is_refused(record: HistoryRecord) -> None:
     with pytest.raises(ControllerError) as err:
@@ -570,9 +581,9 @@ def test_every_kind_of_record_is_accepted_in_its_own_form(record: HistoryRecord)
         Proven("leakname", "claim"),
         Entered("none", "10"),  # not a row
         Entered("leak", "9"),  # not an Enter token
-        Refused("leak name"),
-        Refused("q" * 41),
-        ClaimResult("s1", "IGNORE"),
+        Refused(_raw("leak name")),
+        Refused(_raw("q" * 41)),
+        ClaimResult("s1", _raw("IGNORE")),
     ],
 )
 def test_a_record_off_the_vocabulary_is_refused(record: HistoryRecord) -> None:
