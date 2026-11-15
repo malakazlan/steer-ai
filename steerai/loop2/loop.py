@@ -257,6 +257,8 @@ class TaskOutcome:
     """[V2.43] (2): Decisions discarded because focus left a press's target after the listing
     showed it there (counted on its own)."""
     unread_automation_ids: int = 0
+    history_dropped: int = 0
+    """[V2.47]: history lines that did not match the history pattern: dropped, never shown."""
     """[V2.26] (2), V2 §6.1, #301: the elements whose automation id was not read, summed over
     every observation the loop took in; counted on the pooled set, the decision stays open."""
     cost_usd: float | None = None

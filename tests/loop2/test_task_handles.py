@@ -19,6 +19,7 @@ from tests.loop2.world_fakes import (
     GO,
     MENU,
     PAGE,
+    PASSWORD,
     World,
     act,
     decision,
@@ -111,23 +112,37 @@ def test_an_element_without_a_runtime_id_has_no_handle() -> None:
     assert world.dispatched == []
 
 
-def test_the_only_number_in_history_is_an_action_lines_task_handle() -> None:
-    """[V2.46]: an action line carries its target's task handle; no other history line carries
-    a number (a refused unlisted handle included)."""
+HANDLED = ("act:", "refused:", "target_changed:", "focus_lost:")
+"""[V2.46], [V2.47] (a): the lines that may carry a task handle."""
+
+
+def test_the_only_numbers_in_history_are_issued_task_handles() -> None:
+    """[V2.46]: an action line carries its target's handle; [V2.47] (a): a line about one
+    element (refused, target_changed, focus_lost) may carry that element's handle, as its last
+    part. No line carries any other number: never an unlisted handle the model named (99)."""
     world = World(
-        [decision(act("click", target=GO.id), first=True), decision(act("click", target=99))],
+        [
+            decision(act("click", target=GO.id), first=True),
+            decision(act("type", target=PASSWORD.id, text="x")),
+            decision(act("click", target=99)),
+        ],
         effects=[report("content_changed")],
     )
     run_task(task(), world.ports())
-    issued = {str(h) for h in world.views[-1].handles.values()}
-    for token in world.views[-1].history:
-        parts = token.split(":")
+    view = world.views[-1]
+    issued = {str(h) for h in view.handles.values()}
+    lines = view.history
+    assert any(line.startswith("refused:") and line.split(":")[-1].isdigit() for line in lines)
+    for line in lines:
+        parts = line.split(":")
         numbers = [p for p in parts if re.fullmatch(r"[0-9]+", p)]
-        if token.startswith("act:"):
+        if line.startswith("act:"):
             assert numbers == [parts[2]]
-            assert parts[2] in issued
+        elif line.startswith(HANDLED):
+            assert numbers in ([], [parts[-1]]), line
         else:
-            assert numbers == [], token
+            assert numbers == [], line
+        assert set(numbers) <= issued, line
 
 
 def test_claim_evidence_is_read_through_the_handles(monkeypatch: pytest.MonkeyPatch) -> None:

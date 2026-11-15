@@ -68,7 +68,9 @@ def test_p4_a_press_whose_target_left_the_snapshot_is_refused_with_a_token() -> 
     )
     run_task(task(), world.ports())
     assert [d.action.verb for d in world.dispatched] == ["click"]
-    assert "refused:press_target_gone" in _history(world)
+    assert f"refused:press_target_gone:{FIELD.id}" in _history(
+        world
+    )  # [V2.47]: with the element's task handle
 
 
 def test_p4_a_press_whose_target_changed_role_or_name_is_refused() -> None:
@@ -80,7 +82,9 @@ def test_p4_a_press_whose_target_changed_role_or_name_is_refused() -> None:
         later=observed(renamed, focus=FIELD.runtime_id),
     )
     run_task(task(), world.ports())
-    assert "refused:press_target_changed" in _history(world)
+    assert f"refused:press_target_changed:{FIELD.id}" in _history(
+        world
+    )  # [V2.47]: with the element's task handle
 
 
 def test_rt04_a_dispatch_carries_the_role_and_name_the_act_port_re_checks() -> None:
@@ -109,7 +113,9 @@ def test_rt07_the_same_send_twice_in_one_batch_after_a_weak_effect_is_refused() 
     )
     run_task(task(), world.ports())
     assert len(world.dispatched) == 1
-    assert "refused:repeat_send" in _history(world)
+    assert f"refused:repeat_send:{GO.id}" in _history(
+        world
+    )  # [V2.47]: with the element's task handle
 
 
 def test_rt09_the_state_digest_reads_the_states_not_only_the_names() -> None:
@@ -472,6 +478,26 @@ def test_rr3_history_holds_the_task_handle_never_the_listing_ordinal() -> None:
     acts = [t.split(":") for t in world.views[-1].history if t.startswith("act:")]
     assert [parts[2] for parts in acts] == [str(MENU.id), str(GO.id)]
     assert all("30" not in parts for parts in acts)
+
+
+def test_a_refused_line_shows_the_task_handle_never_the_listing_ordinal() -> None:
+    """[V2.47] (a): a line about one element carries its task handle. Go is re-listed at snapshot
+    id 30 and its second click is not delivered: the refusal names handle 3, never 30."""
+    moved_go = dataclasses.replace(GO, id=30)
+    relisted = observed([*(e for e in PAGE if e.id != GO.id), moved_go])
+    world = World(
+        [decision(act("click", target=MENU.id), first=True), decision(act("click", target=GO.id))],
+        effects=[report("content_changed")],
+        later=relisted,
+        results=[
+            act_result("click", Delivery.DELIVERED_VERIFIED),
+            act_result("click", Delivery.NOT_DELIVERED),
+        ],
+    )
+    run_task(task(), world.ports())
+    history = world.views[-1].history
+    assert f"refused:not_delivered:{GO.id}" in history
+    assert "refused:not_delivered:30" not in history
 
 
 def test_an_act_that_raises_keeps_the_action_that_may_have_landed() -> None:

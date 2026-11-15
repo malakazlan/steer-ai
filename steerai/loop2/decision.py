@@ -80,7 +80,9 @@ MAX_ACTIONS = 4
 MAX_SUBGOALS = 5
 MAX_DESC_CHARS = 120
 SUBGOAL_ID = re.compile(r"[a-z0-9_]{1,16}")
-PARAM_NAME = re.compile(r"[a-z_]{1,32}")
+PARAM_NAME = re.compile(r"[a-z0-9_]{1,24}")
+"""[V2.47]: a param name is closed at intake: lowercase letters, digits and underscore, at most
+24 characters (subgoal ids: the same alphabet, at most 16, `SUBGOAL_ID`)."""
 CHECKED_KINDS = frozenset({"state", "value", "navigated"})
 
 

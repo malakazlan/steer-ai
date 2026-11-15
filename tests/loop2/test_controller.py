@@ -44,7 +44,6 @@ SAVE = LogEntry(
     classes=("focus",),
     tokens=(),
     read_back=None,
-    claim="none",
 )
 BODY = LogEntry(
     verb="type",
@@ -56,7 +55,6 @@ BODY = LogEntry(
     classes=("own_value",),
     tokens=(),
     read_back=None,
-    claim="proven",
 )
 
 
@@ -153,9 +151,9 @@ def test_log_is_append_only_prefix() -> None:
     assert two[1].startswith(one[1])
     assert two[1].split("\n")[1:] == [
         "1 click handle=1 role=button subgoal=s1 param=- delivery=delivered_verified "
-        "effects=focus read_back=- claim=none",
+        "effects=focus read_back=-",
         "2 type handle=2 role=edit subgoal=s1 param=text delivery=delivered_verified "
-        "effects=own_value read_back=- claim=proven",
+        "effects=own_value read_back=-",
     ]
     assert two[0] == one[0]
 

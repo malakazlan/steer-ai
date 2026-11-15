@@ -152,9 +152,17 @@ page dated 2025-07-14, read 2026-11-15)."""
 LOG_ROLES: Final = frozenset({r.lower() for r in UIA_CONTROL_TYPES} | {"unknown"})
 EFFECT = re.compile(r"[a-z_]{1,32}(:[a-z_]{1,32})?")
 """An effect class or token: `own_value`, or `unknown:<cause>` ([V2.42] (B))."""
-CLAIM_RESULT = re.compile(r"none|proven|accepted|refused:[a-z_]{1,32}")
-EVENT = re.compile(r"[a-z0-9_:.-]{1,128}")
-"""A non-action history line: a closed token the runner wrote (§8.6)."""
+HISTORY_LINE = re.compile(r"[a-z0-9_.-]+(?::[a-z0-9_.-]+)*")
+"""[V2.47]: the one pattern every history line matches before it is shown (§8.6): closed
+tokens, task handles and closed ids, separated by `:`."""
+MAX_HISTORY_LINE: Final = 256
+
+
+def history_line_ok(line: str) -> bool:
+    """[V2.47]: the line may be shown; one that is not is dropped and counted, never shown."""
+    return len(line) <= MAX_HISTORY_LINE and HISTORY_LINE.fullmatch(line) is not None
+
+
 READ_BACK: Final = frozenset({"mismatch", "unread"})
 
 
@@ -166,8 +174,9 @@ def log_role(role: str) -> str:
 
 @dataclass(frozen=True)
 class LogEntry:
-    """[V2.46]: one past action, as closed tokens and the target's task handle. No name and no
-    text: a name in the history is page text that would follow the model to later pages."""
+    """[V2.46], [V2.47]: one past action, as closed tokens and the target's task handle. No
+    name and no text: a name in the history is page text that would follow the model to later
+    pages. No claim result either: a claim result is always its own line."""
 
     verb: str
     handle: int | None
@@ -182,8 +191,6 @@ class LogEntry:
     tokens: tuple[str, ...]
     read_back: str | None
     """`mismatch` or `unread` for a read-back verb whose read-back did not verify."""
-    claim: str
-    """The turn's claim result on this action's subgoal: none, proven, accepted, refused:<t>."""
 
     def token(self) -> str:
         """The history token (§8.6): `act:<verb>:<handle>:<role>:<subgoal>:<param>:<delivery>:
@@ -244,7 +251,7 @@ def _log_line(index: int, entry: LogEntry | str) -> str:
     """[V2.46]: an action line from its closed fields, or a history event as written. Anything
     outside the closed vocabularies is refused (`unsafe_token`), never escaped."""
     if isinstance(entry, str):
-        if EVENT.fullmatch(entry) is None:
+        if not history_line_ok(entry):
             raise ControllerError("unsafe_token")
         return f"{index} {entry}"
     handle = entry.handle
@@ -258,7 +265,7 @@ def _log_line(index: int, entry: LogEntry | str) -> str:
         and TOKEN.fullmatch(entry.delivery) is not None
         and all(EFFECT.fullmatch(e) is not None for e in (*entry.classes, *entry.tokens))
         and (entry.read_back is None or entry.read_back in READ_BACK)
-        and CLAIM_RESULT.fullmatch(entry.claim) is not None
+        and history_line_ok(entry.token())
     )
     if not closed:
         raise ControllerError("unsafe_token")
@@ -266,7 +273,7 @@ def _log_line(index: int, entry: LogEntry | str) -> str:
     return (
         f"{index} {entry.verb} handle={'-' if handle is None else handle} role={entry.role} "
         f"subgoal={entry.subgoal or '-'} param={entry.param or '-'} delivery={entry.delivery} "
-        f"effects={effects} read_back={entry.read_back or '-'} claim={entry.claim}"
+        f"effects={effects} read_back={entry.read_back or '-'}"
     )
 
 
