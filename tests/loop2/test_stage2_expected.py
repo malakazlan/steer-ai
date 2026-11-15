@@ -15,12 +15,14 @@ from steerai.loop2.stage1_expected import Act, Expected
 from steerai.loop2.stage2_expected import (
     DecidingFacts,
     SiteRow,
+    StartDocument,
     deciding_facts,
     dump_table,
     load_acts,
     load_table,
     real_site_tasks,
     site_changed,
+    start_document,
     table_row,
 )
 from steerai.world.effects import Observed
@@ -229,3 +231,30 @@ def test_save_reads_writes_one_read_per_real_site_task(tmp_path: Path) -> None:
     assert main(["--save-reads", str(tmp_path)]) == 0
     for task in real_site_tasks():
         observed_from_json((tmp_path / f"{task.task_id}.json").read_text(encoding="utf-8"))
+
+
+# ---- the start document's status (stage 2 §2.2 step 3; unmeasured until the save-reads slot) ---
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ('{"uri": "https://a.test/", "title": "A", "status": 200}', (200, False, "A", True)),
+        ('{"uri": "https://a.test/", "title": "A", "status": 302}', (302, False, "A", True)),
+        ('{"uri": "https://a.test/", "title": "A", "status": 404}', (404, False, "A", False)),
+        ('{"uri": "https://a.test/", "title": "A", "status": 0}', (None, False, "A", False)),
+        (
+            '{"uri": "chrome-error://chromewebdata/", "title": "", "status": 200}',
+            (200, True, "", False),
+        ),
+        ('{"uri": "https://a.test/", "title": "A"}', (None, False, "A", False)),
+        ("not json", (None, False, "", False)),
+    ],
+)
+def test_the_start_document_is_loaded_only_with_a_2xx_or_3xx_and_no_error_page(
+    raw: str, expected: tuple[int | None, bool, str, bool]
+) -> None:
+    """A status that is unread (0, missing, not a number) is never loaded: fail closed."""
+    got = start_document(raw)
+    assert (got.status, got.error_page, got.title, got.loaded) == expected
+    assert isinstance(got, StartDocument)
