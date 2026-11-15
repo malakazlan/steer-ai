@@ -566,10 +566,10 @@ class _Run:
             if not self.handles.bind(observed):
                 observed = self._nothing_listed(observed)
                 continue
+            self.turn = _Turn()  # #434 principal 1: a close at turn start is this turn's progress
             self._judge_turn_start(observed)
             decision = self._decide(observed)
             self._check_interrupt()  # #326, [V2.40] Q4: a Decision after the kill is discarded
-            self.turn = _Turn()
             fresh = self._observe()
             if fresh.read_cost is not None:
                 self.read_costs.append(fresh.read_cost)  # [V2.34]: this re-read is paid for too

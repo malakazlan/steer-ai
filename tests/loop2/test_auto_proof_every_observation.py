@@ -124,3 +124,26 @@ def test_an_unstable_read_is_never_judged() -> None:
     world = _typed_then(shaky, shaky)
     outcome = run_task(task(), world.ports())
     assert outcome.status != "done"
+
+
+def test_a_close_at_turn_start_is_that_turns_progress() -> None:
+    """#434 principal 1: s1 closes on the stale re-read while s2 stays open; that tick belongs
+    to the turn that follows, so a turn with no effect after it takes no strike."""
+    subs = [
+        *SUBS,
+        SubgoalDoc(id="s2", desc="shop", params={"where": "shop"}, closes="page"),
+    ]
+    world = World(
+        [
+            Decision(subgoals=subs, actions=[act("type", target=FIELD.id, param="text")]),
+            Decision(stop="blocked"),  # decided on the old read: discarded as stale
+            Decision(actions=[act("wait", subgoal="s2")]),
+            Decision(stop="blocked"),
+        ],
+        effects=[report("own_value"), report("none")],
+        screen=START,
+        observations=[START, START, RESULTS],
+    )
+    outcome = run_task(task(), world.ports())
+    assert outcome.strikes == ()
+    assert "proven:s1:results_with_url" in world.views[-1].history
