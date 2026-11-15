@@ -248,6 +248,8 @@ class Decided:
     """[V2.61]: the prompt guard spent an exact count on this turn."""
     estimate_low: bool = False
     """[V2.61]: the turn's calls held more input tokens than the guard's bound said."""
+    calls: int = 1
+    """Invariant 9, [V2.68]: the model calls the turn made (a repaired turn is two)."""
 
 
 AuditReason = Literal["outcome_shown", "outcome_not_shown", "outcome_unclear"]

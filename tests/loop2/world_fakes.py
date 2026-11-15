@@ -290,6 +290,11 @@ class World:
     interrupt_after_settle: bool = False
     """Report `interruption` once a settle has run (the person's kill during the wait)."""
     decide_raises: Exception | None = None
+    decide_errors: list[Exception | None] = field(default_factory=list)
+    """Per controller call, in order: raise this one (None: decide as usual)."""
+    decide_calls: list[int] = field(default_factory=list)
+    """Per answered controller call, in order: how many model calls the turn made (a repaired
+    turn is two); then one."""
     """When set, every controller call raises it (a port failure or `PortInterrupted`)."""
     watch_timeouts: list[bool] = field(default_factory=list)
     """Each watch's `timed_out` in turn, when set (else the submit rule's own)."""
@@ -325,8 +330,12 @@ class World:
         self.sent_at_call.append(len(self.dispatched))
         if self.decide_raises is not None:
             raise self.decide_raises
+        error = self.decide_errors.pop(0) if self.decide_errors else None
+        if error is not None:
+            raise error
         decision = self.decisions.pop(0) if self.decisions else Decision(stop="cannot")
-        return Decided(decision, self.usage, self.listing)
+        calls = self.decide_calls.pop(0) if self.decide_calls else 1
+        return Decided(decision, self.usage, self.listing, calls=calls)
 
     def _arrive(self) -> None:
         if self.later is not None and len(self.dispatched) >= self.later_after_acts:
