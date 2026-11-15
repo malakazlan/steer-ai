@@ -215,6 +215,10 @@ class Decided:
     usage: TokenUsage | None
     listing: ListingTurn | None = None
     """[V2.54]: the listing shown for this Decision; None: every bound handle was shown."""
+    exact_counted: bool = False
+    """[V2.61]: the prompt guard spent an exact count on this turn."""
+    estimate_low: bool = False
+    """[V2.61]: the turn's calls held more input tokens than the guard's bound said."""
 
 
 @dataclass(frozen=True)
@@ -354,6 +358,10 @@ class TaskOutcome:
     usage: TokenUsage = TokenUsage(input_tokens=0, output_tokens=0)
     """[V2.45]: the reported usage summed by category (a lower bound when `usage_incomplete`).
     Stage 1 runs with caching off and asserts every cache counter here is zero."""
+    exact_counts: int = 0
+    """[V2.61]: turns on which the prompt guard spent an exact count (near the ceiling)."""
+    estimates_low: int = 0
+    """[V2.61]: turns whose true input tokens beat the guard's bound (each tightened the ratio)."""
 
     @property
     def reason(self) -> str | None:

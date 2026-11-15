@@ -560,6 +560,21 @@ def test_the_final_line_names_a_rejection_with_its_closed_tokens(
     assert run.result()["rejections"] == ["id_not_listed"]
 
 
+def test_the_final_line_says_how_often_the_prompt_guard_counted_and_was_low(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """[V2.61]: the turns near the ceiling that spent an exact count, and the turns whose byte
+    bound was under the truth."""
+    outcome = TaskOutcome(
+        status="done", cause=None, dispatched=(), model_calls=3, strikes=(), tokens=21.0,
+        cost_usd=0.0, wall_s=1.0, exact_counts=2, estimates_low=1,
+    )  # fmt: skip
+    monkeypatch.setattr(cli, "run_task", lambda _task, _ports: outcome)
+    run = Run(tmp_path)
+    run()
+    assert (run.result()["exact_counts"], run.result()["estimates_low"]) == (2, 1)
+
+
 def test_the_final_line_carries_the_cache_counters(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
