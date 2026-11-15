@@ -22,10 +22,12 @@ Live: `uv run python -m steerai.loop2.stage2a --save-reads <dir>` (read-only), t
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
 import json
 import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
 
@@ -53,7 +55,7 @@ from steerai.loop2.stage2_expected import (
     load_unrated,
     table_from_reads,
 )
-from steerai.probes.layer_b_pages import REPLY_TEXT
+from steerai.probes.layer_b_pages import REPLY_TEXT, InvalidRun
 from steerai.probes.task_suite import H2, H3, H4, H5, H6, HELD_OUT, TASKS, Task
 
 LABEL: Final = "2a"
@@ -61,6 +63,11 @@ ACTS: Final = Path(__file__).with_name("stage2a_acts.json")
 """Each 2a task's acts, by role and name as its saved start read shows them."""
 TABLE: Final = Path(__file__).with_name("stage2a_expected.json")
 """The committed 2a table: each read's SHA-256, its deciding facts and the expected outcome."""
+TABLE_SHA256: Final = "0e4434e00246eacbcbf209430b4cced63d9eeef5d3329b5f6c08778b4e43fb78"
+"""#408 blocker 1: the committed table's pin. A run takes only this table, so moving a task into
+`unrated` (out of acceptance) can never be done by a table passed on the command line."""
+CALC_WAIT_S: Final = 20.0
+"""How long the calculator's window may take to show (unmeasured; the v1 suite's own wait)."""
 OUT_OF_STEP_FILE: Final = Path(__file__).with_name("stage2a_out_of_step.json")
 _STEP_7: Final = "step 7:"
 
@@ -125,6 +132,12 @@ def local_stage_tasks(
     ruling (`unrated`: not run, not counted); any other task missing from the table is a
     `ValueError`."""
     held = set(unrated or {})
+    rated_and_held = sorted(held & set(table))
+    if rated_and_held:
+        raise ValueError(f"held tasks with a table row: {rated_and_held}")
+    strangers = sorted(held - {t.task_id for t in local_tasks()})
+    if strangers:
+        raise ValueError(f"held ids that are not 2a tasks: {strangers}")
     missing = [t.task_id for t in local_tasks() if t.task_id not in set(table) | held]
     if missing:
         raise ValueError(f"unrated tasks: {missing}")
@@ -140,6 +153,54 @@ def local_stage_tasks(
         for t in local_tasks()
         if t.task_id not in held
     )
+
+
+def check_table(text: str) -> None:
+    """#408 blocker 1: the run's table is the committed one, byte for byte (its SHA-256 against
+    `TABLE_SHA256`), and its rated set and unrated map are the committed acts' own."""
+    if hashlib.sha256(text.encode("utf-8")).hexdigest() != TABLE_SHA256:
+        raise ValueError("table: not the committed 2a table")
+    acts = ACTS.read_text(encoding="utf-8")
+    if set(load_table(text)) != set(load_acts(acts)) or load_unrated(text) != load_unrated(acts):
+        raise ValueError("table: its rated and unrated tasks are not the committed acts' own")
+
+
+@contextlib.contextmanager
+def calculator_window(  # noqa: PLR0913 - the title, then each injected platform call
+    *,
+    title: str,
+    windows: Callable[[], Sequence[Any]],  # Any: a top-level window with .title and .hwnd
+    launch: Callable[[], object],
+    close: Callable[[int], object],
+    sleep: Callable[[float], None],
+    clock: Callable[[], float],
+    wait_s: float = CALC_WAIT_S,
+    settle_s: float = 2.0,
+) -> Iterator[int]:
+    """The calculator's window, opened read-only and closed after (#408 blocker 4): refused when
+    one is already open (never the person's), and on `calculator_not_shown` the one this
+    launched is still closed if it shows after all. The title-only match is racy with a person
+    opening their own in the same seconds (unmeasured)."""
+    if any(w.title == title for w in windows()):
+        raise InvalidRun("calculator_already_open")
+    launch()
+    hwnd: int | None = None
+    try:
+        deadline = clock() + wait_s
+        while hwnd is None and clock() < deadline:
+            hwnd = next((w.hwnd for w in windows() if w.title == title), None)
+            if hwnd is None:
+                sleep(0.5)
+        if hwnd is None:
+            raise InvalidRun("calculator_not_shown")
+        sleep(settle_s)
+        yield hwnd
+    finally:
+        if hwnd is None:  # not shown in time: one settle later, close it if it showed after all
+            sleep(settle_s)
+            hwnd = next((w.hwnd for w in windows() if w.title == title), None)
+        if hwnd is not None:
+            close(hwnd)
 
 
 def rate_2a(acts: Mapping[str, SiteRow], reads: Path) -> list[TableRow]:
@@ -203,7 +264,7 @@ def _read_window(hwnd: int) -> bytes:  # pragma: no cover - live, Windows only
 
 
 # Any: a context manager yielding (hwnd, port)
-def _opened(task: Task) -> Any:  # noqa: PLR0915 - one opener per start kind  # pragma: no cover
+def _opened(task: Task) -> Any:
     """The task's start, opened read-only: a page in a throwaway Chrome (port set), or a native
     app this process launched (port None). Only what was launched here is closed."""
     import contextlib  # noqa: PLC0415
@@ -254,21 +315,15 @@ def _opened(task: Task) -> Any:  # noqa: PLR0915 - one opener per start kind  # 
 
     @contextlib.contextmanager
     def calculator() -> Any:  # Any: the context's (hwnd, None)
-        if any(w.title == "Calculator" for w in list_top_windows()):
-            raise InvalidRun("calculator_already_open")  # never the person's
-        subprocess.Popen([str(suite.CALC)])  # noqa: S603 - a fixed system path
-        deadline = time.monotonic() + 20.0
-        window = None
-        while window is None and time.monotonic() < deadline:
-            window = next((w for w in list_top_windows() if w.title == "Calculator"), None)
-            time.sleep(0.5)
-        if window is None:
-            raise InvalidRun("calculator_not_shown")
-        try:
-            time.sleep(2.0)
-            yield window.hwnd, None
-        finally:
-            suite._close(window.hwnd)
+        with calculator_window(
+            title="Calculator",  # the v1 suite's own window title for its calculator task
+            windows=list_top_windows,
+            launch=lambda: subprocess.Popen([str(suite.CALC)]),  # noqa: S603 - a fixed path
+            close=suite._close,
+            sleep=time.sleep,
+            clock=time.monotonic,
+        ) as hwnd:
+            yield hwnd, None
 
     if task.start in suite.PAGE_SETS:
         return page(suite._pages_for(task))
@@ -304,6 +359,9 @@ def save_reads(out: Path) -> int:  # pragma: no cover - live, Windows only
         try:
             with _opened(by_id[task_ids[0]]) as (hwnd, _port):
                 raw = _read_window(hwnd)
+        except InvalidRun as exc:  # #408 blocker 3: a start that cannot open is a row, as in 2b
+            sys.stdout.write(json.dumps({"start": key, "invalid": str(exc)}) + "\n")
+            continue
         except (OSError, TimeoutError, RuntimeError) as exc:
             sys.stdout.write(json.dumps({"start": key, "error": type(exc).__name__}) + "\n")
             continue
@@ -383,6 +441,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
     if args.table is None or args.out is None or args.price_file is None:
         parser.error("--table, --out and --price-file are required for a run")
     table_text = args.table.read_text(encoding="utf-8")
+    check_table(table_text)  # #408 blocker 1: only the committed table runs
     unrated = load_unrated(table_text)
     stages = local_stage_tasks(load_table(table_text), unrated=unrated)
     suites = {t.task_id: t for t in local_tasks()}

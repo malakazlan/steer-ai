@@ -6,6 +6,7 @@ app in code)."""
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 from pathlib import Path
 
@@ -25,6 +26,8 @@ from steerai.loop2.stage2_expected import (
 from steerai.loop2.stage2a import (
     LABEL,
     OUT_OF_STEP,
+    calculator_window,
+    check_table,
     load_out_of_step,
     local_stage_tasks,
     local_tasks,
@@ -33,6 +36,7 @@ from steerai.loop2.stage2a import (
     start_key,
     summarize,
 )
+from steerai.probes.layer_b_pages import InvalidRun
 from steerai.probes.task_suite import H2, H3, H4, H5, H6, HELD_OUT, TASKS
 
 FACTS = DecidingFacts("Edit", None, False, None, None, "R1")
@@ -179,3 +183,124 @@ def test_the_unrated_2a_tasks_are_kept_out_of_the_table_and_the_run() -> None:
     assert not {s.task_id for s in stages} & set(unrated)
     summary = summarize(stages, [], not_started=0, runs_per_task=3, unrated=unrated)
     assert summary.report["unrated"] == unrated
+
+
+# ---- #408 review: blockers 1-4 -----------------------------------------------------------------
+
+
+def test_the_committed_table_is_pinned_and_passes_its_check() -> None:
+    text = stage2a.TABLE.read_text(encoding="utf-8")
+    assert hashlib.sha256(text.encode("utf-8")).hexdigest() == stage2a.TABLE_SHA256
+    check_table(text)
+
+
+def test_a_table_that_moves_a_task_into_unrated_is_refused() -> None:
+    """Unrated must never hide a failing run: a table whose rated set or unrated map is not the
+    committed one is refused, before any run."""
+    raw = json.loads(stage2a.TABLE.read_text(encoding="utf-8"))
+    rated = next(k for k, v in raw.items() if "expected" in v)
+    raw[rated] = {"unrated": "target_after_opener"}
+    with pytest.raises(ValueError, match="table"):
+        check_table(json.dumps(raw, indent=2) + "\n")
+
+
+def test_a_table_that_differs_by_any_byte_is_refused() -> None:
+    text = stage2a.TABLE.read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="table"):
+        check_table(text.replace('"why": "a tab', '"why": "a  tab', 1))
+
+
+def test_a_held_task_with_a_table_row_is_refused() -> None:
+    table = _table()
+    held = next(iter(table))
+    with pytest.raises(ValueError, match="held"):
+        local_stage_tasks(table, unrated={held: "target_after_opener"})
+
+
+def test_a_held_id_that_is_not_a_2a_task_is_refused() -> None:
+    with pytest.raises(ValueError, match="held"):
+        local_stage_tasks(_table(), unrated={"no-such-task": "target_after_opener"})
+
+
+def test_the_pass_check_is_independent_of_the_verifier() -> None:
+    """Blocker 2: no import from the verifier, and `passed` only ever asked about a "done"."""
+    tree = ast.parse(Path(stage2a.__file__).read_text(encoding="utf-8"))
+    modules = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
+    modules |= {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+    assert not [m for m in modules if "verif" in m]
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "id", getattr(n.func, "attr", "")) == "passed"
+    ]
+    assert calls
+    for call in calls:
+        status = call.args[1]
+        assert isinstance(status, ast.Constant)
+        assert status.value == "done"
+
+
+class Window:
+    def __init__(self, title: str, hwnd: int) -> None:
+        self.title = title
+        self.hwnd = hwnd
+
+
+def test_a_calculator_already_open_is_refused_before_launching() -> None:
+    launched: list[int] = []
+    with (
+        pytest.raises(InvalidRun, match="calculator_already_open"),
+        calculator_window(
+            title="Calculator",
+            windows=lambda: [Window("Calculator", 7)],
+            launch=lambda: launched.append(1),
+            close=lambda _hwnd: None,
+            sleep=lambda _s: None,
+            clock=lambda: 0.0,
+        ),
+    ):
+        pass
+    assert launched == []
+
+
+def test_a_calculator_that_shows_late_is_closed_on_the_not_shown_path() -> None:
+    """Blocker 4: the window it launched is closed even when it shows after the deadline."""
+    t = [0.0]
+    shown: list[list[Window]] = [[]]
+    closed: list[int] = []
+
+    def sleep(seconds: float) -> None:
+        t[0] += seconds
+        if t[0] > 25.0:
+            shown[0] = [Window("Calculator", 9)]
+
+    with (
+        pytest.raises(InvalidRun, match="calculator_not_shown"),
+        calculator_window(
+            title="Calculator",
+            windows=lambda: shown[0],
+            launch=lambda: None,
+            close=closed.append,
+            sleep=sleep,
+            clock=lambda: t[0],
+            settle_s=10.0,
+        ),
+    ):
+        pass
+    assert closed == [9]
+
+
+def test_a_calculator_it_launched_is_closed_after_use() -> None:
+    closed: list[int] = []
+    shown = [[], [Window("Calculator", 5)]]
+    with calculator_window(
+        title="Calculator",
+        windows=lambda: shown.pop(0) if len(shown) > 1 else shown[0],
+        launch=lambda: None,
+        close=closed.append,
+        sleep=lambda _s: None,
+        clock=lambda: 0.0,
+    ) as hwnd:
+        assert hwnd == 5
+    assert closed == [5]
