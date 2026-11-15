@@ -212,6 +212,7 @@ def _rec(
     outage: bool = False,
     shown: bool | None = None,
     arm: str = "free",
+    calls: Sequence[JudgeCall] = (),
 ) -> ChainRecord:
     return ChainRecord(
         shape="g22",
@@ -221,10 +222,14 @@ def _rec(
         reason=reason,
         model_calls=3,
         tokens=100.0,
-        judges=tuple(JudgeCall(j, v, None, 5.0) for j, v in judges),  # type: ignore[arg-type]  # test tokens
+        judges=(
+            *(JudgeCall(j, v, None, 5.0) for j, v in judges),  # type: ignore[arg-type]  # test tokens
+            *calls,
+        ),
         declared=(("value",),),
         outcome_shown=status == "done" if shown is None else shown,
         outage=outage,
+        outage_code=(reason or "port_")[len("port_"):] if outage else None,
         arm=arm,  # type: ignore[arg-type]  # a test token
     )
 
@@ -799,8 +804,11 @@ def test_run_eval_writes_an_aborted_record_on_any_exception(tmp_path: Path) -> N
     with pytest.raises(RuntimeError):
         run_eval("pilot", [SHAPES["g22"]], broken, out=tmp_path / "run", ledger=ledger,
                  head=_wired())  # fmt: skip
-    assert ledger.entries()[-1] == {"event": "aborted", "kind": "pilot", "shape": "g22",
-                                    "index": 0, "arm": "free", "error": "RuntimeError"}  # fmt: skip
+    last = ledger.entries()[-1]
+    assert {k: last[k] for k in ("event", "kind", "shape", "index", "arm", "error")} == {
+        "event": "aborted", "kind": "pilot", "shape": "g22", "index": 0, "arm": "free",
+        "error": "RuntimeError"}  # fmt: skip
+    assert last["commit"] == _wired()["commit"]  # the wording it ran on, as a start's
 
 
 # ---- [V2.71]: the stopping rule in the header; the reach arm ----------------------------------
@@ -843,3 +851,146 @@ def test_the_reach_arm_scripts_the_insufficient_set_and_the_judge_sees_it() -> N
 def test_a_shape_with_no_reach_has_no_reach_arm() -> None:
     with pytest.raises(ValueError, match="no_reach_for_this_shape"):
         run_chain(SHAPES["g22"], index=0, provider=Scripted([], ALLOW), arm="reach")
+
+
+# ---- #454 round 2 (1): what a must-veto shape scores ---------------------------------------------
+
+
+def _judge(judge: str, verdict: str, *, scripted: bool = False, declared: str = "value") -> JudgeCall:
+    return JudgeCall(judge, verdict, None, 5.0, scripted=scripted,  # type: ignore[arg-type]
+                     declared=tuple(declared.split(",")))  # fmt: skip
+
+
+def test_a_must_veto_shape_scores_every_audit_verdict_and_the_reach_arms_scripted_intake() -> None:
+    free = _rec("blocked", "audit_veto", calls=[_judge("intake", "rejected"),
+                                                _judge("audit", "vetoed")])  # fmt: skip
+    out = score(SHAPES["g23"], [free])
+    assert (out.verdicts, out.false_allows) == (1, 0)  # the free arm's intake is unscored
+    assert out.unscored == {"intake:value:rejected": 1}
+    reach = _rec("blocked", "audit_veto", arm="reach", calls=[
+        _judge("intake", "passed", scripted=True), _judge("intake", "rejected"),
+        _judge("audit", "vetoed")])  # fmt: skip
+    out = score(SHAPES["g23"], [reach], arm="reach")
+    assert (out.verdicts, out.false_allows) == (2, 1)  # the scripted set's pass is a false allow
+    assert out.unscored == {"intake:value:rejected": 1}  # the later live set's is reported
+
+
+def test_one_scored_verdict_per_chain_per_judge_is_a_single_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    twice = _rec("blocked", "audit_veto", calls=[_judge("audit", "vetoed"),
+                                                 _judge("audit", "vetoed")])  # fmt: skip
+    assert score(SHAPES["g23"], [twice]).verdicts == 2
+    monkeypatch.setattr(chain_eval, "ONE_PER_CHAIN_PER_JUDGE", True)
+    assert score(SHAPES["g23"], [twice]).verdicts == 1
+
+
+# ---- (2): a Decision no model made is guarded in production ---------------------------------------
+
+
+def test_a_decided_with_no_call_must_report_no_usage() -> None:
+    from steerai.loop2.decision import Decision  # noqa: PLC0415
+    from steerai.loop2.loop import Decided  # noqa: PLC0415
+
+    stop = Decision(stop="cannot")
+    Decided(stop, TokenUsage(0, 0), None, calls=0)
+    with pytest.raises(ValueError, match="no_call_with_usage"):
+        Decided(stop, TokenUsage(5, 1), None, calls=0)
+    with pytest.raises(ValueError, match="no_call_with_usage"):
+        Decided(stop, None, None, calls=0)
+    with pytest.raises(ValueError, match="negative_calls"):
+        Decided(stop, TokenUsage(5, 1), None, calls=-1)
+
+
+def test_the_runner_takes_a_decision_no_model_made_only_on_the_first_turn() -> None:
+    from steerai.loop2.runner import run_task  # noqa: PLC0415
+    from tests.loop2.world_fakes import World, act, decision, report, task  # noqa: PLC0415
+
+    world = World([decision(act("click", target=10), first=True), decision(act("wait"))],
+                  effects=[report("content_changed")])  # fmt: skip
+    ports = world.ports()
+    real = ports.decide
+    seen: list[int] = []
+
+    def later_free(view: Any) -> Any:  # Any: the port's TurnView and Decided
+        seen.append(1)
+        decided = real(view)
+        if len(seen) == 1:
+            return decided
+        return dataclasses.replace(decided, calls=0, usage=TokenUsage(0, 0))
+
+    with pytest.raises(ValueError, match="no_call_after_the_first_turn"):
+        run_task(task(), dataclasses.replace(ports, decide=later_free))
+
+
+# ---- (3): the report lists every start and abort on the same wording -----------------------------
+
+
+def test_the_report_lists_every_ledger_start_and_abort_on_the_same_wording(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    head = _wired()
+    ledger.start("pilot", head)
+    ledger.aborted("pilot", "g22", 0, "free", "RuntimeError", head)
+    ledger.start("pilot", _wired(commit="b" * 40))  # a re-roll after a no-op commit
+    other = _wired(controller="controller-0")
+    ledger.start("pilot", other)  # another wording: not listed
+    listed = chain_eval.report("pilot", [], [], ledger=ledger, head=head)["ledger"]
+    assert listed == [
+        {"event": "start", "kind": "pilot", "commit": "a" * 40},
+        {"event": "aborted", "kind": "pilot", "commit": "a" * 40, "shape": "g22", "index": 0,
+         "arm": "free"},
+        {"event": "start", "kind": "pilot", "commit": "b" * 40},
+    ]  # fmt: skip
+
+
+# ---- (4): a scripted intake reject is recorded, once the intake check is wired --------------------
+
+
+@pytest.mark.skipif(chain_eval.INTAKE_PROMPT_VERSION is None, reason="the intake check is not wired")
+def test_a_scripted_intake_reject_is_recorded_in_a_chain() -> None:
+    class Intake(Scripted):
+        def __call__(self, system: list[str], blocks: list[str]) -> Reply:
+            if "intake" in "\n".join(system).casefold():
+                self.calls.append("intake")
+                reject = {"sufficient": False, "reason": "request_asks_more"}
+                return Reply(json.dumps(reject), "end_turn", TokenUsage(40, 5))
+            return super().__call__(system, blocks)
+
+    provider = Intake(_typed_and_claimed("Full name", "Ada Lovelace"), ALLOW)
+    record = run_chain(SHAPES["g22"], index=0, provider=provider)
+    assert ("intake", "rejected") in [(j.judge, j.verdict) for j in record.judges]
+
+
+# ---- the cheap ones: held-out per shapes pin, the reach set validated, the outage's own end ------
+
+
+def test_held_out_runs_once_per_shapes_pin(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.start("pilot", _wired())
+    ledger.start("held_out", _wired())
+    new_shapes = _wired(shapes_sha256="d" * 64)
+    ledger.start("pilot", new_shapes)
+    ledger.start("held_out", new_shapes)  # new held-out shapes: a new pin
+    with pytest.raises(ValueError, match="held_out_run_exists"):
+        ledger.start("held_out", new_shapes)
+
+
+def test_a_reach_set_the_validator_refuses_is_refused() -> None:
+    from steerai.loop2.loop import TurnView  # noqa: PLC0415
+
+    page = Page.from_spec(SHAPES["g23"].page)
+    seen = PageWorld(page).observe()
+    view = TurnView(observed=seen, log=(), first_turn=True,
+                    handles={e.id: e.id for e in seen.snapshot.elements})  # fmt: skip
+    spec = {"subgoals": [{"closes": "value", "params": {"query": "not in the request"}}],
+            "actions": [{"verb": "type", "control": "Find articles", "param": "query"}]}  # fmt: skip
+    with pytest.raises(ValueError, match="reach_decision_invalid"):
+        chain_eval.reach_decision(spec, view, goal=SHAPES["g23"].request)
+
+
+def test_an_outage_must_be_the_chains_own_end() -> None:
+    record = dataclasses.replace(
+        _rec("stopped", "port_model_timeout", outage=True), outage_code="model_error"
+    )
+    with pytest.raises(EvalAbortedError, match="outage_not_the_end"):
+        ending("must_pass", record)
