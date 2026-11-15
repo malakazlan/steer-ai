@@ -51,7 +51,18 @@ from steerai.loop2.turn_trace import (
     positional,
     turn_record,
 )
-from tests.loop2.world_fakes import FIELD, GO, World, act, decision, report, task
+from tests.loop2.world_fakes import (
+    FIELD,
+    GO,
+    PAGE,
+    World,
+    act,
+    decision,
+    element,
+    observed,
+    report,
+    task,
+)
 
 PAGE_TEXT = "Quarterly results for the Acme account"
 TITLE = "Acme Corp - Dashboard - Browser"
@@ -108,6 +119,9 @@ def full_record() -> dict[str, Any]:  # Any: JSON
                         "param": "param:0",
                         "text": True,
                         "key": None,
+                        "commit": "none",
+                        "risk": "R1",
+                        "why": "state_floor",
                     },
                     {
                         "verb": "press",
@@ -115,6 +129,9 @@ def full_record() -> dict[str, Any]:  # Any: JSON
                         "param": None,
                         "text": False,
                         "key": "Enter",
+                        "commit": "submit",
+                        "risk": None,
+                        "why": None,
                     },
                 ],
                 "claims": [
@@ -171,6 +188,9 @@ PLACES: dict[str, Setter] = {
     "decision key": _set(("decision", "actions", 1, "key")),
     "claim kind": _set(("decision", "claims", 0, "kind")),
     "subgoal closes": _set(("decision", "subgoals", 0, "closes")),
+    "action commit": _set(("decision", "actions", 1, "commit")),
+    "action risk": _set(("decision", "actions", 0, "risk")),
+    "action why": _set(("decision", "actions", 0, "why")),
     "decision stop": _set(("decision", "stop")),
     "rejection": lambda r, t: r["decision"]["rejections"].append(t),
     "read kind": _set(("proofs", 0, "read_kind")),
@@ -218,6 +238,17 @@ def test_the_detail_allowlist_is_the_executors_and_the_ports_own_closed_sets() -
     assert REFUSAL_DETAILS | PORT_DETAILS | {"unlisted"} == ACT_DETAILS
     assert KEY_TOKENS["repair_tokens"] is REPAIR_TOKENS
     assert {"not_json", "schema", "id_not_listed", "param_unknown"} <= REPAIR_TOKENS
+
+
+@pytest.mark.parametrize(
+    ("key", "token"),
+    [("commit", "R2"), ("commit", "click"), ("risk", "R4"), ("risk", "submit"),
+     ("why", "commit_not_in_step"), ("why", "R2")],
+)  # fmt: skip
+def test_an_actions_commit_risk_and_rule_are_tokens_of_their_own_sets(key: str, token: str) -> None:
+    record = full_record()
+    record["decision"]["actions"][0][key] = token
+    assert not closed(record)
 
 
 @pytest.mark.parametrize("token", ["click", "title", "navigated", "turn"])
@@ -487,3 +518,48 @@ def test_the_decide_port_hands_the_repair_round_to_the_runner() -> None:
                         late_error=lambda _t: None)  # fmt: skip
     decided = make_decide(calls, goal=GOAL, task_fence="taskfence01")(_view())
     assert (decided.calls, decided.rejections) == (2, ("id_not_listed",))
+
+
+# ---- lg1: each action's declared commit, its rated tier and the rule that set it ---------------
+
+
+def _first_actions(world: World) -> list[dict[str, Any]]:  # Any: JSON
+    records: list[dict[str, Any]] = []  # Any: JSON
+    outcome = run_task(task(), dataclasses.replace(world.ports(), turn_trace=_into(records)))
+    assert outcome.turn_trace_dropped == 0
+    assert all(closed(r) for r in records)
+    actions: list[dict[str, Any]] = records[0]["decision"]["actions"]  # Any: JSON
+    return actions
+
+
+def test_a_declared_commit_blocked_at_r2_is_traced_with_its_rule() -> None:
+    """lg1: blocked `commit_not_in_step` with nothing dispatched; the turn says why."""
+    world = World([decision(act("click", target=GO.id, commit="submit"), first=True)])
+    (action,) = _first_actions(world)
+    assert world.dispatched == []
+    assert (action["commit"], action["risk"], action["why"]) == ("submit", "R2", "commit_declared")
+
+
+def test_a_plain_click_is_r0_with_no_rule() -> None:
+    (action,) = _first_actions(World([decision(act("click", target=GO.id), first=True)]))
+    assert (action["commit"], action["risk"], action["why"]) == ("none", "R0", None)
+
+
+def test_a_deny_word_is_traced_as_the_pattern_never_as_the_word() -> None:
+    delete = element(11, "Button", "Delete account forever", (9, 11), 1)
+    world = World(
+        [decision(act("click", target=delete.id), first=True)], screen=observed([*PAGE, delete])
+    )
+    records: list[dict[str, Any]] = []  # Any: JSON
+    run_task(task(), dataclasses.replace(world.ports(), turn_trace=_into(records)))
+    (action,) = records[0]["decision"]["actions"]
+    assert action["why"] == "deny_pattern"
+    assert action["risk"] in {"R2", "R3"}
+    assert "Delete" not in json.dumps(records)
+
+
+def test_an_action_the_batch_never_rated_has_no_tier() -> None:
+    first = act("click", target=GO.id, commit="submit")  # ends the task at R2
+    world = World([decision(first, act("click", target=GO.id), first=True)])
+    actions = _first_actions(world)
+    assert [a["risk"] for a in actions] == ["R2", None]
