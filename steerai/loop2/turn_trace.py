@@ -86,7 +86,9 @@ class CarrierFact:
     held: bool
     """This carrier held the param on this read."""
     absent_before: bool | None
-    """Absent on the subgoal's baseline; None when the baseline was unread."""
+    """Absent on the subgoal's baseline; None when the baseline was unread. For `results`,
+    which counts only rows absent before by the observer's own rule, True when it holds and None
+    when it does not (#455 review: there is no before half to report)."""
 
 
 @dataclass(frozen=True)
@@ -115,6 +117,8 @@ class ProofAttempt:
     skipped: Skipped | None
     gate: Gate | None
     change: bool
+    """The verifier measured a change class; False also when it refused the read as no
+    navigation at all (`refused`), where nothing was measured."""
     change_by: tuple[ChangeBy, ...]
     refused: tuple[CheckToken, ...]
     """What the navigation check refused with when it was no navigation at all."""
@@ -217,19 +221,17 @@ def _words(*literals: object) -> frozenset[str]:
 
 
 EVENT: Final[Event] = "turn"
-CLOSED_TOKENS: Final = (
-    _words(Event, Verb, Key, ClaimKind, Closes, Stop, WatchKind, FocusState, Carrier, ReadKind)
-    | _words(Tier, Skipped, Gate, ChangeBy, CheckToken, OwnedToken, ProofToken)
-    | REFUSAL_TOKENS
-)
-"""Every string a turn record may hold outside its history lines: the code's own closed sets,
-never a hand list (`param_unknown` is a refusal token, `decision.ValidateToken`)."""
+MAX_NUMBER: Final = 2**31 - 1
+"""#444: the largest number a turn record may hold (counts, positions, tokens, seconds); a
+number is never negative."""
 ACT_DETAILS: Final = REFUSAL_DETAILS | PORT_DETAILS | _words(Unlisted)
 """Every detail a turn record may carry: the executors' and the act port's own closed sets."""
 ACT_RESULTS: Final = frozenset(d.value for d in Delivery) | _words(ActOutcome)
 REPAIR_TOKENS: Final = _words(ValidateToken, ControllerCode)
 """What a failed attempt is rejected with: `validate`'s tokens and the controller's codes."""
 KEY_TOKENS: Final[Mapping[str, frozenset[str]]] = {
+    "event": frozenset({EVENT}),
+    "focus": _words(FocusState),
     "refusal": REFUSAL_TOKENS,
     "rejections": REFUSAL_TOKENS,
     "detail": ACT_DETAILS,
@@ -238,9 +240,26 @@ KEY_TOKENS: Final[Mapping[str, frozenset[str]]] = {
     "commit": _words(Commit),
     "risk": frozenset(RISKS),
     "why": _words(RiskWhy),
+    "verb": _words(Verb),
+    "key": _words(Key),
+    "kind": _words(ClaimKind, WatchKind),
+    "closes": _words(Closes),
+    "stop": _words(Stop),
+    "carrier": _words(Carrier),
+    "read_kind": _words(ReadKind),
+    "tier": _words(Tier),
+    "skipped": _words(Skipped),
+    "gate": _words(Gate),
+    "change_by": _words(ChangeBy),
+    "refused": _words(CheckToken),
+    "guards": _words(CheckToken, OwnedToken),
+    "content_by": _words(ProofToken),
+    "proven_how": _words(ProofToken),
+    "param": frozenset({"param_unknown"}),
 }
-"""Keys whose strings must come from one closed set, not from any of them: a refusal is a
-refusal token, never a verb or a carrier."""
+"""#444: each key that may hold a string, with the one closed set its strings come from (a
+refusal is a refusal token, never a verb or a carrier); a string under any other key fails.
+`param` also takes a `param:<n>` position; `history` takes only grammar lines."""
 _PARAM: Final = re.compile(r"param:[0-9]{1,3}")
 KEYS: Final = frozenset(
     {
@@ -274,9 +293,10 @@ def detail_token(detail: object) -> str | None:
 
 def closed(record: Mapping[str, object]) -> bool:
     """The record holds no free text: fixed keys only; numbers finite; strings from the closed
-    sets or `param:<n>`; history lines only under `history`, each one the positional grammar
-    accepts (a raw subgoal id or param name fails it). Anything else (a name, a title, a
-    path, page text) fails the whole record."""
+    set of its own key (`KEY_TOKENS`) or a `param:<n>` position under `param`; numbers whole
+    or finite, from 0 to `MAX_NUMBER`; history lines only under `history`, each one the
+    positional grammar accepts (a raw subgoal id or param name fails it). Anything else (a
+    name, a title, a path, page text, a token under the wrong key) fails the whole record."""
     return _ok(record, key=None)
 
 
@@ -284,15 +304,15 @@ def _ok(value: object, *, key: str | None) -> bool:  # noqa: PLR0911 - one retur
     if value is None or isinstance(value, bool):
         return True
     if isinstance(value, int):
-        return True
+        return 0 <= value <= MAX_NUMBER
     if isinstance(value, float):
-        return math.isfinite(value)
+        return math.isfinite(value) and 0.0 <= value <= MAX_NUMBER
     if isinstance(value, str):
         if key == "history":
             return len(value) <= MAX_LINE and POSITIONAL_GRAMMAR.fullmatch(value) is not None
-        if key is not None and key in KEY_TOKENS:
-            return value in KEY_TOKENS[key]
-        return value in CLOSED_TOKENS or _PARAM.fullmatch(value) is not None
+        if key == "param" and _PARAM.fullmatch(value) is not None:
+            return True
+        return key is not None and value in KEY_TOKENS.get(key, frozenset())
     if isinstance(value, list | tuple):
         return all(_ok(v, key=key) for v in value)
     if isinstance(value, Mapping):
