@@ -14,6 +14,12 @@ A run is `pass`, `fail` (with its reason), `false_done` (Steer said done, the fi
 before Steer acted), or `monitor_lost` ([V2.59]: tallied apart). `accept` computes every gate
 and every reported figure from the classified runs.
 
+[V2.63] Q5, the contract for stage 2's classifier: a site void (`SITE_VOIDS`) comes only from
+observations independent of Steer's result, such as a wall signature on the page or a control
+probe run before the task, never from Steer's own outcome. A site void keeps a task out of the
+tasks gate only when none of its runs scored a fail or a false_done (a scored failure is never
+hidden behind one), and every site-void reason's rate is reported so over-assignment shows.
+
 Live: `uv run python -m steerai.loop2.stage1 --set 3d --runs 3 --out <dir>` (Windows; sends
 real input through the child; only in a window the coordinator has cleared with the person).
 """
@@ -316,7 +322,12 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
     scored = {k: [v for v in vs if v in ("pass", "fail")] for k, vs in per_task.items()}
     site = [r for r in runs if r.verdict == "void" and r.reason in SITE_VOIDS]
     site_ids = {r.task_id for r in site}
-    unmeasured = [k for k, vs in scored.items() if k in site_ids and len(vs) < runs_per_task]
+    failed = {r.task_id for r in runs if r.verdict in ("fail", "false_done")}
+    unmeasured = [
+        k
+        for k, vs in scored.items()
+        if k in site_ids and k not in failed and len(vs) < runs_per_task
+    ]
     infra = verdicts["void"] - len(site)
     measured = {k: vs for k, vs in scored.items() if k not in unmeasured}
     counted = [r for r in runs if r.final is not None and r.final.get("status") != "error"]
@@ -349,6 +360,9 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
         **_report(runs, finals, verdicts, per_task, total),
         "memory": _memory(runs, floor_mb),
         "site_voids": _counts(r.reason for r in site),
+        "site_void_rates": {  # report only: a classifier over-assigning site voids shows here
+            k: round(n / total, 3) for k, n in _counts(r.reason for r in site).items()
+        },
         "valid_tasks": valid,
         "site_invalid_tasks": unmeasured,
     }

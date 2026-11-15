@@ -132,3 +132,40 @@ def test_a_walled_sites_other_tasks_are_void_without_a_run() -> None:
     assert (skipped.verdict, skipped.reason, skipped.run) == ("void", "bot_wall", 0)
     summary = _stage({task.task_id: [skipped]}, min_valid_tasks=24)
     assert task.task_id in summary.report["site_invalid_tasks"]
+
+
+# ---- #393 review: a scored failure is never hidden behind a site void ----------------------------
+
+
+def test_a_task_with_a_scored_fail_stays_measured_whatever_voids_follow() -> None:
+    runs = _runs(TASKS[0], ("fail", "no_progress"), ("void", "site_control_failed"),
+                 ("void", "bot_wall"))  # fmt: skip
+    hidden = {TASKS[0].task_id: runs}
+    summary = _stage(hidden, min_valid_tasks=24)
+    assert TASKS[0].task_id not in summary.report["site_invalid_tasks"]
+    assert summary.gates["tasks"] is False
+    assert summary.report["result"] == "rejected"
+
+
+def test_a_false_done_then_a_bot_wall_stays_measured() -> None:
+    hidden = {TASKS[0].task_id: _runs(TASKS[0], ("false_done", None), ("void", "bot_wall"))}
+    summary = _stage(hidden, min_valid_tasks=24)
+    assert TASKS[0].task_id not in summary.report["site_invalid_tasks"]
+    assert summary.gates["false_done"] is False
+
+
+def test_each_site_void_reason_has_its_rate_reported_never_gated() -> None:
+    """A classifier that over-assigns site voids shows here."""
+    extra = {t.task_id: _runs(t, ("void", "site_changed"), *PASSES) for t in TASKS[:10]}
+    summary = _stage(extra, min_valid_tasks=24)
+    assert summary.report["site_void_rates"] == {"site_changed": round(10 / 100, 3)}
+    assert "site_void_rates" not in summary.gates
+    assert summary.report["result"] == "accepted"
+
+
+def test_a_void_breach_outranks_a_failed_gate() -> None:
+    extra = {t.task_id: _runs(t, ("void", "log_unreadable"), *PASSES) for t in TASKS[:11]}
+    extra[TASKS[29].task_id] = _runs(TASKS[29], ("fail", "no_progress"), *PASSES[:2])
+    summary = _stage(extra, min_valid_tasks=24)
+    assert (summary.gates["void"], summary.gates["tasks"]) == (False, False)
+    assert summary.report["result"] == "inconclusive"
