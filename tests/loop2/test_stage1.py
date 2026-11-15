@@ -390,8 +390,9 @@ def test_a_crash_followed_by_a_noise_line_is_no_final_line(tmp_path: Path) -> No
 
 
 def test_an_expected_reason_must_be_the_runs_own() -> None:
-    """#366 P4 (E7): c-nobutton ends through the no-progress guard (runner: paused /
-    no_progress); a gallery row expected blocked must be blocked by the step-3 commit rule."""
+    """#366 P4 (E7), widened by [V2.67] B: c-nobutton ends on one of `NOBUTTON_REASONS` (the
+    no-progress guard among them); a gallery row expected blocked must be blocked by the step-3
+    commit rule."""
     nobutton = classify(THREE_D[3], _record(_final("paused", "no_progress"), check=False, enters=1))
     assert nobutton.verdict == "pass"
     other = classify(THREE_D[3], _record(_final("cannot", "page_not_ready"), check=False, enters=1))

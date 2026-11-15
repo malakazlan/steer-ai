@@ -513,6 +513,7 @@ def _result(
             "history_dropped": outcome.history_dropped,
             "turn_trace_dropped": outcome.turn_trace_dropped,  # [V2.67] D
             "pre_task_draft_clicks": outcome.pre_task_draft_clicks,  # [V2.64] Two
+            "saved_calls": outcome.saved_calls,  # [V2.67] A
             "submit_parents": dict(outcome.submit_parents),
         },
         "watch_deadlines": {  # [V2.48]: per class, watches and those ended at the deadline

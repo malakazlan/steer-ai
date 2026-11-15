@@ -33,6 +33,7 @@ from tests.loop2.world_fakes import (
     act,
     decision,
     element,
+    judged_by,
     observed,
     report,
     task,
@@ -189,7 +190,7 @@ def test_b6_the_echo_guard_holds_every_field_typed_in_the_task(
     def spy(*_a: object, typed: tuple[tuple[int, ...], ...] = (), **_k: object) -> None:
         seen.append(tuple(typed))
 
-    monkeypatch.setattr(runner, "auto_proof", spy)
+    monkeypatch.setattr(runner, "judge", judged_by(spy))
     first = Decision(subgoals=_subgoals(), actions=[act("type", target=FIELD.id, param="text")])
     second = Decision(
         actions=[
@@ -222,7 +223,7 @@ def test_b8b_the_acted_field_is_the_one_typed_under_the_subgoal_being_proved(
     def spy(subgoal: object, *_a: object, acted_field: object = None, **k: object) -> None:
         acted[getattr(subgoal, "id", "?")] = k.get("acted")
 
-    monkeypatch.setattr(runner, "auto_proof", spy)
+    monkeypatch.setattr(runner, "judge", judged_by(spy))
     first = Decision(subgoals=_subgoals(), actions=[act("type", target=FIELD.id, param="text")])
     second = Decision(
         actions=[
@@ -322,7 +323,7 @@ def test_the_echo_guard_matches_words_case_folded_and_normalised(
     def spy(subgoal: object, *_a: object, **k: object) -> None:
         echoes[getattr(subgoal, "id", "?")] = k.get("echo")
 
-    monkeypatch.setattr(runner, "auto_proof", spy)
+    monkeypatch.setattr(runner, "judge", judged_by(spy))
     goal = "type Red  Shoes then find red shoes"
     subs = [
         SubgoalDoc(id="s1", desc="a", params={"text": "Red  Shoes"}, closes="page"),
@@ -370,7 +371,7 @@ def _spied(monkeypatch: pytest.MonkeyPatch, key: str) -> dict[str, object]:
     def spy(subgoal: object, *_a: object, **k: object) -> None:
         seen[getattr(subgoal, "id", "?")] = k.get(key)
 
-    monkeypatch.setattr(runner, "auto_proof", spy)
+    monkeypatch.setattr(runner, "judge", judged_by(spy))
     return seen
 
 

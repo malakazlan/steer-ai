@@ -136,6 +136,9 @@ class TurnView:
     """[V2.56]: what appeared, and what changed, since the observation the model last saw."""
     changes: Literal["compared", "no_comparison", "states_unread"] = "no_comparison"
     """[V2.56]: whether this turn had a comparison, and whether its states were read."""
+    calls_left: int | None = None
+    """Invariant 9, [V2.69]: the model calls this turn may still make (a repair is one); None:
+    no call budget."""
 
     def __post_init__(self) -> None:
         if not all(isinstance(r, RECORD_TYPES) for r in self.log):
@@ -249,7 +252,7 @@ class Decided:
     estimate_low: bool = False
     """[V2.61]: the turn's calls held more input tokens than the guard's bound said."""
     calls: int = 1
-    """[V2.67] D: the provider calls this Decision took: more than one is a repair round."""
+    """Invariant 9, [V2.68]: the model calls the turn made (a repaired turn is two)."""
     rejections: tuple[str, ...] = ()
     """[V2.67] D: the closed rejection tokens of each attempt that failed before it, in order."""
 
@@ -479,6 +482,8 @@ class TaskOutcome:
     among the rows the model was shown."""
     typed_into_combobox: bool = False
     """[V2.64] Two: a type targeted a ComboBox (whether it was then sent or refused)."""
+    saved_calls: int = 0
+    """[V2.67] A: model calls not made because the turn-start judgement closed the task."""
     pre_task_draft_clicks: int = 0
     """[V2.64] Two: non-field clicks whose submit scope held a filled field with no pending-text
     record (text Steer did not type: a draft from before the task, or the page's own)."""

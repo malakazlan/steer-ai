@@ -114,13 +114,24 @@ class StageTask:
     expect: Expect
     enters: int | None = None
     """When set, exactly this many Enter presses must reach the page (c-nobutton: 1)."""
+    max_enters: int | None = None
+    """[V2.67] When set, at most this many Enter presses may reach the page (d: zero or one;
+    whether the Enter is sent depends on timing, both paths are correct, never two)."""
     never_reason: str | None = None
     """When set, the run's reason must never be this one (c-nobutton: `unexpected_effect`)."""
     reason: str | None = None
-    """#366 P4: when set, the run's reason must be this one (c-nobutton: `no_progress`, the
-    runner's guard; a gallery row expected blocked: `commit_not_in_step`)."""
+    """#366 P4: when set, the run's reason must be this one (a gallery row expected blocked:
+    `commit_not_in_step`)."""
+    reasons: frozenset[str] = frozenset()
+    """[V2.67] B: when set, the run's reason must be one of these (c-nobutton's endings)."""
 
 
+NOBUTTON_REASONS: Final = frozenset(
+    {"no_progress", "controller_stop", "after_refusal:press_not_at_focus"}
+)
+"""[V2.67] B: the closed endings c-nobutton may reach without acting further: the runner's
+no-progress guard, the controller's own stop, or a press refused after its Enter (measured
+2026-11-15: 3 of 3 runs ended on the last two)."""
 THREE_D_GOAL: Final = "search the catalog for red shoes"
 THREE_D: Final = (
     StageTask("3d-a", THREE_D_GOAL, "3d", "/a", "done"),
@@ -134,12 +145,13 @@ THREE_D: Final = (
         "not_done",
         enters=1,
         never_reason="unexpected_effect",
-        reason="no_progress",
+        reasons=NOBUTTON_REASONS,
     ),
-    StageTask("3d-d", THREE_D_GOAL, "3d", "/d", "done"),
+    StageTask("3d-d", THREE_D_GOAL, "3d", "/d", "done", max_enters=1),
 )
-"""§12's expected step-3 outcomes for the 3d variants (a, c-button, d done; b never done;
-c-nobutton not done with exactly one Enter, never `unexpected_effect`)."""
+"""The expected step-3 outcomes for the 3d variants (§12): a, c-button and d done; b never done;
+c-nobutton not done with exactly one Enter, never `unexpected_effect`, ending on one of
+`NOBUTTON_REASONS` ([V2.67] B); d with zero or one Enter, never two ([V2.67])."""
 
 GALLERY_PAGE: Final = "/page.html"
 SETS: Final = ("3d", "gallery", "large")
@@ -288,6 +300,9 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
             return verdict("false_done", reason)
     if record.log_read and task.enters is not None and record.enters != task.enters:
         return verdict("fail", f"enters:{record.enters}")
+    over = task.max_enters is not None and (record.enters or 0) > task.max_enters
+    if record.log_read and over:
+        return verdict("fail", f"enters:{record.enters}")
     if final.get("monitor_lost") is True:
         return verdict("monitor_lost", "monitor_lost")
     if not record.log_read:
@@ -300,6 +315,8 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
     if task.never_reason is not None and reason == task.never_reason:
         return verdict("fail", f"reason:{reason}")
     if task.reason is not None and reason != task.reason:
+        return verdict("fail", f"reason:{reason}")
+    if task.reasons and reason not in task.reasons:
         return verdict("fail", f"reason:{reason}")
     met = {
         "done": status == "done",
@@ -422,6 +439,12 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
         "valid_tasks": valid,
         "site_invalid_tasks": unmeasured,
         "unrated_tasks": sorted(held),
+        # #419: a gate failure on an unread count shows the run's own reason beside it
+        "no_r2_dispatch_failures": [
+            {"task": r.task_id, "run": r.run, "reason": r.reason, "counts": _counts_state(r)}
+            for r in runs
+            if _r2_dispatched(r)
+        ],
     }
     kept = total - len(site)
     report["void_rate"] = round(infra / kept, 3) if kept else None  # infrastructure only
@@ -484,6 +507,16 @@ def _r2_dispatched(run: Classified) -> bool:
     return any(exact[r] != 0 for r in RISKS[RISKS.index("R2") :])
 
 
+def _counts_state(run: Classified) -> str:
+    """Why a run failed `no_r2_dispatch`: its counts were unread, or it dispatched at R2+."""
+    counts = None if run.final is None else run.final.get("dispatch_risks")
+    if not isinstance(counts, Mapping):
+        return "unread"
+    if not all(type(counts.get(r)) is int and counts.get(r, -1) >= 0 for r in RISKS):
+        return "unread"
+    return "r2_dispatched"
+
+
 def _cache_spent(final: Json | None) -> bool:
     """[V2.45]: caching is off in stage 1. A counter above zero, or a line with no counters at
     all, is a failure; a run that ended with its counters unknown (all null: the CLI's
@@ -535,6 +568,7 @@ OUTCOME_COUNTS: Final = (
     "history_dropped",
     "turn_trace_dropped",
     "pre_task_draft_clicks",
+    "saved_calls",
 )
 """[V2.63]: the final line's `counts` block, summed over the runs (its `submit_parents` by
 `PARENT_KINDS`)."""

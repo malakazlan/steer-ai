@@ -828,6 +828,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     on_sent: Callable[[int], None] | None = None,
     on_rejected: Callable[[dict[str, Any]], None] | None = None,
     turn: int = 0,
+    max_calls: int | None = None,
 ) -> tuple[Decision, DecideRecord]:
     """Ask, parse, validate; on failure repair with code tokens only, up to `max_repairs` times.
 
@@ -839,6 +840,8 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     many the guard cut) in place of `listing_note`.
     [V2.61]: the guard bounds by bytes at `tokens_per_byte` and may spend one `count_exact` near
     the ceiling (`_fit`); `on_sent` hears each call's prompt bytes.
+    Invariant 9, [V2.69]: with `max_calls`, the repair is made only while a call is left, so a
+    turn never makes more calls than the budget allows; without one, the rejection stands.
     A failure raises ControllerError carrying the DecideRecord of the calls spent.
     """
     if first_turn == bool(subgoal_lines):
@@ -880,7 +883,10 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
         on_fit(listed_ids, cut)
     error: ControllerError | None = None
     rejected: list[str] = []
-    for attempt in range(max_repairs + 1):
+    attempts = max_repairs + 1
+    if max_calls is not None:  # invariant 9, [V2.69]: never a call past the budget
+        attempts = max(1, min(attempts, max_calls))
+    for attempt in range(attempts):
         blocks = user
         if error is not None:
             blocks = [*user, repair_line(error.tokens or (error.code,))]
@@ -916,7 +922,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
             shape = decision_shape(decision, known_subgoals=known_subgoals, tokens=tokens,
                                    turn=turn, attempt=attempt)  # fmt: skip
             on_rejected({**shape, "parsed": True})
-    calls = max_repairs + 1
+    calls = attempts
     final = error if error is not None else ControllerError("schema")
     final.record = DecideRecord(PROMPT_VERSION, calls, calls > 1, True, rejections=tuple(rejected))
     raise final
