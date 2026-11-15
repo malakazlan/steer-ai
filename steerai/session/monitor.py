@@ -18,6 +18,7 @@ Rules (edge cases TK-01..49, probe `hook-latency-2026-11-04`):
 from __future__ import annotations
 
 import ctypes
+import math
 import sys
 import threading
 import time
@@ -33,6 +34,7 @@ from steerai.probes.win_input import (
     _send,
     _user32,
     build_keyboard_input,
+    key_up_probe,
     nudge_in_place,
 )
 
@@ -59,6 +61,42 @@ TAKEOVER_TOKENS = frozenset({TAKEOVER, OTHER_STEER_INPUT})
 
 
 HOOKS = ("keyboard", "mouse")
+UNASSIGNED_VKS = frozenset({0x0E, 0x0F, *range(0x97, 0xA0), 0xE8})
+"""Microsoft Learn, Virtual-Key Codes (Winuser.h): 0x0E-0F, 0x97-9F and 0xE8 are Unassigned."""
+PROBE_VK = 0xE8
+"""[V2.57] LW-01: the keyboard hook's probe key, a key-up of an unassigned code (provisional
+until the probe in the PR picks it: it must cause nothing in the foreground app, IME included)."""
+LATENCY_BUCKETS_MS = 1000
+"""The latency histogram's last bucket: 1000 ms and over (the hook timeout's cap, Microsoft
+Learn LowLevelKeyboardProc: Windows 10 1709 and later allow at most 1000 ms)."""
+
+
+class HookLatency:
+    """[V2.57] LW-01: each callback's latency (event tick to entry tick, in ms) as a fixed
+    histogram: no event list, no timestamps, nothing that grows with the input."""
+
+    def __init__(self) -> None:
+        self._buckets = [0] * (LATENCY_BUCKETS_MS + 1)
+        self._events = 0
+
+    def record(self, ms: int) -> None:
+        self._buckets[min(max(ms, 0), LATENCY_BUCKETS_MS)] += 1
+        self._events += 1
+
+    def summary(self) -> tuple[int, int | None, int | None]:
+        """(events, p95 ms, p99 ms); None when nothing was recorded."""
+        if not self._events:
+            return 0, None, None
+        return self._events, self._quantile(0.95), self._quantile(0.99)
+
+    def _quantile(self, q: float) -> int:
+        rank = math.ceil(q * self._events)
+        seen = 0
+        for ms, count in enumerate(self._buckets):
+            seen += count
+            if seen >= rank:
+                return ms
+        return LATENCY_BUCKETS_MS  # pragma: no cover - the counts always reach `rank`
 
 
 class MonitorCore:
@@ -306,13 +344,27 @@ class HookMonitor:
         monotonic: Callable[[], float] = time.monotonic,
         dead_band_px: int = DEAD_BAND_PX,
         extra_info: int = STEER_EXTRA_INFO,
+        per_hook: bool = False,
+        probe_vk: int | None = None,
+        tick: Callable[[], int] | None = None,
     ) -> None:
+        if per_hook and probe_vk not in UNASSIGNED_VKS:
+            raise ValueError("the keyboard probe must be an unassigned virtual key")
+        self._per_hook = per_hook
+        """[V2.57] LW-01 (v2): each hook proves itself, and each callback's latency is kept."""
+        self._probe_vk = probe_vk
+        self._tick = tick
+        """The system tick in ms (GetTickCount, the clock of the hook structs' `time`)."""
+        self._latency = HookLatency()
         self._mods, self._vk = parse_kill_key(kill_key)
         self._monotonic = monotonic
         self._dead_band = dead_band_px
         self._extra_info = extra_info
         self._core = MonitorCore(
-            started_at=monotonic(), dead_band_px=dead_band_px, extra_info=extra_info
+            started_at=monotonic(),
+            dead_band_px=dead_band_px,
+            extra_info=extra_info,
+            per_hook=per_hook,
         )
         self._thread: threading.Thread | None = None
         self._thread_id = 0
@@ -333,8 +385,12 @@ class HookMonitor:
                 "monitor_unavailable: a previous hook thread did not stop; restart the process",
             )
         self._core = MonitorCore(
-            started_at=self._monotonic(), dead_band_px=self._dead_band, extra_info=self._extra_info
+            started_at=self._monotonic(),
+            dead_band_px=self._dead_band,
+            extra_info=self._extra_info,
+            per_hook=self._per_hook,
         )
+        self._latency = HookLatency()
         self._ready.clear()
         self._error = None
         self._procs = []
@@ -392,8 +448,18 @@ class HookMonitor:
         self._core.probe_sent(now=self._monotonic())
         try:
             nudge_in_place()
+            if self._per_hook and self._probe_vk is not None:
+                key_up_probe(self._probe_vk)  # LW-01: the keyboard hook's own proof
         except OSError:
             self._core.on_probe_failed()  # fails closed: the next boundary stops (D4)
+
+    def probe_seen(self) -> bool:
+        """LW-01: both hooks saw an own event since the last probe."""
+        return self._core.probe_seen()
+
+    def latency(self) -> tuple[int, int | None, int | None]:
+        """LW-01: (callbacks timed, p95 ms, p99 ms); v1 times none."""
+        return self._latency.summary()
 
     def mark_ask_open(self) -> None:
         self._core.mark_ask_open()
@@ -495,6 +561,9 @@ class HookMonitor:
             wintypes.LPARAM,
         )
         kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+        if self._per_hook and self._tick is None:
+            kernel32.GetTickCount.restype = wintypes.DWORD
+            self._tick = kernel32.GetTickCount
         msg = wintypes.MSG()
         user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_NOREMOVE)  # creates the queue first
         self._thread_id = int(kernel32.GetCurrentThreadId())
@@ -518,11 +587,17 @@ class HookMonitor:
         core = self._core
         monotonic = self._monotonic
         struct = _MouseHook if mouse else _KeyboardHook
+        tick = self._tick if self._per_hook else None
+        latency = self._latency
 
         def proc(code: int, wparam: int, lparam: int) -> int:
+            entered = tick() if tick is not None else 0
             try:
                 if code == HC_ACTION:
                     info = ctypes.cast(lparam, ctypes.POINTER(struct)).contents
+                    if tick is not None:  # LW-01: event tick to entry tick, wrap-safe
+                        late = (entered - int(info.time)) & 0xFFFF_FFFF
+                        latency.record(late if late < 0x8000_0000 else 0)
                     if mouse:
                         core.on_mouse(
                             message=int(wparam),
