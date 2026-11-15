@@ -381,6 +381,8 @@ class HookMonitor:
         self._tick = tick
         """The system tick in ms (GetTickCount, the clock of the hook structs' `time`)."""
         self._latency = HookLatency()
+        self._stall: dict[str, float] = {}
+        """#364 P3: a test seam, never set outside Windows tests."""
         self._mods, self._vk = parse_kill_key(kill_key)
         self._monotonic = monotonic
         self._dead_band = dead_band_px
@@ -509,6 +511,18 @@ class HookMonitor:
             *up,
         )
 
+    def stall_next_for_test(self, hook: str, seconds: float) -> None:
+        """#364 P3: the next callback of `hook` (`keyboard` or `mouse`) blocks for `seconds`
+        before it returns: past LowLevelHooksTimeout the OS removes that hook silently, the
+        failure LW-01 must catch (Windows tests only)."""
+        if hook not in HOOKS:
+            raise ValueError("hook must be keyboard or mouse")
+        self._stall[hook] = seconds
+
+    def lost_hooks(self) -> tuple[str, ...]:
+        """LW-01: the hooks that missed the last probe past its deadline."""
+        return self._core.lost_hooks(now=self._monotonic())
+
     def unhook_for_test(self) -> None:
         """Remove the hooks behind the core's back, the way the OS does on a timeout."""
         if self._thread_id:
@@ -617,9 +631,14 @@ class HookMonitor:
         tick = self._tick if self._per_hook else None
         latency = self._latency
 
+        stall = self._stall
+        hook = "mouse" if mouse else "keyboard"
+
         def proc(code: int, wparam: int, lparam: int) -> int:
             try:
                 entered = tick() if tick is not None else 0  # #364 H6: inside the try
+                if hook in stall:
+                    time.sleep(stall.pop(hook))  # the test seam: a callback that hangs
                 if code == HC_ACTION:
                     info = ctypes.cast(lparam, ctypes.POINTER(struct)).contents
                     if tick is not None:  # LW-01: event tick to entry tick, wrap-safe

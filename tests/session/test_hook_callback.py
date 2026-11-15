@@ -10,6 +10,7 @@ import ctypes
 import queue
 import sys
 import threading
+import time
 from collections.abc import Callable
 from ctypes import wintypes
 from typing import Any
@@ -652,5 +653,28 @@ def test_a_tick_that_raises_still_passes_the_event_on(monkeypatch: pytest.Monkey
             NEXT_HOOK_RESULT
         )
         assert monitor.counts().get("callback_errors") == 1
+    finally:
+        monitor.close()
+
+
+def test_the_stall_seam_blocks_only_the_named_hooks_next_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#364 P3: the seam the Windows removal test uses, proved here over the fake user32."""
+    user32 = FakeUser32()
+    monitor = _v2_started(monkeypatch, user32)
+
+    def timed(kind: int, wparam: int, info: ctypes.Structure) -> float:
+        started = time.perf_counter()
+        user32.procs[kind](HC_ACTION, wparam, ctypes.addressof(info))
+        return time.perf_counter() - started
+
+    try:
+        monitor.stall_next_for_test("keyboard", 0.2)
+        assert timed(WH_MOUSE_LL, WM_MOUSEMOVE, _mouse(flags=0, extra=0)) < 0.2
+        assert timed(WH_KEYBOARD_LL, 0x100, _key(flags=0, extra=0)) >= 0.2
+        assert timed(WH_KEYBOARD_LL, 0x100, _key(flags=0, extra=0)) < 0.2  # once only
+        with pytest.raises(ValueError, match="hook"):
+            monitor.stall_next_for_test("touch", 1.0)
     finally:
         monitor.close()
