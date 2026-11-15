@@ -944,9 +944,14 @@ class _Run:
         """[V2.64] One: one veto-only call. No port, no call left in the budget, a failed or
         unparsed call: `audit_failed`; a veto: `audit_veto`. Both end `blocked`, never done."""
         audit = self.ports.audit
-        budgets = self.task.budgets
-        spent = not math.isfinite(self.tokens) or self.tokens >= budgets.max_tokens
-        if audit is None or self.model_calls + 1 > budgets.max_model_calls or spent:
+        used = Usage(  # #404 principal 3: every budget, with the audit's own call counted
+            actions=len(self.dispatched),
+            model_calls=self.model_calls + 1,
+            cost_usd=self._cost(),
+            wall_s=self.ports.clock() - self.started,
+            tokens=self.tokens,
+        )
+        if audit is None or budget_hit(self.task.budgets, used) is not None:
             self.audit = ("failed", "audit_failed")
             raise _End("blocked", Reason("audit_failed"))
         cited = {

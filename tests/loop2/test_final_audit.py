@@ -264,3 +264,27 @@ def test_an_audit_that_made_no_call_is_not_counted_as_one() -> None:
     assert (outcome.status, outcome.reason) == ("blocked", "audit_failed")
     assert outcome.model_calls == world.events.count("decide")
     assert outcome.audit == ("failed", "audit_no_call")
+
+
+# ---- #404 principal 3: every budget is checked before the audit's call ------------------------
+
+
+def test_a_budget_spent_at_the_done_point_stops_the_audit_before_its_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The budgets the decide loop checks (here the wall) are checked, with the audit's own call
+    counted, before it is made; spent, the audit is not called and the task is `audit_failed`."""
+    from steerai.loop2.guards import budget_hit as real  # noqa: PLC0415
+
+    seen: list[int] = []
+
+    def hit(budgets: Any, used: Any) -> Any:  # Any: the guard's own types
+        seen.append(used.model_calls)
+        return "max_wall" if used.model_calls >= 3 else real(budgets, used)
+
+    monkeypatch.setattr("steerai.loop2.runner.budget_hit", hit)
+    world = _value_only(ALLOW)
+    outcome = run_task(task(), world.ports())
+    assert world.audits == []
+    assert (outcome.status, outcome.reason) == ("blocked", "audit_failed")
+    assert seen[-1] == world.events.count("decide") + 1  # the audit's own call is counted
