@@ -8,12 +8,11 @@ from __future__ import annotations
 import copy
 import dataclasses
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import pytest
 
-from steerai.loop2 import runner
 from steerai.loop2.decision import ActionDoc, Decision, SubgoalDoc
 from steerai.loop2.history import (
     DELIVERIES,
@@ -22,6 +21,7 @@ from steerai.loop2.history import (
     REFUSAL_TOKENS,
     VERBS,
     ClaimResult,
+    HistoryRecord,
     LogEntry,
     Proven,
     render,
@@ -58,13 +58,24 @@ ATTEMPT = ProofAttempt(
     change=True,
     change_by=("navigated",),
     refused=(),
-    params=(ParamProof(0, (CarrierFact("url_param", True, True), CarrierFact("title", False, None))),),
+    params=(
+        ParamProof(0, (CarrierFact("url_param", True, True), CarrierFact("title", False, None))),
+    ),
     content=True,
     content_by="title",
     guards=("owned_by_combobox", "option_evidence"),
     proven=True,
     proven_how="title",
 )
+
+
+def _into(records: list[dict[str, Any]]) -> Callable[[Mapping[str, object]], None]:
+    """A trace port that keeps each record (Any: JSON, read back by the test)."""
+
+    def sink(record: Mapping[str, object]) -> None:
+        records.append(dict(record))
+
+    return sink
 
 
 def full_record() -> dict[str, Any]:  # Any: JSON
@@ -82,10 +93,24 @@ def full_record() -> dict[str, Any]:  # Any: JSON
                 "rejections": [],
                 "subgoals": [{"closes": "page", "params": 1}],
                 "actions": [
-                    {"verb": "type", "in_step": True, "param": "param:0", "text": True, "key": None},
-                    {"verb": "press", "in_step": True, "param": None, "text": False, "key": "Enter"},
+                    {
+                        "verb": "type",
+                        "in_step": True,
+                        "param": "param:0",
+                        "text": True,
+                        "key": None,
+                    },
+                    {
+                        "verb": "press",
+                        "in_step": True,
+                        "param": None,
+                        "text": False,
+                        "key": "Enter",
+                    },
                 ],
-                "claims": [{"kind": "navigated", "in_step": True, "param": "param:0", "evidence": 1}],
+                "claims": [
+                    {"kind": "navigated", "in_step": True, "param": "param:0", "evidence": 1}
+                ],
                 "ask": False,
                 "stop": None,
             },
@@ -194,7 +219,7 @@ def test_a_proof_attempt_built_with_free_text_fails_its_check() -> None:
 def test_the_runner_writes_each_turn_closed_and_none_of_the_pages_text() -> None:
     world = World([decision(act("click", target=GO.id), first=True)])
     records: list[dict[str, Any]] = []  # Any: JSON
-    ports = dataclasses.replace(world.ports(), turn_trace=records.append)
+    ports = dataclasses.replace(world.ports(), turn_trace=_into(records))
     run_task(task(), ports)
     assert records
     assert all(closed(r) for r in records)
@@ -212,19 +237,19 @@ def test_a_dropped_turn_record_is_counted_in_the_runs_outcome(
     dropped: a gap in the trace never reads as a clean run."""
     world = World([decision(act("click", target=GO.id), first=True)])
     clean: list[dict[str, Any]] = []  # Any: JSON
-    kept = run_task(task(), dataclasses.replace(world.ports(), turn_trace=clean.append))
+    kept = run_task(task(), dataclasses.replace(world.ports(), turn_trace=_into(clean)))
     assert clean
     assert kept.turn_trace_dropped == 0
 
-    real = runner.turn_record
+    real = turn_record
 
     def leaky(facts: TurnTrace) -> dict[str, Any]:  # Any: JSON
         return {**real(facts), "focus": TITLE}  # a title where a closed token belongs
 
-    monkeypatch.setattr(runner, "turn_record", leaky)
+    monkeypatch.setattr("steerai.loop2.runner.turn_record", leaky)
     world = World([decision(act("click", target=GO.id), first=True)])
     written: list[dict[str, Any]] = []  # Any: JSON
-    outcome = run_task(task(), dataclasses.replace(world.ports(), turn_trace=written.append))
+    outcome = run_task(task(), dataclasses.replace(world.ports(), turn_trace=_into(written)))
     assert written == []
     assert outcome.turn_trace_dropped == len(clean)
 
@@ -251,7 +276,7 @@ def _entry(subgoal: str | None, param: str | None) -> LogEntry:
     )
 
 
-RAW = {
+RAW: dict[str, HistoryRecord] = {
     "act": _entry(SUBGOAL_ID, PARAM_NAME),
     "claim": ClaimResult(SUBGOAL_ID, "accepted"),
     "proven": Proven(SUBGOAL_ID, "claim"),
@@ -310,7 +335,7 @@ def test_the_runner_writes_no_model_chosen_subgoal_id_or_param_name() -> None:
     )
     world = World([Decision(subgoals=subgoals, actions=[typed])], effects=[report("own_value")])
     records: list[dict[str, Any]] = []  # Any: JSON
-    outcome = run_task(task(), dataclasses.replace(world.ports(), turn_trace=records.append))
+    outcome = run_task(task(), dataclasses.replace(world.ports(), turn_trace=_into(records)))
     assert outcome.turn_trace_dropped == 0
     assert all(closed(r) for r in records)
     lines = [line for r in records for line in r["history"]]

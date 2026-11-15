@@ -263,6 +263,8 @@ _H = r"[0-9]{1,9}"
 _ID = r"[a-z0-9_]{1,24}"
 _CLS = _alt(EFFECT_CLASSES)
 _TOK = _alt(EFFECT_TOKENS)
+
+
 def history_grammar(subgoal: str, param: str) -> re.Pattern[str]:
     """[V2.47], #347 review: one form per kind of line, every token from its closed set (no
     shape check is left). A handle slot is digits only; `id_not_listed` has none. The subgoal

@@ -232,15 +232,13 @@ def _ok(value: object, *, key: str | None) -> bool:  # noqa: PLR0911 - one retur
     if isinstance(value, str):
         if key == "history":
             return len(value) <= MAX_LINE and POSITIONAL_GRAMMAR.fullmatch(value) is not None
-        if key in KEY_TOKENS:
+        if key is not None and key in KEY_TOKENS:
             return value in KEY_TOKENS[key]
         return value in CLOSED_TOKENS or _PARAM.fullmatch(value) is not None
     if isinstance(value, list | tuple):
         return all(_ok(v, key=key) for v in value)
     if isinstance(value, Mapping):
-        return all(
-            isinstance(k, str) and k in KEYS and _ok(v, key=k) for k, v in value.items()
-        )
+        return all(isinstance(k, str) and k in KEYS and _ok(v, key=k) for k, v in value.items())
     return False
 
 
