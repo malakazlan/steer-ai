@@ -29,6 +29,7 @@ from steerai.session.helper_core import (
     EXIT_FAILED,
     EXIT_MAP,
     EXIT_OK,
+    KILL_EXIT_CODE,
     HelperCore,
     config_error,
     parse_helper_argv,
@@ -85,6 +86,7 @@ class HelperPlatform(Protocol):
     def wait(self, timeout_ms: int, parent: int, quit_event: int) -> str: ...
     def pump(self) -> Iterator[str]: ...
     def wake(self, handle: int) -> None: ...
+    def terminate_parent(self, handle: int) -> None: ...
     def release(self) -> None: ...
 
 
@@ -153,6 +155,7 @@ def run_helper(args: list[str], platform: HelperPlatform) -> int:  # noqa: PLR09
         return EXIT_MAP
     step = ERROR_INTERNAL
     failed = False
+    ended_steer = False
     try:
         step = ERROR_MAP
         view = platform.map_config(handles.config)
@@ -184,10 +187,14 @@ def run_helper(args: list[str], platform: HelperPlatform) -> int:  # noqa: PLR09
                 break
             for event in platform.pump():
                 if event == "hotkey":
-                    core.hotkey()
+                    core.hotkey(qpc=platform.qpc())
                     platform.wake(handles.wake)
             step = ERROR_INTERNAL
-            core.loop(qpc=platform.qpc(), unbiased_100ns=platform.unbiased())
+            now = platform.qpc()
+            core.loop(qpc=now, unbiased_100ns=platform.unbiased())
+            if not ended_steer and core.kill_overdue(qpc=now):
+                platform.terminate_parent(handles.parent)  # [V2.60] Q1 layer 3, only here
+                ended_steer = True
     except Exception:  # noqa: BLE001 - no stderr: the code in the status words is the report
         failed = True
         status.set("error", step)
@@ -444,6 +451,10 @@ class WindowsHelperPlatform:  # pragma: no cover - live, Windows only (tests/ses
 
     def wake(self, handle: int) -> None:
         self._k32.SetEvent(handle)
+
+    def terminate_parent(self, handle: int) -> None:
+        """[V2.60] Q1 layer 3: end Steer for the person's unacknowledged kill."""
+        self._k32.TerminateProcess(handle, KILL_EXIT_CODE)
 
     def release(self) -> None:
         while self._hooks:

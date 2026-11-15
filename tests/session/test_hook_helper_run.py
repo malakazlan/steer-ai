@@ -67,6 +67,8 @@ class FakePlatform:
     chord: tuple[int, int] | None = None
     waited: list[tuple[int, int, int]] = field(default_factory=list)
     clock: int = 1_000_000
+    step: int = 1_000
+    terminated: list[int] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         write_config(
@@ -100,7 +102,7 @@ class FakePlatform:
     def qpc(self) -> int:
         if self.fail == "qpc":
             raise RuntimeError("an unexpected failure")
-        self.clock += 1_000
+        self.clock += self.step
         return self.clock
 
     def freq(self) -> int:
@@ -149,6 +151,10 @@ class FakePlatform:
     def wake(self, handle: int) -> None:
         assert handle == HANDLES.wake
         self.calls.append("wake")
+
+    def terminate_parent(self, handle: int) -> None:
+        assert handle == HANDLES.parent
+        self.terminated.append(handle)
 
     def release(self) -> None:
         self.calls.append("release")
@@ -284,3 +290,28 @@ def test_an_exception_inside_a_callback_is_counted_and_never_escapes() -> None:
     p.pump = pump  # type: ignore[method-assign]  # a malformed event reaches the callback
     assert run_helper(_argv(), p) == EXIT_OK
     assert _status(p).get("callback_errors") == 1
+
+
+# ---- [V2.60] Q1, kill layer 3 ----------------------------------------------------------------
+
+
+def test_an_unacknowledged_kill_makes_the_helper_end_steer_once() -> None:
+    p = FakePlatform(waits=["input", "timeout", "timeout", "quit"], events=["hotkey"])
+    p.step = 3 * 10_000_000  # 3 s of QPC per read: the bound passes within the loop
+    run_helper(_argv(), p)
+    assert p.terminated == [HANDLES.parent]
+
+
+def test_an_acknowledged_kill_never_ends_steer() -> None:
+    p = FakePlatform(waits=["input", "timeout", "timeout", "quit"], events=["hotkey"])
+    p.step = 3 * 10_000_000
+    config_words(memoryview(p.config_buf)).set("kill_ack", 1)
+    run_helper(_argv(), p)
+    assert p.terminated == []
+
+
+def test_without_a_kill_the_helper_never_ends_steer() -> None:
+    p = FakePlatform(waits=["timeout"] * 5 + ["quit"])
+    p.step = 3 * 10_000_000
+    run_helper(_argv(), p)
+    assert p.terminated == []

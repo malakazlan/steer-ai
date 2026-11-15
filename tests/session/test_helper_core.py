@@ -7,6 +7,9 @@ from __future__ import annotations
 import pytest
 
 from steerai.session.helper_core import (
+    KILL_ACK_S,
+    KILL_EXIT_CODE,
+    KILL_TERMINATE_S,
     SLEEP_DIVERGENCE_MS,
     HelperCore,
     config_error,
@@ -198,8 +201,8 @@ def test_input_while_steers_ask_word_is_set_is_the_answer() -> None:
 
 def test_the_hot_key_sets_kill_once_and_it_never_clears() -> None:
     core, _cfg, status = _core()
-    core.hotkey()
-    core.hotkey()
+    core.hotkey(qpc=1_500 * MS)
+    core.hotkey(qpc=1_600 * MS)
     assert status.get("kill") == 1
 
 
@@ -282,3 +285,33 @@ def test_a_callback_error_is_counted() -> None:
     core, _cfg, status = _core()
     core.callback_error()
     assert status.get("callback_errors") == 1
+
+
+# ---- [V2.60] Q1, kill layer 3: the helper ends a Steer that never acknowledged the kill -------
+
+
+def test_a_kill_is_overdue_only_past_the_bound_and_only_while_unacknowledged() -> None:
+    core, cfg, _status = _core()
+    assert not core.kill_overdue(qpc=99_999 * MS)  # no kill, never overdue
+    core.hotkey(qpc=2_000 * MS)
+    bound_ms = int(KILL_TERMINATE_S * 1000)
+    assert not core.kill_overdue(qpc=(2_000 + bound_ms) * MS)
+    assert core.kill_overdue(qpc=(2_000 + bound_ms + 1) * MS)
+    cfg.set("kill_ack", 1)
+    assert not core.kill_overdue(qpc=(2_000 + bound_ms + 1) * MS)
+
+
+def test_the_bound_is_measured_from_the_first_kill() -> None:
+    core, _cfg, _status = _core()
+    bound_ms = int(KILL_TERMINATE_S * 1000)
+    core.hotkey(qpc=2_000 * MS)
+    core.hotkey(qpc=4_000 * MS)  # a second press does not restart the bound
+    assert core.kill_overdue(qpc=(2_000 + bound_ms + 1) * MS)
+
+
+def test_the_bounds_are_ordered_and_the_exit_code_is_steers_stopped() -> None:
+    """Rev 2b §6.1: KILL_TERMINATE_S >= 2 x KILL_ACK_S; the code is v1's EXIT_STOPPED."""
+    from steerai.run import EXIT_STOPPED  # noqa: PLC0415 - this test only
+
+    assert KILL_TERMINATE_S >= 2 * KILL_ACK_S
+    assert KILL_EXIT_CODE == EXIT_STOPPED
