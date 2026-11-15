@@ -379,6 +379,12 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
         "valid_tasks": valid,
         "site_invalid_tasks": unmeasured,
         "unrated_tasks": sorted(held),
+        # #419: a gate failure on an unread count shows the run's own reason beside it
+        "no_r2_dispatch_failures": [
+            {"task": r.task_id, "run": r.run, "reason": r.reason, "counts": _counts_state(r)}
+            for r in runs
+            if _r2_dispatched(r)
+        ],
     }
     kept = total - len(site)
     report["void_rate"] = round(infra / kept, 3) if kept else None  # infrastructure only
@@ -435,6 +441,16 @@ def _r2_dispatched(run: Classified) -> bool:
     if not all(type(n) is int and n >= 0 for n in exact.values()):
         return True
     return any(exact[r] != 0 for r in RISKS[RISKS.index("R2") :])
+
+
+def _counts_state(run: Classified) -> str:
+    """Why a run failed `no_r2_dispatch`: its counts were unread, or it dispatched at R2+."""
+    counts = None if run.final is None else run.final.get("dispatch_risks")
+    if not isinstance(counts, Mapping):
+        return "unread"
+    if not all(type(counts.get(r)) is int and counts.get(r, -1) >= 0 for r in RISKS):
+        return "unread"
+    return "r2_dispatched"
 
 
 def _cache_spent(final: Json | None) -> bool:

@@ -57,7 +57,13 @@ _VERBS: Final[dict[object, Verb]] = {v: v for v in get_args(Verb)}
 _KEYS: Final[dict[object, Key]] = {k: k for k in get_args(Key)}
 _RISKS: Final[dict[object, Risk]] = {r: r for r in RISKS}
 SITE_SPACING_S: Final = 60.0
+"""§2.3, [V2.63] Q4: the least time between two page loads of one host, controls included."""
 DAILY_CAP: Final = 12
+"""[V2.65] (3): the most loads of one host in one day at the spacing, a hard cap (#419): an
+attempt starts only with its whole budget left today."""
+ATTEMPT_LOADS: Final = 2
+"""#419: the loads one attempt can make on its host, before its control: the run's own load and a
+possible wall confirmation."""
 DAY_WAIT_CHUNK_S: Final = 3600.0
 """#413 blocker 1: the wait for the day to turn sleeps at most this long at a time."""
 DAY_WAIT_LIMIT_S: Final = 26 * 3600.0
@@ -74,11 +80,6 @@ class DayDidNotTurn(RuntimeError):  # noqa: N818 - a refusal, named for its reas
 def calendar_day() -> int:
     """Today on the local calendar, as an ordinal: the production day source (#413 blocker 1)."""
     return datetime.date.today().toordinal()  # noqa: DTZ011 - the local day the cap counts
-
-
-"""[V2.65] (3): the most loads of one host in one day at the spacing; a host at the cap stops
-for the day."""
-"""§2.3, [V2.63] Q4: the least time between two page loads of one host, controls included."""
 
 
 @dataclass(frozen=True)
@@ -183,7 +184,11 @@ class Spacer:
         """Loads per host so far: the volume the summary reports."""
 
     def at_cap(self, host: str) -> bool:
-        return self._today.get((self.day(), host), 0) >= self._cap
+        return self.remaining(host) <= 0
+
+    def remaining(self, host: str) -> int:
+        """Loads of `host` left today under the cap."""
+        return self._cap - self._today.get((self.day(), host), 0)
 
     def wait_next_day(self) -> None:
         """Every pending host is at its cap: wait, kill-aware, until the day turns, in sleeps of

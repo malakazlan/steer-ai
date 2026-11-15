@@ -19,6 +19,10 @@ its cap, the precheck and its waits, and the working-set sampler. What is new:
 - **Per-site controls before each batch** (§2.4): a failed control voids that site's runs in the
   batch, which are never started. A check with no fixed page has no control (rev 4.4a ruling
   (c)): its runs are classified normally and the summary lists them as `no_control`.
+- **Unrated tasks run** ([V2.65] (2)): expected `unrated`, they are out of the tasks gate only. A
+  false done or a dispatch at R2 or above fails the stage; any other fail (`cap_killed`,
+  `internal`, a refused start) is caught by the hard bar, void and monitor_lost gates, never by
+  the tasks gate (#419).
 - **Round robin with per-host spacing** (§2.3): run 1 of every task, then run 2, and so on; one
   host is never three in a row; every load of a host, controls included, waits `SITE_SPACING_S`
   after the last one. Re-runs (voids, monitor losses, runs not started) go in later batches,
@@ -60,6 +64,7 @@ from steerai.loop2.stage1 import (
     wait_until_ready,
 )
 from steerai.loop2.stage2_expected import (
+    ATTEMPT_LOADS,
     DAILY_CAP,
     START_EXPRESSION,
     DecidingFacts,
@@ -282,18 +287,23 @@ def run_stage(  # noqa: PLR0913, PLR0915 - the tasks, then keyword-only knobs
         ]
         if not pending:
             break
-        open_now = [t for t in pending if not spacer.at_cap(t.host)]
-        if not open_now:
-            spacer.wait_next_day()  # [V2.65] (3): every pending host is at its cap today
-            continue
-        due = _controls_due(
-            open_now,
+        wanted = _controls_due(
+            pending,
             attempts=attempts,
             scored=scored,
             controlled=controlled,
             voided=voided,
             today=spacer.day(),
         )
+        need = {t.host: ATTEMPT_LOADS for t in pending} | dict.fromkeys(
+            (t.host for t in wanted), ATTEMPT_LOADS + 1
+        )
+        # #419: an attempt starts only with its whole budget (control, run, confirmation) left
+        open_now = [t for t in pending if spacer.remaining(t.host) >= need[t.host]]
+        if not open_now:
+            spacer.wait_next_day()  # [V2.65] (3): no pending host has an attempt's budget today
+            continue
+        due = [t for t in wanted if t in open_now]
         failed, walls = _controls(due, control=control, spacer=spacer, emit=emit)
         for host in {t.host for t in due}:
             controlled[host] = spacer.day()
@@ -301,7 +311,7 @@ def run_stage(  # noqa: PLR0913, PLR0915 - the tasks, then keyword-only knobs
         walled |= walls
         for task in interleaved(open_now):
             task_id = task.stage.task_id
-            if task.host in walled or spacer.at_cap(task.host):
+            if task.host in walled or spacer.remaining(task.host) < ATTEMPT_LOADS:
                 continue
             attempts[task_id] += 1
             run = attempts[task_id]

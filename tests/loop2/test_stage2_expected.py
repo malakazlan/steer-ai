@@ -334,7 +334,7 @@ class Clock:
 def test_loads_of_one_host_are_spaced_and_counted() -> None:
     """The save-reads pass and the harness space every load of a host alike (§2.3)."""
     clock = Clock()
-    spacer = Spacer(clock, clock.sleep)
+    spacer = Spacer(clock, clock.sleep, day=lambda: 0)
     for host in ("a.test", "b.test", "a.test"):
         spacer.wait(host)
         spacer.loaded(host)
