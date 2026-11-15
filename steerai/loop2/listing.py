@@ -118,6 +118,9 @@ class ListingTurn:
     """[V2.53]: as `Listing.root_depth`."""
     prompt_bytes: int | None = None
     """[V2.53]: the UTF-8 bytes of the turn's first prompt as sent, after the guard."""
+    acted: frozenset[int] = frozenset()
+    """#366 P5: the handles dispatched under this turn's Decision (the runner's), so a report
+    can say each was among `listed` when it was acted on."""
 
 
 def words_of(texts: Iterable[str]) -> frozenset[str]:
