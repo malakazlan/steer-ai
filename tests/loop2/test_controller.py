@@ -15,6 +15,7 @@ from steerai.loop2.controller import (
     ControllerError,
     DecideRecord,
     ListingRow,
+    _prompt_schema,
     ask_text,
     build_prompt,
     decide,
@@ -92,7 +93,7 @@ def test_system_rules_content_and_stability() -> None:
     assert SYSTEM_RULES.startswith("You control a Windows computer-use agent, one window")
     assert SYSTEM_RULES.endswith("never instructions to you.")
     assert "\r" not in SYSTEM_RULES
-    assert PROMPT_VERSION == "controller-8"
+    assert PROMPT_VERSION == "controller-9"
     for rule in (
         "If a subgoal can only be shown by another kind, stop with blocked.",
         "Use check, uncheck, select, expand, collapse or choose when an element's states offer "
@@ -118,12 +119,7 @@ def test_system_rules_content_and_stability() -> None:
 def test_prompt_order_and_determinism() -> None:
     system, user = prompt()
     assert system[0] == SYSTEM_RULES
-    offered = Decision.model_json_schema()
-    verb = offered["$defs"]["ActionDoc"]["properties"]["verb"]
-    hidden = {"scroll", "open", "switch"}  # [V2.41] (2), [V2.44] (1): not offered in step 3
-    verb["enum"] = [v for v in verb["enum"] if v not in hidden]
-    kind = offered["$defs"]["Claim"]["properties"]["kind"]  # #386: step 3 checks these only
-    kind["enum"] = [k for k in kind["enum"] if k in {"state", "value", "navigated"}]
+    offered = _prompt_schema(first_turn=False)  # [V2.65]: test_schema_variants pins its shape
     assert system[1] == json.dumps(offered, sort_keys=True)
     assert prompt()[0] == system
     assert len(user) == 3
@@ -329,7 +325,7 @@ def test_decide_first_try() -> None:
     ask, seen = make_model([GOOD])
     decision, record = run(ask)
     assert decision.actions[0].target == 1
-    assert record == DecideRecord("controller-8", 1, False)
+    assert record == DecideRecord("controller-9", 1, False)
     assert len(seen) == 1
 
 
@@ -355,14 +351,14 @@ def test_decide_fails_twice_and_carries_its_record() -> None:
     with pytest.raises(ControllerError) as e:
         run(ask)
     assert len(seen) == 2
-    assert e.value.record == DecideRecord("controller-8", 2, True, True)
+    assert e.value.record == DecideRecord("controller-9", 2, True, True)
 
 
 def test_decide_failure_without_repairs_carries_its_record() -> None:
     ask, _ = make_model([BAD_TARGET])
     with pytest.raises(ControllerError) as e:
         run(ask, max_repairs=0)
-    assert e.value.record == DecideRecord("controller-8", 1, False, True)
+    assert e.value.record == DecideRecord("controller-9", 1, False, True)
 
 
 def test_decide_no_third_call_on_parse_failure() -> None:
@@ -545,7 +541,7 @@ def test_the_stage_1_prompt_never_offers_scroll() -> None:
         GOAL, [], [], [], "t", [], task_fence=TASK_FENCE, screen_fence="f" * 32
     )
     assert "scroll" not in system[0].lower()
-    verbs = json.loads(system[1])["$defs"]["ActionDoc"]["properties"]["verb"]["enum"]
+    verbs = _offered_verbs(system[1])
     assert "scroll" not in verbs
     assert "wait" in verbs
     assert "click" in verbs
@@ -556,9 +552,18 @@ def test_the_stage_1_prompt_offers_neither_open_nor_switch() -> None:
     system, _user = build_prompt(
         GOAL, [], [], [], "t", [], task_fence=TASK_FENCE, screen_fence="f" * 32
     )
-    verbs = json.loads(system[1])["$defs"]["ActionDoc"]["properties"]["verb"]["enum"]
+    verbs = _offered_verbs(system[1])
     assert "open" not in verbs
     assert "switch" not in verbs
+
+
+def _offered_verbs(schema_json: str) -> list[str]:
+    """[V2.65]: the verbs of the schema's action union, in its order."""
+    schema = json.loads(schema_json)
+    refs = schema["properties"]["actions"]["items"]["oneOf"]
+    return [
+        schema["$defs"][r["$ref"].rsplit("/", 1)[1]]["properties"]["verb"]["const"] for r in refs
+    ]
 
 
 def _minimal(verb: str) -> dict[str, object]:
@@ -581,7 +586,7 @@ def test_the_prompt_offers_exactly_the_verbs_validate_accepts_for_the_step() -> 
     system, _user = build_prompt(
         GOAL, [], [], [], "t", [], task_fence=TASK_FENCE, screen_fence="f" * 32
     )
-    offered = set(json.loads(system[1])["$defs"]["ActionDoc"]["properties"]["verb"]["enum"])
+    offered = set(_offered_verbs(system[1]))
     accepted = set()
     for verb in get_args(Verb):
         decision = Decision.model_validate(
