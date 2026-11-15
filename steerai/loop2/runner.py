@@ -436,6 +436,7 @@ class _Run:
         return TaskOutcome(
             status=status,
             cause=cause,
+            wall_s=self.ports.clock() - self.started,
             dispatched=tuple(d.redacted() for d in self.dispatched),
             model_calls=self.model_calls,
             strikes=tuple(self.strike_log),
