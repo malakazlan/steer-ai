@@ -96,6 +96,12 @@ def wait_from(first_pages: Sequence[float], *, margin_s: float) -> float:
     return math.ceil(round((p99(first_pages) + margin_s) * 10, 6)) / 10
 
 
+def put_back_same(before: Sequence[object], after: Sequence[object]) -> bool:
+    """A placement put back: (flags, show, normal, min, max) equal but the minimised position,
+    which Windows fills in on a window's first minimise (-1, -1 is unset)."""
+    return [before[i] for i in (0, 1, 2, 4)] == [after[i] for i in (0, 1, 2, 4)]
+
+
 def doc_plan() -> list[tuple[str, StartKind]]:
     """`DOC_STARTS` starts, cold and loaded taking turns."""
     kinds: tuple[StartKind, StartKind] = ("cold", "loaded")
@@ -201,7 +207,7 @@ def run_start_child(hwnd: int, *, nudge: str, out: Path, trace: Path) -> int:  #
                 "calls": [name for name, _ in calls],
                 "nudge_span_s": nudge_span_s(calls),
                 "show_cmd_before": placement_before[1],
-                "placement_same": placement_after == placement_before,
+                "placement_same": put_back_same(placement_before, placement_after),
                 "rect_same": rect_after == rect_before,
                 "first_page_s": first_page(reads),
                 "reads": len(reads),

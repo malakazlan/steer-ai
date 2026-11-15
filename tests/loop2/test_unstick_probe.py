@@ -11,6 +11,7 @@ from steerai.loop2.unstick_probe import (
     nudge_span_s,
     p99,
     plan,
+    put_back_same,
     wait_from,
 )
 
@@ -82,3 +83,10 @@ def test_the_doc_plan_mixes_cold_and_loaded_starts() -> None:
     assert len(starts) >= 20
     assert {kind for _, kind in starts} == {"cold", "loaded"}
     assert abs(sum(k == "cold" for _, k in starts) - sum(k == "loaded" for _, k in starts)) <= 1
+
+
+def test_the_put_back_is_compared_without_the_minimised_position() -> None:
+    before = (2, 3, (13, 13, 1326, 1019), (-1, -1), (-1, -1))
+    assert put_back_same(before, (2, 3, (13, 13, 1326, 1019), (-32000, -32000), (-1, -1)))
+    assert not put_back_same(before, (2, 1, (13, 13, 1326, 1019), (-1, -1), (-1, -1)))
+    assert not put_back_same(before, (0, 3, (13, 13, 1326, 1019), (-1, -1), (-1, -1)))

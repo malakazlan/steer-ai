@@ -89,9 +89,12 @@ ptMinPosition member" (learn.microsoft.com, ns-winuser-windowplacement, read 202
 without it the set-back left ptMinPosition at the parking point (measured 2026-11-15)."""
 RESTORE_TRIES = 2
 """#400 REVISE 1: a put-back that fails is tried once more; failing again is `restore_failed`."""
-DOCUMENT_WAIT_S = 2.0
-"""[V2.64] (1): how long the start waits after the raise for the page before the nudge (one
-diagnosis run went visible unaided within 1 s; provisional)."""
+DOCUMENT_WAIT_S = 1.0
+"""[V2.64] (1): how long the start waits after the raise for the page before the nudge.
+Measured (degenerate distribution), floor 1.0 s: 24 starts on 2026-11-15 (12 cold, 12 loaded,
+Chrome 157, no trigger) had the page at the first read after the raise in every one (p99 0.0
+s); max(p99 + 0.5 s, 1.0 s), the floor from the diagnosis run in which a raised window turned
+visible unaided in about 1 s. A late nudge costs a 1-px move."""
 DOCUMENT_POLL_S = 0.25
 NUDGE_PAUSE_S = 0.2
 """[V2.62] addendum: the pause between the minimise and the restore of the start's nudge (the
@@ -240,7 +243,10 @@ class Platform(Protocol):
 class WindowPlacement:
     """[V2.64] (3) a window's placement (WINDOWPLACEMENT): its flags, its show state and its
     normal, minimised and maximised positions, saved before a nudge and set back after it with
-    WPF_SETMINPOSITION added, so the minimised position comes back too."""
+    WPF_SETMINPOSITION added. A window never minimised before reads `min_pos` (-1, -1), unset:
+    Windows fills in its parking point on that first minimise even with the flag (measured
+    2026-11-15, 1 of 5; the other 4 byte-identical), so the put-back is compared on flags, show
+    state, normal and maximised positions and the rect."""
 
     flags: int
     show_cmd: int

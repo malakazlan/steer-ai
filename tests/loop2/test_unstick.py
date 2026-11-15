@@ -90,12 +90,28 @@ def test_a_page_that_appears_within_the_wait_is_never_nudged() -> None:
     assert (platform.nudges, world.front_nudged) == ([], None)
 
 
-def test_a_page_that_appears_late_in_the_wait_is_never_nudged() -> None:
-    """#400 REVISE 2: the page first seen at 1.9 s or later, still inside the wait."""
+def test_the_wait_is_the_measured_p99_plus_half_a_second_floored_at_one_second() -> None:
+    """#400 REVISE 2, measured 2026-11-15: 24 starts (12 cold, 12 loaded), the page at the
+    first read after the raise in every one (p99 0.0 s, a degenerate distribution); the wait is
+    max(p99 + 0.5 s, 1.0 s), the floor from the diagnosis run that went visible unaided in
+    about 1 s."""
+    assert max(0.0 + 0.5, 1.0) == DOCUMENT_WAIT_S
+
+
+def test_a_page_that_appears_at_the_last_read_of_the_wait_is_never_nudged() -> None:
     platform = _platform(blank_reads=int(DOCUMENT_WAIT_S / DOCUMENT_POLL_S))
     world = _start(platform)
-    assert platform.read_times[-1] - platform.read_times[0] >= 1.9
+    assert platform.read_times[-1] - platform.read_times[0] == DOCUMENT_WAIT_S
     assert (platform.nudges, world.front_nudged) == ([], None)
+
+
+def test_a_page_that_appears_only_at_1_9_s_gets_the_one_gentle_nudge() -> None:
+    """#400 REVISE 2: past the measured wait a frame-only window is nudged once (one pixel and
+    back); the page that then shows lets the task start."""
+    platform = _platform(blank_reads=int(1.9 / DOCUMENT_POLL_S) + 1)
+    world = _start(platform)
+    assert platform.nudges == ["move:+1", "move:-1"]
+    assert world.front_nudged == "move1px"
 
 
 def test_an_empty_document_past_the_wait_is_never_nudged() -> None:
