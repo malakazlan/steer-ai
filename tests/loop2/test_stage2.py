@@ -653,3 +653,33 @@ def test_an_unrated_task_is_not_run_and_not_counted() -> None:
         unrated={gone: "target_after_opener"},
     )
     assert summary.report["unrated"] == {gone: "target_after_opener"}
+
+
+# ---- #413 item 4: when a control does not repeat -----------------------------------------------
+
+
+def test_a_re_run_on_the_same_day_does_not_repeat_the_control() -> None:
+    tasks = [site("a1", "a.test")]
+    outcomes = iter([True, False, False, False])
+
+    def attempt(t: SiteTask, n: int) -> SiteRecord:
+        lost = next(outcomes)
+        final = {**DONE, "monitor_lost": True} if lost else DONE
+        return SiteRecord(record("a1", n, final=final), None)
+
+    _, loads, _, _ = _staged(tasks, attempt)
+    assert [kind for _, kind, _ in loads] == ["control", "run", "run", "run", "run"]
+
+
+def test_a_site_void_on_one_host_repeats_only_that_hosts_control() -> None:
+    tasks = [site("a1", "a.test"), site("b1", "b.test")]
+    voids = iter(["site_down"])
+
+    def attempt(t: SiteTask, n: int) -> SiteRecord:
+        void = next(voids, None) if t.host == "a.test" else None
+        return SiteRecord(record(t.stage.task_id, n, final=None if void else DONE), void)
+
+    _, loads, _, _ = _staged(tasks, attempt)
+    controls = [host for _, kind, host in loads if kind == "control"]
+    assert controls.count("a.test") == 2
+    assert controls.count("b.test") == 1
