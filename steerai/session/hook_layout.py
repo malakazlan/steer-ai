@@ -95,6 +95,12 @@ ERROR_HOOKS: Final = 2
 ERROR_HOTKEY: Final = 3
 """`RegisterHotKey` failed: another program (or an orphan helper) holds the chord."""
 ERROR_LOOP: Final = 4
+"""The helper's wait or message pump failed after it was ready."""
+ERROR_MAP: Final = 5
+"""The config section could not be mapped."""
+ERROR_INTERNAL: Final = 6
+"""Any other exception in a start step or the loop: the helper has no stderr, so this code is its
+only report (the accepted standard-handles deviation)."""
 
 KIND_TAKEOVER: Final = 0
 KIND_OTHER_STEER: Final = 1

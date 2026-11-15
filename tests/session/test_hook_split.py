@@ -32,6 +32,7 @@ HELPER_MODULES = (
     "steerai.session.probe_ledger",
     "steerai.session.hook_layout",
     "steerai.session.helper_core",
+    "steerai.session.hook_helper",
 )
 FORBIDDEN = ("steerai.action", "steerai.probes", "steerai.session.monitor")
 

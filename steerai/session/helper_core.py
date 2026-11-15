@@ -16,6 +16,7 @@ Only counters and clock comparisons run here ([V2.60] Q3): the gaps over the hoo
 from __future__ import annotations
 
 import zlib
+from dataclasses import dataclass
 from typing import Final
 
 from steerai.session.hook_classifier import (
@@ -51,11 +52,48 @@ SLEEP_DIVERGENCE_MS: Final = 50
 is max(50 ms, 3 x the no-sleep maximum), from P-sleep."""
 WARM_ROUNDS: Final = 1000
 """HH-04: synthetic callbacks run once at start so the first real event finds its code paged in."""
+HELPER_MODULE: Final = "steerai.session.hook_helper"
+EXIT_OK: Final = 0
+EXIT_ARGS: Final = 2
+"""The command line is not five handle values and the layout version."""
+EXIT_MAP: Final = 3
+"""The status section could not be mapped, so nothing could be published."""
+EXIT_FAILED: Final = 4
+"""A failure was published in the status words (`state = failed`, an error code)."""
 _STEERS_OWN: Final = frozenset({"crc", "ask_depth", "kill_ack"})
 _IMMUTABLE: Final = tuple(n for n in CONFIG_WORDS if n not in _STEERS_OWN)
 _COUNTS: Final = ("user", "injected_other", "steer", "answer", "other_steer")
 _TICK_WRAP: Final = 0xFFFF_FFFF
 _HALF: Final = 0x8000_0000
+
+
+@dataclass(frozen=True)
+class HelperHandles:
+    """The five handles the helper inherits (rev 2 §3.3); never the job's."""
+
+    config: int
+    status: int
+    quit: int
+    wake: int
+    parent: int
+
+    def all(self) -> tuple[int, int, int, int, int]:
+        return (self.config, self.status, self.quit, self.wake, self.parent)
+
+
+def helper_argv(handles: HelperHandles, layout_version: int) -> list[str]:
+    """The interpreter's arguments: isolated mode, the module, then integers only (no secret
+    on a command line another process can read)."""
+    return ["-I", "-m", HELPER_MODULE, *(str(h) for h in handles.all()), str(layout_version)]
+
+
+def parse_helper_argv(args: list[str]) -> tuple[HelperHandles, int]:
+    """The helper's own arguments (after the module name); ValueError unless exactly six
+    non-negative decimal integers."""
+    if len(args) != 6 or not all(a.isascii() and a.isdecimal() for a in args):
+        raise ValueError("the helper takes five handle values and the layout version")
+    config, status, quit_event, wake, parent, version = (int(a) for a in args)
+    return HelperHandles(config, status, quit_event, wake, parent), version
 
 
 def _crc(config: Words) -> int:
