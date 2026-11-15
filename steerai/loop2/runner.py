@@ -107,6 +107,7 @@ from steerai.loop2.task import GoalSpan, Subgoal, Task, known_params
 from steerai.loop2.verify import (
     PAGE_CARRIERS,
     URL_CARRIERS,
+    CheckToken,
     Readers,
     check_claim,
     holds_words,
@@ -833,12 +834,13 @@ class _Run:
             return
         self._note(ClaimResult(subgoal.id, "accepted"))  # [V2.47]: one param held, not closed
 
-    def _refused(
+    def _refused(  # noqa: PLR0911 - one return per refusal, in the rules' order
         self, claim: Claim, subgoal: Subgoal, param: str | None, observed: Observed
-    ) -> RunnerClaim | None:
+    ) -> RunnerClaim | CheckToken | None:
         """Code's refusals before the claim check, first match wins: a commit subgoal is never
         closed in step 3 (RT-06); the claim's kind must prove the subgoal's closing kind
-        ([V2.39]); a value or state claim must name one param, by an element that proves no
+        ([V2.39]); a value or state claim must name one param and cite exactly one element (#422:
+        the claim check's own count tokens, before anything reads it), an element that proves no
         other param (#334 review), and a state claim's element must hold the param's words
         ([V2.40] Q7)."""
         if subgoal.commit != "none":
@@ -849,6 +851,8 @@ class _Run:
             return None
         if param is None:
             return "param_missing"
+        if len(claim.evidence) != 1:
+            return "too_much_evidence" if claim.evidence else "evidence_missing"
         if self._reused(subgoal, param, claim.evidence[0]):
             return "evidence_reused"
         named = claim.kind != "state" or self._named(subgoal, param, claim.evidence[0], observed)
