@@ -14,6 +14,7 @@ decide worker (`DecideCalls`).
 from __future__ import annotations
 
 import math
+import secrets
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
@@ -23,14 +24,16 @@ from steerai.loop2.controller import (
     ControllerError,
     FocusState,
     ListingRow,
+    build_audit_prompt,
     decide,
     focus_state,
+    parse_audit,
     v2_listing,
 )
 from steerai.loop2.decide_port import DecideCalls
 from steerai.loop2.history import HistoryRecord
 from steerai.loop2.listing import LISTING_CAP, Listing, select_listing, words_of
-from steerai.loop2.loop import Decided, TokenUsage, TurnView
+from steerai.loop2.loop import Audited, AuditView, Decided, TokenUsage, TurnView
 from steerai.loop2.task import Status, Subgoal, known_params
 
 CALIBRATION_MARGIN: Final = 1.1
@@ -194,6 +197,23 @@ def make_decide(
             None if inputs.listing is None else inputs.listing.turn(listed, cut, tokens, first)
         )
         return Decided(decision, usage, listing, exact_counted=spent, estimate_low=low)
+
+    return port
+
+
+def make_audit(calls: DecideCalls, *, goal: str, task_fence: str) -> Callable[[AuditView], Audited]:
+    """`Ports.audit` ([V2.64] One): the request, the proof tokens and the final listing through
+    `build_audit_prompt`, one call on the decide worker (kill-aware, its usage summed). A failed
+    or unparsed call raises (`ControllerError` carries its usage): the runner vetoes."""
+
+    def port(view: AuditView) -> Audited:
+        rows = v2_listing(view.observed.snapshot, handles=view.handles)
+        system, user = build_audit_prompt(
+            goal, view.proofs, view.observed.snapshot.title or "", rows,
+            task_fence=task_fence, screen_fence=secrets.token_hex(16),
+        )  # fmt: skip
+        doc, usage = calls.turn(lambda ask: parse_audit(ask(system, user)))
+        return Audited(doc.veto, doc.reason, usage)
 
     return port
 

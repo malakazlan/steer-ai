@@ -71,11 +71,13 @@ from steerai.loop2.loop import (
     READ_BACK_VERBS,
     URL_READS,
     ActResult,
+    AuditView,
     Dispatch,
     ParentKind,
     PendingText,
     PortInterrupted,
     Ports,
+    ProofLine,
     Provenance,
     Reason,
     Status,
@@ -420,6 +422,10 @@ class _Run:
         self.focus_losses = 0
         """[V2.43] (2): focus moved off a press's target after the listing showed it there."""
         self.unread_aids = 0
+        self.proven_how: dict[str, ProvenHow] = {}
+        """[V2.64] One: how each subgoal was proven (a claim, or the auto proof's token)."""
+        self.audit: tuple[str, str] | None = None
+        """[V2.64] One: the final audit's outcome and reason, when it ran."""
         """#301: unread automation ids over every observation taken in (`_in_domain`)."""
         self.partial_page_calls = 0
         """[V2.35]: model calls made on a growing or young observation (`_decide`)."""
@@ -479,6 +485,7 @@ class _Run:
             focus_losses=self.focus_losses,
             unread_automation_ids=self.unread_aids,
             url_reads=tuple(self.url_reads.items()),
+            audit=self.audit,
             partial_page_calls=self.partial_page_calls,
             refusals=tuple(self.refusal_counts.items()),
             submit_parents=tuple(self.submit_parents.items()),
@@ -666,17 +673,21 @@ class _Run:
         self.partial_page_calls += observed.growing or observed.young  # [V2.35]: counted
         self.exact_counts += decided.exact_counted
         self.estimates_low += decided.estimate_low
-        counts = _counts(decided.usage)
+        self._spend(decided.usage)
+        self.listing.shown = None if decided.listing is None else decided.listing.listed
+        if decided.listing is not None:
+            self.listing.turns.append(decided.listing)
+        return decided.decision
+
+    def _spend(self, usage: TokenUsage | None) -> None:
+        """A reported call's usage into the task's totals; unknown makes them a lower bound."""
+        counts = _counts(usage)
         if counts is None:
             self.tokens = math.nan  # never zero: the token budget trips ([V2.37] P6)
             self.usage_incomplete = True
         else:
             self.tokens += sum(counts)
             self.by_category = [a + b for a, b in zip(self.by_category, counts, strict=True)]
-        self.listing.shown = None if decided.listing is None else decided.listing.listed
-        if decided.listing is not None:
-            self.listing.turns.append(decided.listing)
-        return decided.decision
 
     def _delta(self, observed: Observed) -> dict[str, Any]:  # Any: TurnView's own field types
         """[V2.56]: `new` and `changed` against the observation the model last saw (never the
@@ -719,7 +730,7 @@ class _Run:
             return observed
         for claim in decision.claims:
             self._claim(claim, observed)
-        self._check_done()
+        self._check_done(observed)
         if decision.ask is not None:
             raise _End("asked", Reason("controller_ask"))
         if decision.stop is not None:
@@ -896,14 +907,70 @@ class _Run:
             self.turn.claim_rejected = True
             return
         self.proven.add(subgoal.id)
+        self.proven_how[subgoal.id] = how
         self.turn.ticked = True
         self.refusal = None
         self._note(Proven(subgoal.id, how))
 
-    def _check_done(self) -> None:
-        """A task with zero subgoals never ends `done` ([V2.11] decision 1)."""
+    def _check_done(self, observed: Observed) -> None:
+        """A task with zero subgoals never ends `done` ([V2.11] decision 1). [V2.64] One: when
+        every proof is self-written, the final audit runs first, and only its pass ends done."""
         if self.subgoals and all(s.id in self.proven for s in self.subgoals):
+            lines = self._proof_lines()
+            if all(line[4] for line in lines):
+                self._audit(observed, lines)
             raise _End("done", None)
+
+    def _proof_lines(self) -> tuple[ProofLine, ...]:
+        """Each proven subgoal: id, closes, how, kind, and whether its proof is self-written: a
+        value or state claim whose every cited element Steer dispatched an action to."""
+        acted = {d.action.target for d in self.dispatched if d.action.target is not None}
+        lines: list[ProofLine] = []
+        for subgoal in self.subgoals:
+            how = self.proven_how.get(subgoal.id, "claim")
+            proofs = self.proofs.get(subgoal.id, {})
+            kinds = {p.kind for p in proofs.values()}
+            kind = (
+                (next(iter(kinds)) if len(kinds) == 1 else "mixed")
+                if proofs
+                else ("navigated" if how == "claim" else how)
+            )
+            own = (
+                how == "claim"
+                and bool(proofs)
+                and kinds <= {"value", "state"}
+                and all(p.handle in acted for p in proofs.values())
+            )
+            lines.append((subgoal.id, subgoal.closes, how, kind, own))
+        return tuple(lines)
+
+    def _audit(self, observed: Observed, lines: tuple[ProofLine, ...]) -> None:
+        """[V2.64] One: one veto-only call. No port, no call left in the budget, a failed or
+        unparsed call: `audit_failed`; a veto: `audit_veto`. Both end `blocked`, never done."""
+        audit = self.ports.audit
+        budgets = self.task.budgets
+        spent = not math.isfinite(self.tokens) or self.tokens >= budgets.max_tokens
+        if audit is None or self.model_calls + 1 > budgets.max_model_calls or spent:
+            self.audit = ("failed", "audit_failed")
+            raise _End("blocked", Reason("audit_failed"))
+        view = AuditView(observed=observed, handles=self.handles.bind(observed), proofs=lines)
+        try:
+            audited = audit(view)
+        except (PortInterrupted, SteerError, ControllerError) as exc:
+            self.model_calls += 1
+            if isinstance(exc, PortInterrupted):
+                self.tokens = math.nan  # abandoned: billed, never reported ([V2.41] (1))
+                self.usage_incomplete = True
+                raise
+            self._spend(exc.usage if isinstance(exc, ControllerError) else None)
+            self.audit = ("failed", "audit_failed")
+            raise _End("blocked", Reason("audit_failed")) from None
+        self.model_calls += 1
+        self._spend(audited.usage)
+        if audited.veto:
+            self.audit = ("vetoed", audited.reason)
+            raise _End("blocked", Reason("audit_veto"))
+        self.audit = ("allowed", audited.reason)
 
     # ---- the batch ------------------------------------------------------------------------
 
@@ -1468,7 +1535,7 @@ class _Run:
             )
             if proof is not None:
                 self._tick(subgoal, how=proof)
-        self._check_done()
+        self._check_done(observed)
 
     # ---- refusals, guards -----------------------------------------------------------------
 
