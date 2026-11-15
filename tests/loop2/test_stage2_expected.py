@@ -516,3 +516,15 @@ def test_a_2b_table_that_differs_by_any_byte_is_refused() -> None:
     text = TABLE.read_text(encoding="utf-8")
     with pytest.raises(ValueError, match="table"):
         check_table(text.replace('"risk": "R1"', '"risk": "R2"', 1))
+
+
+# ---- #428 (8): the acts file is pinned as the table is -------------------------------------------
+
+
+def test_only_the_committed_2b_acts_run() -> None:
+    from steerai.loop2.stage2_expected import ACTS, check_acts  # noqa: PLC0415
+
+    text = ACTS.read_text(encoding="utf-8")
+    check_acts(text)
+    with pytest.raises(ValueError, match="not the committed 2b acts"):
+        check_acts(text.replace("}", "} ", 1))

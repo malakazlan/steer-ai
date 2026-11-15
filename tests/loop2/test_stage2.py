@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import itertools
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ from steerai.loop2.stage2 import (
     SiteTask,
     StartPage,
     classify_site,
+    days_bound,
     harness_failed,
     interleaved,
     invalid_run_void,
@@ -34,6 +36,7 @@ from steerai.loop2.stage2 import (
     volume_bound,
 )
 from steerai.loop2.stage2_expected import (
+    ATTEMPT_LOADS,
     DAILY_CAP,
     SITE_SPACING_S,
     DecidingFacts,
@@ -539,7 +542,7 @@ def test_the_loads_per_host_are_counted_and_reported() -> None:
     assert summary.report["harness_loads_per_host_max"] == 4
     # [V2.65] (3): 3 runs and 3 re-runs, one control first and one per re-run batch at most
     assert summary.report["harness_loads_bound"] == volume_bound(tasks, runs=3) == {"a.test": 10}
-    assert summary.report["harness_days_bound"] == {"a.test": 1}
+    assert summary.report["harness_days_bound"] == {"a.test": 2}  # #428 (5): 10 loads at 6
 
 
 def test_the_volume_bound_per_host_from_the_task_data() -> None:
@@ -698,22 +701,70 @@ def test_a_site_void_on_one_host_repeats_only_that_hosts_control() -> None:
 CALENDAR_TEST = "test_a_spacer_counts_days_on_the_calendar_by_default"
 
 
+def _bare_spacers(source: str, name: str = "t.py") -> list[str]:
+    """Every `Spacer(...)` in `source` (module level, a def or an async def; by its own name, an
+    alias of it, or `module.Spacer`) built without `day=`, or with `day=calendar_day`; the one
+    test of the calendar default is exempt."""
+    tree = ast.parse(source)
+    aliases = {"Spacer"} | {
+        a.asname or a.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for a in node.names
+        if a.name == "Spacer"
+    }
+    exempt: set[int] = set()
+    for fn in ast.walk(tree):
+        if isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef) and fn.name == CALENDAR_TEST:
+            exempt |= {id(n) for n in ast.walk(fn)}
+    bare = []
+    for call in ast.walk(tree):
+        if not isinstance(call, ast.Call) or id(call) in exempt:
+            continue
+        func = call.func
+        spacer = (isinstance(func, ast.Name) and func.id in aliases) or (
+            isinstance(func, ast.Attribute) and func.attr == "Spacer"
+        )
+        if not spacer:
+            continue
+        day = next((k.value for k in call.keywords if k.arg == "day"), None)
+        named = getattr(day, "id", None) or getattr(day, "attr", None)
+        calendar = isinstance(day, ast.Name | ast.Attribute) and named == "calendar_day"
+        if day is None or calendar:
+            bare.append(f"{name}:{call.lineno}")
+    return bare
+
+
 def test_no_stage_test_reads_the_real_calendar() -> None:
     """#419 (1): a run across local midnight must never flip a result. Every `Spacer` built in a
-    stage test is given its day, except the one test of the calendar default itself."""
+    stage test is given its day (never the calendar), except the one test of the default."""
     tests = Path(__file__).parent
-    bare = []
-    for path in tests.glob("test_stage*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for fn in ast.walk(tree):
-            if not isinstance(fn, ast.FunctionDef) or fn.name == CALENDAR_TEST:
-                continue
-            for call in ast.walk(fn):
-                if not isinstance(call, ast.Call) or getattr(call.func, "id", "") != "Spacer":
-                    continue
-                if not any(k.arg == "day" for k in call.keywords):
-                    bare.append(f"{path.name}:{fn.name}")
+    bare = [
+        found
+        for path in sorted(tests.glob("test_stage*.py"))
+        for found in _bare_spacers(path.read_text(encoding="utf-8"), path.name)
+    ]
     assert bare == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "s = Spacer(clock, sleep)\n",  # module level
+        "async def t():\n    Spacer(clock, sleep)\n",
+        "from steerai.loop2.stage2_expected import Spacer as S\ndef t():\n    S(c, s)\n",
+        "import steerai.loop2.stage2_expected as se\ndef t():\n    se.Spacer(c, s)\n",
+        "def t():\n    Spacer(c, s, day=calendar_day)\n",
+        "def t():\n    Spacer(c, s, day=se.calendar_day)\n",
+    ],
+)
+def test_the_calendar_check_sees_every_form(source: str) -> None:
+    """#428 (3): module-level calls, async defs, aliases, attribute forms and the calendar."""
+    assert _bare_spacers(source)
+
+
+def test_the_calendar_check_passes_a_spacer_given_its_day() -> None:
+    assert _bare_spacers("def t():\n    Spacer(c, s, day=days)\n") == []
 
 
 def test_an_attempt_never_starts_without_its_whole_budget_left_today() -> None:
@@ -740,3 +791,117 @@ def test_an_attempt_never_starts_without_its_whole_budget_left_today() -> None:
     assert all(len(kinds) <= 3 for kinds in per_day.values())
     assert all(kinds[-1] == "run" for kinds in per_day.values())  # no control left without its run
     assert len(per_day) > 1  # the attempts that would overrun waited for the next day
+
+
+# ---- #428 (4): the hard cap with a confirmation, and with several hosts --------------------------
+
+
+def _confirming(tasks: list[SiteTask], *, cap: int, runs: int = 2) -> list[tuple[int, str, str]]:
+    """Every run meets a wall on its own host that needs its confirming load."""
+    clock = Clock()
+    days = Days(clock)
+    loads: list[tuple[int, str, str]] = []
+
+    def attempt(t: SiteTask, n: int) -> SiteRecord:
+        loads.append((days(), t.host, "run"))
+        return SiteRecord(walled(), None, wall_host=t.host)
+
+    def confirm(t: SiteTask) -> bool:
+        loads.append((days(), t.host, "confirm"))
+        return False
+
+    def ctl(host: str) -> ControlResult:
+        loads.append((days(), host, "control"))
+        return "pass"
+
+    run_stage(tasks, runs=runs, attempt=attempt, control=ctl, confirm=confirm,
+              spacer=Spacer(clock, clock.sleep, day=days, cap=cap))  # fmt: skip
+    return loads
+
+
+def test_a_wall_needing_its_confirmation_at_two_left_keeps_both_loads_on_its_day() -> None:
+    """With 2 left today, an attempt starts and its run and its confirmation both land today."""
+    assert needs_confirmation(
+        site("a1", "a.test", controlled=False),
+        SiteRecord(walled(), None, wall_host="a.test"),
+    )
+    loads = _confirming([site("a1", "a.test", controlled=False)], cap=4, runs=2)
+    per_day: dict[int, list[str]] = {}
+    for day, _host, kind in loads:
+        per_day.setdefault(day, []).append(kind)
+    assert per_day[0] == ["run", "confirm", "run", "confirm"]  # the second began with 2 left
+    assert all(len(kinds) <= 4 for kinds in per_day.values())
+
+
+def test_the_cap_holds_per_host_with_several_hosts_and_confirmations() -> None:
+    tasks = [site("a1", "a.test"), site("b1", "b.test"), site("a2", "a.test")]
+    loads = _confirming(tasks, cap=5, runs=2)
+    per: dict[tuple[int, str], int] = {}
+    for day, host, _kind in loads:
+        per[(day, host)] = per.get((day, host), 0) + 1
+    assert all(n <= 5 for n in per.values())
+    # each run's confirmation follows it on the same day and the same host
+    for (day, host, kind), (day2, host2, kind2) in itertools.pairwise(loads):
+        if kind2 == "confirm":
+            assert (kind, day, host) == ("run", day2, host2)
+
+
+# ---- #428 (5): the days bound never understates ------------------------------------------------
+
+
+def test_the_days_bound_reserves_each_attempts_confirmation() -> None:
+    per_day = DAILY_CAP // ATTEMPT_LOADS
+    assert days_bound({"a.test": per_day}) == {"a.test": 1}
+    assert days_bound({"a.test": per_day + 1}) == {"a.test": 2}
+    assert days_bound({"a.test": DAILY_CAP}) == {"a.test": 2}  # the old bound said 1
+
+
+def test_a_run_where_every_attempt_confirms_fits_its_days_bound() -> None:
+    tasks = [site("a1", "a.test"), site("a2", "a.test")]
+    loads = _confirming(tasks, cap=DAILY_CAP, runs=3)
+    used = len({day for day, _host, _kind in loads})
+    assert used <= days_bound(volume_bound(tasks, runs=3))["a.test"]
+
+
+# ---- #428 (6): a host with only uncontrolled tasks reserves no control ---------------------------
+
+
+def test_an_uncontrolled_host_needs_only_an_attempts_loads() -> None:
+    """With 2 a day, an uncontrolled task runs today: no control's load is reserved for it."""
+    clock = Clock()
+    days = Days(clock)
+    ran: list[int] = []
+
+    def bounded() -> int:  # a reserved control would wait day after day: fail, never hang
+        day = days()
+        assert day < 3, "the task never ran: a control load was reserved for it"
+        return day
+
+    def attempt(t: SiteTask, n: int) -> SiteRecord:
+        ran.append(days())
+        return SiteRecord(record(t.stage.task_id, n), None)
+
+    run_stage([site("u1", "u.test", controlled=False)], runs=1, attempt=attempt,
+              control=lambda _h: "pass", confirm=lambda _t: False,
+              spacer=Spacer(clock, clock.sleep, day=bounded, cap=ATTEMPT_LOADS))  # fmt: skip
+    assert ran == [0]
+
+
+# ---- #428 (7): a load counts on the day it started ---------------------------------------------
+
+
+def test_a_run_that_crosses_midnight_counts_on_the_day_it_started() -> None:
+    clock = Clock()
+    days = Days(clock)
+    spacer = Spacer(clock, clock.sleep, day=days, cap=3)
+    start = days()
+
+    def attempt(t: SiteTask, n: int) -> SiteRecord:
+        clock.now += 86_400.0  # the run ends after midnight
+        return SiteRecord(record(t.stage.task_id, n), None)
+
+    run_stage([site("a1", "a.test", controlled=False)], runs=1, attempt=attempt,
+              control=lambda _h: "pass", confirm=lambda _t: False, spacer=spacer)  # fmt: skip
+    clock.now -= 86_400.0  # back on the day it started
+    assert days() == start
+    assert spacer.remaining("a.test") == 2
