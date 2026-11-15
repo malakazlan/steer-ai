@@ -171,7 +171,6 @@ def test_the_gate_report_never_carries_text_from_the_childs_line() -> None:
     assert "page title" not in json.dumps(summary.report)
 
 
-
 # ---- #429 (1): the closed details the emitters really send are kept ------------------------------
 
 

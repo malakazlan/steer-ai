@@ -317,7 +317,6 @@ def test_fresh_opened_never_removes_a_start_read(tmp_path: Path) -> None:
     assert start.exists()
 
 
-
 # ---- #429 (2): an opener task with no acts row is refused ----------------------------------------
 
 
