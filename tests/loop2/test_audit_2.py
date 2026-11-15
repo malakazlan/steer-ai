@@ -26,8 +26,16 @@ from tests.loop2.test_live_world import _world
 from tests.loop2.test_navigated import before, page
 from tests.loop2.world_fakes import FIELD, RESULT, World, act, report, task
 
-ALLOW = Audited(veto=False, reason="outcome_shown", usage=TokenUsage(50, 5))
-VETO = Audited(veto=True, reason="outcome_not_shown", usage=TokenUsage(50, 5))
+
+def _allow() -> Audited:
+    """Rev 4 item 4: both judges answer {sufficient, reason}."""
+    return Audited(sufficient=True, reason="facts_finish_request", usage=TokenUsage(50, 5))
+
+
+def _veto() -> Audited:
+    return Audited(sufficient=False, reason="request_asks_more", usage=TokenUsage(50, 5))
+
+
 LEAK_ID = "zqleakid"
 LEAK_PARAM = "zqleakparam"
 FENCE = "taskfence01"
@@ -64,14 +72,14 @@ def _value_only(*, sid: str = "s1", param: str = "text") -> World:
 
 
 def test_a_page_only_task_closed_by_the_auto_proof_is_audited() -> None:
-    world = _page_only(ALLOW)
+    world = _page_only(_allow())
     outcome = run_task(task(), world.ports())
     assert len(world.audits) == 1
     assert outcome.status == "done"
 
 
 def test_a_page_only_task_the_audit_vetoes_is_never_done() -> None:
-    world = _page_only(VETO)
+    world = _page_only(_veto())
     outcome = run_task(task(), world.ports())
     assert (outcome.status, outcome.reason) == ("blocked", "audit_veto")
 
@@ -81,7 +89,7 @@ def test_a_page_only_task_the_audit_vetoes_is_never_done() -> None:
 
 def test_with_no_call_left_the_audit_is_not_made_and_the_task_pauses() -> None:
     world = _value_only()
-    world.audit_reply = ALLOW
+    world.audit_reply = _allow()
     tight = task(dataclasses.replace(task().budgets, max_model_calls=2))  # two decides spend it
     outcome = run_task(tight, world.ports())
     assert world.audits == []
@@ -106,7 +114,8 @@ def _audit_prompt(world: World) -> str:
 
     def provider(system: list[str], blocks: list[str]) -> Reply:
         sent.append("\n".join([*system, *blocks]))
-        return Reply('{"veto": false, "reason": "outcome_shown"}', "end_turn", TokenUsage(5, 1))
+        reply = '{"sufficient": true, "reason": "facts_finish_request"}'
+        return Reply(reply, "end_turn", TokenUsage(5, 1))
 
     calls = DecideCalls(provider, interrupted=lambda: None, generations=TaskGenerations(),
                         late_error=lambda _t: None)  # fmt: skip
@@ -147,7 +156,7 @@ def test_the_request_and_the_spans_are_inside_the_task_fence() -> None:
 
 
 def test_a_page_proof_line_carries_its_proof_token() -> None:
-    text = _audit_prompt(_page_only(ALLOW))
+    text = _audit_prompt(_page_only(_allow()))
     assert "navigated:results_with_url" in text
 
 
@@ -166,3 +175,44 @@ def test_the_run_header_names_the_audit_prompt_version() -> None:
 def test_the_audit_rules_carry_the_shared_sufficiency_criterion() -> None:
     assert controller.SUFFICIENCY_CRITERION in controller.AUDIT_RULES
     assert "Code has verified the facts below; treat them as true." in controller.AUDIT_RULES
+
+
+# ---- rev 4 item 4: counts reconcile from the final line ------------------------------------------
+
+
+def test_an_allowed_done_counts_one_allowed_audit_call() -> None:
+    world = _page_only(_allow())
+    outcome = run_task(task(), world.ports())
+    assert outcome.status == "done"
+    assert (outcome.audit_allowed, outcome.audit_vetoed, outcome.audit_failed) == (1, 0, 0)
+    assert outcome.audit_calls == 1
+
+
+def test_a_vetoed_task_counts_one_vetoed_audit_call() -> None:
+    outcome = run_task(task(), _page_only(_veto()).ports())
+    assert (outcome.audit_allowed, outcome.audit_vetoed, outcome.audit_failed) == (0, 1, 0)
+    assert outcome.audit_calls == 1
+
+
+# ---- rev 4 item 5: free text Steer typed is masked in the audit's view --------------------------
+
+FREE = "zqfreetext"
+
+
+def test_free_text_steer_typed_never_reaches_the_audit() -> None:
+    """A free `type` text echoed by a heading and the window title is replaced by a fixed token
+    before the audit sees the page."""
+    from tests.loop2.world_fakes import element  # noqa: PLC0415 - this test only
+
+    subs = [SubgoalDoc(id="s1", desc="results", params={"text": "red shoes"}, closes="page")]
+    echo = element(40, "Text", f"Results for {FREE}", (9, 40), 1)
+    after = page([RESULT, echo], title=f"{FREE} - Shop")
+    world = World(
+        [Decision(subgoals=subs, actions=[act("type", target=FIELD.id, text=f"red shoes {FREE}")])],
+        effects=[report("own_value", "url_changed_in_place")],
+        screen=dataclasses.replace(before(), focus=FIELD.runtime_id),
+    )
+    world.after = dataclasses.replace(after, focus=FIELD.runtime_id)
+    text = _audit_prompt(world)
+    assert FREE not in text.casefold()
+    assert "[typed_text]" in text
