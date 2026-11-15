@@ -431,6 +431,8 @@ class TaskOutcome:
     among the rows the model was shown."""
     typed_into_combobox: bool = False
     """[V2.64] Two: a type targeted a ComboBox (whether it was then sent or refused)."""
+    saved_calls: int = 0
+    """[V2.67] A: model calls not made because the turn-start judgement closed the task."""
     pre_task_draft_clicks: int = 0
     """[V2.64] Two: non-field clicks whose submit scope held a filled field with no pending-text
     record (text Steer did not type: a draft from before the task, or the page's own)."""

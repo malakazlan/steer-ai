@@ -31,6 +31,7 @@ from tests.loop2.world_fakes import (
     act_result,
     decision,
     element,
+    judged_by,
     observed,
     report,
     snapshot,
@@ -376,7 +377,9 @@ def test_rt03_two_identity_matches_keep_it_pending_and_unread() -> None:
 def test_rt03_a_replaced_top_document_ends_the_pending_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(runner, "auto_proof", lambda *_a, **_k: None)  # not proven; not under test
+    monkeypatch.setattr(
+        runner, "judge", judged_by(lambda *_a, **_k: None)
+    )  # not proven; not under test
     new_doc = dataclasses.replace(PAGE[0], runtime_id=(9, 501))
     replaced = [new_doc, *[e for e in _rerendered() if e.id != PAGE[0].id]]
     world = _composer_world(replaced, {(9, 191): TYPED_VALUE})

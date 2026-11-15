@@ -377,3 +377,11 @@ def test_the_trigger_names_no_application() -> None:
     source = inspect.getsource(live_world.LiveWorld._needs_nudge)
     assert "chrome" not in source.lower()
     assert PAGE  # the fake's page has a Document with children
+
+
+def test_the_world_report_says_which_nudge_the_start_applied() -> None:
+    """Stage 1 acceptance prep: the final line's `world` block carries the nudge, so the stage
+    report can count how often a start needed one."""
+    platform = _platform(blank_reads=FOREVER)
+    assert _start(platform).report()["front_nudged"] == "move1px"
+    assert _start(_platform()).report()["front_nudged"] is None
