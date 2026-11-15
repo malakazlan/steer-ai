@@ -93,6 +93,8 @@ the Document, so its form is the whole page, and on `PAGE` the password and Send
 a commit (R2). The query-class cases (an R1 Enter or search click) run on this page."""
 EMPTY = ValueFact(filled=False, digest="empty")
 TYPED_VALUE = ValueFact(filled=True, digest="typed")
+MAX_SETTLES = 1_000
+"""More settles than this in one task is a runaway wait: the fake fails the test."""
 """What `World.read_value` returns: a field is empty until a type into it reads back True."""
 
 
@@ -262,8 +264,21 @@ class World:
     """The guard each `settle` (the [V2.31] load-guard wait) was given."""
     settled: Observed | None = None
     """What `settle` returns; None: the current screen."""
+    settle_advance_s: float = 0.0
+    """How far the clock moves during each settle (a hold that takes time)."""
     interrupt_after_settle: bool = False
     """Report `interruption` once a settle has run (the person's kill during the wait)."""
+    interrupt_in_decide: int | None = None
+    """Report `interruption` from this controller call on (1-based): the kill arrives while
+    that call is waiting on the model, so its Decision comes back after the kill (#326)."""
+    autocomplete: dict[tuple[int, ...], ValueFact] = field(default_factory=dict)
+    """The value a field holds once the watch after a type has run (the page completed what Steer
+    typed, RT-33)."""
+    read_log: list[Observed] = field(default_factory=list)
+    """Every observation `observe` returned, in order (the very objects)."""
+    observe_lag_s: float = 0.0
+    """When set, each observe is stamped at its completion and the clock then moves on by this
+    much before the read is used (slow processing after a read, RT-19)."""
     read_cost: ReadCost = field(default_factory=ReadCost)
     """What each watch reports it read ([V2.34])."""
     read_s: float = 0.0
@@ -296,7 +311,13 @@ class World:
         self._arrive()
         if self.observations:
             self.screen = self.observations.pop(0)
-        return self.screen
+        seen = self.screen
+        if self.observe_lag_s:
+            stamped = dataclasses.replace(self.screen.snapshot, taken_at=self.now)
+            self.now += self.observe_lag_s
+            seen = dataclasses.replace(self.screen, snapshot=stamped)
+        self.read_log.append(seen)
+        return seen
 
     def _act(self, sent: Dispatch) -> ActResult:
         self.events.append("act")
@@ -316,6 +337,8 @@ class World:
 
     def _watch(self, before: Observed, sent: Dispatch) -> Watched:
         self.events.append("watch")
+        if sent.action.verb == "type" and sent.runtime_id in self.autocomplete:
+            self.values[sent.runtime_id] = self.autocomplete[sent.runtime_id]
         self.now += self.watch_s
         self._arrive()
         effect = self.effects.pop(0) if self.effects else report("none")
@@ -344,6 +367,9 @@ class World:
     def _settle(self, first: Observed, guard_s: float) -> Observed:  # noqa: ARG002 - the Ports shape
         self.events.append("settle")
         self.settle_guards.append(guard_s)
+        if len(self.settle_guards) > MAX_SETTLES:  # a loop that never ends fails, never hangs
+            raise AssertionError(f"settle called more than {MAX_SETTLES} times")
+        self.now += self.settle_advance_s
         if self.settled is not None:
             self.screen = self.settled  # the settle is a read of the screen
         return self.screen
@@ -372,6 +398,8 @@ class World:
     def _interrupted(self) -> str | None:
         if self.interrupt_after_settle:
             return self.interruption if "settle" in self.events else None
+        if self.interrupt_in_decide is not None and len(self.views) >= self.interrupt_in_decide:
+            return self.interruption
         if self.interrupt_after is not None and len(self.dispatched) >= self.interrupt_after:
             return self.interruption
         return None

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final, Literal
 
@@ -28,6 +28,7 @@ from steerai.loop2.batch import batch_continues
 from steerai.loop2.controller import ControllerError
 from steerai.loop2.decision import (
     CLAIM_CLOSES,
+    NOT_IN_STEP_VERBS,
     ActionDoc,
     Claim,
     Decision,
@@ -84,7 +85,7 @@ from steerai.orchestrator.loop import REUSE_FRESHNESS_S
 from steerai.world.effects import EffectReport, Observed, ValueFact, top_document
 from steerai.world.elements import Element
 from steerai.world.model import normalise_name
-from steerai.world.observe2 import YOUNG_S
+from steerai.world.observe2 import FIRST_READY_S, YOUNG_S, document_nodes
 from steerai.world.reads import ReadCost
 from steerai.world.watch import Watched
 
@@ -95,7 +96,22 @@ RefusalKind = Literal["policy", "step", "model", "world"]
 refusal ends `blocked` with its token; a step limit ends `blocked` with `not_in_step`; a model
 fault and a `world` refusal (nothing delivered, the focus not where the press goes) keep the
 stop's own value, recorded `after_refusal:<token>`."""
-STEP_TOKENS: Final = frozenset({"not_in_step"})
+Moved = Literal["page", "target", "focus"]
+"""[V2.43] (2): what moved after the observation the model saw."""
+REFUSAL_KIND: Final[Mapping[str, RefusalKind]] = {
+    "secure_field": "policy",
+    "secure_unread": "policy",
+    "text_changed": "policy",
+    "not_in_step": "step",
+    "target_changed": "world",
+    "not_delivered": "world",
+    "press_not_at_focus": "world",
+    "press_target_gone": "world",
+    "press_target_changed": "world",
+}
+"""[V2.12], [V2.37] P5: each refusal token's kind; any other token is a model fault."""
+KIND_ORDER: Final[tuple[RefusalKind, ...]] = ("policy", "step", "world", "model")
+"""[V2.42] RT-29: several refusal reasons take the kind by this priority, never token order."""
 CLOCK_DOMAIN_S: Final = 3600.0
 """RT-10: a snapshot stamped further than this from `Ports.clock` was stamped on another clock;
 the loop refuses to compare them (the reuse age between batch actions would be meaningless)."""
@@ -158,6 +174,14 @@ class _Turn:
     """Not a strike and not a reset ([V2.31], [V2.35] (2))."""
     sent: int = 0
     """The actions this turn dispatched."""
+    stale_read: Observed | None = None
+    """The world moved after the observation the model saw ([V2.42] RT-19, [V2.43] (2)): the
+    staleness rule applies to this read."""
+    moved: Moved = "page"
+    """What moved: the page (top Document or URL), the named target, or the focus."""
+    moved_after_send: bool = False
+    """The world moved after a send in this turn: the turn is scored normally and the stale
+    streak is left as it was, neither raised nor reset ([V2.43] confirmation)."""
 
 
 class _Handles:
@@ -304,6 +328,14 @@ class _Run:
         """[V2.28] item 1: stale observations in a row; the second is a strike."""
         self.stale_count = 0
         """Stale observations in the task, reported on the outcome."""
+        self.standing: dict[str, list[tuple[RefusalKind, str, int]]] = {}
+        """[V2.42] RT-30: per subgoal, the policy and step-limit refusals that stand until it is
+        proven (kind, token, order); a proven subgoal's entries are ignored at the stop."""
+        self.refused_seq = 0
+        self.target_changes = 0
+        """[V2.43] (2): targets re-rendered after the observation the model saw."""
+        self.focus_losses = 0
+        """[V2.43] (2): focus moved off a press's target after the listing showed it there."""
         self.unread_aids = 0
         """#301: unread automation ids over every observation taken in (`_in_domain`)."""
 
@@ -330,6 +362,8 @@ class _Run:
             cost_usd=self._cost(),
             read_costs=tuple(self.read_costs),
             stale_observations=self.stale_count,
+            target_changes=self.target_changes,
+            focus_losses=self.focus_losses,
             unread_automation_ids=self.unread_aids,
         )
 
@@ -343,6 +377,15 @@ class _Run:
     def _stopped(self, stop: Literal["cannot", "blocked"]) -> _End:
         """[V2.12], [V2.37] P5: the status after a stop, from the latest refusal since the last
         progress."""
+        standing = [
+            entry
+            for sid, entries in self.standing.items()
+            if sid not in self.proven
+            for entry in entries
+        ]
+        if standing:  # [V2.42] RT-30: by the RT-29 order, then the latest
+            kind, token, _seq = min(standing, key=lambda e: (KIND_ORDER.index(e[0]), -e[2]))
+            return _End("blocked", Reason(token if kind == "policy" else "not_in_step"))
         if self.refusal is None:
             return _End(stop, Reason("controller_stop"))
         kind, token = self.refusal
@@ -360,17 +403,28 @@ class _Run:
         while True:
             self._check_interrupt()
             self._check_budgets()
+            if _no_page(observed):  # first: a frame-only page is never `empty_listing`
+                observed = self._page_not_ready(observed)
+                continue
+            if not self.handles.bind(observed):
+                observed = self._nothing_listed(observed)
+                continue
             decision = self._decide(observed)
+            self._check_interrupt()  # #326, [V2.40] Q4: a Decision after the kill is discarded
             self.turn = _Turn()
             fresh = self._observe()
             if fresh.read_cost is not None:
                 self.read_costs.append(fresh.read_cost)  # [V2.34]: this re-read is paid for too
             if stale_observation(observed, fresh):
-                observed = self._stale(fresh)
+                observed = self._stale(fresh, moved="page")
                 continue
-            self.stale_streak = 0
             loading = (observed.growing or observed.young) and self._guard_left(observed) > 0
             observed = self._turn(decision, observed, fresh)
+            if self.turn.stale_read is not None:
+                observed = self._stale(self.turn.stale_read, moved=self.turn.moved)
+                continue
+            if not self.turn.moved_after_send:
+                self.stale_streak = 0  # a turn that ran with nothing moved under it ends it
             waits = bool(decision.actions) and all(a.verb == "wait" for a in decision.actions)
             if loading and waits and self.turn.sent == len(decision.actions):
                 # [V2.31], [V2.35] (2), P3: a wait chosen on a growing or young page, dispatched
@@ -380,6 +434,44 @@ class _Run:
 
     def _observe(self) -> Observed:
         return self._in_domain(self.ports.observe())
+
+    def _page_not_ready(self, observed: Observed) -> Observed:
+        """[V2.44] (2): a browser frame with no Document, or an empty one, is never handed to the
+        model in steps 3 to 6 (step 7 changes this: once `open` exists, a blank page is
+        actionable through the address bar). The task's first observation already waited out
+        the first-ready deadline ([V2.31], through `first_observation`); later in the task the
+        page is held (the settle port) until it has content, ending on the `FIRST_READY_S`
+        deadline after it went blank (or the wall budget), never on a count of holds; a hold
+        the clock did not advance across ends it at once, so a stopped clock never spins.
+        Still blank: `page_not_ready` (a Steer stop, not done); a gone window is infrastructure."""
+        if observed is not self.first:
+            deadline = self.ports.clock() + FIRST_READY_S
+            while (left := min(deadline - self.ports.clock(), self._wall_left())) > 0:
+                started = self.ports.clock()
+                observed = self._in_domain(self.ports.settle(observed, left))
+                self._check_interrupt()
+                if not _no_page(observed):
+                    return observed
+                if self.ports.clock() <= started:
+                    break  # the clock did not move across the hold
+        self._check_budgets()  # a budget that ended the wait is the end, not `page_not_ready`
+        if _window_gone(observed):
+            raise _End("stopped", Reason("window_gone"))
+        raise _End("cannot", Reason("page_not_ready"))
+
+    def _wall_left(self) -> float:
+        return self.task.budgets.max_wall_s - (self.ports.clock() - self.started)
+
+    def _nothing_listed(self, observed: Observed) -> Observed:
+        """[V2.42] RT-40: the model is never called on an empty listing. The load guard first,
+        once per top Document; after it, a live window is `empty_listing` (a perception limit,
+        not done) and a gone window is `window_gone` (infrastructure, under the voiding rule)."""
+        held = self._hold(observed)
+        if held is not None:
+            return held
+        if _window_gone(observed):
+            raise _End("stopped", Reason("window_gone"))
+        raise _End("cannot", Reason("empty_listing"))
 
     def _in_domain(self, observed: Observed) -> Observed:
         """RT-10, RT-11: every observation is stamped by the one `stamp` port, on `Ports.clock`.
@@ -423,8 +515,7 @@ class _Run:
             known_subgoals=known_params(self.subgoals) if self.frozen else None,
         )
         if tokens:
-            kind: RefusalKind = "step" if tokens[0] in STEP_TOKENS else "model"
-            self._refuse(kind, tokens[0])
+            self._refuse(*tokens, subgoal=_step_subgoal(decision))
             return observed
         for claim in decision.claims:
             self._claim(claim, observed)
@@ -634,10 +725,15 @@ class _Run:
         element = self._target(action, listed, observed)
         if element is None and action.verb != "wait":
             return None
+        if element is not None and self._old(observed):
+            again = self._read_again(element, listed, press=action.verb == "press")
+            if again is None:
+                return None  # the page moved under it (`_moved`)
+            observed, element = again  # everything below uses the read it is sent against
         if element is not None and action.verb == "type":
             refusal = type_refusal(element, observed.snapshot)
             if refusal is not None:
-                self._refuse("policy", refusal)
+                self._refuse(refusal, subgoal=action.subgoal)
                 return None
         rated = self._risk(action, element, observed)
         if rated is None:
@@ -645,9 +741,11 @@ class _Run:
         risk, submit = rated
         if RISKS.index(risk) >= _R2:
             raise _End("blocked", Reason("commit_not_in_step"))
-        key = None if element is None else _key(action, element)
+        text = self._text(action)
+        digest = None if action.text is None else self.ports.fact_of(action.text).digest
+        key = None if element is None else _key(action, element, text_digest=digest)
         if key is not None and not self._may_send(key, observed):
-            self._refuse("model", "repeat_send")
+            self._refuse("repeat_send")
             return None
         self._check_budgets()
         sent = Dispatch(
@@ -658,8 +756,66 @@ class _Run:
             risk=risk,
             provenance=_provenance(action),
             submit=submit,
+            text=text,
         )
         return self._dispatch(sent, element, observed, key)
+
+    def _old(self, observed: Observed) -> bool:
+        """[V2.42] RT-19: the resolving observation is older than `REUSE_FRESHNESS_S` (5 s,
+        UNMEASURED; the read-cost probe measures it), from its read's completion."""
+        return self.ports.clock() - observed.snapshot.taken_at > REUSE_FRESHNESS_S
+
+    def _read_again(
+        self, element: Element, listed: Observed, *, press: bool
+    ) -> tuple[Observed, Element] | None:
+        """[V2.42] RT-19: one fresh read (never a model call). The same element (its RuntimeId,
+        held once, same role and name) and the top Document and URL unchanged since the decided-on
+        observation: dispatch on it. Otherwise the staleness rule applies (`_Turn.stale_read`).
+        Age alone never re-asks."""
+        read = self._observe()
+        found = [e for e in read.snapshot.elements if e.runtime_id == element.runtime_id]
+        same = len(found) == 1 and (found[0].role, normalise_name(found[0].name)) == (
+            element.role,
+            normalise_name(element.name),
+        )
+        if same and not stale_observation(listed, read):
+            if press and not press_allowed(focus=read.focus, last_acted=found[0].runtime_id):
+                self._moved("focus", read)  # the re-read shows focus moved: never press blind
+                return None
+            return read, found[0]
+        self._moved("page", read)
+        return None
+
+    def _moved(self, what: Moved, read: Observed | None = None) -> None:
+        """[V2.43] (2): the world moved after the observation the model saw. With nothing
+        dispatched this turn, the staleness rule applies to a fresh read (the loop re-asks, no
+        refusal). After a send in the same batch, the move only ends the batch, as the batch
+        rule does: it is counted with its token and the turn is scored normally, so its send is
+        never forgotten (principal re-review: staleness applies when nothing was dispatched)."""
+        if self.turn.sent > 0:
+            self._count_moved(what)
+            self.turn.moved_after_send = True
+            return
+        self.turn.stale_read = self._observe() if read is None else read
+        self.turn.moved = what
+
+    def _count_moved(self, what: Moved) -> None:
+        """Each kind of world move counted on its own, with its history token."""
+        if what == "page":
+            self.stale_count += 1
+        elif what == "target":
+            self.target_changes += 1
+        else:
+            self.focus_losses += 1
+        self.history.append(_MOVED_TOKEN[what])
+
+    def _text(self, action: ActionDoc) -> str | None:
+        """RT-36: the text a `type` sends: its param's goal span, or its free text."""
+        if action.verb != "type":
+            return None
+        if action.param is None:
+            return action.text
+        return self._subgoal(action.subgoal).params[action.param].text
 
     def _may_send(self, key: ActionKey, observed: Observed) -> bool:
         """[V2.18]: the same send again only after progress, against the previous turn's last
@@ -679,12 +835,14 @@ class _Run:
         if action.verb == "wait":
             return None
         if action.verb == "press":
-            return self._press_target(observed)
+            return self._press_target(listed, observed)
         if action.target is None:  # validate refuses this shape first
             raise AssertionError("target_missing")
         element = self._listed(action.target, listed, observed)
-        if element is None:
-            self._refuse("model", "id_not_listed")
+        if element is None and self.handles.element(action.target, listed) is not None:
+            self._moved("target")  # RT-27, [V2.43] (2): listed, then the world moved
+        elif element is None:
+            self._refuse("id_not_listed")
         return element
 
     def _listed(self, handle: int, listed: Observed, now: Observed) -> Element | None:
@@ -702,18 +860,24 @@ class _Run:
         )
         return element if same else None
 
-    def _press_target(self, observed: Observed) -> Element | None:
+    def _press_target(self, listed: Observed, observed: Observed) -> Element | None:
+        """[V2.6], [V2.43] (2): the fault follows what the model could see. Focus elsewhere or
+        unread in the listing it saw is its fault (a refusal and a strike); focus on the target
+        there and gone now means the world moved (re-observe, re-ask)."""
         acted = self.last_acted
         last = None if acted is None else acted.runtime_id
+        if not press_allowed(focus=listed.focus, last_acted=last):
+            self._refuse("press_not_at_focus")
+            return None
         if not press_allowed(focus=observed.focus, last_acted=last):
-            self._refuse("world", "press_not_at_focus")
+            self._moved("focus")
             return None
         element = next((e for e in observed.snapshot.elements if e.runtime_id == last), None)
         if element is None or acted is None:
-            self._refuse("world", "press_target_gone")
+            self._refuse("press_target_gone")
             return None
         if (element.role, element.name) != (acted.role, acted.name):
-            self._refuse("world", "press_target_changed")
+            self._refuse("press_target_changed")
             return None
         return element
 
@@ -722,13 +886,13 @@ class _Run:
     ) -> tuple[Risk, bool] | None:
         """The action's risk, and whether it is a submit that goes through the Enter table
         ([V2.28] item 1: an Enter on a field, or a click or key that submits pending text)."""
-        if element is None:  # a wait sends nothing: only a declared commit raises it
+        if element is None:  # a wait sends nothing; validate refuses a commit on it (RT-42)
             return COMMIT_RISK[action.commit], False
         verdict = action_risk(
             action, element, goal=self.task.goal, observed=observed, pending=self._pending(observed)
         )
         if verdict.refusal is not None:
-            self._refuse("policy", verdict.refusal)
+            self._refuse(verdict.refusal, subgoal=action.subgoal)
             return None
         enter = action.verb == "press" and action.key == "Enter" and element.role in ENTER_FIELDS
         return verdict.risk, enter or verdict.submit_parent is not None
@@ -820,7 +984,7 @@ class _Run:
             before = _with_value(observed, self._read_value(element, observed))
         act = self._act(sent)
         if act.delivery is Delivery.NOT_DELIVERED and not act.action.skipped:
-            self._refuse("world", "not_delivered")
+            self._refuse("not_delivered")
             return None
         pending_before = list(self.pending)  # each pending field as found just before dispatch
         watched = self.ports.watch(before, sent)
@@ -923,7 +1087,7 @@ class _Run:
             field=element.runtime_id,
             identity=_identity(element),
             scope=None if top is None else top.runtime_id,
-            typed=self._read_value(element, observed) if verified else None,
+            typed=self.ports.fact_of(sent.text) if verified and sent.text else None,
             search=search_facts(observed, element.runtime_id),
             goal_span=sent.provenance == "goal_span",
         )
@@ -970,12 +1134,18 @@ class _Run:
 
     # ---- refusals, guards -----------------------------------------------------------------
 
-    def _refuse(self, kind: RefusalKind, token: str) -> None:
+    def _refuse(self, *tokens: str, subgoal: str | None = None) -> None:
         """[V2.11] decision 4, [V2.37] P5: nothing dispatched is a refusal with a token and a
-        strike; it replaces the latest refusal, whatever its kind."""
+        strike; it replaces the latest refusal, whatever its kind. [V2.42] RT-29: several tokens
+        take the kind by priority and every token is recorded. RT-30: a policy or step-limit
+        refusal also attaches to the refused action's subgoal and stands until it is proven."""
+        kind, token = refusal_of(tokens)
         self.refusal = (kind, token)
-        self.history.append(f"refused:{token}")
+        self.history.extend(f"refused:{t}" for t in tokens)
         self.turn.refused = True
+        if kind in ("policy", "step") and subgoal is not None:
+            self.refused_seq += 1
+            self.standing.setdefault(subgoal, []).append((kind, token, self.refused_seq))
 
     def _guard_left(self, observed: Observed) -> float:
         """[V2.38] RT-24: what is left of the one load guard of this observation's top Document,
@@ -1006,12 +1176,13 @@ class _Run:
         self._check_interrupt()
         return self._in_domain(held)
 
-    def _stale(self, fresh: Observed) -> Observed:
-        """[V2.28] item 1: the Decision is discarded and the controller asked again on the fresh
-        read. No strike for one; the second in a row (and each after) is a strike."""
+    def _stale(self, fresh: Observed, *, moved: Moved) -> Observed:
+        """[V2.28] item 1, [V2.43] (2): the world moved after the observation the model saw (the
+        page, the named target, or the focus before a press); the Decision is discarded and the
+        controller asked again on the fresh read. No strike for one; the second in a row (and
+        each after) is a strike. Each kind is counted on its own."""
         self.stale_streak += 1
-        self.stale_count += 1
-        self.history.append("stale_observation")
+        self._count_moved(moved)
         if self.stale_streak < 2:
             self.turn.neutral = True
         else:
@@ -1028,7 +1199,7 @@ class _Run:
             state_digest=_digest(observed),
             claim_rejected=self.turn.claim_rejected,
             present=frozenset(e.runtime_id for e in observed.snapshot.elements),
-            refused=self.turn.refused,
+            refused=self.turn.refused and self.turn.sent == 0,  # RT-25/26: nothing dispatched
         )
         reasons = self.strikes.record(facts)
         if reasons:
@@ -1065,6 +1236,48 @@ class _Run:
 
 
 # ---- pure helpers -----------------------------------------------------------------------------
+
+
+_MOVED_TOKEN: Final[Mapping[Moved, str]] = {
+    "page": "stale_observation",
+    "target": "target_changed",
+    "focus": "focus_lost",
+}
+"""The history token for each kind of world move ([V2.43] (2)): never a `refused:` token."""
+
+
+def _no_page(observed: Observed) -> bool:
+    """[V2.44] (2), the [V2.31] shapes: a browser window (it has an address bar) with no
+    Document at all, or a top Document with nothing in it. A native window is never this, nor
+    a window with several root Documents (unreadable, not blank: the model sees it)."""
+    elements = observed.snapshot.elements
+    if not any(e.role == "Document" for e in elements):
+        return observed.url_observed
+    inside = document_nodes(observed.snapshot)
+    return inside is not None and not inside
+
+
+def _window_gone(observed: Observed) -> bool:
+    """The task's window is no longer among the top-level windows (infrastructure)."""
+    windows = observed.windows
+    return windows is not None and observed.snapshot.hwnd not in windows
+
+
+def refusal_of(tokens: Sequence[str]) -> tuple[RefusalKind, str]:
+    """[V2.42] RT-29: the kind of a refusal with these tokens, by a fixed priority (policy, step
+    limit, world, model fault), never by their order; the token is the first of that kind."""
+    kinds = [(REFUSAL_KIND.get(t, "model"), t) for t in tokens]
+    for kind in KIND_ORDER:
+        for found, token in kinds:
+            if found == kind:
+                return kind, token
+    raise ValueError("a refusal needs a token")
+
+
+def _step_subgoal(decision: Decision) -> str | None:
+    """[V2.42] RT-30: the subgoal a step-limit refusal of this Decision belongs to: the first
+    action whose verb step 3 refuses; None when no action names one."""
+    return next((a.subgoal for a in decision.actions if a.verb in NOT_IN_STEP_VERBS), None)
 
 
 def _tokens(usage: TokenUsage | None) -> float:
@@ -1140,8 +1353,11 @@ def _provenance(action: ActionDoc) -> Provenance | None:
     return "goal_span" if action.param is not None else "generated"
 
 
-def _key(action: ActionDoc, element: Element) -> ActionKey:
-    params = tuple(p for p in (action.key, action.param, action.option) if p is not None)
+def _key(action: ActionDoc, element: Element, *, text_digest: str | None) -> ActionKey:
+    """[V2.11] decision 3: the action's own closed fields; a free-text type adds its text's
+    digest (RT-34), never the text."""
+    fields = (action.key, action.param, action.option, text_digest)
+    params = tuple(p for p in fields if p is not None)
     return ActionKey(
         verb=action.verb, params=params, runtime_id=element.runtime_id, identity=_identity(element)
     )
