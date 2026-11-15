@@ -251,6 +251,7 @@ def test_the_header_prints_every_limit_and_the_price(tmp_path: Path) -> None:
     )} == {"max_model_calls": "20", "max_actions": "7", "max_tokens": "400000",
            "max_wall_s": "300.0", "max_cost_usd": "0.5"}  # fmt: skip
     assert header["price"] == "configured"
+    assert header["trace_level"] == "redacted"  # invariant 4: no flag reaches the debug level
     assert header["price_source"] == "https://docs.example.com/pricing"
     assert header["price_read_on"] == "2026-11-10"
     assert header["price_stale"] == "false"

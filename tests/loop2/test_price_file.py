@@ -77,7 +77,8 @@ def test_a_file_that_is_not_one_json_object_refuses(tmp_path: Path, text: str) -
 
 def test_a_file_over_the_size_limit_is_never_parsed(tmp_path: Path) -> None:
     path = tmp_path / "price.json"
-    path.write_bytes(b" " * (MAX_PRICE_FILE_BYTES + 1))
+    valid = json.dumps(_doc()).encode("utf-8")
+    path.write_bytes(valid + b" " * (MAX_PRICE_FILE_BYTES + 1 - len(valid)))  # valid, too big
     with pytest.raises(SteerError) as refused:
         load_price(path, model=MODEL, today=TODAY)
     assert refused.value.message == "price_unreadable"
