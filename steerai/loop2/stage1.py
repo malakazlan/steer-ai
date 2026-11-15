@@ -142,6 +142,8 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
         return verdict("fail", "internal")
     if final.get("status") == "error":
         return verdict("fail", f"start_refused:{final.get('detail')}")
+    if not isinstance(final.get("used"), Mapping):  # LiveWorld refused to start: no use at all
+        return verdict("fail", f"start_refused:{final.get('code')}")
     status, reason = final.get("status"), final.get("reason")
     if status == "done":  # done is never void and never hidden behind a lost monitor
         if not record.log_read:

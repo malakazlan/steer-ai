@@ -511,3 +511,15 @@ def test_the_idle_floor_is_exactly_two_seconds() -> None:
     assert precheck(free_mb=lambda: 8000, idle_s=lambda: 1.99) == "person_active"
     assert precheck(free_mb=lambda: 4096, idle_s=lambda: 5.0) is None
     assert precheck(free_mb=lambda: 4095, idle_s=lambda: 5.0) == "low_memory"
+
+
+# ---- #366 re-review: a world that refused to start is never an outcome --------------------------
+
+
+def test_a_world_start_refusal_on_a_never_done_task_is_a_fail_not_a_pass() -> None:
+    """cli.py's shape when LiveWorld refused to start (the session still held by a killed
+    tree, the monitor, the window): no reason, no use, no cache counters."""
+    refusal = {"task_id": "t", "status": "blocked", "code": "gate_blocked",
+               "detail": "steer_already_running"}  # fmt: skip
+    got = classify(NEVER, _record(refusal, check=False))
+    assert (got.verdict, got.reason) == ("fail", "start_refused:gate_blocked")
