@@ -27,8 +27,8 @@ from steerai.orchestrator.loop import Session
 from steerai.orchestrator.trace import ListTrace
 from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome, stop_chrome
 from steerai.probes.uia_snapshot import UiaClient
-from steerai.probes.win_input import acquire_foreground
-from steerai.probes.windows import wait_window_for_pid
+from steerai.probes.win_input import acquire_foreground, foreground_hwnd
+from steerai.probes.windows import get_window_rect, wait_window_for_pid
 from steerai.verify.predicates import TitleMatches
 from steerai.world.model import Snapshot, WorldModel
 
@@ -87,6 +87,19 @@ def _status(model: WorldModel, hwnd: int) -> str:
     )
 
 
+def _why(result: object, hwnd: int, procedure: str, front_before: bool) -> dict[str, object]:
+    """#439: a failed choose names its window's state, so a repeat failure says whether the
+    window was in front (when the choose began and now), how it was brought there, and where
+    it is, instead of starting another guess."""
+    return {
+        "result": result,
+        "acquired_by": procedure,
+        "foreground_before_choose": front_before,
+        "foreground_now": foreground_hwnd() == hwnd,
+        "window_rect": get_window_rect(hwnd),
+    }
+
+
 def _choose(name: str, option: str, step_id: str) -> Step:
     return Step(
         id=step_id,
@@ -109,10 +122,11 @@ def test_choose_picks_a_real_select_option(tmp_path: Path) -> None:
         window = wait_window_for_pid(
             proc.pid, title_contains="Google Chrome", image="chrome.exe", process=proc
         )
-        acquire_foreground(window.hwnd)
+        procedure = acquire_foreground(window.hwnd)
         client = UiaClient()
         model = WorldModel(client)
         _ready(model, window.hwnd)
+        front_before = foreground_hwnd() == window.hwnd
         session = Session(
             task_id="task-choose",
             hwnd=window.hwnd,
@@ -125,7 +139,7 @@ def test_choose_picks_a_real_select_option(tmp_path: Path) -> None:
             trace=ListTrace(),
         )
         chosen = session.run_step(_choose("Size", "Large", "s1"))
-        assert chosen.ok is True, chosen.to_dict()
+        assert chosen.ok is True, _why(chosen.to_dict(), window.hwnd, procedure, front_before)
         assert chosen.action is not None
         assert [s.label for s in chosen.action.steps] == [
             "ExpandCollapsePattern.Expand",
