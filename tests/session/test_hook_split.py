@@ -8,6 +8,8 @@ pass unchanged."""
 from __future__ import annotations
 
 import ast
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -33,26 +35,39 @@ HELPER_MODULES = (
 FORBIDDEN = ("steerai.action", "steerai.probes", "steerai.session.monitor")
 
 
-def _path(module: str) -> Path:
-    base = ROOT.joinpath(*module.split("."))
+def _path(root: Path, module: str) -> Path:
+    base = root.joinpath(*module.split("."))
     package = base / "__init__.py"
     return package if package.is_file() else base.with_suffix(".py")
 
 
-def _steerai_imports(module: str) -> set[str]:
-    """Every `steerai.*` module `module` imports, at module level or inside a function."""
-    tree = ast.parse(_path(module).read_text(encoding="utf-8"))
+def _imported_names(root: Path, module: str) -> set[str]:
+    """Every name `module` imports, absolute: relative imports resolved against its package,
+    at module level or inside a function."""
+    path = _path(root, module)
+    package = module if path.name == "__init__.py" else module.rpartition(".")[0]
     found: set[str] = set()
-    for node in ast.walk(tree):
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
             found.update(a.name for a in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module is not None and node.level == 0:
-            found.add(node.module)
-            found.update(f"{node.module}.{a.name}" for a in node.names)
-    return {name for name in found if name.split(".")[0] == "steerai" and _path(name).is_file()}
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module or ""
+            if node.level:
+                parts = package.split(".")
+                if node.level - 1 >= len(parts):
+                    raise AssertionError(f"{module}: a relative import above the root")
+                anchor = ".".join(parts[: len(parts) - (node.level - 1)])
+                base = f"{anchor}.{base}" if base else anchor
+            found.add(base)
+            found.update(f"{base}.{a.name}" for a in node.names)
+    return found
 
 
-def _closure(module: str) -> set[str]:
+def _closure(module: str, root: Path = ROOT) -> set[str]:
+    """Every name reached from `module`: its imports, theirs, and every package `__init__` on
+    the way, the root package's included. Names are kept before any is-it-a-file filter, so an
+    imported attribute of a forbidden module is caught too."""
+    names: set[str] = set()
     seen: set[str] = set()
     todo = [module]
     while todo:
@@ -60,11 +75,18 @@ def _closure(module: str) -> set[str]:
         if name in seen:
             continue
         seen.add(name)
+        names.add(name)
         parts = name.split(".")
-        parents = [".".join(parts[:i]) for i in range(2, len(parts))]  # packages run __init__
-        todo.extend(p for p in parents if _path(p).is_file())
-        todo.extend(_steerai_imports(name))
-    return seen
+        todo.extend(
+            p for p in (".".join(parts[:i]) for i in range(1, len(parts)))
+            if _path(root, p).is_file()
+        )  # fmt: skip
+        imported = _imported_names(root, name)
+        names.update(imported)
+        todo.extend(
+            n for n in imported if n.split(".")[0] == "steerai" and _path(root, n).is_file()
+        )
+    return names
 
 
 @pytest.mark.parametrize("module", HELPER_MODULES)
@@ -77,6 +99,67 @@ def test_the_helpers_modules_never_reach_input_sending_code(module: str) -> None
 def test_the_closure_walker_does_see_a_forbidden_import() -> None:
     """The walker itself: the in-process monitor reaches input-sending code."""
     assert any(m.startswith("steerai.probes") for m in _closure("steerai.session.monitor"))
+
+
+def _tree(root: Path, files: dict[str, str]) -> None:
+    for rel, text in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+
+_CLEAN = {
+    "steerai/__init__.py": "",
+    "steerai/session/__init__.py": "",
+    "steerai/session/hook_layout.py": "",
+    "steerai/probes/__init__.py": "",
+    "steerai/probes/win_input.py": "",
+}
+
+
+@pytest.mark.parametrize(
+    ("where", "text"),
+    [
+        ("steerai/session/hook_layout.py", "from ..probes import win_input"),
+        ("steerai/session/hook_layout.py", "from .. import probes"),
+        ("steerai/session/hook_layout.py", "def f() -> None:\n    from ..probes import win_input"),
+        ("steerai/__init__.py", "from steerai.probes import win_input"),
+        ("steerai/session/__init__.py", "from steerai.probes.win_input import STEER_EXTRA_INFO"),
+    ],
+)
+def test_the_walker_catches_relative_imports_and_package_inits(
+    tmp_path: Path, where: str, text: str
+) -> None:
+    """#373 review: a relative import and the root package's `__init__` were blind spots."""
+    _tree(tmp_path, {**_CLEAN, where: text})
+    reached = _closure("steerai.session.hook_layout", tmp_path)
+    assert [m for m in reached if m.startswith(FORBIDDEN)], sorted(reached)
+
+
+def test_a_clean_tree_reaches_nothing_forbidden(tmp_path: Path) -> None:
+    _tree(tmp_path, _CLEAN)
+    reached = _closure("steerai.session.hook_layout", tmp_path)
+    assert not [m for m in reached if m.startswith(FORBIDDEN)], sorted(reached)
+
+
+def test_importing_the_helpers_modules_loads_nothing_forbidden() -> None:
+    """#373 review: what actually loads, dynamic imports included, in a fresh isolated
+    interpreter."""
+    code = (
+        "import sys\n"
+        + "".join(f"import {m}\n" for m in HELPER_MODULES)
+        + "print('\\n'.join(sorted(m for m in sys.modules if m.startswith('steerai'))))\n"
+    )
+    done = subprocess.run(  # noqa: S603 - a fixed argument list, no shell
+        [sys.executable, "-I", "-c", code],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    loaded = done.stdout.split()
+    assert set(HELPER_MODULES) <= set(loaded)
+    assert not [m for m in loaded if m.startswith(FORBIDDEN)], loaded
 
 
 def test_v1s_tag_is_the_one_the_input_side_sends() -> None:
