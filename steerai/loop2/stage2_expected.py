@@ -19,7 +19,9 @@ the harness re-reads the start page and compares these facts only (`site_changed
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
+import itertools
 import json
 import re
 import sys
@@ -39,11 +41,12 @@ from steerai.loop2.stage1_expected import (
     ProofKind,
     outcome_of,
     rate,
-    target_in,
+    targets_in,
 )
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.probes.task_suite import H2, H3, H4, H5, H6, HELD_OUT, TASKS, Task
 from steerai.world.effects import Observed
+from steerai.world.elements import Element
 from steerai.world.read_json import observed_from_json
 
 ACTS: Final = Path(__file__).with_name("stage2_acts.json")
@@ -54,6 +57,27 @@ _VERBS: Final[dict[object, Verb]] = {v: v for v in get_args(Verb)}
 _KEYS: Final[dict[object, Key]] = {k: k for k in get_args(Key)}
 _RISKS: Final[dict[object, Risk]] = {r: r for r in RISKS}
 SITE_SPACING_S: Final = 60.0
+DAILY_CAP: Final = 12
+DAY_WAIT_CHUNK_S: Final = 3600.0
+"""#413 blocker 1: the wait for the day to turn sleeps at most this long at a time."""
+DAY_WAIT_LIMIT_S: Final = 26 * 3600.0
+"""#413 blocker 1: a day that has not turned after this long is refused (fail closed)."""
+
+
+class DayDidNotTurn(RuntimeError):  # noqa: N818 - a refusal, named for its reason
+    """Every pending host was at its cap and the calendar day did not turn in the bound."""
+
+    def __init__(self) -> None:
+        super().__init__("day_did_not_turn")
+
+
+def calendar_day() -> int:
+    """Today on the local calendar, as an ordinal: the production day source (#413 blocker 1)."""
+    return datetime.date.today().toordinal()  # noqa: DTZ011 - the local day the cap counts
+
+
+"""[V2.65] (3): the most loads of one host in one day at the spacing; a host at the cap stops
+for the day."""
 """§2.3, [V2.63] Q4: the least time between two page loads of one host, controls included."""
 
 
@@ -134,21 +158,44 @@ def start_document(raw: str) -> StartDocument:
 
 
 class Spacer:
-    """§2.3: every load of a host waits until `spacing_s` after its last one, and is counted
-    (kill-aware: an interrupt raised in the sleep ends the wait as itself)."""
+    """§2.3: every load of a host waits until `spacing_s` after its last one, and is counted, in
+    all and per day ([V2.65] (3): at most `cap` a host a day). Kill-aware: an interrupt raised in
+    a sleep ends the wait as itself."""
 
     def __init__(
         self,
         clock: Callable[[], float],
         sleep: Callable[[float], None],
         spacing_s: float = SITE_SPACING_S,
+        *,
+        day: Callable[[], int] = calendar_day,
+        cap: int = DAILY_CAP,
     ) -> None:
         self._clock = clock
         self._sleep = sleep
         self._spacing_s = spacing_s
         self._last: dict[str, float] = {}
+        self._today: dict[tuple[int, str], int] = {}
+        self._cap = cap
+        self.day = day
+        """The calendar day now (an ordinal): the cap and a control's repeat read it."""
         self.loads: dict[str, int] = {}
         """Loads per host so far: the volume the summary reports."""
+
+    def at_cap(self, host: str) -> bool:
+        return self._today.get((self.day(), host), 0) >= self._cap
+
+    def wait_next_day(self) -> None:
+        """Every pending host is at its cap: wait, kill-aware, until the day turns, in sleeps of
+        at most `DAY_WAIT_CHUNK_S`; a day that has not turned after `DAY_WAIT_LIMIT_S` is refused
+        (`DayDidNotTurn`), never waited on forever."""
+        today = self.day()
+        waited = 0.0
+        while self.day() == today:
+            if waited >= DAY_WAIT_LIMIT_S:
+                raise DayDidNotTurn
+            self._sleep(DAY_WAIT_CHUNK_S)
+            waited += DAY_WAIT_CHUNK_S
 
     def wait(self, host: str) -> None:
         last = self._last.get(host)
@@ -161,6 +208,8 @@ class Spacer:
     def loaded(self, host: str) -> None:
         self._last[host] = self._clock()
         self.loads[host] = self.loads.get(host, 0) + 1
+        key = (self.day(), host)
+        self._today[key] = self._today.get(key, 0) + 1
 
 
 def real_site_tasks() -> tuple[Task, ...]:
@@ -175,12 +224,32 @@ def real_site_tasks() -> tuple[Task, ...]:
 
 def deciding_facts(row: SiteRow, goal: str, read: Observed) -> DecidingFacts:
     """The deciding facts of `row`'s acts on `read`. A target missing from the read is a
-    `ValueError` (`not_in_read`), as `rate` raises it: the start page differs."""
-    risk = rate(goal, row.acts, read)
-    typed = next((a for a in row.acts if a.verb == "type"), None)
-    clicked = next((a for a in reversed(row.acts) if a.verb == "click"), None)
-    field = None if typed is None else target_in(typed, read)
-    button = None if clicked is None else target_in(clicked, read)
+    `ValueError` (`not_in_read`): the start page differs. A target with several copies is rated
+    on each; when every choice gives the same deciding facts the rating does not depend on the
+    copy Steer picks, and it stands. Otherwise it is `ambiguous_target`, naming the facts that
+    differ (the coordinator's ruling, 2026-11-15)."""
+    options = [[None] if act.verb == "press" else list(targets_in(act, read)) for act in row.acts]
+    seen = {
+        _facts_for(row, goal, read, dict(enumerate(choice)))
+        for choice in itertools.product(*options)
+    }
+    if len(seen) > 1:
+        differ = sorted(
+            f.name for f in fields(DecidingFacts) if len({getattr(s, f.name) for s in seen}) > 1
+        )
+        raise ValueError(f"ambiguous_target: the copies differ on {differ}")
+    return seen.pop()
+
+
+def _facts_for(
+    row: SiteRow, goal: str, read: Observed, picked: Mapping[int, Element | None]
+) -> DecidingFacts:
+    chosen = {i: e for i, e in picked.items() if e is not None}
+    risk = rate(goal, row.acts, read, chosen=chosen)
+    typed = next((i for i, a in enumerate(row.acts) if a.verb == "type"), None)
+    clicked = next((i for i in reversed(range(len(row.acts))) if row.acts[i].verb == "click"), None)
+    field = None if typed is None else chosen[typed]
+    button = None if clicked is None else chosen[clicked]
     roles = read.aria_roles
     unread = []
     if field is not None and roles is None:
@@ -226,17 +295,54 @@ def table_row(task_id: str, row: SiteRow, goal: str, raw_read: bytes) -> TableRo
     return TableRow(task_id, hashlib.sha256(raw_read).hexdigest(), facts, expected)
 
 
-def dump_table(rows: Sequence[TableRow]) -> str:
-    """The committed table as stable JSON, by task id."""
-    payload = {
+def dump_table(rows: Sequence[TableRow], *, unrated: Mapping[str, str] | None = None) -> str:
+    """The committed table as stable JSON, by task id; an unrated task is kept out of it as
+    `{"unrated": reason}` (the coordinator's ruling, 2026-11-15)."""
+    entries: dict[str, object] = {
         r.task_id: {
             "read_sha256": r.read_sha256,
             "facts": asdict(r.facts),
             "expected": asdict(r.expected),
         }
-        for r in sorted(rows, key=lambda r: r.task_id)
+        for r in rows
     }
+    entries |= {task_id: {"unrated": reason} for task_id, reason in (unrated or {}).items()}
+    payload = {task_id: entries[task_id] for task_id in sorted(entries)}
     return json.dumps(payload, indent=2, sort_keys=False) + "\n"
+
+
+UNRATED_REASONS: Final = frozenset({"target_after_opener", "pressed_unread", "copies_disagree"})
+"""Tasks the lead rules on before they are rated (the coordinator, 2026-11-15): a target that
+shows only after an opener, a toggle whose pressed state the read does not show, and a target
+whose copies disagree on a deciding fact (no guess at which copy Steer acts on). They are kept
+out of both tables and out of acceptance until then."""
+
+
+def load_unrated(text: str) -> dict[str, str]:
+    """The `{"unrated": reason}` entries of an acts file or a table, checked strictly."""
+    raw = json.loads(text)
+    if not isinstance(raw, dict):
+        raise ValueError("unrated: not an object")
+    return {
+        str(task_id): _unrated(str(task_id), entry)
+        for task_id, entry in raw.items()
+        if isinstance(entry, dict) and "unrated" in entry
+    }
+
+
+def _unrated(task_id: str, entry: Mapping[str, object]) -> str:
+    reason = entry.get("unrated")
+    if set(entry) != {"unrated"} or reason not in UNRATED_REASONS:
+        raise ValueError(f"unrated: {task_id} needs exactly one known reason")
+    return str(reason)
+
+
+def _rated(raw: Mapping[str, object]) -> dict[str, object]:
+    """The entries that are not unrated markers (each marker checked)."""
+    for task_id, entry in raw.items():
+        if isinstance(entry, dict) and "unrated" in entry:
+            _unrated(str(task_id), entry)
+    return {str(k): v for k, v in raw.items() if not (isinstance(v, dict) and "unrated" in v)}
 
 
 def load_table(text: str) -> dict[str, TableRow]:
@@ -245,7 +351,7 @@ def load_table(text: str) -> dict[str, TableRow]:
     raw = json.loads(text)
     if not isinstance(raw, dict):
         raise ValueError("table: not an object")
-    return {str(task_id): _table_row(str(task_id), entry) for task_id, entry in raw.items()}
+    return {task_id: _table_row(task_id, entry) for task_id, entry in _rated(raw).items()}
 
 
 _ENTRY_FIELDS: Final = frozenset({"read_sha256", "facts", "expected"})
@@ -304,7 +410,7 @@ def load_acts(text: str) -> dict[str, SiteRow]:
     raw = json.loads(text)
     if not isinstance(raw, dict):
         raise ValueError("acts: not an object")
-    return {str(task_id): _row(str(task_id), entry) for task_id, entry in raw.items()}
+    return {task_id: _row(task_id, entry) for task_id, entry in _rated(raw).items()}
 
 
 def _row(task_id: str, entry: object) -> SiteRow:
@@ -344,12 +450,15 @@ def _act(task_id: str, raw: object) -> Act:
     )
 
 
-def table_from_reads(acts: Mapping[str, SiteRow], reads: Path) -> list[TableRow]:
-    """Every row with acts, rated on its saved read `<reads>/<task_id>.json`."""
-    goals = {t.task_id: t.goal for t in real_site_tasks()}
+def table_from_reads(
+    acts: Mapping[str, SiteRow], reads: Path, *, tasks: Sequence[Task] | None = None
+) -> list[TableRow]:
+    """Every row with acts, rated on its saved read `<reads>/<task_id>.json`; `tasks` are the
+    group's tasks (the real-site ones by default; group 2a passes its own)."""
+    goals = {t.task_id: t.goal for t in (real_site_tasks() if tasks is None else tasks)}
     unknown = sorted(set(acts) - set(goals))
     if unknown:
-        raise ValueError(f"acts: not real-site tasks: {unknown}")
+        raise ValueError(f"acts: not tasks of this group: {unknown}")
     return [
         table_row(task_id, row, goals[task_id], (reads / f"{task_id}.json").read_bytes())
         for task_id, row in acts.items()
@@ -363,7 +472,9 @@ def save_reads(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live, 
     import secrets  # noqa: PLC0415 - live only
 
     from steerai.probes.live_browser import live_page  # noqa: PLC0415 - Windows only
+    from steerai.probes.memory_guard import EXIT_LOW_MEMORY, LowMemory  # noqa: PLC0415
     from steerai.probes.shadow_v2 import _ComFacts  # noqa: PLC0415 - COM failures as OSError
+    from steerai.probes.task_suite import CHALLENGE_TITLES  # noqa: PLC0415 - live only
     from steerai.world.model import WorldModel  # noqa: PLC0415 - Windows only
     from steerai.world.observe2 import read_observed  # noqa: PLC0415 - Windows only
     from steerai.world.read_json import observed_to_json  # noqa: PLC0415
@@ -377,24 +488,33 @@ def save_reads(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live, 
         host = urllib.parse.urlsplit(start).netloc
         spacer.wait(host)
         spacer.loaded(host)
-        with live_page(start, floor_mb=floor_mb, settle_s=6.0) as page:
-            reply = page.cdp.call(
-                "Runtime.evaluate", {"expression": START_EXPRESSION, "returnByValue": True}
-            )
-            document = start_document(str(reply.get("result", {}).get("value", "")))
-            snapshot = WorldModel(page.client).observe(page.hwnd, cap_s=5.0)
-            read = read_observed(
-                snapshot,
-                _ComFacts(page.client),
-                key=secrets.token_bytes(32),
-                windows=lambda: (page.hwnd,),
-            )
+        try:
+            with live_page(start, floor_mb=floor_mb, settle_s=6.0) as page:
+                reply = page.cdp.call(
+                    "Runtime.evaluate", {"expression": START_EXPRESSION, "returnByValue": True}
+                )
+                document = start_document(str(reply.get("result", {}).get("value", "")))
+                snapshot = WorldModel(page.client).observe(page.hwnd, cap_s=5.0)
+                read = read_observed(
+                    snapshot,
+                    _ComFacts(page.client),
+                    key=secrets.token_bytes(32),
+                    windows=lambda: (page.hwnd,),
+                )
+        except LowMemory as refused:
+            sys.stdout.write(json.dumps({"tasks": task_ids, "refused": str(refused)}) + "\n")
+            return EXIT_LOW_MEMORY
+        except (OSError, TimeoutError, RuntimeError) as exc:
+            sys.stdout.write(json.dumps({"tasks": task_ids, "error": type(exc).__name__}) + "\n")
+            continue
         text = (observed_to_json(read) + "\n").encode("utf-8")
         for task_id in task_ids:
             (out / f"{task_id}.json").write_bytes(text)
         row = {"tasks": task_ids, "elements": len(snapshot.elements)}
-        # stage 2 §2.2 step 3, unmeasured until here: the status reading on each real site
-        row |= {"status": document.status, "error_page": document.error_page}
+        # stage 2 §2.2 step 3, unmeasured until here: the status reading on each real site, and
+        # whether the page is a known wall (a fixed title token, never page text)
+        row |= {"status": document.status, "error_page": document.error_page,
+                "wall": document.title in CHALLENGE_TITLES}  # fmt: skip
         sys.stdout.write(json.dumps(row) + "\n")
     return 0
 
