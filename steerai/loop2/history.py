@@ -49,12 +49,16 @@ ENTER_TOKENS: Final = frozenset(get_args(EnterToken))
 ROWS: Final = frozenset(get_args(RowId))
 MAX_LINE: Final = 256
 RunnerRefusal = Literal[
+    "field_not_empty",
+    "focus_needs_field",
     "id_not_listed",
     "not_delivered",
+    "not_own_text",
     "press_not_at_focus",
     "press_target_changed",
     "press_target_gone",
     "repeat_send",
+    "type_not_at_focus",
 ]
 """What the runner itself refuses (it imports `history`, so its Literal lives here)."""
 PolicyRefusal = Literal["secure_field", "secure_unread", "text_changed"]
@@ -140,6 +144,15 @@ class WorldMoved:
 
 
 @dataclass(frozen=True)
+class FocusMovedAfterPress:
+    """[V2.43] (1), #298: after a Space or an Enter on a state-set element, the watch's after-read
+    shows the focus off the target (an arrow key is exempt: it moves focus by design). The model
+    sees it, with the target's handle; the outcome counts it."""
+
+    handle: int | None = None
+
+
+@dataclass(frozen=True)
 class ClaimResult:
     """[V2.47] (b): a claim's result is its own record: a refusal token, `accepted` (one param's
     proof held, the subgoal not yet closed) or `standard_only`."""
@@ -169,8 +182,26 @@ class LoadGuard:
     """[V2.31]: the load guard held the page before the decision."""
 
 
-HistoryRecord = LogEntry | Refused | WorldMoved | ClaimResult | Proven | Entered | LoadGuard
-RECORD_TYPES: Final = (LogEntry, Refused, WorldMoved, ClaimResult, Proven, Entered, LoadGuard)
+HistoryRecord = (
+    LogEntry
+    | Refused
+    | WorldMoved
+    | FocusMovedAfterPress
+    | ClaimResult
+    | Proven
+    | Entered
+    | LoadGuard
+)
+RECORD_TYPES: Final = (
+    LogEntry,
+    Refused,
+    WorldMoved,
+    FocusMovedAfterPress,
+    ClaimResult,
+    Proven,
+    Entered,
+    LoadGuard,
+)
 _MOVED: Final[Mapping[str, str]] = {
     "page": "stale_observation",
     "target": "target_changed",
@@ -197,6 +228,8 @@ def render(record: HistoryRecord) -> str:  # noqa: PLR0911 - one form per record
         return ":".join(parts)
     if isinstance(record, Refused):
         return f"refused:{record.token}" + _slot(record.handle)
+    if isinstance(record, FocusMovedAfterPress):
+        return "focus_moved_after_press" + _slot(record.handle)
     if isinstance(record, WorldMoved):
         tail = "" if record.what == "page" else _slot(record.handle)
         return _MOVED[record.what] + tail
@@ -238,7 +271,7 @@ GRAMMAR = re.compile(
             rf":(?:none|(?:{_TOK})(?:\.(?:{_TOK}))*)(?::read_back_(?:mismatch|unread))?",
             r"refused:id_not_listed",
             rf"refused:(?:{_alt(REFUSAL_TOKENS - {'id_not_listed'})})(?::{_H})?",
-            rf"(?:target_changed|focus_lost)(?::{_H})?",
+            rf"(?:target_changed|focus_lost|focus_moved_after_press)(?::{_H})?",
             r"stale_observation",
             r"load_guard",
             rf"enter:(?:{_alt(ENTER_TOKENS)}):(?:{_alt(ROWS)})",
@@ -275,6 +308,8 @@ def _fields_ok(record: HistoryRecord, vocab: Vocab) -> bool:  # noqa: PLR0911 - 
     if isinstance(record, Refused):
         no_slot = record.token != "id_not_listed" or record.handle is None  # noqa: S105 - a refusal token
         return record.token in REFUSAL_TOKENS and no_slot and _handle_ok(record.handle, vocab)
+    if isinstance(record, FocusMovedAfterPress):
+        return _handle_ok(record.handle, vocab)
     if isinstance(record, WorldMoved):
         no_slot = record.what != "page" or record.handle is None
         return record.what in _MOVED and no_slot and _handle_ok(record.handle, vocab)

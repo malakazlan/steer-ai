@@ -23,9 +23,9 @@ from typing import Final, Literal
 
 from steerai.action.dispositions import Delivery
 from steerai.errors import ErrorCode, SteerError
-from steerai.loop2.actuate import may_retry, press_allowed
+from steerai.loop2.actuate import may_retry, press_allowed, type_focus_ok
 from steerai.loop2.batch import batch_continues
-from steerai.loop2.controller import ControllerError
+from steerai.loop2.controller import ControllerError, focus_state
 from steerai.loop2.decision import (
     CLAIM_CLOSES,
     NOT_IN_STEP_VERBS,
@@ -35,6 +35,7 @@ from steerai.loop2.decision import (
     subgoal_tokens,
     validate,
 )
+from steerai.loop2.form import STATE_SET_VERB
 from steerai.loop2.guards import (
     ActionKey,
     StrikeReason,
@@ -49,6 +50,7 @@ from steerai.loop2.history import (
     ClaimResult,
     ClaimWord,
     Entered,
+    FocusMovedAfterPress,
     HistoryRecord,
     LoadGuard,
     LogEntry,
@@ -99,6 +101,7 @@ from steerai.loop2.verify import (
 )
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.orchestrator.loop import REUSE_FRESHNESS_S
+from steerai.verify.predicates import FIELD_ROLES
 from steerai.world.effects import EffectReport, Observed, ValueFact, top_document
 from steerai.world.elements import Element
 from steerai.world.model import normalise_name
@@ -125,6 +128,8 @@ REFUSAL_KIND: Final[Mapping[str, RefusalKind]] = {
     "press_not_at_focus": "world",
     "press_target_gone": "world",
     "press_target_changed": "world",
+    "type_not_at_focus": "world",
+    "field_not_empty": "world",
 }
 """[V2.12], [V2.37] P5: each refusal token's kind; any other token is a model fault."""
 KIND_ORDER: Final[tuple[RefusalKind, ...]] = ("policy", "step", "world", "model")
@@ -169,6 +174,25 @@ class _Pending:
     value: ValueFact | None
 
 
+@dataclass
+class _ActCounts:
+    """What the act rules saw, reported on the outcome (`TaskOutcome` has each field's rule):
+    [V2.43] (1) presses after which focus left a state-set target, [V2.52] (b) observations
+    with the focus unread or on nothing listed, [V2.51] (3) types not at
+    the focus, [V2.52] (a) second Toggles fired, refused or settled on the re-read, [V2.51] (5)
+    fields not empty and Backspaces on others' text."""
+
+    focus_moved_after_press: int = 0
+    observations_focus_unread: int = 0
+    observations_focus_elsewhere: int = 0
+    type_unfocused: int = 0
+    second_toggles: int = 0
+    second_toggles_refused: int = 0
+    toggles_settled_on_reread: int = 0
+    fields_not_empty: int = 0
+    not_own_text: int = 0
+
+
 class _End(Exception):  # noqa: N818 - a control-flow signal, not an error
     """The task ends here with this status and cause."""
 
@@ -201,6 +225,9 @@ class _Turn:
     streak is left as it was, neither raised nor reset ([V2.43] confirmation)."""
     moved_handle: int | None = None
     """[V2.47]: the task handle of the element that moved (a target or the focus), if any."""
+    focused: tuple[int, ...] | None = None
+    """[V2.51] (3): the field a focus in this turn's batch put the focus on (read back True): a
+    type after it is checked against it, not against the listing taken before it."""
 
 
 class _Handles:
@@ -323,6 +350,7 @@ class _Run:
         """[V2.46]: action entries and history events, in order (`TurnView.log`)."""
         self.history_dropped = 0
         """[V2.47]: lines that failed the history pattern (`_note`)."""
+        self.counts = _ActCounts()
         self.dispatched: list[Dispatch] = []
         self.model_calls = 0
         self.tokens = 0.0
@@ -405,6 +433,15 @@ class _Run:
             focus_losses=self.focus_losses,
             unread_automation_ids=self.unread_aids,
             history_dropped=self.history_dropped,
+            focus_moved_after_press=self.counts.focus_moved_after_press,
+            observations_focus_unread=self.counts.observations_focus_unread,
+            observations_focus_elsewhere=self.counts.observations_focus_elsewhere,
+            type_unfocused=self.counts.type_unfocused,
+            second_toggles=self.counts.second_toggles,
+            second_toggles_refused=self.counts.second_toggles_refused,
+            toggles_settled_on_reread=self.counts.toggles_settled_on_reread,
+            fields_not_empty=self.counts.fields_not_empty,
+            not_own_text=self.counts.not_own_text,
         )
 
     def _cost(self) -> float | None:
@@ -528,6 +565,9 @@ class _Run:
         load guard)."""
         observed = self.ports.stamp(observed)
         self.unread_aids += observed.snapshot.unread_automation_id_count  # #301: counted
+        focus = focus_state(observed.snapshot, observed.focus)  # [V2.52] (b): counted
+        self.counts.observations_focus_unread += focus == "unread"
+        self.counts.observations_focus_elsewhere += focus == "elsewhere"
         now = self.ports.clock()
         if not abs(now - observed.snapshot.taken_at) <= CLOCK_DOMAIN_S:
             raise _End("stopped", Reason("clock_domain"))
@@ -817,11 +857,9 @@ class _Run:
             if again is None:
                 return None  # the page moved under it (`_moved`)
             observed, element = again  # everything below uses the read it is sent against
-        if element is not None and action.verb == "type":
-            refusal = type_refusal(element, observed.snapshot)
-            if refusal is not None:
-                self._refuse(refusal, subgoal=action.subgoal, handle=self._handle_of(element))
-                return None
+        own_text = self._verb_checks(action, element, listed, observed)
+        if own_text is None:
+            return None
         rated = self._risk(action, element, observed)
         if rated is None:
             return None
@@ -844,9 +882,61 @@ class _Run:
             provenance=_provenance(action),
             submit=submit,
             trigger=trigger,
+            own_text=own_text,
             text=text,
         )
         return self._dispatch(sent, element, observed, key)
+
+    def _verb_checks(
+        self, action: ActionDoc, element: Element | None, listed: Observed, observed: Observed
+    ) -> bool | None:
+        """The verb's own rules before the risk path. None: refused, or the world moved (the
+        batch ends); else whether a Backspace goes to Steer's own text (`Dispatch.own_text`)."""
+        if element is None:
+            return False
+        if action.verb == "type":
+            refusal = type_refusal(element, observed.snapshot)
+            if refusal is not None:
+                self._refuse(refusal, subgoal=action.subgoal, handle=self._handle_of(element))
+                return None
+            return False if self._type_at_focus(element, listed, observed) else None
+        if action.verb == "focus" and element.role not in FIELD_ROLES:
+            # [V2.51] (1): a model fault; keyboard focus on a non-field is a step 5 question
+            handle = self._handle_of(element)
+            self._refuse("focus_needs_field", subgoal=action.subgoal, handle=handle)
+            return None
+        if action.verb == "press" and action.key == "Backspace":
+            return True if self._own_text(element, observed) else None
+        return False
+
+    def _type_at_focus(self, element: Element, listed: Observed, observed: Observed) -> bool:
+        """[V2.51] (3), [V2.43] (2): a type goes only where the keyboard focus is. The fault
+        follows what the model saw: the listing (or this batch's verified focus) shows the
+        focus elsewhere or unread, a refusal and a strike at once; shown there and gone in the
+        read it is sent against, the world moved. Both are counted."""
+        if self.turn.focused is not None:  # this batch's verified focus overrides the listing
+            seen = self.turn.focused == element.runtime_id
+        else:
+            seen = type_focus_ok(focus=listed.focus, target=element, snapshot=listed.snapshot)
+        handle = self._handle_of(element)
+        if not seen:
+            self.counts.type_unfocused += 1
+            self._refuse("type_not_at_focus", handle=handle)
+            return False
+        if not type_focus_ok(focus=observed.focus, target=element, snapshot=observed.snapshot):
+            self.counts.type_unfocused += 1
+            self._moved("focus", handle=handle)
+            return False
+        return True
+
+    def _own_text(self, element: Element, observed: Observed) -> bool:
+        """[V2.51] (5): Backspace only on a field holding Steer's own pending text; any other
+        filled field is refused (`not_own_text`) and counted."""
+        if any(p.field == element.runtime_id for p in self._pending(observed)):
+            return True
+        self.counts.not_own_text += 1
+        self._refuse("not_own_text", handle=self._handle_of(element))
+        return False
 
     def _old(self, observed: Observed) -> bool:
         """[V2.42] RT-19: the resolving observation is older than `REUSE_FRESHNESS_S` (5 s,
@@ -1094,8 +1184,11 @@ class _Run:
             before = _with_value(observed, self._read_value(element, observed))
         act = self._act(sent)
         if act.delivery is Delivery.NOT_DELIVERED and not act.action.skipped:
-            self._refuse("not_delivered", handle=self._handle_of(element))
+            self._not_delivered(act, element)
             return None
+        self._count_toggles(act)
+        if sent.action.verb == "focus" and act.read_back is True and element is not None:
+            self.turn.focused = element.runtime_id
         pending_before = list(self.pending)  # each pending field as found just before dispatch
         watched = self.ports.watch(before, sent)
         self.read_costs.append(watched.read_cost)
@@ -1107,6 +1200,9 @@ class _Run:
         if element is not None:
             self.last_acted = _Acted(element.runtime_id, element.role, element.name)
         self._note(self._log_entry(sent, act, report))
+        if element is not None and _focus_left(sent, element, watched.after):
+            self.counts.focus_moved_after_press += 1  # [V2.43] (1): seen and counted, no extra read
+            self._note(FocusMovedAfterPress(self._handle_of(element)))
         if not report.classes <= {"none", "unknown"}:
             self.refusal = None  # [V2.12]: progress resets the refusal that decides the status
         if sent.submit:
@@ -1114,6 +1210,32 @@ class _Run:
         if element is not None and sent.action.verb == "type":
             self._remember_type(sent, element, observed, verified=act.read_back is True)
         return self._after(watched.after), (act, report)
+
+    def _count_toggles(self, act: ActResult) -> None:
+        """[V2.52] (a): a second Toggle that fired, one refused, and one the re-read made
+        unneeded (the wanted state arrived late), each counted on its own."""
+        evidence = act.action.evidence
+        if evidence.get("toggles") == 2:
+            self.counts.second_toggles += 1
+        elif evidence.get("detail") == "second_toggle_refused":
+            self.counts.second_toggles_refused += 1
+        elif evidence.get("detail") == "settled_on_reread":
+            self.counts.toggles_settled_on_reread += 1
+
+    def _not_delivered(self, act: ActResult, element: Element | None) -> None:
+        """Nothing was sent. The act port's takeover (the person kept using the machine) stops
+        the task as the switch's would; its wall cap is the wall budget; a field that already
+        held text goes back to the controller as its own token ([V2.51] (5)), counted."""
+        detail = act.action.evidence.get("detail")
+        if detail == "takeover":
+            raise _End("stopped", Reason("takeover"))
+        if detail == "wall_budget":
+            self._check_budgets()
+        if detail == "field_not_empty":
+            self.counts.fields_not_empty += 1
+            self._refuse("field_not_empty", handle=self._handle_of(element))
+            return
+        self._refuse("not_delivered", handle=self._handle_of(element))
 
     def _judge_submit(
         self,
@@ -1448,6 +1570,17 @@ def _matches(typed: _Typed, observed: Observed) -> list[Element]:
     if by_rid:
         return by_rid
     return [e for e in elements if e.runtime_id and _identity(e) == typed.identity]
+
+
+def _focus_left(sent: Dispatch, element: Element, after: Observed) -> bool:
+    """[V2.43] (1): a Space or an Enter on a state-set element, and the watch's after-read shows
+    the focus elsewhere. An arrow is exempt (it moves focus by design); an unread focus is never
+    counted as moved."""
+    action = sent.action
+    pressed = action.verb == "press" and action.key in {"Space", "Enter"}
+    if not pressed or element.role not in STATE_SET_VERB or after.focus is None:
+        return False
+    return after.focus != element.runtime_id
 
 
 def _with_value(observed: Observed, value: ValueFact | None) -> Observed:

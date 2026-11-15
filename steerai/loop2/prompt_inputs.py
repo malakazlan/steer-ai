@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from steerai.loop2.controller import ListingRow, decide, v2_listing
+from steerai.loop2.controller import FocusState, ListingRow, decide, focus_state, v2_listing
 from steerai.loop2.decide_port import DecideCalls
 from steerai.loop2.history import HistoryRecord
 from steerai.loop2.loop import Decided, TurnView
@@ -40,6 +40,8 @@ class ControllerInputs:
     unstable: bool
     growing: bool
     young: bool
+    focus: FocusState | None
+    """[V2.52] (b): the header line's focus state; None when a listing row carries it."""
 
 
 def controller_inputs(view: TurnView, *, goal: str) -> ControllerInputs:
@@ -54,13 +56,14 @@ def controller_inputs(view: TurnView, *, goal: str) -> ControllerInputs:
             (s.id, "done" if s.id in view.proven else s.status) for s in view.subgoals
         ),
         window_title=snapshot.title,
-        listing_rows=tuple(v2_listing(snapshot, handles=view.handles)),
+        listing_rows=tuple(v2_listing(snapshot, handles=view.handles, focus=observed.focus)),
         listed_ids=frozenset(view.handles.values()),
         first_turn=view.first_turn,
         known_subgoals=None if view.first_turn else known_params(view.subgoals),
         unstable=not snapshot.stable,
         growing=observed.growing,
         young=observed.young,
+        focus=focus_state(snapshot, observed.focus),
     )
 
 
@@ -97,6 +100,7 @@ def make_decide(calls: DecideCalls, *, goal: str, task_fence: str) -> Callable[[
                 growing=inputs.growing,
                 young=inputs.young,
                 issued=inputs.issued,
+                focus=inputs.focus,
             )
         )
         return Decided(decision, usage)

@@ -22,9 +22,10 @@ def test_the_result_carries_v1s_delivery_and_method_steps() -> None:
     assert done.action.steps == [TYPED], "the method stays recoverable for step 5"
 
 
-def test_the_read_back_verbs_are_type_choose_and_the_state_verbs() -> None:
+def test_the_read_back_verbs_are_type_choose_focus_and_the_state_verbs() -> None:
+    """[V2.51] (1): focus reads the live focus back, three-valued."""
     assert (
-        frozenset({"type", "choose", "check", "uncheck", "select", "expand", "collapse"})
+        frozenset({"type", "choose", "focus", "check", "uncheck", "select", "expand", "collapse"})
         == READ_BACK_VERBS
     )
 
@@ -38,7 +39,7 @@ def test_a_read_back_verb_carries_any_of_the_three_values(read_back: bool | None
     )
 
 
-@pytest.mark.parametrize("verb", ["click", "press", "scroll", "focus", "wait"])
+@pytest.mark.parametrize("verb", ["click", "press", "scroll", "wait"])
 def test_a_verb_without_a_read_back_never_carries_one(verb: str) -> None:
     with pytest.raises(ValueError, match="read_back"):
         ActResult(result(verb, Delivery.DELIVERED_VERIFIED), read_back=True)
@@ -59,7 +60,10 @@ def test_a_state_already_wanted_is_read_back_true_with_nothing_sent() -> None:
     assert already.read_back is True
 
 
-def test_a_verified_read_back_needs_a_verified_or_already_wanted_delivery() -> None:
-    uncertain = result("type", Delivery.DELIVERY_UNCERTAIN, code=ErrorCode.VERIFY_TIMEOUT)
-    with pytest.raises(ValueError, match="read_back"):
-        ActResult(uncertain, read_back=True)
+@pytest.mark.parametrize("delivery", [Delivery.DELIVERED_UNVERIFIED, Delivery.DELIVERY_UNCERTAIN])
+def test_both_facts_are_kept_a_true_read_back_after_any_delivery(delivery: Delivery) -> None:
+    """[V2.51] (2): v1's delivery as reported and the port's read-back, side by side; v2's
+    verified is the read-back alone, so a True read-back stands whatever v1 reported."""
+    sent = result("type", delivery, code=ErrorCode.VERIFY_TIMEOUT)
+    both = ActResult(sent, read_back=True)
+    assert (both.delivery, both.read_back) == (delivery, True)

@@ -807,6 +807,49 @@ def test_a_field_that_turned_secure_since_the_listing_is_not_read(secure: bool |
     assert traced == ["read_secure_live"]
 
 
+# ---- AP-08: the IsPassword read before keys go to a field ---------------------------------------
+
+
+@pytest.mark.parametrize(("live_flag", "expected"), [(False, False), (True, True), (None, None)])
+def test_the_secure_flag_is_read_live(live_flag: bool | None, expected: bool | None) -> None:
+    live = Live()
+    live.ids["h2"] = ("Edit", "Search")
+    live.secure["h2"] = live_flag
+    assert _reader(live, _live_page()).read_secure(FIELD) is expected
+
+
+def test_a_listed_secure_field_is_secure_without_a_read() -> None:
+    live = Live()
+    assert _reader(live, _live_page(SECRET)).read_secure(SECRET) is True
+    assert live.calls == []
+
+
+def test_a_listed_unread_secure_flag_is_unread_without_a_read() -> None:
+    live = Live()
+    page = _live_page()
+    page = dataclasses.replace(
+        page, snapshot=dataclasses.replace(page.snapshot, unread_secure=frozenset({FIELD.id}))
+    )
+    assert _reader(live, page).read_secure(FIELD) is None
+    assert live.calls == []
+
+
+def test_the_secure_flag_of_an_element_not_listed_once_is_unread() -> None:
+    live = Live()
+    gone = element(99, "Edit", "Gone", (9, 99), 1)
+    assert _reader(live, _live_page()).read_secure(gone) is None
+    twice = _live_page(dataclasses.replace(FIELD, id=98))
+    assert _reader(live, twice).read_secure(FIELD) is None
+
+
+def test_a_failed_secure_read_is_unread() -> None:
+    class Failing(Live):
+        def identity(self, _handle: object) -> tuple[str, str, bool | None]:
+            raise SteerError(ErrorCode.PERCEPTION_TIMEOUT, "timeout")
+
+    assert _reader(Failing(), _live_page()).read_secure(FIELD) is None
+
+
 # ---- [V2.49]: a wait with no Document is scoped to the whole window ----------------------------
 
 

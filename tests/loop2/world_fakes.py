@@ -218,7 +218,9 @@ class World:
 
     decisions: list[Decision]
     effects: list[EffectReport] = field(default_factory=list)
-    screen: Observed = field(default_factory=observed)
+    screen: Observed = field(default_factory=lambda: observed(focus=FIELD.runtime_id))
+    """The window as observed; the keyboard focus starts in the search field ([V2.51] (3): a
+    type goes only where the focus is)."""
     read_backs: list[bool | None] = field(default_factory=list)
     """The read-back of each read-back verb's act, in order (then True)."""
     results: list[ActResult] = field(default_factory=list)
@@ -335,6 +337,8 @@ class World:
         read_back = (self.read_backs.pop(0) if self.read_backs else True) if reads else None
         if verb == "type" and read_back:
             self.values[sent.runtime_id] = TYPED_VALUE
+        if verb == "focus" and read_back:  # a focus click that read back moved the focus there
+            self.screen = dataclasses.replace(self.screen, focus=sent.runtime_id)
         if self.results:
             return self.results.pop(0)
         if reads and read_back is None:  # an unread read-back: sent, never verified

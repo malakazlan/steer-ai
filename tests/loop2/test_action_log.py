@@ -317,7 +317,7 @@ def _hostile_world() -> tuple[World, Element]:
     go = dataclasses.replace(GO, name=HOSTILE["name"], automation_id=HOSTILE["automation_id"])
     odd = element(50, HOSTILE["control_type"], "Weiter", (9, 50), 1)
     page = [e if e.id != GO.id else go for e in PAGE] + [odd]
-    screen = observed(page)
+    screen = observed(page, focus=FIELD.runtime_id)
     screen = dataclasses.replace(
         screen,
         snapshot=dataclasses.replace(screen.snapshot, title=HOSTILE["title"]),
@@ -467,7 +467,7 @@ line that carried one would pass an alphabet check, so only the vocabulary keeps
 
 def test_page_text_in_the_allowed_alphabet_never_becomes_a_history_part() -> None:
     go = dataclasses.replace(GO, name=QUIET["name"], automation_id=QUIET["automation_id"])
-    screen = observed([e if e.id != GO.id else go for e in PAGE])
+    screen = observed([e if e.id != GO.id else go for e in PAGE], focus=FIELD.runtime_id)
     screen = dataclasses.replace(
         screen, snapshot=dataclasses.replace(screen.snapshot, title=QUIET["title"])
     )

@@ -179,11 +179,8 @@ def test_a_press_with_focus_listed_elsewhere_strikes_at_once() -> None:
             decision(act("press", key="Enter")),
         ],
         effects=[report("own_value")],
-        observations=[
-            FOCUSED,
-            ELSEWHERE,
-            ELSEWHERE,
-        ],  # the 2nd read is what the press's listing shows
+        observations=[FOCUSED, FOCUSED, ELSEWHERE],
+        after=ELSEWHERE,  # the type's after-read is what the press's listing shows
     )
     outcome = run_task(task(), world.ports())
     assert (
@@ -587,15 +584,15 @@ def test_a_move_after_a_send_in_the_batch_is_scored_and_the_send_remembered() ->
             decision(
                 act("type", target=FIELD.id, param="text"), act("press", key="Enter"), first=True
             ),
-            decision(act("type", target=FIELD.id, param="text")),
+            decision(act("focus", target=FIELD.id), act("type", target=FIELD.id, param="text")),
         ],
-        effects=[report("own_value"), report("own_value")],
+        effects=[report("own_value"), report("focus")],
         observations=[FOCUSED, FOCUSED],
-        later=ELSEWHERE,
-        later_after_acts=1,
+        timeline=[(1, ELSEWHERE), (2, FOCUSED)],  # the focus click brings it back
     )
     outcome = run_task(task(), world.ports())
-    assert [d.action.verb for d in world.dispatched] == ["type"]
+    # [V2.51] (3): the focus comes back first; the same type after it is still a repeat
+    assert [d.action.verb for d in world.dispatched] == ["type", "focus"]
     assert (
         f"focus_lost:{FIELD.id}" in world.views[1].history
     )  # [V2.47]: with the element's task handle

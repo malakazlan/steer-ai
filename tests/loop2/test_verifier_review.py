@@ -191,11 +191,22 @@ def test_b6_the_echo_guard_holds_every_field_typed_in_the_task(
 
     monkeypatch.setattr(runner, "auto_proof", spy)
     first = Decision(subgoals=_subgoals(), actions=[act("type", target=FIELD.id, param="text")])
-    second = Decision(actions=[act("type", target=other.id, param="text", subgoal="s2")])
+    second = Decision(
+        actions=[
+            act("focus", target=other.id, subgoal="s2"),
+            act("type", target=other.id, param="text", subgoal="s2"),
+        ]
+    )
     moved = dataclasses.replace(
         observed([*PAGE, other]), url=URL + "?q=x", document_url=URL + "?q=x"
     )
-    world = World([first, second], screen=observed([*PAGE, other]), later=moved, later_after_acts=2)
+    world = World(
+        [first, second],
+        effects=[report("own_value"), report("focus")],
+        screen=observed([*PAGE, other], focus=FIELD.runtime_id),
+        later=moved,
+        later_after_acts=3,
+    )
     run_task(task(), world.ports())
     assert seen
     assert set(seen[-1]) == {FIELD.runtime_id, other.runtime_id}
@@ -213,11 +224,22 @@ def test_b8b_the_acted_field_is_the_one_typed_under_the_subgoal_being_proved(
 
     monkeypatch.setattr(runner, "auto_proof", spy)
     first = Decision(subgoals=_subgoals(), actions=[act("type", target=FIELD.id, param="text")])
-    second = Decision(actions=[act("type", target=other.id, param="text", subgoal="s2")])
+    second = Decision(
+        actions=[
+            act("focus", target=other.id, subgoal="s2"),
+            act("type", target=other.id, param="text", subgoal="s2"),
+        ]
+    )
     moved = dataclasses.replace(
         observed([*PAGE, other]), url=URL + "?q=x", document_url=URL + "?q=x"
     )
-    world = World([first, second], screen=observed([*PAGE, other]), later=moved, later_after_acts=2)
+    world = World(
+        [first, second],
+        effects=[report("own_value"), report("focus")],
+        screen=observed([*PAGE, other], focus=FIELD.runtime_id),
+        later=moved,
+        later_after_acts=3,
+    )
     run_task(task(), world.ports())
     assert acted["s1"] == FIELD.runtime_id
     assert acted["s2"] == other.runtime_id
@@ -312,7 +334,7 @@ def test_the_echo_guard_matches_words_case_folded_and_normalised(
     world = World(
         [first, second],
         effects=[report("own_value"), report("url_changed_in_place")],
-        screen=observed(QUERY_PAGE),
+        screen=observed(QUERY_PAGE, focus=FIELD.runtime_id),
     )
     world.later = moved
     world.later_after_acts = 2
@@ -358,12 +380,15 @@ def test_the_acted_field_is_the_last_one_typed_under_the_subgoal(
     other = element(12, "Edit", "Other", (9, 12), 1)
     acted = _spied(monkeypatch, "acted")
     first = Decision(subgoals=_subgoals(), actions=[act("type", target=FIELD.id, param="text")])
-    second = Decision(actions=[act("type", target=other.id, param="text")])
+    second = Decision(
+        actions=[act("focus", target=other.id), act("type", target=other.id, param="text")]
+    )
     world = World(
         [first, second],
-        screen=observed([*QUERY_PAGE, other]),
+        effects=[report("own_value"), report("focus")],
+        screen=observed([*QUERY_PAGE, other], focus=FIELD.runtime_id),
         later=_moved([other]),
-        later_after_acts=2,
+        later_after_acts=3,
     )
     run_task(task(), world.ports())
     assert acted["s1"] == other.runtime_id
@@ -376,7 +401,10 @@ def test_a_subgoal_with_nothing_typed_under_it_takes_the_tasks_last_typed_field(
     first = Decision(subgoals=_subgoals(), actions=[act("type", target=FIELD.id, param="text")])
     second = Decision(actions=[act("click", target=GO.id, subgoal="s2")])
     world = World(
-        [first, second], screen=observed(QUERY_PAGE), later=_moved([]), later_after_acts=2
+        [first, second],
+        screen=observed(QUERY_PAGE, focus=FIELD.runtime_id),
+        later=_moved([]),
+        later_after_acts=2,
     )
     run_task(task(), world.ports())
     assert acted["s2"] == FIELD.runtime_id
@@ -392,7 +420,10 @@ def test_the_echo_guard_folds_the_subgoals_words_too(monkeypatch: pytest.MonkeyP
     first = Decision(subgoals=subs, actions=[act("type", target=FIELD.id, param="text")])
     second = Decision(actions=[act("click", target=MENU.id, subgoal="s2")])
     world = World(
-        [first, second], screen=observed(QUERY_PAGE), later=_moved([]), later_after_acts=2
+        [first, second],
+        screen=observed(QUERY_PAGE, focus=FIELD.runtime_id),
+        later=_moved([]),
+        later_after_acts=2,
     )
     run_task(dataclasses.replace(task(), goal="search red shoes then Red Shoes"), world.ports())
     assert echoes["s2"] is True
@@ -402,6 +433,11 @@ def test_generated_text_counts_as_an_echo(monkeypatch: pytest.MonkeyPatch) -> No
     """Steer keeps no words for generated text, so any of it may echo the subgoal's."""
     echoes = _spied(monkeypatch, "echo")
     first = Decision(subgoals=_subgoals(), actions=[act("type", target=FIELD.id, text="anything")])
-    world = World([first], screen=observed(QUERY_PAGE), later=_moved([]), later_after_acts=1)
+    world = World(
+        [first],
+        screen=observed(QUERY_PAGE, focus=FIELD.runtime_id),
+        later=_moved([]),
+        later_after_acts=1,
+    )
     run_task(task(), world.ports())
     assert echoes["s1"] is True
