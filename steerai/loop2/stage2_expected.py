@@ -19,6 +19,7 @@ the harness re-reads the start page and compares these facts only (`site_changed
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import itertools
 import json
@@ -52,6 +53,8 @@ from steerai.world.model import normalise_name
 from steerai.world.read_json import observed_from_json
 
 ACTS: Final = Path(__file__).with_name("stage2_acts.json")
+TABLE: Final = Path(__file__).with_name("stage2_expected.json")
+"""The committed 2b table: each read's SHA-256, its deciding facts and the expected outcome."""
 _ACT_FIELDS: Final = frozenset({"verb", "role", "name", "key", "option", "param"})
 _ROW_FIELDS: Final = frozenset({"acts", "proof", "why"})
 _PROOFS: Final = frozenset(get_args(ProofKind))
@@ -423,6 +426,28 @@ def table_row(task_id: str, row: SiteRow, goal: str, raw_read: bytes) -> TableRo
     return TableRow(task_id, hashlib.sha256(raw_read).hexdigest(), facts, expected)
 
 
+def opener_table_row(
+    task_id: str, row: SiteRow, goal: str, raw_start: bytes, raw_opened: bytes
+) -> TableRow:
+    """A row behind an opener ([V2.65] (1)): its first act is the opener, rated on the start
+    read (the opener may vanish once clicked); the rest are rated on the opened read, and the
+    row's risk is the higher of the two. The opened read's digest is committed."""
+    opener = OPENERS.get(task_id)
+    if opener is None or not row.acts or row.acts[0] != opener:
+        raise ValueError(f"opener: {task_id}'s acts must start with its opener")
+    start = observed_from_json(raw_start.decode("utf-8"))
+    opened = observed_from_json(raw_opened.decode("utf-8"))
+    opener_risk = rate(goal, (opener,), start)
+    rest = deciding_facts(SiteRow(row.acts[1:], row.proof, row.why), goal, opened)
+    if rest.unread:
+        raise ValueError(f"unread_facts: {task_id} {list(rest.unread)}")
+    risk = max(opener_risk, rest.risk, key=RISKS.index)
+    facts = dataclasses.replace(rest, risk=risk)
+    outcome, reason = outcome_of(risk, row.proof)
+    expected = Expected(task_id, outcome, reason, risk, row.proof, row.why)
+    return TableRow(task_id, hashlib.sha256(raw_opened).hexdigest(), facts, expected)
+
+
 def dump_table(rows: Sequence[TableRow], *, unrated: Mapping[str, str] | None = None) -> str:
     """The committed table as stable JSON, by task id; an unrated task is kept out of it as
     `{"unrated": reason}` (the coordinator's ruling, 2026-11-15)."""
@@ -588,7 +613,15 @@ def table_from_reads(
     if unknown:
         raise ValueError(f"acts: not tasks of this group: {unknown}")
     return [
-        table_row(task_id, row, goals[task_id], opened_read_path(reads, task_id).read_bytes())
+        opener_table_row(
+            task_id,
+            row,
+            goals[task_id],
+            (reads / f"{task_id}.json").read_bytes(),
+            opened_read_path(reads, task_id).read_bytes(),
+        )
+        if task_id in OPENERS
+        else table_row(task_id, row, goals[task_id], (reads / f"{task_id}.json").read_bytes())
         for task_id, row in acts.items()
     ]
 
@@ -730,12 +763,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return save_opened(args.save_opened, floor_mb=args.min_free_mb)
     if args.reads is None:
         parser.error("--reads is required to compute the table")
-    rows = table_from_reads(load_acts(args.acts.read_text(encoding="utf-8")), args.reads)
+    acts_text = args.acts.read_text(encoding="utf-8")
+    rows = table_from_reads(load_acts(acts_text), args.reads)
     for r in rows:
         e = r.expected
         sys.stdout.write(f"{r.task_id:<6} {e.risk:<3} {e.outcome:<11} {e.reason or '-'}\n")
     if args.out is not None:
-        args.out.write_bytes(dump_table(rows).encode("utf-8"))
+        table = dump_table(rows, unrated=load_unrated(acts_text))
+        args.out.write_bytes(table.encode("utf-8"))
     return 0
 
 

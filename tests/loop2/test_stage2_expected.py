@@ -14,7 +14,9 @@ import pytest
 
 from steerai.loop2.stage1_expected import Act, Expected
 from steerai.loop2.stage2_expected import (
+    ACTS,
     SITE_SPACING_S,
+    TABLE,
     UNRATED_REASONS,
     DecidingFacts,
     SiteRow,
@@ -442,3 +444,23 @@ def two_forms_notes() -> Observed:
     """NOTE (the field) and both forms' buttons: NOTE is under the Document, so both buttons are
     under its parent container: both pairs are in scope, and agree."""
     return two_forms()
+
+
+# ---- the committed 2b table ([V2.65], the save-reads and opener slots, 2026-11-15) --------------
+
+
+def test_the_committed_2b_acts_and_table_cover_every_real_site_task() -> None:
+    ids = {t.task_id for t in real_site_tasks()}
+    acts = ACTS.read_text(encoding="utf-8")
+    table = TABLE.read_text(encoding="utf-8")
+    assert set(load_acts(acts)) | set(load_unrated(acts)) == ids
+    assert set(load_table(table)) == set(load_acts(acts))
+    assert load_unrated(table) == load_unrated(acts)
+
+
+def test_the_committed_2b_table_holds_no_page_text() -> None:
+    """Only digests, closed facts and the rows' own reasons: never a field's or page's name."""
+    table = TABLE.read_text(encoding="utf-8")
+    for row in load_table(table).values():
+        assert len(row.read_sha256) == 64
+    assert "Search Wikipedia" not in table

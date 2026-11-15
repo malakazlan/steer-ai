@@ -7,6 +7,8 @@ unrated. Fakes only."""
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -19,13 +21,16 @@ from steerai.loop2.stage2_expected import (
     OPENERS,
     DecidingFacts,
     OpenerError,
+    SiteRow,
     click_opener,
     load_openers,
     opened_read_path,
     opener_start_facts,
+    opener_table_row,
     wait_revealed,
 )
 from steerai.world.effects import Observed
+from steerai.world.read_json import observed_to_json
 from tests.loop2.world_fakes import DOC, FIELD, element, observed
 
 
@@ -195,3 +200,39 @@ def test_only_new_elements_inside_the_page_count_as_revealed() -> None:
     noisy = observed([DOC, FIELD, frame, notice])
     assert wait_revealed(reads(noisy, noisy), observed([DOC, FIELD, frame]), clock=clock,
                          sleep=clock.sleep) is None  # fmt: skip
+
+
+def test_a_row_behind_an_opener_rates_the_opener_on_the_start_and_the_rest_when_opened() -> None:
+    """The opener may vanish once clicked (a search button replaced by its field): it is rated
+    on the start read, the rest on the opened read, and the row's risk is the higher."""
+    field = element(40, "ComboBox", "Search", (9, 40), 1)
+    start = observed([DOC, FIELD, OPENER_BUTTON])
+    shown = [DOC, FIELD, field]
+    opened = dataclasses.replace(
+        observed(shown),
+        aria_roles={field.runtime_id: "combobox"},
+        landmarks={e.runtime_id: None for e in shown},
+    )
+    row = SiteRow(
+        acts=(
+            OPEN_SEARCH,
+            Act("type", "ComboBox", "Search", param="flexbox"),
+            Act("press", "", "", key="Enter"),
+        ),
+        proof="navigated",
+        why="w",
+    )
+    got = opener_table_row("mdn1", row, "search the docs for flexbox", saved(start), saved(opened))
+    assert got.facts.field_role == "ComboBox"
+    assert got.facts.aria_role == "combobox"
+    assert got.read_sha256 == hashlib.sha256(saved(opened)).hexdigest()
+
+
+def test_a_row_behind_an_opener_must_start_with_that_opener() -> None:
+    row = SiteRow((Act("type", "ComboBox", "Search", param="x"),), None, "w")
+    with pytest.raises(ValueError, match="opener"):
+        opener_table_row("mdn1", row, "g", saved(observed([DOC])), saved(observed([DOC])))
+
+
+def saved(seen: Observed) -> bytes:
+    return (observed_to_json(seen) + "\n").encode("utf-8")
