@@ -70,6 +70,10 @@ _WAIT_ABANDONED = 0x80
 COINIT_MULTITHREADED = 0x0
 """`CoInitializeEx`'s MTA flag (objbase.h)."""
 DPAPI_PROBE = b"steer-v2-dpapi-probe"
+ShowCommand = Literal["minimize", "restore", "maximize"]
+NUDGE_PAUSE_S = 0.2
+"""[V2.62] addendum: the pause between the minimise and the restore of the start's nudge (the
+value the diagnosis used; one run per nudge, provisional)."""
 START_IDLE_S = 10.0
 """[V2.62] how long the task start waits for the person to go idle (they have usually just
 typed the command) before the window is brought in front; provisional, unmeasured. Past it
@@ -156,6 +160,15 @@ class Platform(Protocol):
 
     def window_cover(self, hwnd: int) -> CoverFacts:
         """[V2.62] one read of `hwnd`'s cover facts (`probes.windows.window_cover`)."""
+        ...
+
+    def is_maximized(self, hwnd: int) -> bool:
+        """IsZoomed."""
+        ...
+
+    def show_window(self, hwnd: int, command: ShowCommand) -> None:
+        """ShowWindow on the bound window only: minimise, restore or maximise; an
+        OSError when the call fails."""
         ...
 
     def focused(  # Any: the UiaClient
@@ -336,6 +349,8 @@ class LiveWorld:
         self._lost = False
         """[V2.57] LW-01: monitor_lost is final for the task: never re-installed and resumed."""
         self.monitor_lost = 0
+        self.front_nudged = False
+        """[V2.62] addendum: the start minimised and restored the bound window."""
 
     def _debug_sink(self) -> DebugSink:
         config = self._config
@@ -421,16 +436,55 @@ class LiveWorld:
         hwnd = self._config.hwnd
         if not self._idle_to_start():
             return
+        behind = self._behind(hwnd)
         try:
             self._inputs.acquire_foreground(hwnd)
         except OSError as exc:
             raise SteerError(ErrorCode.FOCUS_LOST, "foreground_refused") from exc
         if self.interrupted() is not None:
             return  # the lock or a kill during the acquire (SW-07's re-check): the task's own
+        if behind:
+            self._nudge(hwnd)
+            if self.interrupted() is not None:
+                return  # a kill during the nudge: the window is restored, the task's own
         if self._inputs.foreground_hwnd() != hwnd:
             raise SteerError(ErrorCode.FOCUS_LOST, "not_in_front")
         if self._cover() is not None:
             raise SteerError(ErrorCode.FOCUS_LOST, "window_covered")
+
+    def _behind(self, hwnd: int) -> bool:
+        """[V2.62] addendum: the window is behind before the raise (not the foreground, or
+        covered), so Chrome's occlusion tracker may keep it hidden after the raise. A minimised
+        or cloaked window is never nudged: the postcondition refuses it, nothing restores a
+        window the person minimised. An unread foreground counts as behind."""
+        cover = self._cover()
+        if cover not in (None, "covered"):
+            return False
+        try:
+            in_front = self._inputs.foreground_hwnd() == hwnd
+        except OSError:
+            in_front = False
+        return cover == "covered" or not in_front
+
+    def _nudge(self, hwnd: int) -> None:
+        """[V2.62] addendum: minimise, then restore, our own bound window (measured: the only
+        tested action that unsticks Chrome's occlusion state after the raise). The restore runs
+        whatever happens after the minimise, so the window is never left minimised; a window
+        that was maximised and did not come back maximised is maximised again. The nudge is
+        recorded in `front_nudged`."""
+        platform = self._platform
+        try:
+            maximized = platform.is_maximized(hwnd)
+            platform.show_window(hwnd, "minimize")
+            try:
+                self._config.pause(NUDGE_PAUSE_S)
+            finally:
+                platform.show_window(hwnd, "restore")
+            if maximized and not platform.is_maximized(hwnd):
+                platform.show_window(hwnd, "maximize")
+        except OSError as exc:
+            raise SteerError(ErrorCode.FOCUS_LOST, "nudge_refused") from exc
+        self.front_nudged = True
 
     def _idle_to_start(self) -> bool:
         """True once the person is idle; False on a switch token (nothing sent); a person
@@ -937,6 +991,21 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
 
     def facts(self, client: Any) -> FactReader:  # Any: the UiaClient
         return _ComFacts(client)
+
+    def is_maximized(self, hwnd: int) -> bool:
+        import ctypes  # noqa: PLC0415 - Windows only
+
+        return bool(ctypes.windll.user32.IsZoomed(hwnd))
+
+    def show_window(self, hwnd: int, command: ShowCommand) -> None:
+        import ctypes  # noqa: PLC0415 - Windows only
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        # SW_MINIMIZE 6, SW_RESTORE 9, SW_MAXIMIZE 3; ShowWindow's return is the previous
+        # visibility, never a failure, so only a dead handle is refused
+        if not user32.IsWindow(hwnd):
+            raise OSError("not_a_window")
+        user32.ShowWindow(hwnd, {"minimize": 6, "restore": 9, "maximize": 3}[command])
 
     def window_cover(self, hwnd: int) -> CoverFacts:
         from steerai.probes.windows import window_cover  # noqa: PLC0415 - Windows only

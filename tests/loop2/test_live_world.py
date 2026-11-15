@@ -163,6 +163,15 @@ class Platform:
             screen=(0, 0, 1920, 1080),
         )
         """[V2.62] the bound window's cover facts: in front and uncovered unless a test says."""
+        self.covers: list[CoverFacts] = []
+        """Cover reads in order, before `cover` (a window that the raise uncovers)."""
+        self.shown: list[str] = []
+        self.show_times: list[float] = []
+        self.maximized_now = False
+        self.restore_keeps_maximized = True
+        """What SW_RESTORE does to a window minimised from maximised."""
+        self.show_error: Exception | None = None
+        self.on_show: Any = None  # Any: a test's hook, called with each command
 
     def dpi_aware(self) -> bool:
         self.calls.append("dpi")
@@ -203,7 +212,24 @@ class Platform:
 
     def window_cover(self, hwnd: int) -> CoverFacts:
         assert hwnd == 16
-        return self.cover
+        return self.covers.pop(0) if self.covers else self.cover
+
+    def is_maximized(self, hwnd: int) -> bool:
+        assert hwnd == 16
+        return self.maximized_now
+
+    def show_window(self, hwnd: int, command: str) -> None:
+        assert hwnd == 16
+        if self.show_error is not None:
+            raise self.show_error
+        self.shown.append(command)
+        self.show_times.append(self.monitor_clock())
+        if command == "restore":
+            self.maximized_now = self.maximized_now and self.restore_keeps_maximized
+        if command == "maximize":
+            self.maximized_now = True
+        if self.on_show is not None:
+            self.on_show(command)
 
     def uia(self) -> tuple[Any, UiaBindings]:
         self.calls.append("uia")
