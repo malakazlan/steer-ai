@@ -157,7 +157,10 @@ class HelperMonitor:
     # ---- what the loop reads --------------------------------------------------------------------
 
     def kill_requested(self) -> bool:
-        """K4: the kill word, read directly; layer 1 acknowledges it the first time."""
+        """K4: the kill word, read directly; layer 1 acknowledges it the first time. Once
+        closed nothing is read (#385 HH4-14): False, and the "closed" loss stops the task."""
+        if self._closed:
+            return False
         if self._helper.status.get("kill") == 0:  # #383 HM-06: nonzero is a kill
             return False
         if not self._acked:
@@ -192,6 +195,8 @@ class HelperMonitor:
             self.probe_now()
 
     def probe_now(self) -> None:
+        if self._closed:
+            return  # #385 HH4-14: no probe for a closed helper
         self._ledger.probe_sent(now=self._now(), counts=self._counts)
         try:
             self._probe()
@@ -202,12 +207,16 @@ class HelperMonitor:
         return not self._closed and self._ledger.probe_seen(counts=self._counts)
 
     def last_user_input(self) -> float:
+        if self._closed:
+            return self._clock()  # #385 HH4-14: input "just now", so every send is refused
         word = self._helper.status.get("last_user")  # HH-10: the word first, then the clocks
         return last_user_seconds(word=word, qpc_now=self._qpc(), freq=self._freq,
                                  clock_now=self._clock(), clock_resolution=self._resolution,
                                  started_at=self._started_at)  # fmt: skip
 
     def takeover_token(self) -> str:
+        if self._closed:
+            return TAKEOVER
         return (
             OTHER_STEER_INPUT if is_other_steer(self._helper.status.get("last_user")) else TAKEOVER
         )
@@ -224,7 +233,9 @@ class HelperMonitor:
         return None
 
     def latency(self) -> tuple[int, int | None, int | None]:
-        """The helper's latency histogram: (events, p95 ms, p99 ms)."""
+        """The helper's latency histogram: (events, p95 ms, p99 ms); none once closed."""
+        if self._closed:
+            return 0, None, None
         status = self._helper.status
         events = status.get("latency_events")
         if not events:
@@ -261,6 +272,8 @@ class HelperMonitor:
 
     def watch_once(self) -> None:
         """One watchdog step: its own validated read, the kill layer, the session reads."""
+        if self._closed:
+            return
         read = self._read(self._watch_state)
         if read.killed:
             self._kill_layer()

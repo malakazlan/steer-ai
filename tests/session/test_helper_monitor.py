@@ -18,6 +18,7 @@ from steerai.session import helper_monitor
 from steerai.session.helper_core import KILL_ACK_S, write_config
 from steerai.session.helper_launch import CLOSE_TIMEOUT_MS
 from steerai.session.helper_monitor import WATCH_PERIOD_MS, HelperMonitor
+from steerai.session.hook_classifier import TAKEOVER
 from steerai.session.hook_layout import (
     HISTOGRAMS,
     KIND_OTHER_STEER,
@@ -698,3 +699,44 @@ def test_the_counts_fetch_the_words_on_every_read() -> None:
     rig.helper.status_buf = fresh
     rig.helper.status_w.set("delivered_keyboard", 5)
     assert rig.monitor._counts.delivered("keyboard") == 5
+
+
+# ---- #385 HH4-14: every public method is safe after close -------------------------------------
+
+_PUBLIC = sorted(
+    name
+    for name, value in vars(HelperMonitor).items()
+    if callable(value) and not name.startswith("_")
+)
+_AFTER_CLOSE: dict[str, tuple[tuple[object, ...], object]] = {
+    "kill_requested": ((), False),  # nothing to acknowledge; the "closed" loss stops the task
+    "healthy": ((), False),
+    "maintain": ((), None),
+    "probe_now": ((), None),
+    "probe_seen": ((), False),
+    "last_user_input": ((), None),  # input "just now" (the clock): every send is refused
+    "takeover_token": ((), TAKEOVER),
+    "session_change": ((), "session_locked"),
+    "latency": ((), (0, None, None)),
+    "wait": ((0.0,), None),
+    "close": ((), None),
+    "watch_once": ((), None),
+}
+
+
+def test_the_after_close_list_names_every_public_method() -> None:
+    assert sorted(_AFTER_CLOSE) == _PUBLIC
+
+
+@pytest.mark.parametrize("name", _PUBLIC)
+def test_every_public_method_is_safe_after_close(name: str) -> None:
+    """No method reads the unmapped words, raises, or sends a probe once closed."""
+    rig = _rig()
+    rig.monitor.close()
+    rig.at(100.0 + 10 * DEADLINE_S)  # long after: the last poll is stale too
+    args, expected = _AFTER_CLOSE[name]
+    if name == "last_user_input":
+        expected = rig.t[0]
+    assert getattr(rig.monitor, name)(*args) == expected
+    assert rig.probes == []
+    assert rig.helper.terminated == 0
