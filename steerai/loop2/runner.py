@@ -1783,9 +1783,7 @@ class _Run:
                 allow_file=self._allow_file(),
             )
             if tracing:
-                self.turn.proofs.append(
-                    _attempt(position, read_kind, observed, None, gate, judged)
-                )
+                self.turn.proofs.append(_attempt(position, read_kind, observed, None, gate, judged))
             if judged.proof is not None:
                 self._tick(subgoal, how=judged.proof)
         if skipped is None:
