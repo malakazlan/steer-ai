@@ -19,7 +19,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Final, Literal, Protocol, get_args
 
 from steerai.action.dispositions import ActionResult, Delivery, Mechanism, Step
 from steerai.action.keyboard import GateApproval
@@ -30,6 +30,80 @@ from steerai.world.elements import Element
 from steerai.world.model import Snapshot, normalise_name
 
 SNAPSHOT_MAX_AGE_S = 10.0
+
+RefusalDetail = Literal[
+    # admission
+    "snapshot_unstable",
+    "snapshot_stale",
+    "disabled",
+    "secure_field",
+    "window_gone",
+    "window_cloaked",
+    "cloak_unreadable",
+    "window_disabled",
+    "identity_changed",
+    "precondition_already_satisfied",
+    # a pattern the element does not expose (`UiaBindings.pattern`: `no_<name>`)
+    "no_InvokePattern",
+    "no_ValuePattern",
+    "no_TogglePattern",
+    "no_ExpandCollapsePattern",
+    "no_SelectionItemPattern",
+    "no_ScrollItemPattern",
+    # the semantic executor
+    "read_only",
+    "unchanged",
+    "leaf_node",
+    "expand_by_click",
+    "no_pattern",
+    "in_state",
+    "partial_state",
+    "no_own_row",
+    "editable_combobox",
+    "no_option_source",
+    "no_options",
+    "no_match",
+    "ambiguous_option",
+    "option_disabled",
+    "option_unselectable",
+    "left_expanded",
+    # the physical executor
+    "dpi_context",
+    "secure_desktop",
+    "accessibility_filter",
+    "self_target",
+    "minimized",
+    "hung",
+    "integrity_blocked",
+    "offscreen",
+    "clipped",
+    "covered",
+    "covered_in_window",
+    "hit_test_miss",
+    "target_moved",
+    "modifier_held",
+    "button_held",
+    "menu_mode",
+    "foreground_refused",
+    "cursor_mismatch",
+    "routed_chord",
+    "blocked_chord",
+    "active_option",
+    "target_not_focused",
+    "field_not_empty",
+    "approval_mismatch",
+    "tab_not_typed",
+    "typing_budget",
+    "unreadable_value",
+    "truncated",
+    "readback_differs",
+    "focus_lost",
+    "focus_moved",
+]
+"""SX-28: every `detail` an executor refuses or reports with, as the closed set the redacted
+trace shares ([V2.67] D). Pinned to its producers by `tests/action/test_refusal_details.py`:
+a new detail that is not here fails that test."""
+REFUSAL_DETAILS: Final = frozenset(get_args(RefusalDetail))
 
 # UIA pattern ids (UIAutomationClient constants), kept as literals so executors are testable
 # without comtypes; the generated module exposes the same values.

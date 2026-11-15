@@ -17,6 +17,7 @@ from steerai.planner.claude_planner import ClaudePlanner
 from steerai.planner.contracts import PlanRequest
 from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome, stop_chrome
 from steerai.probes.uia_snapshot import UiaClient
+from steerai.probes.win_input import acquire_foreground
 from steerai.probes.windows import wait_window_for_pid
 from steerai.world.model import WorldModel
 
@@ -39,6 +40,7 @@ def test_the_planner_writes_a_valid_plan_for_the_google_page(tmp_path: Path) -> 
         window = wait_window_for_pid(
             proc.pid, title_contains="Google Chrome", image="chrome.exe", process=proc
         )
+        acquire_foreground(window.hwnd)
         model = WorldModel(UiaClient())
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:

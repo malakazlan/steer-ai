@@ -45,7 +45,7 @@ from steerai.debug_trace import BufferedDebugSink, DebugSink, NullDebugSink
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.act_guards import GuardDesk, InputGuard, ToggleGuard
 from steerai.loop2.act_port import ActPort
-from steerai.loop2.controller import PROMPT_VERSION
+from steerai.loop2.controller import AUDIT_PROMPT_VERSION, PROMPT_VERSION
 from steerai.loop2.decide_port import Call, Counter, DecideCalls, TaskGenerations
 from steerai.loop2.listing import LISTING_CAP
 from steerai.loop2.loop import ActResult, Dispatch, PortInterrupted, Ports
@@ -949,6 +949,7 @@ class LiveWorld:
             "model": DEFAULT_MODEL,
             "effort": EFFORT,
             "prompt_version": PROMPT_VERSION,
+            "audit_prompt_version": AUDIT_PROMPT_VERSION,  # [V2.69] (packet rev 5 P7)
             "trace_level": self._config.trace_level,
             "price": "not configured" if price is None else "configured",
             "listing_cap": str(LISTING_CAP),
@@ -1028,6 +1029,7 @@ class LiveWorld:
             read_value=read_value_here,
             read_state=read_state_here,
             fact_of=world.fact_of,
+            turn_trace=self._write,  # [V2.67] D: each turn, closed, at every trace level
         )
 
     def __enter__(self) -> LiveWorld:

@@ -263,26 +263,37 @@ _H = r"[0-9]{1,9}"
 _ID = r"[a-z0-9_]{1,24}"
 _CLS = _alt(EFFECT_CLASSES)
 _TOK = _alt(EFFECT_TOKENS)
-GRAMMAR = re.compile(
-    "|".join(
-        (
-            rf"act:(?:{_alt(VERBS)}):(?:{_H}|-):(?:{_alt(LOG_ROLES)}):{_ID}:(?:{_ID}|-)"
-            rf":(?:{_alt(DELIVERIES)}):(?:empty|(?:{_CLS})(?:\.(?:{_CLS}))*)"
-            rf":(?:none|(?:{_TOK})(?:\.(?:{_TOK}))*)(?::read_back_(?:mismatch|unread))?",
-            r"refused:id_not_listed",
-            rf"refused:(?:{_alt(REFUSAL_TOKENS - {'id_not_listed'})})(?::{_H})?",
-            rf"(?:target_changed|focus_lost|focus_moved_after_press)(?::{_H})?",
-            r"stale_observation",
-            r"load_guard",
-            rf"enter:(?:{_alt(ENTER_TOKENS)}):(?:{_alt(ROWS)})",
-            rf"claim:{_ID}:(?:{_alt(CLAIM_RESULTS)})",
-            rf"proven:{_ID}:(?:{_alt(PROVEN_HOW)})",
+
+
+def history_grammar(subgoal: str, param: str) -> re.Pattern[str]:
+    """[V2.47], #347 review: one form per kind of line, every token from its closed set (no
+    shape check is left). A handle slot is digits only; `id_not_listed` has none. The subgoal
+    and param slots are given: the model's own ids for the history (`GRAMMAR`), positions for
+    the redacted trace (`POSITIONAL_GRAMMAR`, [V2.67] D)."""
+    return re.compile(
+        "|".join(
+            (
+                rf"act:(?:{_alt(VERBS)}):(?:{_H}|-):(?:{_alt(LOG_ROLES)}):(?:{subgoal})"
+                rf":(?:{param}|-):(?:{_alt(DELIVERIES)}):(?:empty|(?:{_CLS})(?:\.(?:{_CLS}))*)"
+                rf":(?:none|(?:{_TOK})(?:\.(?:{_TOK}))*)(?::read_back_(?:mismatch|unread))?",
+                r"refused:id_not_listed",
+                rf"refused:(?:{_alt(REFUSAL_TOKENS - {'id_not_listed'})})(?::{_H})?",
+                rf"(?:target_changed|focus_lost|focus_moved_after_press)(?::{_H})?",
+                r"stale_observation",
+                r"load_guard",
+                rf"enter:(?:{_alt(ENTER_TOKENS)}):(?:{_alt(ROWS)})",
+                rf"claim:(?:{subgoal}):(?:{_alt(CLAIM_RESULTS)})",
+                rf"proven:(?:{subgoal}):(?:{_alt(PROVEN_HOW)})",
+            )
         )
     )
-)
-"""[V2.47], #347 review: one form per kind of line, every token from its closed set (no shape
-check is left): the backstop on `render`. A handle slot is digits only; `id_not_listed` has
-none."""
+
+
+GRAMMAR: Final = history_grammar(_ID, _ID)
+"""The history's backstop on `render`: subgoal ids and param names as the model wrote them."""
+POSITIONAL_GRAMMAR: Final = history_grammar(r"s[0-9]{1,3}", r"param:[0-9]{1,3}")
+"""[V2.67] D ruling (a): the redacted trace's lines, every model-chosen name replaced by its
+position (`turn_trace.positional`): a raw subgoal id or param name fails it."""
 
 
 def record_ok(record: HistoryRecord, vocab: Vocab) -> bool:
