@@ -13,6 +13,7 @@ import pytest
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.errors import ErrorCode
 from steerai.loop2.decision import ActionDoc, Claim, Decision, SubgoalDoc
+from steerai.loop2.listing import ListingTurn
 from steerai.loop2.loop import (
     READ_BACK_VERBS,
     ActResult,
@@ -250,6 +251,8 @@ class World:
     dispatched: list[Dispatch] = field(default_factory=list)
     write_aheads: list[Dispatch] = field(default_factory=list)
     usage: TokenUsage | None = field(default_factory=lambda: TokenUsage(100, 10))
+    listing: ListingTurn | None = None
+    """#366 P5: the listing turn every Decision reports (None: every bound handle shown)."""
     """What each controller call reports it used ([V2.37] P6); None: not reported."""
     values: dict[tuple[int, ...], ValueFact | None] = field(default_factory=dict)
     """Each field's value fact as `read_value` returns it (a type that reads back True sets it)."""
@@ -313,7 +316,7 @@ class World:
         if self.decide_raises is not None:
             raise self.decide_raises
         decision = self.decisions.pop(0) if self.decisions else Decision(stop="cannot")
-        return Decided(decision, self.usage)
+        return Decided(decision, self.usage, self.listing)
 
     def _arrive(self) -> None:
         if self.later is not None and len(self.dispatched) >= self.later_after_acts:

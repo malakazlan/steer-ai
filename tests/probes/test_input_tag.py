@@ -41,3 +41,11 @@ def test_a_tag_is_a_nonzero_32_bit_value(tag: int) -> None:
     with pytest.raises(ValueError, match="tag"):
         use_extra_info(tag)
     assert extra_info() == STEER_EXTRA_INFO
+
+
+def test_a_bound_tag_wins_over_the_process_tag() -> None:
+    """#385 HH4-11: a probe bound to the run's tag keeps it after the process tag is restored."""
+    use_extra_info(STEER_EXTRA_INFO)
+    run = 0x2222_3333
+    assert build_mouse_input(dx=0, dy=0, flags=0, tag=run).union.mi.dwExtraInfo == run
+    assert build_keyboard_input(vk=0x0E, keyup=True, tag=run).union.ki.dwExtraInfo == run
