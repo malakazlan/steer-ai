@@ -45,6 +45,7 @@ class FakeHelper:
     status_buf: bytearray = field(default_factory=lambda: bytearray(status_size()))
     config_buf: bytearray = field(default_factory=lambda: bytearray(config_size()))
     exited: bool = False
+    exited_raises: OSError | None = None
     terminated: int = 0
     closed: int = 0
     wakes: list[int] = field(default_factory=list)
@@ -93,6 +94,8 @@ class FakeHelper:
         return PID
 
     def has_exited(self) -> bool:
+        if self.exited_raises is not None:
+            raise self.exited_raises
         return self.exited
 
     def wait_exit(self, timeout_ms: int) -> bool:
@@ -642,7 +645,14 @@ def _naps(monitor: HelperMonitor) -> list[float | None]:
 
 @pytest.mark.parametrize(
     ("seconds", "ms"),
-    [(float("nan"), 0), (-1.0, 0), (float("inf"), 1000), (1e12, 1000), (0.0004, 0)],
+    [
+        (float("nan"), 0),
+        (-1.0, 0),
+        (float("inf"), 1000),
+        (1e12, 1000),
+        (0.0004, 1),  # #385: rounded up, never a zero wait for a time asked
+        (0.2501, 251),
+    ],
 )
 def test_a_kill_aware_wait_is_clamped(seconds: float, ms: int) -> None:
     rig = _rig()
@@ -740,3 +750,14 @@ def test_every_public_method_is_safe_after_close(name: str) -> None:
     assert getattr(rig.monitor, name)(*args) == expected
     assert rig.probes == []
     assert rig.helper.terminated == 0
+
+
+def test_a_liveness_read_that_raises_inside_a_wait_is_a_loss() -> None:
+    """#385 principal note: `has_exited` raising inside `wait` loses the monitor and naps."""
+    rig = _rig()
+    naps = _naps(rig.monitor)
+    rig.helper.exited_raises = OSError(6, "the handle is invalid")
+    rig.monitor.wait(0.25)
+    assert naps == [0.25]
+    assert rig.helper.wakes == []
+    assert not rig.monitor.healthy()

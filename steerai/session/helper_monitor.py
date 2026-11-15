@@ -246,13 +246,16 @@ class HelperMonitor:
         """HH-08: a kill-aware wait wakes on the helper's `wake` or its exit. #383 HM-20: the
         time is clamped; once the helper is closed or gone, or its wait fails, the time is
         napped instead, so a caller's loop of waits never spins."""
-        ms = int(min(seconds, MAX_WAIT_MS / 1000) * 1000) if seconds > 0 else 0
-        if self._closed or self._helper.has_exited():
+        ms = math.ceil(min(seconds, MAX_WAIT_MS / 1000) * 1000) if seconds > 0 else 0
+        if self._closed:
             self._nap.wait(ms / 1000)
             return
         try:
+            if self._helper.has_exited():
+                self._nap.wait(ms / 1000)
+                return
             self._helper.wait_wake(ms)
-        except OSError as exc:
+        except OSError as exc:  # a liveness read or the wait itself failed (#385)
             self._lose(f"wake_wait_failed:{exc.errno}")
             self._nap.wait(ms / 1000)
 
