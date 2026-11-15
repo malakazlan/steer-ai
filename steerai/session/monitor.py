@@ -37,32 +37,60 @@ from steerai.probes.win_input import (
     key_up_probe,
     nudge_in_place,
 )
+from steerai.session.hook_classifier import (
+    DEAD_BAND_PX,
+    HOOKS,
+    LLKHF_INJECTED,
+    LLKHF_UP,
+    LLMHF_INJECTED,
+    OTHER_STEER_INPUT,
+    TAKEOVER,
+    TAKEOVER_TOKENS,
+    WM_LBUTTONDOWN,
+    WM_MOUSEMOVE,
+    WM_MOUSEWHEEL,
+    Classifier,
+)
+from steerai.session.probe_ledger import PROBE_DEADLINE_S, PROBE_PERIOD_S, ProbeLedger
 
-LLKHF_INJECTED = 0x10
-LLKHF_UP = 0x80
-"""KBDLLHOOKSTRUCT flags: the transition state, set for a key-up (Microsoft Learn)."""
-LLMHF_INJECTED = 0x01
-WM_MOUSEMOVE = 0x0200
-WM_LBUTTONDOWN = 0x0201
-WM_MOUSEWHEEL = 0x020A
-DEAD_BAND_PX = 4
-"""Physical pixels; unmeasured across DPI settings (TK-42)."""
-PROBE_PERIOD_S = 1.0
-"""Quiet time after the last tagged event before a self-probe is due (unmeasured)."""
-PROBE_DEADLINE_S = 0.25
-"""How long a sent probe may take to reach the hook; measured p95 under load is 48 ms, max
-110 ms (probe `hook-latency-2026-11-04`)."""
+__all__ = [
+    "DEAD_BAND_PX",
+    "DEFAULT_KILL_KEY",
+    "HC_ACTION",
+    "HOOKS",
+    "HOOK_TIMEOUT_CAP_MS",
+    "HOTKEY_ID",
+    "LATENCY_BUCKETS_MS",
+    "LLKHF_INJECTED",
+    "LLKHF_UP",
+    "LLMHF_INJECTED",
+    "MEASURER_MARGIN_S",
+    "OTHER_STEER_INPUT",
+    "PM_NOREMOVE",
+    "PROBE_DEADLINE_S",
+    "PROBE_PERIOD_S",
+    "PROBE_VK",
+    "TAKEOVER",
+    "TAKEOVER_TOKENS",
+    "UNASSIGNED_VKS",
+    "WH_KEYBOARD_LL",
+    "WH_MOUSE_LL",
+    "WM_APP_UNHOOK",
+    "WM_APP_UNHOOK_KEEP_KEY",
+    "WM_HOTKEY",
+    "WM_LBUTTONDOWN",
+    "WM_MOUSEMOVE",
+    "WM_MOUSEWHEEL",
+    "WM_QUIT",
+    "HookLatency",
+    "HookMonitor",
+    "MonitorCore",
+    "parse_hook_timeout",
+    "parse_kill_key",
+    "probe_deadline_s",
+    "read_hook_timeout_ms",
+]
 
-
-TAKEOVER = "takeover"
-OTHER_STEER_INPUT = "other_steer_input"
-"""[V2.58] (2): the latest foreign input carried v1's constant tag in a run with its own tag:
-another Steer, not a person at the keys."""
-TAKEOVER_TOKENS = frozenset({TAKEOVER, OTHER_STEER_INPUT})
-"""The closed tokens of a stop for someone else's input: a person, or another Steer."""
-
-
-HOOKS = ("keyboard", "mouse")
 HOOK_TIMEOUT_CAP_MS = 1000
 """Microsoft Learn, LowLevelKeyboardProc: on Windows 10 1709 and later the system uses 1000 ms
 for any LowLevelHooksTimeout larger than that."""
@@ -157,6 +185,10 @@ class HookLatency:
 
 
 class MonitorCore:
+    """The in-process monitor's core: the `Classifier` the hook thread feeds and the
+    `ProbeLedger` the loop asks ([V2.60] PR 1: split so the hook helper can load the classifier
+    without input-sending code; the behaviour is unchanged)."""
+
     def __init__(  # noqa: PLR0913 - keyword-only knobs; v1 passes none of the v2 ones
         self,
         *,
@@ -167,190 +199,90 @@ class MonitorCore:
         probe_vk: int = PROBE_VK,
         deadline_s: float = PROBE_DEADLINE_S,
     ) -> None:
-        self._per_hook = per_hook
-        self._deadline_s = deadline_s
-        """[V2.59] (v2): the derived probe deadline; v1 keeps `PROBE_DEADLINE_S`."""
-        """[V2.57] LW-01 (v2): each hook proves itself; v1 keeps one proof for both."""
-        self._probe_vk = probe_vk
-        self._delivered = dict.fromkeys(HOOKS, 0)
-        """#364 P1: own events delivered per hook; the keyboard counts only the probe key's
-        key-up. A count, never a key code."""
-        self._base = dict.fromkeys(HOOKS, 0)
-        self._outstanding = 0
-        """Probes sent since the hooks were last proven; each must be delivered on both."""
-        self._extra_info = extra_info
-        """The tag of this process's own input: v1's constant, or a v2 run's own ([V2.57])."""
         self._started_at = started_at
-        self._dead_band = dead_band_px
-        self._last_user: float | None = None
-        self._last_kind = TAKEOVER
-        self._last_steer: float = started_at
-        self._last_by = dict.fromkeys(HOOKS, started_at)
-        """Each hook's last own event (LW-01)."""
-        self._probe_sent_at: float | None = None
-        self._reference: tuple[int, int] | None = None
-        self._counts: dict[str, int] = {}
-        self._ask_depth = 0
-        self._kill = False
-        self._errors = 0
-        self._loop_failed = False
+        self._classifier = Classifier(
+            started_at=started_at,
+            extra_info=extra_info,
+            probe_vk=probe_vk,
+            dead_band_px=dead_band_px,
+        )
+        self._ledger = ProbeLedger(per_hook=per_hook, deadline_s=deadline_s)
+        """[V2.57] LW-01 (v2): each hook proves itself; v1 keeps one proof for both. [V2.59]
+        (v2): the derived probe deadline; v1 keeps `PROBE_DEADLINE_S`."""
+        self._probe_failed = False
 
     # ---- what the hook thread feeds -------------------------------------------------------------
 
     def on_keyboard(self, *, flags: int, extra: int, now: float, vk: int = 0) -> None:
-        if extra == self._extra_info:
-            probe = vk == self._probe_vk and bool(flags & LLKHF_UP)
-            self._steer(now, "keyboard", delivered=probe)
-            return
-        if extra == STEER_EXTRA_INFO:
-            self._other_steer(now)
-            return
-        self._person(now, injected=bool(flags & LLKHF_INJECTED))
+        self._classifier.on_keyboard(flags=flags, extra=extra, now=now, vk=vk)
 
     def on_mouse(
         self, *, message: int, flags: int, extra: int, pt: tuple[int, int], now: float
     ) -> None:
-        x, y = pt
-        if extra == self._extra_info:
-            self._steer(now, "mouse", delivered=True)
-            if message == WM_MOUSEMOVE:
-                self._reference = (x, y)
-            return
-        if extra == STEER_EXTRA_INFO:
-            self._other_steer(now)
-            return
-        injected = bool(flags & LLMHF_INJECTED)
-        if message != WM_MOUSEMOVE:
-            self._person(now, injected=injected)
-            return
-        moved = self._reference is None or (
-            abs(x - self._reference[0]) > self._dead_band
-            or abs(y - self._reference[1]) > self._dead_band
-        )
-        if injected:
-            self._reference = (x, y)
-            self._count("injected_other")
-            return
-        if moved:
-            # the reference moves only with a counted move, so a slow drift still adds up
-            self._reference = (x, y)
-            self._person(now, injected=False)
-        else:
-            self._count("user")
+        self._classifier.on_mouse(message=message, flags=flags, extra=extra, pt=pt, now=now)
 
     def on_hotkey(self) -> None:
-        self._kill = True
+        self._classifier.on_hotkey()
 
     def on_callback_error(self) -> None:
-        self._errors += 1
-        self._count("callback_errors")
+        self._classifier.on_callback_error()
 
     def on_loop_error(self) -> None:
-        self._loop_failed = True
+        self._classifier.on_loop_error()
 
     def on_probe_failed(self) -> None:
         """The self-probe could not be sent (UIPI, a secure desktop): the hook is unproven."""
-        self._loop_failed = True
+        self._probe_failed = True
 
     def mark_ask_open(self) -> None:
-        self._ask_depth += 1
+        self._classifier.mark_ask_open()
 
     def mark_ask_closed(self) -> None:
-        self._ask_depth = max(0, self._ask_depth - 1)
+        self._classifier.mark_ask_closed()
 
     # ---- what the loop reads ----------------------------------------------------------------
 
     def last_user_input(self) -> float:
         """The last instant the person acted; the monitor's start time until the first one
         (unknown is treated as "just now", TK-29)."""
-        return self._started_at if self._last_user is None else self._last_user
+        last = self._classifier.last_user()
+        return self._started_at if last is None else last
 
     def counts(self) -> dict[str, int]:
-        return dict(self._counts)
+        return self._classifier.counts()
 
     def takeover_token(self) -> str:
         """Who made the latest foreign input: `takeover` (a person) or `other_steer_input`
         ([V2.58] (2))."""
-        return self._last_kind
+        return self._classifier.last_kind()
 
     def kill_requested(self) -> bool:
-        return self._kill
+        return self._classifier.kill_requested()
 
     def probe_due(self, *, now: float) -> bool:
-        if self._per_hook:
-            if self._outstanding and not self.probe_seen():
-                return False  # one probe in flight until both hooks saw it
-            return now - min(self._last_by.values()) >= PROBE_PERIOD_S
-        if self._probe_sent_at is not None and self._probe_sent_at >= self._last_steer:
-            return False  # one probe in flight
-        return now - self._last_steer >= PROBE_PERIOD_S
+        return self._ledger.probe_due(now=now, counts=self._classifier)
 
     def probe_seen(self) -> bool:
         """LW-01, #364 P1: every probe sent since the last proof was delivered on both hooks
-        (counted, never by timestamp: an own event of the probe's tick is not proof, nor is a
-        late event of an earlier probe the proof of a later one)."""
-        return self._outstanding > 0 and not self._unproven()
-
-    def _unproven(self) -> tuple[str, ...]:
-        return tuple(
-            hook for hook in HOOKS if self._delivered[hook] - self._base[hook] < self._outstanding
-        )
+        (counted, never by timestamp)."""
+        return self._ledger.probe_seen(counts=self._classifier)
 
     def lost_hooks(self, *, now: float) -> tuple[str, ...]:
         """LW-01: the hooks that have not seen the last probe past its deadline, in order."""
-        sent = self._probe_sent_at
-        if sent is None or not self._outstanding or now - sent <= self._deadline_s:
-            return ()
-        return self._unproven()
+        return self._ledger.lost_hooks(now=now, counts=self._classifier)
 
     def probe_sent(self, *, now: float) -> None:
-        if not self._outstanding or self.probe_seen():  # a new proof starts from here
-            self._base = dict(self._delivered)
-            self._outstanding = 0
-        self._outstanding += 1
-        self._probe_sent_at = now
+        self._ledger.probe_sent(now=now, counts=self._classifier)
 
     def healthy(self, *, now: float, thread_alive: bool) -> bool:
-        if not thread_alive or self._errors or self._loop_failed:
+        c = self._classifier
+        if not thread_alive or c.errors() or c.loop_failed() or self._probe_failed:
             return False
-        if self._per_hook:
-            return not self.lost_hooks(now=now)
-        sent = self._probe_sent_at
-        probe_missed = (
-            sent is not None and self._last_steer < sent and now - sent > PROBE_DEADLINE_S
-        )
-        return not probe_missed
+        return self._ledger.probe_ok(now=now, counts=c)
 
     def detail(self) -> str:
         """The 5.4 detail token for an unhealthy monitor."""
         return "monitor_lost"
-
-    # ---- internals -----------------------------------------------------------------------------
-
-    def _steer(self, now: float, hook: str, *, delivered: bool) -> None:
-        self._last_steer = now
-        self._last_by[hook] = now
-        if delivered:
-            self._delivered[hook] += 1
-        self._count("steer")
-
-    def _person(self, now: float, *, injected: bool) -> None:
-        if self._ask_depth > 0:
-            self._count("answer")
-            return
-        self._count("injected_other" if injected else "user")
-        self._last_user = now
-        self._last_kind = TAKEOVER
-
-    def _other_steer(self, now: float) -> None:
-        """[V2.58] (2): another Steer's input (v1's constant, in a run with its own tag). It
-        stops this one as a person's would (`last_user_input`), counted apart."""
-        self._count("other_steer")
-        self._last_user = now
-        self._last_kind = OTHER_STEER_INPUT
-
-    def _count(self, kind: str) -> None:
-        self._counts[kind] = self._counts.get(kind, 0) + 1
 
 
 # ---- the kill key ----------------------------------------------------------------------------
