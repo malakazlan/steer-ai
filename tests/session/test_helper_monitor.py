@@ -64,6 +64,8 @@ class FakeHelper:
 
     @property
     def status(self) -> Words:
+        if self.closed:
+            raise RuntimeError("the helper is not started")  # as `HelperProcess` once released
         words = status_words(memoryview(self.status_buf).toreadonly())
         if self.on_get is None:
             return words
@@ -673,3 +675,26 @@ def test_a_failed_wake_wait_is_a_loss_and_naps_its_time() -> None:
     rig.monitor.wait(0.25)
     assert naps == [0.25]
     assert not rig.monitor.healthy()
+
+
+# ---- #383 principal note 1 (PR 4): nothing reads the words after close -------------------------
+
+
+def test_after_close_the_monitor_is_lost_and_reads_no_words() -> None:
+    """The real words are unmapped by then: a read would be an access violation."""
+    rig = _rig()
+    rig.monitor.close()
+    assert not rig.monitor.healthy()
+    rig.monitor.maintain()
+    assert not rig.monitor.probe_seen()
+    assert rig.probes == []
+    assert rig.helper.terminated == 0  # a close is not a helper-caused loss
+
+
+def test_the_counts_fetch_the_words_on_every_read() -> None:
+    """Never a view kept from construction (a stale mapping)."""
+    rig = _rig()
+    fresh = bytearray(len(rig.helper.status_buf))
+    rig.helper.status_buf = fresh
+    rig.helper.status_w.set("delivered_keyboard", 5)
+    assert rig.monitor._counts.delivered("keyboard") == 5

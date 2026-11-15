@@ -85,15 +85,15 @@ class _WordCounts:
     """`ProbeLedger`'s view of the words: delivery counts and own-event times in seconds on the
     QPC timeline."""
 
-    def __init__(self, status: Words, freq: int) -> None:
-        self._status = status
+    def __init__(self, helper: HelperView, freq: int) -> None:
+        self._helper = helper  # the words fetched on every read, never kept (#383 note 1)
         self._freq = freq
 
     def delivered(self, hook: str) -> int:
-        return self._status.get(f"delivered_{hook}")
+        return self._helper.status.get(f"delivered_{hook}")
 
     def last_own(self, hook: str) -> float:
-        return self._status.get(f"last_own_qpc_{hook}") / self._freq
+        return self._helper.status.get(f"last_own_qpc_{hook}") / self._freq
 
     def last_steer(self) -> float:
         return max(self.last_own(h) for h in HOOKS)
@@ -129,7 +129,7 @@ class HelperMonitor:
         config = helper.config
         self._nonce = (config.get("nonce_lo"), config.get("nonce_hi"))
         self._pid = helper.pid()
-        self._counts = _WordCounts(helper.status, freq)
+        self._counts = _WordCounts(helper, freq)
         self._ledger = ProbeLedger(per_hook=True, deadline_s=deadline_s)
         self._loop_state = ReaderState()
         self._watch_state = ReaderState()
@@ -186,6 +186,8 @@ class HelperMonitor:
         return "lost_hooks:" + ",".join(lost) if lost else None
 
     def maintain(self) -> None:
+        if self._closed:
+            return  # #383 note 1: the words are unmapped once closed
         if self._ledger.probe_due(now=self._now(), counts=self._counts):
             self.probe_now()
 
@@ -197,7 +199,7 @@ class HelperMonitor:
             self._probe_failed = True  # fails closed: the next health check is false
 
     def probe_seen(self) -> bool:
-        return self._ledger.probe_seen(counts=self._counts)
+        return not self._closed and self._ledger.probe_seen(counts=self._counts)
 
     def last_user_input(self) -> float:
         word = self._helper.status.get("last_user")  # HH-10: the word first, then the clocks
@@ -247,6 +249,9 @@ class HelperMonitor:
         if self._closed:
             return
         self._closed = True
+        with self._lock:
+            if self._lost is None:
+                self._lost = "closed"  # #383 note 1: latched, so no health check reads the words
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=WATCH_JOIN_S)
