@@ -35,6 +35,7 @@ from steerai.loop2.form import (
 )
 from steerai.loop2.guards import StrikeReason
 from steerai.loop2.history import RECORD_TYPES, HistoryRecord, render
+from steerai.loop2.listing import ListingTurn
 from steerai.loop2.query import SearchFacts, classify, search_landmark_of
 from steerai.loop2.task import Commit, Subgoal
 from steerai.orchestrator.contracts import RISKS, Risk
@@ -127,6 +128,14 @@ class TurnView:
 
     issued: frozenset[int] = frozenset()
     """[V2.49]: every task handle issued so far: the handles a history record may name."""
+    keep: frozenset[tuple[int, ...]] = frozenset()
+    """[V2.54] always-keep, by RuntimeId: every element acted on in this task and every field
+    holding pending text. The listing shows them before anything else while they exist."""
+    new: frozenset[tuple[int, ...]] = frozenset()
+    changed: frozenset[tuple[int, ...]] = frozenset()
+    """[V2.56]: what appeared, and what changed, since the observation the model last saw."""
+    changes: Literal["compared", "no_comparison", "states_unread"] = "no_comparison"
+    """[V2.56]: whether this turn had a comparison, and whether its states were read."""
 
     def __post_init__(self) -> None:
         if not all(isinstance(r, RECORD_TYPES) for r in self.log):
@@ -204,6 +213,8 @@ class Decided:
 
     decision: Decision
     usage: TokenUsage | None
+    listing: ListingTurn | None = None
+    """[V2.54]: the listing shown for this Decision; None: every bound handle was shown."""
 
 
 @dataclass(frozen=True)
@@ -274,6 +285,9 @@ class TaskOutcome:
     unread_automation_ids: int = 0
     """[V2.26] (2), V2 §6.1, #301: the elements whose automation id was not read, summed over
     every observation the loop took in; counted on the pooled set, the decision stays open."""
+    listings: tuple[ListingTurn, ...] = ()
+    """[V2.54]: each turn's listing counts (eligible, shown, cut, the class ceilings, the prompt
+    guard's cut and the prompt's tokens), for the stage 1 report."""
     focus_moved_after_press: int = 0
     """[V2.43] (1), #298: presses (Space or Enter on a state-set element) after which the watch's
     after-read showed the focus off the target."""

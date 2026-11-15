@@ -42,6 +42,7 @@ from steerai.loop2.act_guards import GuardDesk, InputGuard, ToggleGuard
 from steerai.loop2.act_port import ActPort
 from steerai.loop2.controller import PROMPT_VERSION
 from steerai.loop2.decide_port import Call, DecideCalls, TaskGenerations
+from steerai.loop2.listing import LISTING_CAP
 from steerai.loop2.loop import ActResult, Dispatch, Ports
 from steerai.loop2.prompt_inputs import make_decide
 from steerai.loop2.task import Task
@@ -377,6 +378,9 @@ class LiveWorld:
             "prompt_version": PROMPT_VERSION,
             "trace_level": self._config.trace_level,
             "price": "not configured" if price is None else "configured",
+            "listing_cap": str(LISTING_CAP),
+            "always_keep_ceiling": str(2 * LISTING_CAP),
+            "goal_word_subcap": str(LISTING_CAP // 3),
         }
         if price is not None:
             record["price_source"] = price.source
