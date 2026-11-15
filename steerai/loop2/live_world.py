@@ -489,7 +489,12 @@ class LiveWorld:
         probe lost behind it only a symptom); then the monitor's health, kept up by `maintain`.
         Never raises. The act port's idle rule owns `takeover` (rev 3.10 (b))."""
         monitor = self._monitor
-        if monitor.kill_requested():
+        try:
+            killed = monitor.kill_requested()
+        except Exception:  # noqa: BLE001 - #383 note 2: an unread kill is a lost monitor (fail closed)
+            self._lose()
+            return "monitor_lost"
+        if killed:
             return "killed"
         if self._latched is None:
             self._latched = self._session_signal() or self._helper_session_change()

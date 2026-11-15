@@ -26,6 +26,12 @@ class HelperMonitor(Monitor):
         self.waits: list[float] = []
         self.clock = clock
         self.kill_after_waits: int | None = None
+        self.kill_raises: Exception | None = None
+
+    def kill_requested(self) -> bool:
+        if self.kill_raises is not None:
+            raise self.kill_raises
+        return super().kill_requested()
 
     def session_change(self) -> str | None:
         return self.change
@@ -153,3 +159,15 @@ def test_the_header_names_which_monitor_runs() -> None:
     plain_world, _ = _world(HelperPlatform())
     assert helper_world.header(task())["hook_monitor"] == "helper"
     assert plain_world.header(task())["hook_monitor"] == "in_process"
+
+
+def test_a_kill_read_that_raises_is_a_lost_monitor_never_an_exception() -> None:
+    """#383 principal note 2: a closed helper's kill word cannot be read, and `interrupted`
+    never raises; the stop is latched and counted once."""
+    platform = HelperPlatform()
+    world, _ = _world(platform, hook_helper=True)
+    assert platform.helper is not None
+    platform.helper.kill_raises = RuntimeError("the helper is not started")
+    assert world.interrupted() == "monitor_lost"
+    assert world.interrupted() == "monitor_lost"
+    assert world.monitor_lost == 1
