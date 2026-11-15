@@ -116,9 +116,10 @@ SYSTEM_RULES = (
     "- Each subgoal declares `closes`, the kind of fact that proves it done: value (a field "
     "holds the text), state (an element is in a state) or page: the page shows the result the "
     "request asks for. In this step it can be proven only when the address or title shows it; "
-    "otherwise stop with blocked. Every subgoal needs at least one param.\n"
-    "- A param's value is words copied exactly from the request, as written there, never an "
-    "element's name. Subgoal ids are unique; actions and claims name a declared subgoal id. "
+    "otherwise stop with blocked. A page subgoal needs at least one param.\n"
+    "- When you declare a subgoal, each param's value is words copied exactly from the "
+    "request, never an element's name. Subgoal ids are unique; actions and claims name a "
+    "declared subgoal id. "
     "A first reply that acts or claims declares its subgoals.\n"
     "- `param` names one of its subgoal's params by its name, the word before `=` in the "
     "subgoal line, never by its words. A `type` gives `param` or `text`, never both.\n"
@@ -494,7 +495,8 @@ def _limits(schema: dict[str, Any]) -> None:  # Any: a JSON schema document
     """[V2.68] Two: the validator's own limits, stated where the model reads them (never
     stricter than `validate`: a twin test holds each to its constant): the subgoal id pattern
     on the id and on every reference to it, the param name pattern and a non-empty value, the
-    desc length, the most actions and subgoals, and a non-empty ask. Subgoals are not required:
+    desc length, at least one param on every subgoal, the most actions and subgoals, and a
+    non-empty ask. Subgoals are not required:
     a first reply that only asks or stops declares none."""
     defs = schema["$defs"]
     defs["SubgoalId"] = {  # one copy, referenced by the id and every reference to it
@@ -511,6 +513,7 @@ def _limits(schema: dict[str, Any]) -> None:  # Any: a JSON schema document
         "maxLength": PARAM_NAME_CHARS,
     }
     sub["params"]["additionalProperties"] = {"type": "string", "minLength": 1}
+    sub["params"]["minProperties"] = 1  # every closing kind needs a param (`*_without_param`)
     for name, part in defs.items():
         if name.startswith(("Action_", "Claim_")):
             part["properties"]["subgoal"] = dict(sid)
