@@ -11,7 +11,9 @@ budget spent before the call pauses with its token; a failed call made counts in
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import inspect
+from collections.abc import Mapping
 from typing import Any
 
 import pytest
@@ -27,11 +29,19 @@ from steerai.loop2.controller import (
     build_audit_prompt,
     build_intake_prompt,
 )
+from steerai.loop2.decide_port import DecideCalls, Reply, TaskGenerations
 from steerai.loop2.decision import Claim, Decision, SubgoalDoc
-from steerai.loop2.loop import Audited, IntakeView, TokenUsage
+from steerai.loop2.loop import Audited, IntakeView, PortInterrupted, TokenUsage
+from steerai.loop2.prompt_inputs import make_intake
 from steerai.loop2.runner import run_task
 from tests.loop2.test_live_world import _world
 from tests.loop2.world_fakes import FIELD, GO, World, act, report, task
+
+NEWLINE = chr(10)
+INTAKE_FIXED = "unmeasured"
+"""V4: sha256 of the intake's rules and schema blocks, joined by newlines (filled from a run)."""
+AUDIT_FIXED = "unmeasured"
+"""V4: sha256 of the audit's rules and schema blocks, joined by newlines (filled from a run)."""
 
 VALUE = SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value")
 STATE = SubgoalDoc(id="s2", desc="x", params={"what": "shoes"}, closes="state")
@@ -153,6 +163,7 @@ def test_a_prompt_over_its_bound_makes_no_call() -> None:
     world = _world_with([_first([VALUE])], reply=ControllerError("prompt_too_large"))
     outcome = run_task(task(), world.ports())
     assert (outcome.intake_no_call, outcome.intake_checks) == (1, 0)
+    assert (outcome.status, outcome.reason) == ("stopped", "port_prompt_too_large")  # #437's path
 
 
 def test_a_port_error_takes_decides_path_and_counts_the_call() -> None:
@@ -162,10 +173,92 @@ def test_a_port_error_takes_decides_path_and_counts_the_call() -> None:
     assert (outcome.intake_failed, outcome.intake_checks) == (1, 1)
 
 
+def test_a_timed_out_check_takes_decides_path_and_counts_the_call() -> None:
+    """F3, tester gap on #457: a timeout is a port error like any other."""
+    reply = SteerError(ErrorCode.MODEL_TIMEOUT, "deadline")
+    outcome = run_task(task(), _world_with([_first([VALUE])], reply=reply).ports())
+    assert (outcome.status, outcome.reason) == ("stopped", "port_model_timeout")
+    assert (outcome.intake_failed, outcome.intake_checks) == (1, 1)
+
+
+def test_a_kill_during_the_check_is_the_kills_stop_and_a_failed_call() -> None:
+    """F3, tester gap on #457: an abandoned wait carries no authority; the latched switch stops
+    the task, and the call made is counted failed."""
+    world = _world_with([_first([VALUE])], reply=PortInterrupted("killed"))
+    world.interrupt_after_intake = True
+    world.interruption = "killed"
+    outcome = run_task(task(), world.ports())
+    assert (outcome.status, outcome.reason) == ("stopped", "killed")
+    assert (outcome.intake_failed, outcome.intake_checks) == (1, 1)
+    assert world.dispatched == []
+
+
+def test_a_kill_after_the_reply_keeps_the_counts_reconciled() -> None:
+    """C5, #457 principal 1: the verdict is counted and memoised before the switch is read."""
+    world = _world_with([_first([VALUE])])
+    world.interrupt_after_intake = True
+    world.interruption = "killed"
+    outcome = run_task(task(), world.ports())
+    assert (outcome.status, outcome.reason) == ("stopped", "killed")
+    assert outcome.intake_checks == outcome.intake_passed + outcome.intake_rejected == 1
+    assert world.dispatched == []
+
+
+def test_a_wait_given_up_before_the_send_counts_nothing() -> None:
+    """F3, #457 principal 2: the port gave up before its request went out: no call."""
+    world = _world_with([_first([VALUE])], reply=PortInterrupted("killed", sent=False))
+    world.interrupt_after_intake = True
+    world.interruption = "killed"
+    outcome = run_task(task(), world.ports())
+    assert (outcome.status, outcome.reason) == ("stopped", "killed")
+    assert (outcome.intake_checks, outcome.intake_failed) == (0, 0)
+    assert outcome.model_calls == 1  # the decide alone
+
+
+def test_a_switch_latched_before_the_check_sends_nothing() -> None:
+    """F3, #457 principal 2: a kill read before the call: the check is never asked."""
+    world = _world_with([_first([VALUE])])
+    world.interrupt_in_decide = 1
+    world.interruption = "killed"
+    outcome = run_task(task(), world.ports())
+    assert outcome.reason == "killed"
+    assert world.intakes == []
+    assert outcome.intake_checks == 0
+
+
+def test_a_provider_refusal_through_the_real_port_ends_blocked_intake_failed() -> None:
+    """F4, #457 principal 3: a refusal is a call made with no usable answer, never a port error
+    (`stopped/port_model_error`)."""
+
+    def provider(_system: list[str], _blocks: list[str]) -> Reply:
+        return Reply("", "refusal", TokenUsage(7, 0))
+
+    calls = DecideCalls(provider, interrupted=lambda: None, generations=TaskGenerations(),
+                        late_error=lambda _t: None)  # fmt: skip
+    intake = make_intake(calls, goal=task().goal, task_fence="taskfence01")
+    world = _world_with([_first([VALUE])])
+    outcome = run_task(task(), dataclasses.replace(world.ports(), intake=intake))
+    assert (outcome.status, outcome.reason) == ("blocked", "intake_failed")
+    assert (outcome.intake_failed, outcome.intake_checks, outcome.intake_tokens) == (1, 1, 7)
+
+
+def test_a_refused_intake_turn_is_traced() -> None:
+    """[V2.67] D, #457 principal 5: one record per turn, the refused intake turn included."""
+    world = _rejected_once()
+    records: list[dict[str, Any]] = []  # Any: JSON, read back
+
+    def sink(record: Mapping[str, object]) -> None:
+        records.append(dict(record))
+
+    run_task(task(), dataclasses.replace(world.ports(), turn_trace=sink))
+    assert [r["turn"] for r in records] == [1, 2]
+    assert [f["refusal"] for f in records[0]["refusals"]] == ["intake_insufficient"]
+
+
 @pytest.mark.parametrize(
     "error",
-    [ControllerError("not_json"), ControllerError("schema")],
-    ids=["not_json", "schema"],
+    [ControllerError("not_json"), ControllerError("schema"), ControllerError("model_refusal")],
+    ids=["not_json", "schema", "model_refusal"],
 )
 def test_an_unusable_reply_ends_blocked_intake_failed(error: ControllerError) -> None:
     error.record = DecideRecord(INTAKE_PROMPT_VERSION, 1, False, True)
@@ -191,6 +284,8 @@ def test_the_check_counts_one_call_and_reconciles() -> None:
 
 def test_the_prompt_takes_no_observation() -> None:
     assert "observed" not in inspect.signature(build_intake_prompt).parameters
+    # P1/P2 sentinel, tester gap on #457: the port's view holds the subgoal lines and nothing else
+    assert [f.name for f in dataclasses.fields(IntakeView)] == ["subgoals"]
 
 
 def test_the_prompt_holds_positions_spans_and_no_model_text() -> None:
@@ -204,8 +299,6 @@ def test_the_prompt_holds_positions_spans_and_no_model_text() -> None:
     lines = text.split("\n")
     assert not any(line.startswith("request:") for line in lines)
     assert lines.count("<<<request taskfence01") == 1
-    for leak in ("s1", "zqdesc", "text="):
-        assert leak not in user[0].split("<<<request")[0]
 
 
 def test_the_runner_hands_the_check_positions_never_model_ids() -> None:
@@ -215,6 +308,10 @@ def test_the_runner_hands_the_check_positions_never_model_ids() -> None:
     run_task(task(), world.ports())
     (view,) = world.intakes
     assert view.subgoals == ((1, "value", ((1, "red shoes"),)),)
+    system, user = build_intake_prompt(task().goal, view.subgoals, task_fence="taskfence01")
+    text = NEWLINE.join([*system, *user])
+    for leak in ("zqleakid", "zqdesc", "zqparam"):  # #457 principal: the whole prompt
+        assert leak not in text
 
 
 # ---- versions, legend --------------------------------------------------------------------------
@@ -229,6 +326,20 @@ def test_the_intake_prompt_version_and_header() -> None:
 def test_both_judges_share_the_criterion() -> None:
     assert controller.SUFFICIENCY_CRITERION in controller.INTAKE_RULES
     assert controller.SUFFICIENCY_CRITERION in controller.AUDIT_RULES
+
+
+def _fixed(system: list[str]) -> str:
+    return hashlib.sha256(NEWLINE.join(system).encode()).hexdigest()
+
+
+def test_each_judges_fixed_blocks_are_pinned_with_its_version() -> None:
+    """V4, #457 principal 4: a change to a judge's rules or schema (the shared sentence among
+    them) fails here until its version and this pin change together."""
+    intake, _ = build_intake_prompt("g", (), task_fence="taskfence01")
+    audit, _ = build_audit_prompt("g", (), "w", [], task_fence="taskfence01",
+                                  screen_fence="scrfence01")  # fmt: skip
+    assert (INTAKE_PROMPT_VERSION, _fixed(intake)) == ("intake-1", INTAKE_FIXED)
+    assert (controller.AUDIT_PROMPT_VERSION, _fixed(audit)) == ("audit-3", AUDIT_FIXED)
 
 
 def test_intake_insufficient_is_told_to_the_model() -> None:

@@ -300,6 +300,8 @@ class World:
     """False: no intake port (a test of something else that must not pay the intake call)."""
     interrupt_after_audit: bool = False
     """Report `interruption` once the audit has been asked."""
+    interrupt_after_intake: bool = False
+    """Report `interruption` once the intake check has been asked."""
     interrupt_after_settle: bool = False
     """Report `interruption` once a settle has run (the person's kill during the wait)."""
     decide_raises: Exception | None = None
@@ -456,6 +458,8 @@ class World:
             return self.interruption if "settle" in self.events else None
         if self.interrupt_after_audit:
             return self.interruption if "audit" in self.events else None
+        if self.interrupt_after_intake:
+            return self.interruption if "intake" in self.events else None
         if self.interrupt_in_decide is not None and len(self.views) >= self.interrupt_in_decide:
             return self.interruption
         if self.interrupt_after is not None and len(self.dispatched) >= self.interrupt_after:

@@ -196,6 +196,7 @@ ErrorCode = Literal[
     "fence_bad",
     "unsafe_token",
     "prompt_too_large",
+    "model_refusal",
 ]
 
 
@@ -622,7 +623,7 @@ def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
     return [SYSTEM_RULES, schema_json], [stable, log, turn]
 
 
-AUDIT_PROMPT_VERSION = "audit-2"
+AUDIT_PROMPT_VERSION = "audit-3"
 SUFFICIENCY_CRITERION = (
     "Answer whether these facts finish the request as the person who asked would check it; "
     "they do not when the request asks for a result beyond them."

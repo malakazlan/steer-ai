@@ -26,10 +26,12 @@ from steerai.loop2 import controller
 from steerai.loop2.controller import (
     AUDIT_PROMPT_VERSION,
     TOKENS_PER_BYTE,
+    AskModel,
     ControllerError,
     DecideRecord,
     FocusState,
     ListingRow,
+    SufficiencyDoc,
     build_audit_prompt,
     decide,
     focus_state,
@@ -37,7 +39,8 @@ from steerai.loop2.controller import (
     prompt_tokens,
     v2_listing,
 )
-from steerai.loop2.decide_port import DecideCalls
+from steerai.errors import SteerError
+from steerai.loop2.decide_port import MODEL_REFUSAL, DecideCalls
 from steerai.loop2.history import HistoryRecord
 from steerai.loop2.listing import LISTING_CAP, Listing, select_listing, words_of
 from steerai.loop2.loop import Audited, AuditView, Decided, IntakeView, TokenUsage, TurnView
@@ -319,8 +322,18 @@ def make_intake(
     def port(view: IntakeView) -> Audited:
         system, user = controller.build_intake_prompt(goal, view.subgoals, task_fence=task_fence)
         _within_bound(calls, system, user)
+
+        def judge(ask: AskModel) -> SufficiencyDoc:
+            try:
+                raw = ask(system, user)
+            except SteerError as exc:  # #457 principal 3: a provider refusal is an unusable
+                if exc.message != MODEL_REFUSAL:  # reply (blocked/intake_failed), not a port
+                    raise  # error, which takes decide's path
+                raise ControllerError("model_refusal") from None
+            return parse_audit(raw)
+
         try:
-            doc, usage = calls.turn(lambda ask: parse_audit(ask(system, user)))
+            doc, usage = calls.turn(judge)
         except ControllerError as failed:
             failed.record = DecideRecord(controller.INTAKE_PROMPT_VERSION, 1, False, True)
             raise
