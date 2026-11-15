@@ -29,6 +29,7 @@ from tests.loop2.world_fakes import (
     World,
     act,
     element,
+    judged_by,
     observed,
     report,
     task,
@@ -323,7 +324,7 @@ def test_only_an_allow_that_says_the_outcome_is_shown_lets_done_stand(
 
 def test_an_auto_proof_is_never_audited(monkeypatch: pytest.MonkeyPatch) -> None:
     """Rev 4.5 test 3: a page subgoal closed by the auto proof."""
-    monkeypatch.setattr("steerai.loop2.runner.auto_proof", lambda *_a, **_k: "url_query")
+    monkeypatch.setattr("steerai.loop2.runner.judge", judged_by(lambda *_a, **_k: "url_query"))
     subs = [SubgoalDoc(id="s1", desc="results", params={"text": "red shoes"}, closes="page")]
     world = World(
         [Decision(subgoals=subs, actions=[act("type", target=FIELD.id, param="text")])],
@@ -342,7 +343,7 @@ def test_a_mixed_task_value_plus_navigated_is_never_audited(
 ) -> None:
     """Rev 4.5 test 4: one value proof and one page proof (the type under the page subgoal, closed
     by the auto proof)."""
-    monkeypatch.setattr("steerai.loop2.runner.auto_proof", lambda *_a, **_k: "url_query")
+    monkeypatch.setattr("steerai.loop2.runner.judge", judged_by(lambda *_a, **_k: "url_query"))
     subs = [
         SubgoalDoc(id="s1", desc="field", params={"text": "red shoes"}, closes="value"),
         SubgoalDoc(id="s2", desc="results", params={"text": "red shoes"}, closes="page"),

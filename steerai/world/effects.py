@@ -706,6 +706,43 @@ def _carriers(
     return out
 
 
+CarrierHeld = tuple[Carrier, bool, bool | None]
+"""[V2.67] D: a carrier, whether it holds the text on the after read, and whether it held it
+on the before read (None: that side unread)."""
+
+
+def carrier_facts(
+    before: Observed, after: Observed, *, acted: tuple[int, ...] | None, text: str
+) -> tuple[CarrierHeld, ...]:
+    """[V2.67] D: each carrier's two halves, from the helpers `_carriers` uses (whose rule is
+    held after and not before): the proof trace names which half failed. `results` counts only
+    rows absent before (the observer's own rule), so its before half is False when it holds and
+    unread otherwise. Never on `observe`'s path."""
+    needle = _tokens(text)
+    if not needle:
+        return ()
+    out: list[CarrierHeld] = []
+    if after.url is not None:
+        was = None if before.url is None else carries(before.url, text)
+        out.append(("url_param", carries(after.url, text), was))
+        folded = " ".join(unicodedata.normalize("NFKC", text).split()).casefold()
+        was_path = None if before.url is None else folded in _segments(before.url)
+        out.append(("url_path", folded in _segments(after.url), was_path))
+    if len(needle) == 1 and len(needle[0]) < MIN_TOKEN_CHARS:
+        return tuple(out)
+    b, a = before.snapshot, after.snapshot
+    out.append(("title", _contains(a.title, needle), _contains(b.title, needle)))
+    scopes = _scopes(b, a, acted)
+    if before.headings is not None and after.headings is not None:
+        top_a = _top_heading(a, after.headings, scopes[1])
+        top_b = _top_heading(b, before.headings, scopes[0])
+        held = top_a is not None and _contains(top_a.name, needle)
+        out.append(("heading", held, top_b is not None and _contains(top_b.name, needle)))
+    new_rows = _results_carrier(b, a, acted, needle, scopes)
+    out.append(("results", new_rows, False if new_rows else None))
+    return tuple(out)
+
+
 def _top_heading(
     snapshot: Snapshot, headings: Mapping[tuple[int, ...], int], scope: set[int] | None
 ) -> Element | None:

@@ -1,0 +1,8 @@
+{
+  "gh1": {"verb": "click", "role": "Button", "name": "Search or jump to, type / to search"},
+  "mdn1": {"verb": "click", "role": "Button", "name": "Search the site"},
+  "u3": {"verb": "expand", "role": "TreeItem", "name": "Reports"},
+  "u5": {"verb": "click", "role": "Button", "name": "Sort"},
+  "m1": {"verb": "click", "role": "Button", "name": "Help"},
+  "r4": {"verb": "click", "role": "Button", "name": "Export"}
+}
