@@ -21,7 +21,12 @@ import pytest
 from steerai.orchestrator.plan_io import plan_from_json
 from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome, stop_chrome
 from steerai.probes.uia_snapshot import UiaClient
-from steerai.probes.win_input import _send, _user32, build_keyboard_input
+from steerai.probes.win_input import (
+    _send,
+    _user32,
+    acquire_foreground,
+    build_keyboard_input,
+)
 from steerai.probes.windows import wait_window_for_pid
 from steerai.run import EXIT_BLOCKED, EXIT_DONE, EXIT_PAUSED
 from steerai.session.monitor import DEFAULT_KILL_KEY, parse_kill_key
@@ -175,6 +180,7 @@ def test_the_runner_sends_once_resumes_as_done_and_honours_the_risk_limit(tmp_pa
         window = wait_window_for_pid(
             proc.pid, title_contains="Google Chrome", image="chrome.exe", process=proc
         )
+        acquire_foreground(window.hwnd)
         start = _observe_until_exposed(WorldModel(UiaClient()), window.hwnd)
         content_role = next(
             e.role for e in start.elements if e.name == "ok" and e.parent_id is not None
@@ -280,6 +286,7 @@ def test_a_person_target_asks_which_row_and_clicks_the_chosen_one(tmp_path: Path
         window = wait_window_for_pid(
             proc.pid, title_contains="Google Chrome", image="chrome.exe", process=proc
         )
+        acquire_foreground(window.hwnd)
         _observe_until_exposed(WorldModel(UiaClient()), window.hwnd)
         plan_path = tmp_path / "person.json"
         plan_path.write_text(json.dumps(_person_plan_doc()), encoding="utf-8")
