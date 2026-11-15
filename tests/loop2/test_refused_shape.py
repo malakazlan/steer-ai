@@ -19,6 +19,7 @@ from steerai.loop2.history import (
     render,
 )
 from steerai.loop2.runner import run_task
+from steerai.loop2.turn_trace import positional
 from tests.loop2.test_controller import BAD_TARGET, make_model, run
 from tests.loop2.test_intake_check import VALUE, _first, _reject, _rejected_once, _world_with
 from tests.loop2.test_rejected_intake_turn import SUBS, _rejected
@@ -67,6 +68,12 @@ def test_each_form_renders_closed_and_passes_both_grammars(
 )
 def test_anything_else_is_dropped(record: RefusedShape) -> None:
     assert not record_ok(record, VOCAB)
+
+
+def test_the_redacted_trace_keeps_the_record_unchanged() -> None:
+    """#464 review: the record holds no model names, so `positional` passes it through."""
+    record = refused_shape(["value", "state"])
+    assert positional(record, ["s1", "s2"], {"s1": frozenset({"text"})}) is record
 
 
 def test_the_grammar_refuses_free_text_in_the_line() -> None:
