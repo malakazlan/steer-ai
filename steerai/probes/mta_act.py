@@ -69,6 +69,7 @@ def run_arm(
     import comtypes.client  # noqa: F401, PLC0415 - imported here, before any thread enters
 
     found: list[dict[str, object]] = []
+    shown = _shown(hwnd, cdp_port, server_port)
 
     def body() -> None:
         if apartment == "mta":
@@ -85,11 +86,49 @@ def run_arm(
         thread = threading.Thread(target=body)
         thread.start()
         thread.join()
-    row = found[0] if found else {"steps": [], "error": "no_result"}
+    row: dict[str, object] = found[0] if found else {"steps": [], "error": "no_result"}
     row["apartment"] = apartment
+    row["shown"] = shown
     row["trusted_rows"] = _trusted_rows(cdp_port, server_port)
     sys.stdout.write(json.dumps(row) + "\n")
     return 0
+
+
+def _visibility(cdp_port: int, server_port: int) -> object:  # pragma: no cover - live
+    from steerai.probes.layer_b import _ours  # noqa: PLC0415
+
+    cdp, _ = _ours(cdp_port, server_port)
+    try:
+        reply = cdp.call(
+            "Runtime.evaluate", {"expression": "document.visibilityState", "returnByValue": True}
+        )
+    finally:
+        cdp.close()
+    return reply.get("result", {}).get("value")
+
+
+def _shown(hwnd: int, cdp_port: int, server_port: int) -> dict[str, object]:  # pragma: no cover
+    """Raise our window; if Chrome still holds the page hidden (the [V2.64] occlusion stall), the
+    1-px move and back, then wait up to 5 s for `visible`. Both arms start from a shown page."""
+    from steerai.probes.win_input import acquire_foreground  # noqa: PLC0415
+    from steerai.probes.windows import get_window_rect, set_window_rect  # noqa: PLC0415
+
+    acquire_foreground(hwnd)
+    before = _visibility(cdp_port, server_port)
+    nudged = False
+    if before != "visible":
+        left, top, right, bottom = get_window_rect(hwnd)
+        set_window_rect(hwnd, (left + 1, top, right + 1, bottom))
+        time.sleep(0.2)
+        set_window_rect(hwnd, (left, top, right, bottom))
+        nudged = True
+    deadline = time.monotonic() + 5.0
+    after = _visibility(cdp_port, server_port)
+    while after != "visible" and time.monotonic() < deadline:
+        time.sleep(0.1)
+        after = _visibility(cdp_port, server_port)
+    time.sleep(0.5)  # the rows re-exposed to UIA
+    return {"before": before, "nudged": nudged, "after": after}
 
 
 def _drive(hwnd: int, ledger_dir: Path) -> dict[str, object]:  # pragma: no cover - live
@@ -139,7 +178,7 @@ def _drive(hwnd: int, ledger_dir: Path) -> dict[str, object]:  # pragma: no cove
             result = session.run_step(step)
             ok, detail = bool(result.ok), str(result.to_dict().get("action", {}).get("detail", ""))
         except Exception as exc:  # noqa: BLE001 - a probe records any failure as data
-            ok, detail = False, type(exc).__name__
+            ok, detail = False, f"{type(exc).__name__}: {exc}"[:200]
         steps.append({"row": row, "ok": ok, "detail": detail,
                       "s": round(time.monotonic() - started, 3)})  # fmt: skip
         time.sleep(0.3)
