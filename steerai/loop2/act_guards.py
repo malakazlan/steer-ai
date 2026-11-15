@@ -132,8 +132,14 @@ class InputGuard:
     # ---- the sending calls -----------------------------------------------------------------------
 
     def acquire_foreground(self, hwnd: int) -> str:
+        """[V2.62]: Steer never raises the bound window mid-task. The task start brought it in
+        front (`LiveWorld`); here a window still in front is `already`, and one that is not is
+        refused as v1's own acquire refuses (an OSError: v1's `foreground_refused`), with
+        nothing sent."""
         self._switch()
-        return self._inner.acquire_foreground(hwnd)
+        if self._inner.foreground_hwnd() != hwnd:
+            raise OSError("not_in_front")
+        return "already"
 
     def move_cursor(self, x: int, y: int) -> None:
         self._switch()
@@ -270,6 +276,14 @@ class GuardDesk:
         except (OSError, SteerError):
             return None
         return focus or None  # an empty RuntimeId is unread, as `focus_state` reads it
+
+    def root_at(self, x: int, y: int) -> int:
+        """[V2.62]: the root window under a screen point (v1's `root_hwnd_at`); 0 when unread,
+        which is never the bound window."""
+        try:
+            return self._guard.root_hwnd_at(x, y)
+        except (OSError, SteerError):
+            return 0
 
     def armed(self, focus: frozenset[tuple[int, ...]]) -> AbstractContextManager[None]:
         return self._guard.armed(focus)
