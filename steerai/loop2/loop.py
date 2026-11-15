@@ -387,14 +387,14 @@ class Ports:
     """The value fact a field holding exactly this text reads as (the session key and the
     normalisation `read_value` uses), so a value claim compares digests, never text."""
     audit: Callable[[AuditView], Audited] | None = None
+    """[V2.64] One: the final audit, called only when every proof is self-written; None means
+    there is none, so such a task fails closed (`audit_failed`), never ends done unaudited."""
     turn_trace: Callable[[Mapping[str, object]], None] | None = None
     """[V2.67] D: each turn's closed record (`turn_trace.closed`) for the redacted trace; None
     writes none."""
     intake: Callable[[IntakeView], Audited] | None = None
     """[V2.68] One: the intake sufficiency check, on a first Decision of value or state subgoals
     only; None means there is none, and such a Decision is not checked."""
-    """[V2.64] One: the final audit, called only when every proof is self-written; None means
-    there is none, so such a task fails closed (`audit_failed`), never ends done unaudited."""
 
 
 WatchKind = Literal["plain", "trigger", "submit", "wait"]
