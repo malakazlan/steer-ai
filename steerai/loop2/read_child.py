@@ -534,7 +534,7 @@ def run_follow(exp: Exp, out_dir: Path, price: Path) -> int:  # noqa: PLR0915  #
     import subprocess  # noqa: PLC0415
     import tempfile  # noqa: PLC0415
 
-    from steerai.loop2.stage1 import THREE_D, child_argv  # noqa: PLC0415
+    from steerai.loop2.stage1 import THREE_D, _idle_s, child_argv  # noqa: PLC0415
     from steerai.probes import instant_search as fixture  # noqa: PLC0415 - live only
     from steerai.probes.chrome_a11y import (  # noqa: PLC0415
         CHROME_DEFAULT,
@@ -566,6 +566,7 @@ def run_follow(exp: Exp, out_dir: Path, price: Path) -> int:  # noqa: PLR0915  #
                 cdp, _ = _ours(port, server.port)
                 try:
                     fixture._wait_ready(cdp)
+                    idle_at_start, saver_at_start = round(_idle_s(), 1), _screensaver()
                     started = time.time()
                     runs = {
                         label: subprocess.Popen(  # noqa: S603 - our own modules, fixed argvs
@@ -581,6 +582,8 @@ def run_follow(exp: Exp, out_dir: Path, price: Path) -> int:  # noqa: PLR0915  #
                 stop_chrome(proc, tmp / "profile")
                 shutil.rmtree(tmp, ignore_errors=True)
         row: dict[str, object] = {"name": name, "variant": variant, "force_a11y": force,
+                                  "idle_s_at_start": idle_at_start,
+                                  "screensaver_at_start": saver_at_start,
                                   "start_wall": round(started, 3), "end_wall": round(ended, 3),
                                   "codes": codes}  # fmt: skip
         for label in codes:
@@ -635,6 +638,16 @@ def run_follow(exp: Exp, out_dir: Path, price: Path) -> int:  # noqa: PLR0915  #
         on_chrome("b", f"{exp}-2-read", read())
         on_chrome("c-button", f"{exp}-3-read", read())
     return 0
+
+
+def _screensaver() -> bool | None:  # pragma: no cover - live, Windows only
+    """SPI_GETSCREENSAVERRUNNING (0x0072); None when unread."""
+    import ctypes  # noqa: PLC0415 - Windows only
+
+    running = ctypes.c_int(0)
+    if not ctypes.windll.user32.SystemParametersInfoW(0x0072, 0, ctypes.byref(running), 0):
+        return None
+    return bool(running.value)
 
 
 _TEE: Final = (
