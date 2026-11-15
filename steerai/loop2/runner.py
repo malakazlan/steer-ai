@@ -116,8 +116,13 @@ from steerai.loop2.query import (
 from steerai.loop2.task import GoalSpan, Subgoal, Task, known_params
 from steerai.loop2.turn_trace import (
     ActFact,
+    CarrierFact,
+    Gate,
+    ParamProof,
     ProofAttempt,
+    ReadFacts,
     RefusalFact,
+    Skipped,
     TurnTrace,
     WatchFacts,
     closed,
@@ -125,10 +130,12 @@ from steerai.loop2.turn_trace import (
     positional,
     turn_record,
 )
+from steerai.loop2.turn_trace import ReadKind as ProofRead
 from steerai.loop2.verify import (
     PAGE_CARRIERS,
     URL_CARRIERS,
     CheckToken,
+    Judged,
     Readers,
     check_claim,
     holds_words,
@@ -484,6 +491,8 @@ class _Run:
         self.judged: Observed | None = None
         """§7.1: the last read the auto proof judged (`_auto_proofs`)."""
         self.saved_calls = 0
+        self.next_read: ProofRead = "turn_start"
+        """[V2.67] D: what the next turn-start judgement runs on (`_stale` marks a re-read)."""
         """[V2.67] A: turns the turn-start judgement closed the task, so no model call was made."""
         self.pre_task_draft_clicks = 0
         """[V2.64] Two: counted at each non-field click (`_pre_task_draft`)."""
@@ -1130,7 +1139,7 @@ class _Run:
                 return observed
             after, sent = result
             observed = after
-            self._auto_proofs(observed)
+            self._auto_proofs(observed, "after_action")
             nxt = actions[index + 1] if index + 1 < len(actions) else None
             if nxt is None or not self._continues(sent, nxt, listed, observed):
                 return observed
@@ -1692,29 +1701,41 @@ class _Run:
         """[V2.67] A: the read a decision is about to be made on is judged first; when that
         closes the task, the model call this turn would have made is not made and is counted."""
         proven = len(self.proven)
+        read, self.next_read = self.next_read, "turn_start"
         try:
-            self._auto_proofs(observed)
+            self._auto_proofs(observed, read)
         except _End as end:
             if end.status == "done" and len(self.proven) > proven:
                 self.saved_calls += 1
             raise
 
-    def _auto_proofs(self, observed: Observed) -> None:
+    def _auto_proofs(self, observed: Observed, read_kind: ProofRead) -> None:
         """§7.1, [V2.67] A: the code-only proof runs on every full observation code takes (the
         turn-start read, the stale re-read and the after-action read), for each open subgoal
         with a change signal since its baseline: same rules, guards and baseline, every param on
         this one read ([V2.39]). Only a stable full-tier read is judged, never a poll (a page
-        still growing is: its evidence is there). The same read is judged once."""
-        if observed is self.judged or observed.tier != "full" or not observed.snapshot.stable:
+        still growing is: its evidence is there). The same read is judged once. [V2.67] D: every
+        attempt, a skipped read and a closed gate included, goes to the turn's trace record with
+        every condition it rests on."""
+        if observed is self.judged:
             return
         self.judged = observed
-        for subgoal in self.subgoals:
+        skipped: Skipped | None = None
+        if observed.tier != "full":
+            skipped = "poll"
+        elif not observed.snapshot.stable:
+            skipped = "unstable"
+        for position, subgoal in enumerate(self.subgoals, 1):
             if subgoal.id in self.proven or subgoal.id not in self.baselines:
                 continue
             if subgoal.closes != "page":
                 continue  # [V2.39]: the navigated auto proof closes only a page subgoal
             baseline = self.baselines[subgoal.id]
-            if _change_gate(baseline, observed) is None:
+            gate = None if skipped is not None else _change_gate(baseline, observed)
+            if gate is None:
+                self.turn.proofs.append(
+                    _attempt(position, read_kind, observed, skipped, gate, None)
+                )
                 continue
             judged = judge(
                 subgoal,
@@ -1725,9 +1746,11 @@ class _Run:
                 echo=self._echo(subgoal),
                 allow_file=self._allow_file(),
             )
+            self.turn.proofs.append(_attempt(position, read_kind, observed, None, gate, judged))
             if judged.proof is not None:
                 self._tick(subgoal, how=judged.proof)
-        self._check_done(observed)
+        if skipped is None:
+            self._check_done(observed)
 
     # ---- refusals, guards -----------------------------------------------------------------
 
@@ -1789,6 +1812,7 @@ class _Run:
         controller asked again on the fresh read. No strike for one; the second in a row (and
         each after) is a strike. Each kind is counted on its own."""
         self.stale_streak += 1
+        self.next_read = "stale_reread"  # [V2.67] D: the next turn starts on this re-read
         self._count_moved(moved)
         if self.stale_streak < 2:
             self.turn.neutral = True
@@ -2048,7 +2072,7 @@ def _key(action: ActionDoc, element: Element, *, text_digest: str | None) -> Act
     )
 
 
-def _change_gate(baseline: Observed, now: Observed) -> Literal["url", "document"] | None:
+def _change_gate(baseline: Observed, now: Observed) -> Gate | None:
     """§7.1's change signal, and which: the URL changed (both read), or the top Document was
     replaced; None: neither, so the proof is not tried ([V2.67] D names it)."""
     if baseline.url is not None and now.url is not None and baseline.url != now.url:
@@ -2064,3 +2088,52 @@ def _digest(observed: Observed) -> str:
     pattern states, so ticking another box is new state (RT-09)."""
     rows = sorted((e.runtime_id, e.role, e.name, e.caps) for e in observed.snapshot.elements)
     return hashlib.sha256(repr(rows).encode()).hexdigest()
+
+
+def _attempt(  # noqa: PLR0913, PLR0917 - one attempt's facts, positional for brevity
+    position: int,
+    read_kind: ProofRead,
+    observed: Observed,
+    skipped: Skipped | None,
+    gate: Gate | None,
+    judged: Judged | None,
+) -> ProofAttempt:
+    """[V2.67] D: one judgement of one subgoal on one read as closed facts: positions, closed
+    tokens and booleans, never a name, a word or an address."""
+    read = ReadFacts(
+        tier=observed.tier,
+        stable=observed.snapshot.stable,
+        growing=observed.growing,
+        young=observed.young,
+    )
+    if judged is None:
+        return ProofAttempt(subgoal=position, read_kind=read_kind, read=read, skipped=skipped,
+                            gate=gate, change=False, change_by=(), refused=(), params=(),
+                            content=False, content_by=None, guards=(), proven=False,
+                            proven_how=None)  # fmt: skip
+    params = tuple(
+        ParamProof(
+            param=n,
+            carriers=tuple(
+                CarrierFact(carrier=c, held=held, absent_before=None if was is None else not was)
+                for c, held, was in facts
+            ),
+        )
+        for n, (_name, facts) in enumerate(judged.params, 1)
+    )
+    return ProofAttempt(
+        subgoal=position,
+        read_kind=read_kind,
+        read=read,
+        skipped=skipped,
+        gate=gate,
+        change=bool(judged.change_by),
+        change_by=judged.change_by,
+        refused=judged.refused,
+        params=params,
+        content=judged.content_by is not None,
+        content_by=judged.content_by,
+        guards=judged.guards,
+        proven=judged.proof is not None,
+        proven_how=judged.proof,
+    )
