@@ -52,8 +52,12 @@ def test_a_page_subgoal_without_a_param_is_refused_into_the_repair_turn() -> Non
 
 
 def test_the_prompt_asks_for_the_closing_kind_generically() -> None:
+    """Each closing kind is named and described generically ([V2.64] One: the page kind
+    describes the request, not what the step can prove), naming no task."""
     assert "closes" in SYSTEM_RULES
-    assert "value, state or page" in SYSTEM_RULES
+    for kind in ("value (a field holds the text)", "state (an element is in a state)",
+                 "page: the page shows the result the request asks for"):  # fmt: skip
+        assert kind in SYSTEM_RULES
 
 
 def _world(

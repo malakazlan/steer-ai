@@ -475,6 +475,11 @@ def _result(
         },
         "monitor_lost": reason == "monitor_lost" or bool(report.get("monitor_lost")),
         "rejections": list(outcome.rejections),  # closed tokens: why a turn was rejected
+        "audit": {  # [V2.64] One: the final audit, when every proof was self-written
+            "ran": outcome.audit is not None,
+            "result": None if outcome.audit is None else outcome.audit[0],
+            "reason": None if outcome.audit is None else outcome.audit[1],
+        },
         "exact_counts": outcome.exact_counts,  # [V2.61]: turns near the ceiling, counted exactly
         "estimates_low": outcome.estimates_low,  # [V2.61]: turns whose byte bound was low
         "cache_tokens": {  # [V2.45]: stage 1 asserts each is zero (caching is off)
@@ -505,6 +510,7 @@ def _result(
             "target_changes": outcome.target_changes,
             "focus_losses": outcome.focus_losses,
             "history_dropped": outcome.history_dropped,
+            "pre_task_draft_clicks": outcome.pre_task_draft_clicks,  # [V2.64] Two
             "submit_parents": dict(outcome.submit_parents),
         },
         "watch_deadlines": {  # [V2.48]: per class, watches and those ended at the deadline

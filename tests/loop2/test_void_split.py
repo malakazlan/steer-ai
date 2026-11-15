@@ -1,11 +1,13 @@
 """[V2.63] Q5: voids split. Infrastructure voids (memory, an unreadable log, a run not started)
 above 1 in 10 make the stage inconclusive, as monitor losses above 1 in 10 do ([V2.59], Q3); site
-voids (site changed, bot wall, control failed) are reported separately and are not in that
-rate. A stage with a real-site minimum needs that many tasks valid to be conclusive. A bot wall
-voids its site for the rest of the stage: no retry against it. In the shared core, so stage 2
-reuses it."""
+voids (site down, start page differs, site changed, bot wall, control failed) are reported
+separately and are not in that rate. A stage with a real-site minimum needs that many tasks valid
+to be conclusive. A bot wall voids its site for the rest of the stage: no retry against it. In
+the shared core, so stage 2 reuses it."""
 
 from __future__ import annotations
+
+import pytest
 
 from steerai.loop2.stage1 import (
     SITE_VOIDS,
@@ -41,7 +43,29 @@ def _stage(
 
 
 def test_the_site_voids_are_closed() -> None:
-    assert frozenset({"site_changed", "bot_wall", "site_control_failed"}) == SITE_VOIDS
+    """[V2.63] Q5, with the coordinator's note on stage 2 (2026-11-15): a site down or a start
+    page that differs is the site's, read by the harness before the run."""
+    assert (
+        frozenset(
+            {
+                "site_down",
+                "start_page_differs",
+                "site_changed",
+                "bot_wall",
+                "site_control_failed",
+            }
+        )
+        == SITE_VOIDS
+    )
+
+
+@pytest.mark.parametrize("reason", ["site_down", "start_page_differs"])
+def test_a_site_down_or_a_differing_start_page_is_out_of_the_void_rate(reason: str) -> None:
+    extra = {t.task_id: _runs(t, ("void", reason), *PASSES) for t in TASKS[:12]}
+    summary = _stage(extra, min_valid_tasks=24)
+    assert summary.gates["void"]
+    assert summary.report["void_rate"] == 0
+    assert summary.report["site_voids"] == {reason: 12}
 
 
 def test_site_voids_are_reported_apart_and_not_in_the_void_rate() -> None:

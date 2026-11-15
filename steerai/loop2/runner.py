@@ -35,7 +35,7 @@ from steerai.loop2.decision import (
     subgoal_tokens,
     validate,
 )
-from steerai.loop2.form import STATE_SET_VERB
+from steerai.loop2.form import ENTER_FIELDS, STATE_SET_VERB, scope_fields
 from steerai.loop2.guards import (
     ActionKey,
     StrikeReason,
@@ -64,18 +64,20 @@ from steerai.loop2.history import (
     log_role,
     record_ok,
 )
-from steerai.loop2.listing import ListingTurn
+from steerai.loop2.listing import ListingTurn, words_of
 from steerai.loop2.loop import (
     COMMIT_RISK,
     PARENT_KINDS,
     READ_BACK_VERBS,
     URL_READS,
     ActResult,
+    AuditView,
     Dispatch,
     ParentKind,
     PendingText,
     PortInterrupted,
     Ports,
+    ProofLine,
     Provenance,
     Reason,
     Status,
@@ -421,11 +423,17 @@ class _Run:
         self.focus_losses = 0
         """[V2.43] (2): focus moved off a press's target after the listing showed it there."""
         self.unread_aids = 0
+        self.proven_how: dict[str, ProvenHow] = {}
+        """[V2.64] One: how each subgoal was proven (a claim, or the auto proof's token)."""
+        self.audit: tuple[str, str] | None = None
+        """[V2.64] One: the final audit's outcome and reason, when it ran."""
         self.query_combobox_listed = False
         self.typed_into_combobox = False
         """[V2.64] Two: the two ComboBox facts of the task, no judgement."""
         """#301: unread automation ids over every observation taken in (`_in_domain`)."""
         self.partial_page_calls = 0
+        self.pre_task_draft_clicks = 0
+        """[V2.64] Two: counted at each non-field click (`_pre_task_draft`)."""
         """[V2.35]: model calls made on a growing or young observation (`_decide`)."""
         self.refusal_counts: dict[RefusalWord, int] = {}
         """[V2.46], [V2.63] (e): every refusal by its token (`_refuse`)."""
@@ -483,9 +491,11 @@ class _Run:
             focus_losses=self.focus_losses,
             unread_automation_ids=self.unread_aids,
             url_reads=tuple(self.url_reads.items()),
+            audit=self.audit,
             query_combobox_listed=self.query_combobox_listed,
             typed_into_combobox=self.typed_into_combobox,
             partial_page_calls=self.partial_page_calls,
+            pre_task_draft_clicks=self.pre_task_draft_clicks,
             refusals=tuple(self.refusal_counts.items()),
             submit_parents=tuple(self.submit_parents.items()),
             history_dropped=self.history_dropped,
@@ -672,13 +682,7 @@ class _Run:
         self.partial_page_calls += observed.growing or observed.young  # [V2.35]: counted
         self.exact_counts += decided.exact_counted
         self.estimates_low += decided.estimate_low
-        counts = _counts(decided.usage)
-        if counts is None:
-            self.tokens = math.nan  # never zero: the token budget trips ([V2.37] P6)
-            self.usage_incomplete = True
-        else:
-            self.tokens += sum(counts)
-            self.by_category = [a + b for a, b in zip(self.by_category, counts, strict=True)]
+        self._spend(decided.usage)
         self.listing.shown = None if decided.listing is None else decided.listing.listed
         if not self.query_combobox_listed:
             self.query_combobox_listed = _query_combobox_listed(
@@ -687,6 +691,16 @@ class _Run:
         if decided.listing is not None:
             self.listing.turns.append(decided.listing)
         return decided.decision
+
+    def _spend(self, usage: TokenUsage | None) -> None:
+        """A reported call's usage into the task's totals; unknown makes them a lower bound."""
+        counts = _counts(usage)
+        if counts is None:
+            self.tokens = math.nan  # never zero: the token budget trips ([V2.37] P6)
+            self.usage_incomplete = True
+        else:
+            self.tokens += sum(counts)
+            self.by_category = [a + b for a, b in zip(self.by_category, counts, strict=True)]
 
     def _delta(self, observed: Observed) -> dict[str, Any]:  # Any: TurnView's own field types
         """[V2.56]: `new` and `changed` against the observation the model last saw (never the
@@ -729,7 +743,7 @@ class _Run:
             return observed
         for claim in decision.claims:
             self._claim(claim, observed)
-        self._check_done()
+        self._check_done(observed)
         if decision.ask is not None:
             raise _End("asked", Reason("controller_ask"))
         if decision.stop is not None:
@@ -906,14 +920,88 @@ class _Run:
             self.turn.claim_rejected = True
             return
         self.proven.add(subgoal.id)
+        self.proven_how[subgoal.id] = how
         self.turn.ticked = True
         self.refusal = None
         self._note(Proven(subgoal.id, how))
 
-    def _check_done(self) -> None:
-        """A task with zero subgoals never ends `done` ([V2.11] decision 1)."""
+    def _check_done(self, observed: Observed) -> None:
+        """A task with zero subgoals never ends `done` ([V2.11] decision 1). [V2.64] One: when
+        the task is closed only by value or state claims (rev 4.6), the final audit runs
+        first, and only its pass ends done."""
         if self.subgoals and all(s.id in self.proven for s in self.subgoals):
+            lines = self._proof_lines()
+            if all(line[4] for line in lines):
+                self._audit(observed, lines)
             raise _End("done", None)
+
+    def _proof_lines(self) -> tuple[ProofLine, ...]:
+        """Each proven subgoal: id, closes, how, kind, and whether it was closed only by value or
+        state claims (rev 4.6: on any element, whoever set it; an editable ComboBox exposes its
+        child Edit's Value, so "an element Steer acted on" was a trigger a mirror could skip)."""
+        lines: list[ProofLine] = []
+        for subgoal in self.subgoals:
+            how = self.proven_how.get(subgoal.id, "claim")
+            proofs = self.proofs.get(subgoal.id, {})
+            kinds = {p.kind for p in proofs.values()}
+            kind = (
+                (next(iter(kinds)) if len(kinds) == 1 else "mixed")
+                if proofs
+                else ("navigated" if how == "claim" else how)
+            )
+            own = how == "claim" and bool(proofs) and kinds <= {"value", "state"}
+            lines.append((subgoal.id, subgoal.closes, how, kind, own))
+        return tuple(lines)
+
+    def _audit(self, observed: Observed, lines: tuple[ProofLine, ...]) -> None:
+        """[V2.64] One: one veto-only call. No port, no call left in the budget, a failed or
+        unparsed call: `audit_failed`; a veto: `audit_veto`. Both end `blocked`, never done."""
+        audit = self.ports.audit
+        used = Usage(  # #404 principal 3: every budget, checked as decide checks it before a call
+            actions=len(self.dispatched),
+            model_calls=self.model_calls,  # the guard trips at `not spent < limit`, as decide
+            cost_usd=self._cost(),
+            wall_s=self.ports.clock() - self.started,
+            tokens=self.tokens,
+        )
+        if audit is None or budget_hit(self.task.budgets, used) is not None:
+            self.audit = ("failed", "audit_failed")
+            raise _End("blocked", Reason("audit_failed"))
+        cited = {
+            self.handles.by_handle[p.handle]
+            for proofs in self.proofs.values()
+            for p in proofs.values()
+            if p.handle in self.handles.by_handle
+        }
+        words = words_of(span.text for s in self.subgoals for span in s.params.values())
+        view = AuditView(
+            observed=observed,
+            handles=self.handles.bind(observed),
+            proofs=lines,
+            keep=self._always_keep() | cited,
+            words=words,
+        )
+        try:
+            audited = audit(view)
+        except (PortInterrupted, SteerError, ControllerError) as exc:
+            if isinstance(exc, ControllerError) and exc.record is None:
+                # refused before any call (the bound, a fence in the data): no call is counted
+                self.audit = ("failed", "audit_no_call")
+                raise _End("blocked", Reason("audit_failed")) from None
+            self.model_calls += 1
+            if isinstance(exc, PortInterrupted):
+                self.tokens = math.nan  # abandoned: billed, never reported ([V2.41] (1))
+                self.usage_incomplete = True
+                raise
+            self._spend(exc.usage if isinstance(exc, ControllerError) else None)
+            self.audit = ("failed", "audit_failed")
+            raise _End("blocked", Reason("audit_failed")) from None
+        self.model_calls += 1
+        self._spend(audited.usage)
+        if audited.veto or audited.reason != "outcome_shown":  # #404 principal 4: fail closed
+            self.audit = ("vetoed", audited.reason)
+            raise _End("blocked", Reason("audit_veto"))
+        self.audit = ("allowed", audited.reason)
 
     # ---- the batch ------------------------------------------------------------------------
 
@@ -979,6 +1067,8 @@ class _Run:
         if key is not None and not self._may_send(key, observed):
             self._refuse("repeat_send", handle=self._handle_of(element))
             return None
+        if action.verb == "click" and element is not None and element.role not in ENTER_FIELDS:
+            self._pre_task_draft(element, observed)
         self._check_budgets()
         sent = Dispatch(
             action=action,
@@ -1218,6 +1308,19 @@ class _Run:
         self.typed = kept
         self.pending = found
         return out
+
+    def _pre_task_draft(self, target: Element, observed: Observed) -> None:
+        """[V2.64] Two, [V2.37]'s recorded limit: count the click once when a field in its scope
+        holds text and has no pending-text record. A count only, never a refusal; secure fields
+        are never read, and the reads stop at the first filled one."""
+        mine = {m.runtime_id for typed in self.typed for m in _matches(typed, observed)}
+        for held in scope_fields(observed, target):
+            if held.runtime_id in mine:
+                continue
+            value = self._read_value(held, observed)
+            if value is not None and value.filled:
+                self.pre_task_draft_clicks += 1
+                return
 
     def _readers(self, observed: Observed) -> Readers:
         """[V2.29] Q2: the claim checks' live reads, bound to the ports, taken at the claim and
@@ -1488,7 +1591,7 @@ class _Run:
             )
             if proof is not None:
                 self._tick(subgoal, how=proof)
-        self._check_done()
+        self._check_done(observed)
 
     # ---- refusals, guards -----------------------------------------------------------------
 

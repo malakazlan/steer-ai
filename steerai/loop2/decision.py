@@ -124,7 +124,13 @@ SUBGOAL_ID = re.compile(r"[a-z0-9_]{1,16}")
 PARAM_NAME = re.compile(r"[a-z0-9_]{1,24}")
 """[V2.47]: a param name is closed at intake: lowercase letters, digits and underscore, at most
 24 characters (subgoal ids: the same alphabet, at most 16, `SUBGOAL_ID`)."""
-CHECKED_KINDS = frozenset({"state", "value", "navigated"})
+STEP_KINDS: Final[Mapping[int, frozenset[str]]] = {
+    3: frozenset({"state", "value", "navigated"}),
+}
+"""#386, [V2.44] (1)'s rule for verbs applied to claim kinds: the one table, keyed by step, of the
+kinds a Decision may claim. The prompt offers exactly these and `validate` accepts exactly
+these; step 3 checks state, value and navigated (the other kinds are steps 4 to 7)."""
+CHECKED_KINDS = STEP_KINDS[STEP]
 
 
 class _Strict(BaseModel):
