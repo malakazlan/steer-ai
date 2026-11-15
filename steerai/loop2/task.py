@@ -75,12 +75,28 @@ class TokenPrice:
 
     usd_per_input_token: float
     usd_per_output_token: float
+    usd_per_cache_write_token: float | None = None
+    """[V2.40] Q3: the cache-write (creation) rate; None: not configured."""
+    usd_per_cache_read_token: float | None = None
+    """[V2.40] Q3: the cache-read rate; None: not configured."""
 
     def __post_init__(self) -> None:
-        """RT-32: a price is a finite positive number; 0 would read as free, never enforced."""
-        for rate in (self.usd_per_input_token, self.usd_per_output_token):
+        """RT-32: a price is a finite positive number; 0 would read as free, never enforced.
+        A cache rate may be left out (not configured), never 0."""
+        rates = (self.usd_per_input_token, self.usd_per_output_token)
+        cached = (self.usd_per_cache_write_token, self.usd_per_cache_read_token)
+        for rate in (*rates, *(r for r in cached if r is not None)):
             if not _positive(rate, integer=False):
                 raise ValueError("a token price must be finite and positive")
+
+    def rates(self) -> tuple[float | None, float | None, float | None, float | None]:
+        """The four rates, in `TokenUsage` order: input, output, cache write, cache read."""
+        return (
+            self.usd_per_input_token,
+            self.usd_per_output_token,
+            self.usd_per_cache_write_token,
+            self.usd_per_cache_read_token,
+        )
 
 
 @dataclass(frozen=True)

@@ -148,10 +148,13 @@ class ActResult:
 
 @dataclass(frozen=True)
 class TokenUsage:
-    """[V2.37] P6: the tokens one controller call used, as the provider reported them."""
+    """[V2.37] P6, [V2.40] Q3: the tokens one controller call used, as the provider reported
+    them, by the API's own field names. `input_tokens` excludes the two cache categories."""
 
     input_tokens: int
     output_tokens: int
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -225,8 +228,12 @@ class TaskOutcome:
     """[V2.26] (2), V2 §6.1, #301: the elements whose automation id was not read, summed over
     every observation the loop took in; counted on the pooled set, the decision stays open."""
     cost_usd: float | None = None
-    """Tokens times the configured price; None when no price is configured ([V2.37] P6): the
-    cost budget is then reported "not configured", never as enforced."""
+    """Each token category times its configured rate ([V2.40] Q3); None when no price is
+    configured or a used category has no rate ([V2.37] P6): the cost budget is then reported
+    "not configured", never as enforced, never 0.0."""
+    usage_incomplete: bool = False
+    """[V2.41] (1): some call's usage was missing or invalid (an abandoned call is billed but
+    never reported): `tokens` and `cost_usd` are then a lower bound, never complete."""
 
     @property
     def reason(self) -> str | None:
