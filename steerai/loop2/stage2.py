@@ -72,6 +72,7 @@ from steerai.loop2.stage2_expected import (
     SiteRow,
     Spacer,
     TableRow,
+    check_acts,
     check_table,
     deciding_facts,
     load_acts,
@@ -299,8 +300,8 @@ def run_stage(  # noqa: PLR0913, PLR0915 - the tasks, then keyword-only knobs
             today=spacer.day(),
         )
         need = {t.host: ATTEMPT_LOADS for t in pending} | dict.fromkeys(
-            (t.host for t in wanted), ATTEMPT_LOADS + 1
-        )
+            (t.host for t in wanted if t.controlled), ATTEMPT_LOADS + 1
+        )  # #428 (6): a host whose tasks run no control reserves none
         # #419: an attempt starts only with its whole budget (control, run, confirmation) left
         open_now = [t for t in pending if spacer.remaining(t.host) >= need[t.host]]
         if not open_now:
@@ -322,17 +323,19 @@ def run_stage(  # noqa: PLR0913, PLR0915 - the tasks, then keyword-only knobs
                 got = Classified(task_id, run, "void", "site_control_failed", False, None)
             else:
                 spacer.wait(task.host)
+                started = spacer.day()  # #428 (7): the load counts on this day
                 result = attempt(task, run)
                 if isinstance(result, str):  # never started: nothing was loaded
                     not_started += 1
                     emit({"task": task_id, "run": run, "not_started": result})
                     continue
-                spacer.loaded(task.host)
+                spacer.loaded(task.host, day=started)
                 confirmed = False
                 if needs_confirmation(task, result):
                     spacer.wait(task.host)
+                    started = spacer.day()
                     confirmed = confirm(task)
-                    spacer.loaded(task.host)
+                    spacer.loaded(task.host, day=started)
                 got = classify_site(task, result, confirmed=confirmed)
             classified.append(got)
             scored[task_id] += got.verdict not in ("void", "monitor_lost")
@@ -385,8 +388,9 @@ def _controls(
     walls: set[str] = set()
     for host in dict.fromkeys(t.host for t in interleaved(pending) if t.controlled):
         spacer.wait(host)
+        started = spacer.day()
         result = control(host)
-        spacer.loaded(host)
+        spacer.loaded(host, day=started)
         emit({"control": host, "result": result})
         if result == "fail":
             failed.add(host)
@@ -409,8 +413,12 @@ def volume_bound(tasks: Sequence[SiteTask], *, runs: int) -> dict[str, int]:
 
 
 def days_bound(bound: Mapping[str, int]) -> dict[str, int]:
-    """The days each host's bound needs at `DAILY_CAP` loads a day ([V2.65] (3))."""
-    return {host: -(-loads // DAILY_CAP) for host, loads in bound.items()}
+    """The most days each host's bound can take ([V2.65] (3), #428 (5)): every load in the
+    bound may need its wall confirmation, and an attempt starts only with its
+    `ATTEMPT_LOADS` left today, so a day holds `DAILY_CAP // ATTEMPT_LOADS` of them at
+    worst. Never fewer days than a run can take."""
+    per_day = DAILY_CAP // ATTEMPT_LOADS
+    return {host: -(-loads // per_day) for host, loads in bound.items()}
 
 
 def summarize(  # noqa: PLR0913 - the runs, then keyword-only figures
@@ -558,7 +566,8 @@ def _live_site(  # noqa: PLR0911 - one return per way a run ends  # pragma: no c
 
         def record(log_read: bool, check: bool | None) -> RunRecord:
             return RunRecord(task_id, run, ran.final, True, log_read, check, None,
-                             killed=ran.killed, code=ran.code, memory=memory)  # fmt: skip
+                             killed=ran.killed, code=ran.code, memory=memory,
+                             kill_failure=ran.kill_failure)  # fmt: skip
 
         try:
             left = json.loads(_read(port, _WALL_EXPRESSION, "after") or "{}")
@@ -641,7 +650,9 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--price-file", type=Path, required=True)
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
-    acts = load_acts(args.acts.read_text(encoding="utf-8"))
+    acts_text = args.acts.read_text(encoding="utf-8")
+    check_acts(acts_text)  # #428 (8): only the committed acts run
+    acts = load_acts(acts_text)
     table_text = args.table.read_text(encoding="utf-8")
     check_table(table_text)  # #424 (2): only the committed table runs
     unrated = load_unrated(table_text)  # [V2.65] (2): run, held to the hard bar
