@@ -148,13 +148,16 @@ class ActResult:
 
 @dataclass(frozen=True)
 class TokenUsage:
-    """[V2.37] P6, [V2.40] Q3: the tokens one controller call used, as the provider reported
-    them, by the API's own field names. `input_tokens` excludes the two cache categories."""
+    """[V2.37] P6, [V2.40] Q3, [V2.45]: the tokens one controller call used, as the provider
+    reported them, by category. `input_tokens` excludes the cache categories; the two writes split
+    the API's `cache_creation_input_tokens` by lifetime (its `cache_creation` breakdown), and
+    `cache_read` is its `cache_read_input_tokens`."""
 
     input_tokens: int
     output_tokens: int
-    cache_creation_input_tokens: int = 0
-    cache_read_input_tokens: int = 0
+    cache_write_5m: int = 0
+    cache_write_1h: int = 0
+    cache_read: int = 0
 
 
 @dataclass(frozen=True)
@@ -232,6 +235,9 @@ class TaskOutcome:
     configured or a used category has no rate ([V2.37] P6): the cost budget is then reported
     "not configured", never as enforced, never 0.0."""
     usage_incomplete: bool = False
+    usage: TokenUsage = TokenUsage(input_tokens=0, output_tokens=0)
+    """[V2.45]: the reported usage summed by category (a lower bound when `usage_incomplete`).
+    Stage 1 runs with caching off and asserts every cache counter here is zero."""
     """[V2.41] (1): some call's usage was missing or invalid (an abandoned call is billed but
     never reported): `tokens` and `cost_usd` are then a lower bound, never complete."""
 

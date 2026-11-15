@@ -6,6 +6,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import date
 
 import pytest
 
@@ -93,6 +94,9 @@ the Document, so its form is the whole page, and on `PAGE` the password and Send
 a commit (R2). The query-class cases (an R1 Enter or search click) run on this page."""
 EMPTY = ValueFact(filled=False, digest="empty")
 TYPED_VALUE = ValueFact(filled=True, digest="typed")
+PRICE_URL = "https://platform.claude.com/docs/en/build-with-claude/prompt-caching"
+PRICE_READ_ON = date(2026, 11, 15)
+"""[V2.45]: where a test price says it was read, and when."""
 """What `World.read_value` returns: a field is empty until a type into it reads back True."""
 
 

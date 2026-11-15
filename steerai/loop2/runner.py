@@ -304,8 +304,9 @@ class _Run:
         self.dispatched: list[Dispatch] = []
         self.model_calls = 0
         self.tokens = 0.0
-        self.by_category = [0, 0, 0, 0]
-        """[V2.40] Q3: input, output, cache write and cache read, over every reported call."""
+        self.by_category = [0, 0, 0, 0, 0]
+        """[V2.40] Q3, [V2.45]: input, output, 5-minute write, 1-hour write and read, over every
+        reported call."""
         self.usage_incomplete = False
         self.strikes = Strikes(STRIKE_LIMIT)
         self.strike_log: list[tuple[StrikeReason, ...]] = []
@@ -364,6 +365,7 @@ class _Run:
             tokens=self.tokens,
             cost_usd=self._cost(),
             usage_incomplete=self.usage_incomplete,
+            usage=TokenUsage(*self.by_category),
             read_costs=tuple(self.read_costs),
             stale_observations=self.stale_count,
             target_changes=self.target_changes,
@@ -1251,16 +1253,17 @@ def _step_subgoal(decision: Decision) -> str | None:
     return next((a.subgoal for a in decision.actions if a.verb in NOT_IN_STEP_VERBS), None)
 
 
-def _counts(usage: TokenUsage | None) -> tuple[int, int, int, int] | None:
-    """[V2.37] P6, [V2.40] Q3: a call's four token counts; None when the usage is missing or a
-    count is not a whole number of tokens, zero or more."""
+def _counts(usage: TokenUsage | None) -> tuple[int, int, int, int, int] | None:
+    """[V2.37] P6, [V2.40] Q3, [V2.45]: a call's token counts by category; None when the usage
+    is missing or a count is not a whole number of tokens, zero or more."""
     if usage is None:
         return None
     counts = (
         usage.input_tokens,
         usage.output_tokens,
-        usage.cache_creation_input_tokens,
-        usage.cache_read_input_tokens,
+        usage.cache_write_5m,
+        usage.cache_write_1h,
+        usage.cache_read,
     )
     if any(isinstance(c, bool) or not isinstance(c, int) or c < 0 for c in counts):
         return None

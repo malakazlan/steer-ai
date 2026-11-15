@@ -26,6 +26,8 @@ from tests.loop2.world_fakes import (
     MENU,
     PAGE,
     PASSWORD,
+    PRICE_READ_ON,
+    PRICE_URL,
     QUERY_PAGE,
     SEND,
     URL,
@@ -289,9 +291,19 @@ def test_a_budget_cap_must_be_finite_and_positive(name: str, bad: object) -> Non
 @pytest.mark.parametrize("bad", [0.0, -0.01, math.nan, math.inf])
 def test_a_token_price_must_be_finite_and_positive(bad: float) -> None:
     with pytest.raises(ValueError, match="price"):
-        TokenPrice(usd_per_input_token=bad, usd_per_output_token=0.01)
+        TokenPrice(
+            usd_per_input_token=bad,
+            usd_per_output_token=0.01,
+            source=PRICE_URL,
+            read_on=PRICE_READ_ON,
+        )
     with pytest.raises(ValueError, match="price"):
-        TokenPrice(usd_per_input_token=0.01, usd_per_output_token=bad)
+        TokenPrice(
+            usd_per_input_token=0.01,
+            usd_per_output_token=bad,
+            source=PRICE_URL,
+            read_on=PRICE_READ_ON,
+        )
 
 
 def test_a_cost_cap_that_is_a_bool_is_rejected() -> None:
@@ -300,7 +312,9 @@ def test_a_cost_cap_that_is_a_bool_is_rejected() -> None:
 
 
 def test_a_priced_cost_cap_of_zero_pauses_before_the_first_call() -> None:
-    price = TokenPrice(usd_per_input_token=0.01, usd_per_output_token=0.01)
+    price = TokenPrice(
+        usd_per_input_token=0.01, usd_per_output_token=0.01, source=PRICE_URL, read_on=PRICE_READ_ON
+    )
     budgets = Budgets(**(GOOD | {"max_cost_usd": 0.0}), price=price)
     world = World([decision(act("click", target=GO.id), first=True)])
     outcome = run_task(task(budgets), world.ports())
