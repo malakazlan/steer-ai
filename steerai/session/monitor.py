@@ -618,8 +618,8 @@ class HookMonitor:
         latency = self._latency
 
         def proc(code: int, wparam: int, lparam: int) -> int:
-            entered = tick() if tick is not None else 0
             try:
+                entered = tick() if tick is not None else 0  # #364 H6: inside the try
                 if code == HC_ACTION:
                     info = ctypes.cast(lparam, ctypes.POINTER(struct)).contents
                     if tick is not None:  # LW-01: event tick to entry tick, wrap-safe

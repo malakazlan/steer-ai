@@ -631,3 +631,26 @@ def test_v1_records_no_latency(monkeypatch: pytest.MonkeyPatch) -> None:
         assert monitor.latency() == (0, None, None)
     finally:
         monitor.close()
+
+
+def test_a_tick_that_raises_still_passes_the_event_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#364 H6: the entry tick is read inside the procedure's try: the chain goes on and the
+    failure is recorded, never raised into the hook chain."""
+
+    def broken_tick() -> int:
+        raise OSError("GetTickCount")
+
+    user32 = FakeUser32()
+    _patch(monkeypatch, user32)
+    monitor = HookMonitor(
+        monotonic=lambda: 100.0, per_hook=True, probe_vk=PROBE_VK, tick=broken_tick
+    )
+    monitor.start()
+    try:
+        key = _key(flags=0, extra=0)
+        assert user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x100, ctypes.addressof(key)) == (
+            NEXT_HOOK_RESULT
+        )
+        assert monitor.counts().get("callback_errors") == 1
+    finally:
+        monitor.close()

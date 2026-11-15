@@ -54,6 +54,7 @@ FAKED: frozenset[str] = frozenset(
         "session/test_hook_callback.py::test_the_probe_key_is_an_unassigned_virtual_key",
         # LW-01: the v2 monitor over the fake user32 (`_patch`), on a moving fake clock
         "session/test_hook_callback.py::test_the_monitor_reports_whether_both_hooks_saw_the_probe",
+        "session/test_hook_callback.py::test_a_tick_that_raises_still_passes_the_event_on",
     }
 )
 """Tests that call these names over fakes (a monkeypatched user32, a fake hook thread), read and
