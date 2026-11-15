@@ -784,14 +784,16 @@ class _Run:
                 self.by_category = [a + b for a, b in zip(self.by_category, counts, strict=True)]
             raise
         self.model_calls += decided.calls  # invariant 9, [V2.68]: a repaired turn is two calls
-        self.partial_page_calls += observed.growing or observed.young  # [V2.35]: counted
+        made = decided.calls > 0  # [V2.71] (a): a Decision no model made spends nothing
+        self.partial_page_calls += made and (observed.growing or observed.young)  # [V2.35]
         self.turn.usage = decided.usage  # [V2.67] D: this turn's own facts
         self.turn.listing = decided.listing
         self.turn.repair = decided.calls > 1
         self.turn.repair_tokens = decided.rejections
         self.exact_counts += decided.exact_counted
         self.estimates_low += decided.estimate_low
-        self._spend(decided.usage)
+        if made:
+            self._spend(decided.usage)
         self.listing.shown = None if decided.listing is None else decided.listing.listed
         if not self.query_combobox_listed:
             self.query_combobox_listed = _query_combobox_listed(

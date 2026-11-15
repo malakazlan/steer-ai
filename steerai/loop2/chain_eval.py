@@ -742,9 +742,7 @@ class Ledger:
                 raise ValueError("held_out_run_exists")
         self._append({"event": "start", "kind": kind, **{k: head.get(k) for k in FROZEN_KEYS}})
 
-    def aborted(
-        self, kind: RunKind, shape: str, index: int, arm: str, error: str
-    ) -> None:
+    def aborted(self, kind: RunKind, shape: str, index: int, arm: str, error: str) -> None:
         self._append(
             {"event": "aborted", "kind": kind, "shape": shape, "index": index, "arm": arm,
              "error": error}

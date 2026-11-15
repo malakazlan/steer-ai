@@ -252,7 +252,9 @@ class Decided:
     estimate_low: bool = False
     """[V2.61]: the turn's calls held more input tokens than the guard's bound said."""
     calls: int = 1
-    """Invariant 9, [V2.68]: the model calls the turn made (a repaired turn is two)."""
+    """Invariant 9, [V2.68]: the model calls the turn made (a repaired turn is two); 0 for a
+    Decision no model made (the chain eval's scripted reach, [V2.71] (a)), which spends
+    nothing and whose usage is not read."""
     rejections: tuple[str, ...] = ()
     """[V2.67] D: the closed rejection tokens of each attempt that failed before it, in order."""
 
