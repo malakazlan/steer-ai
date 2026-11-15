@@ -804,3 +804,10 @@ def test_a_terminate_during_close_waits_for_it_and_then_does_nothing() -> None:
     ender.join(5)
     assert not w.named("terminate_job")
     assert not w.named("terminate_process")
+
+
+def test_the_modifier_flags_have_one_copy() -> None:
+    """#385 principal note: RegisterHotKey's fsModifiers are defined once, in the monitor."""
+    package = Path(__file__).resolve().parents[2] / "steerai"
+    sources = [p.read_text(encoding="utf-8") for p in package.rglob("*.py")]
+    assert sum(s.count('"win": 0x0008') for s in sources) == 1
