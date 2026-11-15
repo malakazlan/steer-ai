@@ -28,7 +28,7 @@ from steerai.loop2.controller import (
     build_intake_prompt,
 )
 from steerai.loop2.decision import Claim, Decision, SubgoalDoc
-from steerai.loop2.loop import Audited, IntakeView, TokenUsage
+from steerai.loop2.loop import Audited, IntakeView, PortInterrupted, TokenUsage
 from steerai.loop2.runner import run_task
 from tests.loop2.test_live_world import _world
 from tests.loop2.world_fakes import FIELD, GO, World, act, report, task
@@ -160,6 +160,26 @@ def test_a_port_error_takes_decides_path_and_counts_the_call() -> None:
     assert (outcome.intake_failed, outcome.intake_checks) == (1, 1)
 
 
+def test_a_timed_out_check_takes_decides_path_and_counts_the_call() -> None:
+    """F3, tester gap on #457: a timeout is a port error like any other."""
+    reply = SteerError(ErrorCode.MODEL_TIMEOUT, "deadline")
+    outcome = run_task(task(), _world_with([_first([VALUE])], reply=reply).ports())
+    assert (outcome.status, outcome.reason) == ("stopped", "port_model_timeout")
+    assert (outcome.intake_failed, outcome.intake_checks) == (1, 1)
+
+
+def test_a_kill_during_the_check_is_the_kills_stop_and_a_failed_call() -> None:
+    """F3, tester gap on #457: an abandoned wait carries no authority; the latched switch stops
+    the task, and the call made is counted failed."""
+    world = _world_with([_first([VALUE])], reply=PortInterrupted("killed"))
+    world.interrupt_after_intake = True
+    world.interruption = "killed"
+    outcome = run_task(task(), world.ports())
+    assert (outcome.status, outcome.reason) == ("stopped", "killed")
+    assert (outcome.intake_failed, outcome.intake_checks) == (1, 1)
+    assert world.dispatched == []
+
+
 @pytest.mark.parametrize(
     "error",
     [ControllerError("not_json"), ControllerError("schema")],
@@ -189,6 +209,8 @@ def test_the_check_counts_one_call_and_reconciles() -> None:
 
 def test_the_prompt_takes_no_observation() -> None:
     assert "observed" not in inspect.signature(build_intake_prompt).parameters
+    # P1/P2 sentinel, tester gap on #457: the port's view holds the subgoal lines and nothing else
+    assert [f.name for f in dataclasses.fields(IntakeView)] == ["subgoals"]
 
 
 def test_the_prompt_holds_positions_spans_and_no_model_text() -> None:
