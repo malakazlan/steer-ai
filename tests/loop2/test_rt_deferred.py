@@ -776,3 +776,19 @@ def test_several_empty_root_documents_are_not_blank() -> None:
     world = World([Decision(stop="cannot")], screen=observed(roots))
     outcome = run_task(task(), world.ports())
     assert outcome.model_calls == 1
+
+
+def test_the_deadline_counts_from_when_the_page_went_blank() -> None:
+    """The page goes blank 20 s into the task: it is still waited for `FIRST_READY_S` from
+    then, never from the task's start."""
+    world = World(
+        [decision(act("click", target=GO.id), first=True)],
+        effects=[report("navigated")],
+        later=FRAME_ONLY,  # the screen stays blank after the click, on every read
+        settled=FRAME_ONLY,
+    )
+    world.watch_s = 20.0
+    world.settle_advance_s = 0.5
+    outcome = run_task(task(), world.ports())
+    assert outcome.reason == "page_not_ready"
+    assert world.now >= 20.0 + FIRST_READY_S - 1e-6
