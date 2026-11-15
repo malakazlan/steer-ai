@@ -606,12 +606,12 @@ def run_chain(  # noqa: PLR0913 - the shape, then keyword-only knobs
         budgets=budgets,
         history=[],
     )
+    decide = _arm(make_decide(calls, goal=shape.request, task_fence=fence), shape, arm)
     ports = Ports(
         audit=recorded_judge(
             "audit", make_audit(calls, goal=shape.request, task_fence=fence), seen, world.typed
         ),
-        decide=_recorded_decide(_arm(make_decide(calls, goal=shape.request, task_fence=fence),
-                                     shape, arm), seen),  # fmt: skip
+        decide=_recorded_decide(decide, seen),
         observe=world.observe,
         act=world.act,
         watch=world.watch,
@@ -742,7 +742,7 @@ class Ledger:
                 raise ValueError("held_out_run_exists")
         self._append({"event": "start", "kind": kind, **{k: head.get(k) for k in FROZEN_KEYS}})
 
-    def aborted(  # noqa: PLR0913 - where the run stopped, field by field
+    def aborted(
         self, kind: RunKind, shape: str, index: int, arm: str, error: str
     ) -> None:
         self._append(
