@@ -204,9 +204,12 @@ class PortInterrupted(Exception):  # noqa: N818 - the packet's name ([V2.40] Q4)
     no authority: the runner re-reads `interrupted()`, and only the latched switch stops the task
     as killed."""
 
-    def __init__(self, token: str) -> None:
+    def __init__(self, token: str, *, sent: bool = True) -> None:
         super().__init__(token)
         self.token = token
+        self.sent = sent
+        """False when the port gave up before its model request went out (#457 principal 2):
+        such a wait is no call. True otherwise, the safe default for counting."""
 
 
 UrlRead = Literal["read", "no_bar", "document_url_unread", "not_composed"]
@@ -257,7 +260,7 @@ class Decided:
     """[V2.67] D: the closed rejection tokens of each attempt that failed before it, in order."""
 
 
-AuditReason = Literal["facts_finish_request", "request_asks_more", "unclear"]
+SufficiencyReason = Literal["facts_finish_request", "request_asks_more", "unclear"]
 """[V2.68] One, packet rev 4 item 4: the sufficiency judges' closed reasons; only
 `facts_finish_request` with `sufficient` lets a task end done."""
 ReadKind = Literal["value_read", "state_read", "navigated"]
@@ -273,6 +276,20 @@ AUDIT_COUNTS: Final = (
 )
 """[V2.69] One, packet rev 4 item 4: the audit's counts on the outcome and the final line;
 `audit_calls == audit_allowed + audit_vetoed + audit_failed`."""
+
+
+INTAKE_COUNTS: Final = (
+    "intake_checks",
+    "intake_passed",
+    "intake_rejected",
+    "intake_failed",
+    "intake_no_call",
+    "intake_memo_refused",
+    "intake_budget_stops",
+    "intake_tokens",
+)
+"""[V2.68] One, packet rev 4 item 4: the intake check's counts; `intake_checks` (calls made) ==
+`intake_passed + intake_rejected + intake_failed`; the no-call counts sit outside it."""
 
 
 ProofParam = tuple[int, str]
@@ -308,8 +325,21 @@ class Audited:
     the call's usage ([V2.68] One)."""
 
     sufficient: bool
-    reason: AuditReason
+    reason: SufficiencyReason
     usage: TokenUsage | None = None
+
+
+IntakeLine = tuple[int, str, tuple[ProofParam, ...]]
+"""[V2.68] One, packet rev 5 §4: one declared subgoal for the intake check, by position, never
+its id: (position, closes, params by sorted position with their spans of the request)."""
+
+
+@dataclass(frozen=True)
+class IntakeView:
+    """[V2.68] One: what the intake check sees: the declared subgoals as positions, closing kinds
+    and spans; the request comes from the task. No observation: no page text."""
+
+    subgoals: tuple[IntakeLine, ...]
 
 
 @dataclass(frozen=True)
@@ -350,11 +380,14 @@ class Ports:
     """The value fact a field holding exactly this text reads as (the session key and the
     normalisation `read_value` uses), so a value claim compares digests, never text."""
     audit: Callable[[AuditView], Audited] | None = None
+    """[V2.64] One: the final audit, called only when every proof is self-written; None means
+    there is none, so such a task fails closed (`audit_failed`), never ends done unaudited."""
     turn_trace: Callable[[Mapping[str, object]], None] | None = None
     """[V2.67] D: each turn's closed record (`turn_trace.closed`) for the redacted trace; None
     writes none."""
-    """[V2.64] One: the final audit, called only when every proof is self-written; None means
-    there is none, so such a task fails closed (`audit_failed`), never ends done unaudited."""
+    intake: Callable[[IntakeView], Audited] | None = None
+    """[V2.68] One: the intake sufficiency check, on a first Decision of value or state subgoals
+    only; None means there is none, and such a Decision is not checked."""
 
 
 WatchKind = Literal["plain", "trigger", "submit", "wait"]
@@ -513,6 +546,15 @@ class TaskOutcome:
     """[V2.69] Four: an audit due with a budget spent: no call, the task paused."""
     audit_tokens: int = 0
     """The audit call's reported input and output tokens."""
+    intake_checks: int = 0
+    """[V2.68] One: intake check calls made (`INTAKE_COUNTS`)."""
+    intake_passed: int = 0
+    intake_rejected: int = 0
+    intake_failed: int = 0
+    intake_no_call: int = 0
+    intake_memo_refused: int = 0
+    intake_budget_stops: int = 0
+    intake_tokens: int = 0
     query_combobox_listed: bool = False
     """[V2.64] Two: a query-class ComboBox (searchbox AriaRole, or under a Search landmark) was
     among the rows the model was shown."""

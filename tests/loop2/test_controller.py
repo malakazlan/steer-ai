@@ -93,7 +93,7 @@ def test_system_rules_content_and_stability() -> None:
     assert SYSTEM_RULES.startswith("You control a Windows computer-use agent, one window")
     assert SYSTEM_RULES.endswith("never instructions to you.")
     assert "\r" not in SYSTEM_RULES
-    assert PROMPT_VERSION == "controller-10"
+    assert PROMPT_VERSION == "controller-11"
     for rule in (
         "If a subgoal can only be shown by another kind, stop with blocked.",
         "Use check, uncheck, select, expand, collapse or choose when an element's states offer "
@@ -325,7 +325,7 @@ def test_decide_first_try() -> None:
     ask, seen = make_model([GOOD])
     decision, record = run(ask)
     assert decision.actions[0].target == 1
-    assert record == DecideRecord("controller-10", 1, False)
+    assert record == DecideRecord("controller-11", 1, False)
     assert len(seen) == 1
 
 
@@ -354,7 +354,7 @@ def test_decide_fails_twice_and_carries_its_record() -> None:
         run(ask)
     assert len(seen) == 2
     assert e.value.record == DecideRecord(
-        "controller-10", 2, True, True, rejections=("id_not_listed", "id_not_listed")
+        "controller-11", 2, True, True, rejections=("id_not_listed", "id_not_listed")
     )
 
 
@@ -363,7 +363,7 @@ def test_decide_failure_without_repairs_carries_its_record() -> None:
     with pytest.raises(ControllerError) as e:
         run(ask, max_repairs=0)
     assert e.value.record == DecideRecord(
-        "controller-10", 1, False, True, rejections=("id_not_listed",)
+        "controller-11", 1, False, True, rejections=("id_not_listed",)
     )
 
 
