@@ -489,14 +489,10 @@ class LiveWorld:
         each failing closed: unread is `secure_desktop`, LW-17/18: the lock is the cause, a
         probe lost behind it only a symptom); then the monitor's health, kept up by `maintain`.
         Never raises. The act port's idle rule owns `takeover` (rev 3.10 (b))."""
+        killed = self._kill_token()
+        if killed is not None:
+            return killed
         monitor = self._monitor
-        try:
-            killed = monitor.kill_requested()
-        except Exception:  # noqa: BLE001 - #383 note 2: an unread kill is a lost monitor (fail closed)
-            self._lose()
-            return "monitor_lost"
-        if killed:
-            return "killed"
         if self._latched is None:
             self._latched = self._session_signal() or self._helper_session_change()
         if self._latched is not None:
@@ -513,6 +509,16 @@ class LiveWorld:
         self._lose()
         return "monitor_lost"
 
+    def _kill_token(self) -> str | None:
+        """The one kill read (#385 HH4-01): `killed`, or `monitor_lost` (latched) when the kill
+        cannot be read (fail closed), else None. No kill-path read ever raises."""
+        try:
+            killed = self._monitor.kill_requested()
+        except Exception:  # noqa: BLE001 - an unread kill is a lost monitor, latched and counted
+            self._lose()
+            return "monitor_lost"
+        return "killed" if killed else None
+
     def _lose(self) -> None:
         """LW-01: latch monitor_lost for the task, counted once."""
         if not self._lost:
@@ -524,23 +530,26 @@ class LiveWorld:
         derived deadline ([V2.59]) on the world's clock, waited out kill-aware; else the monitor
         is lost and the send never happens."""
         monitor = self._monitor
-        if monitor.kill_requested():  # #364 H3: the kill wins at every point
-            raise PortInterrupted("killed")
+        token = self._kill_token()  # #364 H3: the kill wins at every point
+        if token is not None:
+            raise PortInterrupted(token)
         if self._lost:  # #364 H1: a hook that answers again after a loss is not trusted
             raise PortInterrupted("monitor_lost")
         monitor.probe_now()
         started = self._config.clock()
         while True:
-            if monitor.kill_requested():
-                raise PortInterrupted("killed")
+            token = self._kill_token()
+            if token is not None:
+                raise PortInterrupted(token)
             if not monitor.healthy():  # #364 H2, H5: errors, a dead thread, a failed send
                 self._lose()
                 raise PortInterrupted("monitor_lost")
             if monitor.probe_seen():
                 return
             if self._config.clock() - started >= self._probe_deadline_s:
-                if monitor.kill_requested():  # a kill after the last poll still wins
-                    raise PortInterrupted("killed")
+                token = self._kill_token()  # a kill after the last poll still wins
+                if token is not None:
+                    raise PortInterrupted(token)
                 self._lose()
                 raise PortInterrupted("monitor_lost")
             self._kill_aware_sleep(PROVE_POLL_S)

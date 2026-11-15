@@ -28,9 +28,13 @@ class HelperMonitor(Monitor):
         self.clock = clock
         self.kill_after_waits: int | None = None
         self.kill_raises: Exception | None = None
+        self.kill_reads = 0
+        self.kill_raises_from = 1
+        """The kill read (1-based) from which `kill_raises` is raised."""
 
     def kill_requested(self) -> bool:
-        if self.kill_raises is not None:
+        self.kill_reads += 1
+        if self.kill_raises is not None and self.kill_reads >= self.kill_raises_from:
             raise self.kill_raises
         return super().kill_requested()
 
@@ -184,3 +188,21 @@ def test_the_hook_timeout_is_read_once_at_start_and_that_value_passed_on() -> No
     assert timeout == 700
     assert deadline == pytest.approx(0.7 + 0.05)
     assert world.header(task())["hook_timeout_ms"] == "700"
+
+
+@pytest.mark.parametrize("raises_from", [1, 2, 3])
+def test_a_kill_read_that_raises_while_proving_is_monitor_lost(raises_from: int) -> None:
+    """#385 HH4-01: every kill read goes through one guarded accessor; no kill-path read
+    raises anything but `PortInterrupted`."""
+    platform = HelperPlatform()
+    world, _ = _world(platform, hook_helper=True)
+    helper = platform.helper
+    assert helper is not None
+    helper.seen = False  # the probe is not seen yet: the proof polls
+    helper.kill_reads = 0
+    helper.kill_raises = RuntimeError("the helper is not started")
+    helper.kill_raises_from = raises_from
+    with pytest.raises(PortInterrupted) as stopped:
+        world._prove_hooks()
+    assert stopped.value.args == ("monitor_lost",)
+    assert world.monitor_lost == 1
