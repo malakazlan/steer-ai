@@ -25,11 +25,14 @@ def test_a_proven_read_names_its_change_carriers_and_content() -> None:
     assert _held(judged, "results") == (True, False)
 
 
-def test_the_verdict_is_the_auto_proofs() -> None:
-    for now in (page([RESULT]), page([RESULT], url=URL), page([], url=QUERY_URL)):
-        assert judge(SUB, before(), now, typed=TYPED).proof == auto_proof(
-            SUB, before(), now, typed=TYPED
-        )
+def test_the_verdict_is_the_old_rules() -> None:
+    """The base's `auto_proof` gave these tokens on these reads (pinned, not compared to
+    `auto_proof`, which is now `judge().proof`)."""
+    cases = ((page([RESULT]), "results_with_url"), (page([RESULT], url=URL), None),
+             (page([], url=QUERY_URL), None))  # fmt: skip
+    for now, token in cases:
+        assert judge(SUB, before(), now, typed=TYPED).proof == token
+        assert auto_proof(SUB, before(), now, typed=TYPED) == token
 
 
 def test_an_unread_address_is_named() -> None:
