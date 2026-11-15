@@ -633,3 +633,20 @@ def test_the_risk_is_rated_on_the_very_read_the_dispatch_is_sent_against(
     rated_on, element = rated[0]
     assert rated_on is world.read_log[2]
     assert any(e is element for e in world.read_log[2].snapshot.elements)
+
+
+def test_a_press_re_read_on_age_rechecks_the_focus_on_the_new_read() -> None:
+    """RT-19 for a press: the loop itself re-checks focus on the re-read, without relying on the
+    act port. Focus moved to the menu by the re-read: a world move (`focus_lost`), no press."""
+    world = World(
+        [
+            decision(act("type", target=FIELD.id, param="text"), first=True),
+            decision(act("press", key="Enter")),
+        ],
+        effects=[report("own_value")],
+        observations=[FOCUSED] * 5 + [ELSEWHERE] * 4,
+    )
+    world.observe_lag_s = REUSE_FRESHNESS_S + 1.0
+    outcome = run_task(task(), world.ports())
+    assert [d.action.verb for d in world.dispatched] == ["type"]
+    assert outcome.focus_losses == 1

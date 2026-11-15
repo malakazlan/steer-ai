@@ -697,7 +697,7 @@ class _Run:
         if element is None and action.verb != "wait":
             return None
         if element is not None and self._old(observed):
-            again = self._read_again(element, listed)
+            again = self._read_again(element, listed, press=action.verb == "press")
             if again is None:
                 return None  # the page moved under it (`_moved`)
             observed, element = again  # everything below uses the read it is sent against
@@ -736,7 +736,9 @@ class _Run:
         UNMEASURED; the read-cost probe measures it), from its read's completion."""
         return self.ports.clock() - observed.snapshot.taken_at > REUSE_FRESHNESS_S
 
-    def _read_again(self, element: Element, listed: Observed) -> tuple[Observed, Element] | None:
+    def _read_again(
+        self, element: Element, listed: Observed, *, press: bool
+    ) -> tuple[Observed, Element] | None:
         """[V2.42] RT-19: one fresh read (never a model call). The same element (its RuntimeId,
         held once, same role and name) and the top Document and URL unchanged since the decided-on
         observation: dispatch on it. Otherwise the staleness rule applies (`_Turn.stale_read`).
@@ -748,6 +750,9 @@ class _Run:
             normalise_name(element.name),
         )
         if same and not stale_observation(listed, read):
+            if press and not press_allowed(focus=read.focus, last_acted=found[0].runtime_id):
+                self._moved("focus", read)  # the re-read shows focus moved: never press blind
+                return None
             return read, found[0]
         self._moved("page", read)
         return None
