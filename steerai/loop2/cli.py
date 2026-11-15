@@ -27,7 +27,6 @@ from pathlib import Path
 from typing import Any, Final, TextIO
 
 from steerai.errors import (
-    DETAIL_AMBIGUOUS_TARGET,
     DETAIL_CLOAK_UNREADABLE,
     DETAIL_LOOP_V2_NOT_READY,
     DETAIL_MINIMIZED,

@@ -37,7 +37,6 @@ from steerai.debug_trace import (
 from steerai.errors import (
     DETAIL_AMBIGUOUS_TARGET,
     DETAIL_CLOAK_UNREADABLE,
-    DETAIL_LOOP_V2_NOT_READY,
     DETAIL_MINIMIZED,
     DETAIL_NO_MATCH,
     DETAIL_USAGE,
@@ -1786,7 +1785,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         options = parse_args(args)
     except UsageError as exc:
         sys.stderr.write(f"usage error: {exc}\n")
-        sys.stdout.write(json.dumps({"status": "error", "code": None, "detail": "usage"}) + "\n")
+        sys.stdout.write(
+            json.dumps({"status": "error", "code": None, "detail": DETAIL_USAGE}) + "\n"
+        )
         return EXIT_USAGE
     if options.loop == "v2":  # an abbreviated flag: the v2 parser takes no abbreviations
         return _loop_v2(args)
