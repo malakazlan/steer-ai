@@ -12,7 +12,12 @@ from typing import Any
 import pytest
 
 from steerai.errors import ErrorCode, SteerError
-from steerai.loop2.controller import AUDIT_PROMPT_VERSION, ControllerError, build_audit_prompt
+from steerai.loop2.controller import (
+    AUDIT_PROMPT_VERSION,
+    ControllerError,
+    build_audit_prompt,
+    parse_audit,
+)
 from steerai.loop2.decision import Claim, Decision, SubgoalDoc
 from steerai.loop2.loop import Audited, AuditView, PortInterrupted, TokenUsage
 from steerai.loop2.runner import run_task
@@ -306,3 +311,76 @@ def test_only_an_allow_that_says_the_outcome_is_shown_lets_done_stand(
 ) -> None:
     outcome = run_task(task(), _value_only(contradiction).ports())
     assert (outcome.status, outcome.reason) == ("blocked", "audit_veto")
+
+
+# ---- #404 principal 5: the rev 4.5 tests still missing ------------------------------------------
+
+
+def test_an_auto_proof_is_never_audited(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rev 4.5 test 3: a page subgoal closed by the auto proof."""
+    monkeypatch.setattr("steerai.loop2.runner.auto_proof", lambda *_a, **_k: "url_query")
+    subs = [SubgoalDoc(id="s1", desc="results", params={"text": "red shoes"}, closes="page")]
+    world = World(
+        [Decision(subgoals=subs, actions=[act("type", target=FIELD.id, param="text")])],
+        effects=[report("url_changed_in_place")],
+    )
+    world.after = dataclasses.replace(observed(), url="https://shop.test/search?q=red+shoes")
+    world.later = world.after
+    world.audit_reply = VETO
+    outcome = run_task(task(), world.ports())
+    assert outcome.status == "done"
+    assert world.audits == []
+
+
+def test_a_mixed_task_value_plus_navigated_is_never_audited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rev 4.5 test 4: one value proof and one page proof (the type under the page subgoal, closed
+    by the auto proof)."""
+    monkeypatch.setattr("steerai.loop2.runner.auto_proof", lambda *_a, **_k: "url_query")
+    subs = [
+        SubgoalDoc(id="s1", desc="field", params={"text": "red shoes"}, closes="value"),
+        SubgoalDoc(id="s2", desc="results", params={"text": "red shoes"}, closes="page"),
+    ]
+    claim = Claim(subgoal="s1", kind="value", evidence=[FIELD.id], param="text")
+    world = World(
+        [
+            Decision(
+                subgoals=subs, actions=[act("type", target=FIELD.id, param="text", subgoal="s2")]
+            ),
+            Decision(claims=[claim]),
+        ],
+        effects=[report("own_value", "url_changed_in_place")],
+    )
+    world.after = dataclasses.replace(observed(), url="https://shop.test/search?q=red+shoes")
+    world.later = world.after
+    world.audit_reply = VETO
+    outcome = run_task(task(), world.ports())
+    assert outcome.status == "done"
+    assert world.audits == []
+
+
+@pytest.mark.parametrize(
+    ("reply", "code"),
+    [
+        ('{"veto": false, "reason": "looks_fine"}', "schema"),
+        ('{"veto": false}', "schema"),
+        ('{"veto": "no", "reason": "outcome_shown"}', "schema"),
+        ("not json at all", "not_json"),
+    ],
+    ids=["unknown_reason", "no_reason", "veto_not_bool", "unparsed"],
+)
+def test_parse_audit_refuses_anything_but_its_schema(reply: str, code: str) -> None:
+    """Rev 4.5 test 6, on the parser itself."""
+    with pytest.raises(ControllerError) as refused:
+        parse_audit(reply)
+    assert refused.value.code == code
+
+
+def test_the_audits_tokens_are_counted_in_used() -> None:
+    """Rev 4.5 test 10."""
+    world = _value_only(Audited(veto=False, reason="outcome_shown", usage=TokenUsage(500, 7)))
+    outcome = run_task(task(), world.ports())
+    decides = world.events.count("decide")
+    assert outcome.usage.input_tokens == decides * 100 + 500
+    assert outcome.usage.output_tokens == decides * 10 + 7
