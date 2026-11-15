@@ -650,3 +650,31 @@ def test_a_press_re_read_on_age_rechecks_the_focus_on_the_new_read() -> None:
     outcome = run_task(task(), world.ports())
     assert [d.action.verb for d in world.dispatched] == ["type"]
     assert outcome.focus_losses == 1
+
+
+def test_a_mixed_turn_then_one_stale_turn_is_no_strike() -> None:
+    """The streak is neither raised by a mixed turn: mixed (0 -> 0), then one stale turn
+    (0 -> 1) is the first in a row, no strike. A mixed turn that raised it would make that
+    stale turn the second (a strike)."""
+
+    def at(url: str, focus: tuple[int, ...]) -> Observed:
+        seen = observed(QUERY_PAGE, focus=focus)
+        return dataclasses.replace(seen, url=url, document_url=url)
+
+    a, b = URL + "a", URL + "b"
+    world = World(
+        [
+            decision(
+                act("type", target=FIELD.id, param="text"), act("press", key="Enter"), first=True
+            ),
+            decision(act("click", target=GO.id)),
+        ],
+        effects=[report("own_value")],
+        observations=[at(a, FIELD.runtime_id), at(a, FIELD.runtime_id), at(b, FIELD.runtime_id)],
+        after=at(a, MENU.runtime_id),  # after the type, focus is on the menu: a mixed turn
+    )
+    outcome = run_task(task(), world.ports())
+    history = [t for v in world.views for t in v.history]
+    assert "focus_lost" in history
+    assert outcome.stale_observations == 1
+    assert all("refused" not in reasons for reasons in outcome.strikes)
