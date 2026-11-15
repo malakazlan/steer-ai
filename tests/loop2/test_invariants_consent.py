@@ -118,7 +118,9 @@ def run(
 ORDER = ["checks", "admit", "goal_check", "ask", "after_yes", "write_ahead", "dispatch"]
 
 
-@pending("§3.4: checks, ledger, goal check, ask, after-yes, write-ahead, dispatch, in order")
+@pending(
+    "§3.4: checks, ledger, goal check, ask, after-yes, write-ahead, dispatch, in order", step=4
+)
 def test_a_yes_runs_every_step_in_order_and_dispatches_once() -> None:
     script = Script()
     end = run(script)
@@ -126,7 +128,7 @@ def test_a_yes_runs_every_step_in_order_and_dispatches_once() -> None:
     assert len(script.dispatched) == 1
 
 
-@pending("§8.3, [V2.15] Q6: the same answer rule for R2 and R3")
+@pending("§8.3, [V2.15] Q6: the same answer rule for R2 and R3", step=4)
 @pytest.mark.parametrize("risk", ["R2", "R3"])
 def test_every_r2_and_r3_action_asks_in_bootstrap_mode(risk: Risk) -> None:
     script = Script()
@@ -135,7 +137,7 @@ def test_every_r2_and_r3_action_asks_in_bootstrap_mode(risk: Risk) -> None:
     assert script.asks[0].risk == risk
 
 
-@pending("§3.4 steps 3 and 4: a refused check asks nothing and dispatches nothing")
+@pending("§3.4 steps 3 and 4: a refused check asks nothing and dispatches nothing", step=4)
 @pytest.mark.parametrize(
     "token", ["commit_undeclared", "no_strict_shape", "not_in_step", "composer_differs"]
 )
@@ -146,7 +148,7 @@ def test_a_failed_check_refuses_before_the_ledger_and_the_ask(token: RefusalToke
     assert script.events == ["checks"]
 
 
-@pending("§8.4, §3.4 step 5: a key closed done refuses done_already with no ask")
+@pending("§8.4, §3.4 step 5: a key closed done refuses done_already with no ask", step=4)
 def test_a_done_key_refuses_done_already_without_a_goal_check_or_an_ask() -> None:
     script = Script(admission="done")
     end = run(script)
@@ -154,21 +156,21 @@ def test_a_done_key_refuses_done_already_without_a_goal_check_or_an_ask() -> Non
     assert script.events == ["checks", "admit"]
 
 
-@pending("§8.4: an unknown outcome confirms, never re-sends")
+@pending("§8.4: an unknown outcome confirms, never re-sends", step=4)
 def test_a_key_after_an_unknown_outcome_asks_with_previous_attempt() -> None:
     script = Script(admission="confirm")
     run(script)
     assert script.asks[0].previous_attempt is not None
 
 
-@pending("§8.4: an unknown outcome confirms, never re-sends")
+@pending("§8.4: an unknown outcome confirms, never re-sends", step=4)
 def test_a_key_after_an_unknown_outcome_never_dispatches_without_a_new_yes() -> None:
     script = Script(admission="confirm", answer=lambda _ask: "no")
     run(script)
     assert script.dispatched == []
 
 
-@pending("§3.4 step 8: a no ends the task blocked, user_declined")
+@pending("§3.4 step 8: a no ends the task blocked, user_declined", step=4)
 @pytest.mark.parametrize("answer", ["no", "no:{id}"])
 def test_a_no_ends_blocked_user_declined(answer: str) -> None:
     script = Script(answer=lambda ask: answer.format(id=ask.decision_id))
@@ -178,7 +180,7 @@ def test_a_no_ends_blocked_user_declined(answer: str) -> None:
     assert script.dispatched == []
 
 
-@pending("§3.4 step 8, [V2.15] Q7: no answer ends the task paused, unanswered")
+@pending("§3.4 step 8, [V2.15] Q7: no answer ends the task paused, unanswered", step=4)
 def test_no_answer_ends_paused_unanswered() -> None:
     script = Script(answer=lambda _ask: "unanswered")
     end = run(script)
@@ -186,7 +188,7 @@ def test_no_answer_ends_paused_unanswered() -> None:
     assert script.dispatched == []
 
 
-@pending("§3.4 step 8: the kill switch ends the task stopped, killed")
+@pending("§3.4 step 8: the kill switch ends the task stopped, killed", step=4)
 def test_the_kill_switch_ends_stopped_killed() -> None:
     script = Script(answer=lambda _ask: "killed")
     end = run(script)
@@ -194,7 +196,7 @@ def test_the_kill_switch_ends_stopped_killed() -> None:
     assert script.dispatched == []
 
 
-@pending("§8.3 only an exact yes for the open ask consents")
+@pending("§8.3 only an exact yes for the open ask consents", step=4)
 @pytest.mark.parametrize("answer", ["y", "Yes", "yes ", "", "yes:d-000000000000", "ok"])
 def test_anything_but_an_exact_yes_never_dispatches(answer: str) -> None:
     script = Script(answer=lambda _ask: answer)
@@ -203,7 +205,7 @@ def test_anything_but_an_exact_yes_never_dispatches(answer: str) -> None:
     assert "write_ahead" not in script.events
 
 
-@pending("[V2.15] Q6: a yes is used once per action key")
+@pending("[V2.15] Q6: a yes is used once per action key", step=4)
 def test_a_yes_for_an_earlier_decision_never_dispatches_again() -> None:
     first = Script()
     consents = Consents()
@@ -214,7 +216,7 @@ def test_a_yes_for_an_earlier_decision_never_dispatches_again() -> None:
     assert second.dispatched == []
 
 
-@pending("§3.4 step 9 screen_changed_during_ask ([v2.24])")
+@pending("§3.4 step 9 screen_changed_during_ask ([v2.24])", step=4)
 @pytest.mark.parametrize("token", ["screen_changed_during_ask", "not_foreground"])
 def test_a_failed_after_yes_check_refuses_and_dispatches_nothing(token: RefusalToken) -> None:
     script = Script(after=token)
@@ -224,7 +226,7 @@ def test_a_failed_after_yes_check_refuses_and_dispatches_nothing(token: RefusalT
     assert script.dispatched == []
 
 
-@pending("§8.4: a failed write-ahead dispatches nothing and ends blocked")
+@pending("§8.4: a failed write-ahead dispatches nothing and ends blocked", step=4)
 def test_a_failed_write_ahead_ends_blocked_wal_unavailable() -> None:
     script = Script(written=False)
     end = run(script)
@@ -232,14 +234,14 @@ def test_a_failed_write_ahead_ends_blocked_wal_unavailable() -> None:
     assert script.dispatched == []
 
 
-@pending("§8.4: the dispatch carries the decision bound to the action key")
+@pending("§8.4: the dispatch carries the decision bound to the action key", step=4)
 def test_the_dispatched_decision_is_bound_to_the_action_key() -> None:
     script = Script()
     run(script)
     assert script.dispatched[0].action_key == KEY
 
 
-@pending("§8.5: generated text at R2 asks and says the agent wrote it")
+@pending("§8.5: generated text at R2 asks and says the agent wrote it", step=4)
 def test_generated_text_is_asked_with_the_generated_reason() -> None:
     script = Script()
     run(script, dataclasses.replace(REQUEST, text_from="agent"))
@@ -249,14 +251,14 @@ def test_generated_text_is_asked_with_the_generated_reason() -> None:
 # ---- the goal check ([V2.15] Q5, packet §3.5) -----------------------------------------------
 
 
-@pending("[V2.15] Q5: the goal check never approves; serves still asks")
+@pending("[V2.15] Q5: the goal check never approves; serves still asks", step=4)
 def test_a_serving_verdict_still_asks() -> None:
     script = Script(verdict="serves")
     run(script)
     assert len(script.asks) == 1
 
 
-@pending("[V2.15] Q5: contrary asks with goal_contrary, never blocks")
+@pending("[V2.15] Q5: contrary asks with goal_contrary, never blocks", step=4)
 def test_a_contrary_verdict_asks_and_a_yes_still_dispatches() -> None:
     script = Script(verdict="contrary")
     end = run(script)
@@ -264,7 +266,7 @@ def test_a_contrary_verdict_asks_and_a_yes_still_dispatches() -> None:
     assert end.kind == "dispatched"
 
 
-@pending("[V2.15] Q5: every verdict asks, none blocks")
+@pending("[V2.15] Q5: every verdict asks, none blocks", step=4)
 @pytest.mark.parametrize("verdict", ["serves", "unrelated", "contrary", "unknown"])
 def test_no_verdict_blocks(verdict: Verdict) -> None:
     script = Script(verdict=verdict)
@@ -272,7 +274,7 @@ def test_no_verdict_blocks(verdict: Verdict) -> None:
     assert end.kind == "dispatched"
 
 
-@pending("§3.5 the reason token per verdict")
+@pending("§3.5 the reason token per verdict", step=4)
 @pytest.mark.parametrize(
     ("verdict", "reasons"),
     [
@@ -286,14 +288,14 @@ def test_each_verdict_maps_to_its_reason(verdict: Verdict, reasons: tuple[str, .
     assert goal_reasons(verdict) == reasons
 
 
-@pending("§3.5: the goal check sees one row, never the listing or the history")
+@pending("§3.5: the goal check sees one row, never the listing or the history", step=4)
 def test_the_goal_row_holds_only_the_action_facts() -> None:
     row = goal_row(act("click", target=SEND.id), SEND, text=None, text_from=None)
     assert set(dataclasses.asdict(row)) == {"verb", "commit", "role", "name", "text", "text_from"}
     assert (row.verb, row.role, row.name) == ("click", SEND.role, SEND.name)
 
 
-@pending("§3.5: the goal check reuses v1's goal-match system prompt unchanged")
+@pending("§3.5: the goal check reuses v1's goal-match system prompt unchanged", step=4)
 def test_the_goal_prompt_keeps_the_v1_system_prompt_and_fences_the_row() -> None:
     row = GoalRow(
         verb="click", commit="send", role="Button", name="Send", text=None, text_from=None
@@ -304,7 +306,7 @@ def test_the_goal_prompt_keeps_the_v1_system_prompt_and_fences_the_row() -> None
     assert "Send" in user
 
 
-@pending("§3.4 step 6: the goal check gets the row of the action asked about")
+@pending("§3.4 step 6: the goal check gets the row of the action asked about", step=4)
 def test_the_goal_check_sees_the_asked_actions_row() -> None:
     script = Script()
     run(script)
@@ -319,7 +321,7 @@ UNCERTAIN = ActionResult(
 )
 
 
-@pending("[V2.25] (c), §8.4: nothing sent is retried once under the same record and answer")
+@pending("[V2.25] (c), §8.4: nothing sent is retried once under the same record and answer", step=4)
 @pytest.mark.parametrize("risk", ["R2", "R3"])
 def test_nothing_sent_is_retried_once_with_no_second_ask_or_write_ahead(risk: Risk) -> None:
     script = Script(results=[LEFT])
@@ -331,7 +333,7 @@ def test_nothing_sent_is_retried_once_with_no_second_ask_or_write_ahead(risk: Ri
     assert script.dispatched[0] == script.dispatched[1], "the same decision"
 
 
-@pending("[V2.25] (c): v1's local retry is once")
+@pending("[V2.25] (c): v1's local retry is once", step=4)
 def test_the_local_retry_is_once() -> None:
     script = Script(results=[LEFT, LEFT])
     run(script)
@@ -339,7 +341,7 @@ def test_the_local_retry_is_once() -> None:
     assert script.events.count("write_ahead") == 1
 
 
-@pending("[V2.25] (c), §8.4: an uncertain delivery is never re-sent")
+@pending("[V2.25] (c), §8.4: an uncertain delivery is never re-sent", step=4)
 def test_an_uncertain_delivery_is_never_re_sent() -> None:
     script = Script(results=[UNCERTAIN])
     run(script)

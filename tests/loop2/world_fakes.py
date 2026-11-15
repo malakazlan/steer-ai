@@ -40,11 +40,13 @@ from steerai.world.reads import ReadCost
 from steerai.world.watch import Watched, conclusive
 
 
-def pending(rule: str) -> pytest.MarkDecorator:
-    """[V2.9] an invariant written before its code (step 3c or step 4): it must fail on the
-    stub's `NotImplementedError` and nothing else, and the mark comes off when the step
-    implements it. `rule` names the rule it guards (§n or [V2.n])."""
-    return pytest.mark.xfail(strict=True, raises=NotImplementedError, reason=f"stub: {rule}")
+def pending(rule: str, *, step: int) -> pytest.MarkDecorator:
+    """[V2.9] an invariant written before its code: it must fail on the stub's
+    `NotImplementedError` and nothing else, and the mark comes off when `step` implements it.
+    `rule` names the rule it guards (§n or [V2.n]); packet §7: stage 1 needs no step 3 mark."""
+    return pytest.mark.xfail(
+        strict=True, raises=NotImplementedError, reason=f"step {step} stub: {rule}"
+    )
 
 
 GOAL = "search the shop for red shoes"

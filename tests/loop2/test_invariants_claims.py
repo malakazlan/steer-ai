@@ -66,7 +66,7 @@ def check(
     )
 
 
-@pending("§3.1 content_present standard")
+@pending("§3.1 content_present standard", step=4)
 def test_a_new_element_in_the_scope_holding_the_words_is_a_standard_proof() -> None:
     result = check(claim(RESULT.id), [RESULT])
     assert result.tokens == ()
@@ -75,77 +75,77 @@ def test_a_new_element_in_the_scope_holding_the_words_is_a_standard_proof() -> N
     assert "in_delta" in result.proof.signals
 
 
-@pending("[V2.15] amendment 1: every param word, in any order")
+@pending("[V2.15] amendment 1: every param word, in any order", step=4)
 def test_the_words_in_any_order_pass() -> None:
     reordered = element(11, "Text", "Shoes, red", (9, 11), 1)
     assert check(claim(reordered.id), [reordered]).proof is not None
 
 
-@pending("[V2.15] amendment 1: every param word, in one cited name")
+@pending("[V2.15] amendment 1: every param word, in one cited name", step=4)
 def test_a_missing_word_is_words_missing() -> None:
     boots = element(11, "Text", "Red boots", (9, 11), 1)
     assert "words_missing" in check(claim(boots.id), [boots]).tokens
 
 
-@pending("[V2.15] amendment 1: every param word, in one cited name")
+@pending("[V2.15] amendment 1: every param word, in one cited name", step=4)
 def test_words_split_over_two_names_are_words_missing() -> None:
     red = element(11, "Text", "Red", (9, 11), 1)
     shoes = element(12, "Text", "Shoes", (9, 12), 1)
     assert "words_missing" in check(claim(red.id, shoes.id), [red, shoes]).tokens
 
 
-@pending("[V2.15] amendment 1: whole tokens, casefolded")
+@pending("[V2.15] amendment 1: whole tokens, casefolded", step=4)
 def test_a_word_inside_another_word_is_words_missing() -> None:
     joined = element(11, "Text", "Redshoes", (9, 11), 1)
     assert "words_missing" in check(claim(joined.id), [joined]).tokens
 
 
-@pending("§3.1 rule 1 param_missing")
+@pending("§3.1 rule 1 param_missing", step=4)
 def test_a_claim_without_a_param_is_param_missing() -> None:
     assert "param_missing" in check(claim(RESULT.id, param=None), [RESULT]).tokens
 
 
-@pending("§3.1 rule 1 param_missing")
+@pending("§3.1 rule 1 param_missing", step=4)
 def test_a_param_the_subgoal_lacks_is_param_missing() -> None:
     assert "param_missing" in check(claim(RESULT.id, param="other"), [RESULT]).tokens
 
 
-@pending("§3.1 rule 2 evidence_missing")
+@pending("§3.1 rule 2 evidence_missing", step=4)
 def test_no_evidence_is_evidence_missing() -> None:
     assert "evidence_missing" in check(claim(), [RESULT]).tokens
 
 
-@pending("§3.1 rule 2 too_much_evidence")
+@pending("§3.1 rule 2 too_much_evidence", step=4)
 def test_more_than_four_ids_is_too_much_evidence() -> None:
     many = [element(20 + i, "Text", "Red shoes", (9, 20 + i), 1) for i in range(5)]
     assert "too_much_evidence" in check(claim(*(e.id for e in many)), many).tokens
 
 
-@pending("§3.1 rule 3 id_not_listed")
+@pending("§3.1 rule 3 id_not_listed", step=4)
 def test_an_id_not_in_the_snapshot_is_not_listed() -> None:
     assert "id_not_listed" in check(claim(99), [RESULT]).tokens
 
 
-@pending("§3.1 rule 4 outside_scope ([V2.3])")
+@pending("§3.1 rule 4 outside_scope ([V2.3])", step=4)
 def test_a_tab_name_holding_the_words_is_outside_scope() -> None:
     tab = element(30, "TabItem", "Red shoes - results", (9, 30), None)
     assert "outside_scope" in check(claim(tab.id), [tab]).tokens
 
 
-@pending("§3.1 rule 4 outside_scope ([V2.3])")
+@pending("§3.1 rule 4 outside_scope ([V2.3])", step=4)
 def test_the_address_bar_is_outside_scope() -> None:
     bar = element(31, "Edit", "red shoes", (9, 31), None)
     assert "outside_scope" in check(claim(bar.id), [bar]).tokens
 
 
-@pending("§3.1 rule 5 not_in_delta")
+@pending("§3.1 rule 5 not_in_delta", step=4)
 def test_an_element_already_in_the_baseline_is_not_in_delta() -> None:
     old = element(11, "Text", "Red shoes", (9, 11), 1)
     subgoal = facts(baseline=snapshot([*PAGE, old]))
     assert "not_in_delta" in check(claim(old.id), [old], subgoal).tokens
 
 
-@pending("§3.1 rule 5: a changed name is in the delta")
+@pending("§3.1 rule 5: a changed name is in the delta", step=4)
 def test_an_element_whose_name_changed_since_the_baseline_is_in_the_delta() -> None:
     before = element(11, "Text", "Loading", (9, 11), 1)
     after = element(11, "Text", "Red shoes", (9, 11), 1)
@@ -153,7 +153,7 @@ def test_an_element_whose_name_changed_since_the_baseline_is_in_the_delta() -> N
     assert check(claim(after.id), [after], subgoal).proof is not None
 
 
-@pending("§3.1 rule 5: a replaced top Document")
+@pending("§3.1 rule 5: a replaced top Document", step=4)
 def test_a_replaced_top_document_gives_the_new_top_document_signal() -> None:
     page = element(40, "Document", "Results", (8, 40), None)
     line = element(41, "Text", "Red shoes", (8, 41), 40)
@@ -164,7 +164,7 @@ def test_a_replaced_top_document_gives_the_new_top_document_signal() -> None:
     assert "new_top_document" in result.proof.signals
 
 
-@pending("§3.1 rule 6 inside_field")
+@pending("§3.1 rule 6 inside_field", step=4)
 def test_an_element_inside_the_typed_fields_container_is_inside_field() -> None:
     group = element(50, "Group", "", (9, 50), 1)
     field = element(51, "Edit", "Search", (9, 51), 50)
@@ -173,13 +173,13 @@ def test_an_element_inside_the_typed_fields_container_is_inside_field() -> None:
     assert "inside_field" in check(claim(hint.id), [group, field, hint], subgoal).tokens
 
 
-@pending("§3.1 rule 10 too_short")
+@pending("§3.1 rule 10 too_short", step=4)
 def test_a_single_token_under_three_characters_is_too_short() -> None:
     ox = element(11, "Text", "ox", (9, 11), 1)
     assert "too_short" in check(claim(ox.id, param="short"), [ox]).tokens
 
 
-@pending("§3.1: a proof and reject tokens never come together")
+@pending("§3.1: a proof and reject tokens never come together", step=4)
 def test_a_rejected_claim_has_no_proof() -> None:
     result = check(claim(99), [RESULT])
     assert result.proof is None
@@ -194,7 +194,7 @@ COMBO_LIST = element(62, "List", "", (9, 62), 60)
 COMBO_ITEM = element(63, "Text", "red shoes", (9, 63), 62)
 
 
-@pending("[V2.21] #9 rule 1: a list under the field's ComboBox ancestor is field-owned")
+@pending("[V2.21] #9 rule 1: a list under the field's ComboBox ancestor is field-owned", step=4)
 def test_a_list_under_the_fields_combobox_ancestor_is_under_suggestions() -> None:
     subgoal = facts(typed_fields=(COMBO_FIELD.runtime_id,))
     shown = [COMBO, COMBO_FIELD, COMBO_LIST, COMBO_ITEM]
@@ -203,7 +203,7 @@ def test_a_list_under_the_fields_combobox_ancestor_is_under_suggestions() -> Non
     assert "owned_by_combobox" in tokens
 
 
-@pending("[V2.21] #9 rule 2: a list named by the field's ControllerFor is field-owned")
+@pending("[V2.21] #9 rule 2: a list named by the field's ControllerFor is field-owned", step=4)
 def test_a_list_named_by_controller_for_is_under_suggestions() -> None:
     popup = element(64, "List", "", (9, 64), 1)
     line = element(65, "Text", "red shoes", (9, 65), 64)
@@ -214,21 +214,21 @@ def test_a_list_named_by_controller_for_is_under_suggestions() -> None:
     assert "owned_by_parent" not in tokens, "the field's parent is the scope Document"
 
 
-@pending("[V2.21] #9: field-owned is decided by these rules, not by the effect class")
+@pending("[V2.21] #9: field-owned is decided by these rules, not by the effect class", step=4)
 def test_a_field_owned_list_is_rejected_even_when_not_a_revealed_root() -> None:
     subgoal = facts(typed_fields=(COMBO_FIELD.runtime_id,), revealed_roots=())
     shown = [COMBO, COMBO_FIELD, COMBO_LIST, COMBO_ITEM]
     assert "under_suggestions" in check(claim(COMBO_ITEM.id), shown, subgoal).tokens
 
 
-@pending("§3.1 rule 7: a Menu ancestor")
+@pending("§3.1 rule 7: a Menu ancestor", step=4)
 def test_an_element_under_a_menu_is_under_suggestions() -> None:
     menu = element(66, "Menu", "", (9, 66), 1)
     entry = element(67, "MenuItem", "red shoes", (9, 67), 66)
     assert "under_suggestions" in check(claim(entry.id), [menu, entry]).tokens
 
 
-@pending("§3.1 rule 7: a ToolTip ancestor")
+@pending("§3.1 rule 7: a ToolTip ancestor", step=4)
 def test_an_element_under_a_tooltip_is_under_suggestions() -> None:
     tip = element(68, "ToolTip", "", (9, 68), 1)
     words = element(69, "Text", "red shoes", (9, 69), 68)
@@ -241,7 +241,7 @@ FORM_FIELD = element(72, "Edit", "Search", (9, 72), 71)
 FORM_LIST = element(73, "List", "", (9, 73), 70)
 
 
-@pending("[V2.21] #9 rule 4: a list under the field's grandparent only is not field-owned")
+@pending("[V2.21] #9 rule 4: a list under the field's grandparent only is not field-owned", step=4)
 def test_a_list_that_only_shares_a_container_with_the_field_is_not_field_owned() -> None:
     """The list sits under the field's grandparent, not its parent container."""
     row = element(74, "ListItem", "Red shoes", (9, 74), 73)
@@ -270,7 +270,7 @@ SEARCH_HINT = element(114, "Text", "red shoes", (9, 114), 113)
 IN_SEARCH = Landmark(kind="search", runtime_id=SEARCH_AREA.runtime_id)
 
 
-@pending("[V2.21] #9 rule 3: sharing the field's nearest Search landmark is field-owned")
+@pending("[V2.21] #9 rule 3: sharing the field's nearest Search landmark is field-owned", step=4)
 def test_a_list_sharing_the_fields_search_landmark_is_field_owned() -> None:
     subgoal = facts(typed_fields=(SEARCH_INPUT.runtime_id,))
     shown = [SEARCH_AREA, SEARCH_INNER, SEARCH_INPUT, SEARCH_HINTS, SEARCH_HINT]
@@ -280,7 +280,7 @@ def test_a_list_sharing_the_fields_search_landmark_is_field_owned() -> None:
     assert fired(tokens) == {"owned_by_search_landmark"}
 
 
-@pending("[V2.21] #9 rule 4: under the field's parent container is field-owned")
+@pending("[V2.21] #9 rule 4: under the field's parent container is field-owned", step=4)
 def test_a_list_under_the_fields_parent_container_is_field_owned() -> None:
     box = element(120, "Group", "", (9, 120), 1)
     typed = element(121, "Edit", "Search", (9, 121), 120)
@@ -292,7 +292,7 @@ def test_a_list_under_the_fields_parent_container_is_field_owned() -> None:
     assert fired(tokens) == {"owned_by_parent"}
 
 
-@pending("[V2.21] #9: anything merely below the Document is not field-owned")
+@pending("[V2.21] #9: anything merely below the Document is not field-owned", step=4)
 def test_a_result_under_the_scope_document_beside_the_field_is_not_field_owned() -> None:
     subgoal = facts(typed_fields=(FIELD.runtime_id,))
     result = check(claim(RESULT.id), [RESULT], subgoal)
@@ -300,7 +300,7 @@ def test_a_result_under_the_scope_document_beside_the_field_is_not_field_owned()
     assert fired(result.tokens) == set()
 
 
-@pending("[V2.21] #9 rule 4: a parent that is a Main landmark is not a field's container")
+@pending("[V2.21] #9 rule 4: a parent that is a Main landmark is not a field's container", step=4)
 def test_a_result_under_the_main_landmark_beside_the_field_is_not_field_owned() -> None:
     main = element(130, "Group", "", (9, 130), 1)
     typed = element(131, "Edit", "Search", (9, 131), 130)
@@ -312,7 +312,9 @@ def test_a_result_under_the_main_landmark_beside_the_field_is_not_field_owned() 
     assert result.proof is not None
 
 
-@pending("[V2.21] #9 sample: the suggestion list under the field's search Group hits rules 2-4")
+@pending(
+    "[V2.21] #9 sample: the suggestion list under the field's search Group hits rules 2-4", step=4
+)
 def test_the_suggestion_sample_hits_controller_for_landmark_and_parent() -> None:
     group = element(140, "Group", "Search", (9, 140), 1)
     typed = element(141, "Edit", "Search", (9, 141), 140)
@@ -330,7 +332,7 @@ def test_the_suggestion_sample_hits_controller_for_landmark_and_parent() -> None
     ], "[V2.23] C: every rule that fires, in a stable order"
 
 
-@pending("[V2.21] #9 sample: results directly under the Document (cp1) hit no rule")
+@pending("[V2.21] #9 sample: results directly under the Document (cp1) hit no rule", step=4)
 def test_the_results_under_the_document_sample_hits_no_rule() -> None:
     form = element(150, "Group", "Search", (9, 150), 1)
     typed = element(151, "Edit", "Search", (9, 151), 150)
@@ -348,7 +350,7 @@ def test_the_results_under_the_document_sample_hits_no_rule() -> None:
     assert fired(result.tokens) == set()
 
 
-@pending("[V2.23] B: no landmark map with a typed field fails closed, landmarks_unread")
+@pending("[V2.23] B: no landmark map with a typed field fails closed, landmarks_unread", step=4)
 def test_a_missing_landmark_map_with_a_typed_field_fails_closed() -> None:
     subgoal = facts(typed_fields=(FIELD.runtime_id,))
     result = check(claim(RESULT.id), [RESULT], subgoal, landmarks_read=False)
@@ -357,14 +359,16 @@ def test_a_missing_landmark_map_with_a_typed_field_fails_closed() -> None:
     assert fired(result.tokens) == set(), "not read is never owned"
 
 
-@pending("[V2.23] B: with no typed field there is nothing to own")
+@pending("[V2.23] B: with no typed field there is nothing to own", step=4)
 def test_a_missing_landmark_map_without_a_typed_field_is_no_reject() -> None:
     result = check(claim(RESULT.id), [RESULT], facts(), landmarks_read=False)
     assert result.proof is not None
     assert "landmarks_unread" not in result.tokens
 
 
-@pending("[V2.23] B: an unread ControllerFor is not observed by design and never fails closed")
+@pending(
+    "[V2.23] B: an unread ControllerFor is not observed by design and never fails closed", step=4
+)
 def test_an_unread_controller_for_never_fails_closed() -> None:
     subgoal = facts(typed_fields=(FIELD.runtime_id,), controlled=())
     result = check(claim(RESULT.id), [RESULT], subgoal)
@@ -372,7 +376,7 @@ def test_an_unread_controller_for_never_fails_closed() -> None:
     assert "landmarks_unread" not in result.tokens
 
 
-@pending("[V2.21] #9: the option rule stays on top of the field-owned rules")
+@pending("[V2.21] #9: the option rule stays on top of the field-owned rules", step=4)
 def test_the_option_rule_comes_before_the_field_owned_rules() -> None:
     box = element(160, "Group", "", (9, 160), 1)
     typed = element(161, "Edit", "Search", (9, 161), 160)
@@ -391,7 +395,7 @@ def test_the_option_rule_comes_before_the_field_owned_rules() -> None:
     assert tokens[0] == "option_evidence"
 
 
-@pending("[V2.17].2: a selectable ListItem is never evidence for text Steer typed")
+@pending("[V2.17].2: a selectable ListItem is never evidence for text Steer typed", step=4)
 def test_a_selectable_list_item_is_option_evidence_for_typed_text() -> None:
     option = Element(
         id=75,
@@ -408,7 +412,7 @@ def test_a_selectable_list_item_is_option_evidence_for_typed_text() -> None:
     assert "option_evidence" in check(claim(option.id), shown, subgoal).tokens
 
 
-@pending("[V2.17].2: a selected ListItem is a listbox option too")
+@pending("[V2.17].2: a selected ListItem is a listbox option too", step=4)
 def test_a_selected_list_item_is_option_evidence_for_typed_text() -> None:
     option = Element(
         id=76,
@@ -425,7 +429,7 @@ def test_a_selected_list_item_is_option_evidence_for_typed_text() -> None:
     assert "option_evidence" in check(claim(option.id), shown, subgoal).tokens
 
 
-@pending("[V2.17].2: the option rule covers only the param Steer typed under the subgoal")
+@pending("[V2.17].2: the option rule covers only the param Steer typed under the subgoal", step=4)
 def test_a_list_option_is_evidence_when_the_subgoal_typed_something_else() -> None:
     option = Element(
         id=77,
@@ -442,7 +446,7 @@ def test_a_list_option_is_evidence_when_the_subgoal_typed_something_else() -> No
     assert check(claim(option.id), shown, subgoal).proof is not None
 
 
-@pending("[V2.3]: under a revealed root that is not field-owned, with under_revealed")
+@pending("[V2.3]: under a revealed root that is not field-owned, with under_revealed", step=4)
 def test_a_revealed_list_that_is_not_field_owned_passes_with_under_revealed() -> None:
     panel = element(80, "Group", "Details", (9, 80), 1)
     words = element(81, "Text", "Red shoes", (9, 81), 80)
@@ -452,7 +456,7 @@ def test_a_revealed_list_that_is_not_field_owned_passes_with_under_revealed() ->
     assert "under_revealed" in result.proof.signals
 
 
-@pending("[V2.3]: under_revealed is only set under a revealed root")
+@pending("[V2.3]: under_revealed is only set under a revealed root", step=4)
 def test_evidence_outside_any_revealed_root_has_no_under_revealed() -> None:
     result = check(claim(RESULT.id), [RESULT])
     assert result.proof is not None

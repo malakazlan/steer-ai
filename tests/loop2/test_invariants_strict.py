@@ -71,7 +71,7 @@ def check(
     )
 
 
-@pending("§8.8 strict content_present bound to the write-ahead record")
+@pending("§8.8 strict content_present bound to the write-ahead record", step=4)
 def test_one_new_element_holding_the_whole_content_is_a_strict_proof() -> None:
     result = check([*PAGE, BUBBLE])
     assert result.tokens == ()
@@ -79,50 +79,50 @@ def test_one_new_element_holding_the_whole_content_is_a_strict_proof() -> None:
     assert (result.proof.tier, result.proof.preexisting) == ("strict", False)
 
 
-@pending("§8.8 the proof's action_id is the record's action key")
+@pending("§8.8 the proof's action_id is the record's action key", step=4)
 def test_the_strict_proof_is_bound_to_the_records_action_key() -> None:
     result = check([*PAGE, BUBBLE])
     assert result.proof is not None
     assert result.proof.action_id == RECORD.action_key
 
 
-@pending("§8.8 no_record")
+@pending("§8.8 no_record", step=4)
 def test_without_a_record_there_is_no_strict_proof() -> None:
     assert "no_record" in check([*PAGE, BUBBLE], records=()).tokens
 
 
-@pending("§8.8 no_record: a record only written, never dispatched")
+@pending("§8.8 no_record: a record only written, never dispatched", step=4)
 def test_a_record_still_in_phase_written_is_no_record() -> None:
     written = dataclasses.replace(RECORD, phase="written")
     assert "no_record" in check([*PAGE, BUBBLE], records=(written,)).tokens
 
 
-@pending("[V2.15] Q1: the record binds the proof by the subgoal id it holds")
+@pending("[V2.15] Q1: the record binds the proof by the subgoal id it holds", step=4)
 def test_a_record_of_another_subgoal_is_no_record() -> None:
     other = dataclasses.replace(RECORD, subgoal="s2")
     assert "no_record" in check([*PAGE, BUBBLE], records=(other,)).tokens
 
 
-@pending("§3.3 strict rule 3 param_not_sent")
+@pending("§3.3 strict rule 3 param_not_sent", step=4)
 def test_a_param_other_than_the_one_typed_is_param_not_sent() -> None:
     to_line = element(11, "ListItem", "the team", (5, 11), 4)
     result = check([*PAGE, to_line], cited=claim(to_line.id, param="to"))
     assert "param_not_sent" in result.tokens
 
 
-@pending("§3.3 strict rule 4, T1 not_new ([V2.17].7)")
+@pending("§3.3 strict rule 4, T1 not_new ([V2.17].7)", step=4)
 def test_content_already_in_the_records_before_is_not_new() -> None:
     old = dataclasses.replace(RECORD, before=snapshot([*PAGE, BUBBLE]))
     assert "not_new" in check([*PAGE, BUBBLE], records=(old,)).tokens
 
 
-@pending("§3.3 strict rule 4 duplicate_effect")
+@pending("§3.3 strict rule 4 duplicate_effect", step=4)
 def test_two_new_matching_elements_are_a_duplicate_effect() -> None:
     twin = element(11, "ListItem", "ok thanks", (5, 11), 4)
     assert "duplicate_effect" in check([*PAGE, BUBBLE, twin]).tokens
 
 
-@pending("§3.3 strict tier: the earliest record's before is used")
+@pending("§3.3 strict tier: the earliest record's before is used", step=4)
 def test_a_second_record_never_hides_a_duplicate() -> None:
     later = CommitRecord(
         action_key="k-send", subgoal="s1", phase="acting", before=snapshot([*PAGE, BUBBLE])
@@ -131,35 +131,35 @@ def test_a_second_record_never_hides_a_duplicate() -> None:
     assert "duplicate_effect" in check([*PAGE, BUBBLE, twin], records=(RECORD, later)).tokens
 
 
-@pending("§3.3 strict rule 4, T1 no_match ([V2.17].7)")
+@pending("§3.3 strict rule 4, T1 no_match ([V2.17].7)", step=4)
 def test_part_of_the_content_is_no_match() -> None:
     part = element(12, "ListItem", "ok", (5, 12), 4)
     assert "no_match" in check([*PAGE, part], cited=claim(part.id)).tokens
 
 
-@pending("§3.3 inside_composer, a v2 token with no T1 equivalent")
+@pending("§3.3 inside_composer, a v2 token with no T1 equivalent", step=4)
 def test_the_content_inside_the_composer_is_inside_composer() -> None:
     echo = element(13, "Text", "ok thanks", (5, 13), 2)
     assert "inside_composer" in check([*PAGE, echo], cited=claim(echo.id)).tokens
 
 
-@pending("§3.3 composer_not_cleared, a v2 token with no T1 equivalent")
+@pending("§3.3 composer_not_cleared, a v2 token with no T1 equivalent", step=4)
 def test_a_field_still_filled_is_composer_not_cleared() -> None:
     assert "composer_not_cleared" in check([*PAGE, BUBBLE], filled=True).tokens
 
 
-@pending("§3.3 strict rule 6 composer_unreadable")
+@pending("§3.3 strict rule 6 composer_unreadable", step=4)
 def test_an_unread_field_is_composer_unreadable() -> None:
     assert "composer_unreadable" in check([*PAGE, BUBBLE], filled=None).tokens
 
 
-@pending("§3.3 strict rule 6: a field that is gone needs no read")
+@pending("§3.3 strict rule 6: a field that is gone needs no read", step=4)
 def test_a_composer_that_is_gone_passes_without_a_read() -> None:
     gone = [DOC, SEND, CONVERSATION, BUBBLE]
     assert check(gone, filled=None).proof is not None
 
 
-@pending("§3.3 strict rule 1: the scope rule holds at the strict tier")
+@pending("§3.3 strict rule 1: the scope rule holds at the strict tier", step=4)
 def test_content_outside_the_scope_document_is_outside_scope() -> None:
     toast = element(14, "Text", "ok thanks", (5, 14), None)
     assert "outside_scope" in check([*PAGE, toast], cited=claim(toast.id)).tokens
@@ -175,29 +175,29 @@ def proof(tier: Tier) -> Proof:
     )
 
 
-@pending("§7.1, §8.8 standard_only: a standard proof never closes a commit subgoal")
+@pending("§7.1, §8.8 standard_only: a standard proof never closes a commit subgoal", step=4)
 def test_a_standard_proof_never_closes_a_commit_subgoal() -> None:
     assert closes("send", proof("standard")) == "standard_only"
     assert closes("submit", proof("standard")) == "standard_only"
 
 
-@pending("§8.8: a strict proof closes a commit subgoal")
+@pending("§8.8: a strict proof closes a commit subgoal", step=4)
 def test_a_strict_proof_closes_a_commit_subgoal() -> None:
     assert closes("send", proof("strict")) is None
 
 
-@pending("§7.1: a standard proof closes a commit-none subgoal")
+@pending("§7.1: a standard proof closes a commit-none subgoal", step=4)
 def test_a_standard_proof_closes_a_commit_none_subgoal() -> None:
     assert closes("none", proof("standard")) is None
 
 
-@pending("[V2.17].7: the strict tier passes T1's Appeared reasons through unchanged")
+@pending("[V2.17].7: the strict tier passes T1's Appeared reasons through unchanged", step=4)
 @pytest.mark.parametrize("reason", T1_REASONS)
 def test_every_t1_reason_passes_through_the_strict_tier(reason: str) -> None:
     assert strict_reason(reason) == reason
 
 
-@pending("[V2.17].7: a reason T1 never gives is refused, never mapped")
+@pending("[V2.17].7: a reason T1 never gives is refused, never mapped", step=4)
 def test_a_reason_outside_t1_is_refused() -> None:
     with pytest.raises(ValueError, match="reason"):
         strict_reason("preexisting")
