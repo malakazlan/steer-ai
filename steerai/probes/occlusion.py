@@ -39,9 +39,10 @@ import tempfile
 import time
 from collections.abc import Sequence
 from ctypes import wintypes
-from itertools import pairwise
 from pathlib import Path
 from typing import Any, Final
+
+from steerai.world.cover import covered_fraction
 
 Rect = tuple[int, int, int, int]
 
@@ -59,27 +60,6 @@ SAMPLE_S: Final = 0.25
 SPAN_S: Final = 10.0
 SETTLE_S: Final = 0.5
 """After an arrangement, before the first read (unmeasured: the occlusion tracker's own pass)."""
-
-
-def covered_fraction(target: Rect, above: Sequence[Rect]) -> float:
-    """The exact share of `target` (left, top, right, bottom) under the union of `above`: 0.0
-    uncovered, 1.0 fully covered (every edge clipped to the target; each cell between edges is
-    in or out as a whole)."""
-    left, top, right, bottom = target
-    if right <= left or bottom <= top:
-        return 0.0
-    clipped = [
-        (max(a[0], left), max(a[1], top), min(a[2], right), min(a[3], bottom)) for a in above
-    ]
-    clipped = [c for c in clipped if c[2] > c[0] and c[3] > c[1]]
-    xs = sorted({left, right, *(c[0] for c in clipped), *(c[2] for c in clipped)})
-    ys = sorted({top, bottom, *(c[1] for c in clipped), *(c[3] for c in clipped)})
-    hit = 0
-    for x0, x1 in pairwise(xs):
-        for y0, y1 in pairwise(ys):
-            if any(c[0] <= x0 and x1 <= c[2] and c[1] <= y0 and y1 <= c[3] for c in clipped):
-                hit += (x1 - x0) * (y1 - y0)
-    return hit / ((right - left) * (bottom - top))
 
 
 def first_page(samples: Sequence[dict[str, Any]]) -> float | None:  # Any: JSON
