@@ -84,6 +84,15 @@ def parse_cdp_message(raw: str) -> CdpMessage:
 # ---------------------------------------------------------------- CDP client
 
 
+class ChromeLost(OSError):  # noqa: N818 - named for the cause it carries, as PortInterrupted
+    """#459: the page's DevTools connection closed under us (the browser went away): an
+    infrastructure event the caller handles as an `OSError`, never a raw websockets error."""
+
+
+CHROME_LOST = "chrome_lost"
+"""The closed cause a lost DevTools connection carries."""
+
+
 class CdpSession:
     """Minimal synchronous DevTools client bound to one page target."""
 
@@ -95,16 +104,27 @@ class CdpSession:
         self._next_id = 1
 
     def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """One DevTools call; a connection that closed under it (the browser went away, with or
+        without a close frame) is `ChromeLost`."""
+        from websockets.exceptions import ConnectionClosed  # noqa: PLC0415 - live probes only
+
         message_id = self._next_id
         self._next_id += 1
-        self._ws.send(CdpMessage(id=message_id, method=method, params=params or {}).to_json())
-        while True:
-            reply = parse_cdp_message(str(self._ws.recv(timeout=10)))
-            if reply.id == message_id:
-                return reply.result or {}
+        try:
+            self._ws.send(CdpMessage(id=message_id, method=method, params=params or {}).to_json())
+            while True:
+                reply = parse_cdp_message(str(self._ws.recv(timeout=10)))
+                if reply.id == message_id:
+                    return reply.result or {}
+        except ConnectionClosed as exc:
+            raise ChromeLost(CHROME_LOST) from exc
 
     def close(self) -> None:
-        self._ws.close()
+        """Close the connection; one the browser already closed is closed (#459)."""
+        from websockets.exceptions import ConnectionClosed  # noqa: PLC0415 - live probes only
+
+        with contextlib.suppress(ConnectionClosed):
+            self._ws.close()
 
 
 def page_ws_url(port: int, *, timeout_s: float = 15.0) -> str:
