@@ -388,3 +388,30 @@ def test_the_estimate_never_undercounts_the_worst_measured_page() -> None:
     the ceiling is far above the largest capped prompt measured (8,339 tokens)."""
     assert controller.CHARS_PER_TOKEN <= 2.248
     assert controller.PROMPT_TOKEN_CEILING >= 5 * 8_339
+
+
+def test_the_guard_never_cuts_the_root_chain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#360 item 1: the root chain sits above every other row; cutting it would orphan them."""
+    root = [ListingRow(d, f'{d + 1} Pane "{"x" * 100}"', handle=d + 1, row_class="root")
+            for d in range(5)]  # fmt: skip
+    rows = [*root, *_keep_rows(10)[5:]]
+    system, user = build_prompt(
+        GOAL, [], [], [], "Shop", root, task_fence="taskfence01", screen_fence="f" * 32
+    )
+    monkeypatch.setattr(controller, "PROMPT_TOKEN_CEILING", controller.prompt_tokens(system, user))
+    fits: list[tuple[frozenset[int], int]] = []
+    decide(
+        _ask_recorder([]), task_goal=GOAL, subgoal_lines=[], action_log=[], subgoal_status=[],
+        window_title="Shop", listing_rows=rows, listed_ids=frozenset(range(1, 11)),
+        first_turn=True, task_fence="taskfence01", keep_cap=0,
+        on_fit=lambda shown, cut: fits.append((shown, cut)),
+    )  # fmt: skip
+    assert fits == [(frozenset(range(1, 6)), 5)]
+    monkeypatch.setattr(controller, "PROMPT_TOKEN_CEILING", 1)
+    with pytest.raises(ControllerError) as refused:
+        decide(
+            _ask_recorder([]), task_goal=GOAL, subgoal_lines=[], action_log=[], subgoal_status=[],
+            window_title="Shop", listing_rows=root, listed_ids=frozenset(range(1, 6)),
+            first_turn=True, task_fence="taskfence01", keep_cap=0,
+        )  # fmt: skip
+    assert refused.value.code == "prompt_too_large"
