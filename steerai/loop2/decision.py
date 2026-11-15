@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Literal
+from typing import Final, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
@@ -62,10 +62,17 @@ CLAIM_CLOSES: Mapping[str, Closes] = {
 """[V2.39]: the closing kind each claim kind proves; a claim of another kind is `kind_mismatch`."""
 
 UNTARGETED = frozenset({"press", "wait"})
-NOT_IN_STEP_VERBS = frozenset({"open", "switch", "scroll"})
-"""Verbs step 3 refuses as a step limit (`not_in_step`): window switching is step 7; scroll is
-refused in stage 1 ([V2.41] (2), #299): no stage 1 row needs it and `ScrollPattern.Scroll()`
-is unprobed (a step 5 probe task)."""
+STEP: Final = 3
+"""The v2 loop's current step (V2 §12)."""
+STEP_VERBS: Final[Mapping[int, frozenset[str]]] = {
+    3: frozenset(get_args(Verb)) - {"open", "switch", "scroll"},
+}
+"""[V2.44] (1): the one table, keyed by step, of the verbs a Decision may use. The prompt offers
+exactly these and `validate` accepts exactly these. Step 3 leaves out `open` and `switch`
+(window switching is step 7) and `scroll` ([V2.41] (2), #299: no stage 1 row needs it, and
+`ScrollPattern.Scroll()` is unprobed, a step 5 probe task)."""
+NOT_IN_STEP_VERBS: Final = frozenset(get_args(Verb)) - STEP_VERBS[STEP]
+"""Refused as a step limit (`not_in_step`): the backstop for a model that sends one anyway."""
 MAX_ACTIONS = 4
 MAX_SUBGOALS = 5
 MAX_DESC_CHARS = 120
