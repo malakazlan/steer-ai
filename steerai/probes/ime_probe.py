@@ -76,6 +76,7 @@ IME_LANGUAGES: Final = frozenset({0x04, 0x11, 0x12})
 WM_INPUTLANGCHANGEREQUEST: Final = 0x0050
 """Microsoft Learn, WM_INPUTLANGCHANGEREQUEST: lParam is the input locale identifier."""
 WM_IME_CONTROL: Final = 0x0283
+"""WinUser.h, line 2425 (SDK 10.0.19041.0)."""
 IMC_SETOPENSTATUS: Final = 0x0006
 """immdev.h (SDK 10.0.19041.0); lParam nonzero opens the IME (IMC_SETOPENSTATUS, Microsoft
 Learn)."""
