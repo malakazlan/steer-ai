@@ -13,7 +13,6 @@ and a result box, and returns data only (`Reply`). The loop thread waits on the 
 
 from __future__ import annotations
 
-import re
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -136,13 +135,29 @@ LateError = Callable[[str], None]
 called from the decide worker's thread, so it must be thread-safe (the adapter's clear trace)."""
 
 
+LATE_CLASSES: Final = frozenset(
+    {
+        "ConnectionError",
+        "KeyError",
+        "OSError",
+        "RuntimeError",
+        "TimeoutError",
+        "TypeError",
+        "ValueError",
+    }
+)
+"""#346 (1): the exception classes a late token may name; any other class (a library's, or one
+whose name a page could shape) is `late_error`."""
+
+
 def late_token(error: BaseException) -> str:
-    """A closed token for a failure nobody will read: `late_<code>` for a SteerError, else
-    `late_<exception class>`. Never the message, which may quote page or prompt text."""
+    """A closed token for a failure nobody will read: `late_<code>` for a SteerError,
+    `late_<class>` for a class on the allowlist, else `late_error`. Never the message, which
+    may quote page or prompt text."""
     if isinstance(error, SteerError):
         return f"late_{error.code.value}"
-    name = re.sub(r"[^a-z0-9_]", "", type(error).__name__.lower())[:32] or "error"
-    return f"late_{name}"
+    name = type(error).__name__
+    return f"late_{name.lower()}" if name in LATE_CLASSES else "late_error"
 
 
 class _Box:
@@ -183,7 +198,9 @@ class _Box:
 
 def _work(call: Call, system: list[str], blocks: list[str], box: _Box) -> None:
     """The decide worker: one provider call; its reply or its failure, whatever its class, left
-    in the box. `finally` finishes the box even if the catch were ever narrowed."""
+    in the box. `finally` finishes the box even if the catch were ever narrowed. A `SystemExit`
+    here is kept like any failure and raised on the loop thread; `run_on_loop_thread` re-raises
+    it in the caller, so it ends the process (#346 (2))."""
     reply: Reply | None = None
     error: BaseException | None = None
     try:

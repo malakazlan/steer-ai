@@ -22,6 +22,7 @@ semantic one over `ToggleGuard` and `UiaOptions(client)` (AP-54), the physical o
 
 from __future__ import annotations
 
+import gc
 import secrets
 import sys
 import threading
@@ -82,6 +83,10 @@ class Platform(Protocol):
     def uia(self) -> tuple[Any, UiaBindings]: ...  # Any: the UiaClient
     def apartment(self) -> str:
         """The calling thread's COM apartment after `uia()`: `MTA`, `STA`, `MAINSTA` or `NA`."""
+        ...
+
+    def release_com(self) -> None:
+        """Balance `uia()`'s `CoInitializeEx` on this thread: one `CoUninitialize`, once."""
         ...
 
     def start_monitor(self, kill_key: str, clock: Callable[[], float]) -> Monitor:
@@ -452,7 +457,11 @@ class LiveWorld:
         self.close()
 
     def close(self) -> None:
-        """Task end: the monitor stops once; the debug records are protected and written."""
+        """Task end, on the loop thread only (rev 4.0c): the debug records are protected and
+        written, every attribute holding a COM object is dropped (so they are released here, on
+        their own thread, with no collection needed), and the monitor stops once."""
+        if threading.get_ident() != getattr(self, "_thread", threading.get_ident()):
+            raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "wrong_thread")
         if self._closed:
             return
         self._closed = True
@@ -461,7 +470,44 @@ class LiveWorld:
             if debug is not None:
                 self.debug_failure = debug.flush()  # its closed failure token, or None
         finally:
+            for name in _COM_HOLDERS:
+                if hasattr(self, name):
+                    delattr(self, name)
             self._monitor.close()
+
+
+_COM_HOLDERS = ("world", "semantic", "physical", "desk", "_observe", "_facts", "_client", "_debug")
+"""Rev 4.0c: the attributes that hold COM objects (directly, or through an executor, the guard
+or the world ports); `close` drops them on the loop thread."""
+
+
+def run_on_loop_thread[T](work: Callable[[], T], *, release: Callable[[], None]) -> T:
+    """Run one task's `work` on its own loop thread (packet §1, rev 4.0c, rev 4.2).
+
+    `work` builds and closes its `LiveWorld` and returns plain data only, never an object
+    holding COM. When it ends, on that thread: a collection (a backstop for a COM object kept
+    alive by a cycle), then `release`, the platform's one `CoUninitialize`, exactly once and
+    never before the release step. An exception from `work` is re-raised here as itself, so a
+    decide worker's `SystemExit`, raised on the loop thread, ends the process from the caller
+    (#346 (2))."""
+    result: list[T] = []
+    failure: list[BaseException] = []
+
+    def loop() -> None:
+        try:
+            result.append(work())
+        except BaseException as exc:  # noqa: BLE001 - re-raised in the caller as itself
+            failure.append(exc)
+        finally:
+            gc.collect()
+            release()
+
+    thread = threading.Thread(target=loop, name="steer-v2-loop")
+    thread.start()
+    thread.join()
+    if failure:
+        raise failure[0]
+    return result[0]
 
 
 def _write_ahead_closed(_dispatch: Dispatch) -> str:
@@ -481,15 +527,19 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
     def uia(self) -> tuple[Any, UiaBindings]:  # Any: the UiaClient
         """UIA on this (the loop) thread, in the MTA: the thread enters the MTA first, and a
         comtypes not yet imported is told to initialise as MTA too (it reads the flag once)."""
-        import ctypes  # noqa: PLC0415 - Windows only
-
-        ole32 = ctypes.windll.ole32
+        ole32 = _ole32()
         enter_mta(lambda flags: int(ole32.CoInitializeEx(None, flags)))
+        self._entered = True
         if "comtypes" not in sys.modules:
             sys.coinit_flags = COINIT_MULTITHREADED  # type: ignore[attr-defined]  # comtypes reads it
         from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415 - Windows only
 
         return UiaClient(), UiaBindings.load()
+
+    def release_com(self) -> None:
+        if getattr(self, "_entered", False):
+            self._entered = False
+            _ole32().CoUninitialize()
 
     def start_monitor(self, kill_key: str, clock: Callable[[], float]) -> Monitor:
         from steerai.session.monitor import HookMonitor  # noqa: PLC0415 - Windows hooks
@@ -566,6 +616,18 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
 
         client = anthropic.Anthropic(timeout=DEFAULT_TIMEOUT_S, max_retries=DEFAULT_MAX_RETRIES)
         return anthropic_call(client)
+
+
+def _ole32() -> Any:  # pragma: no cover - live, Windows only; Any: the ctypes DLL
+    """ole32 with the two calls the loop thread makes typed (argtypes, restype)."""
+    import ctypes  # noqa: PLC0415 - Windows only
+
+    ole32 = ctypes.windll.ole32
+    ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    ole32.CoInitializeEx.restype = ctypes.c_long
+    ole32.CoUninitialize.argtypes = []
+    ole32.CoUninitialize.restype = None
+    return ole32
 
 
 class _ComFacts:  # pragma: no cover - live, Windows only

@@ -11,6 +11,7 @@ import gc
 import json
 import re
 import threading
+import weakref
 from collections.abc import Callable
 from typing import Any
 
@@ -31,6 +32,7 @@ from steerai.loop2.live_world import (
     UiaElements,
     WindowsPlatform,
     enter_mta,
+    run_on_loop_thread,
 )
 from steerai.loop2.live_world import Platform as LivePlatform
 from steerai.loop2.loop import Dispatch, PortInterrupted, TokenUsage
@@ -94,6 +96,10 @@ class Monitor:
         self.closed += 1
 
 
+class _Client:
+    """A fake UIA client: weakly referable, so a test can see it released."""
+
+
 class Platform:
     """The Windows side, recorded; each knob fails one construction check."""
 
@@ -105,7 +111,7 @@ class Platform:
         self.locked: bool | Exception | None = False
         self.desktop: str | Exception = "Default"
         self.monitor = Monitor()
-        self.client = object()
+        self.client: _Client | None = _Client()
         names = {v: k for k, v in TYPE_IDS.items()}
         self.bindings = UiaBindings(control_types=names, interfaces={})
         self.calls: list[str] = []
@@ -125,6 +131,9 @@ class Platform:
 
     def apartment(self) -> str:
         return self.com_apartment
+
+    def release_com(self) -> None:
+        self.calls.append("release_com")
 
     def uia(self) -> tuple[Any, UiaBindings]:
         self.calls.append("uia")
@@ -430,7 +439,7 @@ def test_the_semantic_executor_reads_options_through_the_client() -> None:
     world, platform = _world()
     options = world.semantic._options
     assert isinstance(options, UiaOptions)
-    assert options._client is platform.client
+    assert id(options._client) == id(platform.client)
 
 
 def test_both_executors_stop_on_the_switch_and_are_guarded() -> None:
@@ -777,28 +786,6 @@ def test_every_trace_write_holds_one_lock() -> None:
     assert len(trace.lines) == 2
 
 
-def _on_a_fresh_thread(work: Callable[[], object]) -> object:
-    """Run `work` on a new thread, as 7b runs a task on its own loop thread (packet §1). Every
-    COM object it made is released on that thread before it ends: a comtypes object collected
-    later on another thread crashes the interpreter in `Release` (seen: a segfault in GC)."""
-    out: list[object] = []
-
-    def run() -> None:
-        try:
-            out.append(work())
-        except BaseException as exc:  # noqa: BLE001 - handed back to the test thread
-            out.append(exc)
-        finally:
-            gc.collect()  # the thread's COM objects die here, on their own thread
-
-    thread = threading.Thread(target=run)
-    thread.start()
-    thread.join(timeout=30.0)
-    if isinstance(out[0], BaseException):
-        raise out[0]
-    return out[0]
-
-
 @pytest.mark.windows
 def test_the_windows_platform_constructs_and_closes() -> None:
     """The real side, on its own loop thread: UIA in the MTA, the hook monitor with its hot key,
@@ -806,16 +793,14 @@ def test_the_windows_platform_constructs_and_closes() -> None:
     from steerai.probes.windows import list_top_windows  # noqa: PLC0415 - Windows only
 
     hwnd = list_top_windows()[0].hwnd
+    platform = WindowsPlatform()
 
     def task() -> object:
-        world = LiveWorld(_config(hwnd=hwnd, kill_key="ctrl+alt+shift+f9"), WindowsPlatform())
-        try:
+        with LiveWorld(_config(hwnd=hwnd, kill_key="ctrl+alt+shift+f9"), platform) as world:
             return world.interrupted()
-        finally:
-            world.close()
-            del world
 
-    assert _on_a_fresh_thread(task) in {None, "session_locked", "secure_desktop"}
+    done = run_on_loop_thread(task, release=platform.release_com)
+    assert done in {None, "session_locked", "secure_desktop"}
 
 
 @pytest.mark.windows
@@ -831,7 +816,7 @@ def test_a_loop_threads_uia_client_is_in_the_mta() -> None:
         del client, bindings
         return platform.apartment()
 
-    assert _on_a_fresh_thread(build) == "MTA"
+    assert run_on_loop_thread(build, release=platform.release_com) == "MTA"
 
 
 def test_the_value_digest_key_is_random_per_task() -> None:
@@ -1010,3 +995,86 @@ def test_the_apartment_refusal_is_never_renamed_uia_unavailable() -> None:
     with pytest.raises(SteerError) as failed:
         _world(platform)
     assert failed.value.message == "com_apartment"
+
+
+# ---- 7b: the loop thread and COM release (packet rev 4.0c, rev 4.2) ------------------------
+
+
+def test_the_work_runs_on_its_own_loop_thread_and_hands_back_its_result() -> None:
+    caller = threading.get_ident()
+    seen: list[int] = []
+
+    def work() -> str:
+        seen.append(threading.get_ident())
+        return "done"
+
+    assert run_on_loop_thread(work, release=lambda: None) == "done"
+    assert seen
+    assert seen[0] != caller
+
+
+def test_com_is_released_once_after_the_work_and_after_the_collection() -> None:
+    order: list[str] = []
+
+    def work() -> None:
+        order.append("work")
+
+    def release() -> None:
+        order.append("release")
+
+    run_on_loop_thread(work, release=release)
+    assert order == ["work", "release"]
+
+
+@pytest.mark.parametrize("error", [KeyError("bug"), SystemExit(3)], ids=["error", "exit"])
+def test_the_loops_exception_reaches_the_caller_as_itself(error: BaseException) -> None:
+    """#346 (2): a worker `SystemExit` raised on the loop thread ends the process from the
+    caller, never only its own thread; COM is still released."""
+    released: list[bool] = []
+
+    def work() -> None:
+        raise error
+
+    with pytest.raises(type(error)) as raised:
+        run_on_loop_thread(work, release=lambda: released.append(True))
+    assert raised.value is error
+    assert released == [True]
+
+
+def test_close_releases_the_client_without_a_collection_while_the_world_lives() -> None:
+    """Rev 4.0c: `close()` drops every COM-holding attribute; nothing but a cycle-free chain
+    held the client, so it dies at once, on this thread."""
+    platform = Platform()
+    world, _ = _world(platform)
+    client = platform.client
+    assert client is not None
+    ref = weakref.ref(client)
+    platform.client = None
+    del client
+    gc.disable()
+    try:
+        world.close()
+        assert ref() is None
+        assert world.interrupted is not None  # the world itself is alive
+    finally:
+        gc.enable()
+
+
+def test_close_refuses_any_thread_but_the_loop_thread() -> None:
+    platform = Platform()
+    world, _ = _world(platform)
+    seen: list[BaseException] = []
+
+    def elsewhere() -> None:
+        try:
+            world.close()
+        except SteerError as exc:
+            seen.append(exc)
+
+    other = threading.Thread(target=elsewhere)
+    other.start()
+    other.join(timeout=5.0)
+    assert [getattr(e, "message", "") for e in seen] == ["wrong_thread"]
+    assert platform.monitor.closed == 0
+    world.close()
+    assert platform.monitor.closed == 1
