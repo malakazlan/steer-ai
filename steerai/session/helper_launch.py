@@ -168,8 +168,8 @@ class LaunchWin32(Protocol):
     def process_id(self, process: int) -> int: ...
     def has_exited(self, process: int) -> bool: ...
     def exit_code(self, process: int) -> int | None: ...
-    def terminate_job(self, job: int) -> None: ...
-    def terminate_process(self, process: int) -> None: ...
+    def terminate_job(self, job: int) -> bool: ...
+    def terminate_process(self, process: int) -> bool: ...
     def close(self, handle: int) -> None: ...
 
 
@@ -284,8 +284,8 @@ class HelperProcess:
                 if process is not None and not w.has_exited(process):
                     w.set_event(self._quit)
                     w.wait_any((process,), CLOSE_TIMEOUT_MS)
-                    if not w.has_exited(process) and self._job is not None:
-                        w.terminate_job(self._job)
+                    if not w.has_exited(process):
+                        self._end()
             finally:
                 self._release()  # #375 P3: whatever the wait did
 
@@ -431,13 +431,22 @@ class HelperProcess:
             raise _refuse("the hook helper's identity did not match")
 
     def _abort(self) -> None:
-        w = self._w
-        if self._job is not None:
-            w.terminate_job(self._job)
-        elif self._process is not None:
-            w.terminate_process(self._process)
         self._closed = True
-        self._release()
+        try:
+            self._end()
+        finally:
+            self._release()
+
+    def _end(self) -> None:
+        """#375 H5 (HL-09): end the helper through its job, else its process (each result
+        checked), then wait a bounded time for it to be gone, so a restart never meets it still
+        holding the kill chord."""
+        w = self._w
+        ended = self._job is not None and w.terminate_job(self._job)
+        if not ended and self._process is not None:
+            w.terminate_process(self._process)
+        if self._process is not None:
+            w.wait_any((self._process,), CLOSE_TIMEOUT_MS)
 
     def _close(self, handle: int) -> None:
         if handle in self._owned:
@@ -820,11 +829,11 @@ class WindowsLaunch:  # pragma: no cover - live, Windows only (tests/session win
             return None
         return None if code.value == STILL_ACTIVE else int(code.value)
 
-    def terminate_job(self, job: int) -> None:
-        self._k.TerminateJobObject(job, 1)
+    def terminate_job(self, job: int) -> bool:
+        return bool(self._k.TerminateJobObject(job, 1))
 
-    def terminate_process(self, process: int) -> None:
-        self._k.TerminateProcess(process, 1)
+    def terminate_process(self, process: int) -> bool:
+        return bool(self._k.TerminateProcess(process, 1))
 
     def close(self, handle: int) -> None:
         self._k.CloseHandle(handle)

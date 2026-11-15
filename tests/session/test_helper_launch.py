@@ -17,6 +17,7 @@ from steerai.errors import SteerError
 from steerai.session import helper_launch
 from steerai.session.helper_core import HelperHandles, config_error, parse_helper_argv
 from steerai.session.helper_launch import (
+    CLOSE_TIMEOUT_MS,
     CREATE_NO_WINDOW,
     CREATE_SUSPENDED,
     CREATE_UNICODE_ENVIRONMENT,
@@ -145,6 +146,8 @@ class FakeWin32:
     behaviour: str = "ready"
     raise_at: str | None = None
     enable_fails_at: int = 0
+    job_terminate_ok: bool = True
+    process: int = 0
     disable_fails_at: int = 0
     enables: int = 0
     disables: int = 0
@@ -259,6 +262,7 @@ class FakeWin32:
         if jobs and self.job_list_fails:
             raise OSError(87, "JOB_LIST refused")
         process, thread = self._new(), self._new()
+        self.process = process
         if not flags & CREATE_SUSPENDED:
             self._play(cmdline)
         else:
@@ -326,13 +330,15 @@ class FakeWin32:
         del process
         return 3 if self.exited else None
 
-    def terminate_job(self, job: int) -> None:
+    def terminate_job(self, job: int) -> bool:
         self.calls.append(("terminate_job", job))
-        self.exited = True
+        self.exited = self.job_terminate_ok
+        return self.job_terminate_ok
 
-    def terminate_process(self, process: int) -> None:
+    def terminate_process(self, process: int) -> bool:
         self.calls.append(("terminate_process", process))
         self.exited = True
+        return True
 
     def close(self, handle: int) -> None:
         self.open_handles.discard(handle)
@@ -614,3 +620,30 @@ def test_an_invalid_state_refuses_without_waiting() -> None:
         _helper(w).start()
     pairs = [c for c in w.named("wait") if isinstance(c[1], tuple) and len(c[1]) == 2]
     assert not pairs  # never waited for ready
+
+
+# ---- #375 review H5 (HL-09): ending the helper is checked, then waited for, before release ----
+
+
+def _ended_then_waited_then_closed(w: FakeWin32) -> bool:
+    ended = max(i for i, c in enumerate(w.calls) if c[0] in {"terminate_job", "terminate_process"})
+    waited = [i for i, c in enumerate(w.calls) if c == ("wait", (w.process,), CLOSE_TIMEOUT_MS)]
+    closed = [i for i, c in enumerate(w.calls) if c == ("close", w.process)]
+    return bool(waited) and bool(closed) and ended < waited[-1] < closed[0]
+
+
+def test_a_refused_start_waits_for_the_helper_to_exit_before_releasing() -> None:
+    """So a restart never meets the dying helper still holding the kill chord."""
+    w = FakeWin32(behaviour="hang")
+    with pytest.raises(SteerError, match="monitor_unavailable"):
+        _helper(w).start()
+    assert _ended_then_waited_then_closed(w)
+
+
+def test_a_job_that_will_not_terminate_falls_back_to_the_process() -> None:
+    w = FakeWin32(behaviour="hang", job_terminate_ok=False)
+    with pytest.raises(SteerError, match="monitor_unavailable"):
+        _helper(w).start()
+    assert w.named("terminate_job")
+    assert w.named("terminate_process")
+    assert _ended_then_waited_then_closed(w)
