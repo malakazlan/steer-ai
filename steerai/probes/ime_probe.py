@@ -11,7 +11,17 @@ lines on stdout. On top of them it changes one thing, and puts it back in `final
   window with the focus; DefWindowProc activates the locale). With Windows' default of one input
   method for every window, the person's current input method changes with it until restored.
 - the IME's open status, by WM_IME_CONTROL IMC_SETOPENSTATUS to the Edit's default IME window.
-Both are read back: a locale that did not switch, or an IME that did not open, aborts.
+Both are read back: a locale that did not switch, or an IME that did not open, aborts. Every IME
+read and write goes through SendMessageTimeoutW with abort-if-hung, so a hung IME never holds the
+probe or its restore. The first row says the person's input method is switched until the
+restore; the layout before is said (`before_layout`, with the `--restore` command for it) before
+the first switch. SIGTERM and SIGBREAK raise inside the probe, so the restore in `finally` runs.
+
+Known limit: a hard kill runs no `finally`. Anything that ends the process with TerminateProcess
+(Task Manager's End task, `taskkill /F`, and on Windows `os.kill` with any signal other than
+CTRL_C_EVENT or CTRL_BREAK_EVENT, Python docs, os.kill) leaves the input method switched. Put it
+back with `uv run python -m steerai.probes.ime_probe --restore HKL`, HKL from `before_layout`:
+it starts a fresh Notepad of its own, requests the layout there, reads it back and closes it.
 
 A key passes as in `probe_key`, judged against the baseline taken with the IME open: the text is
 still empty, the caret, the IME open status, the layout and the foreground are unchanged, the key
@@ -27,10 +37,12 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from ctypes import wintypes
 from dataclasses import dataclass
 from typing import Any, Final, Protocol
@@ -55,6 +67,7 @@ __all__ = [
     "ime_layouts",
     "main",
     "parse_hkl",
+    "restore_layout",
     "run",
 ]
 
@@ -204,6 +217,7 @@ def run(  # noqa: PLR0913 - every side of the desk injected, keyword-only
     if desk.idle_s() < IDLE_S:
         emit({"restored": True, "switched": False})
         raise Abort("not_idle")
+    emit({"header": {"probe_key_ime": "open", "input_method": "switched_until_restore"}})
     monitor.start()
     accepted: list[int] = []
     try:
@@ -219,6 +233,8 @@ def run(  # noqa: PLR0913 - every side of the desk injected, keyword-only
             if before["foreground"] != notepad.hwnd:
                 emit({"restored": True, "switched": False})
                 raise Abort("notepad_not_foreground")
+            was = f"{int(before['layout']):#x}"
+            emit({"before_layout": was, "restore_with": f"--restore {was}"})
             try:
                 accepted = _judge(
                     desk,
@@ -379,6 +395,54 @@ class _ImeDesk(_Desk):
             raise Abort("ime_control_unanswered")
 
 
+def restore_layout(  # noqa: PLR0913 - every side of the desk injected, keyword-only
+    *,
+    desk: ImeDesk,
+    launch: Callable[[], Notepad],
+    read_text_of: Callable[[int], Callable[[], str]],
+    hkl: int,
+    emit: Callable[[Row], None],
+    pause: Callable[[float], None] = time.sleep,
+) -> bool:
+    """`--restore`: after a hard kill, put the input locale back to `hkl` through a fresh Notepad
+    of our own (never a window of the person's), read it back, close it. No input is sent."""
+    if hkl not in desk.layouts():
+        raise Abort("layout_not_installed")
+    notepad = launch()
+    try:
+        pause(1.0)
+        edit = desk.edit_of(notepad.hwnd)
+        if not edit:
+            raise Abort("no_edit_control")
+        read_text = read_text_of(edit)
+        if desk.state(notepad.hwnd, read_text)["foreground"] != notepad.hwnd:
+            raise Abort("notepad_not_foreground")
+        desk.request_layout(edit, hkl)
+        pause(SWITCH_S)
+        now = int(desk.state(notepad.hwnd, read_text)["layout"])
+        emit({"restored": now == hkl, "layout": f"{now:#x}"})
+        return now == hkl
+    finally:
+        notepad.close()
+
+
+@contextmanager
+def raising_on_termination() -> Iterator[None]:
+    """SIGTERM and SIGBREAK (where the platform has them) raise `Abort("killed")` on the main
+    thread, so every `finally` runs; the handlers before are put back after."""
+
+    def killed(_signum: int, _frame: object) -> None:
+        raise Abort("killed")
+
+    numbers = [getattr(signal, n) for n in ("SIGTERM", "SIGBREAK") if hasattr(signal, n)]
+    previous = {n: signal.signal(n, killed) for n in numbers}
+    try:
+        yield
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, signal.SIG_DFL if handler is None else handler)
+
+
 def _launch_notepad() -> Notepad:  # pragma: no cover - live, Windows only
     from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415 - Windows only
 
@@ -430,14 +494,21 @@ def _live(  # pragma: no cover - live, Windows only
                layout=layout, emit=emit)  # fmt: skip
 
 
+def _live_restore(hkl: int, emit: Callable[[Row], None]) -> bool:  # pragma: no cover - live
+    return restore_layout(desk=_ImeDesk(), launch=_launch_notepad, read_text_of=_text_reader,
+                          hkl=hkl, emit=emit)  # fmt: skip
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
     probe: Callable[[int | None, int, Callable[[Row], None]], list[int]] = _live,
+    restore: Callable[[int, Callable[[Row], None]], bool] = _live_restore,
 ) -> int:
     parser = argparse.ArgumentParser(prog="python -m steerai.probes.ime_probe")
     parser.add_argument("--batch", type=int, default=20)
     parser.add_argument("--layout", type=parse_hkl, default=None)
+    parser.add_argument("--restore", type=parse_hkl, default=None, metavar="HKL")
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
 
     def emit(row: Row) -> None:
@@ -445,7 +516,10 @@ def main(
         sys.stdout.flush()
 
     try:
-        accepted = probe(args.layout, args.batch, emit)
+        with raising_on_termination():
+            if args.restore is not None:
+                return 0 if restore(args.restore, emit) else RESTORE_FAILED
+            accepted = probe(args.layout, args.batch, emit)
     except RestoreFailed:
         emit({"aborted": "restore_failed"})
         return RESTORE_FAILED

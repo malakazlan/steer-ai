@@ -10,6 +10,7 @@ import ast
 import inspect
 import io
 import json
+import signal
 from collections.abc import Callable
 from contextlib import redirect_stdout
 from typing import Any
@@ -90,6 +91,8 @@ class FakeDesk:
         self.restores = True
         self.hangs_after_close = False
         self.text_empty = True
+        self.rows_at_requests: list[list[Row]] = []
+        self.rows: list[Row] = []
 
     def idle_s(self) -> float:
         return self.idle
@@ -113,6 +116,7 @@ class FakeDesk:
 
     def request_layout(self, edit: int, hkl: int) -> None:
         self.log.append(f"layout {edit} {hkl:#x}")
+        self.rows_at_requests.append(list(self.rows))
         if self.restores or hkl != EN_US:
             self.layout = hkl
 
@@ -135,11 +139,13 @@ class Probe:
         self.desk = FakeDesk([EN_US, JA] if installed is None else installed, self.log)
         self.monitor = FakeMonitor()
         self.sent: list[int] = []
-        self.rows: list[Row] = []
+        self.rows: list[Row] = self.desk.rows
         self.effect: Callable[[int], None] = lambda _vk: None
+        self.rows_at_launch: list[Row] = []
 
     def launch(self) -> ime_probe.Notepad:
         self.log.append("launch")
+        self.rows_at_launch = list(self.rows)
         return ime_probe.Notepad(pid=4242, hwnd=100, close=lambda: self.log.append("close"))
 
     def send_up(self, vk: int) -> None:
@@ -209,6 +215,21 @@ def test_each_key_is_judged_with_the_ime_open_then_everything_is_put_back() -> N
                               "close"]  # fmt: skip
     assert {"restored": True, "switched": True, "restore_errors": []} in probe.rows
     assert (probe.desk.ime_open, probe.desk.layout) == (0, EN_US)
+
+
+def test_the_layout_before_and_how_to_put_it_back_are_said_before_the_first_switch() -> None:
+    probe = Probe()
+    probe.run([PROBE_VK])
+    first = probe.desk.rows_at_requests[0]
+    assert {"before_layout": f"{EN_US:#x}",
+            "restore_with": f"--restore {EN_US:#x}"} in first  # fmt: skip
+
+
+def test_the_header_says_the_persons_input_method_is_switched_until_the_restore() -> None:
+    probe = Probe()
+    probe.run([PROBE_VK])
+    header = {"header": {"probe_key_ime": "open", "input_method": "switched_until_restore"}}
+    assert probe.rows_at_launch == [header]  # said first, before Notepad starts
 
 
 def test_a_key_the_open_ime_reacts_to_fails_and_the_rest_are_still_judged() -> None:
@@ -381,6 +402,99 @@ def test_main_exits_with_its_own_code_when_the_restore_failed() -> None:
     code, rows = _main(unrestored)
     assert code == ime_probe.RESTORE_FAILED
     assert rows == [{"probe": "ime_probe", "aborted": "restore_failed"}]
+
+
+KILLS = [name for name in ("SIGTERM", "SIGBREAK") if hasattr(signal, name)]
+
+
+@pytest.mark.parametrize("name", KILLS)
+def test_a_termination_signal_raises_inside_the_probe_so_the_restore_runs(name: str) -> None:
+    number = getattr(signal, name)
+    before = signal.getsignal(number)
+    probe = Probe()
+
+    def killed(_vk: int) -> None:
+        handler = signal.getsignal(number)
+        assert callable(handler)
+        handler(number, None)
+
+    probe.effect = killed
+    out = io.StringIO()
+    with redirect_stdout(out):
+        code = ime_probe.main([], probe=lambda _l, _s, emit: _run_with(probe, emit))
+    rows = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert code == 2
+    assert {"probe": "ime_probe", "aborted": "killed"} in rows
+    assert probe.log[-3:] == ["open 101 0", f"layout 101 {EN_US:#x}", "close"]
+    assert signal.getsignal(number) == before  # put back after the run
+
+
+def _run_with(probe: Probe, emit: Callable[[Row], None]) -> list[int]:
+    def both(row: Row) -> None:
+        probe.rows.append(row)
+        emit(row)
+
+    return ime_probe.run(
+        desk=probe.desk, launch=probe.launch, read_text_of=lambda _edit: lambda: "",
+        monitor=probe.monitor, send_up=probe.send_up, echo=probe.echo, candidates=[PROBE_VK],
+        size=3, layout=None, emit=both, pause=lambda _s: None,
+    )  # fmt: skip
+
+
+def test_the_hard_kill_residual_and_its_remedy_are_stated() -> None:
+    doc = ime_probe.__doc__ or ""
+    assert "TerminateProcess" in doc
+    assert "--restore" in doc
+
+
+# ---- --restore: put the layout back after a hard kill --------------------------------------------
+
+
+def _restore(probe: Probe, hkl: int) -> bool:
+    return ime_probe.restore_layout(
+        desk=probe.desk, launch=probe.launch, read_text_of=lambda _edit: lambda: "", hkl=hkl,
+        emit=probe.rows.append, pause=lambda _s: None,
+    )  # fmt: skip
+
+
+def test_restore_puts_the_layout_back_through_a_fresh_notepad_of_our_own() -> None:
+    probe = Probe()
+    probe.desk.layout = JA
+    assert _restore(probe, EN_US) is True
+    assert probe.log == ["launch", f"layout 101 {EN_US:#x}", "close"]
+    assert {"restored": True, "layout": f"{EN_US:#x}"} in probe.rows
+
+
+def test_restore_that_does_not_take_says_so() -> None:
+    probe = Probe()
+    probe.desk.layout = JA
+    probe.desk.restores = False
+    assert _restore(probe, EN_US) is False
+    assert {"restored": False, "layout": f"{JA:#x}"} in probe.rows
+    assert probe.log[-1] == "close"
+
+
+def test_restore_refuses_a_layout_that_is_not_installed_before_launching() -> None:
+    probe = Probe([EN_US])
+    with pytest.raises(ime_probe.Abort, match="layout_not_installed"):
+        _restore(probe, KO)
+    assert probe.log == []
+
+
+@pytest.mark.parametrize(("restored", "code"), [(True, 0), (False, ime_probe.RESTORE_FAILED)])
+def test_main_restore_mode_exits_on_the_restore_alone(restored: bool, code: int) -> None:
+    asked: list[int] = []
+
+    def restore(hkl: int, _emit: Callable[[Row], None]) -> bool:
+        asked.append(hkl)
+        return restored
+
+    def no_probe(*_a: object) -> list[int]:
+        raise AssertionError("restore mode runs no probe")
+
+    with redirect_stdout(io.StringIO()):
+        got = ime_probe.main(["--restore", "0x04090409"], probe=no_probe, restore=restore)
+    assert (got, asked) == (code, [EN_US])
 
 
 def test_main_reports_any_other_abort_as_an_abort() -> None:

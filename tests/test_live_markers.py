@@ -40,6 +40,10 @@ FAKED: frozenset[str] = frozenset(
         "test_ime_probe.py::test_an_ime_read_answered_is_its_open_status",
         "test_ime_probe.py::test_an_ime_read_that_times_out_is_unanswered_never_a_wait",
         "test_ime_probe.py::test_with_no_ime_window_there_is_nothing_to_read",
+        # #379 review 1: main over a fake probe and a fake restore; the signal handler is
+        # called directly, no signal is sent
+        "test_ime_probe.py::test_a_termination_signal_raises_inside_the_probe_so_the_restore_runs",
+        "test_ime_probe.py::test_main_restore_mode_exits_on_the_restore_alone",
         # LW-01: the v2 platform's monitor and timeout over a replaced HookMonitor and registry read
         "loop2/test_live_world.py::test_the_v2_platform_starts_a_per_hook_monitor",
         "loop2/test_live_world.py::test_the_hook_timeout_is_read_from_the_registry_and_capped",
