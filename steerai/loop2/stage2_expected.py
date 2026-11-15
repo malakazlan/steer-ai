@@ -56,6 +56,8 @@ from steerai.world.read_json import observed_from_json
 ACTS: Final = Path(__file__).with_name("stage2_acts.json")
 TABLE: Final = Path(__file__).with_name("stage2_expected.json")
 """The committed 2b table: each read's SHA-256, its deciding facts and the expected outcome."""
+TABLE_SHA256: Final = "89ceab94e04b2b515c814e61ecc57812d90d52af19daf5cd594494e5424d68e9"
+"""#424 (2): the committed 2b table's pin, as 2a's: a run takes only this table."""
 _ACT_FIELDS: Final = frozenset({"verb", "role", "name", "key", "option", "param"})
 _ROW_FIELDS: Final = frozenset({"acts", "proof", "why"})
 _PROOFS: Final = frozenset(get_args(ProofKind))
@@ -299,6 +301,20 @@ def click_opener(cdp: Cdp, opener: Act) -> None:
     if not isinstance(object_id, str):
         raise OpenerError("opener_not_resolved")
     cdp("Runtime.callFunctionOn", {"objectId": object_id, "functionDeclaration": _CLICK})
+
+
+def check_table(text: str) -> None:
+    """#424 (2): the run's 2b table is the committed one, byte for byte."""
+    if hashlib.sha256(text.encode("utf-8")).hexdigest() != TABLE_SHA256:
+        raise ValueError("table: not the committed 2b table")
+
+
+def fresh_opened(out: Path, task_id: str) -> Path:
+    """#424 (1): an opener attempt's target file, any earlier one removed first, so a later
+    unstable or failed reveal never leaves a stale opened read to be rated."""
+    path = opened_read_path(out, task_id)
+    path.unlink(missing_ok=True)
+    return path
 
 
 def opened_read_path(reads: Path, task_id: str) -> Path:
@@ -713,6 +729,7 @@ def save_opened(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live,
         spacer.wait(host)
         spacer.loaded(host)
         row: dict[str, object] = {"task": task.task_id}
+        path = fresh_opened(out, task.task_id)
         try:
             with live_page(task.start, floor_mb=floor_mb, settle_s=6.0) as page:
                 reply = page.cdp.call(
@@ -740,7 +757,6 @@ def save_opened(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live,
         if revealed is None:
             sys.stdout.write(json.dumps({**row, "revealed": False}) + "\n")
             continue
-        path = opened_read_path(out, task.task_id)
         path.write_bytes((observed_to_json(revealed.read) + "\n").encode("utf-8"))
         sys.stdout.write(json.dumps({**row, "revealed": True, "new": revealed.new_roles}) + "\n")
     return 0

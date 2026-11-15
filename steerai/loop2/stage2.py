@@ -72,6 +72,7 @@ from steerai.loop2.stage2_expected import (
     SiteRow,
     Spacer,
     TableRow,
+    check_table,
     deciding_facts,
     load_acts,
     load_table,
@@ -642,6 +643,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
     acts = load_acts(args.acts.read_text(encoding="utf-8"))
     table_text = args.table.read_text(encoding="utf-8")
+    check_table(table_text)  # #424 (2): only the committed table runs
     unrated = load_unrated(table_text)  # [V2.65] (2): run, held to the hard bar
     tasks = site_tasks(load_table(table_text), acts, unrated=unrated)
 

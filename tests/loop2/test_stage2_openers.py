@@ -23,6 +23,7 @@ from steerai.loop2.stage2_expected import (
     OpenerError,
     SiteRow,
     click_opener,
+    fresh_opened,
     load_openers,
     opened_read_path,
     opener_start_facts,
@@ -236,3 +237,14 @@ def test_a_row_behind_an_opener_must_start_with_that_opener() -> None:
 
 def saved(seen: Observed) -> bytes:
     return (observed_to_json(seen) + "\n").encode("utf-8")
+
+
+# ---- #424 (1): a stale opened read never survives a later failed reveal --------------------------
+
+
+def test_a_new_attempt_removes_the_earlier_opened_read(tmp_path: Path) -> None:
+    stale = tmp_path / "mdn1.opened.json"
+    stale.write_text("{}", encoding="utf-8")
+    target = fresh_opened(tmp_path, "mdn1")
+    assert target == stale
+    assert not stale.exists()  # an unstable reveal now leaves no file to be rated

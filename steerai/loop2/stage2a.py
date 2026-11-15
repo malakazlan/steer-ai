@@ -55,11 +55,11 @@ from steerai.loop2.stage2_expected import (
     TableRow,
     click_opener,
     dump_table,
+    fresh_opened,
     full_read,
     load_acts,
     load_table,
     load_unrated,
-    opened_read_path,
     table_from_reads,
     wait_revealed,
 )
@@ -365,6 +365,7 @@ def save_opened(out: Path) -> int:  # pragma: no cover - live, Windows only
             sys.stdout.write(json.dumps({"task": task.task_id, "refused": "low_memory"}) + "\n")
             return EXIT_LOW_MEMORY
         row: dict[str, object] = {"task": task.task_id}
+        path = fresh_opened(out, task.task_id)
         try:
             with _opened(task) as (hwnd, port):
                 if port is None:
@@ -379,7 +380,6 @@ def save_opened(out: Path) -> int:  # pragma: no cover - live, Windows only
         if revealed is None:
             sys.stdout.write(json.dumps({**row, "revealed": False}) + "\n")
             continue
-        path = opened_read_path(out, task.task_id)
         path.write_bytes((observed_to_json(revealed.read) + "\n").encode("utf-8"))
         sys.stdout.write(json.dumps({**row, "revealed": True, "new": revealed.new_roles}) + "\n")
     return 0

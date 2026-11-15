@@ -18,6 +18,7 @@ from steerai.loop2.stage2_expected import (
     ACTS,
     SITE_SPACING_S,
     TABLE,
+    TABLE_SHA256,
     UNRATED_REASONS,
     DayDidNotTurn,
     DecidingFacts,
@@ -25,6 +26,7 @@ from steerai.loop2.stage2_expected import (
     Spacer,
     StartDocument,
     calendar_day,
+    check_table,
     deciding_facts,
     dump_table,
     load_acts,
@@ -499,3 +501,18 @@ def test_a_day_that_never_turns_is_refused_after_a_bounded_wait() -> None:
         spacer.wait_next_day()
     assert len(clock.slept) <= 27
     assert sum(clock.slept) <= 27 * 3600.0
+
+
+# ---- #424 (2): the 2b table is pinned like 2a's -------------------------------------------------
+
+
+def test_the_committed_2b_table_is_pinned_and_passes_its_check() -> None:
+    text = TABLE.read_text(encoding="utf-8")
+    assert hashlib.sha256(text.encode("utf-8")).hexdigest() == TABLE_SHA256
+    check_table(text)
+
+
+def test_a_2b_table_that_differs_by_any_byte_is_refused() -> None:
+    text = TABLE.read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="table"):
+        check_table(text.replace('"risk": "R1"', '"risk": "R2"', 1))
