@@ -33,6 +33,7 @@ from steerai.loop2.live_world import (
     LiveWorld,
     UiaElements,
     WindowIdentity,
+    WindowPlacement,
     WindowsPlatform,
     enter_mta,
     run_on_loop_thread,
@@ -164,6 +165,40 @@ class Platform:
             screen=(0, 0, 1920, 1080),
         )
         """[V2.62] the bound window's cover facts: in front and uncovered unless a test says."""
+        self.covers: list[CoverFacts] = []
+        """Cover reads in order, before `cover` (a window that the raise uncovers)."""
+        self._init_window_state()
+        self.show_error: Exception | None = None
+        self.on_show: Any = None  # Any: a test's hook, called with each command
+        self.on_move: Any = None  # Any: a test's hook, called with each nudge move's dx
+
+    def _init_window_state(self) -> None:
+        """[V2.64] the bound window's start: its page, its placement and the nudges seen."""
+        self.frame_screen: Snapshot | None = None
+        """[V2.64] what a read shows while `blank_reads_left` lasts: a frame with no Document."""
+        self.blank_reads_left = 0
+        self.page_after_nudge = True
+        self.address_bar_value: str | None = None
+        self.kill_after_reads = 0
+        self.read_times: list[float] = []
+        self.nudge_read_index = 0
+        """How many reads came before the first nudge call."""
+        self.nudges: list[str] = []
+        self.placement = WindowPlacement(
+            flags=0, show_cmd=1, normal=(40, 40, 1240, 940), min_pos=(-1, -1), max_pos=(-1, -1)
+        )
+        self.placements_set: list[WindowPlacement] = []
+        self.placement_attempts = 0
+        self.placement_errors: list[Exception | None] = []
+        """Each SetWindowPlacement call takes the next: an exception raises, None succeeds."""
+        self.rect_now: tuple[int, int, int, int] = (40, 40, 1240, 940)
+        self.rect_after_placement: tuple[int, int, int, int] | None = None
+        self.rects_set: list[tuple[int, int, int, int]] = []
+        self.rect_attempts: list[tuple[int, int, int, int]] = []
+        self.rect_errors: list[Exception | None] = []
+        """Each SetWindowPos call takes the next: an exception raises, None succeeds."""
+        self.primary = True
+        self.primary_error: Exception | None = None
 
     def dpi_aware(self) -> bool:
         self.calls.append("dpi")
@@ -204,7 +239,70 @@ class Platform:
 
     def window_cover(self, hwnd: int) -> CoverFacts:
         assert hwnd == 16
-        return self.cover
+        return self.covers.pop(0) if self.covers else self.cover
+
+    def _nudged(self, call: str) -> None:
+        if not self.nudges:
+            self.nudge_read_index = len(self.read_times)
+        self.nudges.append(call)
+
+    def _page_back(self) -> None:
+        if self.page_after_nudge:
+            self.blank_reads_left = 0
+
+    def window_placement(self, hwnd: int) -> WindowPlacement:
+        assert hwnd == 16
+        return self.placement
+
+    def set_window_placement(self, hwnd: int, placement: WindowPlacement) -> None:
+        assert hwnd == 16
+        self.placement_attempts += 1
+        failed = self.placement_errors.pop(0) if self.placement_errors else None
+        if failed is not None:
+            raise failed
+        self._nudged("placement")
+        self.placements_set.append(placement)
+        if self.rect_after_placement is not None:
+            self.rect_now = self.rect_after_placement
+        self._page_back()
+
+    def window_rect(self, hwnd: int) -> tuple[int, int, int, int]:
+        assert hwnd == 16
+        return self.rect_now
+
+    def set_window_rect(self, hwnd: int, rect: tuple[int, int, int, int]) -> None:
+        """A one-pixel step right is the gentle nudge's move (`move:+1`); the next rect set
+        after it is its way back (`move:-1`), whatever rect that is."""
+        assert hwnd == 16
+        self.rect_attempts.append(rect)
+        failed = self.rect_errors.pop(0) if self.rect_errors else None
+        if failed is not None:
+            raise failed
+        before = self.rect_now
+        self.rects_set.append(rect)
+        self.rect_now = rect
+        out = rect == (before[0] + 1, before[1], before[2] + 1, before[3])
+        back = not out and self.nudges[-1:] == ["move:+1"]
+        if out or back:
+            self._nudged("move:+1" if out else "move:-1")
+            if self.on_move is not None:
+                self.on_move(1 if out else -1)
+            if back:
+                self._page_back()
+
+    def on_primary_monitor(self, hwnd: int) -> bool:
+        assert hwnd == 16
+        if self.primary_error is not None:
+            raise self.primary_error
+        return self.primary
+
+    def show_window(self, hwnd: int, command: str) -> None:
+        assert hwnd == 16
+        if self.show_error is not None:
+            raise self.show_error
+        self._nudged(command)
+        if self.on_show is not None:
+            self.on_show(command)
 
     def uia(self) -> tuple[Any, UiaBindings]:
         self.calls.append("uia")
@@ -258,6 +356,12 @@ class Platform:
 
         def read(_hwnd: int) -> Snapshot:
             self.reads += 1
+            self.read_times.append(clock())
+            if self.kill_after_reads and self.reads >= self.kill_after_reads:
+                self.monitor.killed = True
+            if self.blank_reads_left > 0 and self.frame_screen is not None:
+                self.blank_reads_left -= 1
+                return self.frame_screen
             if self.screen_error is not None:
                 raise self.screen_error
             if self.handles is None:
@@ -268,7 +372,7 @@ class Platform:
 
     def facts(self, client: Any) -> Any:  # Any: a FactReader
         del client
-        return _Facts()
+        return _Facts(self)
 
     def windows(self, pid: int) -> tuple[int, ...]:
         del pid
@@ -312,11 +416,14 @@ class Platform:
 
 
 class _Facts:
+    def __init__(self, platform: Platform) -> None:
+        self._platform = platform
+
     def document_url_in(self, _snapshot: Snapshot, _document_id: int) -> None:
         return None
 
-    def address_bar(self, _hwnd: int) -> None:
-        return None
+    def address_bar(self, _hwnd: int) -> str | None:
+        return self._platform.address_bar_value
 
     def focused_runtime_id(self) -> tuple[int, ...]:
         return FIELD.runtime_id

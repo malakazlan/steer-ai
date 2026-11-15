@@ -35,6 +35,7 @@ from steerai.loop2.price import STALE_DAYS, PriceFile, load_price
 from steerai.loop2.runner import run_task
 from steerai.loop2.task import Budgets, Envelope, Task
 from steerai.orchestrator.console import escape_text
+from steerai.orchestrator.contracts import RISKS
 from steerai.orchestrator.trace import JsonLinesTrace, NullTrace, Trace
 from steerai.planner.claude_planner import DEFAULT_MODEL
 from steerai.probes.windows import WindowInfo
@@ -510,12 +511,15 @@ def _result(
             "target_changes": outcome.target_changes,
             "focus_losses": outcome.focus_losses,
             "history_dropped": outcome.history_dropped,
+            "pre_task_draft_clicks": outcome.pre_task_draft_clicks,  # [V2.64] Two
             "submit_parents": dict(outcome.submit_parents),
         },
         "watch_deadlines": {  # [V2.48]: per class, watches and those ended at the deadline
             kind: {"watches": watches, "deadline": hits}
             for kind, watches, hits in outcome.watch_deadlines
         },
+        # [V2.65] (2): the dispatches by their rated risk; step 3 dispatches nothing at R2 or above
+        "dispatch_risks": {r: sum(d.risk == r for d in outcome.dispatched) for r in RISKS},
         "tokens_incomplete": not tokens_known,
         "cost_incomplete": not cost_known,
         "wall_incomplete": not wall_known,

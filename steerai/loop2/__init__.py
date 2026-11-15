@@ -13,6 +13,7 @@ def ready(step: int) -> bool:
         act_port,
         actuate,
         batch,
+        choose_probe,
         claims,
         cli,
         consent,
@@ -37,8 +38,10 @@ def ready(step: int) -> bool:
         stage1_expected,
         stage2,
         stage2_expected,
+        stage2a,
         task,
         text,
+        unstick_probe,
         verify,
         world_ports,
     )
