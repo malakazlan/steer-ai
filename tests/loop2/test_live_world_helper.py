@@ -36,6 +36,12 @@ class HelperMonitor(Monitor):
         self.kill_reads = 0
         self.kill_raises_from = 1
         """The kill read (1-based) from which `kill_raises` is raised."""
+        self.close_raises: Exception | None = None
+
+    def close(self) -> None:
+        super().close()
+        if self.close_raises is not None:
+            raise self.close_raises
 
     def kill_requested(self) -> bool:
         self.kill_reads += 1
@@ -280,3 +286,38 @@ def test_the_helper_probe_is_bound_to_the_runs_tag() -> None:
     probe = live_world.bound_probe(0x2222_3333, vk=0x0E, nudge=nudge, key_up=key_up)
     probe()
     assert sent == [("nudge", 0x2222_3333), ("key_up:0xe", 0x2222_3333)]
+
+
+def test_a_cleanup_that_raises_never_masks_the_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#385 HH4-06: the helper's close failing after a failed build is noted on the refusal,
+    and the rest of the cleanup still runs."""
+    platform = HelperPlatform()
+    original = platform.start_helper_monitor
+
+    def start(*args: Any) -> HelperMonitor:  # Any: the platform's own arguments
+        helper = original(*args)
+        helper.close_raises = OSError(6, "the handle is invalid")
+        return helper
+
+    platform.start_helper_monitor = start  # type: ignore[method-assign,assignment]  # a failing close
+
+    def broken(*_args: object) -> None:
+        raise SteerError(ErrorCode.GATE_BLOCKED, "build_refused")
+
+    monkeypatch.setattr(live_world.LiveWorld, "_build", broken)
+    with pytest.raises(SteerError, match="build_refused") as refused:
+        _world(platform, hook_helper=True)
+    notes = getattr(refused.value, "__notes__", [])
+    assert any("the handle is invalid" in n for n in notes)
+    assert platform.calls.count("untag") == 1
+    assert platform.calls.count("release_session") == 1
+
+
+def test_close_noting_keeps_the_cause_and_notes_the_cleanup() -> None:
+    cause = SteerError(ErrorCode.GATE_BLOCKED, "monitor_unavailable")
+
+    def close() -> None:
+        raise OSError(6, "the handle is invalid")
+
+    live_world.close_noting(close, cause)
+    assert any("the handle is invalid" in n for n in cause.__notes__)

@@ -229,6 +229,15 @@ class LiveConfig:
     Windows), not the 15.625 ms world clock."""
 
 
+def close_noting(close: Callable[[], None], cause: BaseException) -> None:
+    """#385 HH4-06: a cleanup after a failure; a cleanup that raises is noted on `cause`, the
+    error being raised, never put in its place."""
+    try:
+        close()
+    except Exception as exc:  # noqa: BLE001 - noted on the cause, which is what propagates
+        cause.add_note(f"the cleanup after this failure also failed: {exc!r}")
+
+
 def bound_probe(
     tag: int,
     *,
@@ -336,8 +345,8 @@ class LiveWorld:
                 self._token("session_abandoned")  # a previous Steer died holding it
             debug = self._debug_sink()
             self._build(client, bindings, debug)
-        except BaseException:
-            self.close()
+        except BaseException as exc:
+            close_noting(self.close, exc)  # #385 HH4-06: never in place of the refusal
             raise
 
     def _take_session(self, platform: Platform, config: LiveConfig) -> tuple[str, Monitor]:
@@ -1072,8 +1081,8 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
                 probe=probe,
                 terminate_self=end_this_process,
             )
-        except BaseException:
-            helper.close()
+        except BaseException as exc:
+            close_noting(helper.close, exc)
             raise
 
     def hook_timeout_ms(self) -> int | None:
