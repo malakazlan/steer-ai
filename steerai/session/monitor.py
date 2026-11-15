@@ -58,6 +58,9 @@ TAKEOVER_TOKENS = frozenset({TAKEOVER, OTHER_STEER_INPUT})
 """The closed tokens of a stop for someone else's input: a person, or another Steer."""
 
 
+HOOKS = ("keyboard", "mouse")
+
+
 class MonitorCore:
     def __init__(
         self,
@@ -65,7 +68,10 @@ class MonitorCore:
         started_at: float,
         dead_band_px: int = DEAD_BAND_PX,
         extra_info: int = STEER_EXTRA_INFO,
+        per_hook: bool = False,
     ) -> None:
+        self._per_hook = per_hook
+        """[V2.57] LW-01 (v2): each hook proves itself; v1 keeps one proof for both."""
         self._extra_info = extra_info
         """The tag of this process's own input: v1's constant, or a v2 run's own ([V2.57])."""
         self._started_at = started_at
@@ -73,6 +79,8 @@ class MonitorCore:
         self._last_user: float | None = None
         self._last_kind = TAKEOVER
         self._last_steer: float = started_at
+        self._last_by = dict.fromkeys(HOOKS, started_at)
+        """Each hook's last own event (LW-01)."""
         self._probe_sent_at: float | None = None
         self._reference: tuple[int, int] | None = None
         self._counts: dict[str, int] = {}
@@ -85,7 +93,7 @@ class MonitorCore:
 
     def on_keyboard(self, *, flags: int, extra: int, now: float) -> None:
         if extra == self._extra_info:
-            self._steer(now)
+            self._steer(now, "keyboard")
             return
         if extra == STEER_EXTRA_INFO:
             self._other_steer(now)
@@ -97,7 +105,7 @@ class MonitorCore:
     ) -> None:
         x, y = pt
         if extra == self._extra_info:
-            self._steer(now)
+            self._steer(now, "mouse")
             if message == WM_MOUSEMOVE:
                 self._reference = (x, y)
             return
@@ -162,9 +170,26 @@ class MonitorCore:
         return self._kill
 
     def probe_due(self, *, now: float) -> bool:
+        if self._per_hook:
+            sent = self._probe_sent_at
+            if sent is not None and not self.probe_seen():
+                return False  # one probe in flight until both hooks saw it
+            return now - min(self._last_by.values()) >= PROBE_PERIOD_S
         if self._probe_sent_at is not None and self._probe_sent_at >= self._last_steer:
             return False  # one probe in flight
         return now - self._last_steer >= PROBE_PERIOD_S
+
+    def probe_seen(self) -> bool:
+        """LW-01: both hooks saw an own event since the last probe was sent."""
+        sent = self._probe_sent_at
+        return sent is not None and all(t >= sent for t in self._last_by.values())
+
+    def lost_hooks(self, *, now: float) -> tuple[str, ...]:
+        """LW-01: the hooks that have not seen the last probe past its deadline, in order."""
+        sent = self._probe_sent_at
+        if sent is None or now - sent <= PROBE_DEADLINE_S:
+            return ()
+        return tuple(hook for hook in HOOKS if self._last_by[hook] < sent)
 
     def probe_sent(self, *, now: float) -> None:
         self._probe_sent_at = now
@@ -172,6 +197,8 @@ class MonitorCore:
     def healthy(self, *, now: float, thread_alive: bool) -> bool:
         if not thread_alive or self._errors or self._loop_failed:
             return False
+        if self._per_hook:
+            return not self.lost_hooks(now=now)
         sent = self._probe_sent_at
         probe_missed = (
             sent is not None and self._last_steer < sent and now - sent > PROBE_DEADLINE_S
@@ -184,8 +211,9 @@ class MonitorCore:
 
     # ---- internals -----------------------------------------------------------------------------
 
-    def _steer(self, now: float) -> None:
+    def _steer(self, now: float, hook: str) -> None:
         self._last_steer = now
+        self._last_by[hook] = now
         self._count("steer")
 
     def _person(self, now: float, *, injected: bool) -> None:

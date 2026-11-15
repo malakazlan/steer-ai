@@ -237,3 +237,73 @@ def test_in_v1_its_own_constant_is_still_its_own_input() -> None:
     assert core.last_user_input() == 0.0
     assert core.takeover_token() == "takeover"
     assert "other_steer" not in core.counts()
+
+
+# ---- [V2.57] LW-01: per-hook proof (v2 only; v1's single proof is unchanged) -------------------
+
+
+def _per_hook(start: float = 100.0) -> MonitorCore:
+    return MonitorCore(started_at=start, per_hook=True)
+
+
+def _own_key(core: MonitorCore, now: float) -> None:
+    core.on_keyboard(flags=LLKHF_INJECTED, extra=STEER_EXTRA_INFO, now=now)
+
+
+def _own_move(core: MonitorCore, now: float) -> None:
+    core.on_mouse(
+        message=WM_MOUSEMOVE, flags=LLMHF_INJECTED, extra=STEER_EXTRA_INFO, pt=(1, 1), now=now
+    )
+
+
+def test_a_probe_seen_by_one_hook_only_is_a_lost_monitor() -> None:
+    """The keyboard hook removed by the OS while the mouse probe still arrives: v1's single
+    proof stays healthy; per hook, the unseen keyboard hook is lost past the deadline."""
+    for per_hook, healthy in ((False, True), (True, False)):
+        core = MonitorCore(started_at=100.0, per_hook=per_hook)
+        core.probe_sent(now=101.0)
+        _own_move(core, 101.1)
+        assert core.healthy(now=101.0 + PROBE_DEADLINE_S + 0.01, thread_alive=True) is healthy
+    assert core.lost_hooks(now=101.0 + PROBE_DEADLINE_S + 0.01) == ("keyboard",)
+
+
+def test_a_probe_seen_by_both_hooks_is_proof() -> None:
+    core = _per_hook()
+    core.probe_sent(now=101.0)
+    assert core.probe_seen() is False
+    _own_move(core, 101.1)
+    assert core.probe_seen() is False
+    _own_key(core, 101.2)
+    assert core.probe_seen() is True
+    assert core.healthy(now=105.0, thread_alive=True) is True
+    assert core.lost_hooks(now=105.0) == ()
+
+
+def test_each_hook_unseen_past_the_deadline_is_named() -> None:
+    core = _per_hook()
+    core.probe_sent(now=101.0)
+    _own_key(core, 101.1)
+    assert core.lost_hooks(now=101.0 + PROBE_DEADLINE_S) == ()  # not yet past it
+    assert core.lost_hooks(now=101.0 + PROBE_DEADLINE_S + 0.01) == ("mouse",)
+    core = _per_hook()
+    core.probe_sent(now=101.0)
+    assert core.lost_hooks(now=102.0) == ("keyboard", "mouse")
+
+
+def test_a_probe_is_due_when_either_hook_has_been_quiet() -> None:
+    """Our own typing keeps the keyboard hook proven but says nothing about the mouse hook."""
+    core = _per_hook()
+    _own_key(core, 100.0 + PROBE_PERIOD_S - 0.1)
+    assert core.probe_due(now=100.0 + PROBE_PERIOD_S) is True  # the mouse hook went quiet
+    v1 = _core()
+    _own_key(v1, 100.0 + PROBE_PERIOD_S - 0.1)
+    assert v1.probe_due(now=100.0 + PROBE_PERIOD_S) is False  # v1: any own event is proof
+
+
+def test_one_per_hook_probe_in_flight_at_a_time() -> None:
+    core = _per_hook()
+    core.probe_sent(now=101.0)
+    _own_move(core, 101.1)
+    assert core.probe_due(now=103.0) is False  # the keyboard half is still in flight
+    _own_key(core, 101.2)
+    assert core.probe_due(now=101.2 + PROBE_PERIOD_S) is True
