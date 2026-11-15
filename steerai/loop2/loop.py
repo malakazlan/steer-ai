@@ -136,6 +136,9 @@ class TurnView:
     """[V2.56]: what appeared, and what changed, since the observation the model last saw."""
     changes: Literal["compared", "no_comparison", "states_unread"] = "no_comparison"
     """[V2.56]: whether this turn had a comparison, and whether its states were read."""
+    calls_left: int | None = None
+    """Invariant 9, [V2.69]: the model calls this turn may still make (a repair is one); None:
+    no call budget."""
 
     def __post_init__(self) -> None:
         if not all(isinstance(r, RECORD_TYPES) for r in self.log):
@@ -248,18 +251,42 @@ class Decided:
     """[V2.61]: the prompt guard spent an exact count on this turn."""
     estimate_low: bool = False
     """[V2.61]: the turn's calls held more input tokens than the guard's bound said."""
+    calls: int = 1
+    """Invariant 9, [V2.68]: the model calls the turn made (a repaired turn is two)."""
+    rejections: tuple[str, ...] = ()
+    """[V2.67] D: the closed rejection tokens of each attempt that failed before it, in order."""
 
 
-AuditReason = Literal["outcome_shown", "outcome_not_shown", "outcome_unclear"]
-"""[V2.64] One: what the final audit says of the request's outcome (closed)."""
+AuditReason = Literal["facts_finish_request", "request_asks_more", "unclear"]
+"""[V2.68] One, packet rev 4 item 4: the sufficiency judges' closed reasons; only
+`facts_finish_request` with `sufficient` lets a task end done."""
 RunnerAuditReason = Literal["audit_failed", "audit_no_call"]
-"""[V2.64] One, #432: the runner's own audit endings: the audit failed or was refused before
+"""[V2.64] One, #432: the runner's own audit endings: the audit failed, or was refused before
 any call (closed; the outcome's `audit` reason is one of these or an `AuditReason`)."""
 AUDIT_FAILED: Final[RunnerAuditReason] = "audit_failed"
 AUDIT_NO_CALL: Final[RunnerAuditReason] = "audit_no_call"
-ProofLine = tuple[str, str, str, str, bool]
-"""One proven subgoal for the audit: (subgoal id, closes, how, kind, closed only by value or
-state claims)."""
+ReadKind = Literal["value_read", "state_read", "navigated"]
+"""[V2.68] One: what kind of fact code verified for a proven subgoal (the audit's read token)."""
+AUDIT_COUNTS: Final = (
+    "audit_calls",
+    "audit_allowed",
+    "audit_vetoed",
+    "audit_failed",
+    "audit_no_call",
+    "audit_budget_stops",
+    "audit_tokens",
+)
+"""[V2.69] One, packet rev 4 item 4: the audit's counts on the outcome and the final line;
+`audit_calls == audit_allowed + audit_vetoed + audit_failed`."""
+
+
+ProofParam = tuple[int, str]
+"""[V2.68], packet rev 5 §5: a proven param for the audit: its position among the subgoal's
+params (sorted by name, as `decision_shape`) and its span of the request (the person's words)."""
+ProofLine = tuple[int, str, str, str, tuple[ReadKind, str], tuple[ProofParam, ...]]
+"""[V2.68], [V2.69] One: one proven subgoal for the audit, by position, never its id: (position,
+closes, how, kind, read, params). `read` is what code verified, a closed (kind, detail) pair the
+prompt renders as `value_read:equals_param`, `state_read:<wanted>` or `navigated:<how>`."""
 
 
 @dataclass(frozen=True)
@@ -275,13 +302,17 @@ class AuditView:
     audit's listing is selected as decide's is, with these kept under the cap."""
     words: frozenset[str] = frozenset()
     """The subgoals' param words, for the goal-word class of the listing."""
+    typed: tuple[str, ...] = dataclass_field(default=(), repr=False)
+    """Packet rev 5 item 5: each free text Steer typed in the task (in memory only); the audit
+    port masks it out of the listing and the title before the call."""
 
 
 @dataclass(frozen=True)
 class Audited:
-    """The audit's answer: a veto or not, its closed reason, and the call's usage."""
+    """The audit's answer: whether the verified facts finish the request, its closed reason, and
+    the call's usage ([V2.68] One)."""
 
-    veto: bool
+    sufficient: bool
     reason: AuditReason
     usage: TokenUsage | None = None
 
@@ -324,11 +355,52 @@ class Ports:
     """The value fact a field holding exactly this text reads as (the session key and the
     normalisation `read_value` uses), so a value claim compares digests, never text."""
     audit: Callable[[AuditView], Audited] | None = None
+    turn_trace: Callable[[Mapping[str, object]], None] | None = None
+    """[V2.67] D: each turn's closed record (`turn_trace.closed`) for the redacted trace; None
+    writes none."""
     """[V2.64] One: the final audit, called only when every proof is self-written; None means
     there is none, so such a task fails closed (`audit_failed`), never ends done unaudited."""
 
 
 WatchKind = Literal["plain", "trigger", "submit", "wait"]
+PortDetail = Literal[
+    # the act port's own refusals and results
+    "port_error",
+    "screen_changed_during_wait",
+    "target_gone",
+    "expand_needs_click",
+    "not_in_step",
+    "commit_not_in_step",
+    "shape",
+    "text_missing",
+    "focus_needs_field",
+    "key_not_allowed",
+    "not_own_text",
+    "secure_unread",
+    "wall_budget",
+    "press_not_at_focus",
+    # the input guard and the toggle guard
+    "idle_unread",
+    "not_armed",
+    "toggle_limit",
+    "second_toggle_refused",
+    "second_toggle_uncertain",
+    "settled_on_reread",
+    # the tap check, the takeover and the switch (`interrupted`)
+    "hands_on",
+    "foreground_elevated",
+    "tap_unreadable",
+    "takeover",
+    "other_steer_input",
+    "killed",
+    "monitor_lost",
+    "session_locked",
+    "generation",
+]
+"""[V2.67] D: every `detail` the act port, its guards and the switch put on an act result, on
+top of the executors' (`execution.RefusalDetail`). Pinned to its producers by
+`tests/action/test_refusal_details.py`."""
+PORT_DETAILS: Final = frozenset(get_args(PortDetail))
 """[V2.48]: the watch classes, each with its own deadline (`world_ports.WorldTimes`)."""
 
 
@@ -406,6 +478,9 @@ class TaskOutcome:
     history_dropped: int = 0
     """[V2.47]: history lines off the history vocabulary (`history_line_ok`): dropped, never
     shown."""
+    turn_trace_dropped: int = 0
+    """[V2.67] D: turn records that failed the no-free-text check (`turn_trace.closed`): dropped,
+    never written in part, and counted so a gap in the trace never reads as a clean run."""
     wall_s: float = 0.0
     """7b: the task's wall time on the ports' clock, start to end (use against `max_wall_s`)."""
     cost_usd: float | None = None
@@ -429,13 +504,27 @@ class TaskOutcome:
     exact_counts: int = 0
     """[V2.61]: turns on which the prompt guard spent an exact count (near the ceiling)."""
     audit: tuple[str, AuditReason | RunnerAuditReason] | None = None
-    """[V2.64] One: the final audit's (`allowed` | `vetoed` | `failed`, reason token); None when
-    no audit ran (some proof was not self-written, or the task did not reach done)."""
+    """[V2.64] One, [V2.69] One: the final audit's (`allowed` | `vetoed` | `failed`, reason token);
+    None when no audit was due (the task did not reach done)."""
+    audit_calls: int = 0
+    """[V2.69] One, packet rev 4 item 4: audit calls made; `audit_allowed + audit_vetoed +
+    audit_failed` (a failed call made counts in `audit_failed`)."""
+    audit_allowed: int = 0
+    audit_vetoed: int = 0
+    audit_failed: int = 0
+    audit_no_call: int = 0
+    """An audit refused before any call (no port, over the prompt bound): never a call."""
+    audit_budget_stops: int = 0
+    """[V2.69] Four: an audit due with a budget spent: no call, the task paused."""
+    audit_tokens: int = 0
+    """The audit call's reported input and output tokens."""
     query_combobox_listed: bool = False
     """[V2.64] Two: a query-class ComboBox (searchbox AriaRole, or under a Search landmark) was
     among the rows the model was shown."""
     typed_into_combobox: bool = False
     """[V2.64] Two: a type targeted a ComboBox (whether it was then sent or refused)."""
+    saved_calls: int = 0
+    """[V2.67] A: model calls not made because the turn-start judgement closed the task."""
     pre_task_draft_clicks: int = 0
     """[V2.64] Two: non-field clicks whose submit scope held a filled field with no pending-text
     record (text Steer did not type: a draft from before the task, or the page's own)."""
@@ -583,6 +672,20 @@ _ORDER: Final = {risk: index for index, risk in enumerate(RISKS)}
 AskReason = Literal["generated_text", "text_changed", "submit_pending_text"]
 """[V2.25]: `generated_text` and `text_changed` are asks no grant covers; `submit_pending_text`
 marks a tier the submit rule raised, so its blocks are counted on their own."""
+RiskWhy = Literal[
+    "commit_declared",
+    "state_floor",
+    "deny_pattern",
+    "parent_unread",
+    "secure_type",
+    "enter_field",
+    "enter_other",
+    "submit_rule",
+]
+"""[V2.67] D: the rule of `action_risk` that set the final tier (the first to reach it, in
+rule order): the declared commit, the state verbs' R1 floor, v1's deny, control, consent
+and billing patterns (`gate.deny_tier_of`, one tier for its four classes), a parent the
+snapshot does not hold, a type into a secure field, an Enter, or the submit rule."""
 ParentKind = Literal["document", "main", "narrower"]
 PARENT_KINDS: Final[tuple[ParentKind, ...]] = get_args(ParentKind)
 Held = Literal["held", "changed", "unread"]
@@ -607,17 +710,21 @@ class RiskVerdict:
     submit: bool = False
     """#350: the action goes through the Enter table (an Enter on a field, or the submit rule
     fired), decided by the same call; the watch holds it as a submit."""
+    why: RiskWhy | None = None
+    """[V2.67] D: the rule that set `risk`; None at R0 with nothing raised."""
 
 
 @dataclass
 class _Tally:
     risk: Risk = "R0"
+    why: RiskWhy | None = None
     reasons: set[AskReason] = dataclass_field(default_factory=set)
     submit_parent: ParentKind | None = None
     refused: bool = False
 
-    def raise_to(self, tier: Risk) -> None:
-        self.risk = _highest(self.risk, tier)
+    def raise_to(self, tier: Risk, why: RiskWhy) -> None:
+        if _ORDER[tier] > _ORDER[self.risk]:  # raise-only; the first rule to reach it
+            self.risk, self.why = tier, why
 
 
 def _highest(*tiers: Risk) -> Risk:
@@ -658,23 +765,24 @@ def action_risk(
     id, its group name and the submit rule. `goal` is kept for the step-4 goal check."""
     del goal  # the per-action goal check is step 4
     scoping = _scoping_verb(action, element)
-    tally = _Tally(COMMIT_RISK[action.commit])
-    tally.raise_to("R1" if scoping in STATE_FLOOR else "R0")
+    tally = _Tally()
+    tally.raise_to(COMMIT_RISK[action.commit], "commit_declared")
+    tally.raise_to("R1" if scoping in STATE_FLOOR else "R0", "state_floor")
     deny: Risk = "R0"
     if action.verb not in NO_DENY_VERBS:
         deny = _deny(action, element, observed, scoping)
-        tally.raise_to(deny)
+        tally.raise_to(deny, "deny_pattern")
         if _parent_unread(element, observed):
-            tally.raise_to("R2")  # its group name cannot be read: never read as "no group"
+            tally.raise_to("R2", "parent_unread")  # its group name cannot be read
     if action.verb == "type" and element.secure:
-        tally.raise_to("R3")
+        tally.raise_to("R3", "secure_type")
     states = _states(observed, pending)
     denied = _ORDER[deny] >= _ORDER["R2"]
     kind = action_class(action, element.role)  # [V2.50]: the one call, risk and timing
     if kind == "enter_field":
         _enter(tally, action, element, observed, states, denied=denied)
     elif kind == "enter_other":
-        tally.raise_to("R2")  # [V2.26] (3): an Enter on anything else, or no known target
+        tally.raise_to("R2", "enter_other")  # [V2.26] (3): an Enter on anything else
     elif kind in _SUBMIT_RULE:
         _submit(tally, action, element, observed, states, denied=denied)
     if _ORDER[tally.risk] >= _ORDER["R2"] and _generated(action, states):
@@ -686,6 +794,7 @@ def action_risk(
         "text_changed" if tally.refused else None,
         trigger=kind in TRIGGER_CLASSES,
         submit=kind == "enter_field" or tally.submit_parent is not None,
+        why=tally.why,
     )
 
 
@@ -817,11 +926,12 @@ def _enter(  # noqa: PLR0913 - the tally, the action, its target and the read fa
     mine = next(((h, s) for h, s in states if h.field == field.runtime_id), None)
     if mine is None:
         tally.raise_to(
-            classify(field=NO_SEARCH, goal_span=False, commit=action.commit, deny_word=denied)
+            classify(field=NO_SEARCH, goal_span=False, commit=action.commit, deny_word=denied),
+            "enter_field",
         )
         return
     held, state = mine
-    tally.raise_to(_classified(tally, action, observed, held, state, denied=denied))
+    tally.raise_to(_classified(tally, action, observed, held, state, denied=denied), "enter_field")
 
 
 def _submit(  # noqa: PLR0913 - the tally, the action, its target and the read facts
@@ -851,7 +961,7 @@ def _submit(  # noqa: PLR0913 - the tally, the action, its target and the read f
             tier = "R2"
         if _ORDER[tier] >= _ORDER["R2"]:
             tally.reasons.add("submit_pending_text")
-        tally.raise_to(tier)
+        tally.raise_to(tier, "submit_rule")
 
 
 def _parent_kind(observed: Observed, field: tuple[int, ...]) -> ParentKind:

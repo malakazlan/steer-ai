@@ -198,6 +198,7 @@ class Platform:
         self.rect_errors: list[Exception | None] = []
         """Each SetWindowPos call takes the next: an exception raises, None succeeds."""
         self.primary = True
+        self.images_read: list[int] = []
         self.primary_error: Exception | None = None
 
     def dpi_aware(self) -> bool:
@@ -240,6 +241,10 @@ class Platform:
     def window_cover(self, hwnd: int) -> CoverFacts:
         assert hwnd == 16
         return self.covers.pop(0) if self.covers else self.cover
+
+    def process_image(self, pid: int) -> str:
+        self.images_read.append(pid)
+        return "chrome.exe"
 
     def _nudged(self, call: str) -> None:
         if not self.nudges:
@@ -703,6 +708,7 @@ def test_the_run_header_names_the_model_effort_prompt_trace_and_price() -> None:
         "model": "claude-opus-5",
         "effort": "medium",
         "prompt_version": PROMPT_VERSION,
+        "audit_prompt_version": "audit-2",  # [V2.69] (packet rev 5 P7)
         "trace_level": "redacted",
         "price": "not configured",
         "listing_cap": "150",
@@ -1084,6 +1090,9 @@ def test_the_report_has_every_counter() -> None:
         "debug_failure": None,
         "monitor_lost": 0,
         "front_nudged": None,
+        "cover": None,
+        "cover_above": None,
+        "cover_above_ours": None,
         "hook_events": 0,
         "hook_latency_p95_ms": None,
         "hook_latency_p99_ms": None,

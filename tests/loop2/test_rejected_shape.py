@@ -33,10 +33,13 @@ def test_an_action_is_its_verb_whether_in_step_and_its_param_if_declared() -> No
         known_subgoals={}, tokens=["not_in_step", "param_unknown"], turn=1, attempt=0,
     )  # fmt: skip
     assert shape["actions"] == [
-        {"verb": "type", "in_step": True, "param": "param:0", "text": False, "key": None},
-        {"verb": "scroll", "in_step": False, "param": None, "text": False, "key": None},
-        {"verb": "type", "in_step": True, "param": "param_unknown", "text": False, "key": None},
-    ]
+        {"verb": "type", "in_step": True, "param": "param:0", "text": False, "key": None,
+         "commit": "none"},
+        {"verb": "scroll", "in_step": False, "param": None, "text": False, "key": None,
+         "commit": "none"},
+        {"verb": "type", "in_step": True, "param": "param_unknown", "text": False, "key": None,
+         "commit": "none"},
+    ]  # fmt: skip
     assert (shape["turn"], shape["attempt"]) == (1, 0)
     assert shape["rejections"] == ["not_in_step", "param_unknown"]
 

@@ -727,11 +727,11 @@ def test_a_failed_call_counts_as_a_model_call_with_usage_incomplete() -> None:
 
 
 def test_a_controller_failure_after_calling_counts_the_call() -> None:
-    error = ControllerError("not_json", record=DecideRecord("controller-9", 2, True, True))
+    error = ControllerError("not_json", record=DecideRecord("controller-10", 2, True, True))
     world = World([], decide_raises=error)
     outcome = run_task(task(), world.ports())
     assert (outcome.status, outcome.reason) == ("stopped", "port_not_json")
-    assert outcome.model_calls == 1
+    assert outcome.model_calls == 2  # invariant 9, [V2.68]: the call and its repair
     assert outcome.usage_incomplete
 
 

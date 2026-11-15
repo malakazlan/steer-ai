@@ -168,10 +168,12 @@ def test_an_internal_error_or_a_reached_stub_is_a_fail_said_as_internal(
     assert (got.verdict, got.reason) == ("fail", "internal")
 
 
-def test_a_refused_start_is_steers_fail_not_a_void() -> None:
+def test_a_refused_start_is_an_infrastructure_void() -> None:
+    """[V2.67] C (supersedes "a refused start is Steer's fail"): a run that never began cannot
+    be scored; it counts toward the 1-in-10 void limit."""
     final = {"status": "error", "code": "gate_blocked", "detail": "price_missing"}
     got = classify(DONE, _record(final, check=False))
-    assert (got.verdict, got.reason) == ("fail", "start_refused:price_missing")
+    assert (got.verdict, got.reason) == ("void", "start_refused:gate_blocked:price_missing")
 
 
 # ---- acceptance ------------------------------------------------------------------------------
@@ -390,8 +392,9 @@ def test_a_crash_followed_by_a_noise_line_is_no_final_line(tmp_path: Path) -> No
 
 
 def test_an_expected_reason_must_be_the_runs_own() -> None:
-    """#366 P4 (E7): c-nobutton ends through the no-progress guard (runner: paused /
-    no_progress); a gallery row expected blocked must be blocked by the step-3 commit rule."""
+    """#366 P4 (E7), widened by [V2.67] B: c-nobutton ends on one of `NOBUTTON_REASONS` (the
+    no-progress guard among them); a gallery row expected blocked must be blocked by the step-3
+    commit rule."""
     nobutton = classify(THREE_D[3], _record(_final("paused", "no_progress"), check=False, enters=1))
     assert nobutton.verdict == "pass"
     other = classify(THREE_D[3], _record(_final("cannot", "page_not_ready"), check=False, enters=1))
@@ -520,13 +523,13 @@ def test_the_idle_floor_is_exactly_two_seconds() -> None:
 # ---- #366 re-review: a world that refused to start is never an outcome --------------------------
 
 
-def test_a_world_start_refusal_on_a_never_done_task_is_a_fail_not_a_pass() -> None:
+def test_a_world_start_refusal_on_a_never_done_task_is_a_void_not_a_pass() -> None:
     """cli.py's shape when LiveWorld refused to start (the session still held by a killed
     tree, the monitor, the window): no reason, no use, no cache counters."""
     refusal = {"task_id": "t", "status": "blocked", "code": "gate_blocked",
                "detail": "steer_already_running"}  # fmt: skip
     got = classify(NEVER, _record(refusal, check=False))
-    assert (got.verdict, got.reason) == ("fail", "start_refused:gate_blocked:steer_already_running")
+    assert (got.verdict, got.reason) == ("void", "start_refused:gate_blocked:steer_already_running")
 
 
 # ---- #366 re-review: the re-run loop and the wait for the person, pure -------------------------

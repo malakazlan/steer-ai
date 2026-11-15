@@ -19,6 +19,10 @@ its cap, the precheck and its waits, and the working-set sampler. What is new:
 - **Per-site controls before each batch** (§2.4): a failed control voids that site's runs in the
   batch, which are never started. A check with no fixed page has no control (rev 4.4a ruling
   (c)): its runs are classified normally and the summary lists them as `no_control`.
+- **Unrated tasks run** ([V2.65] (2)): expected `unrated`, they are out of the tasks gate only. A
+  false done or a dispatch at R2 or above fails the stage; any other fail (`cap_killed`,
+  `internal`, a refused start) is caught by the hard bar, void and monitor_lost gates, never by
+  the tasks gate (#419).
 - **Round robin with per-host spacing** (§2.3): run 1 of every task, then run 2, and so on; one
   host is never three in a row; every load of a host, controls included, waits `SITE_SPACING_S`
   after the last one. Re-runs (voids, monitor losses, runs not started) go in later batches,
@@ -60,16 +64,21 @@ from steerai.loop2.stage1 import (
     wait_until_ready,
 )
 from steerai.loop2.stage2_expected import (
+    ATTEMPT_LOADS,
     DAILY_CAP,
+    OPENERS,
     START_EXPRESSION,
     DecidingFacts,
     SiteRow,
     Spacer,
     TableRow,
+    check_acts,
+    check_table,
     deciding_facts,
     load_acts,
     load_table,
     load_unrated,
+    opener_start_facts,
     real_site_tasks,
     site_check,
     start_document,
@@ -84,7 +93,7 @@ INVALID_RUN_VOIDS: Final[Mapping[str, str]] = {
 }
 """#403 blocker 2: a run that never started is a site void only by the harness's own token; any
 other failure before the page read (launch, window, DevTools, UIA) is the machine's."""
-STEER_CAUSED: Final = ("cap_killed", "no_final_line", "internal", "start_refused:", "enters:")
+STEER_CAUSED: Final = ("cap_killed", "no_final_line", "internal", "enters:")
 """Stage 1's results that are Steer's whatever the page shows: they come before any wall."""
 MIN_VALID_TASKS: Final = 24
 """[V2.63] Q5: a conclusive stage needs at least this many of the 30 tasks not site-voided."""
@@ -282,18 +291,23 @@ def run_stage(  # noqa: PLR0913, PLR0915 - the tasks, then keyword-only knobs
         ]
         if not pending:
             break
-        open_now = [t for t in pending if not spacer.at_cap(t.host)]
-        if not open_now:
-            spacer.wait_next_day()  # [V2.65] (3): every pending host is at its cap today
-            continue
-        due = _controls_due(
-            open_now,
+        wanted = _controls_due(
+            pending,
             attempts=attempts,
             scored=scored,
             controlled=controlled,
             voided=voided,
             today=spacer.day(),
         )
+        need = {t.host: ATTEMPT_LOADS for t in pending} | dict.fromkeys(
+            (t.host for t in wanted if t.controlled), ATTEMPT_LOADS + 1
+        )  # #428 (6): a host whose tasks run no control reserves none
+        # #419: an attempt starts only with its whole budget (control, run, confirmation) left
+        open_now = [t for t in pending if spacer.remaining(t.host) >= need[t.host]]
+        if not open_now:
+            spacer.wait_next_day()  # [V2.65] (3): no pending host has an attempt's budget today
+            continue
+        due = [t for t in wanted if t in open_now]
         failed, walls = _controls(due, control=control, spacer=spacer, emit=emit)
         for host in {t.host for t in due}:
             controlled[host] = spacer.day()
@@ -301,7 +315,7 @@ def run_stage(  # noqa: PLR0913, PLR0915 - the tasks, then keyword-only knobs
         walled |= walls
         for task in interleaved(open_now):
             task_id = task.stage.task_id
-            if task.host in walled or spacer.at_cap(task.host):
+            if task.host in walled or spacer.remaining(task.host) < ATTEMPT_LOADS:
                 continue
             attempts[task_id] += 1
             run = attempts[task_id]
@@ -309,17 +323,19 @@ def run_stage(  # noqa: PLR0913, PLR0915 - the tasks, then keyword-only knobs
                 got = Classified(task_id, run, "void", "site_control_failed", False, None)
             else:
                 spacer.wait(task.host)
+                started = spacer.day()  # #428 (7): the load counts on this day
                 result = attempt(task, run)
                 if isinstance(result, str):  # never started: nothing was loaded
                     not_started += 1
                     emit({"task": task_id, "run": run, "not_started": result})
                     continue
-                spacer.loaded(task.host)
+                spacer.loaded(task.host, day=started)
                 confirmed = False
                 if needs_confirmation(task, result):
                     spacer.wait(task.host)
+                    started = spacer.day()
                     confirmed = confirm(task)
-                    spacer.loaded(task.host)
+                    spacer.loaded(task.host, day=started)
                 got = classify_site(task, result, confirmed=confirmed)
             classified.append(got)
             scored[task_id] += got.verdict not in ("void", "monitor_lost")
@@ -372,8 +388,9 @@ def _controls(
     walls: set[str] = set()
     for host in dict.fromkeys(t.host for t in interleaved(pending) if t.controlled):
         spacer.wait(host)
+        started = spacer.day()
         result = control(host)
-        spacer.loaded(host)
+        spacer.loaded(host, day=started)
         emit({"control": host, "result": result})
         if result == "fail":
             failed.add(host)
@@ -396,8 +413,12 @@ def volume_bound(tasks: Sequence[SiteTask], *, runs: int) -> dict[str, int]:
 
 
 def days_bound(bound: Mapping[str, int]) -> dict[str, int]:
-    """The days each host's bound needs at `DAILY_CAP` loads a day ([V2.65] (3))."""
-    return {host: -(-loads // DAILY_CAP) for host, loads in bound.items()}
+    """The most days each host's bound can take ([V2.65] (3), #428 (5)): every load in the
+    bound may need its wall confirmation, and an attempt starts only with its
+    `ATTEMPT_LOADS` left today, so a day holds `DAILY_CAP // ATTEMPT_LOADS` of them at
+    worst. Never fewer days than a run can take."""
+    per_day = DAILY_CAP // ATTEMPT_LOADS
+    return {host: -(-loads // per_day) for host, loads in bound.items()}
 
 
 def summarize(  # noqa: PLR0913 - the runs, then keyword-only figures
@@ -460,6 +481,12 @@ def _start_page(site: SiteTask, port: int, hwnd: int) -> StartPage:  # pragma: n
         )
     finally:
         del client  # its COM objects are released here, on this thread
+    opener = OPENERS.get(site.stage.task_id)
+    if opener is not None:  # [V2.65] (1): the target shows only after the opener
+        committed = site.facts
+        return StartPage(
+            loaded, wall, None if committed is None else opener_start_facts(opener, read, committed)
+        )
     try:
         facts: DecidingFacts | None = deciding_facts(site.row, site.suite.goal, read)
     except ValueError:  # the act's target is missing: not the expected start page
@@ -622,8 +649,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--price-file", type=Path, required=True)
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
-    acts = load_acts(args.acts.read_text(encoding="utf-8"))
+    acts_text = args.acts.read_text(encoding="utf-8")
+    check_acts(acts_text)  # #428 (8): only the committed acts run
+    acts = load_acts(acts_text)
     table_text = args.table.read_text(encoding="utf-8")
+    check_table(table_text)  # #424 (2): only the committed table runs
     unrated = load_unrated(table_text)  # [V2.65] (2): run, held to the hard bar
     tasks = site_tasks(load_table(table_text), acts, unrated=unrated)
 
