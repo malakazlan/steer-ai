@@ -89,7 +89,7 @@ def read_status(  # noqa: PLR0913 - the words, the reader's state and each check
     pid: int,
     helper_exited: bool,
 ) -> StatusRead:
-    if status.get("kill") == 1:
+    if status.get("kill") != 0:  # #383 HM-06: fail closed
         return StatusRead(killed=True, fault=None, words={})
     words = {name: status.get(name) for name in _READ}
     now = qpc_now()  # HH-10: after the read

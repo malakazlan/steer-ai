@@ -12,7 +12,12 @@ in-process `Monitor` protocol that `LiveWorld` reads, built on the helper's shar
   transitions; any during the task stops it (§5.6). It also runs kill layer 2.
 - **The kill** ([V2.60] Q1): layer 1, the loop thread acknowledges (`kill_ack`) the first time it
   sees the kill; layer 2, the watchdog ends Steer's own process when a set kill stays
-  unacknowledged past `KILL_ACK_S`. Nothing else here ever ends Steer (tested).
+  unacknowledged past `KILL_ACK_S`. Nothing else here ever ends Steer (tested). A self-end that
+  raises is counted in `end_self_failures` and tried again on the next step (#383 HM-08).
+- **The ack disarms layers 2 and 3** (#383 HM-05, accepted as designed): once `kill_ack` is
+  written neither fires, even if the loop then hangs. After the ack the kill is still read before
+  every input burst ([V2.40]), so a loop that keeps running cannot send; layers 2 and 3 exist for
+  a Steer that cannot read the kill at all.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from ctypes import wintypes
 from typing import Any, Final, Protocol
 
 from steerai.session.helper_core import KILL_ACK_S, KILL_EXIT_CODE
+from steerai.session.helper_launch import CLOSE_TIMEOUT_MS
 from steerai.session.helper_reader import (
     ReaderState,
     StatusRead,
@@ -40,8 +46,16 @@ CLOCK_RESOLUTION_S: Final = 0.015625
 """`time.monotonic()` on CPython 3.12 here is GetTickCount64 at 15.625 ms (meas,
 `time.get_clock_info`, 2026-11-15): one tick added to a person's input time (§5.3)."""
 WATCH_PERIOD_MS: Final = 100
+MAX_WAIT_MS: Final = 1000
+"""#383 HM-20: one kill-aware wait is a step; its caller re-reads the words between steps."""
+WATCH_JOIN_S: Final = (CLOSE_TIMEOUT_MS + 2 * WATCH_PERIOD_MS) / 1000
+"""#383 blocker 6: close waits out a watchdog that may be ending the helper (up to
+`CLOSE_TIMEOUT_MS`) before the helper's handles are closed."""
 """The watchdog's period: the helper's heartbeat period (rev 2 §5.3, provisional)."""
 _UNSET: Final = object()
+_OURS: Final[dict[str, object]] = {"lock": 1, "desktop": "Default"}
+"""HM-01: the state a task may start in: unlocked (WTS_SESSIONSTATE_UNLOCK, 1) on the Default
+desktop. Anything else at the first poll is a transition already."""
 
 
 class HelperView(Protocol):
@@ -128,8 +142,12 @@ class HelperMonitor:
         self._session_seen: dict[str, object] = dict.fromkeys(("lock", "connect", "desktop"),
                                                               _UNSET)  # fmt: skip
         self._transitions = dict.fromkeys(("lock", "connect", "desktop"), 0)
+        self._polled_at = self._started_at
         self._closed = False
+        self._poll_session()  # #383 blocker 5: never "nothing seen yet"
         self._stop = threading.Event()
+        self._nap = threading.Event()
+        """Never set: a wait that cannot wait on the helper still takes its time (HM-20)."""
         self._thread: threading.Thread | None = None
         if start_thread:
             self._thread = threading.Thread(target=self._run, name="steer-helper-watch",
@@ -140,7 +158,7 @@ class HelperMonitor:
 
     def kill_requested(self) -> bool:
         """K4: the kill word, read directly; layer 1 acknowledges it the first time."""
-        if self._helper.status.get("kill") != 1:
+        if self._helper.status.get("kill") == 0:  # #383 HM-06: nonzero is a kill
             return False
         if not self._acked:
             self._helper.config.set("kill_ack", 1)
@@ -153,16 +171,19 @@ class HelperMonitor:
         read = self._read(self._loop_state)
         if read.killed:
             return True  # a kill is not a loss; `kill_requested` reports it
-        if read.fault is not None:
-            self._lose(read.fault)
+        if read.fault is None and self._probe_failed:
             return False
-        if self._probe_failed:
-            return False
-        lost = self._ledger.lost_hooks(now=self._now(), counts=self._counts)
-        if lost:
-            self._lose("lost_hooks:" + ",".join(lost))
+        cause = read.fault if read.fault is not None else self._watch_loss()
+        if cause is not None:
+            self._lose(cause)
             return False
         return True
+
+    def _watch_loss(self) -> str | None:
+        if self._poll_age() > self._deadline_s:  # HM-03: the watchdog stopped watching
+            return "stale_session_poll"
+        lost = self._ledger.lost_hooks(now=self._now(), counts=self._counts)
+        return "lost_hooks:" + ",".join(lost) if lost else None
 
     def maintain(self) -> None:
         if self._ledger.probe_due(now=self._now(), counts=self._counts):
@@ -190,7 +211,10 @@ class HelperMonitor:
         )
 
     def session_change(self) -> str | None:
-        """§5.6: a lock, connect or desktop transition during the task, as its stop token."""
+        """§5.6: a lock, connect or desktop transition during the task, as its stop token. It
+        fails closed (#383 blocker 5): a last poll older than the deadline is a stop."""
+        if self._poll_age() > self._deadline_s:
+            return "session_locked"
         if self._transitions["lock"] or self._transitions["connect"]:
             return "session_locked"
         if self._transitions["desktop"]:
@@ -206,8 +230,18 @@ class HelperMonitor:
         return events, self._quantile(status, 0.95, events), self._quantile(status, 0.99, events)
 
     def wait(self, seconds: float) -> None:
-        """HH-08: a kill-aware wait wakes on the helper's `wake` or its exit."""
-        self._helper.wait_wake(max(0, int(seconds * 1000)))
+        """HH-08: a kill-aware wait wakes on the helper's `wake` or its exit. #383 HM-20: the
+        time is clamped; once the helper is closed or gone, or its wait fails, the time is
+        napped instead, so a caller's loop of waits never spins."""
+        ms = int(min(seconds, MAX_WAIT_MS / 1000) * 1000) if seconds > 0 else 0
+        if self._closed or self._helper.has_exited():
+            self._nap.wait(ms / 1000)
+            return
+        try:
+            self._helper.wait_wake(ms)
+        except OSError as exc:
+            self._lose(f"wake_wait_failed:{exc.errno}")
+            self._nap.wait(ms / 1000)
 
     def close(self) -> None:
         if self._closed:
@@ -215,7 +249,7 @@ class HelperMonitor:
         self._closed = True
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
+            self._thread.join(timeout=WATCH_JOIN_S)
         self._helper.close()
 
     # ---- the watchdog ----------------------------------------------------------------------------
@@ -230,15 +264,22 @@ class HelperMonitor:
             self._lose(read.fault)
         self._poll_session()
 
-    def _run(self) -> None:  # pragma: no cover - the thread; `watch_once` is what is tested
+    def _run(self) -> None:
+        """The watchdog thread: one `watch_once` per period. Once the helper has exited its
+        handle is signalled and `wait_exit` returns at once, so the period is then waited on the
+        stop event (#383 blocker 4). The whole body is guarded: a raise is a loss, latched,
+        never a silent death of the watchdog."""
+        period_s = WATCH_PERIOD_MS / 1000
         while not self._stop.is_set():
-            self._helper.wait_exit(WATCH_PERIOD_MS)
-            if self._stop.is_set():
-                return
             try:
+                if self._helper.wait_exit(WATCH_PERIOD_MS):
+                    self._stop.wait(period_s)
+                if self._stop.is_set():
+                    return
                 self.watch_once()
             except Exception:  # noqa: BLE001 - a watchdog that cannot watch is a loss, latched
                 self._lose("watchdog_error")
+                self._stop.wait(period_s)
 
     def _kill_layer(self) -> None:
         """[V2.60] Q1, layer 2: a set kill the loop never acknowledged ends Steer itself."""
@@ -248,8 +289,13 @@ class HelperMonitor:
         if self._kill_seen_at is None:
             self._kill_seen_at = now
         if now - self._kill_seen_at > KILL_ACK_S and not self._ended_steer:
+            try:
+                self._terminate_self()
+            except Exception:  # noqa: BLE001 - #383 HM-08: counted in Steer's word, tried again
+                config = self._helper.config
+                config.set("end_self_failures", config.get("end_self_failures") + 1)
+                return
             self._ended_steer = True
-            self._terminate_self()
 
     def _poll_session(self) -> None:
         reads = {
@@ -259,9 +305,14 @@ class HelperMonitor:
         }
         for name, value in reads.items():
             seen = self._session_seen[name]
-            if value is None or (seen is not _UNSET and value != seen):
+            first_not_ours = seen is _UNSET and value != _OURS.get(name, value)
+            if value is None or first_not_ours or (seen is not _UNSET and value != seen):
                 self._transitions[name] += 1
             self._session_seen[name] = value
+        self._polled_at = self._clock()
+
+    def _poll_age(self) -> float:
+        return self._clock() - self._polled_at
 
     # ---- internals -----------------------------------------------------------------------------
 

@@ -118,6 +118,7 @@ class Desk:
         self.lost = False
         self.taps = 0
         self.current: frozenset[tuple[int, ...]] | None = None
+        self.idle_stamps = 0
 
     def tap_refusal(self) -> str | None:
         self.taps += 1
@@ -141,6 +142,9 @@ class Desk:
 
     def armed(self, focus: frozenset[tuple[int, ...]]) -> AbstractContextManager[None]:
         return self._arm(focus)
+
+    def idle_checked(self) -> None:
+        self.idle_stamps += 1
 
     @contextmanager
     def _arm(self, focus: frozenset[tuple[int, ...]]) -> Iterator[None]:
@@ -1035,7 +1039,7 @@ def _real_executors(*, guarded: bool) -> tuple[Any, Any]:
             interrupted=lambda: None,
             focused=lambda: ((), False),
             clock=lambda: 0.0,
-            last_input=lambda: -1.0,
+            last_input=lambda: -100.0,  # idle: the act port's check passed
             takeover_token=lambda: "takeover",
         )
     else:
@@ -1161,3 +1165,21 @@ def test_the_persons_input_during_the_proof_refuses_the_act() -> None:
     result = rig.port.act(_dispatch("type", FIELD, **TYPE))
     assert _refused(result, ErrorCode.GATE_PENDING_USER, "takeover")
     assert _nothing_executed(rig)
+
+
+# ---- #383 blocker 2: every idle check that passes stamps the guard ------------------------------
+
+
+def test_the_idle_wait_and_the_last_idle_check_each_stamp_the_desk() -> None:
+    desk = Desk()
+    rig = _port(physical=Executor(ok("type")), desk=desk)
+    rig.port.act(_dispatch("type", FIELD, **TYPE))
+    assert desk.idle_stamps == 2  # `_wait_for_idle`, then `_proven_just_now`
+
+
+def test_a_refused_idle_check_does_not_stamp() -> None:
+    desk = Desk(last_input=0.0)
+    rig = _port(physical=Executor(ok("type")), desk=desk)
+    rig.clock.on_pause = lambda: setattr(desk, "last", rig.clock.now)  # busy past the wait
+    rig.port.act(_dispatch("type", FIELD, **TYPE))
+    assert desk.idle_stamps == 0

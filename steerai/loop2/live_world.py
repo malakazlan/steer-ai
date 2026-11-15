@@ -214,6 +214,9 @@ class LiveConfig:
     hook_helper: bool = False
     """[V2.60]: the hooks and the kill hot key in their own helper process (`HelperMonitor`)
     instead of a thread in this one. Off by default until the switch (packet rev 2b §10.1)."""
+    gap_clock: Callable[[], float] = time.perf_counter
+    """#383 blocker 3: the guard's re-read gap clock, QPC (`perf_counter` on CPython 3.12
+    Windows), not the 15.625 ms world clock."""
 
 
 def enter_mta(co_initialize_ex: Callable[[int], int]) -> None:
@@ -376,6 +379,7 @@ class LiveWorld:
             pause=config.pause,
             last_input=self._monitor.last_user_input,
             takeover_token=self._monitor.takeover_token,
+            gap_clock=config.gap_clock,
         )
         self.desk = GuardDesk(
             guard,

@@ -7,6 +7,7 @@ only a loop around `watch_once`, which these tests call directly."""
 from __future__ import annotations
 
 import ast
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,7 +16,8 @@ import pytest
 
 from steerai.session import helper_monitor
 from steerai.session.helper_core import KILL_ACK_S, write_config
-from steerai.session.helper_monitor import HelperMonitor
+from steerai.session.helper_launch import CLOSE_TIMEOUT_MS
+from steerai.session.helper_monitor import WATCH_PERIOD_MS, HelperMonitor
 from steerai.session.hook_layout import (
     HISTOGRAMS,
     KIND_OTHER_STEER,
@@ -45,7 +47,10 @@ class FakeHelper:
     terminated: int = 0
     closed: int = 0
     wakes: list[int] = field(default_factory=list)
+    wake_fails: bool = False
     on_get: Callable[[str], None] | None = None
+    terminate_exits: bool = True
+    """False: the end was asked for but has not taken effect yet (its words still read)."""
 
     def __post_init__(self) -> None:
         write_config(self.config, run_tag=0x1234_5678, probe_vk=0x0E, kill_mods=7, kill_vk=0x53,
@@ -93,10 +98,12 @@ class FakeHelper:
 
     def wait_wake(self, timeout_ms: int) -> None:
         self.wakes.append(timeout_ms)
+        if self.wake_fails:
+            raise OSError(6, "the handle is invalid")
 
     def terminate(self) -> None:
         self.terminated += 1
-        self.exited = True
+        self.exited = self.terminate_exits
 
     def close(self) -> None:
         self.closed += 1
@@ -143,8 +150,9 @@ class Rig:
             s.set(f"delivered_{hook}", s.get(f"delivered_{hook}") + 1)
 
 
-def _rig(*, probe_fails: bool = False) -> Rig:
-    helper, session = FakeHelper(), FakeSession()
+def _rig(*, probe_fails: bool = False, session: FakeSession | None = None) -> Rig:
+    helper = FakeHelper()
+    session = FakeSession() if session is None else session
     t = [100.0]
     probes: list[int] = []
     ended: list[int] = []
@@ -414,3 +422,254 @@ def test_close_closes_the_helper_once() -> None:
     rig.monitor.close()
     rig.monitor.close()
     assert rig.helper.closed == 1
+
+
+def test_any_nonzero_kill_word_is_requested() -> None:
+    """#383 HM-06."""
+    rig = _rig()
+    rig.helper.status_w.set("kill", 7)
+    assert rig.monitor.kill_requested()
+
+
+def test_a_latched_loss_stays_lost_when_the_words_read_well_again() -> None:
+    """#383 T1: the helper is being ended but its words still read; a heartbeat that goes
+    fresh again must not make a lost monitor healthy (K3)."""
+    rig = _rig()
+    rig.helper.terminate_exits = False
+    rig.at(100.0 + DEADLINE_S + 0.1)
+    assert not rig.monitor.healthy()  # stale: lost, latched
+    rig.heartbeat()
+    assert not rig.monitor.healthy()
+
+
+# ---- #383 blocker 4: the watchdog thread's loop -------------------------------------------------
+
+
+def _stop_after(monitor: HelperMonitor, rounds: int) -> list[float | None]:
+    """Replace the stop event's wait: record each timeout, stop after `rounds`."""
+    waits: list[float | None] = []
+    stop = monitor._stop
+
+    def wait(timeout: float | None = None) -> bool:
+        waits.append(timeout)
+        if len(waits) >= rounds:
+            stop.set()
+        return stop.is_set()
+
+    stop.wait = wait  # type: ignore[method-assign]  # a counted wait
+    return waits
+
+
+def test_once_the_helper_is_gone_the_watchdog_waits_its_period_and_never_spins() -> None:
+    """A signalled process handle makes `wait_exit` return at once; the loop then waits on its
+    own stop event for one period instead."""
+    rig = _rig()
+    rig.helper.exited = True
+    waits = _stop_after(rig.monitor, 3)
+    rig.monitor._run()
+    assert waits == [WATCH_PERIOD_MS / 1000] * 3
+    assert rig.helper.terminated == 1  # the dead helper is a loss, latched once
+
+
+def test_a_raise_anywhere_in_the_watchdog_is_a_loss_never_a_silent_death() -> None:
+    rig = _rig()
+
+    def broken(timeout_ms: int) -> bool:
+        raise OSError(6, "the handle is invalid")
+
+    rig.helper.wait_exit = broken  # type: ignore[method-assign]  # the wait itself fails
+    waits = _stop_after(rig.monitor, 2)
+    rig.monitor._run()
+    assert not rig.monitor.healthy()
+    assert waits  # it kept watching, without spinning
+
+
+# ---- #383 blocker 5: the session reads fail closed ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("start", "token"),
+    [
+        ({"lock": 0}, "session_locked"),  # HM-01: already locked when the task starts
+        ({"desktop": "Winlogon"}, "secure_desktop"),  # HM-01: already on the secure desktop
+        ({"lock": None}, "session_locked"),  # T3: a first read that is unread
+        ({"desktop": None}, "secure_desktop"),
+        ({"connect": None}, "session_locked"),
+    ],
+)
+def test_the_first_poll_at_construction_flags_a_state_that_is_not_ours(
+    start: dict[str, object], token: str
+) -> None:
+    session = FakeSession()
+    for name, value in start.items():
+        setattr(session, name, value)
+    rig = _rig(session=session)
+    assert rig.monitor.session_change() == token  # before any watchdog step
+
+
+def test_a_session_poll_older_than_the_deadline_is_a_stop() -> None:
+    """A dead or hung watchdog (HM-03), or a GIL stall (HM-02): the last poll is too old, and
+    what it said can no longer be trusted."""
+    rig = _rig()
+    assert rig.monitor.session_change() is None
+    rig.at(100.0 + DEADLINE_S + 0.01)
+    assert rig.monitor.session_change() == "session_locked"
+
+
+def test_a_stale_session_poll_loses_the_monitor() -> None:
+    rig = _rig()
+    rig.at(100.0 + DEADLINE_S * 0.5)
+    rig.heartbeat()
+    assert rig.monitor.healthy()
+    rig.at(100.0 + DEADLINE_S + 0.01)
+    rig.heartbeat()  # the helper is fine; the watchdog is not
+    assert not rig.monitor.healthy()
+
+
+def test_each_watchdog_poll_refreshes_the_poll_age() -> None:
+    rig = _rig()
+    for i in range(1, 6):
+        rig.at(100.0 + i * DEADLINE_S * 0.6)
+        rig.heartbeat()
+        rig.monitor.watch_once()
+        assert rig.monitor.session_change() is None
+
+
+# ---- #383 blocker 6: close never races a watchdog that is still ending the helper -------------
+
+
+def test_close_joins_the_watchdog_for_longer_than_ending_the_helper_can_take() -> None:
+    rig = _rig()
+    joins: list[float | None] = []
+
+    class Thread:
+        def join(self, timeout: float | None = None) -> None:
+            joins.append(timeout)
+
+    rig.monitor._thread = Thread()  # type: ignore[assignment]  # records the join's timeout
+    rig.monitor.close()
+    (timeout,) = joins
+    assert timeout is not None
+    assert timeout > CLOSE_TIMEOUT_MS / 1000 + WATCH_PERIOD_MS / 1000
+    assert rig.helper.closed == 1
+
+
+@dataclass
+class HeldHelper(FakeHelper):
+    """A helper whose end is held, as a real one is for up to `CLOSE_TIMEOUT_MS`."""
+
+    entered: threading.Event = field(default_factory=threading.Event)
+    release: threading.Event = field(default_factory=threading.Event)
+    order: list[str] = field(default_factory=list)
+
+    def terminate(self) -> None:
+        self.entered.set()
+        self.release.wait(5)
+        super().terminate()
+        self.order.append("terminated")
+
+    def close(self) -> None:
+        self.order.append("closed")
+        super().close()
+
+
+def test_close_waits_for_a_watchdog_still_ending_the_helper() -> None:
+    helper = HeldHelper()
+    helper.exited = True  # the watchdog's first step is a loss, and it ends the helper
+    monitor = HelperMonitor(
+        helper,
+        session=FakeSession(),
+        clock=lambda: 100.0,
+        qpc=lambda: int(100.0 * FREQ),
+        freq=FREQ,
+        deadline_s=DEADLINE_S,
+        probe=lambda: None,
+        terminate_self=lambda: None,
+    )
+    assert helper.entered.wait(5)
+    closer = threading.Thread(target=monitor.close)
+    closer.start()
+    closer.join(0.2)
+    assert closer.is_alive()
+    assert helper.closed == 0
+    helper.release.set()
+    closer.join(5)
+    assert helper.order == ["terminated", "closed"]
+
+
+# ---- #383 HM-08: a failed self-end (layer 2) is counted and tried again -----------------------
+
+
+def test_a_failed_self_end_is_counted_and_tried_again_on_the_next_step() -> None:
+    rig = _rig()
+    failures = [OSError(5, "denied")]
+
+    def end() -> None:
+        if failures:
+            raise failures.pop()
+        rig.ended.append(1)
+
+    rig.monitor._terminate_self = end
+    rig.helper.status_w.set("kill", 1)
+    rig.monitor.watch_once()
+    rig.at(100.0 + KILL_ACK_S + 0.01)
+    rig.heartbeat()
+    rig.monitor.watch_once()
+    assert rig.ended == []
+    assert rig.helper.config.get("end_self_failures") == 1
+    rig.monitor.watch_once()
+    rig.monitor.watch_once()
+    assert rig.ended == [1]  # tried again, then once only
+    assert rig.helper.config.get("end_self_failures") == 1
+
+
+# ---- #383 HM-20: a kill-aware wait is clamped, and never returns at once to a caller's loop ---
+
+
+def _naps(monitor: HelperMonitor) -> list[float | None]:
+    naps: list[float | None] = []
+
+    def wait(timeout: float | None = None) -> bool:
+        naps.append(timeout)
+        return False
+
+    monitor._nap.wait = wait  # type: ignore[method-assign]  # a recorded nap
+    return naps
+
+
+@pytest.mark.parametrize(
+    ("seconds", "ms"),
+    [(float("nan"), 0), (-1.0, 0), (float("inf"), 1000), (1e12, 1000), (0.0004, 0)],
+)
+def test_a_kill_aware_wait_is_clamped(seconds: float, ms: int) -> None:
+    rig = _rig()
+    rig.monitor.wait(seconds)
+    assert rig.helper.wakes == [ms]
+
+
+def test_once_the_helper_is_gone_a_wait_naps_its_time_instead_of_returning_at_once() -> None:
+    """Its exit signals the wake wait at once: a caller's loop of waits would spin."""
+    rig = _rig()
+    naps = _naps(rig.monitor)
+    rig.helper.exited = True
+    rig.monitor.wait(0.25)
+    assert rig.helper.wakes == []
+    assert naps == [0.25]
+
+
+def test_after_close_a_wait_naps_and_never_touches_the_helper() -> None:
+    rig = _rig()
+    naps = _naps(rig.monitor)
+    rig.monitor.close()
+    rig.monitor.wait(0.25)
+    assert rig.helper.wakes == []
+    assert naps == [0.25]
+
+
+def test_a_failed_wake_wait_is_a_loss_and_naps_its_time() -> None:
+    rig = _rig()
+    naps = _naps(rig.monitor)
+    rig.helper.wake_fails = True
+    rig.monitor.wait(0.25)
+    assert naps == [0.25]
+    assert not rig.monitor.healthy()

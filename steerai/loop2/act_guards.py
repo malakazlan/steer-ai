@@ -56,7 +56,11 @@ KEY_CHORDS: Final[Mapping[Key, str]] = {
 """AP-12: each `Key` to one of v1's named keys, no modifier; a test locks it to the Literal."""
 REREAD_AFTER_S: Final = 0.015625
 """[V2.60] HH-09: one tick of the world clock (`time.monotonic()`, GetTickCount64 at 15.625 ms,
-meas 2026-11-15). A send that comes later than this after the last idle read re-reads it first."""
+meas 2026-11-15). A send that comes a tick or more after the last idle read that passed re-reads
+it first; the gap itself is measured on the gap clock (QPC), never on the world clock."""
+MAX_REREADS: Final = 3
+"""Rev 2 §5.3: a re-read that itself comes too late (the thread lost the CPU) is re-read, at most
+this many times; then the send is refused."""
 TOGGLE_STATES: Final = frozenset({0, 1, 2})
 """UIA ToggleState (UIAutomationCore.h): Off 0, On 1, Indeterminate 2."""
 TOGGLE_LIMIT: Final = 2
@@ -80,8 +84,12 @@ class InputGuard:
         last_input: Callable[[], float],
         takeover_token: Callable[[], str],
         pause: Callable[[float], None] = time.sleep,
+        gap_clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self._inner = inner
+        self._gap_clock = gap_clock
+        """#383 blocker 3: the re-read's gap, on QPC (`perf_counter` is QueryPerformanceCounter
+        on CPython 3.12 Windows, meas `time.get_clock_info`), not the 15.625 ms world clock."""
         self._interrupted = interrupted
         self._focused = focused
         """ONE read of the focused element (slice 7): its RuntimeId and its live IsPassword
@@ -96,8 +104,8 @@ class InputGuard:
         self._act_started = 0.0
         self._last_click: float | None = None
         self._idle_read_at: float | None = None
-        """HH-09: when the idle rule was last read for this act (the act port reads it just
-        before arming); None outside an armed act."""
+        """HH-09: on the gap clock, when the idle rule last passed: the act port's check
+        (`idle_checked`) or the guard's own re-read. None: never, so the next send re-reads."""
 
     # ---- the act port's arming -----------------------------------------------------------------
 
@@ -109,12 +117,10 @@ class InputGuard:
     def _arm(self, focus: frozenset[tuple[int, ...]]) -> Iterator[None]:
         self._armed = focus
         self._act_started = self._clock()
-        self._idle_read_at = self._act_started
         try:
             yield
         finally:
             self._armed = None
-            self._idle_read_at = None
 
     # ---- the checks ------------------------------------------------------------------------------
 
@@ -123,18 +129,31 @@ class InputGuard:
         if token is not None:
             raise RefusalError(ErrorCode.GATE_BLOCKED, token)
 
+    def idle_checked(self) -> None:
+        """#383 blocker 2: the act port's idle check just passed; the re-read is timed from
+        here."""
+        self._idle_read_at = self._gap_clock()
+
     def _fresh_idle(self) -> None:
-        """[V2.60] HH-09: inside an act, a send that comes more than one clock tick after the
-        last idle read re-reads it: the person's input within `IDLE_S` refuses the send. The
-        residual is the bytecodes between this read and the call (measured as M7)."""
-        if self._idle_read_at is None:
-            return
-        now = self._clock()
-        if now - self._idle_read_at <= REREAD_AFTER_S:
-            return
-        if now - self._last_input() < IDLE_S:
-            raise RefusalError(ErrorCode.GATE_PENDING_USER, self._takeover_token())
-        self._idle_read_at = now
+        """[V2.60] HH-09, before every send, armed or not (#383 blocker 1): a send a tick or
+        more after the last idle read that passed (or with none, or with the gap clock gone
+        backwards) re-reads the idle rule; the person's input within `IDLE_S` refuses it, and so
+        does an idle rule that cannot be read (HM-15). A re-read that is itself late is re-read,
+        `MAX_REREADS` times at most. The residual is the bytecodes between this read and the
+        call (measured as M7)."""
+        for _ in range(MAX_REREADS):
+            stamp = self._idle_read_at
+            if stamp is not None and 0 <= self._gap_clock() - stamp < REREAD_AFTER_S:
+                return
+            read_at = self._gap_clock()  # a read is only as fresh as its start
+            try:
+                last = self._last_input()
+            except Exception as exc:  # HM-15: an unread idle rule refuses, never raises
+                raise RefusalError(ErrorCode.GATE_BLOCKED, "idle_unread") from exc
+            if self._clock() - last < IDLE_S:
+                raise RefusalError(ErrorCode.GATE_PENDING_USER, self._takeover_token())
+            self._idle_read_at = read_at
+        raise RefusalError(ErrorCode.GATE_PENDING_USER, self._takeover_token())
 
     def _keyboard(self) -> None:
         self._switch()
@@ -299,6 +318,11 @@ class GuardDesk:
 
     def armed(self, focus: frozenset[tuple[int, ...]]) -> AbstractContextManager[None]:
         return self._guard.armed(focus)
+
+    def idle_checked(self) -> None:
+        """#383 blocker 2: the act port's idle check passed; the guard times its re-read from
+        here."""
+        self._guard.idle_checked()
 
 
 class ToggleGuard(UiaBindings):

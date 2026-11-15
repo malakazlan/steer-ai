@@ -71,7 +71,7 @@ EXIT_MAP: Final = 3
 """The status section could not be mapped, so nothing could be published."""
 EXIT_FAILED: Final = 4
 """A failure was published in the status words (`state = failed`, an error code)."""
-_STEERS_OWN: Final = frozenset({"crc", "ask_depth", "kill_ack"})
+_STEERS_OWN: Final = frozenset({"crc", "ask_depth", "kill_ack", "end_self_failures"})
 _IMMUTABLE: Final = tuple(n for n in CONFIG_WORDS if n not in _STEERS_OWN)
 _COUNTS: Final = ("user", "injected_other", "steer", "answer", "other_steer")
 _TICK_WRAP: Final = 0xFFFF_FFFF
@@ -262,6 +262,10 @@ class HelperCore:
         if self._kill_qpc is None or self._config.get("kill_ack"):
             return False
         return qpc - self._kill_qpc > KILL_TERMINATE_S * self._freq
+
+    def end_steer_failed(self) -> None:
+        """#383 HM-08: layer 3's `TerminateProcess` failed; counted, and the loop tries again."""
+        self._status.set("end_steer_failures", self._status.get("end_steer_failures") + 1)
 
     def callback_error(self) -> None:
         self._classifier.on_callback_error()

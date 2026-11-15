@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import pytest
 
+from steerai.session import hook_helper
 from steerai.session.helper_core import (
     EXIT_ARGS,
     EXIT_FAILED,
@@ -69,6 +71,8 @@ class FakePlatform:
     clock: int = 1_000_000
     step: int = 1_000
     terminated: list[int] = field(default_factory=list)
+    end_results: list[bool] = field(default_factory=list)
+    """What each `TerminateProcess` returns, in order; True once these run out."""
 
     def __post_init__(self) -> None:
         write_config(
@@ -152,9 +156,10 @@ class FakePlatform:
         assert handle == HANDLES.wake
         self.calls.append("wake")
 
-    def terminate_parent(self, handle: int) -> None:
+    def terminate_parent(self, handle: int) -> bool:
         assert handle == HANDLES.parent
         self.terminated.append(handle)
+        return self.end_results.pop(0) if self.end_results else True
 
     def release(self) -> None:
         self.calls.append("release")
@@ -315,3 +320,24 @@ def test_without_a_kill_the_helper_never_ends_steer() -> None:
     p.step = 3 * 10_000_000
     run_helper(_argv(), p)
     assert p.terminated == []
+
+
+# ---- #383 HM-08: a failed end of Steer is counted and tried again ----------------------------
+
+
+def test_a_failed_end_of_steer_is_counted_and_tried_again_on_the_next_pass() -> None:
+    p = FakePlatform(waits=["input"] + ["timeout"] * 4 + ["quit"], events=["hotkey"])
+    p.step = 3 * 10_000_000
+    p.end_results = [False, False, True]
+    run_helper(_argv(), p)
+    assert p.terminated == [HANDLES.parent] * 3  # and never again once it succeeded
+    assert _status(p).get("end_steer_failures") == 2
+
+
+def test_the_windows_end_of_steer_reports_terminate_process_result() -> None:
+    """HM-08: `TerminateProcess` returns a BOOL; zero is a failure, never ignored."""
+    results = [0, 1]
+    platform = object.__new__(hook_helper.WindowsHelperPlatform)  # no DLLs: only the result
+    platform._k32 = SimpleNamespace(TerminateProcess=lambda *_: results.pop(0))
+    assert platform.terminate_parent(7) is False
+    assert platform.terminate_parent(7) is True
