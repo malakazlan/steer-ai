@@ -25,7 +25,7 @@ from steerai.action.dispositions import Delivery
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.actuate import may_retry, press_allowed
 from steerai.loop2.batch import batch_continues
-from steerai.loop2.controller import ControllerError, LogEntry, history_line_ok, log_role
+from steerai.loop2.controller import ControllerError
 from steerai.loop2.decision import (
     CLAIM_CLOSES,
     NOT_IN_STEP_VERBS,
@@ -45,6 +45,19 @@ from steerai.loop2.guards import (
     budget_hit,
     made_progress,
     same_action,
+)
+from steerai.loop2.history import (
+    ClaimResult,
+    Entered,
+    HistoryRecord,
+    LoadGuard,
+    LogEntry,
+    Proven,
+    Refused,
+    Vocab,
+    WorldMoved,
+    log_role,
+    record_ok,
 )
 from steerai.loop2.loop import (
     COMMIT_RISK,
@@ -303,7 +316,7 @@ class _Run:
         self.subgoals: tuple[Subgoal, ...] = task.subgoals
         self.frozen = bool(task.subgoals)
         self.proven: set[str] = set()
-        self.log: list[LogEntry | str] = []
+        self.log: list[HistoryRecord] = []
         """[V2.46]: action entries and history events, in order (`TurnView.log`)."""
         self.history_dropped = 0
         """[V2.47]: lines that failed the history pattern (`_note`)."""
@@ -528,6 +541,7 @@ class _Run:
             handles=self.handles.bind(observed),
             subgoals=self.subgoals,
             proven=frozenset(self.proven),
+            issued=frozenset(self.handles.by_handle),
         )
         try:
             decided = self.ports.decide(view)
@@ -648,7 +662,7 @@ class _Run:
         if set(proofs) >= set(subgoal.params) and self._still(subgoal, observed):
             self._tick(subgoal, how="claim")
             return
-        self._note(f"claim:{subgoal.id}:accepted")  # [V2.47]: one param held, not yet closed
+        self._note(ClaimResult(subgoal.id, "accepted"))  # [V2.47]: one param held, not closed
 
     def _refused(
         self, claim: Claim, subgoal: Subgoal, param: str | None, observed: Observed
@@ -707,20 +721,22 @@ class _Run:
         return True
 
     def _reject(self, subgoal: Subgoal, tokens: Sequence[str]) -> None:
-        self._notes(f"claim:{subgoal.id}:{t}" for t in tokens)
+        self._notes(ClaimResult(subgoal.id, t) for t in tokens)
         self.turn.claim_rejected = True
 
-    def _note(self, line: LogEntry | str) -> None:
-        """[V2.47]: every history line is checked against the one history pattern before the
-        model can see it; a line that does not match is dropped and counted, never shown."""
-        if history_line_ok(line if isinstance(line, str) else line.token()):
-            self.log.append(line)
+    def _note(self, record: HistoryRecord) -> None:
+        """[V2.47], [V2.49]: every history record is checked against the task's vocabulary (its
+        subgoals and the handles it issued) before the model can see it; one that fails is
+        dropped and counted, never shown."""
+        vocab = Vocab(known_params(self.subgoals), frozenset(self.handles.by_handle))
+        if record_ok(record, vocab):
+            self.log.append(record)
         else:
             self.history_dropped += 1
 
-    def _notes(self, lines: Iterable[str]) -> None:
-        for line in lines:
-            self._note(line)
+    def _notes(self, records: Iterable[HistoryRecord]) -> None:
+        for record in records:
+            self._note(record)
 
     def _handle_of(self, element: Element | None) -> int | None:
         """[V2.47]: an element's task handle, for a line about that element; None without one."""
@@ -738,13 +754,13 @@ class _Run:
         """A proven subgoal. RT-06, §8.8: a commit subgoal is never closed in step 3 (a standard
         proof never closes it; the strict tier is step 4)."""
         if subgoal.commit != "none":
-            self._note(f"claim:{subgoal.id}:standard_only")
+            self._note(ClaimResult(subgoal.id, "standard_only"))
             self.turn.claim_rejected = True
             return
         self.proven.add(subgoal.id)
         self.turn.ticked = True
         self.refusal = None
-        self._note(f"proven:{subgoal.id}:{how}")
+        self._note(Proven(subgoal.id, how))
 
     def _check_done(self) -> None:
         """A task with zero subgoals never ends `done` ([V2.11] decision 1)."""
@@ -878,9 +894,7 @@ class _Run:
             self.target_changes += 1
         else:
             self.focus_losses += 1
-        handle = self.turn.moved_handle
-        tail = "" if handle is None or what == "page" else f":{handle}"  # [V2.47]
-        self._note(f"{_MOVED_TOKEN[what]}{tail}")
+        self._note(WorldMoved(what, self.turn.moved_handle))  # [V2.47]: its element
 
     def _text(self, action: ActionDoc) -> str | None:
         """RT-36: the text a `type` sends: its param's goal span, or its free text."""
@@ -1039,8 +1053,8 @@ class _Run:
             read = "unread"
         return LogEntry(
             verb=action.verb,
-            handle=action.target,
-            role=log_role(sent.role) if action.target is not None else "unknown",
+            handle=self.handles.by_rid.get(sent.runtime_id) if sent.runtime_id else None,
+            role=log_role(sent.role) if sent.runtime_id else "unknown",
             subgoal=action.subgoal,
             param=action.param if action.verb == "type" else None,
             delivery=act.delivery.value,
@@ -1121,7 +1135,7 @@ class _Run:
         held = watched.timed_out or watched.conclusive_ms is not None
         if not held and (outcome.outcome != "unexpected_effect" or outcome.row == "4"):
             outcome = EnterOutcome("back_to_controller", "unknown", "5")
-        self._note(f"enter:{outcome.token}:{outcome.row}")
+        self._note(Entered(outcome.token, outcome.row))
         if outcome.outcome == "unexpected_effect":
             raise _End("stopped", Reason("unexpected_effect"))
 
@@ -1234,8 +1248,7 @@ class _Run:
         refusal also attaches to the refused action's subgoal and stands until it is proven."""
         kind, token = refusal_of(tokens)
         self.refusal = (kind, token)
-        tail = "" if handle is None else f":{handle}"  # [V2.47]: the refused element, if any
-        self._notes(f"refused:{t}{tail}" for t in tokens)
+        self._notes(Refused(token, handle) for token in tokens)  # [V2.47]: its element
         self.turn.refused = True
         if kind in ("policy", "step") and subgoal is not None:
             self.refused_seq += 1
@@ -1265,7 +1278,7 @@ class _Run:
         if top is None or top.runtime_id in self.reasked or left <= 0:
             return None
         self.reasked.add(top.runtime_id)
-        self._note("load_guard")
+        self._note(LoadGuard())
         held = self.ports.settle(observed, left)
         self._check_interrupt()
         return self._in_domain(held)
@@ -1330,14 +1343,6 @@ class _Run:
 
 
 # ---- pure helpers -----------------------------------------------------------------------------
-
-
-_MOVED_TOKEN: Final[Mapping[Moved, str]] = {
-    "page": "stale_observation",
-    "target": "target_changed",
-    "focus": "focus_lost",
-}
-"""The history token for each kind of world move ([V2.43] (2)): never a `refused:` token."""
 
 
 def _no_page(observed: Observed) -> bool:

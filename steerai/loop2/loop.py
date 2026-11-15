@@ -25,7 +25,6 @@ from typing import Final, Literal
 
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.errors import ErrorCode, SteerError
-from steerai.loop2.controller import LogEntry
 from steerai.loop2.decision import ActionDoc, Decision
 from steerai.loop2.form import (
     ACTING_ROLES,
@@ -35,6 +34,7 @@ from steerai.loop2.form import (
     form_facts,
 )
 from steerai.loop2.guards import StrikeReason
+from steerai.loop2.history import RECORD_TYPES, HistoryRecord, render
 from steerai.loop2.query import SearchFacts, classify, search_landmark_of
 from steerai.loop2.task import Commit, Subgoal
 from steerai.orchestrator.contracts import RISKS, Risk
@@ -106,9 +106,9 @@ class TurnView:
     """What one controller call is given: the latest observation and closed history tokens."""
 
     observed: Observed
-    log: tuple[LogEntry | str, ...]
-    """[V2.46]: what happened so far, in order: an action entry (closed tokens and the task
-    handle) or a history event (a closed token). Never screen text or model text (§8.6)."""
+    log: tuple[HistoryRecord, ...]
+    """[V2.46], [V2.49]: what happened so far, in order, as typed records (closed tokens, the
+    task's ids and issued handles). Never screen text or model text (§8.6), never a string."""
     first_turn: bool
     handles: Mapping[int, int]
     """[V2.38] RT-17: each listed element's task handle, by its snapshot id. The listing shows
@@ -118,10 +118,17 @@ class TurnView:
     proven: frozenset[str] = frozenset()
     """The subgoal ids proven so far: their status is `done`."""
 
+    issued: frozenset[int] = frozenset()
+    """[V2.49]: every task handle issued so far: the handles a history record may name."""
+
+    def __post_init__(self) -> None:
+        if not all(isinstance(r, RECORD_TYPES) for r in self.log):
+            raise TypeError("history entries are records, never strings ([V2.49])")
+
     @property
     def history(self) -> tuple[str, ...]:
-        """The log as history tokens (§8.6): an action entry as its `token()`."""
-        return tuple(e if isinstance(e, str) else e.token() for e in self.log)
+        """The log as its lines (§8.6), each by `history.render`."""
+        return tuple(render(r) for r in self.log)
 
 
 READ_BACK_VERBS = frozenset({"type", "choose", "check", "uncheck", "select", "expand", "collapse"})
@@ -257,10 +264,11 @@ class TaskOutcome:
     """[V2.43] (2): Decisions discarded because focus left a press's target after the listing
     showed it there (counted on its own)."""
     unread_automation_ids: int = 0
-    history_dropped: int = 0
-    """[V2.47]: history lines that did not match the history pattern: dropped, never shown."""
     """[V2.26] (2), V2 §6.1, #301: the elements whose automation id was not read, summed over
     every observation the loop took in; counted on the pooled set, the decision stays open."""
+    history_dropped: int = 0
+    """[V2.47]: history lines off the history vocabulary (`history_line_ok`): dropped, never
+    shown."""
     cost_usd: float | None = None
     """Each token category times its configured rate ([V2.40] Q3); None when no price is
     configured or a used category has no rate ([V2.37] P6): the cost budget is then reported

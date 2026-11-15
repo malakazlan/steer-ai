@@ -15,7 +15,6 @@ from steerai.loop2.controller import (
     ControllerError,
     DecideRecord,
     ListingRow,
-    LogEntry,
     ask_text,
     build_prompt,
     decide,
@@ -24,6 +23,7 @@ from steerai.loop2.controller import (
     repair_rate,
 )
 from steerai.loop2.decision import STEP, STEP_VERBS, UNTARGETED, Decision, Verb, validate
+from steerai.loop2.history import LogEntry, Vocab
 
 FENCE = "f3nc3"
 TASK_FENCE = "t4sk9x7q"
@@ -83,6 +83,7 @@ def prompt(
         unstable=unstable,
         growing=growing,
         young=young,
+        vocab=Vocab({"s1": frozenset({"text"})}, frozenset({1, 2})),
     )
 
 
@@ -150,10 +151,8 @@ def test_log_is_append_only_prefix() -> None:
     _, two = prompt(log=[SAVE, BODY])
     assert two[1].startswith(one[1])
     assert two[1].split("\n")[1:] == [
-        "1 click handle=1 role=button subgoal=s1 param=- delivery=delivered_verified "
-        "effects=focus read_back=-",
-        "2 type handle=2 role=edit subgoal=s1 param=text delivery=delivered_verified "
-        "effects=own_value read_back=-",
+        "1 act:click:1:button:s1:-:delivered_verified:focus:none",
+        "2 act:type:2:edit:s1:text:delivered_verified:own_value:none",
     ]
     assert two[0] == one[0]
 

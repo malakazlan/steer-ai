@@ -16,8 +16,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from steerai.loop2.controller import ListingRow, LogEntry, decide, v2_listing
+from steerai.loop2.controller import ListingRow, decide, v2_listing
 from steerai.loop2.decide_port import DecideCalls
+from steerai.loop2.history import HistoryRecord
 from steerai.loop2.loop import Decided, TurnView
 from steerai.loop2.task import Status, Subgoal, known_params
 
@@ -28,7 +29,8 @@ class ControllerInputs:
 
     task_goal: str
     subgoal_lines: tuple[str, ...]
-    action_log: tuple[LogEntry | str, ...]
+    action_log: tuple[HistoryRecord, ...]
+    issued: frozenset[int]
     subgoal_status: tuple[tuple[str, Status], ...]
     window_title: str
     listing_rows: tuple[ListingRow, ...]
@@ -47,6 +49,7 @@ def controller_inputs(view: TurnView, *, goal: str) -> ControllerInputs:
         task_goal=goal,
         subgoal_lines=tuple(_subgoal_line(s) for s in view.subgoals),
         action_log=view.log,
+        issued=view.issued,
         subgoal_status=tuple(
             (s.id, "done" if s.id in view.proven else s.status) for s in view.subgoals
         ),
@@ -93,6 +96,7 @@ def make_decide(calls: DecideCalls, *, goal: str, task_fence: str) -> Callable[[
                 unstable=inputs.unstable,
                 growing=inputs.growing,
                 young=inputs.young,
+                issued=inputs.issued,
             )
         )
         return Decided(decision, usage)

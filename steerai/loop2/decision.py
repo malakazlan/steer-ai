@@ -60,6 +60,13 @@ CLAIM_CLOSES: Mapping[str, Closes] = {
     "content_present": "page",
 }
 """[V2.39]: the closing kind each claim kind proves; a claim of another kind is `kind_mismatch`."""
+WITHOUT_PARAM: Final[dict[Closes, str]] = {
+    "value": "value_without_param",
+    "state": "state_without_param",
+    "page": "page_without_param",
+}
+"""[V2.39], [V2.40] Q7: the refusal for a subgoal with no param, one literal per closing kind
+(#347 review: no token is built from runtime data)."""
 
 UNTARGETED = frozenset({"press", "wait"})
 NO_COMMIT_VERBS = frozenset({"wait", "scroll", "focus"})
@@ -199,7 +206,7 @@ def _subgoal_doc_tokens(sub: SubgoalDoc, goal: str, fences: frozenset[str]) -> l
     if not sub.params:
         # [V2.39], [V2.40] Q7: every closing kind proves params (page_without_param,
         # value_without_param, state_without_param); with none it could never close
-        tokens.append(f"{sub.closes}_without_param")
+        tokens.append(WITHOUT_PARAM[sub.closes])
     return tokens
 
 

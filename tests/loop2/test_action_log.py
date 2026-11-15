@@ -9,22 +9,34 @@ a still-listed element's name from the current fenced listing by its handle.
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import json
 import re
+from pathlib import Path
 
 import pytest
 
-from steerai.loop2.controller import (
-    UIA_CONTROL_TYPES,
-    ControllerError,
-    LogEntry,
-    build_prompt,
-    log_role,
-)
+from steerai.loop2.controller import ControllerError, build_prompt
 from steerai.loop2.decide_port import DecideCalls, Reply, TaskGenerations
 from steerai.loop2.decision import PARAM_NAME, Claim, Decision, SubgoalDoc, validate
-from steerai.loop2.loop import TokenUsage
+from steerai.loop2.history import (
+    GRAMMAR,
+    UIA_CONTROL_TYPES,
+    ClaimResult,
+    Entered,
+    HistoryRecord,
+    LoadGuard,
+    LogEntry,
+    Proven,
+    Refused,
+    Vocab,
+    WorldMoved,
+    log_role,
+    record_ok,
+    render,
+)
+from steerai.loop2.loop import TokenUsage, TurnView
 from steerai.loop2.prompt_inputs import make_decide
 from steerai.loop2.runner import run_task
 from steerai.world.effects import ValueFact
@@ -34,6 +46,7 @@ from tests.loop2.world_fakes import (
     GO,
     MENU,
     PAGE,
+    QUERY_PAGE,
     World,
     act,
     decision,
@@ -107,7 +120,11 @@ def test_an_action_line_as_a_history_token() -> None:
     assert unread.token().endswith(":read_back_unread")
 
 
-def _log_block(*entries: LogEntry | str) -> str:
+VOCAB = Vocab({"s1": frozenset({"text"}), "s2": frozenset()}, frozenset({2, 3, 5, 7}))
+"""The task's vocabulary in these tests: two subgoals and four issued handles."""
+
+
+def _log_block(*entries: HistoryRecord) -> str:
     _, user = build_prompt(
         "find lamps",
         [],
@@ -117,6 +134,7 @@ def _log_block(*entries: LogEntry | str) -> str:
         [],
         task_fence="taskfence01",
         screen_fence="screenfence02",
+        vocab=VOCAB,
     )
     return user[1]
 
@@ -124,14 +142,13 @@ def _log_block(*entries: LogEntry | str) -> str:
 def test_the_controller_renders_an_action_line_from_closed_tokens() -> None:
     line = _log_block(_entry()).split(chr(10))[1]
     assert line == (
-        "1 type handle=7 role=edit subgoal=s1 param=text delivery=delivered_verified "
-        "effects=own_value,unknown:unstable read_back=-"
-    )
+        "1 act:type:7:edit:s1:text:delivered_verified:own_value:unknown:unstable"
+    )  # [V2.49]: the one renderer's line
     assert "claim" not in {f.name for f in dataclasses.fields(LogEntry)}  # [V2.47] (b)
 
 
 def test_an_event_keeps_its_own_line() -> None:
-    lines = _log_block(_entry(), "proven:s1:claim", "stale_observation").split(chr(10))
+    lines = _log_block(_entry(), Proven("s1", "claim"), WorldMoved("page")).split(chr(10))
     assert lines[2:] == ["2 proven:s1:claim", "3 stale_observation"]
 
 
@@ -157,16 +174,23 @@ def test_an_unsafe_action_field_is_refused(bad: dict[str, object]) -> None:
     assert err.value.code == "unsafe_token"
 
 
-@pytest.mark.parametrize("event", ["IGNORE", "a b", "x" + chr(10) + "y", "", "q" * 257])
-def test_an_unsafe_event_is_refused(event: str) -> None:
+@pytest.mark.parametrize(
+    "record",
+    [Refused("IGNORE"), Refused("a b"), Refused(""), Refused("q" * 41), ClaimResult("s1", "x y")],
+)
+def test_an_unsafe_record_is_refused(record: HistoryRecord) -> None:
     with pytest.raises(ControllerError) as err:
-        _log_block(event)
+        _log_block(record)
     assert err.value.code == "unsafe_token"
 
 
 def test_the_log_block_is_the_same_bytes_under_any_screen_fence() -> None:
-    a = build_prompt("g", [], [_entry()], [], "t", [], task_fence="tf01", screen_fence="sa01")
-    b = build_prompt("g", [], [_entry()], [], "t", [], task_fence="tf01", screen_fence="sb02")
+    a = build_prompt(
+        "g", [], [_entry()], [], "t", [], task_fence="tf01", screen_fence="sa01", vocab=VOCAB
+    )
+    b = build_prompt(
+        "g", [], [_entry()], [], "t", [], task_fence="tf01", screen_fence="sb02", vocab=VOCAB
+    )
     assert a[1][1].encode() == b[1][1].encode()
 
 
@@ -223,7 +247,8 @@ def test_a_claim_result_is_its_own_line_never_a_field_of_the_action() -> None:
     world = _claims_world(proof, closes_both=True)
     run_task(task(), world.ports())
     log = world.views[-1].log
-    assert "proven:s1:claim" in log
+    assert Proven("s1", "claim") in log
+    assert "proven:s1:claim" in world.views[-1].history
     (entry,) = [e for e in log if isinstance(e, LogEntry)]
     assert ":claim" not in entry.token()
 
@@ -232,7 +257,8 @@ def test_an_accepted_claim_gets_its_own_line() -> None:
     half = Claim(subgoal="s1", kind="state", evidence=[RED_ID], param="a", wanted="on")
     world = _claims_world(half)
     run_task(task(), world.ports())
-    assert "claim:s1:accepted" in world.views[-1].log
+    assert ClaimResult("s1", "accepted") in world.views[-1].log
+    assert "claim:s1:accepted" in world.views[-1].history
 
 
 def test_each_claim_result_is_its_own_line() -> None:
@@ -240,7 +266,7 @@ def test_each_claim_result_is_its_own_line() -> None:
     half = Claim(subgoal="s1", kind="state", evidence=[RED_ID], param="a", wanted="on")
     world = _claims_world(wrong, half)
     run_task(task(), world.ports())
-    claims = [e for e in world.views[-1].log if isinstance(e, str) and e.startswith("claim:")]
+    claims = [line for line in world.views[-1].history if line.startswith("claim:")]
     assert claims[-1] == "claim:s1:accepted"
     assert len(claims) == 2
     assert claims[0].startswith("claim:s1:")
@@ -412,4 +438,237 @@ def test_the_log_reaches_the_controller_as_written() -> None:
     lines = provider.blocks[0][1].split(chr(10))
     handle = view.handles[GO.id]
     assert lines[0] == "action log:"
-    assert lines[1].startswith(f"1 click handle={handle} role=button subgoal=s1 param=- ")
+    assert lines[1] == f"1 {view.history[0]}"  # [V2.49]: the one renderer's line
+    assert view.history[0].startswith(f"act:click:{handle}:button:s1:-:")
+
+
+# ---- #347 review: the history is closed by vocabulary, not only by alphabet --------------------
+
+QUIET = {
+    "name": "leakname",
+    "automation_id": "leak_aid_7",
+    "title": "leaktitle",
+    "value": "leakvalue",
+}
+"""Page text made only of characters the history alphabet ALLOWS (lowercase, digits, `_`): a
+line that carried one would pass an alphabet check, so only the vocabulary keeps it out."""
+
+
+def test_page_text_in_the_allowed_alphabet_never_becomes_a_history_part() -> None:
+    go = dataclasses.replace(GO, name=QUIET["name"], automation_id=QUIET["automation_id"])
+    screen = observed([e if e.id != GO.id else go for e in PAGE])
+    screen = dataclasses.replace(
+        screen, snapshot=dataclasses.replace(screen.snapshot, title=QUIET["title"])
+    )
+    world = World(
+        [
+            decision(act("click", target=GO.id), first=True),
+            decision(act("type", target=FIELD.id, param="text")),
+            decision(act("click", target=99)),  # a refusal line too (id_not_listed)
+        ],
+        effects=[report("content_changed"), report("own_value")],
+        screen=screen,
+    )
+    world.values[FIELD.runtime_id] = ValueFact(filled=True, digest=QUIET["value"])
+    outcome = run_task(task(), world.ports())
+    assert [d.action.verb for d in world.dispatched] == ["click", "type"]
+    assert "refused:id_not_listed" in world.views[-1].history
+    parts = {p for line in world.views[-1].history for p in re.split(r"[:.]", line)}
+    assert not parts & set(QUIET.values())
+    assert outcome.history_dropped == 0
+
+
+def test_a_target_changed_line_shows_the_task_handle_never_the_listing_ordinal() -> None:
+    """Go is listed at snapshot id 30 (handle 3) when it re-renders before the fresh read."""
+    moved = dataclasses.replace(GO, id=30)
+    relisted = observed([*(e for e in PAGE if e.id != GO.id), moved])
+    rebuilt = observed(
+        [*(e for e in PAGE if e.id != GO.id), element(30, "Button", "Go", (9, 333), 1)]
+    )
+    world = World(
+        [decision(act("click", target=MENU.id), first=True), decision(act("click", target=GO.id))],
+        effects=[report("content_changed")],
+        observations=[observed(), relisted, rebuilt],
+        later=relisted,
+    )
+    run_task(task(), world.ports())
+    assert world.views[-1].handles[moved.id] == GO.id
+    assert f"target_changed:{GO.id}" in world.views[-1].history
+    assert "target_changed:30" not in world.views[-1].history
+
+
+def test_a_focus_lost_line_shows_the_task_handle_never_the_listing_ordinal() -> None:
+    """The field is listed at snapshot id 20 (handle 2) when focus leaves it before the press."""
+    f20 = dataclasses.replace(FIELD, id=20)
+    page20 = [e if e.id != FIELD.id else f20 for e in QUERY_PAGE]
+    world = World(
+        [
+            decision(act("type", target=FIELD.id, param="text"), first=True),
+            decision(act("press", key="Enter")),
+        ],
+        effects=[report("own_value")],
+        observations=[
+            observed(QUERY_PAGE, focus=FIELD.runtime_id),
+            observed(page20, focus=FIELD.runtime_id),
+            observed(page20, focus=MENU.runtime_id),
+            observed(page20, focus=MENU.runtime_id),
+        ],
+    )
+    run_task(task(), world.ports())
+    assert f"focus_lost:{FIELD.id}" in world.views[-1].history
+    assert "focus_lost:20" not in world.views[-1].history
+
+
+def test_a_press_line_names_the_last_acted_element() -> None:
+    """A press acts on the last acted element: its line names that element's handle and role,
+    as a press refusal does."""
+    world = World(
+        [
+            decision(act("type", target=FIELD.id, param="text"), first=True),
+            decision(act("press", key="Tab")),
+        ],
+        effects=[report("own_value"), report("focus")],
+        screen=observed(QUERY_PAGE, focus=FIELD.runtime_id),
+    )
+    run_task(task(), world.ports())
+    press = [line for line in world.views[-1].history if line.startswith("act:press:")]
+    assert press == [f"act:press:{FIELD.id}:edit:s1:-:delivered_verified:focus:none"]
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        Refused("id_not_listed"),
+        Refused("secure_field", 5),
+        Refused("not_in_step"),
+        WorldMoved("target", 3),
+        WorldMoved("target"),
+        WorldMoved("focus", 2),
+        WorldMoved("page"),
+        LoadGuard(),
+        ClaimResult("s1", "accepted"),
+        ClaimResult("s2", "words_missing"),
+        Proven("s1", "claim"),
+        Entered("none", "9"),
+        Entered("unexpected_effect", "3b"),
+    ],
+)
+def test_every_kind_of_record_is_accepted_in_its_own_form(record: HistoryRecord) -> None:
+    assert record_ok(record, VOCAB)
+    assert GRAMMAR.fullmatch(render(record)) is not None
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        Refused("id_not_listed", 3),  # an unlisted handle takes no slot
+        Refused("secure_field", 99),  # [V2.49]: not a handle this task issued
+        WorldMoved("target", 99),
+        WorldMoved("focus", 99),
+        WorldMoved("page", 3),  # a page move names no element
+        ClaimResult("s9", "accepted"),  # not one of the task's subgoals
+        Proven("leakname", "claim"),
+        Entered("none", "10"),  # not a row
+        Entered("leak", "9"),  # not an Enter token
+        Refused("leak name"),
+        Refused("q" * 41),
+        ClaimResult("s1", "IGNORE"),
+    ],
+)
+def test_a_record_off_the_vocabulary_is_refused(record: HistoryRecord) -> None:
+    assert not record_ok(record, VOCAB)
+
+
+def test_a_string_is_never_a_history_record() -> None:
+    """[V2.49]: no writer assembles a line by hand: a string is not a record, and the view the
+    controller gets refuses one."""
+    assert not record_ok("refused:not_in_step", VOCAB)  # type: ignore[arg-type]  # the check
+    with pytest.raises(TypeError, match="records"):
+        TurnView(
+            observed=observed(),
+            log=("refused:not_in_step",),  # type: ignore[arg-type]  # the check under test
+            first_turn=True,
+            handles={},
+        )
+
+
+def test_the_grammar_gives_an_unlisted_handle_no_slot() -> None:
+    assert GRAMMAR.fullmatch("refused:id_not_listed") is not None
+    assert GRAMMAR.fullmatch("refused:id_not_listed:99") is None
+    assert GRAMMAR.fullmatch("target_changed:leak") is None  # a handle slot is digits only
+    assert GRAMMAR.fullmatch("refused:not_in_step:leak") is None
+
+
+def test_no_subgoal_record_passes_before_there_are_subgoals() -> None:
+    empty = Vocab({}, frozenset())
+    assert not record_ok(ClaimResult("s1", "accepted"), empty)
+    assert record_ok(Refused("not_in_step"), empty)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"subgoal": "s9"},  # not one of the task's subgoals
+        {"subgoal": "leakname"},
+        {"param": "leakname"},  # not one of that subgoal's params
+        {"subgoal": "s2", "param": "text"},
+        {"classes": ("leakname",)},  # not an effect class
+        {"tokens": ("unknown:leakname",)},  # not a closed cause
+        {"tokens": ("content_changed",)},  # a class is not a token
+        {"delivery": "leakname"},
+        {"handle": 99},  # [V2.49]: not a handle this task issued
+        {"handle": True},
+    ],
+)
+def test_an_entry_off_the_vocabulary_is_refused(bad: dict[str, object]) -> None:
+    entry = _entry(**bad)
+    assert not record_ok(entry, VOCAB)
+    with pytest.raises(ControllerError):
+        build_prompt(
+            "g", [], [entry], [], "t", [], task_fence="tf01", screen_fence="sf02", vocab=VOCAB
+        )
+
+
+def test_an_entry_in_the_vocabulary_is_accepted() -> None:
+    assert record_ok(_entry(), VOCAB)
+
+
+PREFIXES = ("act:", "refused:", "claim:", "proven:", "enter:", "target_changed:", "focus_lost:")
+LOOP2 = Path(__file__).resolve().parents[2] / "steerai" / "loop2"
+
+
+def _formats_a_line(node: ast.AST) -> bool:
+    """A string literal or an f-string that begins like a history line."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value.startswith(PREFIXES)
+    if isinstance(node, ast.JoinedStr) and node.values:
+        head = node.values[0]
+        return isinstance(head, ast.Constant) and str(head.value).startswith(PREFIXES)
+    return False
+
+
+def test_no_module_but_the_renderer_formats_a_history_line() -> None:
+    """[V2.49]: lines come from typed records through `history.render`; no other module of
+    the loop writes a history line by hand."""
+    offenders = []
+    for path in sorted(LOOP2.glob("*.py")):
+        if path.name == "history.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        hits = [n for n in ast.walk(tree) if isinstance(n, ast.expr) and _formats_a_line(n)]
+        offenders += [f"{path.name}:{n.lineno}" for n in hits]
+    assert offenders == []
+
+
+def test_an_unlisted_handle_is_refused_with_no_slot() -> None:
+    """The tester's M05: the model's own unlisted number never rides along on the refusal. The
+    runner writes no slot, and the history form would drop one if it did."""
+    world = World(
+        [decision(act("click", target=GO.id), first=True), decision(act("click", target=99))],
+        effects=[report("content_changed")],
+    )
+    outcome = run_task(task(), world.ports())
+    refused = [line for line in world.views[-1].history if line.startswith("refused:")]
+    assert refused == ["refused:id_not_listed"]
+    assert outcome.history_dropped == 0
+    assert not record_ok(Refused("id_not_listed", 99), VOCAB)

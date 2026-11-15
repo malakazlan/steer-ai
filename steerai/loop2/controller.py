@@ -1,7 +1,9 @@
 """Controller prompt building and reply parsing. The model call itself is injected.
 
-Free text (element names, subgoal descriptions, the request) only ever appears inside a fence.
-The action log holds no free text at all ([V2.46]): closed tokens and task handles only.
+Screen text and model text (element names, the window title, subgoal descriptions) only ever
+appear inside a fence. The request is the person's own words: it is fence-checked (it may not
+carry a fence), not wrapped. The action log holds no free text at all ([V2.46], [V2.47]):
+closed tokens, task handles and the task's own subgoal ids and params.
 The task fence is fixed for a task so the stable and log blocks stay byte-identical across calls;
 the screen fence is fresh for every call.
 """
@@ -13,18 +15,23 @@ import re
 import secrets
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Final, Literal, get_args
+from typing import Any, Literal, get_args
 
 from pydantic import ValidationError
 
 from steerai.loop2.decision import (
-    PARAM_NAME,
     STEP,
     STEP_VERBS,
     SUBGOAL_ID,
     Decision,
     Verb,
     validate,
+)
+from steerai.loop2.history import (
+    HistoryRecord,
+    Vocab,
+    record_ok,
+    render,
 )
 from steerai.loop2.task import Status
 from steerai.loop2.text import clean_line, has_control
@@ -53,7 +60,9 @@ SYSTEM_RULES = (
     "Rules:\n"
     "- Act only on ids in the current listing. Never name an element that is not listed.\n"
     "- The action log names an element by its id and role only; while it is listed, read its "
-    "name in the listing by that id.\n"
+    "name in the listing by that id. An action line is act:verb:id:role:subgoal:param:"
+    "delivery:effect classes:effect tokens; the other lines are what code saw: refused, claim, "
+    "proven, target_changed, focus_lost, stale_observation, load_guard, enter.\n"
     "- A ComboBox can be a text field: `type` is allowed on it.\n"
     "- Each subgoal declares `closes`, the kind of fact that proves it done: value, state or "
     "page (a field holds the text, an element is in a state, the page shows it). A page subgoal "
@@ -135,83 +144,6 @@ def v2_listing(snapshot: Snapshot, *, handles: Mapping[int, int]) -> list[Listin
     return rows
 
 
-UIA_CONTROL_TYPES: Final = frozenset(
-    {
-        "AppBar", "Button", "Calendar", "CheckBox", "ComboBox", "Custom", "DataGrid", "DataItem",
-        "Document", "Edit", "Group", "Header", "HeaderItem", "Hyperlink", "Image", "List",
-        "ListItem", "MenuBar", "Menu", "MenuItem", "Pane", "ProgressBar", "RadioButton",
-        "ScrollBar", "SemanticZoom", "Separator", "Slider", "Spinner", "SplitButton", "StatusBar",
-        "Tab", "TabItem", "Table", "Text", "Thumb", "TitleBar", "ToolBar", "ToolTip", "Tree",
-        "TreeItem", "Window",
-    }
-)  # fmt: skip
-"""[V2.46]: the UIA control types by their programmatic names (`Element.role` comes from the
-`UIA_*ControlTypeId` constants via `control_type_names`): the 41 documented at
-https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-controltype-ids (50000-50040;
-page dated 2025-07-14, read 2026-11-15)."""
-LOG_ROLES: Final = frozenset({r.lower() for r in UIA_CONTROL_TYPES} | {"unknown"})
-EFFECT = re.compile(r"[a-z_]{1,32}(:[a-z_]{1,32})?")
-"""An effect class or token: `own_value`, or `unknown:<cause>` ([V2.42] (B))."""
-HISTORY_LINE = re.compile(r"[a-z0-9_.-]+(?::[a-z0-9_.-]+)*")
-"""[V2.47]: the one pattern every history line matches before it is shown (§8.6): closed
-tokens, task handles and closed ids, separated by `:`."""
-MAX_HISTORY_LINE: Final = 256
-
-
-def history_line_ok(line: str) -> bool:
-    """[V2.47]: the line may be shown; one that is not is dropped and counted, never shown."""
-    return len(line) <= MAX_HISTORY_LINE and HISTORY_LINE.fullmatch(line) is not None
-
-
-READ_BACK: Final = frozenset({"mismatch", "unread"})
-
-
-def log_role(role: str) -> str:
-    """[V2.46]: the role as the action log shows it: the control-type enum name, lowercased;
-    `unknown` for anything else (an unknown id, a localized type, an ARIA role)."""
-    return role.lower() if role in UIA_CONTROL_TYPES else "unknown"
-
-
-@dataclass(frozen=True)
-class LogEntry:
-    """[V2.46], [V2.47]: one past action, as closed tokens and the target's task handle. No
-    name and no text: a name in the history is page text that would follow the model to later
-    pages. No claim result either: a claim result is always its own line."""
-
-    verb: str
-    handle: int | None
-    """The target's task handle; None for an action with no target."""
-    role: str
-    """`log_role` of the target's control type."""
-    subgoal: str | None
-    param: str | None
-    """For a type, the name of the param typed (never its text)."""
-    delivery: str
-    classes: tuple[str, ...]
-    tokens: tuple[str, ...]
-    read_back: str | None
-    """`mismatch` or `unread` for a read-back verb whose read-back did not verify."""
-
-    def token(self) -> str:
-        """The history token (§8.6): `act:<verb>:<handle>:<role>:<subgoal>:<param>:<delivery>:
-        <classes>:<tokens>[:read_back_<r>]`, `-` for a field that is not there, `empty` and
-        `none` for no class and no token."""
-        parts = [
-            "act",
-            self.verb,
-            "-" if self.handle is None else str(self.handle),
-            self.role,
-            self.subgoal or "-",
-            self.param or "-",
-            self.delivery,
-            ".".join(sorted(self.classes)) or "empty",
-        ]
-        parts.append(".".join(sorted(self.tokens)) or "none")
-        if self.read_back is not None:
-            parts.append(f"read_back_{self.read_back}")
-        return ":".join(parts)
-
-
 def repair_rate(records: Sequence[DecideRecord]) -> float:
     """Decisions that needed a repair call, failed ones included, over all decisions."""
     if not records:
@@ -247,34 +179,13 @@ def _token(text: str) -> str:
     return text
 
 
-def _log_line(index: int, entry: LogEntry | str) -> str:
-    """[V2.46]: an action line from its closed fields, or a history event as written. Anything
-    outside the closed vocabularies is refused (`unsafe_token`), never escaped."""
-    if isinstance(entry, str):
-        if not history_line_ok(entry):
-            raise ControllerError("unsafe_token")
-        return f"{index} {entry}"
-    handle = entry.handle
-    if handle is not None and (isinstance(handle, bool) or handle < 0):
+def _log_line(index: int, record: HistoryRecord, vocab: Vocab | None) -> str:
+    """[V2.46], [V2.47], [V2.49]: a history record as its one line (`render`). A record off the
+    task's vocabulary (`record_ok`), or any record before there is one, is refused
+    (`unsafe_token`), never escaped."""
+    if vocab is None or not record_ok(record, vocab):
         raise ControllerError("unsafe_token")
-    closed = (
-        entry.verb in VERBS
-        and entry.role in LOG_ROLES
-        and (entry.subgoal is None or SUBGOAL_ID.fullmatch(entry.subgoal) is not None)
-        and (entry.param is None or PARAM_NAME.fullmatch(entry.param) is not None)
-        and TOKEN.fullmatch(entry.delivery) is not None
-        and all(EFFECT.fullmatch(e) is not None for e in (*entry.classes, *entry.tokens))
-        and (entry.read_back is None or entry.read_back in READ_BACK)
-        and history_line_ok(entry.token())
-    )
-    if not closed:
-        raise ControllerError("unsafe_token")
-    effects = ",".join((*entry.classes, *entry.tokens)) or "none"
-    return (
-        f"{index} {entry.verb} handle={'-' if handle is None else handle} role={entry.role} "
-        f"subgoal={entry.subgoal or '-'} param={entry.param or '-'} delivery={entry.delivery} "
-        f"effects={effects} read_back={entry.read_back or '-'}"
-    )
+    return f"{index} {render(record)}"
 
 
 def _status_line(sid: str, status: str) -> str:
@@ -296,7 +207,7 @@ def _prompt_schema() -> dict[str, Any]:  # Any: a JSON schema document
 def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
     task_goal: str,
     subgoal_lines: Sequence[str],
-    action_log: Sequence[LogEntry | str],
+    action_log: Sequence[HistoryRecord],
     subgoal_status: Sequence[tuple[str, str]],
     window_title: str,
     listing_rows: Sequence[ListingRow],
@@ -306,8 +217,10 @@ def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
     unstable: bool = False,
     growing: bool = False,
     young: bool = False,
+    vocab: Vocab | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Return (system blocks, user blocks): stable, then append-only log, then the live turn."""
+    """Return (system blocks, user blocks): stable, then append-only log, then the live turn.
+    `vocab` is what the log's records may name (the task's subgoals and issued handles)."""
     _check_fences(task_fence, screen_fence)
     schema_json = json.dumps(_prompt_schema(), sort_keys=True)
     subgoals = (
@@ -322,7 +235,7 @@ def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
     )
     stable = "\n".join([f"request: {_data(task_goal, task_fence)}", *subgoals])
     log = "\n".join(
-        ["action log:", *(_log_line(i, e) for i, e in enumerate(action_log, 1))]
+        ["action log:", *(_log_line(i, e, vocab) for i, e in enumerate(action_log, 1))]
         if action_log
         else ["action log: none"]
     )
@@ -398,7 +311,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     *,
     task_goal: str,
     subgoal_lines: Sequence[str],
-    action_log: Sequence[LogEntry | str],
+    action_log: Sequence[HistoryRecord],
     subgoal_status: Sequence[tuple[str, str]],
     window_title: str,
     listing_rows: Sequence[ListingRow],
@@ -411,6 +324,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     young: bool = False,
     screen_fence: str | None = None,
     max_repairs: int = 1,
+    issued: frozenset[int] = frozenset(),
 ) -> tuple[Decision, DecideRecord]:
     """Ask, parse, validate; on failure repair with code tokens only, up to `max_repairs` times.
 
@@ -429,6 +343,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
         unstable=unstable,
         growing=growing,
         young=young,
+        vocab=Vocab(dict(known_subgoals or {}), issued),
     )
     error: ControllerError | None = None
     for attempt in range(max_repairs + 1):
