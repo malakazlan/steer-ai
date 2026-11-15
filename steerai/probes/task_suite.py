@@ -310,13 +310,17 @@ renderer foregrounded while occluded (Chromium `content_switches.cc`)."""
 
 
 def controls(tasks: Sequence[Task]) -> list[str]:
-    """Each `url_search` task's own results URL (or a `wiki_article` task's article) opened
-    directly in a throwaway Chrome, read the way a run is read, and judged by `passed`: a check
-    that never returns true on real pages would fail every run silently. The read's title is
-    printed too: five control runs are the n=5 title measurement."""
+    """Each real-site task's `control_url` opened directly in a throwaway Chrome, read the way a
+    run is read, and judged by `passed`: a check that never returns true on real pages would
+    fail every run silently. The read's title is printed too: five control runs are the n=5
+    title measurement. A real-site task with no control (its check names no fixed page) is said
+    as `control unavailable`; a local task is skipped."""
     lines = []
     for task in tasks:
-        if task.check not in ("url_search", "wiki_article"):
+        url = control_url(task)
+        if url is None:
+            if task.start.startswith("http"):  # a real site with no fixed page: said, not skipped
+                lines.append(f"{task.task_id}: control unavailable ({task.check})")
             continue
         tmp = Path(tempfile.mkdtemp(prefix="steer-ctl-"))
         port = _free_port()
@@ -324,7 +328,7 @@ def controls(tasks: Sequence[Task]) -> list[str]:
             CHROME_DEFAULT,
             tmp / "profile",
             port,
-            results_url(task),
+            url,
             window_size=WINDOW,
             extra_args=CONTROL_ARGS,
         )
@@ -1327,6 +1331,29 @@ def query_of(url: str) -> str:
 
 
 _SEARCH_PATHS: dict[str, str] = {"google_search": "/search", "youtube_search": "/results"}
+_QUERY_KEYS: dict[str, str] = {"google_search": "q", "youtube_search": "search_query"}
+"""The key each search check's results page carries its words under (the keys `query_of`
+reads), so a control page built from it is judged by the same read."""
+CONTROLLED: frozenset[str] = frozenset({"url_search", "wiki_article", *_SEARCH_PATHS})
+"""Checks with a fixed page to open as a positive control. `youtube_watch` has none: "the first
+video" for the words changes, and the task's data names no video (stage 2 plan §2.4, ruling
+(c): its runs are classified and flagged as having no control, never voided for it)."""
+
+
+def control_url(task: Task) -> str | None:
+    """The page a real-site task's positive control opens, from the task's own data: a
+    `url_search` task's results URL or a `wiki_article` task's article (`results_url`), a search
+    check's results path with the words under its query key; None for a local task or a check
+    with no fixed page."""
+    if not task.start.startswith("http") or task.check not in CONTROLLED:
+        return None
+    if task.check not in _SEARCH_PATHS:
+        return results_url(task)
+    origin = urllib.parse.urlsplit(task.start)
+    query = urllib.parse.urlencode({_QUERY_KEYS[task.check]: task.expected})
+    return urllib.parse.urlunsplit(
+        (origin.scheme, origin.netloc, _SEARCH_PATHS[task.check], query, "")
+    )
 
 
 def shows_result(task: Task, page: Mapping[str, Any]) -> bool:
