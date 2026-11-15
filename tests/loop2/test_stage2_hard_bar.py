@@ -9,6 +9,8 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+import pytest
+
 from steerai.loop2 import cli
 from steerai.loop2.loop import Dispatch, TaskOutcome
 from steerai.loop2.stage1 import Classified, RunRecord, StageTask, accept, classify
@@ -122,3 +124,16 @@ def test_an_error_line_that_dispatched_at_r2_fails_the_gate() -> None:
     line = {**final("R2"), "status": "error", "detail": "x"}
     got = classify(TASKS[0], RunRecord("t0", 4, line, True, True, None, None))
     assert not _with(got).gates["no_r2_dispatch"]
+
+
+# ---- #413 blocker 3: every count is an exact non-negative whole number ---------------------------
+
+
+@pytest.mark.parametrize("count", [0.5, 0.0, -1, True, "0", None])
+def test_a_count_that_is_not_an_exact_non_negative_int_fails_closed(count: object) -> None:
+    line = final("R1")
+    line["dispatch_risks"] = {**line["dispatch_risks"], "R2": count}
+    rated = [r for t in TASKS for r in runs(t, line)]
+    assert not accept(TASKS, rated, controls=None, runs_per_task=3, label="t").gates[
+        "no_r2_dispatch"
+    ]

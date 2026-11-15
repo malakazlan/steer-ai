@@ -431,8 +431,10 @@ def _r2_dispatched(run: Classified) -> bool:
     counts = None if final is None else final.get("dispatch_risks")
     if not isinstance(counts, Mapping):
         return True
-    high = [counts.get(r) for r in RISKS[RISKS.index("R2") :]]
-    return any(_whole(n) is None or _whole(n) != 0 for n in high)
+    exact = {r: counts.get(r) for r in RISKS}  # #413 blocker 3: exact non-negative ints
+    if not all(type(n) is int and n >= 0 for n in exact.values()):
+        return True
+    return any(exact[r] != 0 for r in RISKS[RISKS.index("R2") :])
 
 
 def _cache_spent(final: Json | None) -> bool:
