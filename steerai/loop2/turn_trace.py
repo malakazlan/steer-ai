@@ -20,13 +20,15 @@ from dataclasses import asdict, dataclass
 from typing import Final, Literal, get_args
 
 from steerai.loop2.controller import FocusState
-from steerai.loop2.decision import ClaimKind, Closes, Key, Verb
-from steerai.loop2.history import GRAMMAR, MAX_LINE, REFUSAL_TOKENS
+from steerai.loop2.decision import ClaimKind, Closes, Key, Stop, Verb
+from steerai.loop2.history import GRAMMAR, MAX_LINE, REFUSAL_TOKENS, RefusalWord
 from steerai.loop2.loop import TokenUsage, WatchKind
 from steerai.loop2.owned import OwnedToken
 from steerai.loop2.verify import CheckToken, ProofToken
 from steerai.world.effects import Carrier
 
+Event = Literal["turn"]
+"""The record's own event name."""
 ReadKind = Literal["turn_start", "stale_reread", "after_action"]
 """[V2.67] A: which full-tier read a proof ran on."""
 Tier = Literal["full", "poll"]
@@ -106,7 +108,8 @@ class TurnTrace:
     """The focus state the listing showed: elsewhere, unread, or None (on a listed element)."""
     decision: Mapping[str, object] | None
     """`controller.decision_shape` of the turn's decision; None when the turn made no call."""
-    refusals: tuple[str, ...]
+    refusals: tuple[RefusalWord, ...]
+    """Each refusal token, from `history.RefusalWord`: the producers' own closed set."""
     watch: tuple[WatchFacts, ...]
     tokens: TokenUsage | None
     history: tuple[str, ...]
@@ -117,7 +120,7 @@ class TurnTrace:
 def turn_record(facts: TurnTrace) -> dict[str, object]:
     """The turn as a plain JSON object, before the `closed` check."""
     return {
-        "event": "turn",
+        "event": EVENT,
         "turn": facts.turn,
         "listed": facts.listed,
         "cut": facts.cut,
@@ -137,13 +140,20 @@ def _words(*literals: object) -> frozenset[str]:
     return frozenset(w for lit in literals for w in get_args(lit))
 
 
+EVENT: Final[Event] = "turn"
 CLOSED_TOKENS: Final = (
-    _words(Verb, Key, ClaimKind, Closes, WatchKind, FocusState, Carrier, ReadKind, Tier)
-    | _words(Skipped, Gate, ChangeBy, CheckToken, OwnedToken, ProofToken)
+    _words(Event, Verb, Key, ClaimKind, Closes, Stop, WatchKind, FocusState, Carrier, ReadKind)
+    | _words(Tier, Skipped, Gate, ChangeBy, CheckToken, OwnedToken, ProofToken)
     | REFUSAL_TOKENS
-    | {"turn", "param_unknown", "cannot", "blocked"}
 )
-"""Every string a turn record may hold outside its history lines: the code's own closed sets."""
+"""Every string a turn record may hold outside its history lines: the code's own closed sets,
+never a hand list (`param_unknown` is a refusal token, `decision.ValidateToken`)."""
+KEY_TOKENS: Final[Mapping[str, frozenset[str]]] = {
+    "refusals": REFUSAL_TOKENS,
+    "rejections": REFUSAL_TOKENS,
+}
+"""Keys whose strings must come from one closed set, not from any of them: a refusal is a
+refusal token, never a verb or a carrier."""
 _PARAM: Final = re.compile(r"param:[0-9]{1,3}")
 KEYS: Final = frozenset(
     {
@@ -168,10 +178,10 @@ def closed(record: Mapping[str, object]) -> bool:
     """The record holds no free text: fixed keys only; numbers finite; strings from the closed
     sets or `param:<n>`; history lines only under `history`, each one the history grammar
     accepts. Anything else (a name, a title, a path, page text) fails the whole record."""
-    return _ok(record, history=False)
+    return _ok(record, key=None)
 
 
-def _ok(value: object, *, history: bool) -> bool:  # noqa: PLR0911 - one return per JSON kind
+def _ok(value: object, *, key: str | None) -> bool:  # noqa: PLR0911 - one return per JSON kind
     if value is None or isinstance(value, bool):
         return True
     if isinstance(value, int):
@@ -179,15 +189,16 @@ def _ok(value: object, *, history: bool) -> bool:  # noqa: PLR0911 - one return 
     if isinstance(value, float):
         return math.isfinite(value)
     if isinstance(value, str):
-        if history:
+        if key == "history":
             return len(value) <= MAX_LINE and GRAMMAR.fullmatch(value) is not None
+        if key in KEY_TOKENS:
+            return value in KEY_TOKENS[key]
         return value in CLOSED_TOKENS or _PARAM.fullmatch(value) is not None
     if isinstance(value, list | tuple):
-        return all(_ok(v, history=history) for v in value)
+        return all(_ok(v, key=key) for v in value)
     if isinstance(value, Mapping):
         return all(
-            isinstance(k, str) and k in KEYS and _ok(v, history=k == "history")
-            for k, v in value.items()
+            isinstance(k, str) and k in KEYS and _ok(v, key=k) for k, v in value.items()
         )
     return False
 

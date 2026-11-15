@@ -32,6 +32,7 @@ from steerai.loop2.decision import (
     ActionDoc,
     Claim,
     Decision,
+    Stop,
     subgoal_tokens,
     validate,
 )
@@ -259,7 +260,7 @@ class _Turn:
     shape: dict[str, Any] | None = None  # Any: JSON values (`decision_shape`)
     listing: ListingTurn | None = None
     usage: TokenUsage | None = None
-    refusals: list[str] = field(default_factory=list)
+    refusals: list[RefusalWord] = field(default_factory=list)
     watches: list[WatchFacts] = field(default_factory=list)
     history: list[str] = field(default_factory=list)
     proofs: list[ProofAttempt] = field(default_factory=list)
@@ -514,6 +515,7 @@ class _Run:
             refusals=tuple(self.refusal_counts.items()),
             submit_parents=tuple(self.submit_parents.items()),
             history_dropped=self.history_dropped,
+            turn_trace_dropped=self.turn_trace_dropped,
             listings=tuple(self.listing.turns),
             focus_moved_after_press=self.counts.focus_moved_after_press,
             observations_focus_unread=self.counts.observations_focus_unread,
@@ -540,7 +542,7 @@ class _Run:
             total += used * (rate or 0.0)
         return math.nan if self.usage_incomplete else total
 
-    def _stopped(self, stop: Literal["cannot", "blocked"]) -> _End:
+    def _stopped(self, stop: Stop) -> _End:
         """[V2.12], [V2.37] P5: the status after a stop, from the latest refusal since the last
         progress."""
         standing = [

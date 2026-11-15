@@ -404,6 +404,9 @@ class TaskOutcome:
     history_dropped: int = 0
     """[V2.47]: history lines off the history vocabulary (`history_line_ok`): dropped, never
     shown."""
+    turn_trace_dropped: int = 0
+    """[V2.67] D: turn records that failed the no-free-text check (`turn_trace.closed`): dropped,
+    never written in part, and counted so a gap in the trace never reads as a clean run."""
     wall_s: float = 0.0
     """7b: the task's wall time on the ports' clock, start to end (use against `max_wall_s`)."""
     cost_usd: float | None = None

@@ -533,6 +533,7 @@ OUTCOME_COUNTS: Final = (
     "target_changes",
     "focus_losses",
     "history_dropped",
+    "turn_trace_dropped",
     "pre_task_draft_clicks",
 )
 """[V2.63]: the final line's `counts` block, summed over the runs (its `submit_parents` by
