@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ctypes
 import ntpath
+import os
 import secrets
 import struct
 import subprocess
@@ -86,27 +87,42 @@ def interpreter_and_launcher(
     if ntpath.normcase(prefix) == ntpath.normcase(base_prefix):
         return Path(executable), None
     home = None
-    for line in (pyvenv_cfg or "").splitlines():
+    for line in (pyvenv_cfg or "").removeprefix("\ufeff").splitlines():  # HL-14: a BOM
         key, sep, value = line.partition("=")
         if sep and key.strip().lower() == "home":
             home = value.strip()
     if home is None:
         raise _refuse("the venv's pyvenv.cfg names no home interpreter")
     expected = ntpath.join(home, "python.exe")
-    if ntpath.normcase(expected) != ntpath.normcase(base_executable):
+    if _real(expected) != _real(base_executable):  # HL-13: one real path on both sides
         raise _refuse("the venv's home and the base interpreter disagree")
     return Path(base_executable), Path(executable)
 
 
-def this_interpreter() -> tuple[Path, Path | None]:
-    """`interpreter_and_launcher` for the running Steer."""
-    cfg = Path(sys.prefix) / "pyvenv.cfg"
+def _real(path: str) -> str:
+    return os.path.normcase(os.path.realpath(path))
+
+
+def this_interpreter(
+    *,
+    prefix: str = sys.prefix,
+    base_prefix: str = sys.base_prefix,
+    executable: str = sys.executable,
+    base_executable: str = getattr(sys, "_base_executable", sys.executable),
+) -> tuple[Path, Path | None]:
+    """`interpreter_and_launcher` for the running Steer. HL-04: a `pyvenv.cfg` that cannot be
+    read or decoded is a refusal, never an exception out of the start."""
+    cfg = Path(prefix) / "pyvenv.cfg"
+    try:
+        text = cfg.read_text(encoding="utf-8") if cfg.exists() else None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise _refuse(f"the venv's pyvenv.cfg could not be read ({type(exc).__name__})") from exc
     return interpreter_and_launcher(
-        prefix=sys.prefix,
-        base_prefix=sys.base_prefix,
-        executable=sys.executable,
-        base_executable=getattr(sys, "_base_executable", sys.executable),
-        pyvenv_cfg=cfg.read_text(encoding="utf-8") if cfg.is_file() else None,
+        prefix=prefix,
+        base_prefix=base_prefix,
+        executable=executable,
+        base_executable=base_executable,
+        pyvenv_cfg=text,
     )
 
 

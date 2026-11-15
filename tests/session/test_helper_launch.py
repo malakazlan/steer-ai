@@ -7,6 +7,7 @@ the windows-marked tests in `test_helper_process.py` (CI only)."""
 from __future__ import annotations
 
 import ast
+import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +31,7 @@ from steerai.session.helper_launch import (
     environment_block,
     interpreter_and_launcher,
     machine_ok,
+    this_interpreter,
 )
 from steerai.session.hook_layout import (
     ERROR_HOOKS,
@@ -647,3 +649,45 @@ def test_a_job_that_will_not_terminate_falls_back_to_the_process() -> None:
     assert w.named("terminate_job")
     assert w.named("terminate_process")
     assert _ended_then_waited_then_closed(w)
+
+
+# ---- #375 review H4 (HL-04, HL-13, HL-14): resolving the interpreter never crashes the start --
+
+
+def test_a_pyvenv_cfg_with_a_bom_is_read() -> None:
+    exe, _launcher = interpreter_and_launcher(
+        prefix=r"D:\w\.venv",
+        base_prefix=r"C:\py",
+        executable=r"D:\w\.venv\Scripts\python.exe",
+        base_executable=r"C:\py\python.exe",
+        pyvenv_cfg="\ufeffhome = C:\\py\n",
+    )
+    assert exe == Path(r"C:\py\python.exe")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows path semantics")
+def test_the_home_is_compared_by_real_path() -> None:
+    exe, _launcher = interpreter_and_launcher(
+        prefix=r"D:\w\.venv",
+        base_prefix=r"C:\py",
+        executable=r"D:\w\.venv\Scripts\python.exe",
+        base_executable=r"C:\py\python.exe",
+        pyvenv_cfg="home = C:\\py\\..\\py\\\n",
+    )
+    assert exe == Path(r"C:\py\python.exe")
+
+
+@pytest.mark.parametrize("content", [b"home = \xff\xfe\x00", None])
+def test_an_unreadable_pyvenv_cfg_is_a_refusal(tmp_path: Path, content: bytes | None) -> None:
+    cfg = tmp_path / "pyvenv.cfg"
+    if content is None:
+        cfg.mkdir()  # a read error, not a missing file
+    else:
+        cfg.write_bytes(content)
+    with pytest.raises(SteerError, match="monitor_unavailable"):
+        this_interpreter(
+            prefix=str(tmp_path),
+            base_prefix=r"C:\py",
+            executable=str(tmp_path / "python.exe"),
+            base_executable=r"C:\py\python.exe",
+        )
