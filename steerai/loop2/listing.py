@@ -54,13 +54,20 @@ class Listing:
     cap: int
     keep_at_ceiling: bool
     goal_at_subcap: bool
+    root_depth: int | None = None
+    """[V2.53]: the rows in the root chain (the top Document and every ancestor up to the
+    window), shown or not; None with no single top Document (#360's unmeasured depth)."""
 
     @property
     def cut(self) -> int:
         return max(0, self.eligible - len(self.ids))
 
     def turn(
-        self, listed: frozenset[int], prompt_cut: int, prompt_tokens: int | None
+        self,
+        listed: frozenset[int],
+        prompt_cut: int,
+        prompt_tokens: int | None,
+        prompt_bytes: int | None = None,
     ) -> ListingTurn:
         """This listing as one turn's record, after the prompt guard."""
         return ListingTurn(
@@ -72,6 +79,8 @@ class Listing:
             prompt_cut=prompt_cut,
             prompt_tokens=prompt_tokens,
             listed=listed,
+            root_depth=self.root_depth,
+            prompt_bytes=prompt_bytes,
         )
 
     def note(self, prompt_cut: int = 0) -> str | None:
@@ -105,6 +114,10 @@ class ListingTurn:
     prompt_cut: int
     prompt_tokens: int | None
     listed: frozenset[int]
+    root_depth: int | None = None
+    """[V2.53]: as `Listing.root_depth`."""
+    prompt_bytes: int | None = None
+    """[V2.53]: the UTF-8 bytes of the turn's first prompt as sent, after the guard."""
 
 
 def words_of(texts: Iterable[str]) -> frozenset[str]:
@@ -148,6 +161,7 @@ def select_listing(
         cap=cap,
         keep_at_ceiling=keep_rows > cap or keep_cut > 0,
         goal_at_subcap=goal_cut > 0,
+        root_depth=None if top is None else len(_unshown_chain(top, {}, by_id)),
     )
 
 

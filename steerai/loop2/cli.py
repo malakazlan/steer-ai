@@ -20,7 +20,7 @@ import sys
 import time
 import traceback
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -52,6 +52,7 @@ from steerai.run import (
     resolve_window,
 )
 from steerai.session.monitor import DEFAULT_KILL_KEY, parse_kill_key
+from steerai.world.reads import ReadCost
 
 DEFAULT_BUDGETS: Final = (20, 40, 400_000, 300.0)
 """[V2.53] (3), provisional: model calls, actions, tokens, wall seconds."""
@@ -348,7 +349,42 @@ def _unfinished(budgets: Budgets) -> dict[str, Any]:  # Any: the final JSON
         "limits": _limits(budgets),
         "listings": [],
         "focus": None,
+        **dict.fromkeys(RUN_FACTS),  # unknown, said
     }
+
+
+RUN_FACTS: Final = (
+    "read_cost",
+    "strikes",
+    "stale_observations",
+    "unread_automation_ids",
+    "url_reads",
+)
+"""Stage 2 plan §6 (3): the run facts the final line carries beside the use and the listings."""
+
+
+def read_cost_summary(costs: Sequence[ReadCost]) -> dict[str, float | int | None]:
+    """The full-read cost per observation (each observation's milliseconds per full read, from
+    the reads that produced it), summarised: never the list, so the line stays small."""
+    per = sorted(c.full_ms / c.full_reads for c in costs if c.full_reads > 0)
+
+    def at(q: float) -> float | None:
+        return round(per[min(len(per) - 1, math.ceil(q * len(per)) - 1)], 1) if per else None
+
+    return {
+        "observations": len(per),
+        "full_reads": sum(c.full_reads for c in costs),
+        "p50_ms": at(0.5),
+        "p95_ms": at(0.95),
+        "max_ms": round(per[-1], 1) if per else None,
+    }
+
+
+def _counted(items: Iterable[str]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for item in items:
+        out[item] = out.get(item, 0) + 1
+    return out
 
 
 def _limits(budgets: Budgets) -> dict[str, int | float]:
@@ -404,6 +440,14 @@ def _result(
             "write_1h": outcome.usage.cache_write_1h,
             "read": outcome.usage.cache_read,
         },
+        "read_cost": read_cost_summary(outcome.read_costs),
+        "strikes": {
+            "count": len(outcome.strikes),
+            "by_reason": _counted(r for reasons in outcome.strikes for r in reasons),
+        },
+        "stale_observations": outcome.stale_observations,
+        "unread_automation_ids": outcome.unread_automation_ids,
+        "url_reads": dict(outcome.url_reads),
         "watch_deadlines": {  # [V2.48]: per class, watches and those ended at the deadline
             kind: {"watches": watches, "deadline": hits}
             for kind, watches, hits in outcome.watch_deadlines
@@ -421,6 +465,8 @@ def _result(
                 "goal_at_subcap": t.goal_at_subcap,
                 "prompt_cut": t.prompt_cut,
                 "prompt_tokens": t.prompt_tokens,
+                "root_depth": t.root_depth,
+                "prompt_bytes": t.prompt_bytes,
             }
             for t in outcome.listings
         ],

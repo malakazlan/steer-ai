@@ -21,7 +21,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Final, Literal
+from typing import Final, Literal, get_args
 
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.errors import ErrorCode, SteerError
@@ -206,6 +206,24 @@ class PortInterrupted(Exception):  # noqa: N818 - the packet's name ([V2.40] Q4)
         self.token = token
 
 
+UrlRead = Literal["read", "no_bar", "document_url_unread", "not_composed"]
+"""Stage 2 plan §5: why an observation's URL is what it is, in closed tokens."""
+URL_READS: Final[tuple[UrlRead, ...]] = get_args(UrlRead)
+
+
+def url_read(observed: Observed) -> UrlRead:
+    """`read`; `no_bar` (the window has no address bar observed); `document_url_unread` (the top
+    Document's URL was not read); `not_composed` (it was, but the address bar did not confirm it:
+    the bar unread, or a host the two do not agree on)."""
+    if observed.url is not None:
+        return "read"
+    if not observed.url_observed:
+        return "no_bar"
+    if observed.document_url is None:
+        return "document_url_unread"
+    return "not_composed"
+
+
 @dataclass(frozen=True)
 class Decided:
     """What the decide port returns: the Decision and the call's usage; None when the usage was
@@ -360,6 +378,9 @@ class TaskOutcome:
     Stage 1 runs with caching off and asserts every cache counter here is zero."""
     exact_counts: int = 0
     """[V2.61]: turns on which the prompt guard spent an exact count (near the ceiling)."""
+    url_reads: tuple[tuple[UrlRead, int], ...] = ()
+    """Stage 2 plan §5: every observation taken in, counted by `url_read`, in `URL_READS`
+    order."""
     estimates_low: int = 0
     """[V2.61]: turns whose true input tokens beat the guard's bound (each tightened the ratio)."""
 
