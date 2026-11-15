@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Final, Literal, Protocol, get_args
 
 from steerai.loop2.guards import StrikeReason
+from steerai.loop2.history import REFUSAL_TOKENS
 from steerai.loop2.loop import URL_READS
 from steerai.loop2.stage1_expected import LARGE_TASKS, Expected, large_expected
 from steerai.probes.gallery_page import large_passes, parse_large_log
@@ -399,6 +400,7 @@ def _run_facts(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures
     by_reason = dict.fromkeys(sorted(STRIKE_REASONS), 0)
     counted = dict.fromkeys(COUNTED_FACTS, 0)
     urls: dict[str, int] = dict.fromkeys(URL_READS, 0)
+    refusals: dict[str, int] = dict.fromkeys(sorted(REFUSAL_TOKENS), 0)
 
     def whole(value: object) -> int | None:
         nonlocal odd
@@ -451,6 +453,8 @@ def _run_facts(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures
                 counted[key] += got
         if final.get("url_reads") is not None:
             tally(final.get("url_reads"), urls, URL_READS)
+        if final.get("refusals") is not None:
+            tally(final.get("refusals"), refusals, REFUSAL_TOKENS)
     return {
         "read_cost": {
             **cost,
@@ -461,6 +465,7 @@ def _run_facts(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures
         "strikes": {"count": strike_count, "by_reason": {k: v for k, v in by_reason.items() if v}},
         **counted,
         "url_reads": urls,
+        "refusals": {k: v for k, v in refusals.items() if v},
         "run_facts_incomplete": odd,
     }
 
