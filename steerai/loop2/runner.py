@@ -460,8 +460,9 @@ class _Run:
         self.turns = 0
         """[V2.67] D: the turns the loop opened (its trace's turn numbers), never the calls."""
         self.turn_trace_dropped = 0
-        self.turn_trace_errors = 0
         """[V2.67] D: turn records the no-free-text check dropped."""
+        self.turn_trace_errors = 0
+        """#463 (1): turns whose record could not be built or written."""
         self.read_costs: list[ReadCost] = []
         self.reasked: set[tuple[int, ...]] = set()
         """[V2.38] RT-12: the top Documents already re-asked on (once per Document)."""
