@@ -23,6 +23,7 @@ from steerai.session.monitor import (
     HC_ACTION,
     HOTKEY_ID,
     LLKHF_INJECTED,
+    LLKHF_UP,
     LLMHF_INJECTED,
     PROBE_PERIOD_S,
     PROBE_VK,
@@ -574,7 +575,11 @@ def test_the_monitor_reports_whether_both_hooks_saw_the_probe(
         mouse = _mouse(flags=LLMHF_INJECTED, extra=STEER_EXTRA_INFO)
         user32.procs[WH_MOUSE_LL](HC_ACTION, WM_MOUSEMOVE, ctypes.addressof(mouse))
         assert monitor.probe_seen() is False
-        key = _key(flags=LLKHF_INJECTED, extra=STEER_EXTRA_INFO)
+        other = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=STEER_EXTRA_INFO)  # another key
+        user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x101, ctypes.addressof(other))
+        assert monitor.probe_seen() is False  # #364 P1: only the probe key's key-up proves it
+        key = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=STEER_EXTRA_INFO)
+        key.vkCode = PROBE_VK
         user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x101, ctypes.addressof(key))
         assert monitor.probe_seen() is True
     finally:

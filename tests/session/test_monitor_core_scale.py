@@ -25,6 +25,8 @@ def test_a_hundred_thousand_events_leave_counters_and_one_instant_only() -> None
     assert len(counts) <= KINDS
     for name, value in vars(core).items():
         if isinstance(value, (list, set, dict, tuple)):
-            assert name in ("_counts", "_reference", "_last_by"), f"{name} accumulates"
+            assert name in ("_counts", "_reference", "_last_by", "_delivered", "_base"), (
+                f"{name} accumulates"
+            )
             assert len(value) <= KINDS, f"{name} grew to {len(value)}"
     assert core.last_user_input() == float(EVENTS - 1)

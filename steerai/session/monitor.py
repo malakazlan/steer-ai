@@ -39,6 +39,8 @@ from steerai.probes.win_input import (
 )
 
 LLKHF_INJECTED = 0x10
+LLKHF_UP = 0x80
+"""KBDLLHOOKSTRUCT flags: the transition state, set for a key-up (Microsoft Learn)."""
 LLMHF_INJECTED = 0x01
 WM_MOUSEMOVE = 0x0200
 WM_LBUTTONDOWN = 0x0201
@@ -110,9 +112,17 @@ class MonitorCore:
         dead_band_px: int = DEAD_BAND_PX,
         extra_info: int = STEER_EXTRA_INFO,
         per_hook: bool = False,
+        probe_vk: int = PROBE_VK,
     ) -> None:
         self._per_hook = per_hook
         """[V2.57] LW-01 (v2): each hook proves itself; v1 keeps one proof for both."""
+        self._probe_vk = probe_vk
+        self._delivered = dict.fromkeys(HOOKS, 0)
+        """#364 P1: own events delivered per hook; the keyboard counts only the probe key's
+        key-up. A count, never a key code."""
+        self._base = dict.fromkeys(HOOKS, 0)
+        self._outstanding = 0
+        """Probes sent since the hooks were last proven; each must be delivered on both."""
         self._extra_info = extra_info
         """The tag of this process's own input: v1's constant, or a v2 run's own ([V2.57])."""
         self._started_at = started_at
@@ -132,9 +142,10 @@ class MonitorCore:
 
     # ---- what the hook thread feeds -------------------------------------------------------------
 
-    def on_keyboard(self, *, flags: int, extra: int, now: float) -> None:
+    def on_keyboard(self, *, flags: int, extra: int, now: float, vk: int = 0) -> None:
         if extra == self._extra_info:
-            self._steer(now, "keyboard")
+            probe = vk == self._probe_vk and bool(flags & LLKHF_UP)
+            self._steer(now, "keyboard", delivered=probe)
             return
         if extra == STEER_EXTRA_INFO:
             self._other_steer(now)
@@ -146,7 +157,7 @@ class MonitorCore:
     ) -> None:
         x, y = pt
         if extra == self._extra_info:
-            self._steer(now, "mouse")
+            self._steer(now, "mouse", delivered=True)
             if message == WM_MOUSEMOVE:
                 self._reference = (x, y)
             return
@@ -212,8 +223,7 @@ class MonitorCore:
 
     def probe_due(self, *, now: float) -> bool:
         if self._per_hook:
-            sent = self._probe_sent_at
-            if sent is not None and not self.probe_seen():
+            if self._outstanding and not self.probe_seen():
                 return False  # one probe in flight until both hooks saw it
             return now - min(self._last_by.values()) >= PROBE_PERIOD_S
         if self._probe_sent_at is not None and self._probe_sent_at >= self._last_steer:
@@ -221,18 +231,28 @@ class MonitorCore:
         return now - self._last_steer >= PROBE_PERIOD_S
 
     def probe_seen(self) -> bool:
-        """LW-01: both hooks saw an own event since the last probe was sent."""
-        sent = self._probe_sent_at
-        return sent is not None and all(t >= sent for t in self._last_by.values())
+        """LW-01, #364 P1: every probe sent since the last proof was delivered on both hooks
+        (counted, never by timestamp: an own event of the probe's tick is not proof, nor is a
+        late event of an earlier probe the proof of a later one)."""
+        return self._outstanding > 0 and not self._unproven()
+
+    def _unproven(self) -> tuple[str, ...]:
+        return tuple(
+            hook for hook in HOOKS if self._delivered[hook] - self._base[hook] < self._outstanding
+        )
 
     def lost_hooks(self, *, now: float) -> tuple[str, ...]:
         """LW-01: the hooks that have not seen the last probe past its deadline, in order."""
         sent = self._probe_sent_at
-        if sent is None or now - sent <= PROBE_DEADLINE_S:
+        if sent is None or not self._outstanding or now - sent <= PROBE_DEADLINE_S:
             return ()
-        return tuple(hook for hook in HOOKS if self._last_by[hook] < sent)
+        return self._unproven()
 
     def probe_sent(self, *, now: float) -> None:
+        if not self._outstanding or self.probe_seen():  # a new proof starts from here
+            self._base = dict(self._delivered)
+            self._outstanding = 0
+        self._outstanding += 1
         self._probe_sent_at = now
 
     def healthy(self, *, now: float, thread_alive: bool) -> bool:
@@ -252,9 +272,11 @@ class MonitorCore:
 
     # ---- internals -----------------------------------------------------------------------------
 
-    def _steer(self, now: float, hook: str) -> None:
+    def _steer(self, now: float, hook: str, *, delivered: bool) -> None:
         self._last_steer = now
         self._last_by[hook] = now
+        if delivered:
+            self._delivered[hook] += 1
         self._count("steer")
 
     def _person(self, now: float, *, injected: bool) -> None:
@@ -368,6 +390,7 @@ class HookMonitor:
             dead_band_px=dead_band_px,
             extra_info=extra_info,
             per_hook=per_hook,
+            probe_vk=PROBE_VK if probe_vk is None else probe_vk,
         )
         self._thread: threading.Thread | None = None
         self._thread_id = 0
@@ -392,6 +415,7 @@ class HookMonitor:
             dead_band_px=self._dead_band,
             extra_info=self._extra_info,
             per_hook=self._per_hook,
+            probe_vk=PROBE_VK if self._probe_vk is None else self._probe_vk,
         )
         self._latency = HookLatency()
         self._ready.clear()
@@ -610,8 +634,11 @@ class HookMonitor:
                             now=monotonic(),
                         )
                     else:
-                        core.on_keyboard(
-                            flags=int(info.flags), extra=int(info.dwExtraInfo), now=monotonic()
+                        core.on_keyboard(  # the key code is compared there, never kept
+                            flags=int(info.flags),
+                            extra=int(info.dwExtraInfo),
+                            now=monotonic(),
+                            vk=int(info.vkCode),
                         )
             except Exception:  # noqa: BLE001 - the hook chain must go on; the core records it
                 core.on_callback_error()
