@@ -165,6 +165,10 @@ class LiveConfig:
     times: WorldTimes = field(default_factory=WorldTimes)
     debug_path: Path | None = None
     """Where the DPAPI debug file goes at level `debug`; none: no debug records are kept."""
+    bound_pid: int | None = None
+    """#361 H6: the pid of the window as it was listed; the binding's identity must match."""
+    bound_image: str | None = None
+    """#361 H6: the image of the listed window's process, lower case."""
 
 
 def enter_mta(co_initialize_ex: Callable[[int], int]) -> None:
@@ -237,6 +241,11 @@ class LiveWorld:
         if bound is None:
             del client, bindings
             raise SteerError(ErrorCode.APP_CRASHED, "window_unreadable")
+        if (config.bound_pid is not None and bound.pid != config.bound_pid) or (
+            config.bound_image is not None and bound.image != config.bound_image
+        ):  # #361 H6: the handle now names another process than the one listed
+            del client, bindings
+            raise SteerError(ErrorCode.APP_CRASHED, "window_changed")
         self._bound = bound
         try:
             held, monitor = self._take_session(platform, config)

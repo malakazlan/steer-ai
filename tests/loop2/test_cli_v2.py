@@ -63,12 +63,14 @@ class Run:
         self.trace = tmp_path / "trace.jsonl"
         self.stdout, self.stderr = io.StringIO(), io.StringIO()
         self.ready = True
+        self.image = "browser.exe"
         self.clock = Clock()
         self.deps = V2Deps(
             list_windows=lambda: WINDOWS,
             exclusions=lambda: EXCLUDED,
             platform=lambda: self.platform,
             today=lambda: TODAY,
+            image_of=lambda _pid: self.image,
             ready=lambda _step: self.ready,
             clock=self.clock,
             pause=self.clock.pause,
@@ -426,3 +428,11 @@ def test_no_localappdata_and_no_price_file_refuses(monkeypatch: pytest.MonkeyPat
     with pytest.raises(UsageError, match="price"):
         parse_v2([*WHERE])
     assert parse_v2([*WHERE, "--price-file", "p.json"]).price_file == Path("p.json")
+
+
+def test_the_cli_binds_only_the_process_it_listed(tmp_path: Path) -> None:
+    """#361 H6: the listed window's pid and image go to the binding, which re-reads them."""
+    run = Run(tmp_path)
+    run.image = "other.exe"
+    assert run() == cli.EXIT_FOR["blocked"]
+    assert (run.result()["code"], run.result()["detail"]) == ("app_crashed", "window_changed")

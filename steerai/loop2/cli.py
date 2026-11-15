@@ -91,6 +91,8 @@ class V2Deps:
     """(hwnds, pids) never to bind: this console and its process tree (v1's RN-15)."""
     platform: Callable[[], Platform]
     today: Callable[[], date]
+    image_of: Callable[[int], str]
+    """A process's image name, lower case (v1's `process_name`): bound with the listed pid."""
     ready: Callable[[int], bool] = ready_step
     clock: Callable[[], float] = field(default=time.monotonic)
     pause: Callable[[float], None] = field(default=time.sleep)
@@ -203,6 +205,7 @@ def real_deps() -> V2Deps:
     from steerai.probes.windows import (  # noqa: PLC0415 - Windows only
         console_exclusions,
         list_top_windows,
+        process_name,
     )
 
     return V2Deps(
@@ -210,6 +213,7 @@ def real_deps() -> V2Deps:
         exclusions=console_exclusions,
         platform=WindowsPlatform,
         today=date.today,
+        image_of=lambda pid: process_name(pid).lower(),
     )
 
 
@@ -273,6 +277,8 @@ def _run(options: V2Options, deps: V2Deps, out: _Out, price: PriceFile, window: 
         generations=TaskGenerations(),
         clock=deps.clock,
         pause=deps.pause,
+        bound_pid=window.pid,
+        bound_image=deps.image_of(window.pid),
     )
     platform = deps.platform()
 

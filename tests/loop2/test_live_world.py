@@ -1415,3 +1415,20 @@ def test_a_tag_that_cannot_be_set_releases_the_session() -> None:
         _world(platform)
     assert platform.calls.count("release_session") == 1
     assert not any(c.startswith("monitor") for c in platform.calls)
+
+
+@pytest.mark.parametrize(
+    "listed", [{"bound_pid": 4243}, {"bound_image": "other.exe"}], ids=["pid", "image"]
+)
+def test_a_window_that_is_not_the_one_listed_is_never_bound(listed: dict[str, object]) -> None:
+    """#361 H6 (WIN-01): the handle was reused between the listing and the binding."""
+    platform = Platform()
+    with pytest.raises(SteerError) as refused:
+        _world(platform, **listed)
+    assert (refused.value.code, refused.value.message) == (ErrorCode.APP_CRASHED, "window_changed")
+    assert "session" not in platform.calls
+
+
+def test_the_listed_window_binds() -> None:
+    world, _ = _world(bound_pid=4242, bound_image="browser.exe")
+    world.close()
