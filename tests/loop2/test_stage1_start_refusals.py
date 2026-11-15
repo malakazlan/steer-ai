@@ -207,11 +207,11 @@ def test_an_audit_reason_off_the_closed_enum_is_counted_as_other() -> None:
 def test_the_closed_audit_reasons_are_the_controllers_and_the_runners() -> None:
     from typing import get_args  # noqa: PLC0415
 
-    from steerai.loop2.loop import AuditReason, RunnerAuditReason  # noqa: PLC0415
+    from steerai.loop2.loop import RunnerAuditReason, SufficiencyReason  # noqa: PLC0415
     from steerai.loop2.stage1 import AUDIT_REASONS  # noqa: PLC0415
 
     assert set(get_args(RunnerAuditReason)) == {"audit_failed", "audit_no_call"}
-    assert set(get_args(AuditReason)) | set(get_args(RunnerAuditReason)) == AUDIT_REASONS
+    assert set(get_args(SufficiencyReason)) | set(get_args(RunnerAuditReason)) == AUDIT_REASONS
 
 
 def test_the_runner_records_only_typed_audit_reasons() -> None:
