@@ -24,7 +24,7 @@ from collections.abc import Callable
 from ctypes import wintypes
 from typing import Any, Final, Protocol
 
-from steerai.session.helper_core import KILL_ACK_S
+from steerai.session.helper_core import KILL_ACK_S, KILL_EXIT_CODE
 from steerai.session.helper_reader import (
     ReaderState,
     StatusRead,
@@ -297,6 +297,38 @@ class HelperMonitor:
             if seen >= rank:
                 return ms
         return LATENCY_BUCKETS - 1
+
+
+# ---- the Windows clocks and the last kill layer's exit (Windows only) ---------------------------
+
+
+def qpc_clock() -> tuple[Callable[[], int], int]:  # pragma: no cover - live, Windows only
+    """QueryPerformanceCounter and its frequency (Microsoft Learn: fixed at boot)."""
+    k: Any = ctypes.WinDLL("kernel32", use_last_error=True)  # Any: a ctypes DLL
+    k.QueryPerformanceCounter.argtypes = (ctypes.POINTER(ctypes.c_int64),)
+    k.QueryPerformanceCounter.restype = wintypes.BOOL
+    k.QueryPerformanceFrequency.argtypes = (ctypes.POINTER(ctypes.c_int64),)
+    k.QueryPerformanceFrequency.restype = wintypes.BOOL
+    freq = ctypes.c_int64()
+    if not k.QueryPerformanceFrequency(ctypes.byref(freq)) or freq.value <= 0:
+        raise OSError(ctypes.get_last_error(), "QueryPerformanceFrequency failed")
+
+    def qpc() -> int:
+        value = ctypes.c_int64()
+        k.QueryPerformanceCounter(ctypes.byref(value))
+        return int(value.value)
+
+    return qpc, int(freq.value)
+
+
+def end_this_process() -> None:  # pragma: no cover - live, Windows only
+    """[V2.60] Q1 layer 2: end Steer for the person's kill that its loop never acknowledged."""
+    k: Any = ctypes.WinDLL("kernel32", use_last_error=True)  # Any: a ctypes DLL
+    k.GetCurrentProcess.argtypes = ()
+    k.GetCurrentProcess.restype = wintypes.HANDLE
+    k.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    k.TerminateProcess.restype = wintypes.BOOL
+    k.TerminateProcess(k.GetCurrentProcess(), KILL_EXIT_CODE)
 
 
 # ---- the session and desktop reads (Windows only; on the watchdog thread) -----------------------
