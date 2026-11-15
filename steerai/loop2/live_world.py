@@ -23,6 +23,7 @@ semantic one over `ToggleGuard` and `UiaOptions(client)` (AP-54), the physical o
 from __future__ import annotations
 
 import gc
+import math
 import secrets
 import sys
 import threading
@@ -48,7 +49,7 @@ from steerai.loop2.listing import LISTING_CAP
 from steerai.loop2.loop import ActResult, Dispatch, PortInterrupted, Ports
 from steerai.loop2.prompt_inputs import make_decide
 from steerai.loop2.task import Task
-from steerai.loop2.world_ports import WorldPorts, WorldTimes, kill_sleep
+from steerai.loop2.world_ports import KILL_POLL_S, WorldPorts, WorldTimes, kill_sleep
 from steerai.orchestrator.trace import Trace
 from steerai.planner.claude_planner import DEFAULT_MODEL, EFFORT
 from steerai.session.monitor import probe_deadline_s
@@ -91,6 +92,14 @@ class Monitor(Protocol):
     def close(self) -> None: ...
 
 
+class HelperWorldMonitor(Monitor, Protocol):
+    """[V2.60]: the helper monitor (`session.helper_monitor.HelperMonitor`): a `Monitor`, plus the
+    watchdog's session and desktop transitions (§5.6) and a wait on the helper (HH-08)."""
+
+    def session_change(self) -> str | None: ...
+    def wait(self, seconds: float) -> None: ...
+
+
 class Platform(Protocol):
     """The Windows side of one task. A COM client and bindings are opaque here (Any): built,
     used and released on the loop thread (packet §1 threads)."""
@@ -110,6 +119,17 @@ class Platform(Protocol):
     ) -> Monitor:
         """The hook monitor on the world's clock (its `last_user_input` feeds the idle rule),
         counting only input tagged `extra_info` as Steer's own."""
+        ...
+
+    def start_helper_monitor(
+        self,
+        kill_key: str,
+        clock: Callable[[], float],
+        extra_info: int,
+        deadline_s: float,
+        hook_timeout_ms: int | None,
+    ) -> HelperWorldMonitor:
+        """[V2.60]: the hook helper and its monitor; a start failure is a refusal (K16)."""
         ...
 
     def use_extra_info(self, tag: int) -> None:
@@ -191,6 +211,9 @@ class LiveConfig:
     """#361 H6: the pid of the window as it was listed; the binding's identity must match."""
     bound_image: str | None = None
     """#361 H6: the image of the listed window's process, lower case."""
+    hook_helper: bool = False
+    """[V2.60]: the hooks and the kill hot key in their own helper process (`HelperMonitor`)
+    instead of a thread in this one. Off by default until the switch (packet rev 2b §10.1)."""
 
 
 def enter_mta(co_initialize_ex: Callable[[int], int]) -> None:
@@ -247,6 +270,7 @@ class LiveWorld:
         self._config = config
         self._platform = platform
         self.clock = config.clock
+        self._helper_monitor: HelperWorldMonitor | None = None
         if not platform.dpi_aware():
             raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "dpi_context")
         try:
@@ -295,9 +319,7 @@ class LiveWorld:
             self._input_tag = _run_tag()
             platform.use_extra_info(self._input_tag)
             try:
-                monitor = platform.start_monitor(
-                    config.kill_key, config.clock, self._input_tag, self._probe_deadline_s
-                )
+                monitor = self._start_monitor(platform, config)
             except SteerError:
                 raise  # HookMonitor's own GATE_BLOCKED monitor_unavailable, with its reason
             except Exception as exc:  # any other start failure: no kill switch, no task
@@ -401,7 +423,7 @@ class LiveWorld:
         if monitor.kill_requested():
             return "killed"
         if self._latched is None:
-            self._latched = self._session_signal()
+            self._latched = self._session_signal() or self._helper_session_change()
         if self._latched is not None:
             return self._latched
         if self._lost:
@@ -500,7 +522,42 @@ class LiveWorld:
     # ---- the trace -------------------------------------------------------------------------------
 
     def _kill_aware_sleep(self, seconds: float) -> None:
-        kill_sleep(seconds, interrupted=self.interrupted, pause=self._config.pause)
+        helper = self._helper_monitor
+        if helper is None:
+            kill_sleep(seconds, interrupted=self.interrupted, pause=self._config.pause)
+            return
+        # HH-08: wait on the helper (its wake or its exit) in steps, re-reading the switch
+        # between them, for the whole time asked on the world's clock
+        deadline = self._config.clock() + (seconds if math.isfinite(seconds) else 0.0)
+        while True:
+            token = self.interrupted()
+            if token is not None:
+                raise PortInterrupted(token)
+            left = deadline - self._config.clock()
+            if left <= 0:
+                return
+            helper.wait(min(left, KILL_POLL_S))
+
+    def _start_monitor(self, platform: Platform, config: LiveConfig) -> Monitor:
+        """The in-process hook monitor, or with `hook_helper` the helper's ([V2.60])."""
+        if not config.hook_helper:
+            return platform.start_monitor(
+                config.kill_key, config.clock, self._input_tag, self._probe_deadline_s
+            )
+        helper = platform.start_helper_monitor(
+            config.kill_key,
+            config.clock,
+            self._input_tag,
+            self._probe_deadline_s,
+            platform.hook_timeout_ms(),
+        )
+        self._helper_monitor = helper
+        return helper
+
+    def _helper_session_change(self) -> str | None:
+        """§5.6: a session or desktop transition the helper's watchdog saw during the task."""
+        helper = self._helper_monitor
+        return None if helper is None else helper.session_change()
 
     def _write(self, record: Mapping[str, str]) -> None:
         """One clear-trace line under the one lock (LW-24). A write that fails is counted as
@@ -551,6 +608,7 @@ class LiveWorld:
             "hook_timeout_ms": _shown(self._platform.hook_timeout_ms()),
             "probe_deadline_ms": str(round(self._probe_deadline_s * 1000)),
             "probe_key_ime": "closed_only",  # [V2.59]: verified with the IME closed only
+            "hook_monitor": "helper" if self._config.hook_helper else "in_process",  # [V2.60]
         }
         if price is not None:
             record["price_source"] = price.source
@@ -826,6 +884,68 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
         )
         monitor.start()
         return monitor
+
+    def start_helper_monitor(
+        self,
+        kill_key: str,
+        clock: Callable[[], float],
+        extra_info: int,
+        deadline_s: float,
+        hook_timeout_ms: int | None,
+    ) -> HelperWorldMonitor:
+        """[V2.60]: the hook helper in its job, then its monitor and watchdog; a failure closes
+        the helper and refuses (K16)."""
+        import os  # noqa: PLC0415 - Windows only
+
+        from steerai.probes.win_input import key_up_probe, nudge_in_place  # noqa: PLC0415
+        from steerai.session.helper_launch import (  # noqa: PLC0415 - Windows only
+            HelperProcess,
+            WindowsLaunch,
+            kill_chord,
+            this_interpreter,
+        )
+        from steerai.session.helper_monitor import (  # noqa: PLC0415 - Windows only
+            HelperMonitor,
+            WindowsSessionReads,
+            end_this_process,
+            qpc_clock,
+        )
+        from steerai.session.monitor import HOOK_TIMEOUT_CAP_MS, PROBE_VK  # noqa: PLC0415
+
+        mods, vk = kill_chord(kill_key)
+        interpreter, launcher = this_interpreter()
+        helper = HelperProcess(
+            WindowsLaunch(),
+            interpreter=interpreter,
+            launcher=launcher,
+            system_root=os.environ["SYSTEMROOT"],
+            run_tag=extra_info,
+            probe_vk=PROBE_VK,
+            kill_mods=mods,
+            kill_vk=vk,
+            hook_timeout_ms=HOOK_TIMEOUT_CAP_MS if hook_timeout_ms is None else hook_timeout_ms,
+        )
+        helper.start()
+
+        def probe() -> None:  # LW-01: the mouse nudge and the keyboard probe, with the run's tag
+            nudge_in_place()
+            key_up_probe(PROBE_VK)
+
+        try:
+            qpc, freq = qpc_clock()
+            return HelperMonitor(
+                helper,
+                session=WindowsSessionReads(),
+                clock=clock,
+                qpc=qpc,
+                freq=freq,
+                deadline_s=deadline_s,
+                probe=probe,
+                terminate_self=end_this_process,
+            )
+        except BaseException:
+            helper.close()
+            raise
 
     def hook_timeout_ms(self) -> int | None:
         from steerai.session.monitor import read_hook_timeout_ms  # noqa: PLC0415 - Windows only
