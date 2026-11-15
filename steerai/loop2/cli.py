@@ -395,6 +395,7 @@ def _result(
             "max_cost_usd": cost if cost_known else None,
         },
         "monitor_lost": reason == "monitor_lost" or bool(report.get("monitor_lost")),
+        "rejections": list(outcome.rejections),  # closed tokens: why a turn was rejected
         "tokens_incomplete": not tokens_known,
         "cost_incomplete": not cost_known,
         "wall_incomplete": not wall_known,

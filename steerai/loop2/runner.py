@@ -353,7 +353,7 @@ def enter_outcome(
 
 
 class _Run:
-    def __init__(self, task: Task, ports: Ports) -> None:
+    def __init__(self, task: Task, ports: Ports) -> None:  # noqa: PLR0915 - the run's state, one field each
         self.task = task
         self.ports = ports
         self.subgoals: tuple[Subgoal, ...] = task.subgoals
