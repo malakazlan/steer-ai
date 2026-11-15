@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Literal, Protocol, get_args
 
+from steerai.loop2.guards import StrikeReason
+from steerai.loop2.loop import URL_READS
 from steerai.loop2.stage1_expected import LARGE_TASKS, Expected, large_expected
 from steerai.probes.gallery_page import large_passes, parse_large_log
 from steerai.probes.task_suite import GALLERY, h2_event
@@ -350,6 +352,92 @@ def _watch_deadlines(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON fig
     return {"watch_deadlines": sums, "watch_deadlines_incomplete": odd}
 
 
+STRIKE_REASONS: Final = frozenset(get_args(StrikeReason))
+COUNTED_FACTS: Final = ("stale_observations", "unread_automation_ids")
+
+
+def _run_facts(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures
+    """Stage 2 plan §6 (3): the final lines' run facts over the runs. Counts are summed; the
+    read cost's per-run summaries are combined without pretending to a pooled quantile (the
+    median of the runs' p50, the largest p95 and max). As the watch deadlines: a count that is
+    not a whole number, or a key that is not a closed token, is counted in
+    `run_facts_incomplete`, never summed; a block that is missing or null (the unfinished line)
+    is skipped."""
+    odd = 0
+    cost = {"observations": 0, "full_reads": 0}
+    p50s: list[float] = []
+    p95s: list[float] = []
+    maxes: list[float] = []
+    strike_count = 0
+    by_reason = dict.fromkeys(sorted(STRIKE_REASONS), 0)
+    counted = dict.fromkeys(COUNTED_FACTS, 0)
+    urls: dict[str, int] = dict.fromkeys(URL_READS, 0)
+
+    def whole(value: object) -> int | None:
+        nonlocal odd
+        got = _whole(value)
+        odd += got is None
+        return got
+
+    def number(value: object, into: list[float]) -> None:
+        nonlocal odd
+        if value is None:
+            return  # a run with no full read has no milliseconds: not odd
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not math.isfinite(value)
+        ):
+            odd += 1
+        else:
+            into.append(float(value))
+
+    def tally(block: object, into: dict[str, int], closed: Iterable[str]) -> None:
+        nonlocal odd
+        if not isinstance(block, Mapping):
+            odd += block is not None
+            return
+        allowed = set(closed)
+        for key, value in block.items():
+            if key not in allowed:
+                odd += 1
+            elif (got := whole(value)) is not None:
+                into[key] += got
+
+    for final in finals:
+        read = final.get("read_cost")
+        if isinstance(read, Mapping):
+            for key in ("observations", "full_reads"):
+                if (got := whole(read.get(key))) is not None:
+                    cost[key] += got
+            number(read.get("p50_ms"), p50s)
+            number(read.get("p95_ms"), p95s)
+            number(read.get("max_ms"), maxes)
+        struck = final.get("strikes")
+        if isinstance(struck, Mapping):
+            if (got := whole(struck.get("count"))) is not None:
+                strike_count += got
+            tally(struck.get("by_reason"), by_reason, STRIKE_REASONS)
+        for key in COUNTED_FACTS:
+            value = final.get(key)
+            if value is not None and (got := whole(value)) is not None:
+                counted[key] += got
+        if final.get("url_reads") is not None:
+            tally(final.get("url_reads"), urls, URL_READS)
+    return {
+        "read_cost": {
+            **cost,
+            "run_p50_ms_p50": _quantile(p50s, 0.5),
+            "run_p95_ms_max": _max(p95s),
+            "max_ms": _max(maxes),
+        },
+        "strikes": {"count": strike_count, "by_reason": {k: v for k, v in by_reason.items() if v}},
+        **counted,
+        "url_reads": urls,
+        "run_facts_incomplete": odd,
+    }
+
+
 def _counted(run: Classified) -> bool:
     """A run whose final line is a task's own (not a refused start)."""
     return run.final is not None and run.final.get("status") != "error"
@@ -411,6 +499,17 @@ def _report(
             "cut_total": sum(_whole(t.get("cut")) or 0 for t in listings),
             "prompt_cut_total": sum(_whole(t.get("prompt_cut")) or 0 for t in listings),
             "prompt_tokens_p95": _quantile([t.get("prompt_tokens") for t in listings], 0.95),
+            "goal_at_subcap": sum(t.get("goal_at_subcap") is True for t in listings),
+            "root_depth_max": max(
+                (d for t in listings if (d := _whole(t.get("root_depth"))) is not None),
+                default=None,
+            ),
+            "root_depth_unread": sum(_whole(t.get("root_depth")) is None for t in listings),
+            "prompt_bytes_p95": _quantile([t.get("prompt_bytes") for t in listings], 0.95),
+            "prompt_bytes_max": max(
+                (b for t in listings if (b := _whole(t.get("prompt_bytes"))) is not None),
+                default=None,
+            ),
             "incomplete": sum(  # #366 E10: a turn with any count unread or not a number
                 any(_whole(t.get(k)) is None for k in LISTING_COUNTS) for t in listings
             ),
@@ -425,6 +524,7 @@ def _report(
         "monitor_lost_rate": round(verdicts.get("monitor_lost", 0) / total, 3) if total else None,
         "fail_reasons": _counts(r.reason for r in runs if r.verdict == "fail"),
         **_watch_deadlines(finals),
+        **_run_facts(finals),
     }
 
 
