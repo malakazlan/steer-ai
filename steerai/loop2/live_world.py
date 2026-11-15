@@ -326,7 +326,8 @@ class LiveWorld:
         """[V2.57] LW-02: the session, then the run's tag, then the monitor on it. Any failure
         after the session was taken releases it (#361 H12)."""
         # [V2.59]: the probe deadline from the system's hook timeout, read once at start
-        self._probe_deadline_s = probe_deadline_s(platform.hook_timeout_ms())
+        self._hook_timeout_ms = platform.hook_timeout_ms()  # #385: the one read, passed on
+        self._probe_deadline_s = probe_deadline_s(self._hook_timeout_ms)
         held = platform.acquire_session()  # one Steer per session
         try:
             self._input_tag = _run_tag()
@@ -623,7 +624,7 @@ class LiveWorld:
             config.clock,
             self._input_tag,
             self._probe_deadline_s,
-            platform.hook_timeout_ms(),
+            self._hook_timeout_ms,
         )
         self._helper_monitor = helper
         return helper
@@ -679,7 +680,7 @@ class LiveWorld:
             "listing_cap": str(LISTING_CAP),
             "always_keep_ceiling": str(2 * LISTING_CAP),
             "goal_word_subcap": str(LISTING_CAP // 3),
-            "hook_timeout_ms": _shown(self._platform.hook_timeout_ms()),
+            "hook_timeout_ms": _shown(self._hook_timeout_ms),
             "probe_deadline_ms": str(round(self._probe_deadline_s * 1000)),
             "probe_key_ime": "closed_only",  # [V2.59]: verified with the IME closed only
             "hook_monitor": "helper" if self._config.hook_helper else "in_process",  # [V2.60]

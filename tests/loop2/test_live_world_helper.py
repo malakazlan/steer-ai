@@ -15,6 +15,7 @@ from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.loop import PortInterrupted
 from steerai.loop2.world_ports import KILL_POLL_S
 from tests.loop2.test_live_world import Monitor, Platform, _world
+from tests.loop2.world_fakes import task
 
 
 class HelperMonitor(Monitor):
@@ -171,3 +172,15 @@ def test_a_kill_read_that_raises_is_a_lost_monitor_never_an_exception() -> None:
     assert world.interrupted() == "monitor_lost"
     assert world.interrupted() == "monitor_lost"
     assert world.monitor_lost == 1
+
+
+def test_the_hook_timeout_is_read_once_at_start_and_that_value_passed_on() -> None:
+    """[V2.59], #385 principal 2: one read; the deadline, the helper and the header all use it."""
+    platform = HelperPlatform()
+    reads = iter([700, 300, 300, 300])
+    platform.hook_timeout_ms = lambda: next(reads)  # type: ignore[method-assign]  # changes
+    world, _ = _world(platform, hook_helper=True)
+    _tag, deadline, timeout = platform.helper_args
+    assert timeout == 700
+    assert deadline == pytest.approx(0.7 + 0.05)
+    assert world.header(task())["hook_timeout_ms"] == "700"
