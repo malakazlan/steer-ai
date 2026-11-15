@@ -1706,3 +1706,13 @@ def test_a_failure_right_after_the_monitor_started_closes_the_world(
     assert platform.monitor.closed == 1
     assert platform.calls.count("untag") == 1
     assert platform.calls.count("release_session") == 1
+
+
+def test_a_monitor_lost_twice_is_counted_once() -> None:
+    world, platform = _world()
+    platform.monitor.ok = False
+    assert world.interrupted() == "monitor_lost"
+    platform.monitor.seen = False
+    with pytest.raises(PortInterrupted):
+        world.desk.prove_hooks()
+    assert world.report()["monitor_lost"] == 1

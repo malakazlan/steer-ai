@@ -610,16 +610,16 @@ def test_latency_percentiles_from_the_histogram() -> None:
 
     latency = HookLatency()
     assert latency.summary() == (0, None, None)
-    for ms in [1] * 94 + [20] * 5 + [5000]:
+    for ms in [1] * 95 + [20] * 4 + [5000]:
         latency.record(ms)
-    assert latency.summary() == (100, 20, 20)
+    assert latency.summary() == (100, 1, 20)  # rank 95 is 1 ms, rank 99 is 20 ms
     latency.record(-3)  # a tick from before the counter wrapped is never negative
     assert latency.summary()[0] == 101
 
 
 def test_v1_records_no_latency(monkeypatch: pytest.MonkeyPatch) -> None:
     user32 = FakeUser32()
-    monitor = _started(monkeypatch, user32)
+    monitor = _started(monkeypatch, user32, tick=lambda: 1000)  # a tick given, v1 still times none
     try:
         key = _key(flags=0, extra=0)
         user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x100, ctypes.addressof(key))
