@@ -1404,10 +1404,18 @@ class _Run:
         read = None if now is None else self._read_value(now, after)
         return field_state(pending.value, read, present=now is not None)
 
+    def _mark_acted(self, target: int | None) -> None:
+        """#366 P5: the dispatched target's handle on the turn whose Decision named it."""
+        turns = self.listing.turns
+        if target is None or not turns:
+            return
+        turns[-1] = replace(turns[-1], acted=turns[-1].acted | {target})
+
     def _act(self, sent: Dispatch) -> ActResult:
         """[V2.25] (c): one local retry when nothing was sent, under the same decision, unless
         the person stopped the task in between (RT-15)."""
         self.dispatched.append(sent)  # before the call: an act that raises may still have landed
+        self._mark_acted(sent.action.target)
         act = self.ports.act(sent)
         if may_retry(risk=sent.risk, verified=False, report=None, act=act.action):
             self._check_interrupt()
