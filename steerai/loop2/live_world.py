@@ -45,12 +45,13 @@ from steerai.loop2.act_port import ActPort
 from steerai.loop2.controller import PROMPT_VERSION
 from steerai.loop2.decide_port import Call, DecideCalls, TaskGenerations
 from steerai.loop2.listing import LISTING_CAP
-from steerai.loop2.loop import ActResult, Dispatch, Ports
+from steerai.loop2.loop import ActResult, Dispatch, PortInterrupted, Ports
 from steerai.loop2.prompt_inputs import make_decide
 from steerai.loop2.task import Task
 from steerai.loop2.world_ports import WorldPorts, WorldTimes, kill_sleep
 from steerai.orchestrator.trace import Trace
 from steerai.planner.claude_planner import DEFAULT_MODEL, EFFORT
+from steerai.session.monitor import PROBE_DEADLINE_S
 from steerai.world.effects import Observed, ValueFact, poll_tier, top_document
 from steerai.world.elements import Element
 from steerai.world.model import Snapshot
@@ -78,6 +79,15 @@ class Monitor(Protocol):
     def maintain(self) -> None: ...
     def last_user_input(self) -> float: ...
     def takeover_token(self) -> str: ...
+    def probe_now(self) -> None: ...
+    def probe_seen(self) -> bool:
+        """[V2.57] LW-01: both hooks saw an own event since the last probe."""
+        ...
+
+    def latency(self) -> tuple[int, int | None, int | None]:
+        """LW-01: (callbacks timed, p95 ms, p99 ms)."""
+        ...
+
     def close(self) -> None: ...
 
 
@@ -128,6 +138,10 @@ class Platform(Protocol):
 
     def facts(self, client: Any) -> FactReader: ...  # Any: the UiaClient
     def windows(self, pid: int) -> tuple[int, ...]: ...
+    def hook_timeout_ms(self) -> int | None:
+        """LW-01: the effective LowLevelHooksTimeout in ms, or None when it is not set."""
+        ...
+
     def window_identity(self, hwnd: int) -> WindowIdentity | None:
         """LW-03: what `hwnd` is now; None when any part of it cannot be read."""
         ...
@@ -299,6 +313,9 @@ class LiveWorld:
         self.trace_unwritable = 0
         self.late_sink_failures = 0
         self._latched: str | None = None
+        self._lost = False
+        """[V2.57] LW-01: monitor_lost is final for the task: never re-installed and resumed."""
+        self.monitor_lost = 0
 
     def _debug_sink(self) -> DebugSink:
         config = self._config
@@ -335,6 +352,7 @@ class LiveWorld:
             guard,
             last_input=self._monitor.last_user_input,
             takeover_token=self._monitor.takeover_token,
+            prove=self._prove_hooks,
         )
         self.semantic = Executor(
             uia=ToggleGuard(control_types=bindings.control_types, interfaces=bindings.interfaces),
@@ -379,12 +397,36 @@ class LiveWorld:
             self._latched = self._session_signal()
         if self._latched is not None:
             return self._latched
+        if self._lost:
+            return "monitor_lost"
         try:
             monitor.maintain()
             healthy = monitor.healthy()
         except Exception:  # noqa: BLE001 - a monitor that cannot answer is lost (fail closed)
-            return "monitor_lost"
-        return None if healthy else "monitor_lost"
+            healthy = False
+        if healthy:
+            return None
+        self._lose()
+        return "monitor_lost"
+
+    def _lose(self) -> None:
+        """LW-01: latch monitor_lost for the task, counted once."""
+        if not self._lost:
+            self._lost = True
+            self.monitor_lost += 1
+
+    def _prove_hooks(self) -> None:
+        """[V2.57] LW-01: before each send's idle decision, a fresh probe both hooks must see
+        within `PROBE_DEADLINE_S` on the world's clock, waited out kill-aware; else the monitor
+        is lost and the send never happens."""
+        monitor = self._monitor
+        monitor.probe_now()
+        started = self._config.clock()
+        while not monitor.probe_seen():
+            if self._config.clock() - started >= PROBE_DEADLINE_S:
+                self._lose()
+                raise PortInterrupted("monitor_lost")
+            self._kill_aware_sleep(PROVE_POLL_S)
 
     def _session_signal(self) -> str | None:
         """The lock, then the input desktop; a read that fails (any error) or is unknown is the
@@ -467,6 +509,8 @@ class LiveWorld:
             "trace_unwritable": self.trace_unwritable,
             "late_sink_failures": self.late_sink_failures,
             "debug_failure": self.debug_failure,
+            "monitor_lost": self.monitor_lost,
+            **dict(zip(_LATENCY_KEYS, self._monitor.latency(), strict=True)),
         }
 
     def header(self, task: Task) -> Mapping[str, str]:
@@ -484,6 +528,7 @@ class LiveWorld:
             "listing_cap": str(LISTING_CAP),
             "always_keep_ceiling": str(2 * LISTING_CAP),
             "goal_word_subcap": str(LISTING_CAP // 3),
+            "hook_timeout_ms": _shown(self._platform.hook_timeout_ms()),
         }
         if price is not None:
             record["price_source"] = price.source
@@ -585,6 +630,30 @@ class LiveWorld:
 _COM_HOLDERS = ("world", "semantic", "physical", "desk", "_observe", "_facts", "_client", "_debug")
 """Rev 4.0c: the attributes that hold COM objects (directly, or through an executor, the guard
 or the world ports); `close` drops them on the loop thread."""
+
+
+_LATENCY_KEYS = ("hook_events", "hook_latency_p95_ms", "hook_latency_p99_ms")
+PROVE_POLL_S = 0.01
+"""LW-01: how often the fresh probe's arrival is checked (unmeasured; the deadline decides)."""
+HOOK_TIMEOUT_CAP_MS = 1000
+"""Microsoft Learn, LowLevelKeyboardProc: on Windows 10 1709 and later the system uses 1000 ms
+for any LowLevelHooksTimeout larger than that."""
+
+
+def _shown(value: int | None) -> str:
+    return "unset" if value is None else str(value)
+
+
+def _read_hooks_timeout() -> object:  # pragma: no cover - live, Windows only
+    """HKCU\\Control Panel\\Desktop LowLevelHooksTimeout (ms), as stored; None when absent."""
+    import winreg  # noqa: PLC0415 - Windows only
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop") as key:
+            value, _kind = winreg.QueryValueEx(key, "LowLevelHooksTimeout")
+    except OSError:
+        return None
+    return value
 
 
 def _run_tag() -> int:
@@ -735,11 +804,27 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
             _ole32().CoUninitialize()
 
     def start_monitor(self, kill_key: str, clock: Callable[[], float], extra_info: int) -> Monitor:
-        from steerai.session.monitor import HookMonitor  # noqa: PLC0415 - Windows hooks
+        from steerai.session.monitor import PROBE_VK, HookMonitor  # noqa: PLC0415 - Windows hooks
 
-        monitor = HookMonitor(kill_key=kill_key, monotonic=clock, extra_info=extra_info)
+        monitor = HookMonitor(
+            kill_key=kill_key,
+            monotonic=clock,
+            extra_info=extra_info,
+            per_hook=True,  # [V2.57] LW-01
+            probe_vk=PROBE_VK,
+        )
         monitor.start()
         return monitor
+
+    def hook_timeout_ms(self) -> int | None:
+        raw = _read_hooks_timeout()  # REG_SZ as written by Windows; a DWORD is accepted too
+        if isinstance(raw, str) and raw.strip().isdigit():
+            value = int(raw.strip())
+        elif isinstance(raw, int) and not isinstance(raw, bool):
+            value = raw
+        else:
+            return None
+        return min(value, HOOK_TIMEOUT_CAP_MS) if value > 0 else None
 
     def protect(self, data: bytes) -> bytes:
         from steerai.debug_trace import protect_for_user  # noqa: PLC0415 - DPAPI

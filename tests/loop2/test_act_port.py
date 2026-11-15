@@ -114,6 +114,8 @@ class Desk:
         self.tap = tap
         self.last = last_input
         self.who = "takeover"
+        self.proofs = 0
+        self.lost = False
         self.taps = 0
         self.current: frozenset[tuple[int, ...]] | None = None
 
@@ -126,6 +128,11 @@ class Desk:
 
     def takeover_token(self) -> str:
         return self.who
+
+    def prove_hooks(self) -> None:
+        self.proofs += 1
+        if self.lost:
+            raise PortInterrupted("monitor_lost")
 
     def focused(self) -> tuple[int, ...] | None:
         if self.focus_after:
@@ -1080,4 +1087,24 @@ def test_another_steer_busy_past_the_wait_is_other_steer_input() -> None:
     rig.clock.on_pause = lambda: setattr(desk, "last", rig.clock.now)
     result = rig.port.act(_dispatch("type", FIELD, **TYPE))
     assert _refused(result, ErrorCode.GATE_PENDING_USER, "other_steer_input")
+    assert _nothing_executed(rig)
+
+
+# ---- [V2.57] LW-01: a fresh probe before each send's idle decision ---------------------------
+
+
+def test_each_send_proves_both_hooks_before_its_idle_decision() -> None:
+    desk = Desk()
+    rig = _port(physical=Executor(ok("type")), desk=desk)
+    rig.port.act(_dispatch("type", FIELD, **TYPE))
+    assert desk.proofs == 1
+
+
+def test_a_hook_lost_before_the_idle_decision_sends_nothing() -> None:
+    desk = Desk()
+    desk.lost = True
+    rig = _port(physical=Executor(ok("type")), desk=desk)
+    with pytest.raises(PortInterrupted) as lost:
+        rig.port.act(_dispatch("type", FIELD, **TYPE))
+    assert [lost.value.token] == ["monitor_lost"]
     assert _nothing_executed(rig)

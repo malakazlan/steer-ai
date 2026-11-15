@@ -54,7 +54,9 @@ class Switch:
 
 
 def _desk(guard: InputGuard) -> GuardDesk:
-    return GuardDesk(guard, last_input=lambda: 0.0, takeover_token=lambda: "takeover")
+    return GuardDesk(
+        guard, last_input=lambda: 0.0, takeover_token=lambda: "takeover", prove=lambda: None
+    )
 
 
 def _guard(
@@ -332,18 +334,9 @@ def test_every_key_maps_to_one_named_key_with_no_modifier() -> None:
 
 
 def test_the_desk_reads_v1s_tap_refusal() -> None:
-    desk = GuardDesk(
-        _guard(FakeInput(modifiers=["shift"])),
-        last_input=lambda: 0.0,
-        takeover_token=lambda: "takeover",
-    )
+    desk = _desk(_guard(FakeInput(modifiers=["shift"])))
     assert desk.tap_refusal() == "hands_on"
-    assert (
-        GuardDesk(
-            _guard(FakeInput()), last_input=lambda: 0.0, takeover_token=lambda: "takeover"
-        ).tap_refusal()
-        is None
-    )
+    assert _desk(_guard(FakeInput())).tap_refusal() is None
 
 
 def test_an_unreadable_tap_check_refuses() -> None:
@@ -360,24 +353,17 @@ def test_the_desk_reads_no_focus_as_unread() -> None:
         def focused_runtime_id(self) -> tuple[int, ...]:
             raise OSError("unreadable")
 
+    assert _desk(_guard(Broken())).focused() is None
     assert (
         GuardDesk(
-            _guard(Broken()), last_input=lambda: 0.0, takeover_token=lambda: "takeover"
+            _guard(FakeInput(focused=())),
+            last_input=lambda: 0.0,
+            takeover_token=lambda: "takeover",
+            prove=lambda: None,
         ).focused()
         is None
     )
-    assert (
-        GuardDesk(
-            _guard(FakeInput(focused=())), last_input=lambda: 0.0, takeover_token=lambda: "takeover"
-        ).focused()
-        is None
-    )
-    assert (
-        GuardDesk(
-            _guard(FakeInput()), last_input=lambda: 0.0, takeover_token=lambda: "takeover"
-        ).focused()
-        == TARGET_ID
-    )
+    assert _desk(_guard(FakeInput())).focused() == TARGET_ID
 
 
 # ---- [V2.51] (4): the second Toggle only on an indeterminate state, re-read before it ---------

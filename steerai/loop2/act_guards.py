@@ -237,8 +237,11 @@ class GuardDesk:
         *,
         last_input: Callable[[], float],
         takeover_token: Callable[[], str],
+        prove: Callable[[], None],
     ) -> None:
         self._guard = guard
+        self._prove = prove
+        """[V2.57] LW-01: a fresh probe both hooks must see (raises `PortInterrupted`)."""
         self._last_input = last_input
         """The person's last input, on the act port's clock (slice 7: the session monitor)."""
         self._takeover_token = takeover_token
@@ -252,6 +255,9 @@ class GuardDesk:
 
     def last_input(self) -> float:
         return self._last_input()
+
+    def prove_hooks(self) -> None:
+        self._prove()
 
     def takeover_token(self) -> str:
         """[V2.58] (2): `takeover` or `other_steer_input`, as the monitor saw the last input."""

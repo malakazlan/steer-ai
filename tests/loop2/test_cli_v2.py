@@ -314,6 +314,10 @@ def test_a_run_reports_use_against_every_limit_and_the_worlds_counts(tmp_path: P
         "trace_unwritable": 0,
         "late_sink_failures": 0,
         "debug_failure": None,
+        "monitor_lost": 0,
+        "hook_events": 0,
+        "hook_latency_p95_ms": None,
+        "hook_latency_p99_ms": None,
     }
 
 

@@ -76,6 +76,9 @@ class Monitor:
         self.closed = 0
         self.last = 0.0
         self.who = "takeover"
+        self.probes = 0
+        self.seen = True
+        self.timed: tuple[int, int | None, int | None] = (0, None, None)
         self.raises: Exception | None = None
         """Raised by `maintain` and `healthy` (a hook thread that failed)."""
 
@@ -97,6 +100,15 @@ class Monitor:
 
     def takeover_token(self) -> str:
         return self.who
+
+    def probe_now(self) -> None:
+        self.probes += 1
+
+    def probe_seen(self) -> bool:
+        return self.seen
+
+    def latency(self) -> tuple[int, int | None, int | None]:
+        return self.timed
 
     def close(self) -> None:
         self.closed += 1
@@ -123,6 +135,7 @@ class Platform:
         self.calls: list[str] = []
         self.session = "acquired"
         self.tag_error: Exception | None = None
+        self.hook_timeout: int | None = None
         self.identity: WindowIdentity | None = WindowIdentity(
             pid=4242, started=133_000_000_000_000_000, image="browser.exe", root=True, visible=True
         )
@@ -166,6 +179,9 @@ class Platform:
 
     def release_session(self) -> None:
         self.calls.append("release_session")
+
+    def hook_timeout_ms(self) -> int | None:
+        return self.hook_timeout
 
     def window_identity(self, hwnd: int) -> WindowIdentity | None:
         self.calls.append("identity")
@@ -548,6 +564,7 @@ def test_the_run_header_names_the_model_effort_prompt_trace_and_price() -> None:
         "listing_cap": "150",
         "always_keep_ceiling": "300",
         "goal_word_subcap": "50",
+        "hook_timeout_ms": "unset",
     }
 
 
@@ -895,7 +912,15 @@ def test_a_trace_that_cannot_be_written_never_raises_and_is_counted() -> None:
 def test_the_report_has_every_counter() -> None:
     world, _ = _world()
     world.close()
-    assert world.report() == {"trace_unwritable": 0, "late_sink_failures": 0, "debug_failure": None}
+    assert world.report() == {
+        "trace_unwritable": 0,
+        "late_sink_failures": 0,
+        "debug_failure": None,
+        "monitor_lost": 0,
+        "hook_events": 0,
+        "hook_latency_p95_ms": None,
+        "hook_latency_p99_ms": None,
+    }
 
 
 def test_the_world_is_a_context_manager_that_always_closes() -> None:
@@ -1558,3 +1583,86 @@ def test_a_failed_start_gives_the_process_back_v1s_tag() -> None:
         _world(platform)
     assert extra_info() == STEER_EXTRA_INFO
     assert platform.calls.count("untag") == 1
+
+
+# ---- [V2.57] LW-01: per-hook health in the v2 world ---------------------------------------------
+
+
+def test_a_lost_monitor_stays_lost_and_is_counted_once() -> None:
+    """monitor_lost ends the task in step 3: never re-installed and resumed, because a person
+    may have typed while the hook was gone."""
+    world, platform = _world()
+    platform.monitor.ok = False
+    assert world.interrupted() == "monitor_lost"
+    platform.monitor.ok = True  # a later own event would make the core look healthy again
+    assert world.interrupted() == "monitor_lost"
+    assert world.report()["monitor_lost"] == 1
+
+
+def test_the_desk_proves_both_hooks_with_a_fresh_probe() -> None:
+    world, platform = _world()
+    world.desk.prove_hooks()
+    assert platform.monitor.probes == 1
+    assert world.interrupted() is None
+
+
+def test_a_probe_not_seen_by_both_hooks_in_time_is_a_lost_monitor() -> None:
+    from steerai.session.monitor import PROBE_DEADLINE_S  # noqa: PLC0415 - this test only
+
+    world, platform = _world()
+    platform.monitor.seen = False
+    started = world.clock()
+    with pytest.raises(PortInterrupted) as lost:
+        world.desk.prove_hooks()
+    assert [lost.value.token] == ["monitor_lost"]
+    assert world.clock() - started >= PROBE_DEADLINE_S  # waited out the deadline, kill-aware
+    assert world.interrupted() == "monitor_lost"
+    assert world.report()["monitor_lost"] == 1
+
+
+def test_the_report_carries_the_callback_latency() -> None:
+    world, platform = _world()
+    platform.monitor.timed = (1200, 3, 16)
+    report = world.report()
+    keys = ("hook_events", "hook_latency_p95_ms", "hook_latency_p99_ms")
+    assert tuple(report[k] for k in keys) == (1200, 3, 16)
+
+
+@pytest.mark.parametrize(("timeout", "shown"), [(None, "unset"), (300, "300")])
+def test_the_header_names_the_hook_timeout(timeout: int | None, shown: str) -> None:
+    platform = Platform()
+    platform.hook_timeout = timeout
+    world, _ = _world(platform)
+    assert world.header(task())["hook_timeout_ms"] == shown
+
+
+def test_the_v2_platform_starts_a_per_hook_monitor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real platform's monitor proves each hook with the probe key; nothing is started."""
+    from steerai.session import monitor as monitor_module  # noqa: PLC0415 - this test only
+
+    built: list[dict[str, object]] = []
+
+    class Recorded:
+        def __init__(self, **kwargs: object) -> None:
+            built.append(kwargs)
+
+        def start(self) -> None:
+            built.append({"started": True})
+
+    monkeypatch.setattr(monitor_module, "HookMonitor", Recorded)
+    WindowsPlatform().start_monitor("ctrl+alt+k", lambda: 0.0, 0x1234_5678)
+    assert built[0]["per_hook"] is True
+    assert built[0]["probe_vk"] == monitor_module.PROBE_VK
+    assert built[0]["extra_info"] == 0x1234_5678
+
+
+def test_the_hook_timeout_is_read_from_the_registry_and_capped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Microsoft Learn, LowLevelKeyboardProc: HKCU\\Control Panel\\Desktop LowLevelHooksTimeout,
+    in ms; Windows 10 1709 and later use 1000 for any value larger."""
+    from steerai.loop2 import live_world as live  # noqa: PLC0415 - this test only
+
+    for raw, shown in (("300", 300), (5000, 1000), (None, None), ("x", None)):
+        monkeypatch.setattr(live, "_read_hooks_timeout", lambda raw=raw: raw)
+        assert WindowsPlatform().hook_timeout_ms() == shown
