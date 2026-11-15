@@ -184,7 +184,20 @@
     "why": "a removed item shows only as content: step 4"
   },
   "m1": {
-    "unrated": "target_after_opener"
+    "acts": [
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Help"
+      },
+      {
+        "verb": "click",
+        "role": "MenuItem",
+        "name": "About"
+      }
+    ],
+    "proof": null,
+    "why": "About shows only as content: step 4 (rated on the Help menu's opened read)"
   },
   "b1": {
     "acts": [
@@ -414,7 +427,20 @@
     "why": "a select with groups: its value"
   },
   "r4": {
-    "unrated": "target_after_opener"
+    "acts": [
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Export"
+      },
+      {
+        "verb": "click",
+        "role": "MenuItem",
+        "name": "PDF"
+      }
+    ],
+    "proof": null,
+    "why": "an export shows only as content: step 4 (rated on the Export menu's opened read)"
   },
   "r5": {
     "acts": [
@@ -456,6 +482,19 @@
     "why": "a grid row: a selection state read"
   },
   "u5": {
-    "unrated": "target_after_opener"
+    "acts": [
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Sort"
+      },
+      {
+        "verb": "select",
+        "role": "RadioButton",
+        "name": "Newest first"
+      }
+    ],
+    "proof": "state",
+    "why": "a menu radio: a selection state read (rated on the Sort menu's opened read)"
   }
 }

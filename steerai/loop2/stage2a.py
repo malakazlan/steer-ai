@@ -71,7 +71,7 @@ ACTS: Final = Path(__file__).with_name("stage2a_acts.json")
 """Each 2a task's acts, by role and name as its saved start read shows them."""
 TABLE: Final = Path(__file__).with_name("stage2a_expected.json")
 """The committed 2a table: each read's SHA-256, its deciding facts and the expected outcome."""
-TABLE_SHA256: Final = "0e4434e00246eacbcbf209430b4cced63d9eeef5d3329b5f6c08778b4e43fb78"
+TABLE_SHA256: Final = "d5a1311b948debb02148d7fe3e4d145cb073c894cba95f2dfd59d356ac5cf3c2"
 """#408 blocker 1: the committed table's pin. A run takes only this table, so moving a task into
 `unrated` (out of acceptance) can never be done by a table passed on the command line."""
 CALC_WAIT_S: Final = 20.0
