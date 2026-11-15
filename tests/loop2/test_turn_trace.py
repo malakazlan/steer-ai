@@ -13,6 +13,10 @@ from typing import Any
 
 import pytest
 
+from steerai.action.dispositions import ActionResult, Delivery
+from steerai.action.execution import REFUSAL_DETAILS
+from steerai.errors import ErrorCode
+from steerai.loop2.controller import ControllerError, DecideRecord
 from steerai.loop2.decision import ActionDoc, Decision, SubgoalDoc
 from steerai.loop2.history import (
     DELIVERIES,
@@ -26,19 +30,24 @@ from steerai.loop2.history import (
     Proven,
     render,
 )
-from steerai.loop2.loop import TokenUsage
+from steerai.loop2.loop import PORT_DETAILS, ActResult, TokenUsage
 from steerai.loop2.runner import run_task
 from steerai.loop2.turn_trace import (
+    ACT_DETAILS,
     KEY_TOKENS,
+    REPAIR_TOKENS,
     UNKNOWN,
+    ActFact,
     CarrierFact,
     ParamProof,
     ProofAttempt,
     ReadFacts,
+    RefusalFact,
     TurnTrace,
     WatchFacts,
     closed,
     closed_proofs,
+    detail_token,
     positional,
     turn_record,
 )
@@ -114,7 +123,13 @@ def full_record() -> dict[str, Any]:  # Any: JSON
                 "ask": False,
                 "stop": None,
             },
-            refusals=("id_not_listed", "press_not_at_focus"),
+            refusals=(
+                RefusalFact("id_not_listed", None),
+                RefusalFact("not_delivered", "no_options"),
+            ),
+            acts=(ActFact("type", "delivered_verified"), ActFact("press", "not_sent")),
+            repair=True,
+            repair_tokens=("schema", "id_not_listed"),
             watch=(WatchFacts("submit", 1.25),),
             tokens=TokenUsage(1200, 80),
             history=("stale_observation", "load_guard", "claim:s0:accepted", "proven:s1:claim"),
@@ -144,7 +159,11 @@ def _set(path: tuple[object, ...]) -> Setter:
 
 PLACES: dict[str, Setter] = {
     "focus": _set(("focus",)),
-    "refusal": _set(("refusals", 0)),
+    "refusal": _set(("refusals", 0, "refusal")),
+    "refusal detail": _set(("refusals", 1, "detail")),
+    "act verb": _set(("acts", 0, "verb")),
+    "act result": _set(("acts", 1, "result")),
+    "repair token": lambda r, t: r["repair_tokens"].append(t),
     "history": _set(("history", 0)),
     "watch kind": _set(("watch", 0, "kind")),
     "decision verb": _set(("decision", "actions", 0, "verb")),
@@ -182,22 +201,48 @@ def test_free_text_anywhere_in_a_turn_record_fails_it_whole(place: str, text: st
 @pytest.mark.parametrize("line", ["stale_observation", "load_guard"])
 def test_a_history_line_is_only_ever_one_the_grammar_accepts(line: str) -> None:
     record = full_record()
-    record["refusals"] = [line]  # a history line outside `history` is not a closed token
+    record["refusals"][0]["refusal"] = line  # a history line outside `history` is no token
     assert not closed(record)
 
 
 def test_the_refusal_allowlist_is_the_producers_own_closed_set() -> None:
     """Not a hand list: `history.REFUSAL_TOKENS`, the set every emitter is pinned to
     (`test_history_vocabulary`), and the one `_refuse` is typed by."""
-    assert KEY_TOKENS["refusals"] is REFUSAL_TOKENS
+    assert KEY_TOKENS["refusal"] is REFUSAL_TOKENS
     assert KEY_TOKENS["rejections"] is REFUSAL_TOKENS
+
+
+def test_the_detail_allowlist_is_the_executors_and_the_ports_own_closed_sets() -> None:
+    """Not a hand list: the sets their producers are pinned to (`test_refusal_details`)."""
+    assert KEY_TOKENS["detail"] is ACT_DETAILS
+    assert REFUSAL_DETAILS | PORT_DETAILS | {"unlisted"} == ACT_DETAILS
+    assert KEY_TOKENS["repair_tokens"] is REPAIR_TOKENS
+    assert {"not_json", "schema", "id_not_listed", "param_unknown"} <= REPAIR_TOKENS
 
 
 @pytest.mark.parametrize("token", ["click", "title", "navigated", "turn"])
 def test_a_closed_token_of_another_set_is_not_a_refusal(token: str) -> None:
     record = full_record()
-    record["refusals"] = [token]
+    record["refusals"][0]["refusal"] = token
     assert not closed(record)
+
+
+@pytest.mark.parametrize(
+    ("key", "token"),
+    [("detail", "click"), ("detail", "navigated"), ("result", "no_options"), ("result", "click")],
+)
+def test_a_detail_or_a_result_is_only_a_token_of_its_own_set(key: str, token: str) -> None:
+    record = full_record()
+    record["refusals" if key == "detail" else "acts"][1][key] = token
+    assert not closed(record)
+
+
+def test_a_detail_outside_the_closed_sets_is_written_as_unlisted() -> None:
+    assert detail_token("no_options") == "no_options"
+    assert detail_token("killed") == "killed"
+    assert detail_token(None) is None
+    for text in (*FREE_TEXT, 3, b"no_options"):
+        assert detail_token(text) == "unlisted"
 
 
 def test_a_number_that_is_not_finite_fails_the_record() -> None:
@@ -343,3 +388,102 @@ def test_the_runner_writes_no_model_chosen_subgoal_id_or_param_name() -> None:
     written = json.dumps(records)
     assert SUBGOAL_ID not in written
     assert PARAM_NAME not in written
+
+
+# ---- the gallery diagnosis: each refusal's detail, the batch's acts, the repair round --------
+
+
+def _not_delivered(detail: str) -> ActResult:
+    refused = ActionResult(
+        "click", Delivery.NOT_DELIVERED, code=ErrorCode.ELEMENT_NOT_ACTIONABLE,
+        evidence={"detail": detail},
+    )  # fmt: skip
+    return ActResult(refused, None)
+
+
+@pytest.mark.parametrize(("detail", "written"), [("no_options", "no_options"), (TITLE, "unlisted")])
+def test_a_not_delivered_refusal_carries_its_closed_detail(detail: str, written: str) -> None:
+    world = World(
+        [decision(act("click", target=GO.id), first=True)], results=[_not_delivered(detail)]
+    )
+    records: list[dict[str, Any]] = []  # Any: JSON
+    outcome = run_task(task(), dataclasses.replace(world.ports(), turn_trace=_into(records)))
+    assert outcome.turn_trace_dropped == 0
+    first = records[0]
+    assert {"refusal": "not_delivered", "detail": written} in first["refusals"]
+    assert first["acts"] == [{"verb": "click", "result": "not_delivered"}]
+    assert TITLE not in json.dumps(records)
+
+
+def test_the_batch_is_written_as_its_verbs_in_order_with_each_result() -> None:
+    focus = act("focus", target=FIELD.id)
+    typed = act("type", target=FIELD.id, param="text")
+    world = World([decision(focus, typed, first=True)], effects=[report("own_value")])
+    records: list[dict[str, Any]] = []  # Any: JSON
+    run_task(task(), dataclasses.replace(world.ports(), turn_trace=_into(records)))
+    verbs = [a["verb"] for a in records[0]["acts"]]
+    assert verbs == ["focus", "type"][: len(verbs)]
+    assert verbs
+    assert all(closed(r) for r in records)
+
+
+def test_an_act_refused_before_the_port_is_not_sent() -> None:
+    world = World([decision(act("focus", target=GO.id), first=True)])  # a focus on a button
+    records: list[dict[str, Any]] = []  # Any: JSON
+    run_task(task(), dataclasses.replace(world.ports(), turn_trace=_into(records)))
+    assert records[0]["acts"] == [{"verb": "focus", "result": "not_sent"}]
+    assert records[0]["refusals"] == [{"refusal": "focus_needs_field", "detail": None}]
+    assert world.dispatched == []
+
+
+def test_a_repaired_decision_is_written_with_its_rejection_tokens() -> None:
+    world = World([decision(act("click", target=GO.id), first=True)])
+    ports = world.ports()
+    real = ports.decide
+
+    def repaired(view: Any) -> Any:  # Any: the port's own TurnView and Decided
+        return dataclasses.replace(real(view), calls=2, rejections=("schema",))
+
+    records: list[dict[str, Any]] = []  # Any: JSON
+    run_task(task(), dataclasses.replace(ports, decide=repaired, turn_trace=_into(records)))
+    assert (records[0]["repair"], records[0]["repair_tokens"]) == (True, ["schema"])
+
+
+def test_a_turn_rejected_after_its_repair_is_traced_with_both_attempts() -> None:
+    """The 3d `port_rejected` runs: the failed turn is written, with its repair round."""
+    failed = ControllerError(
+        "rejected", ("id_not_listed",),
+        record=DecideRecord("v", 2, True, True, rejections=("schema", "id_not_listed")),
+    )  # fmt: skip
+    world = World([decision(act("wait"), first=True)])
+    world.decide_raises = failed
+    records: list[dict[str, Any]] = []  # Any: JSON
+    outcome = run_task(task(), dataclasses.replace(world.ports(), turn_trace=_into(records)))
+    assert outcome.reason == "port_rejected"
+    assert len(records) == 1
+    assert (records[0]["repair"], records[0]["repair_tokens"]) == (
+        True,
+        ["schema", "id_not_listed"],
+    )
+    assert records[0]["decision"] is None
+    assert records[0]["turn"] == 1
+
+
+def test_the_decide_port_hands_the_repair_round_to_the_runner() -> None:
+    from steerai.loop2.decide_port import DecideCalls, Reply, TaskGenerations  # noqa: PLC0415
+    from steerai.loop2.prompt_inputs import make_decide  # noqa: PLC0415
+    from tests.loop2.test_listing_wiring import GOAL, _view  # noqa: PLC0415
+
+    sub = {"id": "s1", "desc": "x", "params": {"text": "red shoes"}, "closes": "page"}
+    replies = [
+        {"subgoals": [sub], "actions": [{"verb": "click", "target": 999_999, "subgoal": "s1"}]},
+        {"subgoals": [sub], "actions": [{"verb": "click", "target": GO.id, "subgoal": "s1"}]},
+    ]
+
+    def provider(_system: list[str], _blocks: list[str]) -> Reply:
+        return Reply(json.dumps(replies.pop(0)), "end_turn", TokenUsage(10, 5))
+
+    calls = DecideCalls(provider, interrupted=lambda: None, generations=TaskGenerations(),
+                        late_error=lambda _t: None)  # fmt: skip
+    decided = make_decide(calls, goal=GOAL, task_fence="taskfence01")(_view())
+    assert (decided.calls, decided.rejections) == (2, ("id_not_listed",))
