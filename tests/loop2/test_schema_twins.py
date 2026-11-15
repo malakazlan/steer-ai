@@ -123,3 +123,12 @@ def test_an_empty_ask_is_refused_by_both() -> None:
     branch = next(b for b in ask["anyOf"] if b.get("type") == "string")
     assert branch["minLength"] == 1
     assert "ask_empty" in _tokens(Decision(ask=""))
+
+
+def test_the_pattern_literals_are_pinned_to_their_length_constants() -> None:
+    """decision.py is a token producer: its patterns stay literals (no string built at
+    runtime), and their bounds are the constants the schema states."""
+    from steerai.loop2.decision import PARAM_NAME_CHARS, SUBGOAL_ID_CHARS  # noqa: PLC0415
+
+    assert SUBGOAL_ID.pattern == "[a-z0-9_]{1,%d}" % SUBGOAL_ID_CHARS  # noqa: UP031 - a pin
+    assert PARAM_NAME.pattern == "[a-z0-9_]{1,%d}" % PARAM_NAME_CHARS  # noqa: UP031 - a pin
