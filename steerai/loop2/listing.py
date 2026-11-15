@@ -1,10 +1,14 @@
 """The v2 listing's cap ([V2.54], [V2.55]; packet rev 4.1): which elements of a snapshot the
 model is shown, in tree order, with each row's class.
 
-1. **Always-keep** (`keep`), up to `2 * cap` rows: the keyboard focus, every element acted on in
-   this task while it exists, the fields holding pending text, and what is new or changed since
-   the model last looked. Chosen by v1's order (on-screen interactive first); `keep_at_ceiling`
-   says the class passed the cap or an element of it was cut.
+0. **The root chain** (`root`): the top Document and its ancestors up to the window, shown
+   first and charged to the cap and to the listing's `2 * cap` ceiling, never to a class's
+   sub-limit (#360: charged to the first class that reached it, a deep chain emptied the goal
+   class). A chain longer than the cap, or no single top Document, is left to the classes.
+1. **Always-keep** (`keep`), up to `2 * cap` rows with the root chain: the keyboard focus, every
+   element acted on in this task while it exists, the fields holding pending text, and what is
+   new or changed since the model last looked. Chosen by v1's order (on-screen interactive
+   first); `keep_at_ceiling` says the class passed the cap or an element of it was cut.
 2. **Goal words** (`goal`), up to `cap // 3` rows: elements whose name holds a word of an open
    subgoal's params (the person's own words), most distinct words first, then v1's order;
    `goal_at_subcap` says the class was cut.
@@ -12,9 +16,10 @@ model is shown, in tree order, with each row's class.
    with their ancestors, then offscreen elements nearest the window (`world.elements.prune`).
 
 The listing is closed upward (#359 review): an element is shown with its whole chain of
-ancestors up to the nearest row already shown, and every row so added is charged to that
-element's class, so no class passes its budget and a row's indentation is its true depth. An
-element whose chain does not fit its class's room is cut, never shown orphaned. A cut element
+ancestors up to the nearest row already shown, and every row so added below the root chain is
+charged to that element's class, so no class passes its budget and a row's indentation is its
+true depth. An element whose chain does not fit its class's room is cut, never shown orphaned.
+A cut element
 keeps its task handle but has no row: `validate` refuses it as `id_not_listed`. The verifier and
 the auto proofs read the full snapshot, never this.
 """
@@ -26,13 +31,15 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Final, Literal
 
+from steerai.world.effects import top_document
 from steerai.world.elements import INTERACTIVE_ROLES, Element, prune
 from steerai.world.model import Snapshot
 
 LISTING_CAP: Final = 150
 """[V2.54]: v1's `DEFAULT_CAP`; configurable, provisional."""
-RowClass = Literal["keep", "goal", "rest"]
-"""Why a row is shown; a prompt guard drops `rest` first, then `goal`, then `keep`."""
+RowClass = Literal["root", "keep", "goal", "rest"]
+"""Why a row is shown; a prompt guard drops `rest` first, then `goal`, then `keep`, never
+`root`."""
 _WORD = re.compile(r"\w+")
 
 
@@ -122,7 +129,10 @@ def select_listing(
     keep_all = [e for e in elements if e.runtime_id and e.runtime_id in wanted_keep]
     keep_all.sort(key=lambda e: _keep_rank(e, order))
     shown: dict[int, RowClass] = {}
-    keep_cut = _fill(keep_all, shown, by_id, "keep", 2 * cap)
+    top = top_document(snapshot)
+    if top is not None:
+        _fill([top], shown, by_id, "root", cap)
+    keep_cut = _fill(keep_all, shown, by_id, "keep", 2 * cap - len(shown))
     keep_rows = len(shown)
     goal_all = [e for e in elements if goal_words and _holds_word(e, goal_words)]
     goal_all.sort(key=lambda e: _goal_rank(e, goal_words, order))

@@ -93,7 +93,7 @@ def test_goal_words_come_next_up_to_a_third_of_the_cap() -> None:
     lamps = [_row(1000 + i, name=f"Brass lamp {i}", top=5000 + i) for i in range(80)]
     shown = snapshot([ROOT, *(_row(i) for i in range(1, 400)), *lamps])
     listing = _select(shown, cap=90, goal_words=frozenset({"lamp"}))
-    assert listing.priorities.count("goal") == 90 // 3  # the lamps and the root they bring
+    assert listing.priorities.count("goal") == 90 // 3  # lamps only: the root is a root row
     assert listing.goal_at_subcap is True
     assert len(listing.ids) == 90
 
@@ -116,7 +116,8 @@ def test_an_over_full_always_keep_class_is_chosen_on_screen_interactive_first() 
     every = frozenset(e.runtime_id for e in [*hidden, *plain, *buttons])
     listing = _select(shown, cap=2, keep=every)
     kept = {i for i, c in zip(listing.ids, listing.priorities, strict=True) if c == "keep"}
-    assert kept == {0, 11, 12, 13}  # on-screen interactive first; the root is charged too
+    assert kept == {11, 12, 13}  # on-screen interactive first; the root row takes the fourth
+    assert listing.priorities[0] == "root"
     assert not kept & set(range(1, 6))
 
 
@@ -286,3 +287,69 @@ def test_more_distinct_goal_words_come_first_then_v1s_order() -> None:
     )
     goal = [i for i, c in zip(listing.ids, listing.priorities, strict=True) if c == "goal"]
     assert goal == [1, 2, 300]  # two words first; then the one-word rows in v1's order
+
+
+# ---- #360 item 1: the top Document's chain is shown first, charged to the cap only -----------
+
+
+def _rooted(depth: int) -> tuple[Snapshot, list[Element]]:
+    """A window chain `depth` rows deep above the top Document, then 400 plain rows and 80 far
+    goal-word rows in the page; nothing kept (the first turn, or the focus in the address bar)."""
+    chain = [Element(id=d, depth=d, role="Pane", name="", box=(0, 0, 1000, 800),
+                     runtime_id=(2, d), parent_id=d - 1 if d else None)
+             for d in range(depth)]  # fmt: skip
+    doc = Element(id=depth, depth=depth, role="Document", name="Page", box=(0, 0, 1000, 800),
+                  runtime_id=(2, depth), parent_id=depth - 1 if depth else None)  # fmt: skip
+    page = depth + 1
+    rows = [Element(id=1000 + i, depth=page, role="Button", name=f"Item {i}",
+                    box=(0, 10 * i, 100, 10 * i + 8), runtime_id=(1, 1000 + i),
+                    parent_id=doc.id) for i in range(400)]  # fmt: skip
+    lamps = [Element(id=5000 + i, depth=page, role="Button", name=f"Brass lamp {i}",
+                     box=(0, 9000 + i, 100, 9008 + i), runtime_id=(1, 5000 + i),
+                     parent_id=doc.id, offscreen=True) for i in range(80)]  # fmt: skip
+    return snapshot([*chain, doc, *rows, *lamps]), [*chain, doc]
+
+
+def _goal_hits(listing: Listing) -> tuple[int, ...]:
+    return tuple(i for i, c in zip(listing.ids, listing.priorities, strict=True)
+                 if c == "goal" and i >= 5000)  # fmt: skip
+
+
+@pytest.mark.parametrize("depth", [1, 10, 20, 30, 49, 60])
+def test_a_deep_root_chain_leaves_the_goal_class_untouched(depth: int) -> None:
+    """Probe p5 (#360): the root chain charged to the goal class cut its hits from 16 at depth 1
+    to none at depth >= 49. Shown first and charged to the cap alone, it costs the class none."""
+    lamp = frozenset({"lamp"})
+    shallow = _select(_rooted(1)[0], goal_words=lamp)
+    shown, root = _rooted(depth)
+    listing = _select(shown, goal_words=lamp)
+    assert _goal_hits(listing) == _goal_hits(shallow)
+    assert len(_goal_hits(listing)) == LISTING_CAP // 3
+    assert listing.goal_at_subcap is shallow.goal_at_subcap is True
+    by_id = dict(zip(listing.ids, listing.priorities, strict=True))
+    assert all(by_id.get(e.id) == "root" for e in root)
+    assert len(listing.ids) == LISTING_CAP  # the chain is charged to the overall cap
+    assert _closed_upward(shown, listing)
+
+
+def test_the_root_chain_counts_against_the_listing_ceiling_too() -> None:
+    shown, root = _rooted(30)
+    every = frozenset((1, 1000 + i) for i in range(400))
+    listing = _select(shown, keep=every)
+    assert len(listing.ids) == 2 * LISTING_CAP
+    assert listing.priorities.count("root") == len(root)
+    assert listing.keep_at_ceiling is True
+    assert _closed_upward(shown, listing)
+
+
+def test_a_root_chain_longer_than_the_cap_is_charged_to_the_classes() -> None:
+    shown, _root = _rooted(30)
+    listing = _select(shown, cap=10, goal_words=frozenset({"lamp"}))
+    assert "root" not in listing.priorities
+    assert len(listing.ids) <= 10
+    assert _closed_upward(shown, listing)
+
+
+def test_without_one_top_document_no_row_is_a_root_row() -> None:
+    shown = snapshot([dataclasses.replace(ROOT, role="Pane"), *(_row(i) for i in range(1, 50))])
+    assert "root" not in _select(shown, cap=20).priorities

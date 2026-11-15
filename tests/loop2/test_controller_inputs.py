@@ -47,7 +47,10 @@ def _view(**changes: object) -> TurnView:
 def test_the_listing_is_v2_listing_numbered_by_task_handle() -> None:
     view = _view()
     inputs = controller_inputs(view, goal=GOAL)
-    assert inputs.listing_rows == tuple(v2_listing(view.observed.snapshot, handles=HANDLES))
+    uncapped = v2_listing(view.observed.snapshot, handles=HANDLES)  # every row class `rest`
+    assert [(r.depth, r.text, r.handle) for r in inputs.listing_rows] == [
+        (r.depth, r.text, r.handle) for r in uncapped
+    ]
     go_row = next(r for r in inputs.listing_rows if '"Go"' in r.text)
     assert go_row.text.startswith("41 ")
     menu_row = next(r for r in inputs.listing_rows if '"Options"' in r.text)
