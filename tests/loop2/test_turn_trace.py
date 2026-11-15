@@ -482,24 +482,27 @@ def test_a_repaired_decision_is_written_with_its_rejection_tokens() -> None:
     assert (records[0]["repair"], records[0]["repair_tokens"]) == (True, ["schema"])
 
 
-def test_a_turn_rejected_after_its_repair_is_traced_with_both_attempts() -> None:
-    """The 3d `port_rejected` runs: the failed turn is written, with its repair round."""
+def test_each_rejected_turn_is_written_once_with_its_refusals_and_repair() -> None:
+    """[V2.68] (#437): a Decision still rejected after its repair is a refused turn and the task
+    goes on; each such turn is written once, with its refusal tokens and its repair round
+    (M3), numbered by turns, never by calls: a repaired turn is two calls (M4)."""
     failed = ControllerError(
         "rejected", ("id_not_listed",),
         record=DecideRecord("v", 2, True, True, rejections=("schema", "id_not_listed")),
     )  # fmt: skip
+    failed.usage = TokenUsage(100, 10)  # reported: the task goes on to its strike limit
     world = World([decision(act("wait"), first=True)])
     world.decide_raises = failed
     records: list[dict[str, Any]] = []  # Any: JSON
     outcome = run_task(task(), dataclasses.replace(world.ports(), turn_trace=_into(records)))
-    assert outcome.reason == "port_rejected"
-    assert len(records) == 1
-    assert (records[0]["repair"], records[0]["repair_tokens"]) == (
-        True,
-        ["schema", "id_not_listed"],
-    )
-    assert records[0]["decision"] is None
-    assert records[0]["turn"] == 1
+    turns = len(world.views)
+    assert turns >= 2
+    assert outcome.model_calls == 2 * turns
+    assert [r["turn"] for r in records] == list(range(1, turns + 1))
+    for record in records:
+        assert record["decision"] is None
+        assert record["refusals"] == [{"refusal": "id_not_listed", "detail": None}]
+        assert (record["repair"], record["repair_tokens"]) == (True, ["schema", "id_not_listed"])
 
 
 def test_the_decide_port_hands_the_repair_round_to_the_runner() -> None:
@@ -651,3 +654,65 @@ def test_a_turn_traced_before_the_task_ends_at_the_loop_top_is_not_written_again
     records = _records(world)
     assert len(world.dispatched) == 1
     assert [r["turn"] for r in records] == [1]
+
+
+# ---- #435 merge review: the turn is made once, at the loop top (M1, M2, M4) --------------------
+
+
+def _proven_at_turn_start(*others: SubgoalDoc) -> World:
+    """Turn 1 types the query; the results land after its watch, so turn 3's start read proves
+    the page subgoal before that turn's decide (`test_auto_proof_every_observation`'s shape)."""
+    from tests.loop2.test_auto_proof_every_observation import (  # noqa: PLC0415
+        RESULTS,
+        START,
+        SUBS,
+    )
+
+    return World(
+        [
+            Decision(
+                subgoals=[*SUBS, *others], actions=[act("type", target=FIELD.id, param="text")]
+            ),
+            Decision(stop="blocked"),
+            Decision(stop="blocked"),
+        ],
+        effects=[report("own_value")],
+        screen=START,
+        observations=[START, START, RESULTS],
+    )
+
+
+def test_a_proof_at_turn_start_stays_in_the_turn_that_then_decides() -> None:
+    """M1: the turn-start judgement's Proven line is on the turn it opened, and the decide that
+    follows adds to that turn, never replaces it."""
+    other = SubgoalDoc(id="s2", desc="other", params={"b": "shoes"}, closes="state")
+    records = _records(_proven_at_turn_start(other))
+    last = records[-1]
+    assert last["decision"] is not None
+    assert "proven:s0:results_with_url" in last["history"]
+    assert [r["turn"] for r in records] == [1, 2, 3]
+
+
+def test_a_task_closed_at_turn_start_writes_that_turn_with_no_decision() -> None:
+    """M2: the close raises before decide; the turn was made with its read, so it is written,
+    with no decision and its Proven line."""
+    world = _proven_at_turn_start()
+    records = _records(world)
+    assert len(world.views) == 2  # the third turn made no call
+    last = records[-1]
+    assert (last["turn"], last["decision"]) == (3, None)
+    assert "proven:s0:results_with_url" in last["history"]
+
+
+def test_a_repaired_decision_numbers_its_turn_not_its_calls() -> None:
+    """M4: a Decision that took a repair call is still one turn."""
+    world = World([decision(act("click", target=GO.id), first=True), Decision(stop="cannot")])
+    ports = world.ports()
+    real = ports.decide
+
+    def repaired(view: Any) -> Any:  # Any: the port's own TurnView and Decided
+        return dataclasses.replace(real(view), calls=2, rejections=("schema",))
+
+    records = _records(world, dataclasses.replace(ports, decide=repaired))
+    assert [r["turn"] for r in records] == [1, 2]
+    assert [r["decision"]["turn"] for r in records] == [1, 2]
