@@ -439,13 +439,18 @@ class ListingDelta:
 
 
 def listing_delta(before: Observed, after: Observed) -> ListingDelta | None:
-    """[V2.56] with the observer's own comparison (`_appeared_gone`); None when there is no
-    comparison: the top Document was replaced ([V2.55] (1)), or one side has one and the other
-    not."""
-    top_b, top_a = top_document(before.snapshot), top_document(after.snapshot)
-    if (top_b is None) != (top_a is None):
-        return None
-    if top_b is not None and top_a is not None and top_b.runtime_id != top_a.runtime_id:
+    """[V2.56] with the observer's own comparison (`_appeared_gone`). It compares only when each
+    side has exactly one top Document with the same non-empty RuntimeId, or neither side has a
+    Document; otherwise (a replaced Document, several roots, an unread RuntimeId, one side
+    without) there is no comparison (#359 review (3)) and None."""
+    tops_b, tops_a = _top_documents(before.snapshot), _top_documents(after.snapshot)
+    same_one = (
+        len(tops_b) == 1
+        and len(tops_a) == 1
+        and bool(tops_b[0].runtime_id)
+        and tops_b[0].runtime_id == tops_a[0].runtime_id
+    )
+    if not same_one and (tops_b or tops_a):
         return None
     _b, _a, b_by, a_by, appeared, _gone, _paired = _appeared_gone(before.snapshot, after.snapshot)
     states_read = before.snapshot.caps_read and after.snapshot.caps_read
@@ -601,6 +606,12 @@ def top_document(snapshot: Snapshot) -> Element | None:
 def _top_document(snapshot: Snapshot) -> Element | None:
     """As `loop._top_document`: the one Document with no Document above it; none or several is
     None."""
+    tops = _top_documents(snapshot)
+    return tops[0] if len(tops) == 1 else None
+
+
+def _top_documents(snapshot: Snapshot) -> list[Element]:
+    """Every Document with no Document above it, in tree order."""
     by_id = {e.id: e for e in snapshot.elements}
     tops = []
     for element in snapshot.elements:
@@ -611,7 +622,7 @@ def _top_document(snapshot: Snapshot) -> Element | None:
             parent = by_id.get(parent.parent_id) if parent.parent_id is not None else None
         if parent is None:
             tops.append(element)
-    return tops[0] if len(tops) == 1 else None
+    return tops
 
 
 def _rerendered_page(before: Observed, after: Observed, top_b: Element, top_a: Element) -> bool:

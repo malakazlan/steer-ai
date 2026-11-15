@@ -12,6 +12,7 @@ from steerai.loop2.controller import ROW_TOKENS, SYSTEM_RULES, VERBS, ListingRow
 from steerai.loop2.loop import TurnView
 from steerai.loop2.prompt_inputs import controller_inputs
 from steerai.loop2.runner import run_task
+from steerai.world.capabilities import TOKENS as CAPABILITY_TOKENS
 from steerai.world.effects import listing_delta
 from steerai.world.elements import Element
 from tests.loop2.world_fakes import (
@@ -181,6 +182,7 @@ def test_an_element_seen_last_turn_is_never_new_even_if_it_was_cut() -> None:
         effects=[report("content_changed")],
     )
     run_task(task(), world.ports())
+    assert ITEM.id not in controller_inputs(world.views[0], goal="g", cap=3).listed_ids  # cut
     assert world.views[1].new == frozenset()
 
 
@@ -193,5 +195,59 @@ def _legend_tokens() -> set[str]:
     return {t for t in quoted if " " not in t and t not in VERBS}
 
 
-def test_every_token_the_legend_names_is_one_the_listing_emits_and_the_reverse() -> None:
-    assert _legend_tokens() == set(ROW_TOKENS)
+def _every_token_row(
+    i: int, *, enabled: bool = True, secure: bool = False, offscreen: bool = False
+) -> Element:
+    return Element(id=i, depth=1, role="Button", name=f"Row {i}", box=(0, i, 9, i + 8),
+                   runtime_id=(9, i), parent_id=DOC.id, enabled=enabled, secure=secure,
+                   offscreen=offscreen)  # fmt: skip
+
+
+def test_the_rows_emit_exactly_the_tokens_the_legend_names() -> None:
+    """#359 review (4): rendered rows over one row per flag and capability token, a
+    secure_unread field, a focused, a new and a changed row; never the constant alone, so a
+    renamed token fails here both ways."""
+    flagged = [
+        _every_token_row(101, enabled=False),
+        _every_token_row(102, secure=True),
+        _every_token_row(103, offscreen=True),
+    ]
+    capped = [
+        dataclasses.replace(_every_token_row(110 + n), caps=(token,))
+        for n, token in enumerate(CAPABILITY_TOKENS)
+    ]
+    unread, focused, new, changed = (_every_token_row(i) for i in range(201, 205))
+    rows = [DOC, *flagged, *capped, unread, focused, new, changed]
+    shown = dataclasses.replace(snapshot(rows), unread_secure=frozenset({unread.id}))
+    listing = v2_listing(
+        shown,
+        handles={e.id: e.id for e in rows},
+        focus=focused.runtime_id,
+        new=frozenset({new.runtime_id}),
+        changed=frozenset({changed.runtime_id}),
+    )
+    emitted = {token for row in listing for token in row.text.rsplit("]", 1)[1].split()}
+    assert emitted == set(ROW_TOKENS) == _legend_tokens()
+
+
+# ---- #359 review (3): a comparison only under one same top Document, or none on either side ----
+
+
+def test_several_top_documents_give_no_comparison() -> None:
+    other = dataclasses.replace(DOC, id=60, runtime_id=(9, 60))
+    page = [*PAGE, other]
+    assert listing_delta(observed(page), observed([*page, ITEM])) is None
+
+
+def test_a_top_document_without_a_runtime_id_on_both_sides_gives_no_comparison() -> None:
+    blank = dataclasses.replace(DOC, runtime_id=())
+    page = [blank, *PAGE[1:]]
+    assert listing_delta(observed(page), observed([*page, ITEM])) is None
+
+
+def test_no_document_on_either_side_still_compares() -> None:
+    pane = dataclasses.replace(DOC, role="Pane")
+    page = [pane, *PAGE[1:]]
+    delta = listing_delta(observed(page), observed([*page, ITEM]))
+    assert delta is not None
+    assert delta.new == frozenset({ITEM.runtime_id})
