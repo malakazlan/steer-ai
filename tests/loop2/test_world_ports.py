@@ -220,11 +220,17 @@ class Screen:
         return dataclasses.replace(now, snapshot=seen.snapshot)
 
 
-def _ports(screen: Screen, clock: Clock, interrupted: object = None) -> WorldPorts:
+def _never() -> str | None:
+    return None
+
+
+def _ports(
+    screen: Screen, clock: Clock, interrupted: Callable[[], str | None] = _never
+) -> WorldPorts:
     return WorldPorts(
         poll_read=screen.poll_read,
         full_from=screen.full_from,
-        interrupted=(lambda: None) if interrupted is None else interrupted,  # type: ignore[arg-type]
+        interrupted=interrupted,
         clock=clock,
         pause=clock.pause,
         touches=FirstTouches(),
@@ -352,6 +358,7 @@ class Live:
         self.selected: dict[object, bool | None] = {}
         self.expanded: dict[object, int | None] = {}
         self.fail: BaseException | None = None
+        self.secure: dict[object, bool | None] = {}
         self.calls: list[tuple[str, object]] = []
 
     def _log(self, what: str, handle: object) -> None:
@@ -359,9 +366,10 @@ class Live:
         if self.fail is not None:
             raise self.fail
 
-    def identity(self, handle: object) -> tuple[str, str]:
+    def identity(self, handle: object) -> tuple[str, str, bool | None]:
         self.calls.append(("identity", handle))
-        return self.ids[handle]
+        role, name = self.ids[handle]
+        return role, name, self.secure.get(handle, False)
 
     def value(self, handle: object) -> str | None:
         self._log("value", handle)
@@ -646,8 +654,12 @@ def test_a_quiet_window_needs_two_reads_that_span_it(kind: str) -> None:
     before = ports.observe()
     screen.read_s = 0.7
     screen.reads.clear()
+    start = clock.now
     ports.watch(before, _class_dispatch(kind))
     assert len(screen.reads) >= 2
+    times = [at for at, _ in screen.reads]
+    assert times[-1] - times[0] >= WorldTimes().quiet_s  # the reads span the window
+    assert times[0] > start  # read times are completions, after the watch began
 
 
 def _changes(old: Observed, new: Observed) -> bool:
@@ -706,3 +718,107 @@ def test_the_watch_is_told_the_typed_text() -> None:
     screen.change_at = clock.now + 0.1
     watched = ports.watch(before, _dispatch("type", FIELD, param="text"))
     assert "title" in watched.report.carriers
+
+
+# ---- #348 review: a kill ends every hold within one step ---------------------------------------
+
+
+class LatchAt:
+    """`interrupted()` that reports `killed` once the fake clock passes `at` (the kill key)."""
+
+    def __init__(self, clock: Clock, at: float) -> None:
+        self.clock = clock
+        self.at = at
+
+    def __call__(self) -> str | None:
+        return "killed" if self.clock.now >= self.at else None
+
+
+def _unstable() -> Observed:
+    return dataclasses.replace(observed(), snapshot=snapshot(PAGE, stable=False))
+
+
+def test_a_kill_during_the_first_touch_hold_ends_it_within_one_step() -> None:
+    clock = Clock()
+    screen = Screen(_unstable(), clock)  # never quiet: the first touch would hold to its deadline
+    latch = LatchAt(clock, clock.now + 0.3)
+    ports = _ports(screen, clock, latch)
+    with pytest.raises(PortInterrupted):
+        ports.observe()
+    assert clock.now - latch.at <= KILL_POLL_S + 1e-9
+
+
+def test_a_kill_during_settle_ends_it_within_one_step() -> None:
+    clock = Clock()
+    screen = Screen(_unstable(), clock)
+    ports = _ports(screen, clock)
+    first = screen.full_from(screen.poll_read())
+    latch = LatchAt(clock, clock.now + 0.3)
+    ports = _ports(screen, clock, latch)
+    with pytest.raises(PortInterrupted):
+        ports.settle(first, 4.0)
+    assert clock.now - latch.at <= KILL_POLL_S + 1e-9
+
+
+@pytest.mark.parametrize("kind", ["plain", "trigger", "submit"])
+def test_a_kill_during_a_watch_ends_it_within_one_step(kind: str) -> None:
+    clock = Clock()
+    screen = Screen(observed(), clock)
+    before = _ports(screen, clock).observe()
+    latch = LatchAt(clock, clock.now + 0.3)
+    ports = _ports(screen, clock, latch)
+    with pytest.raises(PortInterrupted):
+        ports.watch(before, _class_dispatch(kind))
+    assert clock.now - latch.at <= KILL_POLL_S + 1e-9
+
+
+# ---- #348 review: the live reads resolve by RuntimeId, never the snapshot id ------------------
+
+
+def test_a_read_resolves_by_runtime_id_never_the_snapshot_id() -> None:
+    """`last` holds an element with FIELD's snapshot id, role and name but another RuntimeId:
+    it is not FIELD, so nothing is read."""
+    live = Live()
+    other = dataclasses.replace(FIELD, runtime_id=(9, 999))
+    page = _live_page()
+    swapped = [other if e.id == FIELD.id else e for e in page.snapshot.elements]
+    page = dataclasses.replace(page, snapshot=dataclasses.replace(page.snapshot, elements=swapped))
+    live.ids["h2"] = ("Edit", "Search")
+    live.values["h2"] = "red shoes"
+    ports = _reader(live, page)
+    assert ports.read_value(FIELD) is None
+    assert live.calls == []
+
+
+@pytest.mark.parametrize("secure", [True, None])
+def test_a_field_that_turned_secure_since_the_listing_is_not_read(secure: bool | None) -> None:
+    """The live identity read also reads IsPassword: a field that is a password now, or whose
+    flag cannot be read, is never read (fail closed), whatever the last observation said."""
+    live = Live()
+    live.ids["h2"] = ("Edit", "Search")
+    live.values["h2"] = "hunter2"
+    live.secure["h2"] = secure
+    traced: list[str] = []
+    assert _reader(live, _live_page(), traced).read_value(FIELD) is None
+    assert ("value", "h2") not in live.calls
+    assert traced == ["read_secure_live"]
+
+
+# ---- [V2.49]: a wait with no Document is scoped to the whole window ----------------------------
+
+
+def test_a_wait_in_a_window_with_no_document_sees_the_whole_window() -> None:
+    """A native window has no Document: the wait falls back to the whole window, so a change
+    anywhere in it is a change (it ends early), as the scope rule says for native apps."""
+    native = [e for e in PAGE if e.role != "Document"]
+    clock = Clock()
+    screen = Screen(observed(native), clock)
+    ports = _ports(screen, clock)
+    before = ports.observe()
+    extra = element(77, "Text", "Saved", (9, 77), 0)
+    screen.changed = observed([*native, extra])
+    screen.change_at = clock.now + 0.3
+    start = clock.now
+    watched = ports.watch(before, _dispatch("wait", None))
+    assert "none" not in watched.report.classes
+    assert clock.now - start < WAIT_S

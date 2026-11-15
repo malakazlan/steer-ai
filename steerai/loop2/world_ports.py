@@ -46,8 +46,8 @@ class LiveElements(Protocol):
     identity read). A COM failure raises a `SteerError` with its code; a missing pattern reads
     None."""
 
-    def identity(self, handle: Any) -> tuple[str, str]:  # Any: a COM element pointer
-        """The element's live control-type role and name."""
+    def identity(self, handle: Any) -> tuple[str, str, bool | None]:  # Any: a COM pointer
+        """The element's live control-type role, name and IsPassword (None: not read)."""
         ...
 
     def value(self, handle: Any) -> str | None: ...  # Any: a COM element pointer
@@ -268,6 +268,25 @@ class WorldPorts:
         """Resolve as `act` does (packet 2.7): the one element with this RuntimeId on the last
         observation handed out, with its live handle, never a secure or unread-secure field, and
         its live role and folded name the ones the runner listed. None: do not read."""
+        handle = self._listed_handle(element)
+        if handle is None:
+            return None
+        identity = self._read(lambda: self._live.identity(handle))
+        if identity is None:
+            return None
+        role, name, secret = identity
+        if secret is not False:  # a password now, or unread: never read it (fail closed)
+            self._trace("read_secure_live")
+            return None
+        if (role, normalise_name(name)) != (element.role, normalise_name(element.name)):
+            self._trace("read_identity_changed")
+            return None
+        return handle
+
+    def _listed_handle(self, element: Element) -> Any:  # Any: a COM element pointer, or None
+        """The live handle of the one element with this RuntimeId on the last observation;
+        None when there is none, more than one, no live handles, or a secure or unread-secure
+        field ([V2.26] (2): never read a field that may be a password)."""
         last = self.last
         if last is None or not element.runtime_id or element.secure:
             return None
@@ -277,13 +296,8 @@ class WorldPorts:
             return None
         found = snapshot.elements[matches[0]]
         if found.secure or found.id in snapshot.unread_secure:
-            return None  # [V2.26] (2): never read a field that may be a password
-        handle = snapshot.handles[matches[0]]
-        role, name = self._read(lambda: self._live.identity(handle)) or ("", "")
-        if (role, normalise_name(name)) != (element.role, normalise_name(element.name)):
-            self._trace("read_identity_changed")
             return None
-        return handle
+        return snapshot.handles[matches[0]]
 
     def _read(self, read: Callable[[], T]) -> T | None:
         """One live read; a COM failure (a `SteerError` with its taxonomy code) is unread and
