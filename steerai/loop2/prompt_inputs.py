@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Final
+from typing import Any, Final
 
 from steerai.loop2.controller import (
     TOKENS_PER_BYTE,
@@ -122,7 +122,13 @@ def _subgoal_line(subgoal: Subgoal) -> str:
     return f"{head}; {params}" if params else head
 
 
-def make_decide(calls: DecideCalls, *, goal: str, task_fence: str) -> Callable[[TurnView], Decided]:
+def make_decide(
+    calls: DecideCalls,
+    *,
+    goal: str,
+    task_fence: str,
+    on_rejected: Callable[[dict[str, Any]], None] | None = None,
+) -> Callable[[TurnView], Decided]:
     """`Ports.decide` for one task: each turn's inputs through `controller.decide`, with the
     turn's summed usage. `task_fence` is fixed for the task, so the stable blocks stay
     byte-identical across calls; the screen fence is fresh per call (the controller's).
@@ -130,9 +136,11 @@ def make_decide(calls: DecideCalls, *, goal: str, task_fence: str) -> Callable[[
     input tokens are held against the bound of the bytes it sent, and a bound that was low is
     flagged and tightens the ratio for the rest of the task (`calibrated`)."""
     per_byte = TOKENS_PER_BYTE
+    turns = 0
 
     def port(view: TurnView) -> Decided:
-        nonlocal per_byte
+        nonlocal per_byte, turns
+        turns += 1
         inputs = controller_inputs(view, goal=goal)
         fitted: list[tuple[frozenset[int], int]] = []
         sent: list[int] = []
@@ -170,6 +178,8 @@ def make_decide(calls: DecideCalls, *, goal: str, task_fence: str) -> Callable[[
                     tokens_per_byte=per_byte,
                     count_exact=exact,
                     on_sent=sent.append,
+                    on_rejected=on_rejected,
+                    turn=turns,
                 )
             )
         except ControllerError as failed:

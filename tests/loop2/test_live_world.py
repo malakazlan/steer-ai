@@ -148,6 +148,7 @@ class Platform:
         self.protected: list[bytes] = []
         self.flush_raises = False
         self.prompts: list[list[str]] = []
+        self.decision_doc: dict[str, Any] | None = None
         self.counted = 0
         self.count_answer: int | None = None
         self.click_named: str | None = None
@@ -296,7 +297,7 @@ class Platform:
 
     def reply(self, _system: list[str], blocks: list[str]) -> Reply:
         self.prompts.append(blocks)
-        decision: dict[str, Any] = {"stop": "cannot"}
+        decision: dict[str, Any] = self.decision_doc or {"stop": "cannot"}
         if len(self.prompts) == 1 and self.click_named is not None:
             pattern = re.compile(rf'^\s*(\d+) Button "{self.click_named}"', re.M)
             found = pattern.search(blocks[2])

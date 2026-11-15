@@ -396,6 +396,7 @@ RUN_FACTS: Final = (
     "stale_observations",
     "unread_automation_ids",
     "url_reads",
+    "partial_page_calls",
     "refusals",
     "counts",
 )
@@ -488,6 +489,7 @@ def _result(
         "stale_observations": outcome.stale_observations,
         "unread_automation_ids": outcome.unread_automation_ids,
         "url_reads": dict(outcome.url_reads),
+        "partial_page_calls": outcome.partial_page_calls,  # [V2.35]
         "refusals": dict(outcome.refusals),  # [V2.46]: by closed token
         "counts": {  # [V2.63]: every count the rulings asked for, collected before stage 2
             "second_toggles": outcome.second_toggles,
