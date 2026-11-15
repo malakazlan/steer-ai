@@ -417,9 +417,9 @@ class _Run:
         self.focus_losses = 0
         """[V2.43] (2): focus moved off a press's target after the listing showed it there."""
         self.unread_aids = 0
+        """#301: unread automation ids over every observation taken in (`_in_domain`)."""
         self.url_reads: dict[UrlRead, int] = dict.fromkeys(URL_READS, 0)
         """Stage 2 plan §5: every observation taken in, by why its URL is what it is."""
-        """#301: unread automation ids over every observation taken in (`_in_domain`)."""
 
     # ---- the outcome ----------------------------------------------------------------------
 
