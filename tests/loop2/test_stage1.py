@@ -27,6 +27,7 @@ from steerai.loop2.stage1 import (
     precheck,
     run_child,
     run_task_runs,
+    wait_for_exit,
     wait_until_ready,
 )
 from steerai.loop2.task import Budgets
@@ -580,27 +581,118 @@ def test_the_harness_waits_for_the_person_before_a_run_is_not_started() -> None:
     readings = iter(["person_active", "person_active", None])
     got = wait_until_ready(
         lambda: next(readings), sleep=lambda s: clock.__setitem__("t", clock["t"] + s),
-        clock=lambda: clock["t"], bound_s=120.0,
+        clock=lambda: clock["t"],
     )  # fmt: skip
     assert got is None
-    assert 0 < clock["t"] < 120.0
+    assert 0 < clock["t"] < stage1.IDLE_WAIT_S
 
 
 def test_a_person_still_at_the_keys_after_the_bound_refuses() -> None:
     clock = {"t": 0.0}
     got = wait_until_ready(
         lambda: "person_active", sleep=lambda s: clock.__setitem__("t", clock["t"] + s),
-        clock=lambda: clock["t"], bound_s=120.0,
+        clock=lambda: clock["t"],
     )  # fmt: skip
     assert got == "person_active"
-    assert clock["t"] >= 120.0
+    assert clock["t"] >= stage1.IDLE_WAIT_S
 
 
-def test_low_memory_is_not_waited_out() -> None:
-    slept: list[float] = []
-    got = wait_until_ready(lambda: "low_memory", sleep=slept.append, clock=lambda: 0.0,
-                           bound_s=120.0)  # fmt: skip
-    assert (got, slept) == ("low_memory", [])
+# ---- low memory is waited out like the person (the 3d shakedown's 20 low_memory refusals) -------
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.t = 0.0
+        self.slept: list[float] = []
+
+    def sleep(self, s: float) -> None:
+        self.slept.append(s)
+        self.t += s
+
+
+def test_memory_that_recovers_inside_the_bound_starts_the_run() -> None:
+    clock = _Clock()
+    readings = iter(["low_memory", "low_memory", "low_memory", None])
+    got = wait_until_ready(lambda: next(readings), sleep=clock.sleep, clock=lambda: clock.t)
+    assert got is None
+    assert clock.slept == [stage1.MEMORY_POLL_S] * 3
+
+
+def test_memory_still_low_past_its_bound_is_a_run_not_started() -> None:
+    clock = _Clock()
+    got = wait_until_ready(lambda: "low_memory", sleep=clock.sleep, clock=lambda: clock.t)
+    assert got == "low_memory"
+    assert stage1.MEMORY_WAIT_S <= clock.t < stage1.MEMORY_WAIT_S + stage1.MEMORY_POLL_S + 1e-9
+
+
+def test_the_floor_stays_the_users_rule() -> None:
+    assert stage1.FLOOR_MB == 4096
+    assert (stage1.MEMORY_WAIT_S, stage1.MEMORY_POLL_S) == (60.0, 2.0)
+
+
+def test_a_kill_during_the_memory_wait_ends_it_and_is_never_a_run_not_started() -> None:
+    checks: list[int] = []
+
+    def check() -> str:
+        checks.append(1)
+        return "low_memory"
+
+    def killed(_s: float) -> None:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        wait_until_ready(check, sleep=killed, clock=lambda: 0.0)
+    assert checks == [1]
+
+
+def test_an_unknown_refusal_is_not_waited_for() -> None:
+    clock = _Clock()
+    assert wait_until_ready(lambda: "other", sleep=clock.sleep, clock=lambda: clock.t) == "other"
+    assert clock.slept == []
+
+
+# ---- the controls' own Chrome processes exit before the first task ------------------------------
+
+
+def test_the_first_task_waits_until_the_controls_processes_have_exited() -> None:
+    clock = _Clock()
+    alive = iter([{11, 12, 99}, {12, 99}, {99}])
+    left = wait_for_exit({11, 12}, alive=lambda: next(alive), sleep=clock.sleep,
+                         clock=lambda: clock.t)  # fmt: skip
+    assert left == set()
+    assert clock.slept == [stage1.EXIT_POLL_S] * 2
+
+
+def test_processes_still_alive_past_the_bound_are_returned_never_killed() -> None:
+    clock = _Clock()
+    left = wait_for_exit({11}, alive=lambda: {11}, sleep=clock.sleep, clock=lambda: clock.t)
+    assert left == {11}
+    assert clock.t >= stage1.EXIT_WAIT_S
+
+
+def test_a_kill_during_the_exit_wait_ends_it() -> None:
+    def killed(_s: float) -> None:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        wait_for_exit({11}, alive=lambda: {11}, sleep=killed, clock=lambda: 0.0)
+
+
+def test_the_controls_record_their_chrome_tree_before_it_is_stopped() -> None:
+    """The live wiring, pinned: `run_control` hands the harness its Chrome's pid before
+    `stop_chrome`, and `main` waits for the recorded tree before the first task."""
+    source = Path(stage1.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    names = {n.func.id for n in ast.walk(main) if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Name)}  # fmt: skip
+    assert "wait_for_exit" in names
+    from steerai.probes import instant_search  # noqa: PLC0415 - the probe's own source
+
+    probe = ast.parse(Path(instant_search.__file__).read_text(encoding="utf-8"))
+    control = next(n for n in probe.body
+                   if isinstance(n, ast.FunctionDef) and n.name == "run_control")  # fmt: skip
+    assert "on_stop" in {a.arg for a in control.args.kwonlyargs}
 
 
 def test_an_unfinished_runs_unknown_cache_counters_are_not_a_cache_failure() -> None:

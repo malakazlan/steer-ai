@@ -22,7 +22,7 @@ import shutil
 import socket
 import tempfile
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, get_args
@@ -263,11 +263,18 @@ def _press_enter(cdp: CdpSession) -> None:
         )
 
 
-def run_control(variant: Variant, *, slow_delay_ms: int = SLOW_DELAY_MS) -> tuple[Entry, ...]:
+def run_control(
+    variant: Variant,
+    *,
+    slow_delay_ms: int = SLOW_DELAY_MS,
+    on_stop: Callable[[int], None] | None = None,
+) -> tuple[Entry, ...]:
     """Drive one variant to its intended end state over DevTools in a throwaway profile, and
     return the page's log. (a), (b): type. (c): type, Enter, then the button when there is one.
     (d): type, Enter at once, then wait past the delay. The session is on our own tab with its
-    navigation committed (`layer_b._ours`, LB-03), and the log is read only from our page."""
+    navigation committed (`layer_b._ours`, LB-03), and the log is read only from our page.
+    `on_stop` hears the browser's pid just before it is stopped (the stage 1 harness waits for
+    that tree to exit before its first task)."""
     from steerai.probes.chrome_a11y import (  # noqa: PLC0415 - live probes only
         CHROME_DEFAULT,
         launch_chrome,
@@ -292,6 +299,8 @@ def run_control(variant: Variant, *, slow_delay_ms: int = SLOW_DELAY_MS) -> tupl
             finally:
                 cdp.close()
         finally:
+            if on_stop is not None:
+                on_stop(proc.pid)
             stop_chrome(proc, tmp / "profile")
             shutil.rmtree(tmp, ignore_errors=True)
     return parse_log(raw)
