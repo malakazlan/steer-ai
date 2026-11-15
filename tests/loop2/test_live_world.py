@@ -170,6 +170,8 @@ class Platform:
         self._init_window_state()
         self.show_error: Exception | None = None
         self.on_show: Any = None  # Any: a test's hook, called with each command
+        self.move_error: Exception | None = None
+        self.on_move: Any = None  # Any: a test's hook, called with each move's dx
 
     def _init_window_state(self) -> None:
         """[V2.64] the bound window's start: its page, its placement and the nudges seen."""
@@ -264,7 +266,11 @@ class Platform:
 
     def move_window_by(self, hwnd: int, dx: int) -> None:
         assert hwnd == 16
+        if self.move_error is not None:
+            raise self.move_error
         self._nudged(f"move:{dx:+d}")
+        if self.on_move is not None:
+            self.on_move(dx)
         if dx < 0:
             self._page_back()
 

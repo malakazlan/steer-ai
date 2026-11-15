@@ -79,8 +79,9 @@ COINIT_MULTITHREADED = 0x0
 DPAPI_PROBE = b"steer-v2-dpapi-probe"
 ShowCommand = Literal["minimize"]
 NudgeKind = Literal["move1px", "minrestore"]
-DEFAULT_NUDGE: NudgeKind = "minrestore"
-"""[V2.64] (5): the gentle `move1px` goes ahead of it only once the evidence run shows it works."""
+DEFAULT_NUDGE: NudgeKind = "move1px"
+"""[V2.64] (5): the gentle nudge first; it worked on 10 of 10 normal and snapped windows in the
+evidence run (2026-11-15, Chrome 157). A maximised window still gets `minrestore`."""
 SW_SHOWNORMAL = 1
 DOCUMENT_WAIT_S = 2.0
 """[V2.64] (1): how long the start waits after the raise for the page before the nudge (one
@@ -232,7 +233,10 @@ class Platform(Protocol):
 @dataclass(frozen=True, slots=True)
 class WindowPlacement:
     """[V2.64] (3) a window's placement (WINDOWPLACEMENT): its show state and its normal,
-    minimised and maximised positions, saved before a nudge and set back after it."""
+    minimised and maximised positions, saved before a nudge and set back after it. The set-back
+    ignores `min_pos` (no WPF_SETMINPOSITION), so a first minimise can leave it changed from the
+    unset -1,-1 to the parking point (measured 2026-11-15); show state, normal position and rect
+    come back the same."""
 
     show_cmd: int
     normal: tuple[int, int, int, int]
@@ -580,8 +584,8 @@ class LiveWorld:
 
     def _nudge(self, hwnd: int, nudge: NudgeKind) -> None:
         """[V2.64] one nudge of our own bound window, the last resort. `move1px` (a one-pixel
-        move and back) applies to a window in its normal state; any other, and every window when
-        `minrestore` is chosen, is minimised then put back with its exact placement
+        move and back, the default) applies to a window in its normal state; any other, and every
+        window when `minrestore` is chosen, is minimised then put back with its placement
         (GetWindowPlacement before, SetWindowPlacement after) and, for a normal window that the
         placement moved (a snapped window's placement holds its pre-snap rect), its exact rect.
         The putting back runs whatever happens after the first call. Recorded in

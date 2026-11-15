@@ -1,9 +1,11 @@
 """[V2.64] the start's nudge, the last resort ([V2.62] diagnosis 2026-11-15, Chrome 157): after
 the raise, the start waits a bounded time for the page. Only a window still showing a browser
-frame with no Document while in front and uncovered is nudged, once; its exact placement is put
+frame with no Document while in front and uncovered is nudged, once; its placement is put
 back. If the page is still missing, the task does not start (`page_hidden`). The gentle nudge (a
-one-pixel move and back) applies to a window that is neither maximised nor minimised; any other
-falls back to minimise and restore."""
+one-pixel move and back) is the default for a window in its normal state (normal or snapped:
+10 of 10 in the evidence run); any other falls back to minimise and restore. The restore can
+change only the placement's minimised position (unset -1,-1 to the parking point, measured
+2026-11-15), so the put-back is checked on show state, normal position and rect."""
 
 from __future__ import annotations
 
@@ -109,8 +111,8 @@ def test_covered_after_the_raise_refuses_before_any_nudge() -> None:
 def test_a_frame_only_window_in_front_is_nudged_once_after_the_wait() -> None:
     platform = _platform(blank_reads=FOREVER)
     world = _start(platform)
-    assert platform.nudges == ["minimize", "placement"]
-    assert world.front_nudged == "minrestore"
+    assert platform.nudges == ["move:+1", "move:-1"]
+    assert world.front_nudged == "move1px"
     waited = platform.read_times[platform.nudge_read_index - 1] - platform.read_times[0]
     assert waited >= DOCUMENT_WAIT_S - 0.5  # the bounded wait came first
 
@@ -127,7 +129,7 @@ def test_a_normal_window_moved_by_the_restore_goes_back_to_its_exact_rect() -> N
     platform = _platform(blank_reads=FOREVER)
     platform.rect_now = (0, 0, 960, 1040)
     platform.rect_after_placement = (40, 40, 1240, 940)
-    _start(platform)
+    _start(platform, nudge="minrestore")
     assert platform.rects_set == [(0, 0, 960, 1040)]
 
 
@@ -135,7 +137,7 @@ def test_the_page_still_missing_after_the_one_nudge_refuses_the_start() -> None:
     platform = _platform(blank_reads=FOREVER, page_after_nudge=False)
     refused = _refused(platform)
     assert (refused.code, refused.message) == (ErrorCode.FOCUS_LOST, "page_hidden")
-    assert platform.nudges == ["minimize", "placement"]  # exactly one nudge, no loop
+    assert platform.nudges == ["move:+1", "move:-1"]  # exactly one nudge, no loop
 
 
 # ---- the gentle nudge -----------------------------------------------------------------------
@@ -156,6 +158,42 @@ def test_the_gentle_nudge_falls_back_to_minimise_and_restore_on_a_maximised_wind
     assert world.front_nudged == "minrestore"
 
 
+def test_the_default_nudge_is_the_gentle_one_on_a_normal_window() -> None:
+    platform = _platform(blank_reads=FOREVER)
+    world = _start(platform)
+    assert platform.nudges == ["move:+1", "move:-1"]
+    assert world.front_nudged == "move1px"
+
+
+def test_the_default_nudge_on_a_maximised_window_is_minimise_and_restore() -> None:
+    platform = _platform(blank_reads=FOREVER)
+    platform.placement = MAXIMIZED
+    world = _start(platform)
+    assert platform.nudges == ["minimize", "placement"]
+    assert world.front_nudged == "minrestore"
+
+
+def test_a_kill_during_the_gentle_nudge_still_moves_the_window_back() -> None:
+    platform = _platform(blank_reads=FOREVER)
+
+    def killed_after_the_move(dx: int) -> None:
+        if dx > 0:
+            platform.monitor.killed = True
+
+    platform.on_move = killed_after_the_move
+    world = LiveWorld(_config(), platform)
+    world.bring_to_front()
+    world.close()
+    assert platform.nudges == ["move:+1", "move:-1"]
+
+
+def test_a_gentle_nudge_move_that_fails_refuses_the_start() -> None:
+    platform = _platform(blank_reads=FOREVER)
+    platform.move_error = OSError("SetWindowPos failed")
+    refused = _refused(platform)
+    assert (refused.code, refused.message) == (ErrorCode.FOCUS_LOST, "nudge_refused")
+
+
 # ---- the switch and failures ----------------------------------------------------------------
 
 
@@ -170,6 +208,7 @@ def test_a_kill_during_the_wait_stops_the_start_without_a_nudge() -> None:
 
 def test_a_kill_during_the_nudge_still_puts_the_placement_back() -> None:
     platform = _platform(blank_reads=FOREVER)
+    platform.placement = MAXIMIZED
 
     def killed_after_minimise(command: str) -> None:
         if command == "minimize":
@@ -184,6 +223,7 @@ def test_a_kill_during_the_nudge_still_puts_the_placement_back() -> None:
 
 def test_a_nudge_call_that_fails_refuses_the_start() -> None:
     platform = _platform(blank_reads=FOREVER)
+    platform.placement = MAXIMIZED
     platform.show_error = OSError("ShowWindow failed")
     refused = _refused(platform)
     assert (refused.code, refused.message) == (ErrorCode.FOCUS_LOST, "nudge_refused")
