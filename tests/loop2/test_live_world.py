@@ -1083,6 +1083,7 @@ def test_the_report_has_every_counter() -> None:
         "late_sink_failures": 0,
         "debug_failure": None,
         "monitor_lost": 0,
+        "front_nudged": None,
         "hook_events": 0,
         "hook_latency_p95_ms": None,
         "hook_latency_p99_ms": None,

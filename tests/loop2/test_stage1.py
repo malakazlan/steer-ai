@@ -526,7 +526,7 @@ def test_a_world_start_refusal_on_a_never_done_task_is_a_fail_not_a_pass() -> No
     refusal = {"task_id": "t", "status": "blocked", "code": "gate_blocked",
                "detail": "steer_already_running"}  # fmt: skip
     got = classify(NEVER, _record(refusal, check=False))
-    assert (got.verdict, got.reason) == ("fail", "start_refused:gate_blocked")
+    assert (got.verdict, got.reason) == ("fail", "start_refused:gate_blocked:steer_already_running")
 
 
 # ---- #366 re-review: the re-run loop and the wait for the person, pure -------------------------
