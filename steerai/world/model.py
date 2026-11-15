@@ -18,6 +18,7 @@ import json
 import time
 import unicodedata
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -74,6 +75,9 @@ class Snapshot:
     unread_automation_id: frozenset[int] = frozenset()
     """[V2.26] (2): ids of the elements whose automation id was not read (recorded and counted;
     not acted on, issue #301)."""
+    wall_at: float | None = None
+    """[V2.40] Q2: the wall-clock reading when `taken_at` comes from an injected (monotonic)
+    clock, for anything persisted or shown; None when `taken_at` is already wall time (v1)."""
 
     @property
     def unread_automation_id_count(self) -> int:
@@ -143,7 +147,7 @@ def snapshot_to_json(snapshot: Snapshot) -> str:
         "hwnd": snapshot.hwnd,
         "process": snapshot.process,
         "title": snapshot.title,
-        "taken_at": snapshot.taken_at,
+        "taken_at": snapshot.taken_at if snapshot.wall_at is None else snapshot.wall_at,
         "node_count": snapshot.node_count,
         "stable": snapshot.stable,
         "minimized": snapshot.minimized,
@@ -301,8 +305,13 @@ def _identity_set(tree: TreeSnapshot) -> frozenset[tuple[int, ...]]:
 
 
 class WorldModel:
-    def __init__(self, client: UiaClient) -> None:
+    def __init__(self, client: UiaClient, *, clock: Callable[[], float] | None = None) -> None:
+        """`clock` stamps `Snapshot.taken_at` ([V2.40] Q2): the v2 adapter passes its one
+        monotonic clock, so a snapshot's age is read on the clock that ages it at admission. A
+        monotonic reading is for durations and freshness only: the snapshot then also carries
+        `wall_at`, which is what is persisted. Without a clock, wall time, as v1 has it."""
         self._client = client
+        self._clock = clock
 
     def observe(  # noqa: PLR0913 - keyword-only tuning knobs, each with a measured default
         self,
@@ -365,7 +374,8 @@ class WorldModel:
             pid=pid,
             process=process_name(pid) if pid else "",
             title=window_title(hwnd),
-            taken_at=time.time(),
+            taken_at=time.time() if self._clock is None else self._clock(),
+            wall_at=None if self._clock is None else time.time(),
             elements=elements_from_nodes(tree.nodes),
             node_count=len(tree.nodes),
             stable=stable,
