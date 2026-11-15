@@ -22,6 +22,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
+from steerai.errors import SteerError
 from steerai.loop2 import controller
 from steerai.loop2.controller import (
     AUDIT_PROMPT_VERSION,
@@ -39,7 +40,6 @@ from steerai.loop2.controller import (
     prompt_tokens,
     v2_listing,
 )
-from steerai.errors import SteerError
 from steerai.loop2.decide_port import MODEL_REFUSAL, DecideCalls
 from steerai.loop2.history import HistoryRecord
 from steerai.loop2.listing import LISTING_CAP, Listing, select_listing, words_of

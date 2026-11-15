@@ -38,7 +38,7 @@ from tests.loop2.test_live_world import _world
 from tests.loop2.world_fakes import FIELD, GO, World, act, report, task
 
 NEWLINE = chr(10)
-INTAKE_FIXED = "unmeasured"
+INTAKE_FIXED = "686561ec64eb27386ccca13e12958475ff88fae32e9acf97f4c6c711667dfdeb"
 """V4: sha256 of the intake's rules and schema blocks, joined by newlines (filled from a run)."""
 AUDIT_FIXED = "unmeasured"
 """V4: sha256 of the audit's rules and schema blocks, joined by newlines (filled from a run)."""
@@ -336,8 +336,8 @@ def test_each_judges_fixed_blocks_are_pinned_with_its_version() -> None:
     intake, _ = build_intake_prompt("g", (), task_fence="taskfence01")
     audit, _ = build_audit_prompt("g", (), "w", [], task_fence="taskfence01",
                                   screen_fence="scrfence01")  # fmt: skip
-    assert (INTAKE_PROMPT_VERSION, _fixed(intake)) == ("intake-1", INTAKE_FIXED)
-    assert (controller.AUDIT_PROMPT_VERSION, _fixed(audit)) == ("audit-3", AUDIT_FIXED)
+    pinned = (INTAKE_PROMPT_VERSION, _fixed(intake), controller.AUDIT_PROMPT_VERSION, _fixed(audit))
+    assert pinned == ("intake-1", INTAKE_FIXED, "audit-3", AUDIT_FIXED)
 
 
 def test_intake_insufficient_is_told_to_the_model() -> None:
