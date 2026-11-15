@@ -8,6 +8,7 @@ wait on the helper (wake or exit, HH-08) instead of a plain sleep. Fakes only.""
 from __future__ import annotations
 
 import dataclasses
+import time
 from typing import Any
 
 import pytest
@@ -17,7 +18,7 @@ from steerai.loop2 import live_world
 from steerai.loop2.act_port import ActPort
 from steerai.loop2.loop import PortInterrupted
 from steerai.loop2.world_ports import KILL_POLL_S
-from tests.loop2.test_live_world import Monitor, Platform, _world
+from tests.loop2.test_live_world import Monitor, Platform, _config, _world
 from tests.loop2.world_fakes import task
 
 
@@ -321,3 +322,49 @@ def test_close_noting_keeps_the_cause_and_notes_the_cleanup() -> None:
 
     live_world.close_noting(close, cause)
     assert any("the handle is invalid" in n for n in cause.__notes__)
+
+
+@pytest.mark.windows
+def test_the_windows_platform_runs_on_the_helper_end_to_end() -> None:
+    """#385 principal 1, the real assembly (CI only: it starts the helper's hooks and sends the
+    tagged probe): `WindowsPlatform` with `hook_helper`, on its own loop thread and the real
+    clocks. The switch reads clean or a session token, both hooks see the run's tagged probe
+    through the helper, and the helper is gone after the world closes."""
+    from steerai.probes.windows import list_top_windows  # noqa: PLC0415 - Windows only
+    from steerai.session.helper_launch import (  # noqa: PLC0415 - Windows only
+        SYNCHRONIZE,
+        HelperProcess,
+        WindowsLaunch,
+    )
+    from steerai.session.helper_monitor import HelperMonitor as RealMonitor  # noqa: PLC0415
+
+    hwnd = list_top_windows()[0].hwnd
+    platform = live_world.WindowsPlatform()
+    win32 = WindowsLaunch()
+    watched: list[int] = []
+    config = _config(
+        hwnd=hwnd,
+        kill_key="ctrl+alt+shift+f9",
+        hook_helper=True,
+        clock=time.monotonic,
+        pause=time.sleep,
+    )
+
+    def task() -> object:
+        with live_world.LiveWorld(config, platform) as world:
+            monitor = world._helper_monitor
+            assert isinstance(monitor, RealMonitor)
+            helper = monitor._helper
+            assert isinstance(helper, HelperProcess)
+            watched.append(win32.duplicate(helper.process_handle, SYNCHRONIZE))
+            token = world.interrupted()
+            world._prove_hooks()  # returns: both hooks saw the tagged probe in time
+            return token
+
+    token = live_world.run_on_loop_thread(task, release=platform.release_com)
+    assert token in {None, "session_locked", "secure_desktop"}
+    (watch,) = watched
+    try:
+        assert win32.wait_any((watch,), 3000) == 0  # the helper is gone after close
+    finally:
+        win32.close(watch)
