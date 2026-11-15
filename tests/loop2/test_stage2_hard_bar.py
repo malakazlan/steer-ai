@@ -137,3 +137,18 @@ def test_a_count_that_is_not_an_exact_non_negative_int_fails_closed(count: objec
     assert not accept(TASKS, rated, controls=None, runs_per_task=3, label="t").gates[
         "no_r2_dispatch"
     ]
+
+
+# ---- #419 (4): a gate failure on an unread count names the run's own reason --------------------
+
+
+def test_an_r2_gate_failure_reports_each_runs_own_reason() -> None:
+    line = {**final("R1"), "status": "error", "detail": "no_window"}
+    del line["dispatch_risks"]
+    refused = classify(TASKS[0], RunRecord("t0", 4, line, True, True, None, None))
+    rated = [r for t in TASKS for r in runs(t, final("R1"))]
+    summary = accept(TASKS, [*rated, refused], controls=None, runs_per_task=3, label="t")
+    assert not summary.gates["no_r2_dispatch"]
+    assert summary.report["no_r2_dispatch_failures"] == [
+        {"task": "t0", "run": 4, "reason": "start_refused:no_window", "counts": "unread"}
+    ]

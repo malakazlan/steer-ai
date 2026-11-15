@@ -136,6 +136,9 @@ class TurnView:
     """[V2.56]: what appeared, and what changed, since the observation the model last saw."""
     changes: Literal["compared", "no_comparison", "states_unread"] = "no_comparison"
     """[V2.56]: whether this turn had a comparison, and whether its states were read."""
+    calls_left: int | None = None
+    """Invariant 9, [V2.69]: the model calls this turn may still make (a repair is one); None:
+    no call budget."""
 
     def __post_init__(self) -> None:
         if not all(isinstance(r, RECORD_TYPES) for r in self.log):
@@ -248,6 +251,8 @@ class Decided:
     """[V2.61]: the prompt guard spent an exact count on this turn."""
     estimate_low: bool = False
     """[V2.61]: the turn's calls held more input tokens than the guard's bound said."""
+    calls: int = 1
+    """Invariant 9, [V2.68]: the model calls the turn made (a repaired turn is two)."""
 
 
 AuditReason = Literal["facts_finish_request", "request_asks_more", "unclear"]
