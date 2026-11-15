@@ -25,14 +25,19 @@ import ctypes
 import json
 import subprocess
 import sys
+import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from ctypes import wintypes
 from typing import Any
 
 IDLE_S = 2.0
 SETTLE_S = 0.2
 ROUND_TRIPS = 250
+LOADS = ("none", "spin", "json")
+JSON_PAYLOAD_BYTES = 200_000
+JSON_PAUSE_S = 0.002
 WM_IME_CONTROL = 0x0283
 IMC_GETOPENSTATUS = 0x0005
 UIA_VALUE_PATTERN = 10002
@@ -166,26 +171,60 @@ def _batch(vk: int, size: int, monitor: Any) -> int:  # Any: HookMonitor
     return int(monitor.counts().get("steer", 0)) - int(before)
 
 
-def round_trip(vk: int, n: int, monitor: Any, *, busy: bool) -> Row:  # Any: HookMonitor
-    """#364 P2: `n` tagged key-ups of `vk`, each timed from the send until the keyboard hook
-    has counted it; with `busy`, a Python thread spins meanwhile (the GIL contended, as when
-    the loop thread works). Key-ups only; nothing else is sent."""
-    import threading  # noqa: PLC0415 - this probe only
+def json_payload() -> str:
+    """About 200 KB of JSON shaped like a listing, roughly what a decide worker parses."""
+    rows: list[dict[str, object]] = []
+    text = ""
+    while len(text) < JSON_PAYLOAD_BYTES:
+        i = len(rows)
+        rows.append({"id": i, "role": "Button", "name": f"Item {i} " + "x" * 40,
+                     "box": [i, i, i + 80, i + 20], "caps": ["toggle:off"]})  # fmt: skip
+        if i % 100 == 0:
+            text = json.dumps({"rows": rows})
+    return json.dumps({"rows": rows})
 
-    from steerai.probes.win_input import key_up_probe  # noqa: PLC0415 - Windows only
 
+@contextmanager
+def load_running(load: str) -> Iterator[Callable[[], int]]:
+    """A Python thread loading the GIL while the round trips run: `none`; `spin`, a tight
+    loop; or `json`, json.loads of `json_payload()` with short sleeps (as a decide worker
+    parses a reply). Yields how much work it did."""
+    if load not in LOADS:
+        raise ValueError(f"unknown load {load!r}")
     stop = threading.Event()
+    work = [0]
 
     def spin() -> None:
-        spins = 0
         while not stop.is_set():
-            spins += 1
+            work[0] += 1
 
-    spinner = threading.Thread(target=spin, daemon=True)
-    if busy:
-        spinner.start()
-    samples: list[float] = []
+    def parse() -> None:
+        payload = json_payload()
+        while not stop.is_set():
+            json.loads(payload)
+            work[0] += 1
+            time.sleep(JSON_PAUSE_S)
+
+    thread = None
+    if load != "none":
+        thread = threading.Thread(target=spin if load == "spin" else parse, daemon=True)
+        thread.start()
     try:
+        yield lambda: work[0]
+    finally:
+        stop.set()
+        if thread is not None:
+            thread.join()
+
+
+def round_trip(vk: int, n: int, monitor: Any, *, load: str) -> Row:  # Any: HookMonitor
+    """#364 P2: `n` tagged key-ups of `vk`, each timed from the send until the keyboard hook
+    has counted it, under `load`; next to it, the hook's own latency (event tick to callback
+    entry) from the monitor's histogram. Key-ups only; nothing else is sent."""
+    from steerai.probes.win_input import key_up_probe  # noqa: PLC0415 - Windows only
+
+    samples: list[float] = []
+    with load_running(load):
         for _ in range(n):
             person = _person_events(monitor)
             before = _steer_events(monitor)
@@ -199,18 +238,33 @@ def round_trip(vk: int, n: int, monitor: Any, *, busy: bool) -> Row:  # Any: Hoo
             if _person_events(monitor) != person:
                 raise Abort("person_input")
             time.sleep(0.005)
-    finally:
-        stop.set()
-        if busy:
-            spinner.join()
     samples.sort()
     return {
-        "round_trip": "busy" if busy else "idle",
+        "round_trip": load,
         "n": n,
         "p50_ms": round(samples[(n - 1) // 2], 3),
         "p95_ms": round(samples[min(n - 1, int(0.95 * n))], 3),
         "max_ms": round(samples[-1], 3),
+        "hook_events": monitor.latency()[0],
+        "hook_p50_ms": monitor.latency_at(0.5),
+        "hook_p95_ms": monitor.latency_at(0.95),
+        "hook_max_ms": monitor.latency_at(1.0),
     }
+
+
+def _phases(vk: int, desk: _Desk, hwnd: int, emit: Callable[[Row], None]) -> None:
+    """One round-trip phase per load, each with its own per-hook monitor timing itself."""
+    from steerai.session.monitor import HookMonitor  # noqa: PLC0415 - Windows hooks
+
+    for load in LOADS:
+        if desk.foreground() != hwnd:
+            raise Abort("foreground_left_notepad")
+        phase = HookMonitor(per_hook=True, probe_vk=vk)
+        phase.start()
+        try:
+            emit(round_trip(vk, ROUND_TRIPS, phase, load=load))
+        finally:
+            phase.close()
 
 
 def run(candidates: Sequence[int], size: int, emit: Callable[[Row], None]) -> list[int]:
@@ -250,19 +304,12 @@ def run(candidates: Sequence[int], size: int, emit: Callable[[Row], None]) -> li
                   "changed": changed, "passes": ok})  # fmt: skip
             if ok:
                 accepted.append(vk)
-        if accepted:  # #364 P2: the chosen key's round trip, idle and with the GIL contended
-            for busy in (False, True):
-                if desk.foreground() != hwnd:
-                    raise Abort("foreground_left_notepad")
-                emit(round_trip(accepted[0], ROUND_TRIPS, monitor, busy=busy))
+        if accepted:  # #364 P2: the chosen key's round trip and hook latency, per load
+            monitor.close()  # one Python hook in the chain: each phase's own, timing itself
+            _phases(accepted[0], desk, hwnd, emit)
             after = desk.state(hwnd, read_text)
-            emit(
-                {
-                    "after_round_trips_changed": sorted(
-                        k for k in baseline if after[k] != baseline[k]
-                    )
-                }
-            )
+            moved = sorted(k for k in baseline if after[k] != baseline[k])
+            emit({"after_round_trips_changed": moved})
     finally:
         notepad.terminate()  # only our own pid
         try:

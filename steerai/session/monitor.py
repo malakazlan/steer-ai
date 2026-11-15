@@ -94,6 +94,13 @@ class HookLatency:
             return 0, None, None
         return self._events, self._quantile(0.95), self._quantile(0.99)
 
+    def at(self, q: float) -> int | None:
+        """The latency at quantile `q` (0 < q <= 1; 1 is the largest bucket seen); None when
+        nothing was recorded."""
+        if not 0 < q <= 1:
+            raise ValueError("a quantile is above 0 and at most 1")
+        return self._quantile(q) if self._events else None
+
     def _quantile(self, q: float) -> int:
         rank = math.ceil(q * self._events)
         seen = 0
@@ -489,6 +496,10 @@ class HookMonitor:
     def latency(self) -> tuple[int, int | None, int | None]:
         """LW-01: (callbacks timed, p95 ms, p99 ms); v1 times none."""
         return self._latency.summary()
+
+    def latency_at(self, q: float) -> int | None:
+        """The callback latency at quantile `q`, in ms (the probe's hook-side measurement)."""
+        return self._latency.at(q)
 
     def mark_ask_open(self) -> None:
         self._core.mark_ask_open()

@@ -23,3 +23,26 @@ def test_the_probe_reports_each_unassigned_key_and_the_first_that_changes_nothin
     assert all(row["probe"] == "probe_key" for row in rows)
     if code == 0:
         assert rows[-1]["first"] in rows[-1]["accepted"]
+
+
+# ---- the load modes, pure: nothing here sends input ----------------------------------------------
+
+
+def test_the_json_load_parses_a_payload_of_about_200_kb() -> None:
+    payload = probe_key.json_payload()
+    assert 180_000 <= len(payload) <= 220_000
+    assert isinstance(json.loads(payload), dict)
+
+
+@pytest.mark.parametrize("load", ["none", "spin", "json"])
+def test_each_load_runs_until_stopped(load: str) -> None:
+    with probe_key.load_running(load) as worked:
+        import time  # noqa: PLC0415 - this test only
+
+        time.sleep(0.05)
+    assert (worked() > 0) is (load != "none")
+
+
+def test_an_unknown_load_is_refused() -> None:
+    with pytest.raises(ValueError, match="load"), probe_key.load_running("disk"):
+        pass

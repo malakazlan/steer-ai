@@ -678,3 +678,33 @@ def test_the_stall_seam_blocks_only_the_named_hooks_next_callback(
             monitor.stall_next_for_test("touch", 1.0)
     finally:
         monitor.close()
+
+
+def test_the_latency_histogram_answers_any_quantile_and_its_max() -> None:
+    """For the probe's hook-side measurement: p50, p95 and the largest bucket seen."""
+    from steerai.session.monitor import HookLatency  # noqa: PLC0415 - this test only
+
+    latency = HookLatency()
+    assert latency.at(0.5) is None
+    for ms in [1] * 50 + [7] * 45 + [30] * 4 + [250]:
+        latency.record(ms)
+    assert (latency.at(0.5), latency.at(0.95), latency.at(1.0)) == (1, 7, 250)
+    for q in (0.0, 1.5):
+        with pytest.raises(ValueError, match="quantile"):
+            latency.at(q)
+
+
+def test_an_event_stamped_after_the_entry_tick_is_zero_not_a_second(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#364 tester T1 (f2_nohalf): the struct's tick one past the entry tick wraps to 2^32-1;
+    it is skew, recorded as 0 ms, never as the 1000 ms overflow bucket."""
+    user32 = FakeUser32()
+    monitor = _v2_started(monkeypatch, user32, tick=TIME_SENTINEL)
+    try:
+        key = _key(flags=0, extra=0)
+        key.time = TIME_SENTINEL + 1
+        user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x100, ctypes.addressof(key))
+        assert monitor.latency() == (1, 0, 0)
+    finally:
+        monitor.close()

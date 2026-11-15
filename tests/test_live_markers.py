@@ -22,6 +22,10 @@ FAKED: frozenset[str] = frozenset(
         "action/test_keyboard.py::test_build_keyboard_unicode_at_the_word_boundary",
         # the v2 platform built, never used: no COM, no hook, no input
         "loop2/test_live_world.py::test_the_windows_platform_is_a_platform",
+        # the probe-key module's pure helpers: a JSON payload and a load thread, no input
+        "test_probe_key.py::test_the_json_load_parses_a_payload_of_about_200_kb",
+        "test_probe_key.py::test_each_load_runs_until_stopped",
+        "test_probe_key.py::test_an_unknown_load_is_refused",
         # LW-01: the v2 platform's monitor and timeout over a replaced HookMonitor and registry read
         "loop2/test_live_world.py::test_the_v2_platform_starts_a_per_hook_monitor",
         "loop2/test_live_world.py::test_the_hook_timeout_is_read_from_the_registry_and_capped",
