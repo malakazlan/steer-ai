@@ -18,7 +18,7 @@ from steerai.loop2.decision import Decision, SubgoalDoc
 from steerai.loop2.loop import TokenUsage
 from steerai.loop2.runner import run_task
 from steerai.loop2.task import Budgets
-from tests.loop2.world_fakes import GO, World, act, report, task
+from tests.loop2.world_fakes import FIELD, GO, World, act, report, task
 
 SUBS = [SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="page")]
 
@@ -111,3 +111,31 @@ def test_each_turn_is_told_the_calls_it_has_left(budget: int, used_first: int, l
     run_task(task(_budget(budget)), world.ports())
     assert world.views[0].calls_left == budget
     assert world.views[1].calls_left == left
+
+
+def test_a_close_at_turn_start_survives_a_rejected_decision_in_that_turn() -> None:
+    """#437 delta (the merge with #434): s1 closes on the stale re-read at the top of a turn whose
+    decide is then rejected. The close is that turn's progress: s1 stays proven and the
+    rejection adds no strike on that turn ([V2.67] A with [V2.68])."""
+    from tests.loop2.test_auto_proof_every_observation import RESULTS, START  # noqa: PLC0415
+
+    subs = [
+        SubgoalDoc(id="s1", desc="results", params={"text": "red shoes"}, closes="page"),
+        SubgoalDoc(id="s2", desc="shop", params={"where": "shop"}, closes="page"),
+    ]
+    world = World(
+        [
+            Decision(subgoals=subs, actions=[act("type", target=FIELD.id, param="text")]),
+            Decision(stop="blocked"),  # decided on the old read: discarded as stale
+            Decision(stop="blocked"),
+        ],
+        effects=[report("own_value")],
+        screen=START,
+        observations=[START, START, RESULTS],
+    )
+    world.decide_errors = [None, None, _rejected("subgoal_id_bad"), None]
+    outcome = run_task(task(), world.ports())
+    assert outcome.strikes == ()
+    history = world.views[-1].history
+    assert "proven:s1:results_with_url" in history
+    assert "refused:subgoal_id_bad" in history
