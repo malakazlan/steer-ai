@@ -229,6 +229,24 @@ class LiveConfig:
     Windows), not the 15.625 ms world clock."""
 
 
+def bound_probe(
+    tag: int,
+    *,
+    vk: int,
+    nudge: Callable[..., None],
+    key_up: Callable[..., None],
+) -> Callable[[], None]:
+    """LW-01: the helper's probe, the mouse nudge then the keyboard probe, bound to the run's
+    tag (#385 HH4-11): never the process tag read at call time, so a late probe after the
+    restore still goes out as this run's own input."""
+
+    def probe() -> None:
+        nudge(tag=tag)
+        key_up(vk, tag=tag)
+
+    return probe
+
+
 def enter_mta(co_initialize_ex: Callable[[int], int]) -> None:
     """Put the calling thread in the COM MTA before any UIA object exists on it (packet §1).
 
@@ -1041,10 +1059,7 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
         )
         helper.start()
 
-        def probe() -> None:  # LW-01: the mouse nudge and the keyboard probe, with the run's tag
-            nudge_in_place()
-            key_up_probe(PROBE_VK)
-
+        probe = bound_probe(extra_info, vk=PROBE_VK, nudge=nudge_in_place, key_up=key_up_probe)
         try:
             qpc, freq = qpc_clock()
             return HelperMonitor(
