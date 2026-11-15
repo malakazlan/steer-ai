@@ -389,6 +389,9 @@ class TaskOutcome:
     Stage 1 runs with caching off and asserts every cache counter here is zero."""
     exact_counts: int = 0
     """[V2.61]: turns on which the prompt guard spent an exact count (near the ceiling)."""
+    submit_parents: tuple[tuple[ParentKind, int], ...] = ()
+    """[V2.25]: the submit rule's firings, counted per kind of the field's parent where each
+    action is rated, in `PARENT_KINDS` order."""
     url_reads: tuple[tuple[UrlRead, int], ...] = ()
     """Stage 2 plan §5: every observation taken in, counted by `url_read`, in `URL_READS`
     order."""
@@ -525,6 +528,7 @@ AskReason = Literal["generated_text", "text_changed", "submit_pending_text"]
 """[V2.25]: `generated_text` and `text_changed` are asks no grant covers; `submit_pending_text`
 marks a tier the submit rule raised, so its blocks are counted on their own."""
 ParentKind = Literal["document", "main", "narrower"]
+PARENT_KINDS: Final[tuple[ParentKind, ...]] = get_args(ParentKind)
 Held = Literal["held", "changed", "unread"]
 """A typed field still in the snapshot and not empty: what Steer typed (same digest), something
 else (a reformat or an autocomplete), or a value that could not be read."""
