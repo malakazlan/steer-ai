@@ -672,3 +672,37 @@ def test_a_strong_change_is_followed_by_a_read_across_the_quiet_window(kind: str
     after = [at for at, _ in screen.reads if at > first_seen]
     assert after
     assert after[-1] - first_seen >= WorldTimes().quiet_s
+
+
+# ---- what the watch is told about the action ---------------------------------------------------
+
+
+def test_the_watch_is_told_the_acted_element() -> None:
+    """A check that only flips its own box is `own_state`, which needs the acted element: told
+    nothing, the same change reads as `content_changed`."""
+    clock = Clock()
+    off = dataclasses.replace(BOX, caps=("toggle:off",))
+    on = dataclasses.replace(BOX, caps=("toggle:on",))
+    screen = Screen(observed([*PAGE, off]), clock)
+    ports = _ports(screen, clock)
+    before = ports.observe()
+    screen.changed = observed([*PAGE, on])
+    screen.change_at = clock.now + 0.1
+    watched = ports.watch(before, _dispatch("check", off))
+    assert "own_state" in watched.report.classes
+
+
+def test_the_watch_is_told_the_typed_text() -> None:
+    """The typed words showing up where they did not (here the window title) are a carrier,
+    which needs the text: told nothing, there is no carrier."""
+    clock = Clock()
+    screen = Screen(observed(), clock)
+    ports = _ports(screen, clock)
+    before = ports.observe()
+    titled = observed()
+    screen.changed = dataclasses.replace(
+        titled, snapshot=dataclasses.replace(titled.snapshot, title="red shoes - Shop")
+    )
+    screen.change_at = clock.now + 0.1
+    watched = ports.watch(before, _dispatch("type", FIELD, param="text"))
+    assert "title" in watched.report.carriers
