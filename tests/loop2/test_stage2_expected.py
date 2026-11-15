@@ -15,7 +15,9 @@ import pytest
 
 from steerai.loop2.stage1_expected import Act, Expected
 from steerai.loop2.stage2_expected import (
+    ACTS,
     SITE_SPACING_S,
+    TABLE,
     UNRATED_REASONS,
     DayDidNotTurn,
     DecidingFacts,
@@ -401,6 +403,70 @@ def test_the_unrated_reasons_are_closed() -> None:
     assert (
         frozenset({"target_after_opener", "pressed_unread", "copies_disagree"}) == UNRATED_REASONS
     )
+
+
+# ---- the coordinator's ruling on py1: a click pairs with the field it would submit ---------------
+
+FORM_TWO = element(60, "Group", "", (9, 60), 1)
+BOX_TWO = element(61, "Edit", "Find", (9, 61), 60)
+GO_TWO = element(62, "Button", "Look up", (9, 62), 60)
+
+
+def two_forms() -> Observed:
+    """The page holds the search form twice: each field's button is in its own form."""
+    base = read()
+    marks = dict(base.landmarks or {})
+    second = Landmark(kind="search", runtime_id=FORM_TWO.runtime_id)
+    marks |= {FORM_TWO.runtime_id: None, BOX_TWO.runtime_id: second, GO_TWO.runtime_id: second}
+    roles = {**(base.aria_roles or {}), BOX_TWO.runtime_id: "searchbox"}
+    elements = [*SHOWN, FORM_TWO, BOX_TWO, GO_TWO]
+    return dataclasses.replace(
+        base, snapshot=dataclasses.replace(base.snapshot, elements=elements),
+        landmarks=marks, aria_roles=roles,
+    )  # fmt: skip
+
+
+def test_a_click_is_rated_only_with_the_fields_in_its_submit_scope() -> None:
+    """Typing into one form and clicking the other form's button is no submit of the text, and
+    not what Steer does: those pairs are left out, as the gate's own [V2.22] scope decides."""
+    assert deciding_facts(TYPE_CLICK, GOAL, two_forms()) == deciding_facts(TYPE_CLICK, GOAL, read())
+
+
+def test_a_click_beside_no_copy_of_the_field_is_still_rated_on_every_pair() -> None:
+    """When no pair is in scope the click submits nothing: every pair stands, as before."""
+    lone = SiteRow(
+        acts=(Act("type", "Edit", "Notes", param="red shoes"), Act("click", "Button", "Look up")),
+        proof=None,
+        why="w",
+    )
+    facts = deciding_facts(lone, GOAL, two_forms_notes())
+    assert facts.button_role == "Button"
+
+
+def two_forms_notes() -> Observed:
+    """NOTE (the field) and both forms' buttons: NOTE is under the Document, so both buttons are
+    under its parent container: both pairs are in scope, and agree."""
+    return two_forms()
+
+
+# ---- the committed 2b table ([V2.65], the save-reads and opener slots, 2026-11-15) --------------
+
+
+def test_the_committed_2b_acts_and_table_cover_every_real_site_task() -> None:
+    ids = {t.task_id for t in real_site_tasks()}
+    acts = ACTS.read_text(encoding="utf-8")
+    table = TABLE.read_text(encoding="utf-8")
+    assert set(load_acts(acts)) | set(load_unrated(acts)) == ids
+    assert set(load_table(table)) == set(load_acts(acts))
+    assert load_unrated(table) == load_unrated(acts)
+
+
+def test_the_committed_2b_table_holds_no_page_text() -> None:
+    """Only digests, closed facts and the rows' own reasons: never a field's or page's name."""
+    table = TABLE.read_text(encoding="utf-8")
+    for row in load_table(table).values():
+        assert len(row.read_sha256) == 64
+    assert "Search Wikipedia" not in table
 
 
 # ---- #413 blocker 1: the day turns in production, and the wait for it is bounded ----------------
