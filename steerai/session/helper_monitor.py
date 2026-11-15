@@ -42,6 +42,9 @@ CLOCK_RESOLUTION_S: Final = 0.015625
 WATCH_PERIOD_MS: Final = 100
 """The watchdog's period: the helper's heartbeat period (rev 2 §5.3, provisional)."""
 _UNSET: Final = object()
+_OURS: Final[dict[str, object]] = {"lock": 1, "desktop": "Default"}
+"""HM-01: the state a task may start in: unlocked (WTS_SESSIONSTATE_UNLOCK, 1) on the Default
+desktop. Anything else at the first poll is a transition already."""
 
 
 class HelperView(Protocol):
@@ -128,7 +131,9 @@ class HelperMonitor:
         self._session_seen: dict[str, object] = dict.fromkeys(("lock", "connect", "desktop"),
                                                               _UNSET)  # fmt: skip
         self._transitions = dict.fromkeys(("lock", "connect", "desktop"), 0)
+        self._polled_at = self._started_at
         self._closed = False
+        self._poll_session()  # #383 blocker 5: never "nothing seen yet"
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         if start_thread:
@@ -153,16 +158,19 @@ class HelperMonitor:
         read = self._read(self._loop_state)
         if read.killed:
             return True  # a kill is not a loss; `kill_requested` reports it
-        if read.fault is not None:
-            self._lose(read.fault)
+        if read.fault is None and self._probe_failed:
             return False
-        if self._probe_failed:
-            return False
-        lost = self._ledger.lost_hooks(now=self._now(), counts=self._counts)
-        if lost:
-            self._lose("lost_hooks:" + ",".join(lost))
+        cause = read.fault if read.fault is not None else self._watch_loss()
+        if cause is not None:
+            self._lose(cause)
             return False
         return True
+
+    def _watch_loss(self) -> str | None:
+        if self._poll_age() > self._deadline_s:  # HM-03: the watchdog stopped watching
+            return "stale_session_poll"
+        lost = self._ledger.lost_hooks(now=self._now(), counts=self._counts)
+        return "lost_hooks:" + ",".join(lost) if lost else None
 
     def maintain(self) -> None:
         if self._ledger.probe_due(now=self._now(), counts=self._counts):
@@ -190,7 +198,10 @@ class HelperMonitor:
         )
 
     def session_change(self) -> str | None:
-        """§5.6: a lock, connect or desktop transition during the task, as its stop token."""
+        """§5.6: a lock, connect or desktop transition during the task, as its stop token. It
+        fails closed (#383 blocker 5): a last poll older than the deadline is a stop."""
+        if self._poll_age() > self._deadline_s:
+            return "session_locked"
         if self._transitions["lock"] or self._transitions["connect"]:
             return "session_locked"
         if self._transitions["desktop"]:
@@ -266,9 +277,14 @@ class HelperMonitor:
         }
         for name, value in reads.items():
             seen = self._session_seen[name]
-            if value is None or (seen is not _UNSET and value != seen):
+            first_not_ours = seen is _UNSET and value != _OURS.get(name, value)
+            if value is None or first_not_ours or (seen is not _UNSET and value != seen):
                 self._transitions[name] += 1
             self._session_seen[name] = value
+        self._polled_at = self._clock()
+
+    def _poll_age(self) -> float:
+        return self._clock() - self._polled_at
 
     # ---- internals -----------------------------------------------------------------------------
 

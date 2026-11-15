@@ -145,8 +145,9 @@ class Rig:
             s.set(f"delivered_{hook}", s.get(f"delivered_{hook}") + 1)
 
 
-def _rig(*, probe_fails: bool = False) -> Rig:
-    helper, session = FakeHelper(), FakeSession()
+def _rig(*, probe_fails: bool = False, session: FakeSession | None = None) -> Rig:
+    helper = FakeHelper()
+    session = FakeSession() if session is None else session
     t = [100.0]
     probes: list[int] = []
     ended: list[int] = []
@@ -476,3 +477,54 @@ def test_a_raise_anywhere_in_the_watchdog_is_a_loss_never_a_silent_death() -> No
     rig.monitor._run()
     assert not rig.monitor.healthy()
     assert waits  # it kept watching, without spinning
+
+
+# ---- #383 blocker 5: the session reads fail closed ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("start", "token"),
+    [
+        ({"lock": 0}, "session_locked"),  # HM-01: already locked when the task starts
+        ({"desktop": "Winlogon"}, "secure_desktop"),  # HM-01: already on the secure desktop
+        ({"lock": None}, "session_locked"),  # T3: a first read that is unread
+        ({"desktop": None}, "secure_desktop"),
+        ({"connect": None}, "session_locked"),
+    ],
+)
+def test_the_first_poll_at_construction_flags_a_state_that_is_not_ours(
+    start: dict[str, object], token: str
+) -> None:
+    session = FakeSession()
+    for name, value in start.items():
+        setattr(session, name, value)
+    rig = _rig(session=session)
+    assert rig.monitor.session_change() == token  # before any watchdog step
+
+
+def test_a_session_poll_older_than_the_deadline_is_a_stop() -> None:
+    """A dead or hung watchdog (HM-03), or a GIL stall (HM-02): the last poll is too old, and
+    what it said can no longer be trusted."""
+    rig = _rig()
+    assert rig.monitor.session_change() is None
+    rig.at(100.0 + DEADLINE_S + 0.01)
+    assert rig.monitor.session_change() == "session_locked"
+
+
+def test_a_stale_session_poll_loses_the_monitor() -> None:
+    rig = _rig()
+    rig.at(100.0 + DEADLINE_S * 0.5)
+    rig.heartbeat()
+    assert rig.monitor.healthy()
+    rig.at(100.0 + DEADLINE_S + 0.01)
+    rig.heartbeat()  # the helper is fine; the watchdog is not
+    assert not rig.monitor.healthy()
+
+
+def test_each_watchdog_poll_refreshes_the_poll_age() -> None:
+    rig = _rig()
+    for i in range(1, 6):
+        rig.at(100.0 + i * DEADLINE_S * 0.6)
+        rig.heartbeat()
+        rig.monitor.watch_once()
+        assert rig.monitor.session_change() is None
