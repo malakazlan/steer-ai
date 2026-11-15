@@ -23,7 +23,6 @@ from pydantic import ValidationError
 from steerai.loop2.decision import (
     CHECKED_KINDS,
     NOT_IN_STEP_VERBS,
-    PARAM_NAME,
     STEP,
     STEP_VERBS,
     SUBGOAL_ID,
@@ -516,18 +515,20 @@ def decision_shape(
     attempt: int,
 ) -> dict[str, Any]:  # Any: JSON values
     """#386: a rejected Decision as closed tokens and counts, for the redacted trace. Verbs, keys,
-    claim kinds and closing kinds are the schema's own closed tokens; a param is named only when
-    it is one of its subgoal's declared params and matches the param-name pattern, else
-    `param_unknown`. Never a value, a desc, typed text, an ask's words or an element id."""
+    claim kinds and closing kinds are the schema's own closed tokens; a param is written as its
+    position among its subgoal's declared params, sorted (`param:0`), else `param_unknown`.
+    Never a value, a desc, a param's name, typed text, an ask's words or an element id."""
     known = {sid: set(names) for sid, names in (known_subgoals or {}).items()}
     for sub in decision.subgoals or []:
         known.setdefault(sub.id, set()).update(sub.params)
 
     def named(subgoal: str, param: str | None) -> str | None:
+        """A declared param by its position among the subgoal's declared names, sorted: a name
+        is model text and may carry the request's own words, so it is never written."""
         if param is None:
             return None
-        ok = param in known.get(subgoal, set()) and PARAM_NAME.fullmatch(param) is not None
-        return param if ok else "param_unknown"
+        declared = sorted(known.get(subgoal, set()))
+        return f"param:{declared.index(param)}" if param in declared else "param_unknown"
 
     return {
         "turn": turn,

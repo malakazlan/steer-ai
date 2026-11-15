@@ -1,7 +1,8 @@
 """#386 step 1: each rejected Decision's shape on the redacted trace, as closed tokens only, so a
 rejection like 3d-a's (`param_unknown`, `not_in_step`) can be read without the decide record.
 Verbs, keys and claim kinds are the schema's own closed tokens (the parser accepts no other);
-a param is named only when it is one of its subgoal's declared params, else `param_unknown`.
+a declared param is written as its position among its subgoal's declared params, sorted
+(`param:0`), else `param_unknown`: a declared name is model text and may carry the request's words.
 Never a value, a name, a desc or any free text."""
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ def test_an_action_is_its_verb_whether_in_step_and_its_param_if_declared() -> No
         known_subgoals={}, tokens=["not_in_step", "param_unknown"], turn=1, attempt=0,
     )  # fmt: skip
     assert shape["actions"] == [
-        {"verb": "type", "in_step": True, "param": "query", "text": False, "key": None},
+        {"verb": "type", "in_step": True, "param": "param:0", "text": False, "key": None},
         {"verb": "scroll", "in_step": False, "param": None, "text": False, "key": None},
         {"verb": "type", "in_step": True, "param": "param_unknown", "text": False, "key": None},
     ]
@@ -48,7 +49,7 @@ def test_a_claim_is_its_kind_whether_checked_in_step_and_its_param_if_declared()
     )  # fmt: skip
     assert shape["claims"] == [
         {"kind": "content_present", "in_step": False, "param": "param_unknown", "evidence": 0},
-        {"kind": "value", "in_step": True, "param": "query", "evidence": 0},
+        {"kind": "value", "in_step": True, "param": "param:0", "evidence": 0},
     ]
 
 
@@ -72,15 +73,30 @@ def test_typed_text_is_only_said_to_be_present() -> None:
     assert "red shoes" not in json.dumps(shape)
 
 
-def test_a_param_name_outside_the_name_pattern_is_never_written() -> None:
-    """A declared name is still model text: only a name of the param pattern is written."""
-    sub = {**SUB, "params": {"query": "red shoes"}}
+def test_a_goal_word_used_as_a_param_name_never_reaches_the_record() -> None:
+    """Sentinel: `red_shoes` passes the name pattern, but it is the request's words; only its
+    position is written, and no goal word appears anywhere in the record."""
+    sub = {"id": "s1", "desc": "x", "params": {"red_shoes": "red shoes", "colour": "red"},
+           "closes": "page"}  # fmt: skip
     shape = decision_shape(
-        _decision(subgoals=[sub], claims=[{"subgoal": "s1", "kind": "value",
-                                           "param": "Red Shoes!"}]),
-        known_subgoals={"s1": frozenset({"Red Shoes!"})}, tokens=[], turn=1, attempt=0,
+        _decision(subgoals=[sub],
+                  claims=[{"subgoal": "s1", "kind": "value", "param": "red_shoes"}],
+                  actions=[{"verb": "type", "target": 3, "subgoal": "s1", "param": "colour"}]),
+        known_subgoals={}, tokens=[], turn=1, attempt=0,
     )  # fmt: skip
-    assert shape["claims"][0]["param"] == "param_unknown"
+    assert shape["claims"][0]["param"] == "param:1"  # sorted: colour, red_shoes
+    assert shape["actions"][0]["param"] == "param:0"
+    text = json.dumps(shape)
+    for word in ("red", "shoes", "colour"):
+        assert word not in text
+
+
+def test_the_positions_follow_the_sorted_declared_names_from_an_earlier_turn() -> None:
+    shape = decision_shape(
+        _decision(claims=[{"subgoal": "s1", "kind": "value", "param": "zeta"}]),
+        known_subgoals={"s1": frozenset({"zeta", "alpha"})}, tokens=[], turn=2, attempt=0,
+    )  # fmt: skip
+    assert shape["claims"][0]["param"] == "param:1"
 
 
 def test_ask_and_stop_are_flags() -> None:
