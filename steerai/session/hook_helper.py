@@ -262,6 +262,11 @@ class MouseHookStruct(ctypes.Structure):
 CallNext = Callable[[int, int, int], int]
 
 
+# #378 (4): both hook procedures return `CallNextHookEx`'s value from a `finally` (B012 waived) so
+# the chain goes on whatever happened. Valid on 3.12; Python 3.14 warns on it (PEP 765), so an
+# interpreter bump revisits both.
+
+
 def make_keyboard_proc(
     sink: KeyboardSink, on_error: Callable[[], None], call_next: CallNext
 ) -> Callable[[int, int, int], int]:
@@ -281,7 +286,7 @@ def make_keyboard_proc(
         except Exception:  # noqa: BLE001 - the hook chain must go on; the count is the report
             on_error()
         finally:
-            return call_next(code, wparam, lparam)  # noqa: B012 - #375 H8: the chain goes on whatever happened
+            return call_next(code, wparam, lparam)  # noqa: B012 - #375 H8: the chain goes on (PEP 765: see above)
 
     return proc
 
@@ -306,7 +311,7 @@ def make_mouse_proc(
         except Exception:  # noqa: BLE001 - the hook chain must go on; the count is the report
             on_error()
         finally:
-            return call_next(code, wparam, lparam)  # noqa: B012 - #375 H8: the chain goes on whatever happened
+            return call_next(code, wparam, lparam)  # noqa: B012 - #375 H8: the chain goes on (PEP 765: see above)
 
     return proc
 
