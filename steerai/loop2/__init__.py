@@ -19,6 +19,7 @@ def ready(step: int) -> bool:
         controller,
         decide_port,
         decision,
+        first_facts,
         form,
         guards,
         history,

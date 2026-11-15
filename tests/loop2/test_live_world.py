@@ -163,6 +163,7 @@ class Platform:
             screen=(0, 0, 1920, 1080),
         )
         """[V2.62] the bound window's cover facts: in front and uncovered unless a test says."""
+        self.window_class_name = "TestWindow"
 
     def dpi_aware(self) -> bool:
         self.calls.append("dpi")
@@ -204,6 +205,10 @@ class Platform:
     def window_cover(self, hwnd: int) -> CoverFacts:
         assert hwnd == 16
         return self.cover
+
+    def window_class(self, hwnd: int) -> str:
+        assert hwnd == 16
+        return self.window_class_name
 
     def uia(self) -> tuple[Any, UiaBindings]:
         self.calls.append("uia")

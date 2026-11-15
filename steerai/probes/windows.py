@@ -546,6 +546,17 @@ def input_desktop_name() -> str:
         user32.CloseDesktop(desktop)
 
 
+def window_class(hwnd: int) -> str:  # pragma: no cover - live, Windows only
+    """The window's class name (GetClassNameW); empty when it cannot be read."""
+    user32 = _user32()
+    user32.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+    user32.GetClassNameW.restype = ctypes.c_int
+    buffer = ctypes.create_unicode_buffer(256)
+    if user32.GetClassNameW(hwnd, buffer, 256) <= 0:
+        return ""
+    return buffer.value
+
+
 def window_title(hwnd: int) -> str:
     user32 = _user32()
     length = user32.GetWindowTextLengthW(hwnd)

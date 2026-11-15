@@ -44,8 +44,9 @@ from steerai.loop2.act_guards import GuardDesk, InputGuard, ToggleGuard
 from steerai.loop2.act_port import ActPort
 from steerai.loop2.controller import PROMPT_VERSION
 from steerai.loop2.decide_port import Call, Counter, DecideCalls, TaskGenerations
+from steerai.loop2.first_facts import first_observation_record
 from steerai.loop2.listing import LISTING_CAP
-from steerai.loop2.loop import ActResult, Dispatch, PortInterrupted, Ports
+from steerai.loop2.loop import ActResult, Dispatch, PortInterrupted, Ports, WindowCovered
 from steerai.loop2.prompt_inputs import make_decide
 from steerai.loop2.task import Task
 from steerai.loop2.world_ports import WorldPorts, WorldTimes, kill_sleep
@@ -158,6 +159,10 @@ class Platform(Protocol):
         """[V2.62] one read of `hwnd`'s cover facts (`probes.windows.window_cover`)."""
         ...
 
+    def window_class(self, hwnd: int) -> str:
+        """The window's class name (GetClassNameW); empty when unread."""
+        ...
+
     def focused(  # Any: the UiaClient
         self, client: Any
     ) -> Callable[[], tuple[tuple[int, ...], bool | None]]: ...
@@ -257,6 +262,8 @@ class LiveWorld:
         self._config = config
         self._platform = platform
         self.clock = config.clock
+        self._started_at = config.clock()
+        """When the world started: the first observation's record times its first read."""
         if not platform.dpi_aware():
             raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "dpi_context")
         try:
@@ -333,6 +340,9 @@ class LiveWorld:
         self._lost = False
         """[V2.57] LW-01: monitor_lost is final for the task: never re-installed and resumed."""
         self.monitor_lost = 0
+        self._reads = 0
+        self._first_read_at: float | None = None
+        self._first_written = False
 
     def _debug_sink(self) -> DebugSink:
         config = self._config
@@ -535,6 +545,9 @@ class LiveWorld:
     def _poll_read(self) -> Observed:
         """The window's snapshot with the task's sticky secure flags (packet §1)."""
         self._on_loop_thread()
+        self._reads += 1
+        if self._first_read_at is None:
+            self._first_read_at = self._config.clock()
         try:
             snapshot = self._observe(self._config.hwnd)
         except (
@@ -560,6 +573,46 @@ class LiveWorld:
             key=self._key,
             windows=lambda: self._platform.windows(snapshot.pid),
             page_facts=top_document(snapshot) is not None,
+        )
+
+    def _observe_first(self) -> Observed:
+        """`world.observe`; the first call also writes the `first_observation` record (closed
+        tokens and counts, `first_facts`), whatever way it ends."""
+        if self._first_written:
+            return self.world.observe()
+        self._first_written = True
+        before = self._reads
+        seen: Observed | None = None
+        cover: str | None = None
+        try:
+            seen = self.world.observe()
+            return seen
+        except WindowCovered as covered:
+            cover = covered.token
+            raise
+        finally:
+            self._write_first(seen, cover, self._reads - before)
+
+    def _write_first(self, seen: Observed | None, cover: str | None, reads: int) -> None:
+        hwnd = self._config.hwnd
+        try:
+            foreground: bool | None = self._inputs.foreground_hwnd() == hwnd
+        except Exception:  # noqa: BLE001 - a diagnostic fact: unread, never raised into the task
+            foreground = None
+        try:
+            window_class = self._platform.window_class(hwnd)
+        except Exception:  # noqa: BLE001 - a diagnostic fact: unread, never raised into the task
+            window_class = ""
+        first = self._first_read_at
+        self._write(
+            first_observation_record(
+                seen,
+                foreground=foreground,
+                cover=cover if cover is not None else self._cover(),
+                window_class=window_class,
+                start_to_read_ms=None if first is None else (first - self._started_at) * 1000,
+                reads=reads,
+            )
         )
 
     # ---- the trace -------------------------------------------------------------------------------
@@ -669,7 +722,7 @@ class LiveWorld:
 
         return Ports(
             decide=make_decide(calls, goal=task.goal, task_fence=self.task_fence),
-            observe=world.observe,
+            observe=self._observe_first,
             act=act_here,
             watch=world.watch,
             write_ahead=_write_ahead_closed,
@@ -933,6 +986,11 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
 
     def facts(self, client: Any) -> FactReader:  # Any: the UiaClient
         return _ComFacts(client)
+
+    def window_class(self, hwnd: int) -> str:
+        from steerai.probes.windows import window_class  # noqa: PLC0415 - Windows only
+
+        return window_class(hwnd)
 
     def window_cover(self, hwnd: int) -> CoverFacts:
         from steerai.probes.windows import window_cover  # noqa: PLC0415 - Windows only
