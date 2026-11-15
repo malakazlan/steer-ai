@@ -69,6 +69,7 @@ from steerai.loop2.stage2_expected import (
     deciding_facts,
     load_acts,
     load_table,
+    load_unrated,
     real_site_tasks,
     site_check,
     start_document,
@@ -94,8 +95,9 @@ LABEL: Final = "2b"
 class SiteTask:
     stage: StageTask
     host: str
-    facts: DecidingFacts
-    """The committed deciding facts the start page is checked against."""
+    facts: DecidingFacts | None
+    """The committed deciding facts the start page is checked against; None for a task held
+    unrated ([V2.65] (2))."""
     controlled: bool = True
     """The task's check has a fixed page its control opens (rev 4.4a: False is `no_control`)."""
     suite: Task | None = None
@@ -137,8 +139,10 @@ def site_tasks(
     unrated: Mapping[str, str] | None = None,
 ) -> tuple[SiteTask, ...]:
     """Group 2b: every real-site task with its committed expected outcome. A task the table does
-    not rate is a `ValueError` (`unrated`): no task runs without its outcome written first."""
-    held = set(unrated or {})  # the lead rules on these first: not run, not counted
+    not rate is a `ValueError` (`unrated`): no task runs without its outcome written first. A task
+    held for the lead's ruling runs too, expected `unrated` ([V2.65] (2): held to the hard bar,
+    out of the tasks gate), with no committed facts to check its start page against."""
+    held = set(unrated or {})
     rated = [t for t in real_site_tasks() if t.task_id not in held]
     missing_rows = [t.task_id for t in rated if t.task_id not in table]
     if missing_rows:
@@ -148,22 +152,21 @@ def site_tasks(
     if missing:
         raise ValueError(f"no_acts: {missing}")
     tasks = []
-    for task in rated:
-        row = table[task.task_id]
-        expected = row.expected
+    for task in real_site_tasks():
+        entry = table.get(task.task_id) if task.task_id not in held else None
         stage = StageTask(
             task.task_id,
             task.goal,
             "site",
             task.start,
-            expected.outcome,
-            reason=expected.reason,
+            "unrated" if entry is None else entry.expected.outcome,
+            reason=None if entry is None else entry.expected.reason,
         )
         tasks.append(
             SiteTask(
                 stage,
                 host_of(task),
-                row.facts,
+                None if entry is None else entry.facts,
                 controlled=control_url(task) is not None,
                 suite=task,
                 row=None if acts is None else acts.get(task.task_id),
@@ -172,13 +175,16 @@ def site_tasks(
     return tuple(tasks)
 
 
-def start_void(start: StartPage, committed: DecidingFacts) -> str | None:
+def start_void(start: StartPage, committed: DecidingFacts | None) -> str | None:
     """The start-page check's void, in its order: down, walled, the page not the expected one,
-    then the deciding facts changed under the table."""
+    then the deciding facts changed under the table. A task with no committed facts (held
+    unrated) is checked only for down and walled."""
     if not start.loaded:
         return "site_down"
     if start.wall:
         return "bot_wall"
+    if committed is None:
+        return None
     if start.facts is None:
         return "start_page_differs"
     check = site_check(committed, start.facts)
@@ -617,7 +623,9 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
     parser.add_argument("--price-file", type=Path, required=True)
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
     acts = load_acts(args.acts.read_text(encoding="utf-8"))
-    tasks = site_tasks(load_table(args.table.read_text(encoding="utf-8")), acts)
+    table_text = args.table.read_text(encoding="utf-8")
+    unrated = load_unrated(table_text)  # [V2.65] (2): run, held to the hard bar
+    tasks = site_tasks(load_table(table_text), acts, unrated=unrated)
 
     def attempt(site: SiteTask, run: int) -> SiteRecord | str:
         ready = wait_until_ready(
@@ -645,6 +653,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
         not_started=not_started,
         runs_per_task=max(args.runs, 3),
         loads=spacer.loads,
+        unrated=unrated,
     )
     _emit({"summary": {"accepted": summary.accepted, "gates": summary.gates, **summary.report}})
     return 0 if summary.accepted else 1

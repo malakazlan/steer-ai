@@ -77,6 +77,12 @@ def test_a_clean_start_page_is_no_void() -> None:
     assert start_void(StartPage(loaded=True, wall=False, facts=FACTS), FACTS) is None
 
 
+def test_a_task_with_no_committed_facts_is_checked_only_for_down_and_walled() -> None:
+    assert start_void(StartPage(loaded=True, wall=False, facts=None), None) is None
+    assert start_void(StartPage(loaded=False, wall=False, facts=None), None) == "site_down"
+    assert start_void(StartPage(loaded=True, wall=True, facts=None), None) == "bot_wall"
+
+
 @pytest.mark.parametrize(
     ("start", "void"),
     [
@@ -637,14 +643,17 @@ def test_the_policy_caps() -> None:
     assert DAILY_CAP == 12
 
 
-def test_an_unrated_task_is_not_run_and_not_counted() -> None:
-    """The coordinator's ruling (2026-11-15): out of the tables and out of acceptance until the
-    lead rules, and listed with its reason."""
+def test_an_unrated_task_runs_with_the_unrated_expectation() -> None:
+    """[V2.65] (2): unrated never means exempt. It runs, held to the hard bar; only its expected
+    outcome is not checked. It has no committed facts, so the start check reads only whether the
+    site is up and not walled."""
     table = _table()
     gone = next(iter(table))
     table.pop(gone)
     tasks = site_tasks(table, unrated={gone: "target_after_opener"})
-    assert gone not in {t.stage.task_id for t in tasks}
+    held = next(t for t in tasks if t.stage.task_id == gone)
+    assert (held.stage.expect, held.facts) == ("unrated", None)
+    assert len(tasks) == 30
     summary = summarize(
         tasks,
         [],
