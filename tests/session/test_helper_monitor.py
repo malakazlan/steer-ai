@@ -50,6 +50,7 @@ class FakeHelper:
     wake_fails: bool = False
     on_get: Callable[[str], None] | None = None
     terminate_exits: bool = True
+    terminate_error: OSError | None = None
     """False: the end was asked for but has not taken effect yet (its words still read)."""
 
     def __post_init__(self) -> None:
@@ -104,6 +105,8 @@ class FakeHelper:
     def terminate(self) -> None:
         self.terminated += 1
         self.exited = self.terminate_exits
+        if self.terminate_error is not None:
+            raise self.terminate_error
 
     def close(self) -> None:
         self.closed += 1
@@ -673,3 +676,14 @@ def test_a_failed_wake_wait_is_a_loss_and_naps_its_time() -> None:
     rig.monitor.wait(0.25)
     assert naps == [0.25]
     assert not rig.monitor.healthy()
+
+
+def test_a_failed_end_of_the_helper_is_recorded_in_the_loss_never_raised() -> None:
+    """#388 principal: `HelperProcess.terminate` raises a failed end wait; the loss records it."""
+    rig = _rig()
+    rig.helper.terminate_error = OSError(6, "the handle is invalid")
+    rig.helper.exited = True
+    assert not rig.monitor.healthy()
+    assert rig.helper.terminated == 1
+    assert rig.monitor._lost is not None
+    assert rig.monitor._lost.endswith(";end_unconfirmed:6")

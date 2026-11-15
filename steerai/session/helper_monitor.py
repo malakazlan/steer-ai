@@ -337,7 +337,11 @@ class HelperMonitor:
             if self._lost is not None:
                 return
             self._lost = reason
-        self._helper.terminate()
+        try:
+            self._helper.terminate()
+        except OSError as exc:  # #388: the end was asked for, its wait failed; recorded
+            with self._lock:
+                self._lost = f"{reason};end_unconfirmed:{exc.errno}"
 
     @staticmethod
     def _quantile(status: Words, q: float, events: int) -> int:
