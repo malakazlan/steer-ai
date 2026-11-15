@@ -23,7 +23,13 @@ from steerai.action.executor import Action, Executor
 from steerai.action.keyboard import NAMED_KEYS
 from steerai.action.physical import PhysicalAction, PhysicalExecutor
 from steerai.errors import ErrorCode
-from steerai.loop2.act_guards import KEY_CHORDS, GuardDesk, InputGuard, ToggleGuard
+from steerai.loop2.act_guards import (
+    KEY_CHORDS,
+    REREAD_AFTER_S,
+    GuardDesk,
+    InputGuard,
+    ToggleGuard,
+)
 from steerai.loop2.decision import Key
 from tests.action.fakes import TYPE_IDS, UIA_INVOKE, UIA_TOGGLE, FakeHandle, FakeWindows
 from tests.action.test_executor import _snapshot as _state_snapshot
@@ -617,3 +623,63 @@ def test_the_guard_has_no_disarmed_mode(cls: type, names: tuple[str, ...]) -> No
     for name in names:
         assert params[name].kind is inspect.Parameter.KEYWORD_ONLY
         assert params[name].default is inspect.Parameter.empty
+
+
+# ---- [V2.60] HH-09: the idle rule is re-read before a send that comes a tick or more later ------
+
+
+def _idle_guard(
+    inner: FakeInput, clock: dict[str, float], last: dict[str, float], reads: list[float]
+) -> InputGuard:
+    def last_input() -> float:
+        reads.append(clock["t"])
+        return last["t"]
+
+    return InputGuard(
+        inner,
+        interrupted=lambda: None,
+        focused=lambda: (inner.focused_runtime_id(), False),
+        clock=lambda: clock["t"],
+        last_input=last_input,
+        takeover_token=lambda: "takeover",
+    )
+
+
+def test_a_click_a_tick_after_the_last_idle_read_re_reads_and_refuses_a_persons_input() -> None:
+    """HH-09: the act port's last idle check passed; the person moved after it, and the click
+    comes later than one clock tick: the guard re-reads the idle rule and refuses."""
+    inner = FakeInput()
+    clock, last = {"t": 100.0}, {"t": 50.0}
+    reads: list[float] = []
+    guard = _idle_guard(inner, clock, last, reads)
+    with guard.armed(frozenset()):
+        clock["t"] = 100.0 + REREAD_AFTER_S + 0.001
+        last["t"] = 100.01  # the person, after the act port's idle check
+        with pytest.raises(RefusalError) as refused:
+            guard.click_at(5, 5)
+    assert refused.value.code == ErrorCode.GATE_PENDING_USER
+    assert reads  # the idle rule was re-read
+    assert inner.clicks == []
+
+
+def test_a_send_within_a_tick_of_the_last_idle_read_does_not_re_read() -> None:
+    inner = FakeInput()
+    clock, last = {"t": 100.0}, {"t": 50.0}
+    reads: list[float] = []
+    guard = _idle_guard(inner, clock, last, reads)
+    with guard.armed(frozenset()):
+        guard.move_cursor(5, 5)
+    assert reads == []
+
+
+def test_an_idle_re_read_lets_the_send_through_and_restarts_the_tick() -> None:
+    inner = FakeInput()
+    clock, last = {"t": 100.0}, {"t": 50.0}
+    reads: list[float] = []
+    guard = _idle_guard(inner, clock, last, reads)
+    with guard.armed(frozenset()):
+        clock["t"] = 100.5
+        guard.move_cursor(5, 5)
+        guard.click_at(5, 5)  # no time passed since the re-read: no second read
+    assert reads == [100.5]
+    assert inner.clicks == [(5, 5)]

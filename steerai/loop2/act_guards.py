@@ -35,6 +35,7 @@ from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.decision import Key
 from steerai.loop2.loop import PortInterrupted
 from steerai.loop2.world_ports import kill_sleep
+from steerai.orchestrator.loop import IDLE_S
 from steerai.world.elements import Box
 
 KEY_CHORDS: Final[Mapping[Key, str]] = {
@@ -53,6 +54,9 @@ KEY_CHORDS: Final[Mapping[Key, str]] = {
     "Backspace": "backspace",
 }
 """AP-12: each `Key` to one of v1's named keys, no modifier; a test locks it to the Literal."""
+REREAD_AFTER_S: Final = 0.015625
+"""[V2.60] HH-09: one tick of the world clock (`time.monotonic()`, GetTickCount64 at 15.625 ms,
+meas 2026-11-15). A send that comes later than this after the last idle read re-reads it first."""
 TOGGLE_STATES: Final = frozenset({0, 1, 2})
 """UIA ToggleState (UIAutomationCore.h): Off 0, On 1, Indeterminate 2."""
 TOGGLE_LIMIT: Final = 2
@@ -91,6 +95,9 @@ class InputGuard:
         """[V2.58] (2): who made it, `takeover` or `other_steer_input` (the monitor's)."""
         self._act_started = 0.0
         self._last_click: float | None = None
+        self._idle_read_at: float | None = None
+        """HH-09: when the idle rule was last read for this act (the act port reads it just
+        before arming); None outside an armed act."""
 
     # ---- the act port's arming -----------------------------------------------------------------
 
@@ -102,10 +109,12 @@ class InputGuard:
     def _arm(self, focus: frozenset[tuple[int, ...]]) -> Iterator[None]:
         self._armed = focus
         self._act_started = self._clock()
+        self._idle_read_at = self._act_started
         try:
             yield
         finally:
             self._armed = None
+            self._idle_read_at = None
 
     # ---- the checks ------------------------------------------------------------------------------
 
@@ -114,8 +123,22 @@ class InputGuard:
         if token is not None:
             raise RefusalError(ErrorCode.GATE_BLOCKED, token)
 
+    def _fresh_idle(self) -> None:
+        """[V2.60] HH-09: inside an act, a send that comes more than one clock tick after the
+        last idle read re-reads it: the person's input within `IDLE_S` refuses the send. The
+        residual is the bytecodes between this read and the call (measured as M7)."""
+        if self._idle_read_at is None:
+            return
+        now = self._clock()
+        if now - self._idle_read_at <= REREAD_AFTER_S:
+            return
+        if now - self._last_input() < IDLE_S:
+            raise RefusalError(ErrorCode.GATE_PENDING_USER, self._takeover_token())
+        self._idle_read_at = now
+
     def _keyboard(self) -> None:
         self._switch()
+        self._fresh_idle()
         if self._armed is None:
             raise RefusalError(ErrorCode.GATE_BLOCKED, "not_armed")
         if self._last_input() > self._act_started:
@@ -133,14 +156,17 @@ class InputGuard:
 
     def acquire_foreground(self, hwnd: int) -> str:
         self._switch()
+        self._fresh_idle()
         return self._inner.acquire_foreground(hwnd)
 
     def move_cursor(self, x: int, y: int) -> None:
         self._switch()
+        self._fresh_idle()
         self._inner.move_cursor(x, y)
 
     def click_at(self, x: int, y: int) -> None:
         self._switch()
+        self._fresh_idle()
         self._inner.click_at(x, y)
         self._last_click = self._clock()
 
