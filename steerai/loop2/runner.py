@@ -654,12 +654,9 @@ class _Run:
                 observed = self._rejected_turn(rejected, observed)
                 self._trace_turn()  # [V2.67] D: one record per rejected turn
                 continue
-            if not self._intake_passes(decision):  # [V2.68] One: refused before anything freezes
-                observed = self._record_strike(observed)
-                self._trace_turn()  # [V2.67] D: one record per refused intake turn (#457 P5)
-                continue
-            self._check_interrupt()  # #326, [V2.40] Q4: a Decision after the kill is discarded
             if self.ports.turn_trace is not None:  # #444: no trace work without a sink
+                # #457 review: shaped before the intake check, so a refused intake turn's record
+                # carries the Decision it judged (None means no call)
                 self.turn.shape = decision_shape(
                     decision,
                     known_subgoals=known_params(self.subgoals),
@@ -667,6 +664,11 @@ class _Run:
                     turn=self.turn.number,
                     attempt=0,
                 )
+            if not self._intake_passes(decision):  # [V2.68] One: refused before anything freezes
+                observed = self._record_strike(observed)
+                self._trace_turn()  # [V2.67] D: one record per refused intake turn (#457 P5)
+                continue
+            self._check_interrupt()  # #326, [V2.40] Q4: a Decision after the kill is discarded
             fresh = self._observe()
             if fresh.read_cost is not None:
                 self.read_costs.append(fresh.read_cost)  # [V2.34]: this re-read is paid for too
@@ -1089,7 +1091,7 @@ class _Run:
                 else ("navigated" if how == "claim" else how)
             )
             params = tuple(
-                (n, subgoal.params[name].text) for n, name in enumerate(sorted(subgoal.params), 1)
+                (n, param.text) for n, param in numbered_params(subgoal.params)
             )
             lines.append(
                 (position, subgoal.closes, how, kind, _read_token(subgoal, how, proofs), params)
@@ -2293,6 +2295,13 @@ def _read_token(subgoal: Subgoal, how: str, proofs: Mapping[str, _Proof]) -> tup
     return ("navigated", how)
 
 
+def numbered_params[V](params: Mapping[str, V]) -> tuple[tuple[int, V], ...]:
+    """#457 review, coordinator ruling: the one numbering both judges read: a subgoal's params
+    by their names' sorted order, 1-based (`param:1`), each with its value. The model's names
+    are never shown, only their order."""
+    return tuple((n, params[name]) for n, name in enumerate(sorted(params), 1))
+
+
 def _intake_lines(subs: Sequence[SubgoalDoc]) -> tuple[IntakeLine, ...]:
     """[V2.68] One, packet rev 5 (P1): each declared subgoal by position and closing kind, its
     params by sorted position with their words; never the model's id, param names or desc."""
@@ -2300,7 +2309,7 @@ def _intake_lines(subs: Sequence[SubgoalDoc]) -> tuple[IntakeLine, ...]:
         (
             position,
             doc.closes,
-            tuple((n, doc.params[name]) for n, name in enumerate(sorted(doc.params), 1)),
+            numbered_params(doc.params),
         )
         for position, doc in enumerate(subs, 1)
     )

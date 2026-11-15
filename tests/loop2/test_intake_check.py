@@ -251,6 +251,7 @@ def test_a_refused_intake_turn_is_traced() -> None:
     run_task(task(), dataclasses.replace(world.ports(), turn_trace=sink))
     assert [r["turn"] for r in records] == [1, 2]
     assert [f["refusal"] for f in records[0]["refusals"]] == ["intake_insufficient"]
+    assert records[0]["decision"] is not None  # #457 review: the judged Decision, not "no call"
 
 
 @pytest.mark.parametrize(
@@ -316,9 +317,9 @@ def test_the_runner_hands_the_check_positions_never_model_ids() -> None:
 
 
 def test_the_intake_prompt_version_and_header() -> None:
-    assert INTAKE_PROMPT_VERSION == "intake-1"
+    assert INTAKE_PROMPT_VERSION == "intake-2"
     live, _ = _world()
-    assert live.header(task())["intake_prompt_version"] == "intake-1"
+    assert live.header(task())["intake_prompt_version"] == "intake-2"
 
 
 def test_both_judges_share_the_criterion() -> None:
@@ -337,7 +338,7 @@ def test_each_judges_fixed_blocks_are_pinned_with_its_version() -> None:
     audit, _ = build_audit_prompt("g", (), "w", [], task_fence="taskfence01",
                                   screen_fence="scrfence01")  # fmt: skip
     pinned = (INTAKE_PROMPT_VERSION, _fixed(intake), controller.AUDIT_PROMPT_VERSION, _fixed(audit))
-    assert pinned == ("intake-1", INTAKE_FIXED, "audit-3", AUDIT_FIXED)
+    assert pinned == ("intake-2", INTAKE_FIXED, "audit-4", AUDIT_FIXED)
 
 
 def test_intake_insufficient_is_told_to_the_model() -> None:

@@ -25,10 +25,10 @@ from steerai.loop2.loop import PortInterrupted, TokenUsage
 from steerai.planner.claude_planner import DEFAULT_MAX_TOKENS, DEFAULT_MODEL, EFFORT
 
 POLL_S: Final = 0.05
+"""[V2.40] Q4: the loop thread polls `interrupted()` this often while a call runs (packet 5)."""
 MODEL_REFUSAL: Final = "refusal"
 """The provider declined to answer (`stop_reason == "refusal"`): a call made, with no answer;
 the judges read it as an unusable reply (#457 principal 3)."""
-"""[V2.40] Q4: the loop thread polls `interrupted()` this often while a call runs (packet 5)."""
 COUNT_TIMEOUT_S: Final = 0.889 * 1.25
 """[V2.61]: the longest wait for an exact count: the measured max, 889 ms, plus a quarter
 (count_tokens on claude-opus-5, 2026-11-15, n=60: p50 310 ms, p95 370 ms, max 889 ms). Later,
