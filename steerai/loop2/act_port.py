@@ -16,10 +16,11 @@ The order of every act:
 3. the dispatch, checked again: R0/R1 only (AP-13), text only on a type and an option only on a
    choose (AP-26), focus only on a field ([V2.51] (1)), a key only from the closed map (AP-12),
    Backspace only on Steer's own text ([V2.51] (5));
-4. before physical input (type, press, focus): v1's tap refusal, then v1's idle rule (the person
-   idle `IDLE_S`, waited in kill-aware steps up to `MAX_WAIT_S` or the wall budget left), then,
-   when it waited, a fresh look: the same window and title, or nothing is sent (AP-03, AP-30,
-   v1 `_fallback_look`);
+4. before anything that sends (every verb but wait), v1's `_boundary`: the idle rule (the person
+   idle `IDLE_S`, v1's constant, UNMEASURED with no probe yet; waited in kill-aware steps up to
+   `MAX_WAIT_S` or the wall budget left), then, when it waited, a fresh look: the same window
+   handle and title, or nothing is sent (AP-03, AP-30, v1 `_fallback_look`). Before physical
+   input (type, press, focus, the fallback click) v1's tap refusal comes first;
 5. resolve on the last observation by RuntimeId (exactly one element), and check it is the
    element the gate rated (`Dispatch.role` / `Dispatch.name`, RT-04); keys never go to a
    listed, unread or live secure field (AP-08, AP-09); a type and a press go only where the live
@@ -30,7 +31,9 @@ The order of every act:
    the first) is one delivered Toggle, `second_toggle_refused`, and one the guard's re-read found
    in the wanted state is verified (`settled_on_reread`, [V2.52] (a));
 7. a click whose semantic call was refused for `no_InvokePattern` with nothing tried falls back
-   to v1's physical click, exactly as v1 does (AP-04..06, 5.9 [v2.50]);
+   to v1's physical click, exactly as v1 does (AP-04..06, 5.9 [v2.50]). A tree item's
+   expand or collapse by click (v1's `expand_by_click`, packet §3) is deferred (AP-25, #353):
+   refused `expand_needs_click`, nothing sent;
 8. the read-back of a read-back verb, attached only when something was sent; v1's delivery is
    kept as reported beside it ([V2.51] (2)).
 """
@@ -43,8 +46,8 @@ from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from typing import Final, Protocol, TypeVar
 
-from steerai.action.dispositions import ActionResult, Delivery
-from steerai.action.executor import Action, click_point, physical_click_target
+from steerai.action.dispositions import ActionResult, Delivery, Step
+from steerai.action.executor import Action, aim_of, click_point, physical_click_target
 from steerai.action.physical import PhysicalAction
 from steerai.errors import ErrorCode
 from steerai.loop2.act_guards import KEY_CHORDS, SECOND_REFUSED, SETTLED
@@ -82,7 +85,10 @@ NO_INVOKE: Final = "no_InvokePattern"
 """v1's refusal detail for a control with no InvokePattern: the only one that falls back."""
 FOCUS_READ_S: Final = 0.5
 """How long the focus read-back polls for the focus to arrive after the click, in `KILL_POLL_S`
-steps (UNMEASURED; the watch after the act reads the focus again)."""
+steps. UNMEASURED (no probe yet); the watch after the act reads the focus again."""
+EXPAND_BY_CLICK: Final = "expand_by_click"
+"""v1's refusal detail for a tree item whose expand or collapse needs a click
+(`executor._tree_expand`); the port defers that click (AP-25, #353)."""
 
 
 class Reads(Protocol):
@@ -145,9 +151,12 @@ class ActPort:
         self._clock = clock
         self._wall_left = wall_left
         self._pause = pause
+        self._sent: ActionResult | None = None
+        """The last result an executor returned in this act: its steps survive a later error."""
 
     def act(self, dispatch: Dispatch) -> ActResult:
         verb = dispatch.action.verb
+        self._sent = None
         token = self._interrupted()
         if token is not None:  # nothing is sent after the key ([V2.40] Q4)
             raise PortInterrupted(token)
@@ -159,8 +168,13 @@ class ActPort:
             return ActResult(_not_sent(verb, refused.code, refused.detail), None)
         except Exception as exc:  # noqa: BLE001 - [V2.51] (2): fail closed, never raise
             evidence = {"detail": "port_error", "error": type(exc).__name__}
+            steps: list[Step] = [] if self._sent is None else list(self._sent.steps)  # v1 sent
             failed = ActionResult(
-                verb, Delivery.DELIVERY_UNCERTAIN, code=ErrorCode.VERIFY_FAILED, evidence=evidence
+                verb,
+                Delivery.DELIVERY_UNCERTAIN,
+                steps=steps,
+                code=ErrorCode.VERIFY_FAILED,
+                evidence=evidence,
             )
             return ActResult(failed, None)
 
@@ -170,8 +184,7 @@ class ActPort:
             # the watch after a wait IS the wait (slice 5, change-aware): nothing is actuated
             return ActResult(ActionResult(verb, Delivery.DELIVERED_VERIFIED), None)
         _check_dispatch(dispatch)
-        if verb in PHYSICAL_VERBS:
-            self._boundary()
+        self._boundary(physical=verb in PHYSICAL_VERBS)
         element, snapshot = self._resolve(dispatch)
         if verb in SEMANTIC_VERBS:
             result = self._semantic_send(dispatch, element, snapshot)
@@ -180,18 +193,23 @@ class ActPort:
         if result.delivery is Delivery.NOT_DELIVERED and not result.skipped:
             return ActResult(result, None)
         if verb == "focus":
-            return ActResult(dataclasses.replace(result, verb="focus"), self._read_focus(element))
+            focused = self._read_focus(element, snapshot)
+            return ActResult(dataclasses.replace(result, verb="focus"), focused)
         return ActResult(result, self._read_back(dispatch, element))
 
     # ---- before anything is sent -------------------------------------------------------------
 
-    def _boundary(self) -> None:
-        """v1's order before physical input: the tap refusal, the idle rule, then a fresh look
-        when it waited (AP-03, AP-30); a refusal raises `_Refused`, a kill `PortInterrupted`."""
-        tap = self._desk.tap_refusal()
-        if tap is not None:
-            code = ErrorCode.SECURE_DESKTOP if tap == "secure_desktop" else ErrorCode.GATE_BLOCKED
-            raise _Refused(code, tap)
+    def _boundary(self, *, physical: bool) -> None:
+        """v1's `_boundary` before anything that sends: for physical input the tap refusal
+        first, then the idle rule, then a fresh look when it waited (AP-03, AP-30); a refusal
+        raises `_Refused`, a kill `PortInterrupted`."""
+        if physical:
+            tap = self._desk.tap_refusal()
+            if tap is not None:
+                code = (
+                    ErrorCode.SECURE_DESKTOP if tap == "secure_desktop" else ErrorCode.GATE_BLOCKED
+                )
+                raise _Refused(code, tap)
         if not self._wait_for_idle():
             return
         before = self._world.last
@@ -249,9 +267,13 @@ class ActPort:
     ) -> ActionResult:
         verb = dispatch.action.verb
         option = dispatch.action.option if verb == "choose" else None
-        result = self._semantic.execute(Action(verb, element.id, option=option), snapshot)
+        result = self._executed(
+            self._semantic.execute(Action(verb, element.id, option=option), snapshot)
+        )
         if verb in {"check", "uncheck"}:
             result = _one_toggle(result)
+        if verb in {"expand", "collapse"} and _nothing_tried(result, EXPAND_BY_CLICK):
+            raise _Refused(ErrorCode.ELEMENT_NOT_ACTIONABLE, "expand_needs_click")  # AP-25
         if verb == "click" and _no_invoke(result) and physical_click_target(snapshot, element):
             return self._fallback(dispatch, result)
         return result
@@ -260,16 +282,27 @@ class ActPort:
         """v1's fallback (orchestrator/loop.py `_dispatch`, 5.9 [v2.50]): the boundary, the
         fresh look when it waited, the target again, still a plain control with no acting
         descendant, then one physical click at v1's `click_point`."""
-        self._boundary()
+        self._boundary(physical=True)
         element, snapshot = self._resolve(dispatch)
         if not physical_click_target(snapshot, element):
             return refused  # an acting child appeared in the wait
         point = click_point(snapshot, element)
-        clicked = self._physical.execute(PhysicalAction("click", point.id), snapshot)
+        clicked = self._executed(
+            self._physical.execute(PhysicalAction("click", point.id), snapshot)
+        )
         # the semantic refusal tried nothing (`_no_invoke`: no steps), so the click's steps are
-        # the act's whole log
-        evidence = {**clicked.evidence, "click_fallback": "physical", "semantic_detail": NO_INVOKE}
+        # the act's whole log; `aim` is v1's closed token for where it aimed
+        evidence = {
+            **clicked.evidence,
+            "click_fallback": "physical",
+            "semantic_detail": NO_INVOKE,
+            "aim": aim_of(element, point),
+        }
         return dataclasses.replace(clicked, evidence=evidence)
+
+    def _executed(self, result: ActionResult) -> ActionResult:
+        self._sent = result
+        return result
 
     # ---- physical ------------------------------------------------------------------------------
 
@@ -278,7 +311,9 @@ class ActPort:
     ) -> ActionResult:
         verb = dispatch.action.verb
         if verb == "focus":  # a hit-tested click, as in v1
-            return self._physical.execute(PhysicalAction("click", element.id), snapshot)
+            return self._executed(
+                self._physical.execute(PhysicalAction("click", element.id), snapshot)
+            )
         _check_secure(element, snapshot, self._world.read_secure(element))
         allowed = key_targets(element, snapshot)
         if self._desk.focused() not in allowed:
@@ -290,7 +325,7 @@ class ActPort:
             chord = KEY_CHORDS[dispatch.action.key]  # type: ignore[index]  # checked first
             sent = PhysicalAction("press", element.id, chord=chord)
         with self._desk.armed(allowed):
-            return self._physical.execute(sent, snapshot)
+            return self._executed(self._physical.execute(sent, snapshot))
 
     # ---- after something was sent --------------------------------------------------------------
 
@@ -308,14 +343,16 @@ class ActPort:
             )
         return None
 
-    def _read_focus(self, element: Element) -> bool | None:
-        """[V2.51] (1): the live focus after a focus click, polled up to `FOCUS_READ_S`: True on
-        the target, False elsewhere, None unread. A kill ends the poll with what was read (the
-        click went: it is never raised away)."""
+    def _read_focus(self, element: Element, snapshot: Snapshot) -> bool | None:
+        """[V2.51] (1): the live focus after a focus click, polled up to `FOCUS_READ_S`: True
+        where keys for the target go (`key_targets`: the target, or a ComboBox's own Edit),
+        False elsewhere, None unread. A kill ends the poll with what was read (the click went:
+        it is never raised away)."""
         started = self._clock()
+        allowed = key_targets(element, snapshot)
         while True:
             focus = self._desk.focused()
-            if focus == element.runtime_id:
+            if focus in allowed:
                 return True
             if self._clock() - started >= FOCUS_READ_S or self._interrupted() is not None:
                 return None if focus is None else False
@@ -379,16 +416,21 @@ def _one_toggle(result: ActionResult) -> ActionResult:
             result.verb,
             Delivery.DELIVERED_UNVERIFIED,
             steps=result.steps,
-            code=ErrorCode.VERIFY_FAILED,
+            code=result.code or ErrorCode.VERIFY_FAILED,  # v1's own code, kept
             evidence={"toggles": 1, "detail": SECOND_REFUSED},
         )
     return result
 
 
+def _nothing_tried(result: ActionResult, detail: str) -> bool:
+    """v1 refused with nothing tried, for `detail`."""
+    refused = result.delivery is Delivery.NOT_DELIVERED and not result.steps
+    return refused and result.evidence.get("detail") == detail
+
+
 def _no_invoke(result: ActionResult) -> bool:
     """v1's fallback condition (AP-04): refused with nothing tried, for no InvokePattern."""
-    refused = result.delivery is Delivery.NOT_DELIVERED and not result.steps
-    return refused and result.evidence.get("detail") == NO_INVOKE
+    return _nothing_tried(result, NO_INVOKE)
 
 
 def _equal(read: ValueFact | None, wanted: ValueFact) -> bool | None:

@@ -72,7 +72,7 @@ def test_the_focus_state_names_only_what_no_row_carries(
 def test_an_element_with_no_runtime_id_never_carries_the_focus() -> None:
     blank = dataclasses.replace(GO, runtime_id=())
     shown = snapshot([*PAGE[:2], blank])
-    assert focus_state(shown, ()) == "elsewhere"
+    assert focus_state(shown, ()) == "unread"  # one meaning for (): unread, fail closed
     rows = v2_listing(shown, handles={}, focus=())
     assert not any(r.text.endswith(" focused") for r in rows)
 

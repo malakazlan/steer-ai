@@ -221,3 +221,18 @@ def test_the_new_refusals_are_closed_tokens_of_their_kinds() -> None:
 def test_the_prompt_says_to_focus_a_field_before_typing() -> None:
     assert PROMPT_VERSION == "controller-6"
     assert "Focus a text field before you type into it" in SYSTEM_RULES
+
+
+def test_a_batch_focus_on_another_field_overrides_the_listing() -> None:
+    """Principal non-blocking: the listing showed the focus on the field, but this batch's
+    verified focus put it on another one: the type is the model's fault, not the world's."""
+    other = element(50, "Edit", "Find", (9, 50), 1)
+    world = World(
+        [decision(act("focus", target=other.id), TYPE, first=True)],
+        screen=observed([*QUERY_PAGE, other], focus=FIELD.runtime_id),
+        effects=[report("focus")],
+    )
+    outcome = run_task(task(), world.ports())
+    assert [d.action.verb for d in world.dispatched] == ["focus"]
+    assert f"refused:type_not_at_focus:{FIELD.id}" in world.views[-1].history
+    assert outcome.focus_losses == 0

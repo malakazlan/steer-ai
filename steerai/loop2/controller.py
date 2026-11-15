@@ -162,9 +162,9 @@ def v2_listing(
 def focus_state(snapshot: Snapshot, focus: tuple[int, ...] | None) -> FocusState | None:
     """[V2.52] (b): None when a listing row carries the focus; `unread` when it was not read;
     `elsewhere` when it is on something the snapshot does not hold."""
-    if focus is None:
+    if not focus:  # None or an empty RuntimeId: not read (fail closed)
         return "unread"
-    if focus and any(e.runtime_id == focus for e in snapshot.elements):
+    if any(e.runtime_id == focus for e in snapshot.elements):
         return None
     return "elsewhere"
 

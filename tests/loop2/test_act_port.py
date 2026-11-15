@@ -46,10 +46,14 @@ class Executor:
         self.calls: list[tuple[Any, Snapshot]] = []
         self.armed: list[frozenset[tuple[int, ...]] | None] = []
         self.desk: Desk | None = None
+        self.during: Callable[[], None] | None = None
+        """Runs inside each call (the person's key pressed while the executor works)."""
 
     def execute(self, action: Any, snapshot: Snapshot) -> ActionResult:  # Any: either kind
         self.calls.append((action, snapshot))
         self.armed.append(None if self.desk is None else self.desk.current)
+        if self.during is not None:
+            self.during()
         result = self.results.pop(0)
         if isinstance(result, Exception):
             raise result
@@ -872,3 +876,109 @@ def test_any_error_inside_the_port_is_uncertain_delivery(where: str) -> None:
     assert result.delivery is Delivery.DELIVERY_UNCERTAIN
     assert result.action.evidence == {"detail": "port_error", "error": "RuntimeError"}
     assert result.read_back is None
+
+
+# ---- #352 review round --------------------------------------------------------------------------
+
+
+def test_a_semantic_verb_waits_for_the_person_too_with_no_tap() -> None:
+    """v1's `_boundary` runs before every dispatch (orchestrator/loop.py `_act`): the idle rule
+    and the fresh look before a semantic click as well; the tap refusal is physical only."""
+    desk = Desk(last_input=0.0, tap="hands_on")
+    rig = _port(semantic=Executor(ok("click")), desk=desk)
+    fresh = observed([*SHOWN.snapshot.elements])
+    rig.world.fresh = [fresh]
+    rig.port.act(_dispatch("click", GO))
+    assert rig.clock.now >= IDLE_S
+    assert rig.world.looks == 1
+    assert rig.semantic.calls[0][1] is fresh.snapshot
+    assert desk.taps == 0
+
+
+def test_a_kill_during_the_semantic_call_stops_the_fallback_with_no_click() -> None:
+    """Principal M10: the switch latches inside the semantic call (no Invoke); the person is
+    idle, so the fallback's boundary must read the switch before its idle check."""
+    latched: list[str] = []
+    rig = _port(
+        semantic=Executor(NO_INVOKE),
+        physical=Executor(ok("click")),
+        interrupted=lambda: latched[0] if latched else None,
+    )
+    rig.semantic.during = lambda: latched.append("killed")
+    with pytest.raises(PortInterrupted):
+        rig.port.act(_dispatch("click", GO))
+    assert rig.physical.calls == []
+
+
+def test_a_fresh_look_in_another_window_with_the_same_title_sends_nothing() -> None:
+    """Principal M17: the window handle is checked, not only the title."""
+    desk = Desk(last_input=0.0)
+    rig = _port(physical=Executor(ok("type")), desk=desk)
+    other = observed([*SHOWN.snapshot.elements])
+    rig.world.fresh = [
+        dataclasses.replace(other, snapshot=dataclasses.replace(other.snapshot, hwnd=0x99))
+    ]
+    result = rig.port.act(_dispatch("type", FIELD, **TYPE))
+    assert _refused(result, ErrorCode.FOCUS_LOST, "screen_changed_during_wait")
+    assert _nothing_executed(rig)
+
+
+def test_a_focus_on_a_comboboxs_own_edit_reads_back_true() -> None:
+    """Principal item 3: the read-back agrees with where keys go (`key_targets`)."""
+    rig = _port(physical=Executor(unverified("click")), desk=Desk(focus=COMBO_EDIT.runtime_id))
+    result = rig.port.act(_dispatch("focus", COMBO))
+    assert result.read_back is True
+
+
+def test_a_tree_item_expand_by_click_is_deferred_and_sends_nothing() -> None:
+    """Packet §3 / [V2.40] Q6, deferred (AP-25, #353): v1 asks for a click; the port refuses."""
+    asks_click = nothing_sent("expand", detail="expand_by_click")
+    rig = _port(semantic=Executor(asks_click), physical=Executor(ok("click")))
+    result = rig.port.act(_dispatch("expand", ROW))
+    assert _refused(result, ErrorCode.ELEMENT_NOT_ACTIONABLE, "expand_needs_click")
+    assert rig.physical.calls == []
+
+
+def test_a_kill_ends_the_focus_poll_at_once() -> None:
+    """The tester's m26: the poll reads the switch at each step (latency, not safety)."""
+    flag: list[bool] = []
+    rig = _port(
+        physical=Executor(unverified("click")),
+        desk=Desk(focus=GO.runtime_id),
+        interrupted=lambda: "takeover" if flag else None,
+    )
+    rig.clock.on_pause = lambda: flag.append(True)
+    result = rig.port.act(_dispatch("focus", FIELD))
+    assert result.read_back is False
+    assert result.delivery is not Delivery.NOT_DELIVERED
+    assert len(rig.clock.pauses) == 1
+
+
+def test_an_error_after_a_send_keeps_what_v1_sent() -> None:
+    """Principal non-blocking: a `port_error` after the executor returned keeps its steps."""
+    toggled = dataclasses.replace(ok("check"), steps=[TOGGLED])
+    rig = _port(semantic=Executor(toggled))
+    rig.world.broken = True
+    result = rig.port.act(_dispatch("check", BOX))
+    assert result.delivery is Delivery.DELIVERY_UNCERTAIN
+    assert result.action.steps == [TOGGLED]
+
+
+def test_a_second_toggle_that_may_have_landed_stays_uncertain() -> None:
+    """Principal item 1: `ToggleGuard` names a raising second Toggle; it is never refused."""
+    may_have = _guarded("second_toggle_uncertain")
+    rig = _port(semantic=Executor(may_have))
+    result = rig.port.act(_dispatch("check", BOX))
+    assert result.action is may_have
+
+
+def test_v1s_unchanged_keeps_its_code() -> None:
+    rig = _port(semantic=Executor(UNCHANGED))
+    rig.world.states[(BOX.runtime_id, "on")] = False
+    result = rig.port.act(_dispatch("check", BOX))
+    assert result.action.code is ErrorCode.VERIFY_TIMEOUT
+
+
+def test_the_fallback_records_where_it_aimed() -> None:
+    rig = _port(semantic=Executor(NO_INVOKE), physical=Executor(ok("click")))
+    assert rig.port.act(_dispatch("click", ROW)).action.evidence["aim"] == "label"

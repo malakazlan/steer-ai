@@ -5,7 +5,8 @@ v1's executors are reused unchanged; these wrappers are what slice 7 injects int
   input (a cursor move, a click, each typed burst, each chord, a foreground acquire with its key
   nudge) reads the switch first and is refused once it reports (AP-01). Keyboard input goes only
   while the act port has armed it, only to the exact RuntimeIds armed (never "any descendant",
-  AP-10), and only when the focused element's live IsPassword reads False (AP-08). The
+  AP-10), and only when the focused element's live IsPassword reads False (AP-08); both come from
+  ONE read of the focused element per burst, so the focus cannot move between them. The
   double-click wait is the guard's own, kill-aware (AP-02).
 - `ToggleGuard` wraps v1's UIA bindings so the TogglePattern v1 gets sends a second Toggle in one
   actuation only when the state re-read just before it still shows the third state v1 saw
@@ -13,8 +14,11 @@ v1's executors are reused unchanged; these wrappers are what slice 7 injects int
 - `GuardDesk` is what the act port reads before physical input: v1's tap refusal and the live
   keyboard focus, both fail closed.
 
-A refusal is v1's `RefusalError`, so v1's own `classify` records it by phase: nothing sent is
-`not_delivered`, a refusal after a burst went out is `delivery_uncertain`.
+A refusal is v1's `RefusalError`, so v1's own `classify` records it by phase: a refusal before
+v1 marked its call sent (a move, a foreground acquire) is `not_delivered`; one after it (inside
+`Call.send`: the click; every typing burst, the first included, since v1 marks the typing sent
+before its loop) is `delivery_uncertain`, though nothing more went out. Slice 7 also passes the
+switch as v1's own `blocker`, which `Call.send` reads before marking anything sent.
 """
 
 from __future__ import annotations
@@ -55,6 +59,8 @@ TOGGLE_LIMIT: Final = 2
 """[V2.52] (a): a tri-state control reaches any state from any other in at most two Toggles."""
 SECOND_REFUSED: Final = "second_toggle_refused"
 SETTLED: Final = "settled_on_reread"
+SECOND_UNCERTAIN: Final = "second_toggle_uncertain"
+"""The second Toggle raised: it may have landed. v1 records it uncertain and it stays so."""
 
 
 class InputGuard:
@@ -65,14 +71,15 @@ class InputGuard:
         inner: InputPort,
         *,
         interrupted: Callable[[], str | None],
-        focus_secure: Callable[[], bool | None],
+        focused: Callable[[], tuple[tuple[int, ...], bool | None]],
         clock: Callable[[], float],
         pause: Callable[[float], None] = time.sleep,
     ) -> None:
         self._inner = inner
         self._interrupted = interrupted
-        self._focus_secure = focus_secure
-        """The focused element's live IsPassword: True a password, None unread (slice 7)."""
+        self._focused = focused
+        """ONE read of the focused element (slice 7): its RuntimeId and its live IsPassword
+        (True a password, None unread)."""
         self._clock = clock
         self._pause = pause
         self._armed: frozenset[tuple[int, ...]] | None = None
@@ -103,9 +110,9 @@ class InputGuard:
         self._switch()
         if self._armed is None:
             raise RefusalError(ErrorCode.GATE_BLOCKED, "not_armed")
-        if self._inner.focused_runtime_id() not in self._armed:
+        focus, secure = self._focused()
+        if focus not in self._armed:
             raise RefusalError(ErrorCode.FOCUS_LOST, "focus_moved")
-        secure = self._focus_secure()
         if secure is None:
             raise RefusalError(ErrorCode.GATE_BLOCKED, "secure_unread")
         if secure:
@@ -234,7 +241,7 @@ class GuardDesk:
             focus = self._guard.focused_runtime_id()
         except (OSError, SteerError):
             return None
-        return focus or None
+        return focus or None  # an empty RuntimeId is unread, as `focus_state` reads it
 
     def armed(self, focus: frozenset[tuple[int, ...]]) -> AbstractContextManager[None]:
         return self._guard.armed(focus)
@@ -277,12 +284,18 @@ class _OneSubstitution:
         return value
 
     def Toggle(self) -> None:  # noqa: N802 - COM naming
-        if self._toggles == 1:
-            self._second()
-        elif self._toggles >= TOGGLE_LIMIT:
+        if self._toggles >= TOGGLE_LIMIT:
             raise RefusalError(ErrorCode.VERIFY_FAILED, "toggle_limit")
-        self._raw.Toggle()
-        self._toggles += 1
+        if self._toggles == 0:
+            self._raw.Toggle()
+            self._toggles = 1
+            return
+        self._second()
+        try:
+            self._raw.Toggle()
+        except Exception as exc:  # it may have landed: never "refused", never retried
+            raise RefusalError(ErrorCode.VERIFY_FAILED, SECOND_UNCERTAIN) from exc
+        self._toggles = 2
 
     def _second(self) -> None:
         """Raise unless the fresh read still shows the third state v1's poll settled on."""

@@ -914,9 +914,10 @@ class _Run:
         follows what the model saw: the listing (or this batch's verified focus) shows the
         focus elsewhere or unread, a refusal and a strike at once; shown there and gone in the
         read it is sent against, the world moved. Both are counted."""
-        seen = self.turn.focused == element.runtime_id or type_focus_ok(
-            focus=listed.focus, target=element, snapshot=listed.snapshot
-        )
+        if self.turn.focused is not None:  # this batch's verified focus overrides the listing
+            seen = self.turn.focused == element.runtime_id
+        else:
+            seen = type_focus_ok(focus=listed.focus, target=element, snapshot=listed.snapshot)
         handle = self._handle_of(element)
         if not seen:
             self.counts.type_unfocused += 1

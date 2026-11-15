@@ -71,7 +71,7 @@ def _guard(
     return InputGuard(
         inner,
         interrupted=(lambda: None) if switch is None else switch,
-        focus_secure=secure,
+        focused=lambda: (inner.focused_runtime_id(), secure()),
         clock=lambda: clock["t"],
         pause=pause,
     )
@@ -510,16 +510,19 @@ def test_no_second_toggle_when_the_re_read_fails(fast_poll: None) -> None:
 
 
 def test_two_toggles_is_the_hard_limit() -> None:
-    handle = _Cycle(0, {0: 2, 2: 0, 1: 1})
+    """A control that ignores the second Toggle still shows the third state: a third call is
+    refused by the limit, not by the re-read."""
+    handle = _Cycle(0, {0: 2, 2: 2, 1: 1})
     guard = ToggleGuard(control_types={}, interfaces={})
     pattern = guard.pattern(handle, UIA_TOGGLE, "TogglePattern")
     assert pattern.CurrentToggleState == 0
     pattern.Toggle()
     assert pattern.CurrentToggleState == 2
     pattern.Toggle()
-    assert pattern.CurrentToggleState == 0
-    with pytest.raises(RefusalError):
+    assert pattern.CurrentToggleState == 2
+    with pytest.raises(RefusalError) as refused:
         pattern.Toggle()
+    assert refused.value.detail == "toggle_limit"
     assert handle.calls == ["toggle", "toggle"]
 
 
@@ -528,3 +531,52 @@ def test_other_patterns_pass_through_the_toggle_guard(fast_poll: None) -> None:
     result = _semantic().execute(Action("click", 1), _state_snapshot(handle))
     assert handle.invoked == 1
     assert result.delivery is not Delivery.NOT_DELIVERED
+
+
+# ---- #352 review round --------------------------------------------------------------------------
+
+
+def test_one_read_of_the_focused_element_per_burst() -> None:
+    """Principal contract (a): the RuntimeId and IsPassword come from one read, so the focus
+    cannot move between them: the guard never reads the focus a second way."""
+    inner = FakeInput(focused=CHILD_ID)  # another read would see the focus elsewhere
+    reads: list[int] = []
+
+    def focused() -> tuple[tuple[int, ...], bool | None]:
+        reads.append(1)
+        return TARGET_ID, False
+
+    guard = InputGuard(
+        inner, interrupted=lambda: None, focused=focused, clock=lambda: 0.0, pause=lambda _s: None
+    )
+    with guard.armed(frozenset({TARGET_ID})):
+        guard.type_text("a")
+        guard.press("enter")
+    assert len(reads) == 2
+    assert inner.bursts == ["text:1", "chord:enter"]
+
+
+def test_a_second_toggle_that_raises_may_have_landed(fast_poll: None) -> None:
+    """Principal item 1: the second Toggle has the first's label, so v1 cannot tell a raise
+    from it apart from a read-back failure; the guard names it uncertain."""
+
+    class _Raising(_Cycle):
+        def GetCurrentPattern(self, pattern_id: int) -> Any:  # noqa: N802 - COM naming
+            pattern = super().GetCurrentPattern(pattern_id)
+            handle = self
+            first = pattern.Toggle
+
+            def toggle() -> None:
+                if handle.calls:
+                    handle.calls.append("toggle")
+                    raise OSError("RPC_E_DISCONNECTED")
+                first()
+
+            pattern.Toggle = toggle
+            return pattern
+
+    handle = _Raising(1, ON_INDET_OFF)
+    result = _check(handle, "uncheck")
+    assert handle.calls == ["toggle", "toggle"]
+    assert result.delivery is Delivery.DELIVERY_UNCERTAIN
+    assert result.evidence["detail"] == "second_toggle_uncertain"
