@@ -196,6 +196,7 @@ ErrorCode = Literal[
     "fence_bad",
     "unsafe_token",
     "prompt_too_large",
+    "model_refusal",
 ]
 
 

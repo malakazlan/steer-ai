@@ -25,6 +25,9 @@ from steerai.loop2.loop import PortInterrupted, TokenUsage
 from steerai.planner.claude_planner import DEFAULT_MAX_TOKENS, DEFAULT_MODEL, EFFORT
 
 POLL_S: Final = 0.05
+MODEL_REFUSAL: Final = "refusal"
+"""The provider declined to answer (`stop_reason == "refusal"`): a call made, with no answer;
+the judges read it as an unusable reply (#457 principal 3)."""
 """[V2.40] Q4: the loop thread polls `interrupted()` this often while a call runs (packet 5)."""
 COUNT_TIMEOUT_S: Final = 0.889 * 1.25
 """[V2.61]: the longest wait for an exact count: the measured max, 889 ms, plus a quarter
@@ -258,7 +261,7 @@ class DecideCalls:
         return result, _summed(self._usages)
 
     def _ask(self, system: list[str], blocks: list[str]) -> str:
-        self._check(None)  # nothing is sent after the latch: not even a repair ask
+        self._check(None, sent=False)  # nothing is sent after the latch: not even a repair ask
         generation = self._generations.current()
         box: _Box[Reply] = _Box(self._late_error)
         worker = threading.Thread(
@@ -277,7 +280,7 @@ class DecideCalls:
         reply = box.result()
         self._usages.append(reply.usage)
         if reply.stop_reason == "refusal":
-            raise SteerError(ErrorCode.MODEL_ERROR, "refusal")
+            raise SteerError(ErrorCode.MODEL_ERROR, MODEL_REFUSAL)
         return reply.text
 
     def count(self, system: list[str], blocks: list[str]) -> int | None:
@@ -287,7 +290,7 @@ class DecideCalls:
         counter = self._counter
         if counter is None:
             return None
-        self._check(None)
+        self._check(None, sent=False)  # a count is never a model call (#457 principal 2)
         generation = self._generations.current()
         box: _Box[tuple[int | None]] = _Box(self._late_error)
         worker = threading.Thread(
@@ -299,26 +302,27 @@ class DecideCalls:
         deadline = time.monotonic() + self._count_timeout_s
         worker.start()
         while not box.done.wait(max(0.0, min(self._poll_s, deadline - time.monotonic()))):
-            self._check(box)
+            self._check(box, sent=False)
             if time.monotonic() >= deadline:
                 box.abandon()  # late: its answer is never read
                 return None
-        self._check(box)
+        self._check(box, sent=False)
         if self._generations.current() != generation:
             box.abandon()
-            raise PortInterrupted("generation")
+            raise PortInterrupted("generation", sent=False)
         return box.result()[0]
 
-    def _check(self, box: _Box[Any] | None) -> None:  # Any: a reply or a count
+    def _check(self, box: _Box[Any] | None, *, sent: bool = True) -> None:  # Any: reply or count
         """Read the switch: on a token, the generation moves on (any result in flight is stale),
-        the call is abandoned, and the wait ends with `PortInterrupted`."""
+        the call is abandoned, and the wait ends with `PortInterrupted` (`sent`: whether a model
+        request had gone out, #457 principal 2)."""
         token = self._interrupted()
         if token is None:
             return
         self._generations.bump()
         if box is not None:
             box.abandon()
-        raise PortInterrupted(token)
+        raise PortInterrupted(token, sent=sent)
 
 
 def _summed(usages: list[TokenUsage | None]) -> TokenUsage | None:

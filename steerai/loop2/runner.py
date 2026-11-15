@@ -647,6 +647,7 @@ class _Run:
                 continue
             if not self._intake_passes(decision):  # [V2.68] One: refused before anything freezes
                 observed = self._record_strike(observed)
+                self._trace_turn()  # [V2.67] D: one record per refused intake turn (#457 P5)
                 continue
             self._check_interrupt()  # #326, [V2.40] Q4: a Decision after the kill is discarded
             self.turn.shape = decision_shape(
@@ -1106,11 +1107,12 @@ class _Run:
             self._refuse("intake_insufficient")
             return False
         self._intake_budget()
+        self._check_interrupt()  # #457 P2: a latched switch sends nothing and counts nothing
         judged = self._intake_call(intake, IntakeView(subgoals=lines))
-        self._check_interrupt()
         passed = judged.sufficient and judged.reason == "facts_finish_request"
         self.intake_memo[key] = passed
         self.intake_counts["intake_passed" if passed else "intake_rejected"] += 1
+        self._check_interrupt()  # #326: a verdict after the kill is discarded, its counts kept
         if not passed:
             self._refuse("intake_insufficient")
         return passed
@@ -1141,8 +1143,12 @@ class _Run:
                 raise
             self._intake_failed(exc.record.calls)
             self._spend(exc.usage)
+            if exc.usage is not None:  # #457 P1, as #452 G3: a failed call's reported tokens
+                self.intake_counts["intake_tokens"] += sum(_counts(exc.usage) or ())
             raise _End("blocked", Reason("intake_failed")) from None
-        except (PortInterrupted, SteerError):
+        except (PortInterrupted, SteerError) as exc:
+            if isinstance(exc, PortInterrupted) and not exc.sent:
+                raise  # #457 P2, packet §4 F3: nothing went out, so nothing is counted
             self._intake_failed(1)
             self.tokens = math.nan  # abandoned or failed: billed, never reported ([V2.41] (1))
             self.usage_incomplete = True

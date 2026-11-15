@@ -204,9 +204,12 @@ class PortInterrupted(Exception):  # noqa: N818 - the packet's name ([V2.40] Q4)
     no authority: the runner re-reads `interrupted()`, and only the latched switch stops the task
     as killed."""
 
-    def __init__(self, token: str) -> None:
+    def __init__(self, token: str, *, sent: bool = True) -> None:
         super().__init__(token)
         self.token = token
+        self.sent = sent
+        """False when the port gave up before its model request went out (#457 principal 2):
+        such a wait is no call. True otherwise, the safe default for counting."""
 
 
 UrlRead = Literal["read", "no_bar", "document_url_unread", "not_composed"]
