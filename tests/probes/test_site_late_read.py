@@ -6,6 +6,7 @@ only: no browser."""
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable
 from typing import Any
 
@@ -207,3 +208,38 @@ def test_the_row_records_the_before_and_after_facts() -> None:
     )
     assert row["after_minimized"] is False
     assert browser.v2_reads[0] == 0.0  # a ready start page is read at once
+
+
+UNSETTLED = dataclasses.replace(BEFORE, snapshot=dataclasses.replace(BEFORE.snapshot, stable=False))
+"""The start page with its Document, on a read that was not stable yet."""
+
+
+class Unsettled(FakeBrowser):
+    """`read_v2` gives the start page unstable `unsettled` times, then stable."""
+
+    def __init__(self, clock: Clock, unsettled: int) -> None:
+        super().__init__(clock, NAVIGATED, lambda: NAVIGATED)
+        self._unsettled = unsettled
+
+    def read_v2(self) -> Observed:
+        self.v2_reads.append(self._clock.t)
+        if len(self.v2_reads) <= self._unsettled:
+            return UNSETTLED
+        return BEFORE if len(self.v2_reads) == self._unsettled + 1 else self._late()
+
+
+def test_a_start_page_with_a_document_is_read_again_until_its_read_is_stable() -> None:
+    clock = Clock()
+    browser = Unsettled(clock, unsettled=3)
+    row = site_sample(browser, RESULTS_URL, sleep=clock.sleep, clock=clock.now)
+    assert row["before_unready"] is False
+    assert row["before_stable"] is True
+    assert len(browser.v2_reads) == 5  # 3 unstable, the ready one, the late read
+
+
+def test_a_start_page_that_never_settles_is_before_unready_with_its_document() -> None:
+    clock = Clock()
+    browser = Unsettled(clock, unsettled=10_000)
+    row = site_sample(browser, RESULTS_URL, sleep=clock.sleep, clock=clock.now)
+    assert row == {"before_unready": True, "before_top_document": True, "before_stable": False}
+    assert browser.scripts == []
