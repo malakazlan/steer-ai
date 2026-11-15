@@ -704,3 +704,36 @@ def test_the_job_handle_is_the_helpers_own_job_and_read_only() -> None:
     assert helper.job_handle == job
     with pytest.raises(AttributeError):
         helper.job_handle = 0  # type: ignore[misc]  # a read-only property
+
+
+# ---- #378 (the #375 re-review's notes) ----------------------------------------------------------
+
+
+def test_a_failed_wait_while_aborting_still_refuses_and_releases() -> None:
+    """(1): `_end`'s wait raising inside `_abort` must not replace the refusal with an OSError."""
+    w = FakeWin32(behaviour="hang")
+    real_wait = w.wait_any
+
+    def wait(handles: tuple[int, ...], timeout_ms: int) -> int | None:
+        if handles == (w.process,) and w.named("terminate_job"):
+            raise OSError(6, "the handle is invalid")
+        return real_wait(handles, timeout_ms)
+
+    w.wait_any = wait  # type: ignore[method-assign]  # the wait after the end fails
+    with pytest.raises(SteerError, match="monitor_unavailable") as refused:
+        _helper(w).start()
+    assert w.open_handles == set()
+    notes = getattr(refused.value, "__notes__", [])
+    assert any("waiting for the hook helper to end failed" in n for n in notes)  # not lost
+
+
+def test_a_suspended_helper_outside_the_job_is_ended_when_resetting_inheritance_fails() -> None:
+    """(2): created suspended (no JOB_LIST), then making a handle non-inheritable fails before
+    it was assigned: it is not in the job, so it is ended by its process handle, and both its
+    handles are owned and closed."""
+    w = FakeWin32(job_list_fails=True, disable_fails_at=1)
+    with pytest.raises(SteerError, match="monitor_unavailable"):
+        _helper(w).start()
+    assert w.named("terminate_process")
+    assert not w.named("assign")
+    assert w.open_handles == set()
