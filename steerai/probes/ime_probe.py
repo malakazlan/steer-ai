@@ -45,6 +45,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from ctypes import wintypes
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Final, Protocol
 
 from steerai.probes.probe_key import (
@@ -500,11 +501,55 @@ def _live_restore(hkl: int, emit: Callable[[Row], None]) -> bool:  # pragma: no 
                           hkl=hkl, emit=emit)  # fmt: skip
 
 
+RECORD_NAME: Final = "ime_probe.json"
+"""[V2.63] Q3: the recorded pass v2 reads at start (`loop2.ime_gate`), beside the price file."""
+
+
+def record_pass(folder: Path, hkl: int, *, today: str) -> None:
+    """Record that the probe key passed with `hkl`'s IME open on this machine, keeping the
+    layouts an earlier pass with the same probe key recorded (one run probes one IME)."""
+    path = folder / RECORD_NAME
+    layouts = {f"{hkl:#x}"}
+    try:
+        earlier = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        earlier = None
+    if (
+        isinstance(earlier, dict)
+        and earlier.get("passed") is True
+        and earlier.get("probe_vk") == f"{PROBE_VK:#04x}"
+        and isinstance(earlier.get("layouts"), list)
+    ):
+        layouts |= {x for x in earlier["layouts"] if isinstance(x, str)}
+    folder.mkdir(parents=True, exist_ok=True)
+    record = {"passed": True, "probe_vk": f"{PROBE_VK:#04x}", "layouts": sorted(layouts),
+              "date": today}  # fmt: skip
+    path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _record_live(hkl: int) -> None:  # pragma: no cover - live, Windows only
+    import datetime  # noqa: PLC0415
+    import os  # noqa: PLC0415
+
+    root = os.environ.get("LOCALAPPDATA")
+    if not root:
+        raise OSError("LOCALAPPDATA is unset: the pass cannot be recorded")
+    record_pass(
+        Path(root) / "steer", hkl, today=datetime.datetime.now().astimezone().date().isoformat()
+    )
+
+
+def installed_layouts() -> list[int]:  # pragma: no cover - live, Windows only
+    """The installed input locales (HKLs), for v2's start check ([V2.63] Q3)."""
+    return _ImeDesk().layouts()
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
     probe: Callable[[int | None, int, Callable[[Row], None]], list[int]] = _live,
     restore: Callable[[int, Callable[[Row], None]], bool] = _live_restore,
+    record: Callable[[int], None] = _record_live,
 ) -> int:
     parser = argparse.ArgumentParser(prog="python -m steerai.probes.ime_probe")
     parser.add_argument("--batch", type=int, default=20)
@@ -512,7 +557,11 @@ def main(
     parser.add_argument("--restore", type=parse_hkl, default=None, metavar="HKL")
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
 
+    probed: list[int] = []
+
     def emit(row: Row) -> None:
+        if isinstance(row.get("layout"), str) and "notepad_pid" in row:
+            probed.append(parse_hkl(row["layout"]))  # the IME this run switched to
         sys.stdout.write(json.dumps({"probe": "ime_probe", **row}) + "\n")
         sys.stdout.flush()
 
@@ -529,6 +578,9 @@ def main(
         return NOT_APPLICABLE if str(stop) == "no_ime_installed" else 2
     passes = PROBE_VK in accepted
     emit({"accepted": [f"{vk:#04x}" for vk in accepted], "probe_vk_passes": passes})
+    if passes and probed:  # a pass with its restore read back (else RestoreFailed above)
+        record(probed[-1])
+        emit({"recorded": f"{probed[-1]:#x}"})
     return 0 if passes else 1
 
 
