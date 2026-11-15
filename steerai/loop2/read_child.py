@@ -76,6 +76,12 @@ def parse_arms(text: str) -> tuple[Arm, ...]:
 WATCHED: Final = frozenset({"chrome.exe", "python.exe", "pythonw.exe"})
 """The process names the leftover list reports: Steer's own Python and its Chromes, nothing else."""
 Mode = Literal["mixed", "real"]
+Then = Literal["none", "input", "model"]
+THENS: Final[tuple[Then, ...]] = get_args(Then)
+Exp = Literal["access", "fade30", "fade120", "input", "model"]
+EXPS: Final[tuple[Exp, ...]] = get_args(Exp)
+FORCE_A11Y: Final = "--force-renderer-accessibility"
+"""Diagnostic only, never in a scored run: does Chrome expose the page when told to."""
 MODES: Final[tuple[Mode, ...]] = get_args(Mode)
 
 
@@ -97,10 +103,15 @@ def _never_called(_system: list[str], _blocks: list[str]) -> NoReturn:
 # ---- the child (live) ---------------------------------------------------------------------------
 
 
-def run_child_reads(hwnd: int, *, arm: Arm, out: Path, trace: Path) -> int:  # pragma: no cover
-    """The real child's setup on `hwnd`, then reads only, in `arm`; one JSON line per read in
-    `out`, then a summary line. Live, Windows only."""
+def run_child_reads(  # pragma: no cover - live
+    hwnd: int, *, arm: Arm, out: Path, trace: Path, then: Then = "none"
+) -> int:
+    """The real child's setup on `hwnd`, then reads, in `arm`; one JSON line per read in `out`,
+    then a summary line. `then`, after the first observation: `input` sends a focus, a type and
+    an Enter to the page's first field through the real act port (no model); `model` makes two
+    real model calls (no input). Live, Windows only."""
     from steerai.loop2.decide_port import TaskGenerations  # noqa: PLC0415 - live only
+    from steerai.loop2.decision import ActionDoc  # noqa: PLC0415
     from steerai.loop2.live_world import (  # noqa: PLC0415
         LiveConfig,
         LiveWorld,
@@ -108,7 +119,7 @@ def run_child_reads(hwnd: int, *, arm: Arm, out: Path, trace: Path) -> int:  # p
         _ole32,
         run_on_loop_thread,
     )
-    from steerai.loop2.loop import PortInterrupted, WindowCovered  # noqa: PLC0415
+    from steerai.loop2.loop import Dispatch, PortInterrupted, WindowCovered  # noqa: PLC0415
     from steerai.loop2.task import Budgets, Envelope, Task  # noqa: PLC0415
     from steerai.orchestrator.trace import JsonLinesTrace  # noqa: PLC0415
     from steerai.probes.windows import process_name, window_pid  # noqa: PLC0415
@@ -170,6 +181,15 @@ def run_child_reads(hwnd: int, *, arm: Arm, out: Path, trace: Path) -> int:  # p
             started = time.monotonic()
             world.bring_to_front()
             ports = world.ports(task)
+            first = ports.observe()
+            reads.append(read_shape(first, time.monotonic() - started))
+            if then == "input":
+                reads.append({"acts": _input_acts(ports, first, ActionDoc, Dispatch)})
+            elif then == "model":
+                call = WindowsPlatform.provider(platform)
+                for _ in range(2):
+                    reply = call(["Answer with one word."], ["Say ok."])
+                    reads.append({"model_call": type(reply).__name__})
             while (now := time.monotonic() - started) < READ_S:
                 try:
                     reads.append(read_shape(ports.observe(), now))
@@ -184,7 +204,81 @@ def run_child_reads(hwnd: int, *, arm: Arm, out: Path, trace: Path) -> int:  # p
     with out.open("w", encoding="utf-8") as handle:
         for read in reads:
             handle.write(json.dumps(read) + "\n")
-        handle.write(json.dumps({"summary": {"arm": arm, "first_page_s": first_page_s(reads),
+        handle.write(json.dumps({"summary": {"arm": arm, "then": then,
+                                             "first_page_s": first_page_s(reads),
+                                             "reads": len(reads)}}) + "\n")  # fmt: skip
+    return 0
+
+
+def _input_acts(
+    ports: Any, seen: Observed, action_doc: Any, dispatch: Any
+) -> list[str]:  # pragma: no cover
+    """A focus, a type and an Enter on the page's first field through the real act port, each
+    resolved on a fresh observation; their deliveries as closed tokens. Any: the live ports and
+    the two classes, imported live."""
+    fields = [e for e in seen.snapshot.elements if e.role == "Edit" and e.parent_id is not None]
+    page = [e for e in fields if e.name != "Address and search bar"]
+    if not page:
+        return ["no_field"]
+    field = page[0]
+    plan = [
+        (action_doc(verb="focus", target=field.id, subgoal="s1"), "R0", None, None),
+        (action_doc(verb="type", target=field.id, subgoal="s1", text="red shoes"), "R0",
+         "goal_span", "red shoes"),
+        (action_doc(verb="press", subgoal="s1", key="Enter"), "R1", None, None),
+    ]  # fmt: skip
+    done: list[str] = []
+    for action, risk, provenance, text in plan:
+        ports.observe()  # the act port resolves on the last observation handed out
+        sent = dispatch(
+            action=action,
+            runtime_id=field.runtime_id,
+            role=field.role,
+            name=field.name,
+            risk=risk,
+            provenance=provenance,
+            text=text,
+        )
+        result = ports.act(sent)
+        done.append(f"{action.verb}:{result.action.delivery.value}")
+    return done
+
+
+def run_plain(hwnd: int, *, out: Path) -> int:  # pragma: no cover - live, Windows only
+    """A plain UIA reader: no session, no hooks, no LiveWorld; v2's world observe on an MTA
+    thread every `READ_POLL_S` for `READ_S`."""
+    import ctypes  # noqa: PLC0415 - Windows only
+    import threading  # noqa: PLC0415
+
+    import comtypes.client  # noqa: F401, PLC0415 - imported here so the reader can enter the MTA
+
+    found: list[list[dict[str, object]]] = []
+
+    def body() -> None:
+        ctypes.windll.ole32.CoInitializeEx(None, 0)
+        try:
+            from steerai.probes.uia_snapshot import UiaClient  # noqa: PLC0415
+            from steerai.world.effects import poll_tier  # noqa: PLC0415
+            from steerai.world.model import WorldModel  # noqa: PLC0415
+
+            model = WorldModel(UiaClient())
+            reads: list[dict[str, object]] = []
+            started = time.monotonic()
+            while (now := time.monotonic() - started) < READ_S:
+                reads.append(read_shape(poll_tier(model.observe(hwnd)), now))
+                time.sleep(READ_POLL_S)
+            found.append(reads)
+        finally:
+            ctypes.windll.ole32.CoUninitialize()
+
+    thread = threading.Thread(target=body)
+    thread.start()
+    thread.join()
+    reads = found[0] if found else []
+    with out.open("w", encoding="utf-8") as handle:
+        for read in reads:
+            handle.write(json.dumps(read) + "\n")
+        handle.write(json.dumps({"summary": {"plain": True, "first_page_s": first_page_s(reads),
                                              "reads": len(reads)}}) + "\n")  # fmt: skip
     return 0
 
@@ -429,6 +523,127 @@ def run_acting(mode: Mode, out_dir: Path, price: Path) -> int:  # noqa: PLR0915 
     return 0
 
 
+def run_follow(exp: Exp, out_dir: Path, price: Path) -> int:  # noqa: PLR0915  # pragma: no cover
+    """The follow-ups after the acting-child reproduction (no controls: the trigger is the first
+    child). `access`: the real CLI on 3d-a, then a read child on a Chrome with
+    `--force-renderer-accessibility`, then one without it. `fade30` / `fade120`: the real CLI on
+    3d-a, a wait, then a read child and a plain reader side by side on one fresh Chrome.
+    `input` / `model`: a read child that only sends input / only calls the model on 3d-a, then
+    read children on b and c-button. Wall-clock times of each child's start and end are kept."""
+    import shutil  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    from steerai.loop2.stage1 import THREE_D, child_argv  # noqa: PLC0415
+    from steerai.probes import instant_search as fixture  # noqa: PLC0415 - live only
+    from steerai.probes.chrome_a11y import (  # noqa: PLC0415
+        CHROME_DEFAULT,
+        launch_chrome,
+        stop_chrome,
+    )
+    from steerai.probes.layer_b import _ours  # noqa: PLC0415
+    from steerai.probes.layer_b_pages import PageServer  # noqa: PLC0415
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
+
+    def emit(row: Mapping[str, object]) -> None:
+        sys.stdout.write(json.dumps(dict(row)) + "\n")
+        sys.stdout.flush()
+
+    def on_chrome(variant: str, name: str, children: Any, *, force: bool = False) -> None:
+        """One fresh Chrome on `variant`; `children(hwnd, run_dir)` returns the argvs to run on
+        it at once (side by side), each with its own label."""
+        run_dir = out_dir / name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(prefix="steer-readchild-"))
+        with PageServer(fixture.pages()) as server:
+            port = fixture._free_port()
+            proc = launch_chrome(
+                CHROME_DEFAULT, tmp / "profile", port, f"http://127.0.0.1:{server.port}/{variant}",
+                extra_args=(FORCE_A11Y,) if force else (),
+            )  # fmt: skip
+            try:
+                window = wait_window_for_pid(proc.pid, timeout_s=30.0, process=proc)
+                cdp, _ = _ours(port, server.port)
+                try:
+                    fixture._wait_ready(cdp)
+                    started = time.time()
+                    runs = {
+                        label: subprocess.Popen(  # noqa: S603 - our own modules, fixed argvs
+                            argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                        )
+                        for label, argv in children(window.hwnd, run_dir).items()
+                    }
+                    codes = {label: run.wait(timeout=CHILD_CAP_S) for label, run in runs.items()}
+                    ended = time.time()
+                finally:
+                    cdp.close()
+            finally:
+                stop_chrome(proc, tmp / "profile")
+                shutil.rmtree(tmp, ignore_errors=True)
+        row: dict[str, object] = {"name": name, "variant": variant, "force_a11y": force,
+                                  "start_wall": round(started, 3), "end_wall": round(ended, 3),
+                                  "codes": codes}  # fmt: skip
+        for label in codes:
+            row[label] = {
+                "first_observation": _first_record(run_dir / f"{label}-trace.jsonl"),
+                **_summary(run_dir / f"{label}-reads.jsonl"),
+            }
+        final = run_dir / "real-final.jsonl"
+        if final.exists():
+            lines = [ln for ln in final.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            if lines:
+                last = json.loads(lines[-1])
+                row["real"] = {k: last.get(k) for k in ("status", "reason", "used", "rejections")}
+        emit(row)
+
+    def read(then: Then = "none") -> Any:
+        def argvs(hwnd: int, run_dir: Path) -> dict[str, list[str]]:
+            return {"read": [
+                sys.executable, "-m", "steerai.loop2.read_child", "child", "--hwnd", str(hwnd),
+                "--arm", "mta", "--then", then,
+                "--out", str(run_dir / "read-reads.jsonl"),
+                "--trace", str(run_dir / "read-trace.jsonl"),
+            ]}  # fmt: skip
+
+        return argvs
+
+    def real(hwnd: int, run_dir: Path) -> dict[str, list[str]]:
+        argv = child_argv(THREE_D[0], hwnd=hwnd, price=price, trace=run_dir / "real-trace.jsonl")
+        # the CLI writes its final line on stdout: through a shell-free redirect of our own
+        return {"real": [sys.executable, "-c", _TEE, str(run_dir / "real-final.jsonl"), *argv]}
+
+    def side_by_side(hwnd: int, run_dir: Path) -> dict[str, list[str]]:
+        return {
+            **read()(hwnd, run_dir),
+            "plain": [
+                sys.executable, "-m", "steerai.loop2.read_child", "plain", "--hwnd", str(hwnd),
+                "--out", str(run_dir / "plain-reads.jsonl"),
+            ],
+        }  # fmt: skip
+
+    if exp == "access":
+        on_chrome("a", "access-1-real", real)
+        on_chrome("b", "access-2-read-forced", read(), force=True)
+        on_chrome("c-button", "access-3-read-plain", read())
+    elif exp in ("fade30", "fade120"):
+        on_chrome("a", f"{exp}-1-real", real)
+        time.sleep(30.0 if exp == "fade30" else 120.0)
+        on_chrome("b", f"{exp}-2-side-by-side", side_by_side)
+    else:
+        only: Then = "input" if exp == "input" else "model"
+        on_chrome("a", f"{exp}-1-{exp}-only", read(only))
+        on_chrome("b", f"{exp}-2-read", read())
+        on_chrome("c-button", f"{exp}-3-read", read())
+    return 0
+
+
+_TEE: Final = (
+    "import subprocess, sys; out = open(sys.argv[1], 'w', encoding='utf-8'); "
+    "raise SystemExit(subprocess.call(sys.argv[2:], stdout=out, stderr=subprocess.DEVNULL))"
+)
+"""Runs the CLI with its stdout in a file (the harness's `_start` does the same)."""
+
+
 def _summary(path: Path) -> dict[str, object]:  # pragma: no cover - live
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -446,6 +661,14 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live
     child.add_argument("--arm", choices=ARMS, required=True)
     child.add_argument("--out", type=Path, required=True)
     child.add_argument("--trace", type=Path, required=True)
+    child.add_argument("--then", choices=THENS, default="none")
+    plain = sub.add_parser("plain")
+    plain.add_argument("--hwnd", type=int, required=True)
+    plain.add_argument("--out", type=Path, required=True)
+    follow = sub.add_parser("follow")
+    follow.add_argument("--exp", choices=EXPS, required=True)
+    follow.add_argument("--out-dir", type=Path, required=True)
+    follow.add_argument("--price-file", type=Path, required=True)
     sequence = sub.add_parser("sequence")
     sequence.add_argument("--arms", default="mta,sta")
     sequence.add_argument("--out-dir", type=Path, required=True)
@@ -458,7 +681,13 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live
         sys.stdout.write("read_child: windows only\n")
         return 0
     if args.mode == "child":
-        return run_child_reads(args.hwnd, arm=args.arm, out=args.out, trace=args.trace)
+        return run_child_reads(
+            args.hwnd, arm=args.arm, out=args.out, trace=args.trace, then=args.then
+        )
+    if args.mode == "plain":
+        return run_plain(args.hwnd, out=args.out)
+    if args.mode == "follow":
+        return run_follow(args.exp, args.out_dir, args.price_file)
     if args.mode == "acting":
         return run_acting(args.acting_mode, args.out_dir, args.price_file)
     return run_sequence(parse_arms(args.arms), args.out_dir)
