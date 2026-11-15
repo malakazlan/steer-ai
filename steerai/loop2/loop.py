@@ -256,6 +256,26 @@ class Ports:
     normalisation `read_value` uses), so a value claim compares digests, never text."""
 
 
+WatchKind = Literal["plain", "trigger", "submit", "wait"]
+"""[V2.48]: the watch classes, each with its own deadline (`world_ports.WorldTimes`)."""
+
+
+def watch_kind(dispatch: Dispatch) -> WatchKind:
+    """How the watch after a dispatch holds (§7.5, [V2.8], [V2.28] 1, [V2.41], [V2.48], [V2.50]).
+    It reads only what the risk path decided and put on the dispatch, never the verb or the key
+    again, so the timing and the risk classes cannot disagree:
+    - `submit`: the risk path routed it through the Enter table (`Dispatch.submit`);
+    - `wait`: a wait (it sends nothing), held like a trigger to `WAIT_S`;
+    - `trigger`: the risk path classed it an activation with no read-back (`Dispatch.trigger`:
+      a click on a non-field, an Enter or a Space that activates an acting element);
+    - `plain`: everything else (the read-back verbs, focus, a press on a state-set element)."""
+    if dispatch.submit:
+        return "submit"
+    if dispatch.action.verb == "wait":
+        return "wait"
+    return "trigger" if dispatch.trigger else "plain"
+
+
 @dataclass(frozen=True)
 class TaskOutcome:
     status: Status
@@ -320,6 +340,10 @@ class TaskOutcome:
     """Each token category times its configured rate ([V2.40] Q3); None when no price is
     configured or a used category has no rate ([V2.37] P6): the cost budget is then reported
     "not configured", never as enforced, never 0.0."""
+    watch_deadlines: tuple[tuple[WatchKind, int, int], ...] = ()
+    """[V2.48]: per watch class (every class, in order): the watches and how many ended at their
+    deadline, for stage 1's per-class deadline counts. A watch that raised (a kill, a port
+    error) never reached a deadline verdict and is in neither count."""
     rejections: tuple[str, ...] = ()
     """The controller's rejection tokens of the turn that ended the task (closed tokens only),
     so a stopped run says why; empty otherwise."""

@@ -22,7 +22,7 @@ from typing import Any, Final, Literal, Protocol, TypeVar
 
 from steerai.action.execution import code_for
 from steerai.errors import SteerError
-from steerai.loop2.loop import Dispatch, PortInterrupted
+from steerai.loop2.loop import Dispatch, PortInterrupted, watch_kind
 from steerai.loop2.runner import LOAD_GUARD_S
 from steerai.world.effects import Observed, ValueFact, top_document, value_fact
 from steerai.world.elements import Element
@@ -35,7 +35,6 @@ KILL_POLL_S: Final = 0.05
 WAIT_S: Final = GROW_GUARD_S
 """[V2.41]: the change-aware wait's deadline (3.0 s, provisional), not a sleep."""
 
-WatchKind = Literal["plain", "trigger", "submit", "wait"]
 T = TypeVar("T")
 Wanted = Literal["on", "off", "selected", "expanded", "collapsed"]
 WANTED: Final = frozenset({"on", "off", "selected", "expanded", "collapsed"})
@@ -108,22 +107,6 @@ def kill_sleep(
         step = min(left, KILL_POLL_S)
         pause(step)
         left -= step
-
-
-def watch_kind(dispatch: Dispatch) -> WatchKind:
-    """How the watch after a dispatch holds (§7.5, [V2.8], [V2.28] 1, [V2.41], [V2.48], [V2.50]).
-    It reads only what the risk path decided and put on the dispatch, never the verb or the key
-    again, so the timing and the risk classes cannot disagree:
-    - `submit`: the risk path routed it through the Enter table (`Dispatch.submit`);
-    - `wait`: a wait (it sends nothing), held like a trigger to `WAIT_S`;
-    - `trigger`: the risk path classed it an activation with no read-back (`Dispatch.trigger`:
-      a click on a non-field, an Enter or a Space that activates an acting element);
-    - `plain`: everything else (the read-back verbs, focus, a press on a state-set element)."""
-    if dispatch.submit:
-        return "submit"
-    if dispatch.action.verb == "wait":
-        return "wait"
-    return "trigger" if dispatch.trigger else "plain"
 
 
 class WorldPorts:

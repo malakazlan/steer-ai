@@ -14,9 +14,8 @@ import pytest
 
 from steerai.loop2 import loop
 from steerai.loop2.form import ACTING_ROLES, STATE_SET_VERB
-from steerai.loop2.loop import TRIGGER_CLASSES, Dispatch, action_class, action_risk
+from steerai.loop2.loop import TRIGGER_CLASSES, Dispatch, action_class, action_risk, watch_kind
 from steerai.loop2.runner import run_task
-from steerai.loop2.world_ports import watch_kind
 from steerai.verify.predicates import FIELD_ROLES
 from tests.loop2.world_fakes import (
     GO,
