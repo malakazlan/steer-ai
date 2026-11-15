@@ -137,13 +137,9 @@ def test_a_rejected_set_is_a_refused_intake_turn() -> None:
 def test_identical_rejects_end_through_the_strike_limit() -> None:
     world = _world_with([_first([VALUE])] * 5, reply=_reject())
     outcome = run_task(task(), world.ports())
-<<<<<<< HEAD
     # R6, [V2.69] Two and its note: every strike's one cause is the reject (`state_seen` is
     # implied on a refused turn), so the reason names it
     assert (outcome.status, outcome.reason) == ("paused", "no_progress:intake_insufficient")
-=======
-    assert (outcome.status, outcome.reason) == ("paused", "no_progress")
->>>>>>> origin/main
     assert len(world.intakes) == 1  # the memo answered the repeats
     assert outcome.intake_memo_refused == 2
 
