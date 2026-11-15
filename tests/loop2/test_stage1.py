@@ -184,14 +184,14 @@ def _ok(
 
 def test_three_passes_per_task_and_clean_tallies_are_accepted() -> None:
     runs = [_ok(t, r) for t in (DONE, NEVER) for r in (1, 2, 3)]
-    summary = accept([DONE, NEVER], runs, controls=(5, 5))
+    summary = accept([DONE, NEVER], runs, controls=(5, 5), runs_per_task=3, label="t")
     assert summary.accepted is True
     assert all(summary.gates.values())
 
 
 def test_each_gate_rejects_on_its_own() -> None:
     clean = [_ok(DONE, r) for r in range(1, 11)]
-    assert accept([DONE], clean, controls=(5, 5)).accepted is True
+    assert accept([DONE], clean, controls=(5, 5), runs_per_task=10, label="t").accepted is True
     nine = clean[:-1]
     eight = clean[:-2]
     cached = _final(cache_tokens={"write_5m": 0, "write_1h": 0, "read": 12})
@@ -207,7 +207,8 @@ def test_each_gate_rejects_on_its_own() -> None:
         "cache_zero": ([*nine, _ok(DONE, 10, final=cached)], (5, 5)),
     }
     for gate, (runs, controls) in cases.items():
-        summary = accept([DONE], runs, controls=controls)
+        passes = sum(r.verdict in ("pass", "fail") for r in runs)  # the scored runs
+        summary = accept([DONE], runs, controls=controls, runs_per_task=passes, label="t")
         assert summary.gates[gate] is False, gate
         assert summary.accepted is False
         assert [g for g, ok in summary.gates.items() if not ok] == [gate]
@@ -215,24 +216,29 @@ def test_each_gate_rejects_on_its_own() -> None:
 
 def test_one_void_in_ten_is_allowed_and_not_scored() -> None:
     runs = [_ok(DONE, r) for r in range(1, 10)] + [_ok(DONE, 10, "void")]
-    summary = accept([DONE], runs, controls=(5, 5))
+    summary = accept([DONE], runs, controls=(5, 5), runs_per_task=9, label="t")
     assert summary.gates["void"] is True
     assert summary.accepted is True
 
 
 def test_a_task_with_no_scored_run_is_not_accepted() -> None:
     runs = [_ok(DONE, 1, "void")] + [_ok(NEVER, r) for r in range(1, 10)]
-    assert accept([DONE, NEVER], runs, controls=(5, 5)).gates["tasks"] is False
+    assert (
+        accept([DONE, NEVER], runs, controls=(5, 5), runs_per_task=9, label="t").gates["tasks"]
+        is False
+    )
 
 
 def test_no_controls_needed_when_no_3d_task_runs() -> None:
     runs = [_ok(BLOCKED, r) for r in (1, 2, 3)]
-    assert accept([BLOCKED], runs, controls=None).gates["controls"] is True
+    assert (
+        accept([BLOCKED], runs, controls=None, runs_per_task=3, label="t").gates["controls"] is True
+    )
 
 
 def test_the_summary_reports_every_figure() -> None:
     runs = [_ok(DONE, r) for r in (1, 2, 3)]
-    report = accept([DONE], runs, controls=(5, 5)).report
+    report = accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="t").report
     for key in (
         "runs", "verdicts", "per_task", "paused_by", "used_p50", "used_p95", "listing",
         "focus", "hook_latency_p95_ms_max", "hook_latency_p99_ms_max", "wall_s_p50",
@@ -333,7 +339,7 @@ def test_the_harness_never_takes_the_session_or_starts_a_monitor() -> None:
 
 def test_an_internal_failure_rejects_on_its_own_gate_too() -> None:
     runs = [*(_ok(DONE, r) for r in range(1, 10)), _ok(DONE, 10, "fail", reason="internal")]
-    gates = accept([DONE], runs, controls=(5, 5)).gates
+    gates = accept([DONE], runs, controls=(5, 5), runs_per_task=10, label="t").gates
     assert (gates["internal"], gates["tasks"]) == (False, False)
 
 
@@ -395,3 +401,31 @@ def test_an_expected_reason_must_be_the_runs_own() -> None:
     assert (
         classify(blocked, _record(_final("blocked", "gate_blocked"), check=False)).verdict == "fail"
     )
+
+
+# ---- #366 P1: 3 of 3, re-runs, and a refused precheck is said -----------------------------------
+
+
+def test_a_task_passes_only_with_as_many_passes_as_runs_per_task() -> None:
+    runs = [_ok(DONE, 1, "void"), _ok(DONE, 2, "void"), _ok(DONE, 3)]
+    assert accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="t").gates["tasks"] is False
+    rerun = [*runs, _ok(DONE, 4), _ok(DONE, 5)]  # the voids re-run
+    assert accept([DONE], rerun, controls=(5, 5), runs_per_task=3, label="t").gates["tasks"] is True
+
+
+def test_fewer_than_three_runs_per_task_is_never_acceptance() -> None:
+    with pytest.raises(ValueError, match="3"):
+        accept([DONE], [_ok(DONE, 1)], controls=(5, 5), runs_per_task=1, label="t")
+
+
+def test_a_refused_precheck_is_counted_and_counts_in_the_void_rate() -> None:
+    runs = [_ok(DONE, r) for r in range(1, 10)]
+    summary = accept([DONE], runs, controls=(5, 5), runs_per_task=9, not_started=2, label="t")
+    assert summary.report["not_started"] == 2
+    assert summary.gates["void"] is False  # 2 of 11 attempts were not Steer's: over 1 in 10
+
+
+def test_the_summary_says_which_set_it_is() -> None:
+    runs = [_ok(DONE, r) for r in (1, 2, 3)]
+    report = accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="3d").report
+    assert report["set"] == "3d"

@@ -42,6 +42,10 @@ IDLE_FLOOR_S: Final = 2.0
 TASK_CAP_S: Final = 600.0
 """The child's cap: twice the 300 s wall budget, so the budget stops the task first."""
 INTERNAL: Final = frozenset({"internal_stub_reached", "internal_error"})
+MIN_RUNS_PER_TASK: Final = 3
+"""#366 P1: acceptance is 3 of 3 at least ([V2.27] stage 1, as v1's bar)."""
+MAX_RERUNS: Final = 3
+"""#366 P1: a task's void, monitor_lost or not-started runs are re-run up to this many times."""
 STATUSES: Final = frozenset({"done", "blocked", "asked", "paused", "stopped", "cannot", "error"})
 """The statuses the v2 CLI's final line can carry; anything else is not its line."""
 
@@ -173,15 +177,23 @@ class Summary:
     report: dict[str, Any] = field(default_factory=dict)  # Any: JSON figures
 
 
-def accept(
+def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates read
     tasks: Sequence[StageTask],
     runs: Sequence[Classified],
     *,
     controls: tuple[int, int] | None,
+    runs_per_task: int,
+    label: str,
+    not_started: int = 0,
 ) -> Summary:
     """Packet rev 4.3 §3: every gate from the classified runs, and every reported figure.
 
-    `controls` is (passed, total) of the 3d positive controls, None when no 3d task ran."""
+    `controls` is (passed, total) of the 3d positive controls, None when no 3d task ran. A task
+    passes only with `runs_per_task` passes (#366 P1: 3 of 3; void, monitor_lost and
+    not-started runs are re-run, and still count in the 1-in-10 rates). `label` names the set,
+    so a partial set is never read as stage 1."""
+    if runs_per_task < MIN_RUNS_PER_TASK:
+        raise ValueError(f"acceptance needs at least {MIN_RUNS_PER_TASK} runs per task")
     total = len(runs)
     verdicts = {v: sum(r.verdict == v for r in runs) for v in Verdict.__args__}  # type: ignore[attr-defined]  # a Literal's members
     per_task: dict[str, list[Verdict]] = {t.task_id: [] for t in tasks}
@@ -192,14 +204,20 @@ def accept(
     finals = [r.final for r in runs if r.final is not None and r.final.get("status") != "error"]
     gates = {
         "controls": controls is None or (controls[1] > 0 and controls[0] == controls[1]),
-        "tasks": all(vs and all(v == "pass" for v in vs) for vs in scored.values()),
+        "tasks": all(vs.count("pass") == runs_per_task == len(vs) for vs in scored.values()),
         "false_done": verdicts["false_done"] == 0,
-        "void": verdicts["void"] * 10 <= total,
+        # a run not started was not Steer's either: it counts with the voids ([V2.41])
+        "void": (verdicts["void"] + not_started) * 10 <= total + not_started,
         "monitor_lost": verdicts["monitor_lost"] * 10 <= total,
         "cache_zero": all(_cache_zero(f) for f in finals),
         "internal": not any(r.reason == "internal" for r in runs),
     }
-    report = _report(runs, finals, verdicts, per_task, total)
+    report = {
+        "set": label,
+        "runs_per_task": runs_per_task,
+        "not_started": not_started,
+        **_report(runs, finals, verdicts, per_task, total),
+    }
     return Summary(all(gates.values()), gates, report)
 
 
@@ -449,18 +467,26 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
     controls = (passed, len(instant_search.VARIANTS))
     _emit({"controls": {"passed": passed, "total": controls[1]}})
     classified: list[Classified] = []
+    not_started = 0
     for task in tasks:
-        for run in range(1, args.runs + 1):
+        scored, run = 0, 0
+        while scored < args.runs and run < args.runs + MAX_RERUNS:  # #366 P1: re-run, bounded
+            run += 1
             refused = precheck(free_mb=free_physical_mb, idle_s=_idle_s)
             if refused is not None:
+                not_started += 1
                 _emit({"task": task.task_id, "run": run, "not_started": refused})
                 continue
             record = _live_3d(task, run, out_dir=args.out, price=args.price_file)
             got = classify(task, record)
             classified.append(got)
+            scored += got.verdict not in ("void", "monitor_lost")
             _emit({"task": got.task_id, "run": got.run, "verdict": got.verdict,
                    "reason": got.reason, "monitor_lost": got.monitor_lost})  # fmt: skip
-    summary = accept(tasks, classified, controls=controls)
+    label = "3d" if args.runs >= MIN_RUNS_PER_TASK else "3d-shakedown"
+    summary = accept(tasks, classified, controls=controls,
+                     runs_per_task=max(args.runs, MIN_RUNS_PER_TASK), label=label,
+                     not_started=not_started)  # fmt: skip
     _emit({"summary": {"accepted": summary.accepted, "gates": summary.gates, **summary.report}})
     return 0 if summary.accepted else 1
 
