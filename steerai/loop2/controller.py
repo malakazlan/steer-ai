@@ -35,6 +35,7 @@ from steerai.loop2.history import (
     render,
 )
 from steerai.loop2.listing import LISTING_CAP, Listing, RowClass
+from steerai.loop2.loop import TokenUsage
 from steerai.loop2.task import Status
 from steerai.loop2.text import clean_line, has_control
 from steerai.world.capabilities import TOKENS as CAPABILITY_TOKENS
@@ -148,6 +149,9 @@ class ControllerError(Exception):
         self.code: ErrorCode = code
         self.tokens: tuple[str, ...] = tuple(tokens)
         self.record: DecideRecord | None = record
+        self.usage: TokenUsage | None = None
+        """The summed usage of the turn's calls, when each reported one (set by the decide
+        port: a rejected turn's calls were billed and reported, so they are never unknown)."""
 
 
 @dataclass(frozen=True)

@@ -18,7 +18,7 @@ from steerai.errors import ErrorCode, SteerError
 from steerai.loop2 import cli
 from steerai.loop2.cli import DEFAULT_BUDGETS, V2Deps, bind_window, parse_v2
 from steerai.loop2.live_world import LiveWorld
-from steerai.loop2.loop import Reason, TaskOutcome
+from steerai.loop2.loop import Reason, TaskOutcome, WatchKind
 from steerai.planner.claude_planner import DEFAULT_MODEL
 from steerai.probes.windows import WindowInfo
 from steerai.run import (
@@ -546,6 +546,20 @@ def test_a_lost_monitor_is_reported_apart_from_steers_own_stops(tmp_path: Path) 
     assert clean.result()["monitor_lost"] is False
 
 
+def test_the_final_line_names_a_rejection_with_its_closed_tokens(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The 3d shakedown's #3: a run stopped on a rejected turn says why, in closed tokens."""
+    stopped = TaskOutcome(
+        status="stopped", cause=Reason("port_rejected"), dispatched=(), model_calls=2,
+        strikes=(), tokens=240.0, cost_usd=0.0, wall_s=1.0, rejections=("id_not_listed",),
+    )  # fmt: skip
+    monkeypatch.setattr(cli, "run_task", lambda _task, _ports: stopped)
+    run = Run(tmp_path)
+    run()
+    assert run.result()["rejections"] == ["id_not_listed"]
+
+
 def test_the_final_line_carries_the_cache_counters(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -562,3 +576,23 @@ def test_the_final_line_carries_the_cache_counters(
     run = Run(tmp_path)
     run()
     assert run.result()["cache_tokens"] == {"write_5m": 1, "write_1h": 2, "read": 3}
+
+
+def test_the_final_line_carries_the_per_class_watch_deadline_counts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """[V2.48]: stage 1 reports, per watch class, the watches that ended at their deadline."""
+    counts: tuple[tuple[WatchKind, int, int], ...] = (
+        ("plain", 2, 0), ("trigger", 3, 1), ("submit", 1, 1), ("wait", 0, 0),
+    )  # fmt: skip
+    outcome = TaskOutcome(
+        status="done", cause=None, dispatched=(), model_calls=1, strikes=(), tokens=10.0,
+        cost_usd=0.0, wall_s=1.0, watch_deadlines=counts,
+    )  # fmt: skip
+    monkeypatch.setattr(cli, "run_task", lambda _task, _ports: outcome)
+    run = Run(tmp_path)
+    run()
+    assert run.result()["watch_deadlines"] == {
+        "plain": {"watches": 2, "deadline": 0}, "trigger": {"watches": 3, "deadline": 1},
+        "submit": {"watches": 1, "deadline": 1}, "wait": {"watches": 0, "deadline": 0},
+    }  # fmt: skip
