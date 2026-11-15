@@ -32,6 +32,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Literal, Protocol, get_args
 
+from steerai.loop2.stage1_expected import LARGE_TASKS, Expected, large_expected
+from steerai.probes.gallery_page import large_passes, parse_large_log
+from steerai.probes.task_suite import GALLERY, h2_event
+
 Expect = Literal["done", "blocked", "never_done", "not_done"]
 Verdict = Literal["pass", "fail", "false_done", "void", "monitor_lost"]
 Json = Mapping[str, Any]  # Any: a JSON object from the child's final line
@@ -93,6 +97,61 @@ THREE_D: Final = (
 )
 """§12's expected step-3 outcomes for the 3d variants (a, c-button, d done; b never done;
 c-nobutton not done with exactly one Enter, never `unexpected_effect`)."""
+
+GALLERY_PAGE: Final = "/page.html"
+SETS: Final = ("3d", "gallery", "large")
+
+
+def gallery_tasks(expected: Mapping[str, Expected]) -> tuple[StageTask, ...]:
+    """The gallery rows as stage tasks, each with its expected outcome and reason
+    (`stage1_expected`: rated by the gate on the gallery's saved read)."""
+    goals = {t.task_id: t.goal for t in GALLERY}
+    return tuple(
+        StageTask(task_id, goals[task_id], "gallery", GALLERY_PAGE, e.outcome, reason=e.reason)
+        for task_id, e in expected.items()
+    )
+
+
+def large_tasks() -> tuple[StageTask, ...]:
+    """The `/large.html` tasks, expected done by ruling. Their acceptance stays fail-closed
+    (`accept`'s `large_listed`, rev 4.3a) until the listed-when-acted check exists."""
+    expected = large_expected()
+    return tuple(
+        StageTask(
+            t.task_id,
+            t.goal,
+            "large",
+            t.path,
+            expected[t.task_id].outcome,
+            reason=expected[t.task_id].reason,
+        )
+        for t in LARGE_TASKS
+    )
+
+
+def tasks_for(name: str, expected: Mapping[str, Expected]) -> tuple[StageTask, ...]:
+    """The tasks of a set by its `--set` name; `expected` is the gallery's rated table."""
+    if name == "3d":
+        return THREE_D
+    if name == "gallery":
+        return gallery_tasks(expected)
+    if name == "large":
+        return large_tasks()
+    raise ValueError(f"unknown set: {name}")
+
+
+def page_check(task: StageTask, raw: str) -> bool:
+    """The page's own pass check on its log as read over DevTools; shares no code with the v2
+    loop or the verifier. Gallery: the one trusted event the row expects (v1's suite check);
+    large: `gallery_page.large_passes`. A large log of another shape is a `ValueError`."""
+    if task.fixture == "gallery":
+        row = next(t for t in GALLERY if t.task_id == task.task_id)
+        return h2_event(raw).strip() == row.expected
+    if task.fixture == "large":
+        for large in LARGE_TASKS:
+            if large.task_id == task.task_id:
+                return large_passes(large.task_id, parse_large_log(raw))
+    raise ValueError(f"no page check for {task.fixture} task {task.task_id}")
 
 
 @dataclass(frozen=True)
@@ -598,22 +657,103 @@ def _live_3d(
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+PAGE_SETTLE_S: Final = 1.0
+"""How long a gallery or large run waits after the child before reading the page's log
+(unmeasured: the 3d fixture's own settle)."""
+
+
+def _live_page(
+    task: StageTask, run: int, *, out_dir: Path, price: Path
+) -> RunRecord:  # pragma: no cover - live
+    """One gallery or large run: the gallery's pages in a throwaway Chrome, the child on its
+    window, then the page's own log over DevTools (`page_check`)."""
+    import shutil  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    from steerai.probes import instant_search  # noqa: PLC0415 - live only
+    from steerai.probes.chrome_a11y import (  # noqa: PLC0415
+        CHROME_DEFAULT,
+        launch_chrome,
+        stop_chrome,
+    )
+    from steerai.probes.gallery_page import LOG_KEY, pages  # noqa: PLC0415
+    from steerai.probes.layer_b import _ours  # noqa: PLC0415
+    from steerai.probes.layer_b_pages import PageServer  # noqa: PLC0415
+    from steerai.probes.suite_chunks import kill_tree  # noqa: PLC0415
+    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
+
+    def evaluate(cdp: Any, expression: str) -> object:  # Any: a CdpSession
+        reply = cdp.call("Runtime.evaluate", {"expression": expression, "returnByValue": True})
+        return reply.get("result", {}).get("value")
+
+    tmp = Path(tempfile.mkdtemp(prefix="steer-stage1-"))
+    run_dir = out_dir / f"{task.task_id}-{run}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with PageServer(pages()) as server:
+        port = instant_search._free_port()
+        proc = launch_chrome(
+            CHROME_DEFAULT, tmp / "profile", port, f"http://127.0.0.1:{server.port}{task.page}"
+        )
+        try:
+            try:
+                window = wait_window_for_pid(proc.pid, timeout_s=30.0, process=proc)
+                cdp, _ = _ours(port, server.port)
+                deadline = time.monotonic() + 15.0
+                while evaluate(cdp, "document.readyState") != "complete":
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("the page never finished loading")
+                    time.sleep(0.1)
+            except (OSError, TimeoutError, RuntimeError):
+                return RunRecord(task.task_id, run, None, False, False, None, None)
+            ran = run_child(
+                child_argv(task, hwnd=window.hwnd, price=price, trace=run_dir / "trace.jsonl"),
+                cap_s=TASK_CAP_S, out=run_dir / "final.jsonl", start=_start, kill=kill_tree,
+            )  # fmt: skip
+            time.sleep(PAGE_SETTLE_S)
+            try:
+                raw = evaluate(cdp, f'localStorage.getItem("{LOG_KEY}") || "[]"')
+                if not isinstance(raw, str):
+                    raise ValueError("the page log is not text")
+                check = page_check(task, raw)
+            except (OSError, RuntimeError, ValueError):
+                return RunRecord(task.task_id, run, ran.final, True, False, None, None,
+                                 killed=ran.killed, code=ran.code)  # fmt: skip
+            finally:
+                cdp.close()
+            return RunRecord(task.task_id, run, ran.final, True, True, check, None,
+                             killed=ran.killed, code=ran.code)  # fmt: skip
+        finally:
+            stop_chrome(proc, tmp / "profile")
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+GALLERY_READ: Final = Path("tests/world/fixtures/gallery/page_read.json")
+"""The gallery's saved read, relative to the repo root (`probes.gallery_read`)."""
+
+
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, Windows only
+    from steerai.loop2.stage1_expected import gallery_expected  # noqa: PLC0415 - live only
     from steerai.probes import instant_search  # noqa: PLC0415 - live only
     from steerai.probes.memory_guard import free_physical_mb  # noqa: PLC0415
+    from steerai.world.read_json import observed_from_json  # noqa: PLC0415
 
     parser = argparse.ArgumentParser(prog="python -m steerai.loop2.stage1")
-    parser.add_argument("--set", choices=["3d"], required=True)
+    parser.add_argument("--set", choices=SETS, required=True)
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--price-file", type=Path, required=True)
+    parser.add_argument("--gallery-read", type=Path, default=GALLERY_READ)
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
-    tasks = THREE_D
-    passed = sum(
-        instant_search.passes(v, instant_search.run_control(v)) for v in instant_search.VARIANTS
-    )
-    controls = (passed, len(instant_search.VARIANTS))
-    _emit({"controls": {"passed": passed, "total": controls[1]}})
+    expected = gallery_expected(observed_from_json(args.gallery_read.read_text("utf-8")))
+    tasks = tasks_for(args.set, expected)
+    controls: tuple[int, int] | None = None
+    if args.set == "3d":
+        passed = sum(
+            instant_search.passes(v, instant_search.run_control(v)) for v in instant_search.VARIANTS
+        )
+        controls = (passed, len(instant_search.VARIANTS))
+        _emit({"controls": {"passed": passed, "total": controls[1]}})
+    live = _live_3d if args.set == "3d" else _live_page
     classified: list[Classified] = []
     not_started = 0
     for task in tasks:
@@ -625,12 +765,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
             )  # fmt: skip
             if ready is not None:
                 return ready
-            return _live_3d(task, run, out_dir=args.out, price=args.price_file)
+            return live(task, run, out_dir=args.out, price=args.price_file)
 
         runs, refused = run_task_runs(task, runs=args.runs, attempt=attempt, emit=_emit)
         classified += runs
         not_started += refused
-    label = "3d" if args.runs >= MIN_RUNS_PER_TASK else "3d-shakedown"
+    label = args.set if args.runs >= MIN_RUNS_PER_TASK else f"{args.set}-shakedown"
     summary = accept(tasks, classified, controls=controls,
                      runs_per_task=max(args.runs, MIN_RUNS_PER_TASK), label=label,
                      not_started=not_started)  # fmt: skip

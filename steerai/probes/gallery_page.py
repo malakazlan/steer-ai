@@ -36,6 +36,11 @@ Rows (id: control, idiom, the verb the model gives it):
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Literal
+
 LOG_KEY = "steer-gallery"
 
 PAGE = """<!doctype html>
@@ -322,10 +327,10 @@ LARGE_PAGE = """<!doctype html>
 <body>
 <h1>Inventory</h1>
 <button id="sort" aria-haspopup="menu" aria-expanded="false" aria-controls="sort-menu">Sort</button>
-<ul id="sort-menu" role="menu" hidden>
-  <li role="menuitem" tabindex="-1">By name</li>
-  <li role="menuitem" tabindex="-1">By date</li>
-  <li role="menuitem" tabindex="-1">By size</li>
+<ul id="sort-menu" role="menu" aria-label="Sort by" hidden>
+  <li role="menuitemradio" aria-checked="false" tabindex="-1" data-key="name">By name</li>
+  <li role="menuitemradio" aria-checked="false" tabindex="-1" data-key="date">By date</li>
+  <li role="menuitemradio" aria-checked="false" tabindex="-1" data-key="size">By size</li>
 </ul>
 <ul id="rows"></ul>
 <script>
@@ -349,25 +354,143 @@ LARGE_PAGE = """<!doctype html>
     put(e, {row: "large-menu", open: open});
   });
   var list = document.getElementById("rows");
+  var rows = [];
+  // made-up, deterministic sort keys: the order differs from the item number for each key
+  var keys = {
+    name: function (n) { return "Item " + n; },
+    date: function (n) { return (n * 7919) % 365; },
+    size: function (n) { return (n * 104729) % 997; }
+  };
   for (var i = 1; i <= ROWS; i++) {
     var li = document.createElement("li");
     li.textContent = "Item " + i + " ";
     var button = document.createElement("button");
-    button.textContent = i === TARGET ? "Reserve item " + i : "Details";
-    (function (n) {
-      button.addEventListener("click", function (e) {
-        if (n === TARGET) { put(e, {row: "large", item: n}); }
-      });
-    })(i);
-    li.appendChild(button);
+    (function (n, row, button) {
+      if (n === TARGET) {
+        var mark = document.createElement("span");
+        // [V2.40] Q7: the name keeps the param's words; the state is aria-pressed
+        button.textContent = "Reserve item " + n;
+        button.setAttribute("aria-pressed", "false");
+        button.addEventListener("click", function (e) {
+          var on = button.getAttribute("aria-pressed") !== "true";
+          button.setAttribute("aria-pressed", on ? "true" : "false");
+          mark.textContent = on ? " Reserved" : "";
+          put(e, {row: "large-reserve", item: n, on: on});
+        });
+        row.appendChild(button);
+        row.appendChild(mark);
+      } else {
+        button.textContent = "Details";
+        button.addEventListener("click", function (e) {
+          put(e, {row: "large-details", item: n});
+        });
+        row.appendChild(button);
+      }
+      rows.push({n: n, li: row});
+    })(i, li, button);
     list.appendChild(li);
   }
+  menu.querySelectorAll("[role=menuitemradio]").forEach(function (item) {
+    item.addEventListener("click", function (e) {
+      var key = item.getAttribute("data-key");
+      menu.querySelectorAll("[role=menuitemradio]").forEach(function (other) {
+        other.setAttribute("aria-checked", other === item ? "true" : "false");
+      });
+      var by = keys[key];
+      var sorted = rows.slice().sort(function (a, b) {
+        var x = by(a.n), y = by(b.n);
+        return x < y ? -1 : x > y ? 1 : a.n - b.n;
+      }).map(function (r) { return r.li; });
+      for (var k = 0; k < sorted.length; k++) { list.appendChild(sorted[k]); }
+      put(e, {row: "large-sort", value: key});
+    });
+  });
 })();
 </script>
 </body></html>
 """
 """[V2.55] (3): a generic large page for the listing cap's stage 1 runs: thousands of rows, a menu
-that reveals items, a target far down. Nothing from H7; it logs like the gallery."""
+that reveals items, a target far down. Nothing from H7; it logs like the gallery.
+
+Stage 1 ruling (2026-11-15): both tasks end in a state a step 3 proof reads. The target is a
+toggle (`aria-pressed`) that shows "Reserved" beside it while its own name keeps its words
+([V2.40] Q7; WAI-ARIA APG button pattern: a toggle's label does not change with its state). The
+Sort menu's items are `menuitemradio`s: a choice checks the item in place, reorders the rows and
+leaves the menu open, so the checked item can still be read. Every row button logs its click."""
+
+LargeTask = Literal["lg1", "lg2"]
+"""lg1: reserve the target; lg2: sort by size."""
+LargeRow = Literal["large-menu", "large-reserve", "large-details", "large-sort"]
+SORT_KEYS: tuple[str, ...] = ("name", "date", "size")
+
+
+@dataclass(frozen=True, slots=True)
+class LargeEntry:
+    """One entry of the large page's own log, as the page wrote it."""
+
+    row: LargeRow
+    trusted: bool
+    item: int | None = None
+    on: bool | None = None
+    open: bool | None = None
+    value: str | None = None
+
+
+def parse_large_log(raw: str) -> tuple[LargeEntry, ...]:
+    """The large page's log as read over DevTools; any other shape is an error, never a pass."""
+    data = json.loads(raw or "[]")
+    if not isinstance(data, list):
+        raise ValueError("the large log is not a list")
+    return tuple(_large_entry(item) for item in data)
+
+
+def _flag(item: Mapping[str, object], name: str) -> bool:
+    value = item.get(name)
+    if not isinstance(value, bool):
+        raise ValueError("a large log entry flag is not a boolean")
+    return value
+
+
+def _number(item: Mapping[str, object]) -> int:
+    value = item.get("item")
+    if not isinstance(value, int) or isinstance(value, bool):  # a bool is an int in Python
+        raise ValueError("a large log entry's item is not a number")
+    return value
+
+
+def _large_entry(item: object) -> LargeEntry:
+    if not isinstance(item, dict):
+        raise ValueError("a large log entry has an unknown shape")
+    trusted = not _flag({"untrusted": item.get("untrusted", False)}, "untrusted")
+    row = item.get("row")
+    if row == "large-menu":
+        return LargeEntry(row, trusted, open=_flag(item, "open"))
+    if row == "large-reserve":
+        return LargeEntry(row, trusted, item=_number(item), on=_flag(item, "on"))
+    if row == "large-details":
+        return LargeEntry(row, trusted, item=_number(item))
+    if row == "large-sort":
+        value = item.get("value")
+        if value not in SORT_KEYS:
+            raise ValueError("a large log entry's sort key is unknown")
+        return LargeEntry(row, trusted, value=str(value))
+    raise ValueError("a large log entry has an unknown shape")
+
+
+def large_passes(task: LargeTask, entries: Sequence[LargeEntry]) -> bool:
+    """The task's intended end state, from the page's own log; every entry must be trusted.
+
+    - `lg1`: exactly one entry, the target reserved (on), and nothing else acted on;
+    - `lg2`: the menu opened, exactly one sort, by size, and no row button acted on.
+    """
+    if not entries or not all(e.trusted for e in entries):
+        return False
+    if task == "lg1":
+        return list(entries) == [LargeEntry("large-reserve", True, item=LARGE_TARGET, on=True)]
+    sorts = [e for e in entries if e.row == "large-sort"]
+    opened = any(e.row == "large-menu" and e.open for e in entries)
+    rows = [e for e in entries if e.row in ("large-reserve", "large-details")]
+    return opened and not rows and [e.value for e in sorts] == ["size"]
 
 
 def large_html() -> str:
