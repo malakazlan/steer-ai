@@ -43,6 +43,7 @@ from steerai.loop2.chain_eval import (
     typed_text_escaped,
 )
 from steerai.loop2.chain_pages import Page, PageWorld, outcome_shown
+from steerai.loop2.controller import AUDIT_RULES, INTAKE_PROMPT_VERSION, INTAKE_RULES
 from steerai.loop2.decide_port import Reply
 from steerai.loop2.decision import ActionDoc
 from steerai.loop2.loop import Audited, Dispatch, TokenUsage
@@ -420,7 +421,7 @@ def test_a_counted_run_needs_the_frozen_wording_and_a_clean_tree() -> None:
 def test_the_header_carries_every_version_pin_and_the_commit() -> None:
     head = header(model="m", effort="high", commit="a" * 40, dirty=False)
     assert {"controller", "intake", "audit", "commit", "dirty", "model", "effort"} <= set(head)
-    assert head["intake"] == "not_wired"  # until the intake check lands
+    assert head["intake"] == INTAKE_PROMPT_VERSION  # the code's own pin, never a literal
     assert closed_record(head)
 
 
@@ -444,15 +445,22 @@ def test_the_header_carries_the_chain_budgets_and_a_budget_change_breaks_the_fre
 class Scripted:
     """The provider: each call answers from the prompt by script, never a model."""
 
-    def __init__(self, turns: Sequence[Callable[[str], dict[str, Any]]], audit: str) -> None:
+    def __init__(
+        self, turns: Sequence[Callable[[str], dict[str, Any]]], audit: str, intake: str = ""
+    ) -> None:
         self.turns = list(turns)
         self.audit = audit
+        self.intake = intake or ALLOW
         self.calls: list[str] = []
         self.prompts: list[str] = []
 
     def __call__(self, system: list[str], blocks: list[str]) -> Reply:
         prompt = "\n".join([*system, *blocks])
-        if "audit" in "\n".join(system).casefold():
+        rules = "\n".join(system)
+        if rules.startswith(INTAKE_RULES):
+            self.calls.append("intake")
+            return Reply(self.intake, "end_turn", TokenUsage(40, 5))
+        if rules.startswith(AUDIT_RULES):
             self.calls.append("audit")
             return Reply(self.audit, "end_turn", TokenUsage(50, 5))
         self.calls.append("decide")
@@ -488,11 +496,12 @@ def test_a_must_pass_chain_the_audit_allows_is_done_and_counts_ok() -> None:
     record = run_chain(SHAPES["g22"], index=0, provider=provider)
     assert (record.status, record.outcome_shown) == ("done", True)
     assert [(j.judge, j.verdict, j.reason) for j in record.judges] == [
-        ("audit", "allowed", "facts_finish_request")
+        ("intake", "passed", "facts_finish_request"),
+        ("audit", "allowed", "facts_finish_request"),
     ]
     assert record.declared == (("value",),)
     assert ending("must_pass", record) == "ok"
-    assert record.judges[0].typed_text_escaped is None  # a param, never free text
+    assert record.judges[1].typed_text_escaped is None  # a param, never free text
 
 
 def test_a_must_veto_chain_the_audit_vetoes_is_not_done() -> None:
@@ -500,14 +509,14 @@ def test_a_must_veto_chain_the_audit_vetoes_is_not_done() -> None:
     record = run_chain(SHAPES["g23"], index=0, provider=provider)
     assert record.status != "done"
     assert not record.outcome_shown
-    assert [j.verdict for j in record.judges] == ["vetoed"]
+    assert [j.verdict for j in record.judges] == ["passed", "vetoed"]  # the script's intake
     assert ending("must_veto", record) == "ok"
 
 
 def test_an_unparsed_audit_on_a_must_pass_chain_is_a_false_veto() -> None:
     provider = Scripted(_typed_and_claimed("Full name", "Ada Lovelace"), "not json at all")
     record = run_chain(SHAPES["g22"], index=0, provider=provider)
-    assert [j.verdict for j in record.judges] == ["failed"]
+    assert [j.verdict for j in record.judges] == ["passed", "failed"]
     assert ending("must_pass", record) == "false_veto"
 
 
@@ -746,10 +755,8 @@ def _wired(**changes: Any) -> dict[str, object]:  # Any: header values
     return {**_head(intake="intake-1"), **changes}
 
 
-def test_the_pilot_refuses_an_unwired_intake_or_a_dirty_tree(tmp_path: Path) -> None:
+def test_the_pilot_refuses_a_dirty_tree(tmp_path: Path) -> None:
     ledger = Ledger(tmp_path / "ledger.jsonl")
-    with pytest.raises(ValueError, match="intake_not_wired"):
-        ledger.start("pilot", _head())
     with pytest.raises(ValueError, match="tree_not_clean"):
         ledger.start("pilot", _wired(dirty=True))
     assert ledger.entries() == []
@@ -844,11 +851,10 @@ def test_the_reach_arm_scripts_the_insufficient_set_and_the_judge_sees_it() -> N
     record = run_chain(SHAPES["g23"], index=0, provider=provider, arm="reach")
     assert record.arm == "reach"
     assert record.declared[0] == ("value",)
-    assert [j.verdict for j in record.judges] == ["vetoed"], (
-        record.status,
-        record.reason,
-        provider.calls,
-    )
+    assert [(j.judge, j.verdict, j.scripted) for j in record.judges] == [
+        ("intake", "passed", True),  # the judge saw the scripted set
+        ("audit", "vetoed", False),
+    ], (record.status, record.reason, provider.calls)
     assert provider.prompts
     assert "none yet" not in provider.prompts[0]  # the first model call already had the set
     assert ending("must_veto", record) == "ok"
@@ -954,19 +960,9 @@ def test_the_report_lists_every_ledger_start_and_abort_on_the_same_wording(tmp_p
 # ---- (4): a scripted intake reject is recorded, once the intake check is wired -------------------
 
 
-@pytest.mark.skipif(
-    chain_eval.INTAKE_PROMPT_VERSION is None, reason="the intake check is not wired"
-)
 def test_a_scripted_intake_reject_is_recorded_in_a_chain() -> None:
-    class Intake(Scripted):
-        def __call__(self, system: list[str], blocks: list[str]) -> Reply:
-            if "intake" in "\n".join(system).casefold():
-                self.calls.append("intake")
-                reject = {"sufficient": False, "reason": "request_asks_more"}
-                return Reply(json.dumps(reject), "end_turn", TokenUsage(40, 5))
-            return super().__call__(system, blocks)
-
-    provider = Intake(_typed_and_claimed("Full name", "Ada Lovelace"), ALLOW)
+    reject = json.dumps({"sufficient": False, "reason": "request_asks_more"})
+    provider = Scripted(_typed_and_claimed("Full name", "Ada Lovelace"), ALLOW, reject)
     record = run_chain(SHAPES["g22"], index=0, provider=provider)
     assert ("intake", "rejected") in [(j.judge, j.verdict) for j in record.judges]
 

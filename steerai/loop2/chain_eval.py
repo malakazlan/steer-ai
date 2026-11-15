@@ -43,11 +43,16 @@ from pathlib import Path
 from typing import Any, Final, Literal, Protocol
 
 from steerai.loop2.chain_pages import Page, PageWorld, outcome_shown
-from steerai.loop2.controller import AUDIT_PROMPT_VERSION, PROMPT_VERSION, ControllerError
+from steerai.loop2.controller import (
+    AUDIT_PROMPT_VERSION,
+    INTAKE_PROMPT_VERSION,
+    PROMPT_VERSION,
+    ControllerError,
+)
 from steerai.loop2.decide_port import Call, Counter, DecideCalls, TaskGenerations
 from steerai.loop2.decision import Decision, validate
 from steerai.loop2.loop import Decided, Ports, TaskOutcome, TokenUsage, TurnView
-from steerai.loop2.prompt_inputs import make_audit, make_decide
+from steerai.loop2.prompt_inputs import make_audit, make_decide, make_intake
 from steerai.loop2.runner import run_task
 from steerai.loop2.task import Budgets, Envelope, Task
 
@@ -71,9 +76,6 @@ STOPPING: Final[Mapping[str, int]] = {
     "max_false_vetoes": MAX_FALSE_VETOES,
 }
 """The stopping rule and the bars, written before the run ([V2.71] (a))."""
-INTAKE_PROMPT_VERSION: Final[str | None] = None
-"""The intake check's version pin once it is wired (`intake-1`); None: not wired yet, and a
-counted eval refuses to run."""
 CHAIN_BUDGETS: Final = Budgets(
     max_actions=40, max_model_calls=20, max_tokens=400_000, max_cost_usd=10.0, max_wall_s=300.0
 )
@@ -392,7 +394,7 @@ def mask_escape_share(records: Sequence[ChainRecord]) -> float | None:
 def header(*, model: str, effort: str, commit: str, dirty: bool) -> dict[str, object]:
     return {
         "controller": PROMPT_VERSION,
-        "intake": INTAKE_PROMPT_VERSION or "not_wired",
+        "intake": INTAKE_PROMPT_VERSION,
         "audit": AUDIT_PROMPT_VERSION,
         "commit": commit,
         "dirty": dirty,
@@ -656,7 +658,9 @@ def run_chain(  # noqa: PLR0913 - the shape, then keyword-only knobs
         history=[],
     )
     decide = _arm(make_decide(calls, goal=shape.request, task_fence=fence), shape, arm, seen)
+    intake = make_intake(calls, goal=shape.request, task_fence=fence)
     ports = Ports(
+        intake=recorded_judge("intake", intake, seen),
         audit=recorded_judge(
             "audit", make_audit(calls, goal=shape.request, task_fence=fence), seen, world.typed
         ),
@@ -777,8 +781,6 @@ class Ledger:
     def start(self, kind: RunKind, head: Mapping[str, object]) -> None:
         if head.get("dirty") is not False:
             raise ValueError("tree_not_clean")
-        if head.get("intake") in {None, "not_wired"}:
-            raise ValueError("intake_not_wired")  # §8: the freeze, then the pilot
         starts = [e for e in self.entries() if e.get("event") == "start"]
         if kind != "pilot":
             pilots = [e for e in starts if e["kind"] == "pilot"]
