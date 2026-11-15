@@ -10,7 +10,7 @@ answer (WM-18). Password fields never carry a value and are tagged `secure` (WM-
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 Box = tuple[int, int, int, int]
@@ -178,11 +178,17 @@ def safe_name(name: str) -> str:
     return escaped[:_HEAD_CHARS] + "…" + escaped[-tail:]
 
 
-def format_lines(elements: Sequence[Element], *, remaining: int = 0) -> list[str]:
+def format_lines(
+    elements: Sequence[Element],
+    *,
+    remaining: int = 0,
+    name: Callable[[str], str] = safe_name,
+) -> list[str]:
+    """One listing line per element; `name` renders the quoted name (v2 caps it in bytes)."""
     lines = []
     for element in elements:
         line = (
-            f'{element.id} {"  " * element.depth}{element.role} "{safe_name(element.name)}" '
+            f'{element.id} {"  " * element.depth}{element.role} "{name(element.name)}" '
             f"[{element.box[0]},{element.box[1]},{element.box[2]},{element.box[3]}]"
         )
         if not element.enabled:
