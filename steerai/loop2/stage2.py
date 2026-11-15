@@ -61,6 +61,7 @@ from steerai.loop2.stage1 import (
 )
 from steerai.loop2.stage2_expected import (
     DAILY_CAP,
+    OPENERS,
     START_EXPRESSION,
     DecidingFacts,
     SiteRow,
@@ -70,6 +71,7 @@ from steerai.loop2.stage2_expected import (
     load_acts,
     load_table,
     load_unrated,
+    opener_start_facts,
     real_site_tasks,
     site_check,
     start_document,
@@ -460,6 +462,12 @@ def _start_page(site: SiteTask, port: int, hwnd: int) -> StartPage:  # pragma: n
         )
     finally:
         del client  # its COM objects are released here, on this thread
+    opener = OPENERS.get(site.stage.task_id)
+    if opener is not None:  # [V2.65] (1): the target shows only after the opener
+        committed = site.facts
+        return StartPage(
+            loaded, wall, None if committed is None else opener_start_facts(opener, read, committed)
+        )
     try:
         facts: DecidingFacts | None = deciding_facts(site.row, site.suite.goal, read)
     except ValueError:  # the act's target is missing: not the expected start page

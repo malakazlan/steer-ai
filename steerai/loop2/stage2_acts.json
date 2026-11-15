@@ -1,0 +1,504 @@
+{
+  "g1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "ComboBox",
+        "name": "Search",
+        "param": "steer ai computer use agent"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Google Search"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "g2": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "ComboBox",
+        "name": "Search",
+        "param": "windows ui automation"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Google Search"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "yt1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "ComboBox",
+        "name": "Search",
+        "param": "lofi hip hop"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Search"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "yt2": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "ComboBox",
+        "name": "Search",
+        "param": "drake latest video"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Search"
+      }
+    ],
+    "proof": null,
+    "why": "a watch URL carries no words: never done (plan rev 4.4 §1.2)"
+  },
+  "wk1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Search Wikipedia",
+        "param": "Alan Turing"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Search"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the article page is reached (the task's own check)"
+  },
+  "wk2": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Search Wikipedia",
+        "param": "Ada Lovelace"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Search"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the article page is reached (the task's own check)"
+  },
+  "bing1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "ComboBox",
+        "name": "Enter your search term",
+        "param": "computer use agents"
+      },
+      {
+        "verb": "press",
+        "key": "Enter"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "ddg1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "ComboBox",
+        "name": "Search with DuckDuckGo",
+        "param": "ui automation tree"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Search"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "gh1": {
+    "acts": [
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Search or jump to, type / to search"
+      },
+      {
+        "verb": "type",
+        "role": "ComboBox",
+        "name": "Search or jump to",
+        "param": "computer use agent"
+      },
+      {
+        "verb": "press",
+        "key": "Enter"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check); the field shows after its opener ([V2.65] (1))"
+  },
+  "py1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Quick search",
+        "param": "pathlib"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Go"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "mdn1": {
+    "acts": [
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Search the site"
+      },
+      {
+        "verb": "type",
+        "role": "ComboBox",
+        "name": "Search",
+        "param": "flexbox"
+      },
+      {
+        "verb": "press",
+        "key": "Enter"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check); the field shows after its opener ([V2.65] (1))"
+  },
+  "wk3": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Search Wikipedia",
+        "param": "Grace Hopper"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Search"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the article page is reached (the task's own check)"
+  },
+  "npm1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "ComboBox",
+        "name": "Search packages",
+        "param": "left-pad"
+      },
+      {
+        "verb": "press",
+        "key": "Enter"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "cr1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Search",
+        "param": "serde"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Search"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "pypi1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Search PyPI",
+        "param": "requests"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Search"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "dr1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Find crate by search query",
+        "param": "serde"
+      },
+      {
+        "verb": "press",
+        "key": "Enter"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "deb1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Keyword:",
+        "param": "curl"
+      },
+      {
+        "verb": "press",
+        "key": "Enter"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "gut1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Search books",
+        "param": "dickens"
+      },
+      {
+        "verb": "press",
+        "key": "Enter"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "rg1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "ComboBox",
+        "name": "Search Gems…",
+        "param": "rails"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Search Gems…"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "aw1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Search ArchWiki",
+        "param": "pacman"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Search"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "hx1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "ComboBox",
+        "name": "Find packages",
+        "param": "ecto"
+      },
+      {
+        "verb": "press",
+        "key": "Enter"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "ub1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Keyword:",
+        "param": "vim"
+      },
+      {
+        "verb": "press",
+        "key": "Enter"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "mc1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Search the CPAN",
+        "param": "mojolicious"
+      },
+      {
+        "verb": "press",
+        "key": "Enter"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "ng1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Enter packages to search",
+        "param": "serilog"
+      },
+      {
+        "verb": "press",
+        "key": "Enter"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "fh1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "ComboBox",
+        "name": "Search apps",
+        "param": "inkscape"
+      },
+      {
+        "verb": "press",
+        "key": "Enter"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "gd1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Search packages or symbols",
+        "param": "cobra"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Search"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "pd1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Search",
+        "param": "provider"
+      },
+      {
+        "verb": "press",
+        "key": "Enter"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "cp1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "SEARCH*",
+        "param": "alamofire"
+      }
+    ],
+    "proof": null,
+    "why": "results only, the URL unchanged: never done, like 3d (b) (plan rev 4.4 §1.2)"
+  },
+  "am1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Search",
+        "param": "ublock"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Search"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the results page's URL carries the words (the task's own check)"
+  },
+  "wt1": {
+    "acts": [
+      {
+        "verb": "type",
+        "role": "Edit",
+        "name": "Search Wiktionary",
+        "param": "serendipity"
+      },
+      {
+        "verb": "click",
+        "role": "Button",
+        "name": "Search"
+      }
+    ],
+    "proof": "navigated",
+    "why": "the article page is reached (the task's own check)"
+  }
+}

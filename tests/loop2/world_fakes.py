@@ -4,7 +4,7 @@ plays the `Ports` of the v2 loop. No site or app names; nothing here touches the
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -26,6 +26,7 @@ from steerai.loop2.loop import (
     TurnView,
 )
 from steerai.loop2.task import Budgets, Envelope, Task
+from steerai.loop2.verify import Judged
 from steerai.world.effects import (
     PRECEDENCE,
     Carrier,
@@ -473,3 +474,14 @@ class World:
             settle=self._settle,
             stamp=self._stamp,
         )
+
+
+def judged_by(proof: Callable[..., object]) -> Callable[..., Judged]:
+    """A test double for `runner.judge` from a proof function's double: the same arguments, its
+    return value as the judgement's verdict ([V2.67] A: the runner reads the verdict off one
+    `Judged`)."""
+
+    def judge(*args: object, **kwargs: object) -> Judged:
+        return Judged(proof(*args, **kwargs))  # type: ignore[arg-type]  # a double's token
+
+    return judge
