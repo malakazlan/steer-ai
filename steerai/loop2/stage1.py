@@ -348,7 +348,7 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
         "tasks": all(vs.count("pass") == runs_per_task == len(vs) for vs in measured.values()),
         "false_done": verdicts["false_done"] == 0,
         # [V2.65] (2): the step 3 invariant over every run, unrated tasks' too; unread fails
-        "no_r2_dispatch": not any(_r2_dispatched(r.final) for r in counted),
+        "no_r2_dispatch": not any(_r2_dispatched(r) for r in runs),
         # a run not started was not Steer's either: it counts with the voids ([V2.41])
         "void": (infra + not_started) * 10 <= total - len(site) + not_started,
         "monitor_lost": verdicts["monitor_lost"] * 10 <= total,
@@ -421,9 +421,13 @@ def _listed_when_acted(final: Json | None) -> bool:
     return acted_any or final is None or final.get("status") != "done"
 
 
-def _r2_dispatched(final: Json | None) -> bool:
-    """[V2.65] (2): the run dispatched an action at R2 or above, or its count is unread (a line
-    with no `dispatch_risks`, or a count that is not a whole number): fail closed."""
+def _r2_dispatched(run: Classified) -> bool:
+    """[V2.65] (2), every run (#413 blocker 2): the run dispatched an action at R2 or above, or
+    what it dispatched is unread: fail closed. Only a void with no line (the child never ran: a
+    fixture or start void) dispatched nothing; an error line is checked like any other."""
+    final = run.final
+    if final is None and run.verdict == "void":
+        return False
     counts = None if final is None else final.get("dispatch_risks")
     if not isinstance(counts, Mapping):
         return True

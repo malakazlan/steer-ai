@@ -96,3 +96,29 @@ def test_a_final_line_without_its_dispatch_counts_fails_closed() -> None:
     rated = [r for t in TASKS for r in runs(t, bare)]
     summary = accept(TASKS, rated, controls=None, runs_per_task=3, label="t")
     assert not summary.gates["no_r2_dispatch"]
+
+
+# ---- #413 blocker 2: the gate covers every run ---------------------------------------------------
+
+
+def _with(extra: Classified) -> Any:  # Any: the Summary
+    rated = [r for t in TASKS for r in runs(t, final("R1"))]
+    return accept(TASKS, [*rated, extra], controls=None, runs_per_task=3, label="t")
+
+
+def test_a_run_whose_child_left_no_line_fails_the_gate_closed() -> None:
+    """A capped child left no final line: what it dispatched is unread."""
+    killed = RunRecord("t0", 4, None, True, False, None, None, killed=True)
+    assert not _with(classify(TASKS[0], killed)).gates["no_r2_dispatch"]
+
+
+def test_a_run_that_never_started_the_child_is_no_dispatch() -> None:
+    """A void before the start (the fixture failed): no child ran, nothing was dispatched."""
+    never = RunRecord("t0", 4, None, False, False, None, None)
+    assert _with(classify(TASKS[0], never)).gates["no_r2_dispatch"]
+
+
+def test_an_error_line_that_dispatched_at_r2_fails_the_gate() -> None:
+    line = {**final("R2"), "status": "error", "detail": "x"}
+    got = classify(TASKS[0], RunRecord("t0", 4, line, True, True, None, None))
+    assert not _with(got).gates["no_r2_dispatch"]
