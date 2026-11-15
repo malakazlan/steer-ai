@@ -897,6 +897,7 @@ class LiveWorld:
             "late_sink_failures": self.late_sink_failures,
             "debug_failure": self.debug_failure,
             "monitor_lost": self.monitor_lost,
+            "front_nudged": self.front_nudged,  # [V2.64] Three: the start's one nudge, or None
             **dict(zip(_LATENCY_KEYS, self._monitor.latency(), strict=True)),
         }
 

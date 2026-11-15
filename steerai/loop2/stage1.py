@@ -766,9 +766,29 @@ def _report(
         "monitor_lost_rate": round(verdicts.get("monitor_lost", 0) / total, 3) if total else None,
         "fail_reasons": _counts(r.reason for r in runs if r.verdict == "fail"),
         "audit": _audits(finals),
+        "start_nudge": _start_nudges(finals),
         **_watch_deadlines(finals),
         **_run_facts(finals),
     }
+
+
+NUDGE_KINDS: Final = ("move1px", "minrestore")
+
+
+def _start_nudges(finals: Sequence[Json]) -> dict[str, int]:
+    """[V2.64] Three: how many runs' starts needed the one nudge, by kind, from the final
+    line's `world` block; `none` when the start needed none, `unread` when the block or the
+    key is missing or not a known kind."""
+    counts = dict.fromkeys((*NUDGE_KINDS, "none", "unread"), 0)
+    for final in finals:
+        world = final.get("world")
+        if not isinstance(world, Mapping) or "front_nudged" not in world:
+            counts["unread"] += 1
+            continue
+        kind = world["front_nudged"]
+        key = "none" if kind is None else kind if kind in NUDGE_KINDS else "unread"
+        counts[key] += 1
+    return counts
 
 
 AUDIT_RESULTS: Final = ("allowed", "vetoed", "failed")

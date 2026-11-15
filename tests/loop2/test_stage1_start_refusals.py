@@ -86,3 +86,18 @@ def test_a_shakedown_header_says_so() -> None:
     from steerai.loop2.stage1 import report_header  # noqa: PLC0415
 
     assert report_header("gallery", runs=1)["set"] == "gallery-shakedown"
+
+
+# ---- the start's nudge ([V2.64] Three), counted over the runs -----------------------------------
+
+
+def test_the_report_counts_the_starts_nudge_by_kind() -> None:
+    def nudged(kind: str | None) -> dict[str, Any]:
+        return _final(world={"monitor_lost": 0, "front_nudged": kind})
+
+    unread = _final(world={"monitor_lost": 0})
+    runs = [_ok(DONE, 1, final=nudged("move1px")), _ok(DONE, 2, final=nudged(None)),
+            _ok(DONE, 3, final=nudged("minrestore")), _ok(DONE, 4, final=unread),
+            _ok(DONE, 5, final=nudged("sideways"))]  # fmt: skip
+    report = accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="t").report
+    assert report["start_nudge"] == {"move1px": 1, "minrestore": 1, "none": 1, "unread": 2}
