@@ -319,6 +319,9 @@ class Ports:
     """The value fact a field holding exactly this text reads as (the session key and the
     normalisation `read_value` uses), so a value claim compares digests, never text."""
     audit: Callable[[AuditView], Audited] | None = None
+    turn_trace: Callable[[Mapping[str, object]], None] | None = None
+    """[V2.67] D: each turn's closed record (`turn_trace.closed`) for the redacted trace; None
+    writes none."""
     """[V2.64] One: the final audit, called only when every proof is self-written; None means
     there is none, so such a task fails closed (`audit_failed`), never ends done unaudited."""
 
