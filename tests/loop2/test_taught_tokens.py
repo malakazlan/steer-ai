@@ -176,3 +176,37 @@ def test_the_step_4_exclusions_hold_only_while_the_runner_does_not_use_consent()
     from steerai.loop2 import runner  # noqa: PLC0415
 
     assert "consent" not in inspect.getsource(runner)
+
+
+PARTLY_TAUGHT: Final[Mapping[str, str]] = {
+    "desc_bad": (
+        "#449: its length is taught by the schema (`maxLength`); its fence and control-character "
+        "half stays validator-only. A desc in the model's own words holds neither unless it "
+        "copies a fence line (an injection) or writes a raw control character; teaching it "
+        "would change the prompt's wording (a controller version) for a fault no stage run is "
+        "known to have hit (unmeasured)."
+    ),
+}
+"""Tokens with more than one rule, only some of which are taught: each names what is taught,
+what stays with the validator, and why."""
+
+
+def test_a_partly_taught_token_is_taught_and_says_what_is_not() -> None:
+    assert set(PARTLY_TAUGHT) <= set(TAUGHT)
+    assert all(reason.strip() for reason in PARTLY_TAUGHT.values())
+
+
+def test_the_desc_halves_left_to_the_validator_are_still_refused() -> None:
+    """#449: the untaught half is enforced, so leaving it untaught costs a repair, never a pass."""
+    from steerai.loop2.decision import Decision, validate  # noqa: PLC0415
+
+    goal = "turn on Dark mode"
+    for desc in ("line one\nline two", "a fence f1f1f1f1 inside"):
+        decision = Decision.model_validate({
+            "subgoals": [{"id": "s1", "desc": desc, "params": {"what": "Dark mode"},
+                          "closes": "state"}],
+            "stop": "cannot",
+        })  # fmt: skip
+        tokens = validate(decision, listed_ids=frozenset(), goal=goal, first_turn=True,
+                          fences=frozenset({"f1f1f1f1"}))  # fmt: skip
+        assert "desc_bad" in tokens
