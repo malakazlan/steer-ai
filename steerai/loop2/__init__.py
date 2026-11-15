@@ -13,6 +13,7 @@ def ready(step: int) -> bool:
         act_port,
         actuate,
         batch,
+        choose_probe,
         claims,
         cli,
         consent,

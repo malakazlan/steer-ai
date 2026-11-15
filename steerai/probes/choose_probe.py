@@ -6,13 +6,15 @@ One throwaway Chrome on the gallery page. Arm `v1`: the ComboBoxes as UIA names 
 live values, then the one step through v1's own Session (its executor built as v1's run builds
 it, with the option source: without one a choose refuses `no_option_source`, 2026-11-15), its
 whole result kept (gate outcome, codes, the action and the evidence). The page is reloaded.
-Arm `v2`: the same read, then the same single step through v2's `ActPort` on a `LiveWorld` (no
-model call), its `ActResult` and the value read after. Each arm runs in its own child process
-(one COM apartment each) and first shows the page (raise; the 1-px nudge only if Chrome holds
-it hidden). The page's own log gives the g12 events after each arm. Sends real input to our own
-window only.
+Arm `v2` (the v2 package's own `choose_probe`, which also runs both arms: v1's side never
+imports the v2 package): the same read, then the same single step through the act port a
+`LiveWorld` hands the loop (no model call), its `ActResult` and the value read after. Each arm
+runs in its own child process (one COM apartment each) and first shows the page (raise; the
+1-px nudge only if Chrome holds it hidden). The page's own log gives the g12 events after each
+arm. Sends real input to our own window only.
 
-Run: `python -m steerai.probes.choose_probe run --out-dir D`.
+Run through the v2 package's `choose_probe` (`run --out-dir D`); this module's `arm` is its v1
+child.
 """
 
 from __future__ import annotations
@@ -203,96 +205,27 @@ def _v1(hwnd: int) -> dict[str, object]:  # pragma: no cover - live
     }
 
 
-def _v2(hwnd: int, pid: int) -> dict[str, object]:  # pragma: no cover - live
-    from steerai.loop2.act_port import ActPort  # noqa: PLC0415
-    from steerai.loop2.decide_port import TaskGenerations  # noqa: PLC0415
-    from steerai.loop2.decision import ActionDoc  # noqa: PLC0415
-    from steerai.loop2.live_world import (  # noqa: PLC0415
-        LiveConfig,
-        LiveWorld,
-        WindowsPlatform,
-        run_on_loop_thread,
-    )
-    from steerai.loop2.loop import Dispatch  # noqa: PLC0415
-    from steerai.orchestrator.trace import ListTrace  # noqa: PLC0415
-    from steerai.session.monitor import DEFAULT_KILL_KEY  # noqa: PLC0415
-
-    config = LiveConfig(
-        task_id="g12-probe",
-        hwnd=hwnd,
-        kill_key=DEFAULT_KILL_KEY,
-        trace_level="redacted",
-        trace=ListTrace(),
-        generations=TaskGenerations(),
-        bound_pid=pid,
-        bound_image="chrome.exe",
-    )
-    platform = WindowsPlatform()
-
-    def work() -> dict[str, object]:
-        with LiveWorld(config, platform) as world:
-            world.bring_to_front()
-            observed = world.world.observe()
-            elements = observed.snapshot.elements
-            combos = combo_rows(elements, lambda e: _fact(world.world.read_value(e)))
-            target, how = pick_combo(elements, LABEL)
-            if target is None:
-                return {"combos_before": combos, "picked": None}
-            act = ActPort(
-                world=world.world,
-                semantic=world.semantic,
-                physical=world.physical,
-                desk=world.desk,
-                interrupted=world.interrupted,
-                clock=config.clock,
-                wall_left=lambda: 60.0,
-                pause=config.pause,
-            )
-            dispatch = Dispatch(
-                action=ActionDoc(verb="choose", target=target.id, subgoal="g1", option=OPTION),
-                runtime_id=target.runtime_id,
-                role=target.role,
-                name=target.name,
-                risk="R1",
-                provenance=None,
-            )
-            started = time.monotonic()
-            try:
-                done = act.act(dispatch)
-                result: dict[str, object] = {
-                    "action": done.action.to_dict(),
-                    "read_back": done.read_back,
-                }
-            except Exception as exc:  # noqa: BLE001 - a probe records any failure as data
-                result = {"raised": f"{type(exc).__name__}: {exc}"[:EVIDENCE_CUT]}
-            span = round(time.monotonic() - started, 3)
-            after = _fact(world.world.read_value(target))
-            return {
-                "combos_before": combos,
-                "picked": {"name": target.name, "how": how},
-                "result": result,
-                "s": span,
-                "value_after": after,
-            }
-
-    return run_on_loop_thread(work, release=platform.release_com)
-
-
-def _fact(fact: object) -> object:  # pragma: no cover - live
+def fact_data(fact: object) -> object:  # pragma: no cover - live
     """A ValueFact as plain data (its fields), or None."""
     if fact is None:
         return None
     return {"filled": getattr(fact, "filled", None), "digest": getattr(fact, "digest", None)}
 
 
-def run_arm(
-    arm: Arm, *, hwnd: int, pid: int, cdp_port: int, server_port: int
+def arm_row(
+    arm: Arm,
+    body: Callable[[], dict[str, object]],
+    *,
+    hwnd: int,
+    cdp_port: int,
+    server_port: int,
 ) -> int:  # pragma: no cover - live
+    """One arm's line: the page shown, its value, the arm's `body`, its value and log after."""
     shown = _shown(hwnd, cdp_port, server_port)
     row: dict[str, object] = {"arm": arm, "shown": shown}
     row["page_value_before"] = _page_value(cdp_port, server_port)
     try:
-        row.update(_v1(hwnd) if arm == "v1" else _v2(hwnd, pid))
+        row.update(body())
     except Exception as exc:  # noqa: BLE001 - a probe records any failure as data
         row["raised"] = f"{type(exc).__name__}: {exc}"[:EVIDENCE_CUT]
     time.sleep(0.5)
@@ -302,88 +235,28 @@ def run_arm(
     return 0
 
 
-def run(out_dir: Path) -> int:  # pragma: no cover - live
-    """One Chrome: the v1 arm, a reload, the v2 arm."""
-    import shutil  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415
-    import tempfile  # noqa: PLC0415
-
-    from steerai.probes.chrome_a11y import (  # noqa: PLC0415
-        CHROME_DEFAULT,
-        launch_chrome,
-        stop_chrome,
-    )
-    from steerai.probes.gallery_page import pages  # noqa: PLC0415
-    from steerai.probes.layer_b import _free_port, _ours  # noqa: PLC0415
-    from steerai.probes.layer_b_pages import PageServer  # noqa: PLC0415
-    from steerai.probes.windows import wait_window_for_pid  # noqa: PLC0415
-
-    rows: list[dict[str, Any]] = []  # Any: JSON
-    tmp = Path(tempfile.mkdtemp(prefix="steer-g12-"))
-    with PageServer(pages()) as server:
-        port = _free_port()
-        proc = launch_chrome(
-            CHROME_DEFAULT, tmp / "profile", port,
-            f"http://127.0.0.1:{server.port}/page.html", window_size=(1100, 900),
-        )  # fmt: skip
-        try:
-            window = wait_window_for_pid(proc.pid, timeout_s=30.0, process=proc)
-            cdp, _ = _ours(port, server.port)
-            cdp.close()
-            time.sleep(1.0)
-            for arm in ("v1", "v2"):
-                if arm == "v2":
-                    cdp, _ = _ours(port, server.port)
-                    try:
-                        cdp.call("Page.reload", {"ignoreCache": True})
-                    finally:
-                        cdp.close()
-                    time.sleep(2.0)
-                done = subprocess.run(  # noqa: S603 - our own module, a fixed argv
-                    [sys.executable, "-m", "steerai.probes.choose_probe", "arm",
-                     "--arm", arm, "--hwnd", str(window.hwnd), "--pid", str(window.pid),
-                     "--cdp-port", str(port), "--server-port", str(server.port)],
-                    capture_output=True, text=True, timeout=180, check=False,
-                )  # fmt: skip
-                lines = [ln for ln in done.stdout.splitlines() if ln.strip()]
-                row = json.loads(lines[-1]) if lines else {"arm": arm, "exit": done.returncode}
-                if not lines:
-                    row["stderr_tail"] = done.stderr.splitlines()[-15:]
-                rows.append(row)
-                sys.stdout.write(json.dumps(row) + "\n")
-                sys.stdout.flush()
-        finally:
-            stop_chrome(proc, tmp / "profile")
-            shutil.rmtree(tmp, ignore_errors=True)
-    (out_dir / "choose_probe.json").write_text(json.dumps(rows))
-    return 0
+def add_arm_args(arm: argparse.ArgumentParser) -> None:  # pragma: no cover - live
+    arm.add_argument("--hwnd", type=int, required=True)
+    arm.add_argument("--pid", type=int, required=True)
+    arm.add_argument("--cdp-port", type=int, required=True)
+    arm.add_argument("--server-port", type=int, required=True)
 
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live
     parser = argparse.ArgumentParser(prog="python -m steerai.probes.choose_probe")
     sub = parser.add_subparsers(dest="mode", required=True)
-    arm = sub.add_parser("arm")
-    arm.add_argument("--arm", choices=("v1", "v2"), required=True)
-    arm.add_argument("--hwnd", type=int, required=True)
-    arm.add_argument("--pid", type=int, required=True)
-    arm.add_argument("--cdp-port", type=int, required=True)
-    arm.add_argument("--server-port", type=int, required=True)
-    whole = sub.add_parser("run")
-    whole.add_argument("--out-dir", type=Path, required=True)
+    add_arm_args(sub.add_parser("arm"))
     args = parser.parse_args(argv)
     if sys.platform != "win32":
         sys.stdout.write("choose_probe: windows only\n")
         return 0
-    if args.mode == "arm":
-        return run_arm(
-            args.arm,
-            hwnd=args.hwnd,
-            pid=args.pid,
-            cdp_port=args.cdp_port,
-            server_port=args.server_port,
-        )
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    return run(args.out_dir)
+    return arm_row(
+        "v1",
+        lambda: _v1(args.hwnd),
+        hwnd=args.hwnd,
+        cdp_port=args.cdp_port,
+        server_port=args.server_port,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover - live
