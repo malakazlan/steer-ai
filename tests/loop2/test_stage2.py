@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import itertools
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ from steerai.loop2.stage2 import (
     SiteTask,
     StartPage,
     classify_site,
+    days_bound,
     harness_failed,
     interleaved,
     invalid_run_void,
@@ -30,7 +32,6 @@ from steerai.loop2.stage2 import (
     run_stage,
     site_tasks,
     start_void,
-    days_bound,
     summarize,
     volume_bound,
 )
@@ -803,7 +804,7 @@ def _confirming(tasks: list[SiteTask], *, cap: int, runs: int = 2) -> list[tuple
 
     def attempt(t: SiteTask, n: int) -> SiteRecord:
         loads.append((days(), t.host, "run"))
-        return SiteRecord(walled(None), None, wall_host=t.host)
+        return SiteRecord(walled(), None, wall_host=t.host)
 
     def confirm(t: SiteTask) -> bool:
         loads.append((days(), t.host, "confirm"))
@@ -822,7 +823,7 @@ def test_a_wall_needing_its_confirmation_at_two_left_keeps_both_loads_on_its_day
     """With 2 left today, an attempt starts and its run and its confirmation both land today."""
     assert needs_confirmation(
         site("a1", "a.test", controlled=False),
-        SiteRecord(walled(None), None, wall_host="a.test"),
+        SiteRecord(walled(), None, wall_host="a.test"),
     )
     loads = _confirming([site("a1", "a.test", controlled=False)], cap=4, runs=2)
     per_day: dict[int, list[str]] = {}
@@ -840,7 +841,7 @@ def test_the_cap_holds_per_host_with_several_hosts_and_confirmations() -> None:
         per[(day, host)] = per.get((day, host), 0) + 1
     assert all(n <= 5 for n in per.values())
     # each run's confirmation follows it on the same day and the same host
-    for (day, host, kind), (day2, host2, kind2) in zip(loads, loads[1:], strict=False):
+    for (day, host, kind), (day2, host2, kind2) in itertools.pairwise(loads):
         if kind2 == "confirm":
             assert (kind, day, host) == ("run", day2, host2)
 
@@ -871,13 +872,18 @@ def test_an_uncontrolled_host_needs_only_an_attempts_loads() -> None:
     days = Days(clock)
     ran: list[int] = []
 
+    def bounded() -> int:  # a reserved control would wait day after day: fail, never hang
+        day = days()
+        assert day < 3, "the task never ran: a control load was reserved for it"
+        return day
+
     def attempt(t: SiteTask, n: int) -> SiteRecord:
         ran.append(days())
         return SiteRecord(record(t.stage.task_id, n), None)
 
     run_stage([site("u1", "u.test", controlled=False)], runs=1, attempt=attempt,
               control=lambda _h: "pass", confirm=lambda _t: False,
-              spacer=Spacer(clock, clock.sleep, day=days, cap=ATTEMPT_LOADS))  # fmt: skip
+              spacer=Spacer(clock, clock.sleep, day=bounded, cap=ATTEMPT_LOADS))  # fmt: skip
     assert ran == [0]
 
 
