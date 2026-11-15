@@ -299,14 +299,8 @@ def _changes(
     *,
     caps_read: bool,
 ) -> _Changes:
-    b_elems = [e for e in before.elements if e.role not in TRANSIENT_ROLES]
-    a_elems = [e for e in after.elements if e.role not in TRANSIENT_ROLES]
-    b_by = {e.runtime_id: e for e in b_elems if e.runtime_id}
-    a_by = {e.runtime_id: e for e in a_elems if e.runtime_id}
+    b_elems, a_elems, b_by, a_by, appeared, gone, rerendered = _appeared_gone(before, after)
     same = {rid for rid in b_by.keys() & a_by.keys() if b_by[rid].role == a_by[rid].role}
-    appeared = [e for e in a_elems if e.runtime_id and e.runtime_id not in same]
-    gone = [e for e in b_elems if e.runtime_id and e.runtime_id not in same]
-    appeared, gone, rerendered = _pair_rerenders(before, after, appeared, gone)
     in_a = scopes[1]
     classes: set[EffectClass] = set()
     tokens: set[Token] = set()
@@ -405,6 +399,65 @@ def _chains(snapshot: Snapshot) -> Callable[[Element], tuple[tuple[str, str], ..
         return chain
 
     return chain_of
+
+
+def _appeared_gone(
+    before: Snapshot, after: Snapshot
+) -> tuple[
+    list[Element],
+    list[Element],
+    dict[tuple[int, ...], Element],
+    dict[tuple[int, ...], Element],
+    list[Element],
+    list[Element],
+    bool,
+]:
+    """The observer's one comparison of two snapshots: the non-transient elements of each, each
+    side by RuntimeId, what appeared and what went (an element keeping its RuntimeId and role is
+    the same), with re-render pairs dropped ([V2.2] §6.1), and whether any was paired."""
+    b_elems = [e for e in before.elements if e.role not in TRANSIENT_ROLES]
+    a_elems = [e for e in after.elements if e.role not in TRANSIENT_ROLES]
+    b_by = {e.runtime_id: e for e in b_elems if e.runtime_id}
+    a_by = {e.runtime_id: e for e in a_elems if e.runtime_id}
+    same = {rid for rid in b_by.keys() & a_by.keys() if b_by[rid].role == a_by[rid].role}
+    appeared = [e for e in a_elems if e.runtime_id and e.runtime_id not in same]
+    gone = [e for e in b_elems if e.runtime_id and e.runtime_id not in same]
+    appeared, gone, rerendered = _pair_rerenders(before, after, appeared, gone)
+    return b_elems, a_elems, b_by, a_by, appeared, gone, rerendered
+
+
+@dataclass(frozen=True, slots=True)
+class ListingDelta:
+    """[V2.56]: what the listing marks between the observation the model last saw and this one:
+    `new` (appeared; a re-render pair is not new) and `changed` (role, folded name, or a state
+    token changed; never position or the offscreen flag), by RuntimeId. `states_read` is False
+    when either side's state tokens were not read: no state change is then claimed."""
+
+    new: frozenset[tuple[int, ...]]
+    changed: frozenset[tuple[int, ...]]
+    states_read: bool
+
+
+def listing_delta(before: Observed, after: Observed) -> ListingDelta | None:
+    """[V2.56] with the observer's own comparison (`_appeared_gone`); None when there is no
+    comparison: the top Document was replaced ([V2.55] (1)), or one side has one and the other
+    not."""
+    top_b, top_a = top_document(before.snapshot), top_document(after.snapshot)
+    if (top_b is None) != (top_a is None):
+        return None
+    if top_b is not None and top_a is not None and top_b.runtime_id != top_a.runtime_id:
+        return None
+    _b, _a, b_by, a_by, appeared, _gone, _paired = _appeared_gone(before.snapshot, after.snapshot)
+    states_read = before.snapshot.caps_read and after.snapshot.caps_read
+    changed = {
+        rid
+        for rid in b_by.keys() & a_by.keys()
+        if b_by[rid].role != a_by[rid].role
+        or normalise_name(b_by[rid].name) != normalise_name(a_by[rid].name)
+        or (states_read and b_by[rid].caps != a_by[rid].caps)
+    }
+    new = {e.runtime_id for e in appeared if e.runtime_id not in b_by}
+    return ListingDelta(frozenset(new), frozenset(changed), states_read)
 
 
 def _pair_rerenders(

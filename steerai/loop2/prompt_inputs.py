@@ -47,6 +47,15 @@ class ControllerInputs:
     """[V2.54]: the rows selected under the cap, with the turn's counts."""
     listing_note: str | None
     """[V2.54]: the header line saying what was cut; None when nothing was."""
+    changes_note: str | None
+    """[V2.56]: the header line when this turn has no comparison or its states were unread."""
+
+
+CHANGES_NOTE = {
+    "no_comparison": "changes: no comparison this turn",
+    "states_unread": "changes: states unread",
+}
+"""[V2.56]: the header line for a turn without a full comparison."""
 
 
 def controller_inputs(view: TurnView, *, goal: str, cap: int = LISTING_CAP) -> ControllerInputs:
@@ -55,10 +64,18 @@ def controller_inputs(view: TurnView, *, goal: str, cap: int = LISTING_CAP) -> C
     open_params = (
         span.text for s in view.subgoals if s.id not in view.proven for span in s.params.values()
     )
+    keep = view.keep | view.new | view.changed  # [V2.56]: both feed always-keep
     listing = select_listing(
-        snapshot, cap=cap, focus=observed.focus, keep=view.keep, goal_words=words_of(open_params)
+        snapshot, cap=cap, focus=observed.focus, keep=keep, goal_words=words_of(open_params)
     )
-    rows = v2_listing(snapshot, handles=view.handles, focus=observed.focus, listing=listing)
+    rows = v2_listing(
+        snapshot,
+        handles=view.handles,
+        focus=observed.focus,
+        listing=listing,
+        new=view.new,
+        changed=view.changed,
+    )
     return ControllerInputs(
         task_goal=goal,
         subgoal_lines=tuple(_subgoal_line(s) for s in view.subgoals),
@@ -78,6 +95,7 @@ def controller_inputs(view: TurnView, *, goal: str, cap: int = LISTING_CAP) -> C
         focus=focus_state(snapshot, observed.focus),
         listing=listing,
         listing_note=listing.note(),
+        changes_note=CHANGES_NOTE.get(view.changes),
     )
 
 
@@ -117,6 +135,7 @@ def make_decide(calls: DecideCalls, *, goal: str, task_fence: str) -> Callable[[
                 issued=inputs.issued,
                 focus=inputs.focus,
                 listing_note=inputs.listing_note,
+                changes_note=inputs.changes_note,
                 on_fit=lambda shown, cut: fitted.append((shown, cut)),
             )
         )

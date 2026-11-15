@@ -19,7 +19,7 @@ import hashlib
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 from steerai.action.dispositions import Delivery
 from steerai.errors import ErrorCode, SteerError
@@ -103,7 +103,7 @@ from steerai.loop2.verify import (
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.orchestrator.loop import REUSE_FRESHNESS_S
 from steerai.verify.predicates import FIELD_ROLES
-from steerai.world.effects import EffectReport, Observed, ValueFact, top_document
+from steerai.world.effects import EffectReport, Observed, ValueFact, listing_delta, top_document
 from steerai.world.elements import Element
 from steerai.world.model import normalise_name
 from steerai.world.observe2 import FIRST_READY_S, YOUNG_S, document_nodes
@@ -201,6 +201,8 @@ class _ListingState:
 
     shown: frozenset[int] | None = None
     turns: list[ListingTurn] = field(default_factory=list)
+    seen: Observed | None = None
+    """[V2.56]: the observation the model last saw: `new` and `changed` are against it."""
 
 
 class _End(Exception):  # noqa: N818 - a control-flow signal, not an error
@@ -600,7 +602,9 @@ class _Run:
             proven=frozenset(self.proven),
             issued=frozenset(self.handles.by_handle),
             keep=self._always_keep(),
+            **self._delta(observed),
         )
+        self.listing.seen = observed
         try:
             decided = self.ports.decide(view)
         except (PortInterrupted, SteerError, ControllerError) as exc:
@@ -623,6 +627,20 @@ class _Run:
         if decided.listing is not None:
             self.listing.turns.append(decided.listing)
         return decided.decision
+
+    def _delta(self, observed: Observed) -> dict[str, Any]:  # Any: TurnView's own field types
+        """[V2.56]: `new` and `changed` against the observation the model last saw (never the
+        listing), by the observer's own comparison; none on the first turn or after a replaced
+        Document."""
+        seen = self.listing.seen
+        delta = None if seen is None else listing_delta(seen, observed)
+        if delta is None:
+            return {"changes": "no_comparison"}
+        return {
+            "new": delta.new,
+            "changed": delta.changed,
+            "changes": "compared" if delta.states_read else "states_unread",
+        }
 
     def _always_keep(self) -> frozenset[tuple[int, ...]]:
         """[V2.54] (1): every element acted on in this task and every field holding pending text,

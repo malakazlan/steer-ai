@@ -109,8 +109,9 @@ def test_system_rules_content_and_stability() -> None:
     ):
         assert rule in SYSTEM_RULES
     assert "Other kinds wait" not in SYSTEM_RULES
-    assert "`on`/`off`" in SYSTEM_RULES
-    assert "`expanded`/`collapsed`" in SYSTEM_RULES
+    # [V2.56]: the legend names the listing's own tokens (the two-way test holds the full set)
+    assert "`toggle:on`" in SYSTEM_RULES
+    assert "`expanded`, `collapsed`" in SYSTEM_RULES
 
 
 def test_prompt_order_and_determinism() -> None:

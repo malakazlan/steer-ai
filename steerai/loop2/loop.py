@@ -131,6 +131,11 @@ class TurnView:
     keep: frozenset[tuple[int, ...]] = frozenset()
     """[V2.54] always-keep, by RuntimeId: every element acted on in this task and every field
     holding pending text. The listing shows them before anything else while they exist."""
+    new: frozenset[tuple[int, ...]] = frozenset()
+    changed: frozenset[tuple[int, ...]] = frozenset()
+    """[V2.56]: what appeared, and what changed, since the observation the model last saw."""
+    changes: Literal["compared", "no_comparison", "states_unread"] = "no_comparison"
+    """[V2.56]: whether this turn had a comparison, and whether its states were read."""
 
     def __post_init__(self) -> None:
         if not all(isinstance(r, RECORD_TYPES) for r in self.log):

@@ -37,6 +37,7 @@ from steerai.loop2.history import (
 from steerai.loop2.listing import Listing, RowClass
 from steerai.loop2.task import Status
 from steerai.loop2.text import clean_line, has_control
+from steerai.world.capabilities import TOKENS as CAPABILITY_TOKENS
 from steerai.world.elements import format_lines
 from steerai.world.model import Snapshot
 
@@ -58,11 +59,17 @@ STATUSES = frozenset(get_args(Status))
 SYSTEM_RULES = (
     "You control a Windows computer-use agent, one window at a time. Each turn you see the task, "
     "its subgoals, what happened since your last turn, and a listing of the window's elements. "
-    "Each element has an id, a role, a name, its states, and `new` if it appeared or changed "
-    "since your last turn. You answer with exactly one JSON object of the Decision schema.\n"
+    "Each element has an id, a role, a name and what code knows of it. You answer with exactly "
+    "one JSON object of the Decision schema.\n"
     "Listing legend:\n"
-    "- States: `on`/`off` for toggles, `selected`, `expanded`/`collapsed`; `new` marks an element "
-    "that appeared or changed since your last turn.\n"
+    "- After the name: `disabled`, `secure` (a password field), `offscreen`, `toggle:on`, "
+    "`toggle:off`, `toggle:mixed`, `selected`, `selectable`, `expanded`, `collapsed`, "
+    "`editable`, `readonly`, `range`; `secure_unread` means it could not be read whether the "
+    "field is a password: never type into it.\n"
+    "- `new` marks an element that appeared since your last turn, `changed` one whose role, name "
+    "or states changed; `changes: no comparison this turn` means there is none (the first turn, "
+    "or the page was replaced) and `changes: states unread` that state changes could not be "
+    "read.\n"
     "- Rows are indented two spaces per depth level; an indented row sits inside the row above.\n"
     "- `screen: unstable` means the window was still changing; `wait` is then an option.\n"
     "- `focused` marks the element with the keyboard focus; `focus: elsewhere` means it is on "
@@ -154,6 +161,8 @@ class ListingRow:
 
 FocusState = Literal["elsewhere", "unread"]
 """[V2.52] (b): where the keyboard focus is when no listing row can carry it."""
+NEW, CHANGED = "new", "changed"
+"""[V2.56]: the row tokens for an element that appeared, or whose role, name or states changed."""
 FOCUSED = "focused"
 """[V2.52] (b): the row token of the element with the keyboard focus (a code fact)."""
 SECURE_UNREAD = "secure_unread"
@@ -161,12 +170,21 @@ SECURE_UNREAD = "secure_unread"
 not keep targeting it with a type."""
 
 
-def v2_listing(
+ROW_TOKENS: frozenset[str] = frozenset(
+    {"disabled", "secure", "offscreen", *CAPABILITY_TOKENS, SECURE_UNREAD, FOCUSED, NEW, CHANGED}
+)
+"""[V2.56]: every token a listing row can carry after the name; a test holds the prompt's legend
+to exactly this set, both ways."""
+
+
+def v2_listing(  # noqa: PLR0913 - the snapshot and each row fact, keyword-only
     snapshot: Snapshot,
     *,
     handles: Mapping[int, int],
     focus: tuple[int, ...] | None = None,
     listing: Listing | None = None,
+    new: frozenset[tuple[int, ...]] = frozenset(),
+    changed: frozenset[tuple[int, ...]] = frozenset(),
 ) -> list[ListingRow]:
     """The v2 listing of `snapshot`: v1's line for every element, numbered by its task handle
     ([V2.38] RT-17: never the snapshot's ordinal), `-` for an element with no handle (it has no
@@ -182,7 +200,9 @@ def v2_listing(
         body = line[len(f"{e.id} ") :]
         unread = f" {SECURE_UNREAD}" if e.id in snapshot.unread_secure else ""
         focused = f" {FOCUSED}" if focus and e.runtime_id == focus else ""
-        text = f"{'-' if handle is None else handle} {body}{unread}{focused}"
+        rid = e.runtime_id
+        delta = f" {NEW}" if rid and rid in new else f" {CHANGED}" if rid and rid in changed else ""
+        text = f"{'-' if handle is None else handle} {body}{unread}{focused}{delta}"
         row_class: RowClass = "rest" if shown is None else shown[e.id]
         rows.append(ListingRow(e.depth, text, handle, row_class))
     return rows
@@ -310,6 +330,7 @@ def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
     vocab: Vocab | None = None,
     focus: FocusState | None = None,
     listing_note: str | None = None,
+    changes_note: str | None = None,
 ) -> tuple[list[str], list[str]]:
     """Return (system blocks, user blocks): stable, then append-only log, then the live turn.
     `vocab` is what the log's records may name (the task's subgoals and issued handles)."""
@@ -340,6 +361,7 @@ def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
             *(["screen: page young"] if young else []),
             *([f"focus: {focus}"] if focus is not None else []),
             *([listing_note] if listing_note is not None else []),
+            *([changes_note] if changes_note is not None else []),
             f"<<<screen {screen_fence}",
             f"window: {_data(window_title, screen_fence)}",
             *(
@@ -421,6 +443,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     issued: frozenset[int] = frozenset(),
     focus: FocusState | None = None,
     listing_note: str | None = None,
+    changes_note: str | None = None,
     on_fit: Callable[[frozenset[int], int], None] | None = None,
 ) -> tuple[Decision, DecideRecord]:
     """Ask, parse, validate; on failure repair with code tokens only, up to `max_repairs` times.
@@ -449,6 +472,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
             vocab=Vocab(dict(known_subgoals or {}), issued),
             focus=focus,
             listing_note=listing_note,
+            changes_note=changes_note,
         )
 
     rows, cut = _fit(list(listing_rows), render)
