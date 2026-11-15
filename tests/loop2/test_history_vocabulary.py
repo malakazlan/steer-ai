@@ -40,12 +40,17 @@ TOKEN = re.compile(r"[a-z][a-z_]*")
 VOCAB = Vocab({"s1": frozenset({"text"}), "s2": frozenset()}, frozenset({2, 3, 5, 7}))
 
 
-def _emitted(module: str, functions: set[str]) -> set[str]:
-    """The string constants these functions return or append: the tokens they can emit."""
+def _emitted(
+    module: str, functions: set[str] | None = None, *, without: frozenset[str] = frozenset()
+) -> set[str]:
+    """The string constants functions of `module` return or append: the tokens they can emit.
+    `functions=None` scans EVERY function (helpers included), except those in `without`."""
     tree = ast.parse((LOOP2 / module).read_text(encoding="utf-8"))
     out: set[str] = set()
     for fn in ast.walk(tree):
-        if not isinstance(fn, ast.FunctionDef) or fn.name not in functions:
+        if not isinstance(fn, ast.FunctionDef) or fn.name in without:
+            continue
+        if functions is not None and fn.name not in functions:
             continue
         for node in ast.walk(fn):
             spots: list[ast.expr] = []
@@ -101,7 +106,9 @@ CLAIM_CHECKS = {"evidence_tokens", "check_claim", "navigated_tokens", "_navigate
 
 
 def test_every_refusal_a_producer_can_emit_is_a_refusal_token() -> None:
-    emitted = _emitted("decision.py", VALIDATE) | set(WITHOUT_PARAM.values()) | _refuse_literals()
+    """Every function of `decision.py` (validate and every helper), not only the named ones."""
+    assert _emitted("decision.py", VALIDATE)  # the named producers do emit
+    emitted = _emitted("decision.py") | set(WITHOUT_PARAM.values()) | _refuse_literals()
     emitted |= _literal_values(typing.get_type_hints(type_refusal)["return"])
     emitted |= _literal_values(typing.get_type_hints(RiskVerdict)["refusal"])
     assert emitted
@@ -109,9 +116,16 @@ def test_every_refusal_a_producer_can_emit_is_a_refusal_token() -> None:
 
 
 def test_every_claim_result_a_producer_can_emit_is_a_claim_result() -> None:
-    emitted = _emitted("verify.py", CLAIM_CHECKS) | _emitted("runner.py", {"_refused"})
-    emitted |= {"accepted", "standard_only"}
+    """Every function of `verify.py` (helpers such as `_excluded` included) and `claims.py`,
+    except the auto proof, whose tokens are ways to prove (next test)."""
+    assert _emitted("verify.py", CLAIM_CHECKS)  # the named producers do emit
+    emitted = _emitted("verify.py", without=frozenset({"auto_proof"})) | _emitted("claims.py")
+    emitted |= _emitted("runner.py", {"_refused"}) | {"accepted", "standard_only"}
     assert emitted <= CLAIM_RESULTS, sorted(emitted - CLAIM_RESULTS)
+
+
+def test_the_auto_proof_emits_only_ways_to_prove() -> None:
+    assert _emitted("verify.py", {"auto_proof"}) <= PROVEN_HOW
 
 
 def test_every_way_to_prove_is_a_proven_how() -> None:
