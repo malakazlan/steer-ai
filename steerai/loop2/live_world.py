@@ -604,7 +604,12 @@ def _without_frames(error: BaseException) -> BaseException:
     return error
 
 
-def run_on_loop_thread[T](work: Callable[[], T], *, release: Callable[[], None]) -> T:
+def run_on_loop_thread[T](
+    work: Callable[[], T],
+    *,
+    release: Callable[[], None],
+    interrupted: Callable[[], None] | None = None,
+) -> T:
     """Run one task's `work` on its own loop thread (packet §1, rev 4.0c, rev 4.2).
 
     `work` builds and closes its `LiveWorld` and returns plain data only, never an object
@@ -612,7 +617,8 @@ def run_on_loop_thread[T](work: Callable[[], T], *, release: Callable[[], None])
     alive by a cycle), then `release`, the platform's one `CoUninitialize`, exactly once and
     never before the release step. An exception from `work` is re-raised here as itself, so a
     decide worker's `SystemExit`, raised on the loop thread, ends the process from the caller
-    (#346 (2))."""
+    (#346 (2)). A Ctrl+C while joining is heard (`interrupted`) and the join goes on: the kill
+    hot key is the stop; the task's thread is never left running (#361 P2)."""
     result: list[T] = []
     failure: list[BaseException] = []
 
@@ -627,7 +633,13 @@ def run_on_loop_thread[T](work: Callable[[], T], *, release: Callable[[], None])
 
     thread = threading.Thread(target=loop, name="steer-v2-loop")
     thread.start()
-    thread.join()
+    while True:
+        try:
+            thread.join()
+            break
+        except KeyboardInterrupt:  # #361 P2: never abandon the thread that holds COM
+            if interrupted is not None:
+                interrupted()
     if failure:
         raise failure[0]
     return result[0]

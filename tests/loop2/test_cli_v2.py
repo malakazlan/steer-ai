@@ -20,7 +20,17 @@ from steerai.loop2.cli import DEFAULT_BUDGETS, V2Deps, bind_window, parse_v2
 from steerai.loop2.loop import Reason, TaskOutcome
 from steerai.planner.claude_planner import DEFAULT_MODEL
 from steerai.probes.windows import WindowInfo
-from steerai.run import EXIT_USAGE, Deps, RunnerError, UsageError, _pick_window, main, parse_args
+from steerai.run import (
+    EXIT_ERROR,
+    EXIT_STOPPED,
+    EXIT_USAGE,
+    Deps,
+    RunnerError,
+    UsageError,
+    _pick_window,
+    main,
+    parse_args,
+)
 from tests.action.fakes import TYPE_IDS
 from tests.loop2.test_live_world import Clock, Platform, _Handle
 from tests.loop2.world_fakes import PAGE
@@ -436,3 +446,36 @@ def test_the_cli_binds_only_the_process_it_listed(tmp_path: Path) -> None:
     run.image = "other.exe"
     assert run() == cli.EXIT_FOR["blocked"]
     assert (run.result()["code"], run.result()["detail"]) == ("app_crashed", "window_changed")
+
+
+def test_ctrl_c_still_writes_the_outcome_and_stops(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#361 P2: every exit path writes exactly one JSON line; an interrupt during the join is
+    said, the outcome kept, and the exit is EXIT_STOPPED."""
+    from tests.loop2.test_live_world import _interrupt_the_first_join  # noqa: PLC0415
+
+    _interrupt_the_first_join(monkeypatch)
+    run = Run(tmp_path)
+    assert run() == EXIT_STOPPED
+    result = run.result()
+    assert result["interrupted"] is True
+    assert "used" in result
+    assert "interrupted" in run.stderr.getvalue()
+    assert run.platform.calls.count("release_com") == 1
+
+
+def test_an_unexpected_error_is_internal_error_on_one_line(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#361 P2: as v1's `run()`: the traceback on stderr, escaped; one JSON line; exit 70."""
+
+    def broken(_task: object, _ports: object) -> TaskOutcome:
+        raise RuntimeError("a bug")
+
+    monkeypatch.setattr(cli, "run_task", broken)
+    run = Run(tmp_path)
+    assert run() == EXIT_ERROR
+    assert (run.result()["status"], run.result()["detail"]) == ("error", "internal_error")
+    assert "RuntimeError" in run.stderr.getvalue()
+    assert run.platform.calls.count("release_com") == 1

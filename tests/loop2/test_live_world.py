@@ -1488,3 +1488,30 @@ def test_a_failed_tasks_frames_are_gone_before_com_is_released() -> None:
         gc.enable()
     assert alive_at_release == [False]
     assert raised.value.message == "uia_timeout"
+
+
+def _interrupt_the_first_join(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Ctrl+C reaches the main thread while it joins the loop thread (on 3.12 Windows it arrives
+    once `join` returns, bpo-29971); the first join of `steer-v2-loop` raises it."""
+    real = threading.Thread.join
+    raised: list[int] = []
+
+    def join(self: threading.Thread, timeout: float | None = None) -> None:
+        if self.name == "steer-v2-loop" and not raised:
+            raised.append(1)
+            raise KeyboardInterrupt
+        real(self, timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", join)
+    return raised
+
+
+def test_ctrl_c_during_the_join_keeps_joining_and_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#361 P2: the loop thread is never abandoned holding COM; the caller hears it."""
+    raised = _interrupt_the_first_join(monkeypatch)
+    heard: list[str] = []
+    released: list[bool] = []
+    result = run_on_loop_thread(
+        lambda: "done", release=lambda: released.append(True), interrupted=lambda: heard.append("x")
+    )
+    assert (result, raised, heard, released) == ("done", [1], ["x"], [True])

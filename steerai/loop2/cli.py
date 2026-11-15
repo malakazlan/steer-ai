@@ -18,6 +18,7 @@ import math
 import os
 import sys
 import time
+import traceback
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -40,6 +41,7 @@ from steerai.probes.windows import WindowInfo
 from steerai.run import (
     EXIT_BLOCKED,
     EXIT_DONE,
+    EXIT_ERROR,
     EXIT_PAUSED,
     EXIT_STOPPED,
     EXIT_USAGE,
@@ -296,12 +298,25 @@ def _run(options: V2Options, deps: V2Deps, out: _Out, price: PriceFile, window: 
             del ports  # rev 4.0c: nothing holding COM outlives the world on this thread
             return outcome, world.report()
 
+    interrupts: list[bool] = []
     try:
-        outcome, report = run_on_loop_thread(work, release=platform.release_com)
+        outcome, report = run_on_loop_thread(
+            work, release=platform.release_com, interrupted=lambda: interrupts.append(True)
+        )
     except SteerError as exc:  # the world refused to start: the session, the monitor, the window
         out.emit({"status": "blocked", "code": exc.code.value, "detail": exc.message}, options)
         return EXIT_BLOCKED
-    out.emit(_result(outcome, task.budgets, report), options)
+    except Exception:  # noqa: BLE001 - as v1's run(): the last line of defence, one exit code
+        for line in traceback.format_exc().splitlines():
+            out.note(line)  # escaped: exception text can quote titles or page text
+        out.emit({"status": "error", "code": None, "detail": "internal_error"}, options)
+        return EXIT_ERROR
+    result = _result(outcome, task.budgets, report)
+    if interrupts:  # #361 P2: Ctrl+C during the join; the outcome is still the task's own
+        out.note("interrupted: Ctrl+C arrived while the task ran; the kill hot key is the stop")
+        out.emit({**result, "interrupted": True}, options)
+        return EXIT_STOPPED
+    out.emit(result, options)
     return EXIT_FOR[outcome.status]
 
 
