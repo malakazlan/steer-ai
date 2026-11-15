@@ -153,6 +153,7 @@ class FakeWin32:
     next_handle: int = 100
     pid: int = 777
     exited: bool = False
+    events: set[int] = field(default_factory=set)
 
     def _new(self) -> int:
         self.next_handle += 4
@@ -197,6 +198,7 @@ class FakeWin32:
     def create_event(self, sa: object, *, manual_reset: bool) -> int:
         del sa
         h = self._new()
+        self.events.add(h)
         self.calls.append(("event", h, manual_reset))
         return h
 
@@ -273,7 +275,13 @@ class FakeWin32:
 
     def wait_any(self, handles: tuple[int, ...], timeout_ms: int) -> int | None:
         self.calls.append(("wait", handles, timeout_ms))
-        return 1 if self.exited else (None if self.behaviour == "hang" else 0)
+        if self.exited:  # a process handle is signalled once the helper is gone
+            signalled = [i for i, h in enumerate(handles) if h not in self.events]
+            return signalled[0] if signalled else None
+        if self.behaviour == "hang":
+            return None
+        events = [i for i, h in enumerate(handles) if h in self.events]
+        return events[0] if events else None  # the helper set wake; a lone process wait times out
 
     def process_id(self, process: int) -> int:
         del process
@@ -439,3 +447,29 @@ def test_the_config_holds_the_runs_values_and_a_fresh_nonce() -> None:
     assert c.get("hook_timeout_ms") == 1000
     assert (c.get("nonce_lo"), c.get("nonce_hi")) != (h2.config.get("nonce_lo"),
                                                        h2.config.get("nonce_hi"))  # fmt: skip
+
+
+# ---- PR 3: what the monitor reads from a started helper ------------------------------------------
+
+
+def test_a_started_helper_answers_its_pid_liveness_and_waits() -> None:
+    w = FakeWin32()
+    helper = _helper(w)
+    helper.start()
+    assert helper.pid() == w.pid
+    assert not helper.has_exited()
+    assert helper.wait_exit(100) is False
+    helper.wait_wake(50)
+    waits = w.named("wait")
+    assert waits[-2][1] == (helper.process_handle,)
+    assert waits[-1][1] == (helper.wake_handle, helper.process_handle)  # HH-08
+    assert w.named("reset")[-1] == ("reset", helper.wake_handle)  # reset after waking
+
+
+def test_terminating_a_helper_ends_its_job() -> None:
+    w = FakeWin32()
+    helper = _helper(w)
+    helper.start()
+    helper.terminate()
+    assert w.named("terminate_job")
+    assert helper.has_exited()
