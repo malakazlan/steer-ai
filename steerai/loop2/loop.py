@@ -342,7 +342,8 @@ class TaskOutcome:
     "not configured", never as enforced, never 0.0."""
     watch_deadlines: tuple[tuple[WatchKind, int, int], ...] = ()
     """[V2.48]: per watch class (every class, in order): the watches and how many ended at their
-    deadline, for stage 1's per-class deadline counts."""
+    deadline, for stage 1's per-class deadline counts. A watch that raised (a kill, a port
+    error) never reached a deadline verdict and is in neither count."""
     rejections: tuple[str, ...] = ()
     """The controller's rejection tokens of the turn that ended the task (closed tokens only),
     so a stopped run says why; empty otherwise."""

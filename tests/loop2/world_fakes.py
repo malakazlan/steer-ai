@@ -277,9 +277,11 @@ class World:
     interrupt_after_settle: bool = False
     """Report `interruption` once a settle has run (the person's kill during the wait)."""
     decide_raises: Exception | None = None
+    """When set, every controller call raises it (a port failure or `PortInterrupted`)."""
     watch_timeouts: list[bool] = field(default_factory=list)
     """Each watch's `timed_out` in turn, when set (else the submit rule's own)."""
-    """When set, every controller call raises it (a port failure or `PortInterrupted`)."""
+    watch_raises: Exception | None = None
+    """When set, every watch raises it (a kill or a port failure while it holds)."""
     interrupt_in_decide: int | None = None
     """Report `interruption` from this controller call on (1-based): the kill arrives while
     that call is waiting on the model, so its Decision comes back after the kill (#326)."""
@@ -353,6 +355,8 @@ class World:
 
     def _watch(self, before: Observed, sent: Dispatch) -> Watched:
         self.events.append("watch")
+        if self.watch_raises is not None:
+            raise self.watch_raises
         if sent.action.verb == "type" and sent.runtime_id in self.autocomplete:
             self.values[sent.runtime_id] = self.autocomplete[sent.runtime_id]
         self.now += self.watch_s

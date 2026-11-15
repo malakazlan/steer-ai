@@ -1258,6 +1258,8 @@ class _Run:
             self.turn.focused = element.runtime_id
         pending_before = list(self.pending)  # each pending field as found just before dispatch
         watched = self.ports.watch(before, sent)
+        # [V2.48]: counted only once the watch returned; one that raised (a kill, a port error)
+        # never reached a deadline verdict and is in neither count
         counted = self.watch_counts[watch_kind(sent)]
         counted[0] += 1
         counted[1] += watched.timed_out
