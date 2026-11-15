@@ -224,6 +224,17 @@ def url_read(observed: Observed) -> UrlRead:
     return "not_composed"
 
 
+class WindowCovered(Exception):  # noqa: N818 - a control-flow signal, as PortInterrupted
+    """[V2.62] the bound window is covered (`world.cover`: minimised, cloaked, or wholly under
+    the windows above it), read before any wait for a page: the task ends at once `stopped` /
+    `window_covered`, never `page_not_ready` after the deadline, and Steer never raises the
+    window itself. `token` is the cover's own reason, for the trace."""
+
+    def __init__(self, token: str) -> None:
+        super().__init__(token)
+        self.token = token
+
+
 @dataclass(frozen=True)
 class Decided:
     """What the decide port returns: the Decision and the call's usage; None when the usage was

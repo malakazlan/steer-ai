@@ -118,6 +118,9 @@ class Desk:
         self.lost = False
         self.taps = 0
         self.current: frozenset[tuple[int, ...]] | None = None
+        self.root = 0x10
+        """[V2.62]: the root window under any point (the fake snapshot's window)."""
+        self.hit_points: list[tuple[int, int]] = []
 
     def tap_refusal(self) -> str | None:
         self.taps += 1
@@ -138,6 +141,10 @@ class Desk:
         if self.focus_after:
             self.focus = self.focus_after.pop(0)
         return self.focus
+
+    def root_at(self, x: int, y: int) -> int:
+        self.hit_points.append((x, y))
+        return self.root
 
     def armed(self, focus: frozenset[tuple[int, ...]]) -> AbstractContextManager[None]:
         return self._arm(focus)

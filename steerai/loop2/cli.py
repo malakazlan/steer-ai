@@ -290,6 +290,7 @@ def _run(options: V2Options, deps: V2Deps, out: _Out, price: PriceFile, window: 
 
     def work() -> tuple[TaskOutcome, dict[str, int | str | None]]:
         with LiveWorld(config, platform) as world:
+            world.bring_to_front()  # [V2.62]: a refusal here is a start refusal, its own reason
             started.append(True)
             limits = _limits_header(task.budgets, price)
             out.note("header: " + json.dumps({**world.header(task), **limits}, sort_keys=True))

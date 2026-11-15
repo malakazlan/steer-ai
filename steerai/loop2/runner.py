@@ -82,6 +82,7 @@ from steerai.loop2.loop import (
     TurnView,
     UrlRead,
     WatchKind,
+    WindowCovered,
     action_risk,
     type_refusal,
     url_read,
@@ -430,6 +431,8 @@ class _Run:
             return self._outcome(end.status, end.cause)
         except PortInterrupted:
             return self._after_port_interrupt()
+        except WindowCovered:  # [V2.62]: covered, read before any wait for a page
+            return self._outcome("stopped", Reason("window_covered"))
         except NotImplementedError:  # packet §7: a later step's stub never falls through
             return self._outcome("stopped", Reason("internal_stub_reached"))
         except (SteerError, ControllerError) as exc:  # RT-16: a port failed; keep the evidence
