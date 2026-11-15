@@ -441,3 +441,15 @@ def test_a_large_page_task_fails_closed_until_listed_when_acted_is_checked() -> 
     other = accept([DONE], [_ok(DONE, r) for r in (1, 2, 3)], controls=(5, 5), runs_per_task=3,
                    label="t")  # fmt: skip
     assert other.gates["large_listed"] is True
+
+
+def test_odd_values_in_a_final_never_crash_the_summary_and_are_said() -> None:
+    """#366 E10: NaN, None or a string in the listings or the use is incomplete, never a crash
+    and never a NaN in the summary."""
+    odd = [{"eligible": None, "shown": 1, "cut": "x", "keep_at_ceiling": False,
+            "goal_at_subcap": False, "prompt_cut": float("nan"), "prompt_tokens": "x"}]  # fmt: skip
+    final = _final(listings=odd, used={"max_actions": 1, "max_wall_s": float("nan")})
+    runs = [_ok(DONE, 1, final=final), _ok(DONE, 2), _ok(DONE, 3)]
+    report = accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="t").report
+    json.dumps(report, allow_nan=False)
+    assert report["listing"]["incomplete"] == 1

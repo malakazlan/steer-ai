@@ -256,10 +256,13 @@ def _report(
         "used_p95": {k: _quantile(v, 0.95) for k, v in used.items()},
         "listing": {
             "turns": len(listings),
-            "eligible_max": max((int(t.get("eligible", 0)) for t in listings), default=None),
-            "cut_total": sum(int(t.get("cut", 0)) for t in listings),
-            "prompt_cut_total": sum(int(t.get("prompt_cut", 0)) for t in listings),
+            "eligible_max": max((_whole(t.get("eligible")) or 0 for t in listings), default=None),
+            "cut_total": sum(_whole(t.get("cut")) or 0 for t in listings),
+            "prompt_cut_total": sum(_whole(t.get("prompt_cut")) or 0 for t in listings),
             "prompt_tokens_p95": _quantile([t.get("prompt_tokens") for t in listings], 0.95),
+            "incomplete": sum(  # #366 E10: a turn with any count unread or not a number
+                any(_whole(t.get(k)) is None for k in LISTING_COUNTS) for t in listings
+            ),
         },
         "focus": {k: sum(int(_number(f, "focus", k) or 0) for f in finals) for k in focus_keys},
         "hook_latency_p95_ms_max": _max(_number(f, "world", "hook_latency_p95_ms") for f in finals),
@@ -281,9 +284,21 @@ def _number(final: Json, outer: str, key: str) -> float | None:
     return float(value)
 
 
+LISTING_COUNTS: Final = ("eligible", "shown", "cut", "prompt_cut", "prompt_tokens")
+
+
+def _whole(value: object) -> int | None:
+    """A count as the CLI writes it; None for anything else (NaN, None, a string, a bool)."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return int(value) if math.isfinite(value) else None
+
+
 def _quantile(values: Sequence[object], q: float) -> float | None:
     numbers = sorted(
-        float(v) for v in values if isinstance(v, int | float) and not isinstance(v, bool)
+        float(v)
+        for v in values
+        if isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v)
     )
     if not numbers:
         return None
