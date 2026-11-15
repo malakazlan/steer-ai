@@ -588,6 +588,22 @@ _V1_TAG = 0x5354_4545
 """v1's input tag (`win_input.STEER_EXTRA_INFO`); a v2 run never uses it."""
 
 
+def _without_frames(error: BaseException) -> BaseException:
+    """#361 H4: the error and every error chained to it, without their tracebacks, so no frame
+    of the task (nor a COM object it held) outlives the release. The caller re-raises it as
+    itself; its own traceback then starts at the caller."""
+    seen: set[int] = set()
+    pending: list[BaseException | None] = [error]
+    while pending:
+        link = pending.pop()
+        if link is None or id(link) in seen:
+            continue
+        seen.add(id(link))
+        link.__traceback__ = None
+        pending += [link.__cause__, link.__context__]
+    return error
+
+
 def run_on_loop_thread[T](work: Callable[[], T], *, release: Callable[[], None]) -> T:
     """Run one task's `work` on its own loop thread (packet §1, rev 4.0c, rev 4.2).
 
@@ -604,7 +620,7 @@ def run_on_loop_thread[T](work: Callable[[], T], *, release: Callable[[], None])
         try:
             result.append(work())
         except BaseException as exc:  # noqa: BLE001 - re-raised in the caller as itself
-            failure.append(exc)
+            failure.append(_without_frames(exc))
         finally:
             gc.collect()
             release()

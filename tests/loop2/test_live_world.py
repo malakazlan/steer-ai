@@ -1461,3 +1461,30 @@ def test_a_window_replaced_after_the_last_read_gets_no_action(verb: str) -> None
     assert sum(h.invoked for h in handles) == 0
     assert platform.fake_input.bursts == []
     assert platform.fake_input.clicks == []
+
+
+def test_a_failed_tasks_frames_are_gone_before_com_is_released() -> None:
+    """#361 H4 (CLI-01): the failure's traceback, and a chained one, would keep `work`'s frame
+    and its COM-holding locals alive past `CoUninitialize`."""
+    refs: list[weakref.ref[_Client]] = []
+    alive_at_release: list[bool] = []
+
+    def work() -> None:
+        held = _Client()
+        refs.append(weakref.ref(held))
+        try:
+            raise OSError("a read failed")
+        except OSError as cause:
+            raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "uia_timeout") from cause
+
+    def release() -> None:
+        alive_at_release.append(refs[0]() is not None)
+
+    gc.disable()
+    try:
+        with pytest.raises(SteerError) as raised:
+            run_on_loop_thread(work, release=release)
+    finally:
+        gc.enable()
+    assert alive_at_release == [False]
+    assert raised.value.message == "uia_timeout"
