@@ -133,3 +133,8 @@ def test_the_rule_says_a_type_never_gives_both_param_and_text() -> None:
     rules = _system()[0]
     assert "A `type` gives `param` or `text`, never both." in rules
     assert "gives either" not in rules
+
+
+def test_the_rule_says_a_reply_stops_or_asks_never_both() -> None:
+    """The [V2.64] eval: 18 of 20 3d-b replies stopped blocked with an ask (`ask_with_stop`)."""
+    assert "A reply either stops or asks, never both." in _system()[0]
