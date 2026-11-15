@@ -257,9 +257,19 @@ def _opened(task: Task) -> Any:  # noqa: PLR0915 - one opener per start kind  # 
 def save_reads(out: Path) -> int:  # pragma: no cover - live, Windows only
     """The `--save-reads` pass: each distinct start once, read-only, no input; a read per task
     id, kept out of the repo."""
+    from steerai.probes.memory_guard import (  # noqa: PLC0415 - live only
+        EXIT_LOW_MEMORY,
+        free_physical_mb,
+    )
+
     out.mkdir(parents=True, exist_ok=True)
     by_id = {t.task_id: t for t in local_tasks()}
     for key, task_ids in read_groups(local_tasks()).items():
+        free = free_physical_mb()
+        if free < FLOOR_MB:  # the stage 2 floor, before every start opened
+            sys.stdout.write(json.dumps({"start": key, "refused": "low_memory", "free_mb": free}))
+            sys.stdout.write("\n")
+            return EXIT_LOW_MEMORY
         try:
             with _opened(by_id[task_ids[0]]) as (hwnd, _port):
                 raw = _read_window(hwnd)
