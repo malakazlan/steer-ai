@@ -2,10 +2,12 @@
 Literals ([V2.49]: record fields are enums; the follow-up issue, which merges before slice 7),
 no module that produces them may build a string from runtime data.
 
-Every refusal token, claim result and proven "how" is then a code literal or a value from a
-closed module-level mapping: never an f-string, a concatenation, a `%` or a `str.format` /
-`str.join` over runtime values. Two uses are allowed, and neither is a history token: an outcome
-`Reason` is rendered (`render_reason`) and a port failure is named (`port_<code>`, in `go`).
+This check sees strings BUILT in a producer: no f-string, concatenation, `%`, `str.format` or
+`str.join` over runtime values. It cannot see runtime data passed straight through (the
+model's free `answer` handed on as a token, the re-review's M4): that is closed by membership,
+`history.REFUSAL_TOKENS`, `CLAIM_RESULTS` and `PROVEN_HOW` (`test_history_vocabulary.py`). Two
+uses are allowed, and neither is a history token: an outcome `Reason` is rendered
+(`render_reason`) and a port failure is named (`port_<code>`, in `go`).
 """
 
 from __future__ import annotations

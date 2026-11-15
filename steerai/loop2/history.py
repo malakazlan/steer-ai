@@ -16,8 +16,13 @@ from dataclasses import dataclass
 from typing import Final, Literal, get_args
 
 from steerai.action.dispositions import Delivery
-from steerai.loop2.decision import Verb
+from steerai.loop2.claims import ClaimToken
+from steerai.loop2.consent import CommitToken
+from steerai.loop2.consent import RefusalToken as StrictRefusal
+from steerai.loop2.decision import WITHOUT_PARAM, Verb
+from steerai.loop2.owned import OwnedToken
 from steerai.loop2.query import EnterToken, RowId
+from steerai.loop2.verify import ProofToken
 from steerai.world.effects import EffectClass, Token
 
 UIA_CONTROL_TYPES: Final = frozenset(
@@ -44,9 +49,55 @@ READ_BACK: Final = frozenset({"mismatch", "unread"})
 ENTER_TOKENS: Final = frozenset(get_args(EnterToken))
 ROWS: Final = frozenset(get_args(RowId))
 MAX_LINE: Final = 256
-CODE_TOKEN = re.compile(r"[a-z_]{1,40}")
-"""A code-written token (a refusal, a claim result, how a subgoal was proven). Code writes these;
-no page or model text reaches them."""
+VALIDATE_REFUSALS: Final = frozenset(
+    {
+        "ask_empty", "ask_with_actions", "ask_with_stop", "commit_cannot_apply", "desc_bad",
+        "empty_decision", "id_not_listed", "key_missing", "not_in_step", "option_missing",
+        "param_missing", "param_name_bad", "param_not_span", "param_unknown",
+        "stop_with_actions", "subgoal_duplicate", "subgoal_id_bad", "subgoal_unknown",
+        "subgoals_after_first", "subgoals_missing", "target_missing",
+        "target_on_untargeted_verb", "text_bad", "text_missing", "too_many_actions",
+        "too_many_subgoals", "type_text_and_param", "wanted_missing",
+        *WITHOUT_PARAM.values(),
+    }
+)  # fmt: skip
+"""What `decision.validate` refuses (the model's shape faults)."""
+RUNNER_REFUSALS: Final = frozenset(
+    {
+        "id_not_listed", "not_delivered", "press_not_at_focus", "press_target_changed",
+        "press_target_gone", "repeat_send",
+        "secure_field", "secure_unread",  # `loop.type_refusal`
+        "text_changed",  # `loop.action_risk`
+    }
+)  # fmt: skip
+"""What the runner itself refuses, with the type and risk rules' refusals."""
+REFUSAL_TOKENS: Final = (
+    VALIDATE_REFUSALS
+    | RUNNER_REFUSALS
+    | frozenset(get_args(StrictRefusal))
+    | frozenset(get_args(CommitToken))
+)
+"""#347 re-review: every refusal token a history line may carry (`Refused.token`); the strict
+tier's (step 4) included, so a step 4 refusal is never dropped."""
+STEP3_CLAIM_REJECTIONS: Final = frozenset(
+    {
+        "evidence_missing", "id_not_listed", "no_carrier", "no_change", "no_content",
+        "not_a_page", "not_in_delta", "outside_scope", "param_missing", "param_unproven",
+        "secure_field", "secure_unread", "state_mismatch", "state_unread", "tier_mismatch",
+        "too_much_evidence", "url_unread", "value_mismatch", "value_unread",
+        "evidence_reused", "kind_mismatch", "standard_only", "words_missing",  # `_refused`
+    }
+)  # fmt: skip
+"""What `verify.check_claim` and the runner's `_refused` reject a step 3 claim with."""
+CLAIM_RESULTS: Final = (
+    frozenset(get_args(ClaimToken))
+    | frozenset(get_args(OwnedToken))
+    | STEP3_CLAIM_REJECTIONS
+    | frozenset({"accepted", "standard_only"})
+)
+"""#347 re-review: every claim result a history line may carry (`ClaimResult.result`)."""
+PROVEN_HOW: Final = frozenset({"claim", *get_args(ProofToken)})
+"""How a subgoal was proven: a claim, or the auto proof's token (`Proven.how`)."""
 
 WorldMove = Literal["page", "target", "focus"]
 
@@ -189,7 +240,6 @@ def _alt(words: frozenset[str]) -> str:
 
 _H = r"[0-9]{1,9}"
 _ID = r"[a-z0-9_]{1,24}"
-_T = r"[a-z_]{1,40}"
 _CLS = _alt(EFFECT_CLASSES)
 _TOK = _alt(EFFECT_TOKENS)
 GRAMMAR = re.compile(
@@ -199,17 +249,19 @@ GRAMMAR = re.compile(
             rf":(?:{_alt(DELIVERIES)}):(?:empty|(?:{_CLS})(?:\.(?:{_CLS}))*)"
             rf":(?:none|(?:{_TOK})(?:\.(?:{_TOK}))*)(?::read_back_(?:mismatch|unread))?",
             r"refused:id_not_listed",
-            rf"refused:(?!id_not_listed(?::|$)){_T}(?::{_H})?",
+            rf"refused:(?:{_alt(REFUSAL_TOKENS - {'id_not_listed'})})(?::{_H})?",
             rf"(?:target_changed|focus_lost)(?::{_H})?",
             r"stale_observation",
             r"load_guard",
             rf"enter:(?:{_alt(ENTER_TOKENS)}):(?:{_alt(ROWS)})",
-            rf"(?:claim|proven):{_ID}:{_T}",
+            rf"claim:{_ID}:(?:{_alt(CLAIM_RESULTS)})",
+            rf"proven:{_ID}:(?:{_alt(PROVEN_HOW)})",
         )
     )
 )
-"""[V2.47], #347 review: one form per kind of line, built from the closed vocabularies: the
-backstop on `render`. A handle slot is digits only; `id_not_listed` has none."""
+"""[V2.47], #347 review: one form per kind of line, every token from its closed set (no shape
+check is left): the backstop on `render`. A handle slot is digits only; `id_not_listed` has
+none."""
 
 
 def record_ok(record: HistoryRecord, vocab: Vocab) -> bool:
@@ -234,14 +286,14 @@ def _fields_ok(record: HistoryRecord, vocab: Vocab) -> bool:  # noqa: PLR0911 - 
         return _entry_ok(record, vocab)
     if isinstance(record, Refused):
         no_slot = record.token != "id_not_listed" or record.handle is None  # noqa: S105 - a refusal token
-        return _code(record.token) and no_slot and _handle_ok(record.handle, vocab)
+        return record.token in REFUSAL_TOKENS and no_slot and _handle_ok(record.handle, vocab)
     if isinstance(record, WorldMoved):
         no_slot = record.what != "page" or record.handle is None
         return record.what in _MOVED and no_slot and _handle_ok(record.handle, vocab)
     if isinstance(record, ClaimResult):
-        return record.subgoal in vocab.known and _code(record.result)
+        return record.subgoal in vocab.known and record.result in CLAIM_RESULTS
     if isinstance(record, Proven):
-        return record.subgoal in vocab.known and _code(record.how)
+        return record.subgoal in vocab.known and record.how in PROVEN_HOW
     if isinstance(record, Entered):
         return record.token in ENTER_TOKENS and record.row in ROWS
     return True
@@ -261,7 +313,3 @@ def _entry_ok(entry: LogEntry, vocab: Vocab) -> bool:
         and set(entry.tokens) <= EFFECT_TOKENS
         and (entry.read_back is None or entry.read_back in READ_BACK)
     )
-
-
-def _code(token: str) -> bool:
-    return isinstance(token, str) and CODE_TOKEN.fullmatch(token) is not None
