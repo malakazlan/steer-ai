@@ -1716,3 +1716,67 @@ def test_a_monitor_lost_twice_is_counted_once() -> None:
     with pytest.raises(PortInterrupted):
         world.desk.prove_hooks()
     assert world.report()["monitor_lost"] == 1
+
+
+# ---- #364 H1/H2/H3/H5: the fresh proof's own guards --------------------------------------------
+
+
+def test_after_monitor_lost_a_recovered_hook_proves_nothing() -> None:
+    """H1 (LW-06): the latch is read first; a hook that answers again is not trusted."""
+    world, platform = _world()
+    platform.monitor.ok = False
+    assert world.interrupted() == "monitor_lost"
+    platform.monitor.ok = True
+    with pytest.raises(PortInterrupted) as lost:
+        world.desk.prove_hooks()
+    assert [lost.value.token] == ["monitor_lost"]
+    assert platform.monitor.probes == 0  # not even probed
+
+
+def test_a_seen_probe_on_an_unhealthy_monitor_is_lost() -> None:
+    """H2 (LW-31): callback errors, a dead thread or a failed loop count, not just the probe."""
+    world, platform = _world()
+    platform.monitor.ok = False  # e.g. a callback error; the probe itself arrived
+    with pytest.raises(PortInterrupted) as lost:
+        world.desk.prove_hooks()
+    assert [lost.value.token] == ["monitor_lost"]
+    assert world.report()["monitor_lost"] == 1
+
+
+def test_a_probe_that_could_not_be_sent_is_lost_at_once() -> None:
+    """H5: `on_probe_failed` makes the monitor unhealthy; no waiting out the deadline."""
+    world, platform = _world()
+    platform.monitor.seen = False
+
+    def failed() -> None:
+        platform.monitor.probes += 1
+        platform.monitor.ok = False
+
+    platform.monitor.probe_now = failed  # type: ignore[method-assign]  # a recording fake
+    started = world.clock()
+    with pytest.raises(PortInterrupted):
+        world.desk.prove_hooks()
+    assert world.clock() == started
+
+
+@pytest.mark.parametrize("when", ["before", "after_the_last_poll"])
+def test_a_kill_during_the_proof_wins(when: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """H3 (LW-05): killed, never monitor_lost, whenever the kill lands, even after the last
+    poll and before the deadline check; nothing latched or counted as a loss."""
+    from steerai.session.monitor import PROBE_DEADLINE_S  # noqa: PLC0415 - this test only
+
+    world, platform = _world()
+    platform.monitor.seen = False
+    if when == "before":
+        platform.monitor.killed = True
+    else:
+
+        def last_poll(_seconds: float) -> None:  # the wait ends; then the kill lands
+            world._config.pause(PROBE_DEADLINE_S)
+            platform.monitor.killed = True
+
+        monkeypatch.setattr(world, "_kill_aware_sleep", last_poll)
+    with pytest.raises(PortInterrupted) as stopped:
+        world.desk.prove_hooks()
+    assert [stopped.value.token] == ["killed"]
+    assert world.report()["monitor_lost"] == 0

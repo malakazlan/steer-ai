@@ -420,10 +420,23 @@ class LiveWorld:
         within `PROBE_DEADLINE_S` on the world's clock, waited out kill-aware; else the monitor
         is lost and the send never happens."""
         monitor = self._monitor
+        if monitor.kill_requested():  # #364 H3: the kill wins at every point
+            raise PortInterrupted("killed")
+        if self._lost:  # #364 H1: a hook that answers again after a loss is not trusted
+            raise PortInterrupted("monitor_lost")
         monitor.probe_now()
         started = self._config.clock()
-        while not monitor.probe_seen():
+        while True:
+            if monitor.kill_requested():
+                raise PortInterrupted("killed")
+            if not monitor.healthy():  # #364 H2, H5: errors, a dead thread, a failed send
+                self._lose()
+                raise PortInterrupted("monitor_lost")
+            if monitor.probe_seen():
+                return
             if self._config.clock() - started >= PROBE_DEADLINE_S:
+                if monitor.kill_requested():  # a kill after the last poll still wins
+                    raise PortInterrupted("killed")
                 self._lose()
                 raise PortInterrupted("monitor_lost")
             self._kill_aware_sleep(PROVE_POLL_S)
