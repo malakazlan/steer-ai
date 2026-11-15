@@ -815,7 +815,7 @@ def test_the_stopping_rule_is_in_the_header_and_frozen() -> None:
         "max_voids": MAX_VOIDS,
         "max_false_vetoes": 3,
     }
-    looser = {**head, "stopping": {**head["stopping"], "chain_cap": 300}}  # type: ignore[dict-item]
+    looser = {**head, "stopping": {**head["stopping"], "chain_cap": 300}}
     with pytest.raises(ValueError, match="wording_not_frozen"):
         check_frozen(looser, head)
 
