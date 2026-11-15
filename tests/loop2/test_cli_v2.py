@@ -14,9 +14,10 @@ from typing import Any
 
 import pytest
 
-from steerai.errors import ErrorCode
+from steerai.errors import ErrorCode, SteerError
 from steerai.loop2 import cli
 from steerai.loop2.cli import DEFAULT_BUDGETS, V2Deps, bind_window, parse_v2
+from steerai.loop2.live_world import LiveWorld
 from steerai.loop2.loop import Reason, TaskOutcome
 from steerai.planner.claude_planner import DEFAULT_MODEL
 from steerai.probes.windows import WindowInfo
@@ -479,3 +480,39 @@ def test_an_unexpected_error_is_internal_error_on_one_line(
     assert (run.result()["status"], run.result()["detail"]) == ("error", "internal_error")
     assert "RuntimeError" in run.stderr.getvalue()
     assert run.platform.calls.count("release_com") == 1
+
+
+def test_a_steer_error_mid_task_reports_use_not_a_refused_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#361 H5 (CLI-04): the world started, so the line is the run's shape, with the use and
+    the limits; the use that could not be counted is null and said."""
+
+    def failed(_task: object, _ports: object) -> TaskOutcome:
+        raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "uia_timeout")
+
+    monkeypatch.setattr(cli, "run_task", failed)
+    run = Run(tmp_path)
+    assert run() == EXIT_STOPPED
+    result = run.result()
+    assert (result["status"], result["reason"], result["error"]) == (
+        "stopped", "port_perception_degraded", "uia_timeout",
+    )  # fmt: skip
+    assert result["limits"]["max_actions"] == 40
+    assert result["used"]["max_model_calls"] is None
+    assert result["tokens_incomplete"] is True
+    assert result["listings"] == []
+
+
+def test_a_steer_error_after_the_task_keeps_its_outcome(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def report(_self: object) -> dict[str, object]:
+        raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "wrong_thread")
+
+    monkeypatch.setattr(LiveWorld, "report", report)
+    run = Run(tmp_path)
+    assert run() == EXIT_STOPPED
+    result = run.result()
+    assert result["error"] == "wrong_thread"
+    assert result["used"]["max_model_calls"] >= 1  # the task's own counts survive

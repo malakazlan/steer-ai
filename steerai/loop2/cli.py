@@ -284,8 +284,12 @@ def _run(options: V2Options, deps: V2Deps, out: _Out, price: PriceFile, window: 
     )
     platform = deps.platform()
 
+    done: dict[str, TaskOutcome] = {}
+    started: list[bool] = []
+
     def work() -> tuple[TaskOutcome, dict[str, int | str | None]]:
         with LiveWorld(config, platform) as world:
+            started.append(True)
             limits = _limits_header(task.budgets, price)
             out.note("header: " + json.dumps({**world.header(task), **limits}, sort_keys=True))
             if price.stale:
@@ -295,6 +299,7 @@ def _run(options: V2Options, deps: V2Deps, out: _Out, price: PriceFile, window: 
                 )
             ports = world.ports(task, header=limits)  # the trace's one header record
             outcome = run_task(task, ports)
+            done["outcome"] = outcome
             del ports  # rev 4.0c: nothing holding COM outlives the world on this thread
             return outcome, world.report()
 
@@ -303,9 +308,18 @@ def _run(options: V2Options, deps: V2Deps, out: _Out, price: PriceFile, window: 
         outcome, report = run_on_loop_thread(
             work, release=platform.release_com, interrupted=lambda: interrupts.append(True)
         )
-    except SteerError as exc:  # the world refused to start: the session, the monitor, the window
-        out.emit({"status": "blocked", "code": exc.code.value, "detail": exc.message}, options)
-        return EXIT_BLOCKED
+    except SteerError as exc:
+        if not started:  # the world refused to start: the session, the monitor, the window
+            out.emit({"status": "blocked", "code": exc.code.value, "detail": exc.message}, options)
+            return EXIT_BLOCKED
+        # #361 H5: after the start, the run's own shape, with what was counted
+        kept = done.get("outcome")
+        result = _unfinished(task.budgets) if kept is None else _result(kept, task.budgets, {})
+        result.update(
+            status="stopped", reason=f"port_{exc.code.value}"[:64], error=exc.message, world=None
+        )
+        out.emit(result, options)
+        return EXIT_STOPPED
     except Exception:  # noqa: BLE001 - as v1's run(): the last line of defence, one exit code
         for line in traceback.format_exc().splitlines():
             out.note(line)  # escaped: exception text can quote titles or page text
@@ -318,6 +332,31 @@ def _run(options: V2Options, deps: V2Deps, out: _Out, price: PriceFile, window: 
         return EXIT_STOPPED
     out.emit(result, options)
     return EXIT_FOR[outcome.status]
+
+
+def _unfinished(budgets: Budgets) -> dict[str, Any]:  # Any: the final JSON
+    """#361 H5: the run's shape when the task ended with no outcome: nothing was counted, so
+    every use is null and said, never 0."""
+    return {
+        "paused_by": None,
+        "used": dict.fromkeys(_limits(budgets)),
+        "tokens_incomplete": True,
+        "cost_incomplete": True,
+        "wall_incomplete": True,
+        "limits": _limits(budgets),
+        "listings": [],
+        "focus": None,
+    }
+
+
+def _limits(budgets: Budgets) -> dict[str, int | float]:
+    return {
+        "max_model_calls": budgets.max_model_calls,
+        "max_actions": budgets.max_actions,
+        "max_tokens": budgets.max_tokens,
+        "max_wall_s": budgets.max_wall_s,
+        "max_cost_usd": budgets.max_cost_usd,
+    }
 
 
 def _limits_header(budgets: Budgets, price: PriceFile) -> dict[str, str]:
@@ -357,13 +396,7 @@ def _result(
         "tokens_incomplete": not tokens_known,
         "cost_incomplete": not cost_known,
         "wall_incomplete": not wall_known,
-        "limits": {
-            "max_model_calls": budgets.max_model_calls,
-            "max_actions": budgets.max_actions,
-            "max_tokens": budgets.max_tokens,
-            "max_wall_s": budgets.max_wall_s,
-            "max_cost_usd": budgets.max_cost_usd,
-        },
+        "limits": _limits(budgets),
         "listings": [
             {
                 "eligible": t.eligible,
