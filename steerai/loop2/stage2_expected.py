@@ -271,6 +271,23 @@ class Revealed:
     """How many new elements of each role the opener revealed (closed values, no names)."""
 
 
+def _in_page(read: Observed) -> list[Element]:
+    """The elements under the page's Document: the browser's own frame (a tab's title, a notice
+    button) changes on its own and is never a reveal (the slot's first opener pass)."""
+    elements = read.snapshot.elements
+    children: dict[int, list[Element]] = {}
+    for e in elements:
+        if e.parent_id is not None:
+            children.setdefault(e.parent_id, []).append(e)
+    found: list[Element] = []
+    stack = [e for e in elements if e.role == "Document"]
+    while stack:
+        e = stack.pop()
+        found.append(e)
+        stack.extend(children.get(e.id, []))
+    return found
+
+
 def wait_revealed(
     read: Callable[[], Observed],
     before: Observed,
@@ -279,10 +296,10 @@ def wait_revealed(
     sleep: Callable[[float], None],
     limit_s: float = REVEAL_LIMIT_S,
 ) -> Revealed | None:
-    """The revealed state once it shows the same new elements (by role and name, against the
-    read before the click) on two reads in a row within `limit_s`; None when it does not: the
-    reveal is not deterministic and the task stays unrated."""
-    seen_before = {(e.role, normalise_name(e.name)) for e in before.snapshot.elements}
+    """The revealed state once it shows the same new elements in the page (by role and name,
+    against the read before the click) on two reads in a row within `limit_s`; None when it does
+    not: the reveal is not deterministic and the task stays unrated."""
+    seen_before = {(e.role, normalise_name(e.name)) for e in _in_page(before)}
     deadline = clock() + limit_s
     last: tuple[tuple[str, str], ...] | None = None
     while clock() < deadline:
@@ -290,7 +307,7 @@ def wait_revealed(
         new = tuple(
             sorted(
                 (e.role, normalise_name(e.name))
-                for e in now.snapshot.elements
+                for e in _in_page(now)
                 if (e.role, normalise_name(e.name)) not in seen_before
             )
         )

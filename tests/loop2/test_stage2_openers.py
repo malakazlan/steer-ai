@@ -184,3 +184,14 @@ def test_the_start_check_behind_an_opener_reads_only_the_opener() -> None:
         [DOC, FIELD, OPENER_BUTTON, element(31, "Button", "Search the site", (9, 31), 1)]
     )
     assert opener_start_facts(OPEN_SEARCH, twice, FACTS) is None
+
+
+def test_only_new_elements_inside_the_page_count_as_revealed() -> None:
+    """The browser's own frame changes on its own (a tab's title, a notice button): never a
+    reveal. Only new elements under the page's Document count (the slot's first pass)."""
+    frame = element(90, "Pane", "Browser", (9, 90), None)
+    notice = element(91, "Button", "Action required", (9, 91), 90)
+    clock = Clock()
+    noisy = observed([DOC, FIELD, frame, notice])
+    assert wait_revealed(reads(noisy, noisy), observed([DOC, FIELD, frame]), clock=clock,
+                         sleep=clock.sleep) is None  # fmt: skip
