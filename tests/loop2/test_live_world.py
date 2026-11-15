@@ -122,6 +122,7 @@ class Platform:
         self.bindings = UiaBindings(control_types=names, interfaces={})
         self.calls: list[str] = []
         self.session = "acquired"
+        self.tag_error: Exception | None = None
         self.identity: WindowIdentity | None = WindowIdentity(
             pid=4242, started=133_000_000_000_000_000, image="browser.exe", root=True, visible=True
         )
@@ -151,6 +152,8 @@ class Platform:
     def use_extra_info(self, tag: int) -> None:
         self.calls.append("tag")
         self.input_tag = tag
+        if self.tag_error is not None:
+            raise self.tag_error
 
     def acquire_session(self) -> str:
         self.calls.append("session")
@@ -1219,7 +1222,8 @@ def test_the_chunked_runners_parent_never_takes_the_session(
 
 def test_the_session_is_taken_only_where_the_monitor_starts() -> None:
     """Every call of `acquire_session` in the package is in one function that, after it, starts
-    the monitor: `LiveWorld.__init__`. A chunk parent, a CLI or a helper never takes it."""
+    the monitor: `LiveWorld._take_session`, which only `LiveWorld.__init__` calls. A chunk
+    parent, a CLI or a helper never takes it."""
     import ast  # noqa: PLC0415 - this test only
 
     package = Path(__file__).resolve().parents[2] / "steerai"
@@ -1237,7 +1241,11 @@ def test_the_session_is_taken_only_where_the_monitor_starts() -> None:
             if "acquire_session" in calls:
                 callers.append(f"{path.name}:{function.name}")
                 assert calls.index("start_monitor") > calls.index("acquire_session")
-    assert callers == ["live_world.py:__init__"]
+    assert callers == ["live_world.py:_take_session"]
+    source = (package / "loop2" / "live_world.py").read_text(encoding="utf-8")
+    init = source[source.index("    def __init__(self, config: LiveConfig") :]
+    init = init[: init.index(chr(10) + "    def ", 1)]
+    assert source.count("self._take_session(") == init.count("self._take_session(") == 1
 
 
 def test_a_random_draw_of_zero_or_v1s_tag_is_drawn_again(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1397,3 +1405,13 @@ def test_the_windows_identity_carries_root_and_visibility(monkeypatch: pytest.Mo
     identity = WindowsPlatform().window_identity(16)
     assert identity is not None
     assert (identity.root, identity.visible) == (False, False)
+
+
+def test_a_tag_that_cannot_be_set_releases_the_session() -> None:
+    """#361 H12 (MTX-01): a failure between taking the session and starting the monitor."""
+    platform = Platform()
+    platform.tag_error = ValueError("an input tag is a nonzero 32-bit value")
+    with pytest.raises(ValueError, match="tag"):
+        _world(platform)
+    assert platform.calls.count("release_session") == 1
+    assert not any(c.startswith("monitor") for c in platform.calls)

@@ -239,22 +239,10 @@ class LiveWorld:
             raise SteerError(ErrorCode.APP_CRASHED, "window_unreadable")
         self._bound = bound
         try:
-            held = platform.acquire_session()  # [V2.57] LW-02: one Steer per session
+            held, monitor = self._take_session(platform, config)
         except BaseException:
             del client, bindings  # released here, before the refusal leaves the loop thread
             raise
-        self._input_tag = _run_tag()
-        platform.use_extra_info(self._input_tag)
-        try:
-            monitor = platform.start_monitor(config.kill_key, config.clock, self._input_tag)
-        except SteerError:
-            del client, bindings  # the UIA client is released before the task is refused
-            platform.release_session()
-            raise  # HookMonitor's own GATE_BLOCKED monitor_unavailable, with its reason
-        except Exception as exc:  # any other start failure: no kill switch, no task
-            del client, bindings
-            platform.release_session()
-            raise SteerError(ErrorCode.GATE_BLOCKED, "monitor_unavailable") from exc
         self._monitor = monitor
         self._init_state()
         if held == "abandoned":
@@ -265,6 +253,24 @@ class LiveWorld:
         except BaseException:
             self.close()
             raise
+
+    def _take_session(self, platform: Platform, config: LiveConfig) -> tuple[str, Monitor]:
+        """[V2.57] LW-02: the session, then the run's tag, then the monitor on it. Any failure
+        after the session was taken releases it (#361 H12)."""
+        held = platform.acquire_session()  # one Steer per session
+        try:
+            self._input_tag = _run_tag()
+            platform.use_extra_info(self._input_tag)
+            try:
+                monitor = platform.start_monitor(config.kill_key, config.clock, self._input_tag)
+            except SteerError:
+                raise  # HookMonitor's own GATE_BLOCKED monitor_unavailable, with its reason
+            except Exception as exc:  # any other start failure: no kill switch, no task
+                raise SteerError(ErrorCode.GATE_BLOCKED, "monitor_unavailable") from exc
+        except BaseException:
+            platform.release_session()
+            raise
+        return held, monitor
 
     def _init_state(self) -> None:
         """The world's own state, set once the monitor runs."""
