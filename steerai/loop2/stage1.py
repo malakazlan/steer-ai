@@ -43,7 +43,7 @@ from typing import Any, Final, Literal, Protocol, get_args
 from steerai.errors import START_DETAILS, ErrorCode
 from steerai.loop2.guards import StrikeReason
 from steerai.loop2.history import REFUSAL_TOKENS
-from steerai.loop2.loop import PARENT_KINDS, REASON_TOKEN, URL_READS
+from steerai.loop2.loop import AUDIT_COUNTS, PARENT_KINDS, REASON_TOKEN, URL_READS
 from steerai.loop2.stage1_expected import LARGE_TASKS, Expected, large_expected
 from steerai.orchestrator.contracts import RISKS
 from steerai.probes.gallery_page import large_passes, parse_large_log
@@ -620,6 +620,7 @@ OUTCOME_COUNTS: Final = (
     "history_dropped",
     "turn_trace_dropped",
     "pre_task_draft_clicks",
+    *AUDIT_COUNTS,
     "saved_calls",
 )
 """[V2.63]: the final line's `counts` block, summed over the runs (its `submit_parents` by
