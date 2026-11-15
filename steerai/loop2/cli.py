@@ -387,8 +387,10 @@ RUN_FACTS: Final = (
     "stale_observations",
     "unread_automation_ids",
     "url_reads",
+    "counts",
 )
-"""Stage 2 plan §6 (3): the run facts the final line carries beside the use and the listings."""
+"""Stage 2 plan §6 (3), [V2.63]: the run facts the final line carries beside the use and the
+listings; `counts` holds the counts that were on the outcome only."""
 
 
 def read_cost_summary(costs: Sequence[ReadCost]) -> dict[str, float | int | None]:
@@ -476,6 +478,17 @@ def _result(
         "stale_observations": outcome.stale_observations,
         "unread_automation_ids": outcome.unread_automation_ids,
         "url_reads": dict(outcome.url_reads),
+        "counts": {  # [V2.63]: every count the rulings asked for, collected before stage 2
+            "second_toggles": outcome.second_toggles,
+            "second_toggles_refused": outcome.second_toggles_refused,
+            "toggles_settled_on_reread": outcome.toggles_settled_on_reread,
+            "fields_not_empty": outcome.fields_not_empty,
+            "not_own_text": outcome.not_own_text,
+            "target_changes": outcome.target_changes,
+            "focus_losses": outcome.focus_losses,
+            "history_dropped": outcome.history_dropped,
+            "submit_parents": dict(outcome.submit_parents),
+        },
         "watch_deadlines": {  # [V2.48]: per class, watches and those ended at the deadline
             kind: {"watches": watches, "deadline": hits}
             for kind, watches, hits in outcome.watch_deadlines

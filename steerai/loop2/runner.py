@@ -67,10 +67,12 @@ from steerai.loop2.history import (
 from steerai.loop2.listing import ListingTurn
 from steerai.loop2.loop import (
     COMMIT_RISK,
+    PARENT_KINDS,
     READ_BACK_VERBS,
     URL_READS,
     ActResult,
     Dispatch,
+    ParentKind,
     PendingText,
     PortInterrupted,
     Ports,
@@ -419,6 +421,8 @@ class _Run:
         """[V2.43] (2): focus moved off a press's target after the listing showed it there."""
         self.unread_aids = 0
         """#301: unread automation ids over every observation taken in (`_in_domain`)."""
+        self.submit_parents: dict[ParentKind, int] = dict.fromkeys(PARENT_KINDS, 0)
+        """[V2.25]: the submit rule's firings by the field's parent kind (`_risk`)."""
         self.url_reads: dict[UrlRead, int] = dict.fromkeys(URL_READS, 0)
         """Stage 2 plan §5: every observation taken in, by why its URL is what it is."""
 
@@ -471,6 +475,7 @@ class _Run:
             focus_losses=self.focus_losses,
             unread_automation_ids=self.unread_aids,
             url_reads=tuple(self.url_reads.items()),
+            submit_parents=tuple(self.submit_parents.items()),
             history_dropped=self.history_dropped,
             listings=tuple(self.listing.turns),
             focus_moved_after_press=self.counts.focus_moved_after_press,
@@ -1155,6 +1160,8 @@ class _Run:
         verdict = action_risk(
             action, element, goal=self.task.goal, observed=observed, pending=self._pending(observed)
         )
+        if verdict.submit_parent is not None:  # [V2.25]: counted where it fires, once an action
+            self.submit_parents[verdict.submit_parent] += 1
         if verdict.refusal is not None:
             self._refuse(verdict.refusal, subgoal=action.subgoal, handle=self._handle_of(element))
             return None
