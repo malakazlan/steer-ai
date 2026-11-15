@@ -522,69 +522,100 @@ class WindowsLaunch:  # pragma: no cover - live, Windows only (tests/session win
         self._maps: dict[int, int] = {}
         self._keep: list[object] = []
         self._sa: Any = None  # Any: the ctypes SECURITY_ATTRIBUTES, built once
-        k = self._k
-        k.GetCurrentProcess.restype = wintypes.HANDLE
-        k.CreateJobObjectW.restype = wintypes.HANDLE
-        k.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
-        k.CreateFileMappingW.restype = wintypes.HANDLE
-        k.CreateFileMappingW.argtypes = (
-            wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
-            wintypes.LPCWSTR,
-        )  # fmt: skip
-        k.CreateEventW.restype = wintypes.HANDLE
-        k.CreateEventW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL,
-                                   wintypes.LPCWSTR)  # fmt: skip
+        self._declare()
+
+    def _declare(self) -> None:  # noqa: PLR0915 - one line per foreign function, by design
+        """#375 P1: argtypes and restype for every call (Microsoft Learn signatures; HANDLE is
+        pointer-width), so no handle (the pseudo-handle -1 above all) is converted as a C int."""
+        k, a = self._k, self._a
+        handle, dword, boolean = wintypes.HANDLE, wintypes.DWORD, wintypes.BOOL
+        sa = ctypes.POINTER(SecurityAttributes)
+        k.GetCurrentProcess.argtypes = ()
+        k.GetCurrentProcess.restype = handle
+        if hasattr(k, "IsWow64Process2"):  # Windows 10 1709 and later
+            k.IsWow64Process2.argtypes = (handle, ctypes.POINTER(wintypes.USHORT),
+                                          ctypes.POINTER(wintypes.USHORT))  # fmt: skip
+            k.IsWow64Process2.restype = boolean
+        k.CreateJobObjectW.argtypes = (sa, wintypes.LPCWSTR)
+        k.CreateJobObjectW.restype = handle
+        k.SetInformationJobObject.argtypes = (handle, ctypes.c_int, ctypes.c_void_p, dword)
+        k.SetInformationJobObject.restype = boolean
+        k.CreateFileMappingW.argtypes = (handle, sa, dword, dword, dword, wintypes.LPCWSTR)
+        k.CreateFileMappingW.restype = handle
+        k.MapViewOfFile.argtypes = (handle, dword, dword, dword, ctypes.c_size_t)
         k.MapViewOfFile.restype = ctypes.c_void_p
-        k.MapViewOfFile.argtypes = (wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
-                                    wintypes.DWORD, ctypes.c_size_t)  # fmt: skip
         k.UnmapViewOfFile.argtypes = (ctypes.c_void_p,)
-        k.DuplicateHandle.argtypes = (
-            wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.HANDLE),
-            wintypes.DWORD, wintypes.BOOL, wintypes.DWORD,
-        )  # fmt: skip
-        k.SetHandleInformation.argtypes = (wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD)
-        k.WaitForMultipleObjects.argtypes = (wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE),
-                                             wintypes.BOOL, wintypes.DWORD)  # fmt: skip
-        k.WaitForMultipleObjects.restype = wintypes.DWORD
-        k.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
-        k.WaitForSingleObject.restype = wintypes.DWORD
-        k.GetProcessId.argtypes = (wintypes.HANDLE,)
-        k.GetProcessId.restype = wintypes.DWORD
-        k.CloseHandle.argtypes = (wintypes.HANDLE,)
-        k.ResumeThread.argtypes = (wintypes.HANDLE,)
-        k.ResumeThread.restype = wintypes.DWORD
-        k.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
-        k.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
-        k.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
-        k.SetEvent.argtypes = (wintypes.HANDLE,)
-        k.ResetEvent.argtypes = (wintypes.HANDLE,)
-        k.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
-        k.LocalFree.argtypes = (ctypes.c_void_p,)
-        k.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
-                                              wintypes.DWORD)  # fmt: skip
-        k.InitializeProcThreadAttributeList.argtypes = (
-            ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(ctypes.c_size_t),
-        )  # fmt: skip
-        k.UpdateProcThreadAttribute.argtypes = (
-            ctypes.c_void_p, wintypes.DWORD, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t,
-            ctypes.c_void_p, ctypes.c_void_p,
-        )  # fmt: skip
+        k.UnmapViewOfFile.restype = boolean
+        k.CreateEventW.argtypes = (sa, boolean, boolean, wintypes.LPCWSTR)
+        k.CreateEventW.restype = handle
+        k.DuplicateHandle.argtypes = (handle, handle, handle, ctypes.POINTER(handle), dword,
+                                      boolean, dword)  # fmt: skip
+        k.DuplicateHandle.restype = boolean
+        k.SetHandleInformation.argtypes = (handle, dword, dword)
+        k.SetHandleInformation.restype = boolean
+        size_out = ctypes.POINTER(ctypes.c_size_t)
+        k.InitializeProcThreadAttributeList.argtypes = (ctypes.c_void_p, dword, dword, size_out)
+        k.InitializeProcThreadAttributeList.restype = boolean
+        k.UpdateProcThreadAttribute.argtypes = (ctypes.c_void_p, dword, ctypes.c_size_t,
+                                                ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p,
+                                                ctypes.POINTER(ctypes.c_size_t))  # fmt: skip
+        k.UpdateProcThreadAttribute.restype = boolean
         k.DeleteProcThreadAttributeList.argtypes = (ctypes.c_void_p,)
-        k.CreateProcessW.argtypes = (
-            wintypes.LPCWSTR, ctypes.c_wchar_p, ctypes.c_void_p, ctypes.c_void_p, wintypes.BOOL,
-            wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR, ctypes.c_void_p, ctypes.c_void_p,
-        )  # fmt: skip
+        k.DeleteProcThreadAttributeList.restype = None
+        k.CreateProcessW.argtypes = (wintypes.LPCWSTR, ctypes.c_wchar_p, sa, sa, boolean, dword,
+                                     ctypes.c_void_p, wintypes.LPCWSTR,
+                                     ctypes.POINTER(StartupInfoEx),
+                                     ctypes.POINTER(ProcessInformation))  # fmt: skip
+        k.CreateProcessW.restype = boolean
+        k.AssignProcessToJobObject.argtypes = (handle, handle)
+        k.AssignProcessToJobObject.restype = boolean
+        k.ResumeThread.argtypes = (handle,)
+        k.ResumeThread.restype = dword
+        k.ResetEvent.argtypes = (handle,)
+        k.ResetEvent.restype = boolean
+        k.SetEvent.argtypes = (handle,)
+        k.SetEvent.restype = boolean
+        k.WaitForMultipleObjects.argtypes = (dword, ctypes.POINTER(handle), boolean, dword)
+        k.WaitForMultipleObjects.restype = dword
+        k.WaitForSingleObject.argtypes = (handle, dword)
+        k.WaitForSingleObject.restype = dword
+        k.GetProcessId.argtypes = (handle,)
+        k.GetProcessId.restype = dword
+        k.GetExitCodeProcess.argtypes = (handle, ctypes.POINTER(dword))
+        k.GetExitCodeProcess.restype = boolean
+        k.TerminateJobObject.argtypes = (handle, wintypes.UINT)
+        k.TerminateJobObject.restype = boolean
+        k.TerminateProcess.argtypes = (handle, wintypes.UINT)
+        k.TerminateProcess.restype = boolean
+        k.CloseHandle.argtypes = (handle,)
+        k.CloseHandle.restype = boolean
+        k.LocalFree.argtypes = (ctypes.c_void_p,)
+        k.LocalFree.restype = ctypes.c_void_p
+        a.OpenProcessToken.argtypes = (handle, dword, ctypes.POINTER(handle))
+        a.OpenProcessToken.restype = boolean
+        a.GetTokenInformation.argtypes = (handle, ctypes.c_int, ctypes.c_void_p, dword,
+                                          ctypes.POINTER(dword))  # fmt: skip
+        a.GetTokenInformation.restype = boolean
+        a.ConvertSidToStringSidW.argtypes = (ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR))
+        a.ConvertSidToStringSidW.restype = boolean
+        a.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = (
+            wintypes.LPCWSTR,
+            dword,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(ctypes.c_ulong),
+        )
+        a.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = boolean
 
     def _fail(self, what: str) -> OSError:
         code = ctypes.get_last_error()
         return OSError(code, f"{what} failed ({code})")
 
     def process_machine(self) -> tuple[int, int]:
-        call = getattr(self._k, "IsWow64Process2", None)
-        if call is None:
+        if not hasattr(self._k, "IsWow64Process2"):
             raise OSError(0, "IsWow64Process2 is not available (Windows 10 1709 or later)")
         process, native = wintypes.USHORT(), wintypes.USHORT()
-        if not call(self._k.GetCurrentProcess(), ctypes.byref(process), ctypes.byref(native)):
+        me = self._k.GetCurrentProcess()
+        if not self._k.IsWow64Process2(me, ctypes.byref(process), ctypes.byref(native)):
             raise self._fail("IsWow64Process2")
         return int(process.value), int(native.value)
 
@@ -610,7 +641,7 @@ class WindowsLaunch:  # pragma: no cover - live, Windows only (tests/session win
         if not self._a.ConvertSidToStringSidW(ctypes.c_void_p(sid), ctypes.byref(text)):
             raise self._fail("ConvertSidToStringSidW")
         user = text.value
-        self._k.LocalFree(text)
+        self._k.LocalFree(ctypes.cast(text, ctypes.c_void_p))
         descriptor = ctypes.c_void_p()
         if not self._a.ConvertStringSecurityDescriptorToSecurityDescriptorW(
             f"D:P(A;;GA;;;{user})", SDDL_REVISION_1, ctypes.byref(descriptor), None
@@ -633,12 +664,12 @@ class WindowsLaunch:  # pragma: no cover - live, Windows only (tests/session win
         info = JobExtendedLimits()
         info.Basic.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
         info.Basic.ActiveProcessLimit = 1
-        limits = (ctypes.byref(info), ctypes.sizeof(info))
+        limits = (ctypes.addressof(info), ctypes.sizeof(info))
         if not self._k.SetInformationJobObject(job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, *limits):
             raise self._fail("SetInformationJobObject")
 
     def create_section(self, sa: object, size: int) -> int:
-        invalid = wintypes.HANDLE(-1)
+        invalid = ctypes.c_void_p(-1)  # INVALID_HANDLE_VALUE: a mapping backed by the paging file
         section = self._k.CreateFileMappingW(invalid, ctypes.byref(sa), PAGE_READWRITE, 0,  # type: ignore[arg-type]  # a ctypes struct
                                              size, None)  # fmt: skip
         if not section:

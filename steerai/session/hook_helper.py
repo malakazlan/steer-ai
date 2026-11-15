@@ -303,29 +303,50 @@ class WindowsHelperPlatform:  # pragma: no cover - live, Windows only (tests/ses
         self._declare()
 
     def _declare(self) -> None:
+        """#375 P1: argtypes and restype for every call (Microsoft Learn signatures; HANDLE and
+        the hook handle are pointer-width), so no handle is ever converted as a C int."""
         k, u = self._k32, self._u32
-        k.MapViewOfFile.argtypes = (wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
-                                    wintypes.DWORD, ctypes.c_size_t)  # fmt: skip
+        handle, dword, boolean = wintypes.HANDLE, wintypes.DWORD, wintypes.BOOL
+        k.GetCurrentProcess.argtypes = ()
+        k.GetCurrentProcess.restype = handle
+        k.GetCurrentProcessId.argtypes = ()
+        k.GetCurrentProcessId.restype = dword
+        k.MapViewOfFile.argtypes = (handle, dword, dword, dword, ctypes.c_size_t)
         k.MapViewOfFile.restype = ctypes.c_void_p
-        k.SetEvent.argtypes = (wintypes.HANDLE,)
-        k.GetCurrentProcess.restype = wintypes.HANDLE
-        k.SetProcessWorkingSetSizeEx.argtypes = (wintypes.HANDLE, ctypes.c_size_t,
-                                                 ctypes.c_size_t, wintypes.DWORD)  # fmt: skip
-        k.GetTickCount.restype = wintypes.DWORD
-        u.SetWindowsHookExW.restype = ctypes.c_void_p
+        k.QueryPerformanceCounter.argtypes = (ctypes.POINTER(ctypes.c_int64),)
+        k.QueryPerformanceCounter.restype = boolean
+        k.QueryPerformanceFrequency.argtypes = (ctypes.POINTER(ctypes.c_int64),)
+        k.QueryPerformanceFrequency.restype = boolean
+        k.QueryUnbiasedInterruptTime.argtypes = (ctypes.POINTER(ctypes.c_uint64),)
+        k.QueryUnbiasedInterruptTime.restype = boolean
+        k.GetTickCount.argtypes = ()
+        k.GetTickCount.restype = dword
+        k.SetProcessWorkingSetSizeEx.argtypes = (handle, ctypes.c_size_t, ctypes.c_size_t, dword)
+        k.SetProcessWorkingSetSizeEx.restype = boolean
+        k.SetEvent.argtypes = (handle,)
+        k.SetEvent.restype = boolean
+        k.TerminateProcess.argtypes = (handle, wintypes.UINT)
+        k.TerminateProcess.restype = boolean
+        u.SetWindowsHookExW.restype = ctypes.c_void_p  # argtypes need the HOOKPROC type: below
         u.CallNextHookEx.argtypes = (ctypes.c_void_p, ctypes.c_int, wintypes.WPARAM,
                                      wintypes.LPARAM)  # fmt: skip
         u.CallNextHookEx.restype = ctypes.c_ssize_t
         u.UnhookWindowsHookEx.argtypes = (ctypes.c_void_p,)
+        u.UnhookWindowsHookEx.restype = boolean
         u.RegisterHotKey.argtypes = (wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT)
+        u.RegisterHotKey.restype = boolean
         u.UnregisterHotKey.argtypes = (wintypes.HWND, ctypes.c_int)
-        u.MsgWaitForMultipleObjectsEx.argtypes = (wintypes.DWORD,
-                                                  ctypes.POINTER(wintypes.HANDLE),
-                                                  wintypes.DWORD, wintypes.DWORD,
-                                                  wintypes.DWORD)  # fmt: skip
-        u.MsgWaitForMultipleObjectsEx.restype = wintypes.DWORD
+        u.UnregisterHotKey.restype = boolean
+        u.MsgWaitForMultipleObjectsEx.argtypes = (dword, ctypes.POINTER(handle), dword, dword,
+                                                  dword)  # fmt: skip
+        u.MsgWaitForMultipleObjectsEx.restype = dword
         u.PeekMessageW.argtypes = (ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT,
                                    wintypes.UINT, wintypes.UINT)  # fmt: skip
+        u.PeekMessageW.restype = boolean
+        u.TranslateMessage.argtypes = (ctypes.POINTER(wintypes.MSG),)
+        u.TranslateMessage.restype = boolean
+        u.DispatchMessageW.argtypes = (ctypes.POINTER(wintypes.MSG),)
+        u.DispatchMessageW.restype = ctypes.c_ssize_t
 
     def _map(self, handle: int, size: int, access: int) -> memoryview:
         address = self._k32.MapViewOfFile(handle, access, 0, 0, size)
@@ -380,6 +401,9 @@ class WindowsHelperPlatform:  # pragma: no cover - live, Windows only (tests/ses
             )
 
         psapi: Any = ctypes.WinDLL("psapi", use_last_error=True)  # Any: a ctypes DLL
+        psapi.GetProcessMemoryInfo.argtypes = (wintypes.HANDLE, ctypes.POINTER(Counters),
+                                               wintypes.DWORD)  # fmt: skip
+        psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
         counters = Counters()
         counters.cb = ctypes.sizeof(Counters)
         me = self._k32.GetCurrentProcess()
