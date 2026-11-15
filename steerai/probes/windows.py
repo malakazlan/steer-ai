@@ -8,7 +8,7 @@ import functools
 import os
 import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from ctypes import wintypes
 from dataclasses import dataclass
 from typing import Protocol
@@ -558,7 +558,6 @@ def window_title(hwnd: int) -> str:
 
 # ---- [V2.62] the cover facts -------------------------------------------------------------------
 
-_GW_HWNDPREV = 3
 _GWL_EXSTYLE = -20
 _GWL_STYLE = -16
 _WS_EX_TRANSPARENT = 0x20
@@ -593,18 +592,44 @@ def window_cover(hwnd: int) -> CoverFacts:  # pragma: no cover - live, Windows o
     monitor's work area. Read-only."""
     user32 = _cover_user32()
     found: list[Rect] = []
-    current = user32.GetWindow(hwnd, _GW_HWNDPREV)
-    while current:
-        rect = _occluding_rect(user32, int(current))
+    for above in windows_above(_z_order(user32), hwnd):
+        rect = _occluding_rect(user32, above)
         if rect is not None:
             found.append(rect)
-        current = user32.GetWindow(current, _GW_HWNDPREV)
     return CoverFacts(
         minimized=bool(user32.IsIconic(hwnd)),
         cloaked=is_cloaked(hwnd),
         rect=_fit(user32, hwnd, _window_rect(user32, hwnd) or (0, 0, 0, 0)),
         above=tuple(found),
     )
+
+
+def windows_above(z_order: Sequence[int], hwnd: int) -> list[int]:
+    """The top-level windows enumerated before `hwnd` in one top-down enumeration. A bound window
+    never enumerated (gone, or on another desktop) raises: its cover is unread, never "nothing
+    above"."""
+    above: list[int] = []
+    for handle in z_order:
+        if handle == hwnd:
+            return above
+        above.append(handle)
+    raise OSError("not_enumerated")
+
+
+def _z_order(user32: ctypes.WinDLL) -> list[int]:  # pragma: no cover - live, Windows only
+    """Every top-level window, top-down, in one EnumWindows pass (Chromium's occlusion tracker
+    enumerates the same way; a GetWindow walk can loop forever or reach a destroyed handle,
+    GetWindow's own remarks)."""
+    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    handles: list[int] = []
+
+    def on_window(handle: int, _lparam: int) -> bool:
+        handles.append(int(handle))
+        return True
+
+    if not user32.EnumWindows(enum_proc(on_window), 0):
+        raise OSError("EnumWindows failed")
+    return handles
 
 
 def _occluding_rect(user32: ctypes.WinDLL, hwnd: int) -> Rect | None:  # pragma: no cover - live
@@ -686,8 +711,11 @@ def _cover_user32() -> ctypes.WinDLL:  # pragma: no cover - live, Windows only
         raise OSError("window helpers require Windows")
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     hwnd = wintypes.HWND
-    user32.GetWindow.argtypes = (hwnd, wintypes.UINT)
-    user32.GetWindow.restype = hwnd
+    user32.EnumWindows.argtypes = (
+        ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM),
+        wintypes.LPARAM,
+    )
+    user32.EnumWindows.restype = wintypes.BOOL
     for name in ("IsWindow", "IsWindowVisible", "IsIconic", "IsZoomed"):
         getattr(user32, name).argtypes = (hwnd,)
         getattr(user32, name).restype = wintypes.BOOL
