@@ -21,6 +21,8 @@ from typing import Any, Final, Literal, get_args
 from pydantic import ValidationError
 
 from steerai.loop2.decision import (
+    CHECKED_KINDS,
+    NOT_IN_STEP_VERBS,
     STEP,
     STEP_KINDS,
     STEP_VERBS,
@@ -557,6 +559,61 @@ def parse(raw: str) -> Decision:
         raise ControllerError("schema") from exc
 
 
+def decision_shape(
+    decision: Decision,
+    *,
+    known_subgoals: Mapping[str, frozenset[str]] | None,
+    tokens: Sequence[str],
+    turn: int,
+    attempt: int,
+) -> dict[str, Any]:  # Any: JSON values
+    """#386: a rejected Decision as closed tokens and counts, for the redacted trace. Verbs, keys,
+    claim kinds and closing kinds are the schema's own closed tokens; a param is written as its
+    position among its subgoal's declared params, sorted (`param:0`), else `param_unknown`.
+    Never a value, a desc, a param's name, typed text, an ask's words or an element id."""
+    known = {sid: set(names) for sid, names in (known_subgoals or {}).items()}
+    for sub in decision.subgoals or []:
+        known.setdefault(sub.id, set()).update(sub.params)
+
+    def named(subgoal: str, param: str | None) -> str | None:
+        """A declared param by its position among the subgoal's declared names, sorted: a name
+        is model text and may carry the request's own words, so it is never written."""
+        if param is None:
+            return None
+        declared = sorted(known.get(subgoal, set()))
+        return f"param:{declared.index(param)}" if param in declared else "param_unknown"
+
+    return {
+        "turn": turn,
+        "attempt": attempt,
+        "rejections": list(tokens),
+        "subgoals": [
+            {"closes": s.closes, "params": len(s.params)} for s in decision.subgoals or []
+        ],
+        "actions": [
+            {
+                "verb": a.verb,
+                "in_step": a.verb not in NOT_IN_STEP_VERBS,
+                "param": named(a.subgoal, a.param),
+                "text": bool(a.text),
+                "key": a.key,
+            }
+            for a in decision.actions
+        ],
+        "claims": [
+            {
+                "kind": c.kind,
+                "in_step": c.kind in CHECKED_KINDS,
+                "param": named(c.subgoal, c.param),
+                "evidence": len(c.evidence),
+            }
+            for c in decision.claims
+        ],
+        "ask": decision.ask is not None,
+        "stop": decision.stop,
+    }
+
+
 def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     ask_model: AskModel,
     *,
@@ -585,6 +642,8 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     tokens_per_byte: float = TOKENS_PER_BYTE,
     count_exact: ExactCount | None = None,
     on_sent: Callable[[int], None] | None = None,
+    on_rejected: Callable[[dict[str, Any]], None] | None = None,
+    turn: int = 0,
 ) -> tuple[Decision, DecideRecord]:
     """Ask, parse, validate; on failure repair with code tokens only, up to `max_repairs` times.
 
@@ -642,6 +701,9 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
             decision = parse(ask_model(system, blocks))
         except ControllerError as err:
             error = err
+            if on_rejected is not None:  # #386: no Decision to shape, only its closed code
+                on_rejected({"turn": turn, "attempt": attempt, "parsed": False,
+                             "rejections": list(err.tokens or (err.code,))})  # fmt: skip
             continue
         tokens = validate(
             decision,
@@ -656,6 +718,10 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
                 decision = decision.model_copy(update={"ask": ask_text(decision.ask)})
             return decision, DecideRecord(PROMPT_VERSION, attempt + 1, attempt > 0)
         error = ControllerError("rejected", tokens)
+        if on_rejected is not None:  # #386: the rejected Decision's shape, closed tokens only
+            shape = decision_shape(decision, known_subgoals=known_subgoals, tokens=tokens,
+                                   turn=turn, attempt=attempt)  # fmt: skip
+            on_rejected({**shape, "parsed": True})
     calls = max_repairs + 1
     final = error if error is not None else ControllerError("schema")
     final.record = DecideRecord(PROMPT_VERSION, calls, calls > 1, True)

@@ -421,6 +421,8 @@ class _Run:
         """[V2.43] (2): focus moved off a press's target after the listing showed it there."""
         self.unread_aids = 0
         """#301: unread automation ids over every observation taken in (`_in_domain`)."""
+        self.partial_page_calls = 0
+        """[V2.35]: model calls made on a growing or young observation (`_decide`)."""
         self.refusal_counts: dict[RefusalWord, int] = {}
         """[V2.46], [V2.63] (e): every refusal by its token (`_refuse`)."""
         self.submit_parents: dict[ParentKind, int] = dict.fromkeys(PARENT_KINDS, 0)
@@ -477,6 +479,7 @@ class _Run:
             focus_losses=self.focus_losses,
             unread_automation_ids=self.unread_aids,
             url_reads=tuple(self.url_reads.items()),
+            partial_page_calls=self.partial_page_calls,
             refusals=tuple(self.refusal_counts.items()),
             submit_parents=tuple(self.submit_parents.items()),
             history_dropped=self.history_dropped,
@@ -648,6 +651,7 @@ class _Run:
             if isinstance(exc, ControllerError) and exc.record is None:
                 raise  # no call was made: nothing billed
             self.model_calls += 1
+            self.partial_page_calls += observed.growing or observed.young
             counts = _counts(exc.usage) if isinstance(exc, ControllerError) else None
             if counts is None:
                 # [V2.41] (1): an abandoned or failed call is billed but never reported: it is
@@ -659,6 +663,7 @@ class _Run:
                 self.by_category = [a + b for a, b in zip(self.by_category, counts, strict=True)]
             raise
         self.model_calls += 1
+        self.partial_page_calls += observed.growing or observed.young  # [V2.35]: counted
         self.exact_counts += decided.exact_counted
         self.estimates_low += decided.estimate_low
         counts = _counts(decided.usage)
