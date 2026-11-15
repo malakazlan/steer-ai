@@ -8,20 +8,23 @@ import dataclasses
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from steerai.loop2.stage1_expected import Act, Expected
 from steerai.loop2.stage2_expected import (
+    SITE_SPACING_S,
     DecidingFacts,
     SiteRow,
+    Spacer,
     StartDocument,
     deciding_facts,
     dump_table,
     load_acts,
     load_table,
     real_site_tasks,
-    site_changed,
+    site_check,
     start_document,
     table_row,
 )
@@ -139,7 +142,7 @@ def test_the_table_text_is_stable() -> None:
 
 def test_the_same_deciding_facts_are_no_change() -> None:
     committed = deciding_facts(TYPE_ENTER, GOAL, read())
-    assert not site_changed(committed, deciding_facts(TYPE_ENTER, GOAL, read()))
+    assert site_check(committed, deciding_facts(TYPE_ENTER, GOAL, read())) == "same"
 
 
 def test_a_new_text_elsewhere_on_the_page_is_no_change() -> None:
@@ -148,7 +151,7 @@ def test_a_new_text_elsewhere_on_the_page_is_no_change() -> None:
     more = dataclasses.replace(
         read(), snapshot=dataclasses.replace(read().snapshot, title="Shop, new banner")
     )
-    assert not site_changed(committed, deciding_facts(TYPE_ENTER, GOAL, more))
+    assert site_check(committed, deciding_facts(TYPE_ENTER, GOAL, more)) == "same"
 
 
 @pytest.mark.parametrize(
@@ -156,7 +159,7 @@ def test_a_new_text_elsewhere_on_the_page_is_no_change() -> None:
 )
 def test_a_changed_role_or_landmark_is_a_change(now: dict[str, bool]) -> None:
     committed = deciding_facts(TYPE_ENTER, GOAL, read())
-    assert site_changed(committed, deciding_facts(TYPE_ENTER, GOAL, read(**now)))
+    assert site_check(committed, deciding_facts(TYPE_ENTER, GOAL, read(**now))) == "changed"
 
 
 # ---- the acts as data -------------------------------------------------------------------------
@@ -258,3 +261,76 @@ def test_the_start_document_is_loaded_only_with_a_2xx_or_3xx_and_no_error_page(
     got = start_document(raw)
     assert (got.status, got.error_page, got.title, got.loaded) == expected
     assert isinstance(got, StartDocument)
+
+
+# ---- #401 principal notes ---------------------------------------------------------------------
+
+
+def _good_table() -> Any:  # Any: a JSON table, spoiled by each test
+    return json.loads(dump_table([table_row("t1", TYPE_CLICK, GOAL, saved(read()))]))
+
+
+@pytest.mark.parametrize(
+    "spoil",
+    [
+        lambda t: t["t1"].update(extra=1),
+        lambda t: t["t1"].update(read_sha256="not hex"),
+        lambda t: t["t1"]["facts"].update(risk="R9"),
+        lambda t: t["t1"]["facts"].update(colour="red"),
+        lambda t: t["t1"]["facts"].pop("aria_role"),
+        lambda t: t["t1"]["facts"].update(search_landmark="yes"),
+        lambda t: t["t1"]["expected"].update(outcome="maybe"),
+        lambda t: t["t1"]["expected"].update(proof="vibes"),
+        lambda t: t["t1"]["expected"].update(task_id="t2"),
+        lambda t: t["t1"]["expected"].update(reason=3),
+    ],
+)
+def test_a_table_that_is_not_valid_is_refused(spoil: Any) -> None:  # Any: a test's mutation
+    """As strict as `load_acts`: a `ValueError` naming `table`, never a partial row."""
+    table = _good_table()
+    spoil(table)
+    with pytest.raises(ValueError, match="table"):
+        load_table(json.dumps(table))
+
+
+def test_an_unread_aria_role_or_landmark_map_is_unread_never_a_change() -> None:
+    committed = deciding_facts(TYPE_ENTER, GOAL, read())
+    no_roles = deciding_facts(TYPE_ENTER, GOAL, dataclasses.replace(read(), aria_roles=None))
+    no_marks = deciding_facts(TYPE_ENTER, GOAL, dataclasses.replace(read(), landmarks=None))
+    assert no_roles.unread == ("aria_role",)
+    assert no_marks.unread == ("landmarks",)
+    assert site_check(committed, no_roles) == "unread"
+    assert site_check(committed, no_marks) == "unread"
+    assert site_check(committed, deciding_facts(TYPE_ENTER, GOAL, read())) == "same"
+    assert (
+        site_check(committed, deciding_facts(TYPE_ENTER, GOAL, read(landmark=False))) == "changed"
+    )
+
+
+def test_a_table_row_is_never_built_from_a_read_with_unread_facts() -> None:
+    with pytest.raises(ValueError, match="unread"):
+        table_row("t1", TYPE_ENTER, GOAL, saved(dataclasses.replace(read(), aria_roles=None)))
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.slept: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+def test_loads_of_one_host_are_spaced_and_counted() -> None:
+    """The save-reads pass and the harness space every load of a host alike (§2.3)."""
+    clock = Clock()
+    spacer = Spacer(clock, clock.sleep)
+    for host in ("a.test", "b.test", "a.test"):
+        spacer.wait(host)
+        spacer.loaded(host)
+    assert clock.slept == [pytest.approx(SITE_SPACING_S)]
+    assert spacer.loads == {"a.test": 2, "b.test": 1}

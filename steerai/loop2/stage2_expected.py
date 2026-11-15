@@ -21,17 +21,21 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
-from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+import time
+import urllib.parse
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Final, get_args
+from typing import Final, Literal, get_args
 
 from steerai.loop2.decision import Key, Verb
 from steerai.loop2.query import search_landmark_of
 from steerai.loop2.stage1_expected import (
     Act,
     Expected,
+    Outcome,
     ProofKind,
     outcome_of,
     rate,
@@ -48,6 +52,9 @@ _ROW_FIELDS: Final = frozenset({"acts", "proof", "why"})
 _PROOFS: Final = frozenset(get_args(ProofKind))
 _VERBS: Final[dict[object, Verb]] = {v: v for v in get_args(Verb)}
 _KEYS: Final[dict[object, Key]] = {k: k for k in get_args(Key)}
+_RISKS: Final[dict[object, Risk]] = {r: r for r in RISKS}
+SITE_SPACING_S: Final = 60.0
+"""§2.3, [V2.63] Q4: the least time between two page loads of one host, controls included."""
 
 
 @dataclass(frozen=True)
@@ -74,6 +81,8 @@ class DecidingFacts:
     """The clicked button's control type; None when the acts click nothing (an Enter)."""
     button_search_landmark: bool | None
     risk: Risk
+    unread: tuple[str, ...] = ()
+    """The facts this read could not say (`aria_role`, `landmarks`): unread, never a value."""
 
 
 @dataclass(frozen=True)
@@ -124,6 +133,36 @@ def start_document(raw: str) -> StartDocument:
     )
 
 
+class Spacer:
+    """§2.3: every load of a host waits until `spacing_s` after its last one, and is counted
+    (kill-aware: an interrupt raised in the sleep ends the wait as itself)."""
+
+    def __init__(
+        self,
+        clock: Callable[[], float],
+        sleep: Callable[[float], None],
+        spacing_s: float = SITE_SPACING_S,
+    ) -> None:
+        self._clock = clock
+        self._sleep = sleep
+        self._spacing_s = spacing_s
+        self._last: dict[str, float] = {}
+        self.loads: dict[str, int] = {}
+        """Loads per host so far: the volume the summary reports."""
+
+    def wait(self, host: str) -> None:
+        last = self._last.get(host)
+        if last is None:
+            return
+        left = last + self._spacing_s - self._clock()
+        if left > 0:
+            self._sleep(left)
+
+    def loaded(self, host: str) -> None:
+        self._last[host] = self._clock()
+        self.loads[host] = self.loads.get(host, 0) + 1
+
+
 def real_site_tasks() -> tuple[Task, ...]:
     """The pooled set's real-site tasks (dev, H1-H6), in set order, each once: the rows whose
     start is a web address. The sets are data; nothing here names a site."""
@@ -143,6 +182,11 @@ def deciding_facts(row: SiteRow, goal: str, read: Observed) -> DecidingFacts:
     field = None if typed is None else target_in(typed, read)
     button = None if clicked is None else target_in(clicked, read)
     roles = read.aria_roles
+    unread = []
+    if field is not None and roles is None:
+        unread.append("aria_role")
+    if (field is not None or button is not None) and read.landmarks is None:
+        unread.append("landmarks")
     return DecidingFacts(
         field_role=None if field is None else field.role,
         aria_role=None if field is None or roles is None else roles.get(field.runtime_id),
@@ -150,6 +194,7 @@ def deciding_facts(row: SiteRow, goal: str, read: Observed) -> DecidingFacts:
         button_role=None if button is None else button.role,
         button_search_landmark=None if button is None else _in_search(read, button.runtime_id),
         risk=risk,
+        unread=tuple(unread),
     )
 
 
@@ -157,9 +202,16 @@ def _in_search(read: Observed, runtime_id: tuple[int, ...]) -> bool:
     return search_landmark_of(read, runtime_id) is not None
 
 
-def site_changed(committed: DecidingFacts, now: DecidingFacts) -> bool:
-    """[V2.63] Q4: the site changed under the table when any deciding fact differs."""
-    return committed != now
+SiteCheck = Literal["same", "changed", "unread"]
+
+
+def site_check(committed: DecidingFacts, now: DecidingFacts) -> SiteCheck:
+    """[V2.63] Q4: `changed` when any deciding fact differs, `same` when none does, and
+    `unread` when this read could not say (an unread AriaRole or landmark map is never read as a
+    change: #401 principal note)."""
+    if now.unread:
+        return "unread"
+    return "same" if committed == now else "changed"
 
 
 def table_row(task_id: str, row: SiteRow, goal: str, raw_read: bytes) -> TableRow:
@@ -167,6 +219,8 @@ def table_row(task_id: str, row: SiteRow, goal: str, raw_read: bytes) -> TableRo
     expected outcome by stage 1's rule."""
     read = observed_from_json(raw_read.decode("utf-8"))
     facts = deciding_facts(row, goal, read)
+    if facts.unread:
+        raise ValueError(f"unread_facts: {task_id} {list(facts.unread)}")
     outcome, reason = outcome_of(facts.risk, row.proof)
     expected = Expected(task_id, outcome, reason, facts.risk, row.proof, row.why)
     return TableRow(task_id, hashlib.sha256(raw_read).hexdigest(), facts, expected)
@@ -186,21 +240,62 @@ def dump_table(rows: Sequence[TableRow]) -> str:
 
 
 def load_table(text: str) -> dict[str, TableRow]:
+    """The committed table, checked as strictly as the acts (#401 principal note): a
+    `ValueError` naming `table` for anything else."""
     raw = json.loads(text)
-    table: dict[str, TableRow] = {}
-    for task_id, entry in raw.items():
-        facts = entry["facts"]
-        risk = facts["risk"]
-        if risk not in RISKS:
-            raise ValueError(f"table: {task_id} has an unknown risk")
-        expected = entry["expected"]
-        table[task_id] = TableRow(
-            task_id,
-            str(entry["read_sha256"]),
-            DecidingFacts(**facts),
-            Expected(**expected),
-        )
-    return table
+    if not isinstance(raw, dict):
+        raise ValueError("table: not an object")
+    return {str(task_id): _table_row(str(task_id), entry) for task_id, entry in raw.items()}
+
+
+_ENTRY_FIELDS: Final = frozenset({"read_sha256", "facts", "expected"})
+_FACT_FIELDS: Final = frozenset(f.name for f in fields(DecidingFacts))
+_EXPECTED_FIELDS: Final = frozenset(f.name for f in fields(Expected))
+_OUTCOMES: Final = frozenset(get_args(Outcome))
+_SHA256: Final = re.compile(r"[0-9a-f]{64}")
+
+
+def _table_row(task_id: str, entry: object) -> TableRow:
+    if not isinstance(entry, dict) or set(entry) != _ENTRY_FIELDS:
+        raise ValueError(f"table: {task_id} needs exactly {sorted(_ENTRY_FIELDS)}")
+    sha, facts, expected = entry["read_sha256"], entry["facts"], entry["expected"]
+    if not isinstance(sha, str) or not _SHA256.fullmatch(sha):
+        raise ValueError(f"table: {task_id} has no SHA-256")
+    return TableRow(task_id, sha, _facts(task_id, facts), _expected(task_id, expected))
+
+
+def _facts(task_id: str, raw: object) -> DecidingFacts:
+    if not isinstance(raw, dict) or set(raw) != _FACT_FIELDS:
+        raise ValueError(f"table: {task_id} needs exactly the deciding facts")
+    texts = ("field_role", "aria_role", "button_role")
+    flags = ("search_landmark", "button_search_landmark")
+    if not all(raw[k] is None or isinstance(raw[k], str) for k in texts):
+        raise ValueError(f"table: {task_id} has a role that is not text")
+    if not all(raw[k] is None or isinstance(raw[k], bool) for k in flags):
+        raise ValueError(f"table: {task_id} has a landmark that is not true or false")
+    risk = _RISKS.get(raw["risk"])
+    unread = raw["unread"]
+    if risk is None:
+        raise ValueError(f"table: {task_id} has an unknown risk")
+    if not isinstance(unread, list) or unread:
+        raise ValueError(f"table: {task_id} has unread facts")
+    return DecidingFacts(
+        raw["field_role"], raw["aria_role"], raw["search_landmark"],
+        raw["button_role"], raw["button_search_landmark"], risk,
+    )  # fmt: skip
+
+
+def _expected(task_id: str, raw: object) -> Expected:
+    if not isinstance(raw, dict) or set(raw) != _EXPECTED_FIELDS:
+        raise ValueError(f"table: {task_id} needs exactly the expected outcome")
+    outcome, risk, proof = raw["outcome"], raw["risk"], raw["proof"]
+    if raw["task_id"] != task_id or outcome not in _OUTCOMES:
+        raise ValueError(f"table: {task_id} has an unknown outcome")
+    if (risk is not None and risk not in _RISKS) or (proof is not None and proof not in _PROOFS):
+        raise ValueError(f"table: {task_id} has an unknown risk or proof")
+    if not all(raw[k] is None or isinstance(raw[k], str) for k in ("reason", "why")):
+        raise ValueError(f"table: {task_id} has a reason that is not text")
+    return Expected(task_id, outcome, raw["reason"], risk, proof, raw["why"])
 
 
 def load_acts(text: str) -> dict[str, SiteRow]:
@@ -277,7 +372,11 @@ def save_reads(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live, 
     by_start: dict[str, list[str]] = {}
     for task in real_site_tasks():
         by_start.setdefault(task.start, []).append(task.task_id)
+    spacer = Spacer(time.monotonic, time.sleep)
     for start, task_ids in by_start.items():
+        host = urllib.parse.urlsplit(start).netloc
+        spacer.wait(host)
+        spacer.loaded(host)
         with live_page(start, floor_mb=floor_mb, settle_s=6.0) as page:
             reply = page.cdp.call(
                 "Runtime.evaluate", {"expression": START_EXPRESSION, "returnByValue": True}
