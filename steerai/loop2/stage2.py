@@ -92,7 +92,7 @@ INVALID_RUN_VOIDS: Final[Mapping[str, str]] = {
 }
 """#403 blocker 2: a run that never started is a site void only by the harness's own token; any
 other failure before the page read (launch, window, DevTools, UIA) is the machine's."""
-STEER_CAUSED: Final = ("cap_killed", "no_final_line", "internal", "start_refused:", "enters:")
+STEER_CAUSED: Final = ("cap_killed", "no_final_line", "internal", "enters:")
 """Stage 1's results that are Steer's whatever the page shows: they come before any wall."""
 MIN_VALID_TASKS: Final = 24
 """[V2.63] Q5: a conclusive stage needs at least this many of the 30 tasks not site-voided."""
