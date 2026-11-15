@@ -12,8 +12,11 @@ and 52 % covered, the page at once. So the check is narrow:
 - minimised (`IsIconic`);
 - cloaked (DWMWA_CLOAKED), or that fact unread (fail closed);
 - the union of the window rects of the visible, uncloaked, non-minimised top-level windows above
-  it in z-order covers its whole window rect, as an exact area (a few pixels left uncovered keep
-  the page, so the area is never sampled).
+  it in z-order covers its whole window rect clipped to the virtual screen (as Chromium clips
+  it), as an exact area (a few pixels left uncovered keep the page, so the area is never
+  sampled); a window with nothing on the screen is covered. The clip of a window overhanging the
+  screen (a maximised window's invisible border) is Chromium's rule and unit-tested, but
+  unmeasured by the probe.
 
 Not being the foreground window is not a cover.
 """
@@ -41,6 +44,8 @@ class CoverFacts:
     """The window's own rect (GetWindowRect)."""
     above: tuple[Rect, ...]
     """The window rects of the visible, uncloaked, non-minimised top-level windows above it."""
+    screen: Rect
+    """The virtual screen (SM_XVIRTUALSCREEN and its kin): the window is clipped to it."""
 
 
 def covered_fraction(target: Rect, above: Sequence[Rect]) -> float:
@@ -64,15 +69,29 @@ def covered_fraction(target: Rect, above: Sequence[Rect]) -> float:
     return hit / ((right - left) * (bottom - top))
 
 
+def _clip(rect: Rect, screen: Rect) -> Rect | None:
+    """`rect` inside `screen`; None when nothing of it is on the screen."""
+    clipped = (
+        max(rect[0], screen[0]),
+        max(rect[1], screen[1]),
+        min(rect[2], screen[2]),
+        min(rect[3], screen[3]),
+    )
+    if clipped[2] <= clipped[0] or clipped[3] <= clipped[1]:
+        return None
+    return clipped
+
+
 def cover_of(facts: CoverFacts) -> CoverToken | None:
-    """Why the window is covered, or None when it is not. A window with no area is covered."""
+    """Why the window is covered, or None when it is not. A window with nothing on the
+    screen is covered."""
     if facts.minimized:
         return "minimized"
     if facts.cloaked is not False:
         return "cloaked"
-    left, top, right, bottom = facts.rect
-    if right <= left or bottom <= top:
+    shown = _clip(facts.rect, facts.screen)
+    if shown is None:
         return "covered"
-    if covered_fraction(facts.rect, facts.above) >= 1.0:
+    if covered_fraction(shown, facts.above) >= 1.0:
         return "covered"
     return None

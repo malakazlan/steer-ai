@@ -250,7 +250,11 @@ def test_a_cover_found_in_the_act_ports_fresh_look_ends_the_task_not_the_act() -
 # ---- [V2.62] the task start: idle, then the window brought in front with its postcondition -----
 
 COVERED = CoverFacts(
-    minimized=False, cloaked=False, rect=(0, 0, 100, 100), above=((0, 0, 100, 100),)
+    minimized=False,
+    cloaked=False,
+    rect=(0, 0, 100, 100),
+    above=((0, 0, 100, 100),),
+    screen=(0, 0, 1920, 1080),
 )
 
 
@@ -352,8 +356,8 @@ def test_a_window_still_not_in_front_after_the_acquire_never_starts() -> None:
     "facts",
     [
         COVERED,
-        CoverFacts(minimized=True, cloaked=False, rect=(0, 0, 100, 100), above=()),
-        CoverFacts(minimized=False, cloaked=None, rect=(0, 0, 100, 100), above=()),
+        dataclasses.replace(COVERED, minimized=True, above=()),
+        dataclasses.replace(COVERED, cloaked=None, above=()),
     ],
     ids=["covered", "minimized", "cloak_unread"],
 )

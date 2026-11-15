@@ -601,7 +601,15 @@ def window_cover(hwnd: int) -> CoverFacts:  # pragma: no cover - live, Windows o
         cloaked=is_cloaked(hwnd),
         rect=_fit(user32, hwnd, _window_rect(user32, hwnd) or (0, 0, 0, 0)),
         above=tuple(found),
+        screen=_virtual_screen(user32),
     )
+
+
+def _virtual_screen(user32: ctypes.WinDLL) -> Rect:  # pragma: no cover - live
+    """The virtual screen (SM_XVIRTUALSCREEN 76, SM_YVIRTUALSCREEN 77, SM_CXVIRTUALSCREEN 78,
+    SM_CYVIRTUALSCREEN 79), the rect Chromium clips an occluded window to."""
+    left, top = user32.GetSystemMetrics(76), user32.GetSystemMetrics(77)
+    return (left, top, left + user32.GetSystemMetrics(78), top + user32.GetSystemMetrics(79))
 
 
 def windows_above(z_order: Sequence[int], hwnd: int) -> list[int]:
@@ -716,6 +724,8 @@ def _cover_user32() -> ctypes.WinDLL:  # pragma: no cover - live, Windows only
         wintypes.LPARAM,
     )
     user32.EnumWindows.restype = wintypes.BOOL
+    user32.GetSystemMetrics.argtypes = (ctypes.c_int,)
+    user32.GetSystemMetrics.restype = ctypes.c_int
     for name in ("IsWindow", "IsWindowVisible", "IsIconic", "IsZoomed"):
         getattr(user32, name).argtypes = (hwnd,)
         getattr(user32, name).restype = wintypes.BOOL

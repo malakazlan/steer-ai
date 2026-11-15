@@ -155,7 +155,13 @@ class Platform:
         self.fake_input = FakeInput()
         self.handles: list[FakeHandle] | None = None
         """When set, each read is the screen with these live handles, stamped on the clock."""
-        self.cover = CoverFacts(minimized=False, cloaked=False, rect=(0, 0, 1200, 900), above=())
+        self.cover = CoverFacts(
+            minimized=False,
+            cloaked=False,
+            rect=(0, 0, 1200, 900),
+            above=(),
+            screen=(0, 0, 1920, 1080),
+        )
         """[V2.62] the bound window's cover facts: in front and uncovered unless a test says."""
 
     def dpi_aware(self) -> bool:
