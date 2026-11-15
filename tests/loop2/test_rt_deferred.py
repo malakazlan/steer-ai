@@ -91,7 +91,9 @@ def test_a_turn_that_dispatched_before_a_refusal_is_no_refused_strike() -> None:
     world = _mixed()
     outcome = run_task(task(), world.ports())
     assert [d.action.verb for d in world.dispatched] == ["click"]
-    assert "refused:secure_field" in world.views[-1].history
+    assert (
+        f"refused:secure_field:{PASSWORD.id}" in world.views[-1].history
+    )  # [V2.47]: with the element's task handle
     assert all("refused" not in reasons for reasons in outcome.strikes)
 
 
@@ -101,7 +103,9 @@ def test_the_send_before_a_refusal_is_the_last_send_for_the_repeat_rule() -> Non
     world = _mixed(decision(act("click", target=GO.id)))
     run_task(task(), world.ports())
     assert [d.action.verb for d in world.dispatched] == ["click"]
-    assert "refused:repeat_send" in world.views[-1].history
+    assert (
+        f"refused:repeat_send:{GO.id}" in world.views[-1].history
+    )  # [V2.47]: with the element's task handle
 
 
 REBUILT = element(GO.id, "Button", "Go", (9, 333), 1)
@@ -124,7 +128,7 @@ def test_a_target_re_rendered_after_the_decision_is_re_asked_not_refused() -> No
     outcome = run_task(task(), world.ports())
     history = world.views[1].history
     assert world.dispatched == []
-    assert "target_changed" in history
+    assert f"target_changed:{GO.id}" in history  # [V2.47]: with the element's task handle
     assert not any(t.startswith("refused:") for t in history)
     assert outcome.target_changes == 1
     assert outcome.stale_observations == 0  # counted apart from page-level staleness
@@ -182,7 +186,9 @@ def test_a_press_with_focus_listed_elsewhere_strikes_at_once() -> None:
         ],  # the 2nd read is what the press's listing shows
     )
     outcome = run_task(task(), world.ports())
-    assert "refused:press_not_at_focus" in world.views[-1].history
+    assert (
+        f"refused:press_not_at_focus:{FIELD.id}" in world.views[-1].history
+    )  # [V2.47]: with the element's task handle
     assert any("refused" in reasons for reasons in outcome.strikes)
     assert outcome.focus_losses == 0
 
@@ -199,7 +205,9 @@ def test_focus_lost_after_the_listing_showed_it_on_the_target_is_re_asked() -> N
         observations=[FOCUSED, FOCUSED, ELSEWHERE, ELSEWHERE],  # listed on the field, then moved
     )
     outcome = run_task(task(), world.ports())
-    assert "focus_lost" in world.views[-1].history
+    assert (
+        f"focus_lost:{FIELD.id}" in world.views[-1].history
+    )  # [V2.47]: with the element's task handle
     assert not any("refused:press" in t for t in world.views[-1].history)
     assert outcome.focus_losses == 1
     assert all("refused" not in reasons for reasons in outcome.strikes)
@@ -421,7 +429,9 @@ def test_a_world_refusal_still_ends_at_progress() -> None:
         effects=[report("content_changed")],
     )
     outcome = run_task(task(), world.ports())
-    assert "refused:not_delivered" in world.views[1].history
+    assert (
+        f"refused:not_delivered:{GO.id}" in world.views[1].history
+    )  # [V2.47]: with the element's task handle
     assert (outcome.status, outcome.reason) == ("cannot", "controller_stop")
 
 
@@ -586,8 +596,10 @@ def test_a_move_after_a_send_in_the_batch_is_scored_and_the_send_remembered() ->
     )
     outcome = run_task(task(), world.ports())
     assert [d.action.verb for d in world.dispatched] == ["type"]
-    assert "focus_lost" in world.views[1].history
-    assert "refused:repeat_send" in world.views[-1].history
+    assert (
+        f"focus_lost:{FIELD.id}" in world.views[1].history
+    )  # [V2.47]: with the element's task handle
+    assert f"refused:repeat_send:{FIELD.id}" in world.views[-1].history  # [V2.47]: its handle
     assert outcome.focus_losses == 1
 
 
@@ -690,7 +702,7 @@ def test_a_mixed_turn_leaves_the_stale_streak_as_it_was() -> None:
     )
     outcome = run_task(task(), world.ports())
     history = [t for v in world.views for t in v.history]
-    assert "focus_lost" in history
+    assert f"focus_lost:{FIELD.id}" in history  # [V2.47]: with the element's task handle
     assert outcome.stale_observations == 2
     assert any("refused" in reasons for reasons in outcome.strikes)
 

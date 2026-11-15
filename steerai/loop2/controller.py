@@ -1,6 +1,9 @@
 """Controller prompt building and reply parsing. The model call itself is injected.
 
-Free text (element names, subgoal descriptions, the request) only ever appears inside a fence.
+Screen text and model text (element names, the window title, subgoal descriptions) only ever
+appear inside a fence. The request is the person's own words: it is fence-checked (it may not
+carry a fence), not wrapped. The action log holds no free text at all ([V2.46], [V2.47]):
+closed tokens, task handles and the task's own subgoal ids and params.
 The task fence is fixed for a task so the stable and log blocks stay byte-identical across calls;
 the screen fence is fresh for every call.
 """
@@ -16,13 +19,26 @@ from typing import Any, Literal, get_args
 
 from pydantic import ValidationError
 
-from steerai.loop2.decision import STEP, STEP_VERBS, SUBGOAL_ID, Decision, Verb, validate
+from steerai.loop2.decision import (
+    STEP,
+    STEP_VERBS,
+    SUBGOAL_ID,
+    Decision,
+    Verb,
+    validate,
+)
+from steerai.loop2.history import (
+    HistoryRecord,
+    Vocab,
+    record_ok,
+    render,
+)
 from steerai.loop2.task import Status
 from steerai.loop2.text import clean_line, has_control
 from steerai.world.elements import format_lines
 from steerai.world.model import Snapshot
 
-PROMPT_VERSION = "controller-4"
+PROMPT_VERSION = "controller-5"
 ASK_PREFIX = "Steer asks: "
 ASK_MAX_CHARS = 200
 MAX_REPLY_BYTES = 64 * 1024
@@ -43,6 +59,10 @@ SYSTEM_RULES = (
     "- `screen: unstable` means the window was still changing; `wait` is then an option.\n"
     "Rules:\n"
     "- Act only on ids in the current listing. Never name an element that is not listed.\n"
+    "- The action log names an element by its id and role only; while it is listed, read its "
+    "name in the listing by that id. An action line is act:verb:id:role:subgoal:param:"
+    "delivery:effect classes:effect tokens; the other lines are what code saw: refused, claim, "
+    "proven, target_changed, focus_lost, stale_observation, load_guard, enter.\n"
     "- A ComboBox can be a text field: `type` is allowed on it.\n"
     "- Each subgoal declares `closes`, the kind of fact that proves it done: value, state or "
     "page (a field holds the text, an element is in a state, the page shows it). A page subgoal "
@@ -124,17 +144,6 @@ def v2_listing(snapshot: Snapshot, *, handles: Mapping[int, int]) -> list[Listin
     return rows
 
 
-@dataclass(frozen=True)
-class LogEntry:
-    """One past action: closed tokens, plus the element name, which is screen data."""
-
-    verb: str
-    role: str
-    name: str
-    effects: tuple[str, ...]
-    claim: str
-
-
 def repair_rate(records: Sequence[DecideRecord]) -> float:
     """Decisions that needed a repair call, failed ones included, over all decisions."""
     if not records:
@@ -170,15 +179,13 @@ def _token(text: str) -> str:
     return text
 
 
-def _log_line(index: int, entry: LogEntry, fence: str) -> str:
-    if entry.verb not in VERBS:
+def _log_line(index: int, record: HistoryRecord, vocab: Vocab | None) -> str:
+    """[V2.46], [V2.47], [V2.49]: a history record as its one line (`render`). A record off the
+    task's vocabulary (`record_ok`), or any record before there is one, is refused
+    (`unsafe_token`), never escaped."""
+    if vocab is None or not record_ok(record, vocab):
         raise ControllerError("unsafe_token")
-    effects = ",".join(_token(e) for e in entry.effects) or "none"
-    head = f"{index} {entry.verb} {_token(entry.role)}"
-    return (
-        f"{head} effects={effects} claim={_token(entry.claim)} "
-        f"<<<name {fence} {_data(entry.name, fence)} {fence}>>>"
-    )
+    return f"{index} {render(record)}"
 
 
 def _status_line(sid: str, status: str) -> str:
@@ -200,7 +207,7 @@ def _prompt_schema() -> dict[str, Any]:  # Any: a JSON schema document
 def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
     task_goal: str,
     subgoal_lines: Sequence[str],
-    action_log: Sequence[LogEntry],
+    action_log: Sequence[HistoryRecord],
     subgoal_status: Sequence[tuple[str, str]],
     window_title: str,
     listing_rows: Sequence[ListingRow],
@@ -210,8 +217,10 @@ def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
     unstable: bool = False,
     growing: bool = False,
     young: bool = False,
+    vocab: Vocab | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Return (system blocks, user blocks): stable, then append-only log, then the live turn."""
+    """Return (system blocks, user blocks): stable, then append-only log, then the live turn.
+    `vocab` is what the log's records may name (the task's subgoals and issued handles)."""
     _check_fences(task_fence, screen_fence)
     schema_json = json.dumps(_prompt_schema(), sort_keys=True)
     subgoals = (
@@ -226,7 +235,7 @@ def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
     )
     stable = "\n".join([f"request: {_data(task_goal, task_fence)}", *subgoals])
     log = "\n".join(
-        ["action log:", *(_log_line(i, e, task_fence) for i, e in enumerate(action_log, 1))]
+        ["action log:", *(_log_line(i, e, vocab) for i, e in enumerate(action_log, 1))]
         if action_log
         else ["action log: none"]
     )
@@ -302,7 +311,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     *,
     task_goal: str,
     subgoal_lines: Sequence[str],
-    action_log: Sequence[LogEntry],
+    action_log: Sequence[HistoryRecord],
     subgoal_status: Sequence[tuple[str, str]],
     window_title: str,
     listing_rows: Sequence[ListingRow],
@@ -315,6 +324,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     young: bool = False,
     screen_fence: str | None = None,
     max_repairs: int = 1,
+    issued: frozenset[int] = frozenset(),
 ) -> tuple[Decision, DecideRecord]:
     """Ask, parse, validate; on failure repair with code tokens only, up to `max_repairs` times.
 
@@ -333,6 +343,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
         unstable=unstable,
         growing=growing,
         young=young,
+        vocab=Vocab(dict(known_subgoals or {}), issued),
     )
     error: ControllerError | None = None
     for attempt in range(max_repairs + 1):
