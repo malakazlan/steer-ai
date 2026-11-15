@@ -401,6 +401,10 @@ def _result(
             "write_1h": outcome.usage.cache_write_1h,
             "read": outcome.usage.cache_read,
         },
+        "watch_deadlines": {  # [V2.48]: per class, watches and those ended at the deadline
+            kind: {"watches": watches, "deadline": hits}
+            for kind, watches, hits in outcome.watch_deadlines
+        },
         "tokens_incomplete": not tokens_known,
         "cost_incomplete": not cost_known,
         "wall_incomplete": not wall_known,

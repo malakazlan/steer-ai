@@ -277,6 +277,8 @@ class World:
     interrupt_after_settle: bool = False
     """Report `interruption` once a settle has run (the person's kill during the wait)."""
     decide_raises: Exception | None = None
+    watch_timeouts: list[bool] = field(default_factory=list)
+    """Each watch's `timed_out` in turn, when set (else the submit rule's own)."""
     """When set, every controller call raises it (a port failure or `PortInterrupted`)."""
     interrupt_in_decide: int | None = None
     """Report `interruption` from this controller call on (1-based): the kill arrives while
@@ -363,12 +365,13 @@ class World:
             after = dataclasses.replace(after, snapshot=stamped)
         held = sent.submit and not self.unheld
         final = held and conclusive(effect, before, after)
+        timed_out = self.watch_timeouts.pop(0) if self.watch_timeouts else held and not final
         return Watched(
             report=effect,
             after=after,
             first_change_ms=None,
             settled_ms=None,
-            timed_out=held and not final,
+            timed_out=timed_out,
             conclusive_ms=0 if final else None,
             read_cost=self.read_cost,
         )
