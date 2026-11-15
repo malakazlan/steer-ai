@@ -61,6 +61,7 @@ def _value_only(audit: Any) -> World:  # Any: an Audited, an exception or a call
         effects=[report("own_value")],
     )
     world.audit_reply = audit
+    world.intake_on = False  # the audit's own tests: no intake call in the counts
     return world
 
 

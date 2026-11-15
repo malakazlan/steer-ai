@@ -40,7 +40,7 @@ from steerai.loop2.controller import (
 from steerai.loop2.decide_port import DecideCalls
 from steerai.loop2.history import HistoryRecord
 from steerai.loop2.listing import LISTING_CAP, Listing, select_listing, words_of
-from steerai.loop2.loop import Audited, AuditView, Decided, TokenUsage, TurnView
+from steerai.loop2.loop import Audited, AuditView, Decided, IntakeView, TokenUsage, TurnView
 from steerai.loop2.task import Status, Subgoal, known_params
 from steerai.world.effects import Observed
 
@@ -306,3 +306,24 @@ def _fold(text: str) -> str:
     """NFKC, whitespace collapsed, full casefold, NFKC again (casefold can denormalise)."""
     collapsed = " ".join(unicodedata.normalize("NFKC", text).split())
     return unicodedata.normalize("NFKC", collapsed.casefold())
+
+
+def make_intake(
+    calls: DecideCalls, *, goal: str, task_fence: str
+) -> Callable[[IntakeView], Audited]:
+    """`Ports.intake` ([V2.68] One): the request and the declared subgoals through
+    `build_intake_prompt`, one call on the decide worker (kill-aware, its usage summed), the
+    audit's strict parser. A prompt over the bound is refused with no call (`prompt_too_large`,
+    no record); a failed or unparsed call raises with its record."""
+
+    def port(view: IntakeView) -> Audited:
+        system, user = controller.build_intake_prompt(goal, view.subgoals, task_fence=task_fence)
+        _within_bound(calls, system, user)
+        try:
+            doc, usage = calls.turn(lambda ask: parse_audit(ask(system, user)))
+        except ControllerError as failed:
+            failed.record = DecideRecord(controller.INTAKE_PROMPT_VERSION, 1, False, True)
+            raise
+        return Audited(doc.sufficient, doc.reason, usage)
+
+    return port

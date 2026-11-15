@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Final, Literal, get_args
 
@@ -40,7 +40,7 @@ from steerai.loop2.decision import (
     Claim,
     Decision,
     Stop,
-    subgoal_tokens,
+    SubgoalDoc,
     validate,
 )
 from steerai.loop2.form import ENTER_FIELDS, STATE_SET_VERB, scope_fields
@@ -78,12 +78,16 @@ from steerai.loop2.listing import ListingTurn, words_of
 from steerai.loop2.loop import (
     AUDIT_COUNTS,
     COMMIT_RISK,
+    INTAKE_COUNTS,
     PARENT_KINDS,
     READ_BACK_VERBS,
     URL_READS,
     ActResult,
+    Audited,
     AuditView,
     Dispatch,
+    IntakeLine,
+    IntakeView,
     ParentKind,
     PendingText,
     PortInterrupted,
@@ -480,6 +484,11 @@ class _Run:
         """[V2.64] One: the final audit's outcome and reason, when it ran."""
         self.audit_counts: dict[str, int] = dict.fromkeys(AUDIT_COUNTS, 0)
         """[V2.69] One, packet rev 4 item 4: the audit's counts (`_audit`)."""
+        self.intake_counts: dict[str, int] = dict.fromkeys(INTAKE_COUNTS, 0)
+        """[V2.68] One, packet rev 4 item 4: the intake check's counts (`_intake_passes`)."""
+        self.intake_memo: dict[str, bool] = {}
+        """Packet rev 5 item 1 (P4): each declared set's verdict by its digest, passed or
+        rejected; a set already judged makes no new call."""
         self.free_texts: list[str] = []
         """Packet rev 5 item 5: the free text of each `type` Steer sent with `text` (not a
         param), kept in memory only, masked out of the audit's view."""
@@ -554,6 +563,7 @@ class _Run:
             url_reads=tuple(self.url_reads.items()),
             audit=self.audit,
             **self.audit_counts,
+            **self.intake_counts,
             query_combobox_listed=self.query_combobox_listed,
             typed_into_combobox=self.typed_into_combobox,
             partial_page_calls=self.partial_page_calls,
@@ -634,6 +644,9 @@ class _Run:
             except ControllerError as rejected:
                 observed = self._rejected_turn(rejected, observed)
                 self._trace_turn()  # [V2.67] D: one record per rejected turn
+                continue
+            if not self._intake_passes(decision):  # [V2.68] One: refused before anything freezes
+                observed = self._record_strike(observed)
                 continue
             self._check_interrupt()  # #326, [V2.40] Q4: a Decision after the kill is discarded
             self.turn.shape = decision_shape(
@@ -838,8 +851,6 @@ class _Run:
             listed &= self.listing.shown
         first = not self.frozen
         goal = self.task.goal
-        if first and decision.subgoals and not subgoal_tokens(decision, goal=goal):
-            self._intake(decision)  # valid subgoals are taken even when an action is refused
         tokens = validate(
             decision,
             listed_ids=listed,
@@ -850,6 +861,10 @@ class _Run:
         if tokens:
             self._refuse(*tokens, subgoal=_step_subgoal(decision))
             return observed
+        if first and decision.subgoals:
+            # packet rev 5 §4: subgoals freeze only on a turn that is not stale, after validate
+            # and the intake check (`_intake_passes`) both passed
+            self._intake(decision)
         for claim in decision.claims:
             self._claim(claim, observed)
         self._check_done(observed)
@@ -1068,6 +1083,81 @@ class _Run:
                 (position, subgoal.closes, how, kind, _read_token(subgoal, how, proofs), params)
             )
         return tuple(lines)
+
+    def _intake_passes(self, decision: Decision) -> bool:
+        """[V2.68] One, [V2.69] Two and Four, packet rev 5 §4: a first Decision whose declared
+        subgoals are all value or state (no ask, no stop) is checked once for sufficiency on the
+        request and the subgoals alone, before anything freezes. A set already judged takes its
+        verdict from the memo with no call. A spent budget pauses with its token, no call. A
+        failed call made ends `blocked/intake_failed`; a port error takes decide's path. An
+        insufficient set is refused (`intake_insufficient`): one strike, nothing frozen,
+        nothing dispatched. True: the Decision goes on."""
+        subs = decision.subgoals or []
+        due = not self.frozen and bool(subs) and decision.ask is None and decision.stop is None
+        intake = self.ports.intake
+        if not due or intake is None or any(s.closes not in {"value", "state"} for s in subs):
+            return True
+        lines = _intake_lines(subs)
+        key = hashlib.sha256(repr([(c, p) for _pos, c, p in lines]).encode()).hexdigest()
+        if key in self.intake_memo:
+            if self.intake_memo[key]:
+                return True
+            self.intake_counts["intake_memo_refused"] += 1
+            self._refuse("intake_insufficient")
+            return False
+        self._intake_budget()
+        judged = self._intake_call(intake, IntakeView(subgoals=lines))
+        self._check_interrupt()
+        passed = judged.sufficient and judged.reason == "facts_finish_request"
+        self.intake_memo[key] = passed
+        self.intake_counts["intake_passed" if passed else "intake_rejected"] += 1
+        if not passed:
+            self._refuse("intake_insufficient")
+        return passed
+
+    def _intake_budget(self) -> None:
+        """[V2.69] Four: a budget spent before the intake call: no call, `paused`, counted."""
+        used = Usage(
+            actions=len(self.dispatched),
+            model_calls=self.model_calls,
+            cost_usd=self._cost(),
+            wall_s=self.ports.clock() - self.started,
+            tokens=self.tokens,
+        )
+        hit = budget_hit(self.task.budgets, used)
+        if hit is not None:
+            self.intake_counts["intake_budget_stops"] += 1
+            raise _End("paused", Reason(hit))
+
+    def _intake_call(self, intake: Callable[[IntakeView], Audited], view: IntakeView) -> Audited:
+        """Packet rev 5 item 1 (failures): no call (over the bound) keeps the no-call path; a port
+        error or an interrupt takes decide's path, counted as a failed call; an unusable reply
+        (unparsed, schema-invalid, a provider refusal) ends `blocked/intake_failed`."""
+        try:
+            judged = intake(view)
+        except ControllerError as exc:
+            if exc.record is None:
+                self.intake_counts["intake_no_call"] += 1
+                raise
+            self._intake_failed(exc.record.calls)
+            self._spend(exc.usage)
+            raise _End("blocked", Reason("intake_failed")) from None
+        except (PortInterrupted, SteerError):
+            self._intake_failed(1)
+            self.tokens = math.nan  # abandoned or failed: billed, never reported ([V2.41] (1))
+            self.usage_incomplete = True
+            raise
+        self.model_calls += 1
+        self.intake_counts["intake_checks"] += 1
+        self._spend(judged.usage)
+        if judged.usage is not None:
+            self.intake_counts["intake_tokens"] += sum(_counts(judged.usage) or ())
+        return judged
+
+    def _intake_failed(self, calls: int) -> None:
+        self.model_calls += calls
+        self.intake_counts["intake_checks"] += calls
+        self.intake_counts["intake_failed"] += calls
 
     def _audit(self, observed: Observed, lines: tuple[ProofLine, ...]) -> None:
         """[V2.64] One, [V2.68] One, [V2.69] One and Four (audit-2): one sufficiency call. A spent
@@ -2107,3 +2197,16 @@ def _read_token(subgoal: Subgoal, how: str, proofs: Mapping[str, _Proof]) -> tup
         wanted = {p.wanted for p in proofs.values() if p.wanted is not None}
         return ("state_read", next(iter(wanted)) if len(wanted) == 1 else "mixed")
     return ("navigated", how)
+
+
+def _intake_lines(subs: Sequence[SubgoalDoc]) -> tuple[IntakeLine, ...]:
+    """[V2.68] One, packet rev 5 (P1): each declared subgoal by position and closing kind, its
+    params by sorted position with their words; never the model's id, param names or desc."""
+    return tuple(
+        (
+            position,
+            doc.closes,
+            tuple((n, doc.params[name]) for n, name in enumerate(sorted(doc.params), 1)),
+        )
+        for position, doc in enumerate(subs, 1)
+    )

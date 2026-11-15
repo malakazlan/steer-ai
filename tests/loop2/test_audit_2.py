@@ -59,7 +59,7 @@ def _page_only(audit: object) -> World:
 def _value_only(*, sid: str = "s1", param: str = "text") -> World:
     subs = [SubgoalDoc(id=sid, desc="the field holds it", params={param: "red shoes"},
                        closes="value")]  # fmt: skip
-    return World(
+    world = World(
         [
             Decision(
                 subgoals=subs, actions=[act("type", target=FIELD.id, param=param, subgoal=sid)]
@@ -68,6 +68,8 @@ def _value_only(*, sid: str = "s1", param: str = "text") -> World:
         ],
         effects=[report("own_value")],
     )
+    world.intake_on = False  # the audit's own tests: no intake call in the counts
+    return world
 
 
 # ---- A1: every task about to end done is audited ----------------------------------------------

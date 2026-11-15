@@ -21,6 +21,7 @@ from steerai.loop2.loop import (
     AuditView,
     Decided,
     Dispatch,
+    IntakeView,
     Ports,
     TokenUsage,
     TurnView,
@@ -288,6 +289,15 @@ class World:
     """[V2.64] One, [V2.69] One: what the final audit answers (an allow by default, so a task
     that reaches done still ends done for one more call), or the failure it raises."""
     audits: list[AuditView] = field(default_factory=list)
+    intake_reply: Audited | BaseException = field(
+        default_factory=lambda: Audited(
+            sufficient=True, reason="facts_finish_request", usage=TokenUsage(30, 3)
+        )
+    )
+    """[V2.68] One: what the intake check answers (a pass by default), or the failure it raises."""
+    intakes: list[IntakeView] = field(default_factory=list)
+    intake_on: bool = True
+    """False: no intake port (a test of something else that must not pay the intake call)."""
     interrupt_after_audit: bool = False
     """Report `interruption` once the audit has been asked."""
     interrupt_after_settle: bool = False
@@ -460,9 +470,18 @@ class World:
             raise reply
         return reply
 
+    def _intake(self, view: IntakeView) -> Audited:
+        self.events.append("intake")
+        self.intakes.append(view)
+        reply = self.intake_reply
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
     def ports(self) -> Ports:
         return Ports(
             audit=self._audit,
+            intake=self._intake if self.intake_on else None,
             decide=self._decide,
             observe=self._observe,
             act=self._act,

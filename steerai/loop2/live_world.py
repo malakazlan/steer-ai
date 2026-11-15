@@ -44,11 +44,11 @@ from steerai.debug_trace import BufferedDebugSink, DebugSink, NullDebugSink
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.act_guards import GuardDesk, InputGuard, ToggleGuard
 from steerai.loop2.act_port import ActPort
-from steerai.loop2.controller import AUDIT_PROMPT_VERSION, PROMPT_VERSION
+from steerai.loop2.controller import AUDIT_PROMPT_VERSION, INTAKE_PROMPT_VERSION, PROMPT_VERSION
 from steerai.loop2.decide_port import Call, Counter, DecideCalls, TaskGenerations
 from steerai.loop2.listing import LISTING_CAP
 from steerai.loop2.loop import ActResult, Dispatch, PortInterrupted, Ports
-from steerai.loop2.prompt_inputs import make_audit, make_decide
+from steerai.loop2.prompt_inputs import make_audit, make_decide, make_intake
 from steerai.loop2.task import Task
 from steerai.loop2.world_ports import KILL_POLL_S, WorldPorts, WorldTimes, kill_sleep
 from steerai.orchestrator.loop import IDLE_S, WAIT_POLL_S
@@ -906,6 +906,7 @@ class LiveWorld:
             "effort": EFFORT,
             "prompt_version": PROMPT_VERSION,
             "audit_prompt_version": AUDIT_PROMPT_VERSION,  # [V2.69] (packet rev 5 P7)
+            "intake_prompt_version": INTAKE_PROMPT_VERSION,  # [V2.68] One
             "trace_level": self._config.trace_level,
             "price": "not configured" if price is None else "configured",
             "listing_cap": str(LISTING_CAP),
@@ -968,6 +969,7 @@ class LiveWorld:
 
         return Ports(
             audit=make_audit(calls, goal=task.goal, task_fence=self.task_fence),
+            intake=make_intake(calls, goal=task.goal, task_fence=self.task_fence),
             decide=make_decide(
                 calls,
                 goal=task.goal,
