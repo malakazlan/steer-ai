@@ -201,6 +201,8 @@ class DecideRecord:
     calls: int
     repaired: bool
     failed: bool = False
+    rejections: tuple[str, ...] = ()
+    """[V2.67] D: the closed tokens of each attempt that failed, in order."""
 
 
 class ControllerError(Exception):
@@ -791,6 +793,7 @@ def decision_shape(
                 "param": named(a.subgoal, a.param),
                 "text": bool(a.text),
                 "key": a.key,
+                "commit": a.commit,  # [V2.67] D
             }
             for a in decision.actions
         ],
@@ -892,6 +895,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     if on_fit is not None:
         on_fit(listed_ids, cut)
     error: ControllerError | None = None
+    rejected: list[str] = []
     attempts = max_repairs + 1
     if max_calls is not None:  # invariant 9, [V2.69]: never a call past the budget
         attempts = max(1, min(attempts, max_calls))
@@ -905,6 +909,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
             decision = parse(ask_model(system, blocks))
         except ControllerError as err:
             error = err
+            rejected.extend(err.tokens or (err.code,))
             if on_rejected is not None:  # #386: no Decision to shape, only its closed code
                 on_rejected({"turn": turn, "attempt": attempt, "parsed": False,
                              "rejections": list(err.tokens or (err.code,))})  # fmt: skip
@@ -920,13 +925,17 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
         if not tokens:
             if decision.ask is not None:
                 decision = decision.model_copy(update={"ask": ask_text(decision.ask)})
-            return decision, DecideRecord(PROMPT_VERSION, attempt + 1, attempt > 0)
+            record = DecideRecord(
+                PROMPT_VERSION, attempt + 1, attempt > 0, rejections=tuple(rejected)
+            )
+            return decision, record
         error = ControllerError("rejected", tokens)
+        rejected.extend(tokens)
         if on_rejected is not None:  # #386: the rejected Decision's shape, closed tokens only
             shape = decision_shape(decision, known_subgoals=known_subgoals, tokens=tokens,
                                    turn=turn, attempt=attempt)  # fmt: skip
             on_rejected({**shape, "parsed": True})
     calls = attempts
     final = error if error is not None else ControllerError("schema")
-    final.record = DecideRecord(PROMPT_VERSION, calls, calls > 1, True)
+    final.record = DecideRecord(PROMPT_VERSION, calls, calls > 1, True, rejections=tuple(rejected))
     raise final

@@ -985,6 +985,7 @@ class LiveWorld:
             read_value=read_value_here,
             read_state=read_state_here,
             fact_of=world.fact_of,
+            turn_trace=self._write,  # [V2.67] D: each turn, closed, at every trace level
         )
 
     def __enter__(self) -> LiveWorld:

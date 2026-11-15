@@ -206,7 +206,13 @@ def make_decide(
             None if inputs.listing is None else inputs.listing.turn(listed, cut, tokens, first)
         )
         return Decided(
-            decision, usage, listing, exact_counted=spent, estimate_low=low, calls=record.calls
+            decision,
+            usage,
+            listing,
+            exact_counted=spent,
+            estimate_low=low,
+            calls=record.calls,
+            rejections=record.rejections,
         )
 
     return port

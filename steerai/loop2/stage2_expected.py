@@ -282,16 +282,18 @@ def click_opener(cdp: Cdp, opener: Act) -> None:
     exactly once is an `OpenerError`; nothing is typed, submitted or answered."""
     wanted = normalise_name(opener.name)
     role = AX_ROLES[opener.role]
-    nodes = cdp("Accessibility.getFullAXTree", {}).get("nodes", [])
-    found = [
-        n["backendDOMNodeId"]
+    nodes = [
+        n for n in cdp("Accessibility.getFullAXTree", {}).get("nodes", []) if isinstance(n, Mapping)
+    ]
+    matches = [
+        n
         for n in nodes
-        if isinstance(n, Mapping)
-        and not n.get("ignored")
+        if not n.get("ignored")
         and n.get("role", {}).get("value") == role
         and normalise_name(str(n.get("name", {}).get("value", ""))) == wanted
         and isinstance(n.get("backendDOMNodeId"), int)
     ]
+    found = [n["backendDOMNodeId"] for n in _outermost_ax(matches, nodes, role)]
     if not found:
         raise OpenerError("opener_not_found")
     if len(found) > 1:
@@ -312,9 +314,47 @@ def check_table(text: str) -> None:
 def fresh_opened(out: Path, task_id: str) -> Path:
     """#424 (1): an opener attempt's target file, any earlier one removed first, so a later
     unstable or failed reveal never leaves a stale opened read to be rated."""
-    path = opened_read_path(out, task_id)
+    path = out / f"{task_id}.opened.json"  # #428 (1): never the start read's name
     path.unlink(missing_ok=True)
     return path
+
+
+def _outermost_ax(
+    matches: Sequence[Mapping[str, Any]], nodes: Sequence[Mapping[str, Any]], role: str
+) -> list[Mapping[str, Any]]:
+    """#424 (3): the start check's counting rule (`outermost`) on the accessibility tree: a
+    match inside another match is the same element and folds into it, except a tree item (a
+    folder inside a same-named folder is another item)."""
+    if role == "treeitem":
+        return list(matches)
+    parent = {str(n.get("nodeId")): n.get("parentId") for n in nodes}
+    ids = {str(m.get("nodeId")) for m in matches}
+
+    def inside(node: Mapping[str, Any]) -> bool:
+        seen: set[str] = set()
+        up = parent.get(str(node.get("nodeId")))
+        while up is not None and str(up) not in seen:
+            if str(up) in ids:
+                return True
+            seen.add(str(up))
+            up = parent.get(str(up))
+        return False
+
+    return [m for m in matches if not inside(m)]
+
+
+def opener_targets(acts: Mapping[str, SiteRow], task_id: str) -> tuple[Act, ...]:
+    """The targets a task's reveal must show, from its committed acts; a task behind an opener
+    with no acts row is refused (#429: fail closed, never any stable reveal)."""
+    row = acts.get(task_id)
+    if row is None:
+        raise OpenerError("no_acts")
+    return reveal_targets(row)
+
+
+def reveal_targets(row: SiteRow) -> tuple[Act, ...]:
+    """#424 (4): the acts after the opener that name a target: the reveal must show them."""
+    return tuple(a for a in row.acts[1:] if a.verb != "press" and a.role)
 
 
 def opened_read_path(reads: Path, task_id: str) -> Path:
@@ -359,13 +399,14 @@ def _in_page(read: Observed) -> list[Element]:
     return found
 
 
-def wait_revealed(
+def wait_revealed(  # noqa: PLR0913 - the reads, then keyword-only knobs
     read: Callable[[], Observed],
     before: Observed,
     *,
     clock: Callable[[], float],
     sleep: Callable[[float], None],
     limit_s: float = REVEAL_LIMIT_S,
+    targets: Sequence[Act] = (),
 ) -> Revealed | None:
     """The revealed state once it shows the same new elements in the page (by role and name,
     against the read before the click) on two reads in a row within `limit_s`; None when it does
@@ -382,7 +423,8 @@ def wait_revealed(
                 if (e.role, normalise_name(e.name)) not in seen_before
             )
         )
-        if new and new == last:
+        wanted = {(a.role, normalise_name(a.name)) for a in targets if a.role}
+        if new and new == last and wanted <= set(new):  # #424 (4): the row's own target
             roles: dict[str, int] = {}
             for role, _name in new:
                 roles[role] = roles.get(role, 0) + 1
@@ -721,15 +763,21 @@ def save_opened(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live,
 
     out.mkdir(parents=True, exist_ok=True)
     spacer = Spacer(time.monotonic, time.sleep)
+    acted = load_acts(ACTS.read_text(encoding="utf-8")) if ACTS.exists() else {}
     for task in real_site_tasks():
         opener = OPENERS.get(task.task_id)
         if opener is None:
             continue
+        row: dict[str, object] = {"task": task.task_id}
+        path = fresh_opened(out, task.task_id)
+        try:
+            targets = opener_targets(acted, task.task_id)  # before any load
+        except OpenerError as exc:
+            sys.stdout.write(json.dumps({**row, "opener": str(exc)}) + "\n")
+            continue
         host = urllib.parse.urlsplit(task.start).netloc
         spacer.wait(host)
         spacer.loaded(host)
-        row: dict[str, object] = {"task": task.task_id}
-        path = fresh_opened(out, task.task_id)
         try:
             with live_page(task.start, floor_mb=floor_mb, settle_s=6.0) as page:
                 reply = page.cdp.call(
@@ -744,6 +792,7 @@ def save_opened(out: Path, *, floor_mb: int) -> int:  # pragma: no cover - live,
                     before,
                     clock=time.monotonic,
                     sleep=time.sleep,
+                    targets=targets,
                 )
         except LowMemory as refused:
             sys.stdout.write(json.dumps({**row, "refused": str(refused)}) + "\n")

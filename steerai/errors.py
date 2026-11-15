@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Final
 
 
 class ErrorCode(StrEnum):
@@ -25,6 +26,53 @@ class ErrorCode(StrEnum):
     WINDOW_OTHER_DESKTOP = "window_other_desktop"
     BUDGET_EXCEEDED = "budget_exceeded"
     INVALID_TEXT = "invalid_text"
+
+
+DETAIL_USAGE: Final = "usage"
+DETAIL_LOOP_V2_NOT_READY: Final = "loop_v2_not_ready"
+DETAIL_NO_MATCH: Final = "no_match"
+DETAIL_AMBIGUOUS_TARGET: Final = "ambiguous_target"
+DETAIL_MINIMIZED: Final = "minimized"
+DETAIL_CLOAK_UNREADABLE: Final = "cloak_unreadable"
+WORLD_START_DETAILS: Final = frozenset(
+    {
+        "com_apartment",
+        "dpi_context",
+        "foreground_refused",
+        "identity_unread",
+        "monitor_unavailable",
+        "not_in_front",
+        "nudge_refused",
+        "page_hidden",
+        "person_active",
+        "restore_failed",
+        "session_mutex_unavailable",
+        "steer_already_running",
+        "trace_needs_dpapi",
+        "uia_unavailable",
+        "window_changed",
+        "window_covered",
+        "window_unreadable",
+        "write_ahead_in_step_3",
+        "wrong_thread",
+    }
+)
+"""#438: the closed messages the v2 world refuses its start with (`loop2.live_world`; a test
+holds every literal it raises to this set, so a new one is added here first)."""
+START_DETAILS: Final = frozenset(
+    {
+        DETAIL_USAGE,
+        DETAIL_LOOP_V2_NOT_READY,
+        DETAIL_NO_MATCH,
+        DETAIL_AMBIGUOUS_TARGET,
+        DETAIL_MINIMIZED,
+        DETAIL_CLOAK_UNREADABLE,
+        *WORLD_START_DETAILS,
+    }
+)
+"""The closed details a refused start's line carries (`cli.py`, `run.py`), as the emitters use
+them; a stage report keeps these and drops any other detail (#429). A price-file or IME message
+is free text and stays out."""
 
 
 class SteerError(Exception):
