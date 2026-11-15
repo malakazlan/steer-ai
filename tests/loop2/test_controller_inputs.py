@@ -113,7 +113,12 @@ class Provider:
 
 
 def _port(provider: Provider) -> DecideCalls:
-    return DecideCalls(provider, interrupted=lambda: None, generations=TaskGenerations())
+    return DecideCalls(
+        provider,
+        interrupted=lambda: None,
+        generations=TaskGenerations(),
+        late_error=lambda _t: None,
+    )
 
 
 def test_the_port_returns_the_decision_and_the_turns_usage() -> None:

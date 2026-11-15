@@ -300,7 +300,12 @@ def test_a_hostile_name_acted_on_never_reaches_the_history() -> None:
     assert all(HISTORY.fullmatch(t) for t in view.history)
     assert not set(HOSTILE) & set(history)
     provider = _Provider()
-    calls = DecideCalls(provider, interrupted=lambda: None, generations=TaskGenerations())
+    calls = DecideCalls(
+        provider,
+        interrupted=lambda: None,
+        generations=TaskGenerations(),
+        late_error=lambda _t: None,
+    )
     make_decide(calls, goal=task().goal, task_fence="taskfence01")(view)
     log_block = provider.blocks[0][1]
     assert not set(HOSTILE) & set(log_block)
@@ -337,3 +342,30 @@ def test_the_effect_tokens_reach_the_action_line() -> None:
     (entry,) = [e for e in world.views[-1].log if isinstance(e, LogEntry)]
     assert entry.tokens == ("rerendered", "unknown:unstable")
     assert entry.token().endswith(":content_changed:rerendered.unknown:unstable")
+
+
+def test_an_unread_read_back_is_marked_on_the_action_line() -> None:
+    typed = act("type", target=FIELD.id, param="text")
+    world = World([decision(typed, first=True)], effects=[report("own_value")], read_backs=[None])
+    run_task(task(), world.ports())
+    (entry,) = [e for e in world.views[-1].log if isinstance(e, LogEntry)]
+    assert entry.read_back == "unread"
+    assert entry.token().endswith(":read_back_unread")
+
+
+def test_the_log_reaches_the_controller_as_written() -> None:
+    world = World([decision(act("click", target=GO.id), first=True)], effects=[report("own_state")])
+    run_task(task(), world.ports())
+    view = world.views[-1]
+    provider = _Provider()
+    calls = DecideCalls(
+        provider,
+        interrupted=lambda: None,
+        generations=TaskGenerations(),
+        late_error=lambda _t: None,
+    )
+    make_decide(calls, goal=task().goal, task_fence="taskfence01")(view)
+    lines = provider.blocks[0][1].split(chr(10))
+    handle = view.handles[GO.id]
+    assert lines[0] == "action log:"
+    assert lines[1].startswith(f"1 click handle={handle} role=button subgoal=s1 param=- ")
