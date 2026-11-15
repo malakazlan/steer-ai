@@ -349,6 +349,7 @@ def _config(**changes: Any) -> LiveConfig:
         generations=TaskGenerations(),
         clock=clock,
         pause=clock.pause,
+        gap_clock=clock,  # one fake clock for the world and the gap (#398 HH4-05)
     )
     return dataclasses.replace(config, **changes)
 
