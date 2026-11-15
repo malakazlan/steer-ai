@@ -830,7 +830,11 @@ def test_the_reach_arm_scripts_the_insufficient_set_and_the_judge_sees_it() -> N
     record = run_chain(SHAPES["g23"], index=0, provider=provider, arm="reach")
     assert record.arm == "reach"
     assert record.declared[0] == ("value",)
-    assert [j.verdict for j in record.judges] == ["vetoed"], (record.status, record.reason, provider.calls)
+    assert [j.verdict for j in record.judges] == ["vetoed"], (
+        record.status,
+        record.reason,
+        provider.calls,
+    )
     assert provider.prompts
     assert "none yet" not in provider.prompts[0]  # the first model call already had the set
     assert ending("must_veto", record) == "ok"
