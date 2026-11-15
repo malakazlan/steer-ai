@@ -44,7 +44,7 @@ def _system() -> list[str]:
 
 
 def test_the_prompt_version_moved() -> None:
-    assert PROMPT_VERSION == "controller-11"
+    assert PROMPT_VERSION == "controller-12"
 
 
 def test_a_rule_says_param_is_a_subgoal_params_name_never_its_words() -> None:
