@@ -52,6 +52,7 @@ RunnerRefusal = Literal[
     "field_not_empty",
     "focus_needs_field",
     "id_not_listed",
+    "intake_insufficient",
     "not_delivered",
     "not_own_text",
     "press_not_at_focus",

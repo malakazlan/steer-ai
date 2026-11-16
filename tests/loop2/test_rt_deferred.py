@@ -524,15 +524,17 @@ def test_an_empty_listing_of_a_gone_window_is_infrastructure() -> None:
 
 def test_a_step_limit_refusal_stands_through_progress_on_its_subgoal() -> None:
     """[V2.42] RT-30: the step-limit refusal attaches to the subgoal of the refused action (the
-    `open`), and a later click's progress does not clear it."""
+    `open`), and a later click's progress does not clear it. Intake packet rev 5 §4 P2: the
+    refused first Decision freezes nothing, so the next turn re-declares the same subgoal."""
+    subgoals = [{"id": "s1", "desc": "x", "params": {"text": "shop"}, "closes": "state"}]
     first = Decision.model_validate(
-        {
-            "subgoals": [{"id": "s1", "desc": "x", "params": {"text": "shop"}, "closes": "state"}],
-            "actions": [{"verb": "open", "subgoal": "s1"}],
-        }
+        {"subgoals": subgoals, "actions": [{"verb": "open", "subgoal": "s1"}]}
+    )
+    again = Decision.model_validate(
+        {"subgoals": subgoals, "actions": [{"verb": "click", "target": GO.id, "subgoal": "s1"}]}
     )
     world = World(
-        [first, decision(act("click", target=GO.id)), Decision(stop="cannot")],
+        [first, again, Decision(stop="cannot")],
         effects=[report("content_changed")],
     )
     outcome = run_task(task(), world.ports())

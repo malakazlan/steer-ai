@@ -598,9 +598,21 @@ def test_a_wrong_target_shape_is_a_model_fault() -> None:
 
 
 def test_a_policy_refusal_after_a_model_fault_decides_the_status() -> None:
-    world = World([decision(UNLISTED_CLICK, first=True), decision(SECURE_TYPE)])
+    """The status precedence: a policy refusal after a model fault decides the status. Intake
+    packet rev 5 §4 P2: a refused first Decision freezes nothing, so the next turn re-declares
+    its subgoals before it meets the policy refusal."""
+    world = World([decision(UNLISTED_CLICK, first=True), decision(SECURE_TYPE, first=True)])
     outcome = run_task(task(), world.ports())
     assert (outcome.status, outcome.reason) == ("blocked", "secure_field")
+
+
+def test_a_refused_first_decision_freezes_nothing() -> None:
+    """Intake packet rev 5 §4 P2: subgoals freeze only after `validate` (and the intake check)
+    pass; the next turn is still an intake turn, so one without subgoals is `subgoals_missing`."""
+    world = World([decision(UNLISTED_CLICK, first=True), decision(act("wait"))])
+    run_task(task(), world.ports())
+    assert world.views[1].first_turn
+    assert "refused:subgoals_missing" in world.views[-1].history
 
 
 def test_a_policy_refusal_stands_over_a_later_model_fault() -> None:

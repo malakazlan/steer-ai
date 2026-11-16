@@ -490,7 +490,8 @@ def _live_local(  # pragma: no cover - live
             except (InvalidRun, OSError, RuntimeError, ValueError):
                 check, log_read = None, False
             return RunRecord(task.task_id, run, ran.final, True, log_read, check, None,
-                             killed=ran.killed, code=ran.code, memory=memory)  # fmt: skip
+                             killed=ran.killed, code=ran.code, memory=memory,
+                             kill_failure=ran.kill_failure)  # fmt: skip
     except (InvalidRun, OSError, TimeoutError, RuntimeError):
         return RunRecord(task.task_id, run, None, False, False, None, None)
 
