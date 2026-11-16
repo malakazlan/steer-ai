@@ -338,6 +338,16 @@ def _summed(usages: list[TokenUsage | None]) -> TokenUsage | None:
     )
 
 
+def _cached_system(system: list[str]) -> list[dict[str, object]]:
+    """#484: the system blocks, the last one marked cacheable. Every judge's system blocks (its
+    rules, then its schema) are identical on every call of that judge and come before all per-turn
+    content, so the one marker ends the fixed prefix. The text is sent as built."""
+    blocks: list[dict[str, object]] = [{"type": "text", "text": s} for s in system]
+    if blocks:
+        blocks[-1]["cache_control"] = {"type": "ephemeral"}
+    return blocks
+
+
 def anthropic_call(
     client: Any,  # Any: the SDK's `Anthropic` client, or a double with `.messages.create`
     *,
@@ -354,7 +364,7 @@ def anthropic_call(
             response = client.messages.create(
                 model=model,
                 max_tokens=max_tokens,
-                system=[{"type": "text", "text": s} for s in system],
+                system=_cached_system(system),
                 messages=[
                     {"role": "user", "content": [{"type": "text", "text": b} for b in blocks]}
                 ],

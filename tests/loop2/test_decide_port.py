@@ -637,7 +637,7 @@ def test_the_provider_call_sends_v1s_model_and_effort_and_reads_text_and_usage()
     assert messages.kwargs["max_tokens"] == 4096
     assert messages.kwargs["system"] == [
         {"type": "text", "text": "rules"},
-        {"type": "text", "text": "schema"},
+        {"type": "text", "text": "schema", "cache_control": {"type": "ephemeral"}},
     ]
     assert messages.kwargs["messages"] == [
         {
@@ -729,7 +729,7 @@ def test_a_failed_call_counts_as_a_model_call_with_usage_incomplete() -> None:
 
 
 def test_a_controller_failure_after_calling_counts_the_call() -> None:
-    error = ControllerError("not_json", record=DecideRecord("controller-12", 2, True, True))
+    error = ControllerError("not_json", record=DecideRecord("controller-13", 2, True, True))
     world = World([], decide_raises=error)
     outcome = run_task(task(), world.ports())
     assert (outcome.status, outcome.reason) == ("stopped", "port_not_json")

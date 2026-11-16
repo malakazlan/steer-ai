@@ -66,7 +66,7 @@ PolicyRefusal = Literal["secure_field", "secure_unread", "text_changed"]
 """The type and risk rules' refusals (`loop.type_refusal`, `RiskVerdict.refusal`)."""
 RunnerClaim = Literal[
     "evidence_reused", "kind_mismatch", "param_missing", "standard_only", "words_missing",
-    "accepted",
+    "evidence_taken", "accepted",
 ]  # fmt: skip
 """The runner's own claim results: `_refused`'s refusals, and a param proof held (`accepted`)."""
 RefusalWord = ValidateToken | RunnerRefusal | PolicyRefusal | StrictRefusal | CommitToken

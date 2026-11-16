@@ -344,7 +344,8 @@ def test_an_exception_while_tracing_is_counted_and_never_loses_the_outcome(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """#444: the turn the task ends in is traced inside `_outcome`; a failure there is counted
-    as a dropped record and the outcome is still returned."""
+    and the outcome is still returned. #463 (1): an exception is a trace error, counted apart
+    from a record the no-free-text check dropped, so a bug is never hidden as a drop."""
 
     def broken(_facts: TurnTrace) -> dict[str, Any]:  # Any: JSON
         raise RuntimeError("a bug in the trace")
@@ -354,13 +355,38 @@ def test_an_exception_while_tracing_is_counted_and_never_loses_the_outcome(
     written: list[dict[str, Any]] = []  # Any: JSON
     outcome = run_task(task(), dataclasses.replace(world.ports(), turn_trace=_into(written)))
     assert written == []
-    assert outcome.turn_trace_dropped >= 1
+    assert outcome.turn_trace_errors >= 1
+    assert outcome.turn_trace_dropped == 0
     assert outcome.status in {"done", "blocked", "paused", "stopped", "cannot"}
+
+
+def test_an_exception_from_the_sink_is_counted_as_a_trace_error() -> None:
+    """#463 (3): the sink's own failure, not only `turn_record`'s."""
+
+    def failing(_record: Mapping[str, object]) -> None:
+        raise OSError("the trace file is gone")
+
+    world = World([decision(act("click", target=GO.id), first=True)])
+    outcome = run_task(task(), dataclasses.replace(world.ports(), turn_trace=failing))
+    assert outcome.turn_trace_errors >= 1
+    assert outcome.turn_trace_dropped == 0
+
+
+def test_a_keyboard_interrupt_from_the_sink_propagates() -> None:
+    """#463 (2): only an `Exception` is counted; an interrupt is never swallowed."""
+
+    def interrupted(_record: Mapping[str, object]) -> None:
+        raise KeyboardInterrupt
+
+    world = World([decision(act("click", target=GO.id), first=True)])
+    with pytest.raises(KeyboardInterrupt):
+        run_task(task(), dataclasses.replace(world.ports(), turn_trace=interrupted))
 
 
 def test_no_trace_work_is_done_without_a_sink(monkeypatch: pytest.MonkeyPatch) -> None:
     """#444: with no trace port the decision's shape, the positional history and the proof
-    attempts are never built (the hot path)."""
+    attempts are never built (#463 (4): the time saved is unmeasured; the test pins only that
+    the work is skipped)."""
 
     def never(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("trace work without a sink")

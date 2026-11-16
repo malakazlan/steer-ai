@@ -13,6 +13,7 @@ from steerai.action.execution import RefusalError
 from steerai.action.physical import PhysicalAction
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.act_guards import GuardDesk, InputGuard
+from steerai.loop2.act_port import FOCUS_READ_S
 from steerai.loop2.loop import ActResult, PortInterrupted
 from steerai.loop2.runner import run_task
 from steerai.loop2.task import Budgets
@@ -48,6 +49,7 @@ from tests.loop2.test_act_port import (
 from tests.loop2.test_rt_deferred import GOOD
 from tests.loop2.world_fakes import (
     FIELD,
+    GO,
     QUERY_PAGE,
     World,
     act,
@@ -343,6 +345,20 @@ def test_a_tree_item_collapse_by_click_is_deferred_too() -> None:
     result = rig.port.act(_dispatch("collapse", ROW))
     assert result.action.evidence["detail"] == "expand_needs_click"
     assert rig.physical.calls == []
+
+
+# ---- T09: the focus poll ends at exactly FOCUS_READ_S --------------------------------------------
+
+
+def test_the_focus_poll_ends_at_exactly_the_read_window() -> None:
+    """The poll stops when `FOCUS_READ_S` has passed (inclusive): the clock is set to exact
+    binary steps so the elapsed time lands on the boundary with no float drift."""
+    rig = _port(physical=Executor(ok("click")), desk=Desk(focus=GO.runtime_id))
+    step = FOCUS_READ_S / 2
+    rig.clock.on_pause = lambda: setattr(rig.clock, "now", step * len(rig.clock.pauses))
+    result = rig.port.act(_dispatch("focus", FIELD))
+    assert result.read_back is False
+    assert len(rig.clock.pauses) == 2
 
 
 # ---- the kill switch at every input call, swept over v1's real PhysicalExecutor ------------------

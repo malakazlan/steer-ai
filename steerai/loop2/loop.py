@@ -515,12 +515,24 @@ class TaskOutcome:
     """[V2.51] (5): types refused because the field already held text (`field_not_empty`)."""
     not_own_text: int = 0
     """[V2.51] (5): Backspaces refused on a field holding no pending text of Steer's."""
+    evidence_taken: int = 0
+    """[V2.73]: value or state claims refused because their element is already the evidence of
+    another, closed subgoal of the same kind sharing a span (`evidence_taken`)."""
+    rebased_open: int = 0
+    """[V2.74] (#475): non-commit subgoals that another subgoal's close through a model claim
+    rebased (`_rebase`) and that were still open when the task ended. An auto-proof close does
+    not count."""
+    rebased_open_commit: int = 0
+    """[V2.76]: as `rebased_open`, for commit subgoals (the auto proof never closes them)."""
     history_dropped: int = 0
     """[V2.47]: history lines off the history vocabulary (`history_line_ok`): dropped, never
     shown."""
     turn_trace_dropped: int = 0
     """[V2.67] D: turn records that failed the no-free-text check (`turn_trace.closed`): dropped,
     never written in part, and counted so a gap in the trace never reads as a clean run."""
+    turn_trace_errors: int = 0
+    """#463 (1): turns whose record could not be built or written (an exception in
+    `turn_record` or the sink): counted apart from the drops, so a bug is never hidden as one."""
     wall_s: float = 0.0
     """7b: the task's wall time on the ports' clock, start to end (use against `max_wall_s`)."""
     cost_usd: float | None = None
