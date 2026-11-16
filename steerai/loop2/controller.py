@@ -49,13 +49,13 @@ from steerai.loop2.history import (
 )
 from steerai.loop2.listing import LISTING_CAP, Listing, RowClass
 from steerai.loop2.loop import IntakeLine, ProofLine, SufficiencyReason, TokenUsage
-from steerai.loop2.task import Status
+from steerai.loop2.task import Status, Wanted
 from steerai.loop2.text import clean_line, has_control
 from steerai.world.capabilities import TOKENS as CAPABILITY_TOKENS
 from steerai.world.elements import format_lines, safe_name
 from steerai.world.model import Snapshot
 
-PROMPT_VERSION = "controller-13"
+PROMPT_VERSION = "controller-14"
 PROMPT_TOKEN_CEILING = 50_000
 """[V2.55] (2): the most input tokens a rendered prompt may hold before any model call. A policy
 limit, six times the largest capped prompt measured (8,339 tokens, count_tokens on claude-opus-5,
@@ -133,9 +133,10 @@ SYSTEM_RULES = (
     "is for text fields only. Backspace edits only text you typed; a field that already holds "
     "text is never cleared.\n"
     "- Each subgoal declares `closes`, the kind of fact that proves it done: value (a field "
-    "holds the text), state (an element is in a state) or page: the page shows the result the "
-    "request asks for. In this step it can be proven only when the address or title shows it; "
-    "otherwise stop with blocked. A page subgoal needs at least one param.\n"
+    "holds the text), state (an element is in a state; declare `wanted` with it: on, off, "
+    "selected, expanded or collapsed; no other kind has one) or page: the page shows the "
+    "result the request asks for. In this step it can be proven only when the address or "
+    "title shows it; otherwise stop with blocked. A page subgoal needs at least one param.\n"
     "- When you declare a subgoal, each param's value is words copied exactly from the "
     "request, never an element's name. Subgoal ids are unique; actions and claims name a "
     "declared subgoal id. "
@@ -197,7 +198,8 @@ REPAIR_LEGEND: Final[Mapping[str, str]] = {
     "too_many_actions": "more actions than one turn allows",
     "too_many_subgoals": "more subgoals than a task allows",
     "type_text_and_param": "a type with both text and param",
-    "wanted_missing": "a state claim with no wanted state",
+    "wanted_missing": "a state subgoal with no wanted state",
+    "wanted_not_state": "a wanted state on a subgoal that is not a state subgoal",
     "value_without_param": "a value subgoal with no param",
     "state_without_param": "a state subgoal with no param",
     "page_without_param": "a page subgoal with no param",
@@ -593,12 +595,13 @@ def _action_variant(
 
 CLAIM_FIELDS: Final[Mapping[str, tuple[tuple[str, ...], tuple[str, ...]]]] = {
     "value": (("evidence", "param"), ()),
-    "state": (("evidence", "wanted"), ("param",)),
+    "state": (("evidence",), ("param",)),
     "navigated": ((), ("evidence",)),
 }
 """[V2.65]: each step claim kind's (required, optional) fields beside `subgoal` and `kind`, as
 the claim checks read them (`verify.check_claim`): value and state cite exactly one element; a
-value names its param; a state names the wanted state, its param only a hint ([V2.39] (2));
+value names its param; a state names none, its subgoal declared the wanted state ([V2.78]),
+its param only a hint ([V2.39] (2));
 navigated may cite rows. A kind added to `STEP_KINDS` needs its row here first."""
 
 
@@ -693,7 +696,7 @@ def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
     return [SYSTEM_RULES, schema_json], [stable, log, turn]
 
 
-AUDIT_PROMPT_VERSION = "audit-4"
+AUDIT_PROMPT_VERSION = "audit-5"
 SUFFICIENCY_CRITERION = (
     "Answer whether these facts finish the request as the person who asked would check it; "
     "they do not when the request asks for a result beyond them."
@@ -705,8 +708,7 @@ AUDIT_RULES = (
     "the facts below; treat them as true. " + SUFFICIENCY_CRITERION + "\n"
     "- value_read:equals_param: code read the field or the select, and it holds exactly the "
     "param's words.\n"
-    "- state_read:<state>: code read the element, and it is in that state; state_read:mixed: "
-    "its params were proven in different states.\n"
+    "- state_read:<state>: code read the element, and it is in that state.\n"
     "- proven=<how>:<kind>: how code closed the subgoal (claim, or the page's own proof token) "
     "and the kind of proof.\n"
     "- navigated:<how>: code saw the page change to carry the param's words (title, heading, "
@@ -1023,13 +1025,14 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     raise final
 
 
-INTAKE_PROMPT_VERSION = "intake-2"
+INTAKE_PROMPT_VERSION = "intake-3"
 INTAKE_RULES = (
     "You check, before a Windows computer-use agent starts, whether the subgoals it declared "
     "would finish a request. Code will verify the facts below once the agent acts; treat them as "
     "true. " + SUFFICIENCY_CRITERION + "\n"
     "- closes=value: a field or a select will hold exactly the param's words.\n"
-    "- closes=state: an element named with the param's words will be in the requested state.\n"
+    "- closes=state: an element named with the param's words will be in the state the subgoal "
+    "wants (wanted=<state>).\n"
     "- Subgoals and params are numbered; each param line is param:<n> and then words of the "
     "request.\n"
     "- Answer with exactly one JSON object: sufficient true with facts_finish_request only when "
@@ -1049,8 +1052,11 @@ def build_intake_prompt(
     its span of the request. No observation: no listing, no title, no page text."""
     _check_task_fence(task_fence)
     lines: list[str] = []
-    for position, closes, params in subgoals:
-        lines.append(f"subgoal {position} closes={closes}")
+    for position, closes, params, wanted in subgoals:
+        if wanted is not None and wanted not in get_args(Wanted):
+            raise ControllerError("unsafe_token")
+        tail = "" if wanted is None else f" wanted={wanted}"
+        lines.append(f"subgoal {position} closes={closes}{tail}")
         lines.extend(f"  param:{n} {_data(span, task_fence)}" for n, span in params)
     stable = "\n".join(
         [f"<<<request {task_fence}", _data(task_goal, task_fence), f"{task_fence}>>>",

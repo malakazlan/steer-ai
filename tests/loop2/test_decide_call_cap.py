@@ -15,7 +15,7 @@ BAD = json.dumps(
     {
         "subgoals": [
             {"id": "expand_the_shipping_policy", "desc": "x", "closes": "state",
-             "params": {"name": "Shipping policy"}}
+             "wanted": "expanded", "params": {"name": "Shipping policy"}}
         ],
         "actions": [{"verb": "expand", "target": 1, "subgoal": "expand_the_shipping_policy"}],
     }

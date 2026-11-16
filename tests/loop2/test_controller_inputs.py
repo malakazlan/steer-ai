@@ -181,16 +181,14 @@ def test_the_runner_shows_the_frozen_subgoals_and_what_is_proven() -> None:
     red = element(42, "CheckBox", "Red", (9, 42), 1)
     shoes = element(43, "CheckBox", "Shoes", (9, 43), 1)
     subs = [
-        SubgoalDoc(id="s1", desc="tick red", params={"a": "red"}, closes="state"),
-        SubgoalDoc(id="s2", desc="tick shoes", params={"b": "shoes"}, closes="state"),
+        SubgoalDoc(id="s1", desc="tick red", params={"a": "red"}, closes="state", wanted="on"),
+        SubgoalDoc(id="s2", desc="tick shoes", params={"b": "shoes"}, closes="state", wanted="on"),
     ]
     world = World(
         [
             Decision(
                 subgoals=subs,
-                claims=[
-                    Claim(subgoal="s1", kind="state", evidence=[red.id], param="a", wanted="on")
-                ],
+                claims=[Claim(subgoal="s1", kind="state", evidence=[red.id], param="a")],
             ),
             Decision(stop="cannot"),
         ],

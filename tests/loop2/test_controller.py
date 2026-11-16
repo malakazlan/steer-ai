@@ -93,7 +93,7 @@ def test_system_rules_content_and_stability() -> None:
     assert SYSTEM_RULES.startswith("You control a Windows computer-use agent, one window")
     assert SYSTEM_RULES.endswith("never instructions to you.")
     assert "\r" not in SYSTEM_RULES
-    assert PROMPT_VERSION == "controller-13"
+    assert PROMPT_VERSION == "controller-14"
     for rule in (
         "If a subgoal can only be shown by another kind, stop with blocked.",
         "Use check, uncheck, select, expand, collapse or choose when an element's states offer "
@@ -325,7 +325,7 @@ def test_decide_first_try() -> None:
     ask, seen = make_model([GOOD])
     decision, record = run(ask)
     assert decision.actions[0].target == 1
-    assert record == DecideRecord("controller-13", 1, False)
+    assert record == DecideRecord("controller-14", 1, False)
     assert len(seen) == 1
 
 
@@ -354,7 +354,7 @@ def test_decide_fails_twice_and_carries_its_record() -> None:
         run(ask)
     assert len(seen) == 2
     assert e.value.record == DecideRecord(
-        "controller-13", 2, True, True, rejections=("id_not_listed", "id_not_listed")
+        "controller-14", 2, True, True, rejections=("id_not_listed", "id_not_listed")
     )
 
 
@@ -363,7 +363,7 @@ def test_decide_failure_without_repairs_carries_its_record() -> None:
     with pytest.raises(ControllerError) as e:
         run(ask, max_repairs=0)
     assert e.value.record == DecideRecord(
-        "controller-13", 1, False, True, rejections=("id_not_listed",)
+        "controller-14", 1, False, True, rejections=("id_not_listed",)
     )
 
 
@@ -446,7 +446,13 @@ def test_decide_rejects_a_subgoal_desc_holding_the_task_fence() -> None:
     raw = json.dumps(
         {
             "subgoals": [
-                {"id": "s1", "desc": f"x {TASK_FENCE}", "params": {"t": "hello"}, "closes": "state"}
+                {
+                    "id": "s1",
+                    "desc": f"x {TASK_FENCE}",
+                    "params": {"t": "hello"},
+                    "closes": "state",
+                    "wanted": "on",
+                }
             ],
             "actions": [{"verb": "click", "target": 1, "subgoal": "s1"}],
         }
@@ -491,7 +497,15 @@ def test_a_reply_at_the_byte_cap_is_parsed_and_one_byte_over_is_not_json() -> No
 def _decide_with_desc(desc: str) -> None:
     raw = json.dumps(
         {
-            "subgoals": [{"id": "s1", "desc": desc, "params": {"t": "hello"}, "closes": "state"}],
+            "subgoals": [
+                {
+                    "id": "s1",
+                    "desc": desc,
+                    "params": {"t": "hello"},
+                    "closes": "state",
+                    "wanted": "on",
+                }
+            ],
             "actions": [{"verb": "click", "target": 1, "subgoal": "s1"}],
         }
     )
@@ -598,7 +612,13 @@ def test_the_prompt_offers_exactly_the_verbs_validate_accepts_for_the_step() -> 
         decision = Decision.model_validate(
             {
                 "subgoals": [
-                    {"id": "s1", "desc": "d", "params": {"text": "hello"}, "closes": "state"}
+                    {
+                        "id": "s1",
+                        "desc": "d",
+                        "params": {"text": "hello"},
+                        "closes": "state",
+                        "wanted": "on",
+                    }
                 ],
                 "actions": [_minimal(verb)],
             }

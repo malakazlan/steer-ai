@@ -352,9 +352,10 @@ class Audited:
     usage: TokenUsage | None = None
 
 
-IntakeLine = tuple[int, str, tuple[ProofParam, ...]]
+IntakeLine = tuple[int, str, tuple[ProofParam, ...], str | None]
 """[V2.68] One, packet rev 5 §4: one declared subgoal for the intake check, by position, never
-its id: (position, closes, params by sorted position with their spans of the request)."""
+its id: (position, closes, params by sorted position with their spans of the request, [V2.78]
+the wanted state a state subgoal declared, else None)."""
 
 
 @dataclass(frozen=True)

@@ -22,28 +22,28 @@ PINS: dict[str, tuple[Prompt, list[str]]] = {
     "decide_first_turn": (
         lambda: c.build_prompt("g", [], [], [], "t", [], task_fence=FENCE, screen_fence=SCREEN),
         [
-            "d3b04209ffc57da87d088347b475757d16d7445cc0ce5689b16a3fb6d73e6de5",
-            "89867d6c0d0313ac22bd5710ed660628f96cedd64a74b16fb2298639085dd7c0",
+            "4531e697253a877ef7b8f3145ae77c61092465ce3be6f8c83c0b1eb9d75c5603",
+            "54a6ebf9a8b041849256e594809091837ed92a160627de58800c12aae4f36dd8",
         ],
     ),
     "decide_later_turn": (
         lambda: c.build_prompt("g", ["s"], [], [], "t", [], task_fence=FENCE, screen_fence=SCREEN),
         [
-            "d3b04209ffc57da87d088347b475757d16d7445cc0ce5689b16a3fb6d73e6de5",
-            "fd96e791e7eb6fe8127261045310cf223ff7ecb2f8fe3da655fb05b55e608523",
+            "4531e697253a877ef7b8f3145ae77c61092465ce3be6f8c83c0b1eb9d75c5603",
+            "c690da9591b6a17390c491bd30f3ef9547b56c7b431e11d8e5d3b5948f68c5a7",
         ],
     ),
     "intake": (
         lambda: c.build_intake_prompt("g", [], task_fence=FENCE),
         [
-            "c5c7f2a04991b863cbbd7e666d0a96ea974cd15b4720d120a28b5a09a2181ef3",
+            "d9ae68b1fcbed9c81c27f133848b564023445f6a8d85a906528dd66f25aae15d",
             "d5a3af9cb3f90d3f9fbb3155c26dcbd4c9cfb22a5e9018c773f4cc6a9ae7d21a",
         ],
     ),
     "audit": (
         lambda: c.build_audit_prompt("g", [], "t", [], task_fence=FENCE, screen_fence=SCREEN),
         [
-            "cfe44de6b8ac153f877bb22363154cc2e245ca0f379bc4f666a194cb831575b9",
+            "4a7196a4ae75bb64eadc5aec748de109d71168149194b259c330db982f53cbc4",
             "d5a3af9cb3f90d3f9fbb3155c26dcbd4c9cfb22a5e9018c773f4cc6a9ae7d21a",
         ],
     ),

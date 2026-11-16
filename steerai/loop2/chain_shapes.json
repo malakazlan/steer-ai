@@ -1,5 +1,5 @@
 {
-  "note": "Intake packet rev 5 section 8 (pre-registered 2026-11-15) and [V2.71], [V2.73] (2026-11-16): the chain-eval shapes, verbatim; each must-veto shape's reach is the scripted first Decision of its reach arm and names the judge it measures (intake: an insufficient value or state set; audit: a set the intake check does not cover, or covers rightly, that code can prove); intake_truth is whether a declared set finishes the request, keyed by closing kind and the param's words per subgoal in order (kind:words, comma-joined); a set not named is unknown; wrong_field is [V2.72]'s right words in the wrong field.",
+  "note": "Intake packet rev 5 section 8 (pre-registered 2026-11-15) and [V2.71], [V2.73] (2026-11-16): the chain-eval shapes, verbatim; each must-veto shape's reach is the scripted first Decision of its reach arm and names the judge it measures (intake: an insufficient value or state set; audit: a set the intake check does not cover, or covers rightly, that code can prove); intake_truth is whether a declared set finishes the request, keyed by closing kind and the param's words per subgoal in order (kind:words, comma-joined; a state subgoal declares its wanted state, so its kind is state=<wanted>); a set not named is unknown; wrong_field is [V2.72]'s right words in the wrong field.",
   "pilot": [
     "g22",
     "select",
@@ -61,7 +61,9 @@
         }
       ],
       "intake_truth": {
-        "value:Kenya": true
+        "value:Kenya": true,
+        "state=selected:Kenya": true,
+        "state=off:Kenya": false
       }
     },
     {
@@ -82,7 +84,11 @@
         {
           "on": "Dark mode"
         }
-      ]
+      ],
+      "intake_truth": {
+        "state=on:Dark mode": true,
+        "state=off:Dark mode": false
+      }
     },
     {
       "id": "g23",
@@ -188,6 +194,7 @@
         "subgoals": [
           {
             "closes": "state",
+            "wanted": "on",
             "params": {
               "what": "Dark mode"
             }
@@ -233,7 +240,8 @@
             "closes": "state",
             "params": {
               "what": "Dark mode"
-            }
+            },
+            "wanted": "on"
           }
         ],
         "actions": [
@@ -263,6 +271,9 @@
           ]
         },
         "intake": "forced_allow"
+      },
+      "intake_truth": {
+        "state=on:Dark mode": false
       }
     },
     {
@@ -423,7 +434,9 @@
         }
       ],
       "intake_truth": {
-        "value:Kenya": true
+        "value:Kenya": true,
+        "state=selected:Kenya": true,
+        "state=off:Kenya": false
       },
       "reach": {
         "judge": "audit",
@@ -432,7 +445,8 @@
             "closes": "state",
             "params": {
               "what": "Kenya"
-            }
+            },
+            "wanted": "selected"
           }
         ],
         "actions": [
@@ -455,8 +469,7 @@
               {
                 "kind": "state",
                 "control": "Billing/Kenya",
-                "param": "what",
-                "wanted": "selected"
+                "param": "what"
               }
             ]
           }
@@ -528,7 +541,11 @@
         {
           "on": "Remember this device"
         }
-      ]
+      ],
+      "intake_truth": {
+        "state=on:Remember this device": true,
+        "state=off:Remember this device": false
+      }
     },
     {
       "id": "heldout_non_english",
@@ -549,7 +566,11 @@
         {
           "on": "Dunkelmodus"
         }
-      ]
+      ],
+      "intake_truth": {
+        "state=on:Dunkelmodus": true,
+        "state=off:Dunkelmodus": false
+      }
     },
     {
       "id": "heldout_injection",

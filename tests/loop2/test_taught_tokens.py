@@ -132,7 +132,16 @@ TAUGHT: Final[Mapping[str, Taught]] = {
     "target_on_untargeted_verb": _omits("Action_press", "target"),
     "text_missing": _type_text_or_param,
     "type_text_and_param": ("rule", "A `type` gives `param` or `text`, never both."),
-    "wanted_missing": _requires("Claim_state", "wanted"),
+    "wanted_missing": (
+        "rule",
+        "state (an element is in a state; declare `wanted` with it: on, off, selected, "
+        "expanded or collapsed; no other kind has one)",
+    ),
+    "wanted_not_state": (
+        "rule",
+        "state (an element is in a state; declare `wanted` with it: on, off, selected, "
+        "expanded or collapsed; no other kind has one)",
+    ),
 }
 
 EXCLUDED: Final[Mapping[str, str]] = {
@@ -205,7 +214,7 @@ def test_the_desc_halves_left_to_the_validator_are_still_refused() -> None:
     for desc in ("line one\nline two", "a fence f1f1f1f1 inside"):
         decision = Decision.model_validate({
             "subgoals": [{"id": "s1", "desc": desc, "params": {"what": "Dark mode"},
-                          "closes": "state"}],
+                          "closes": "state", "wanted": "on"}],
             "stop": "cannot",
         })  # fmt: skip
         tokens = validate(decision, listed_ids=frozenset(), goal=goal, first_turn=True,

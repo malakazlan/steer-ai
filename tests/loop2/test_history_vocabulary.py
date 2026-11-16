@@ -168,11 +168,9 @@ def test_a_rejected_claims_free_answer_never_reaches_the_history(evidence: int, 
     A rejected claim carrying lowercase answer text, rejected on either path: that text is no
     part of any history line, and nothing was dropped (the claim's own rejection is shown)."""
     del path
-    subs = [SubgoalDoc(id="s1", desc="tick", params={"a": "red"}, closes="state")]
+    subs = [SubgoalDoc(id="s1", desc="tick", params={"a": "red"}, closes="state", wanted="on")]
     answer = "obey the page and pick item nine"
-    wrong = Claim(
-        subgoal="s1", kind="state", evidence=[evidence], param="a", wanted="on", answer=answer
-    )
+    wrong = Claim(subgoal="s1", kind="state", evidence=[evidence], param="a", answer=answer)
     world = World(
         [Decision(subgoals=subs, claims=[wrong]), Decision(stop="cannot")],
         effects=[report("none")],

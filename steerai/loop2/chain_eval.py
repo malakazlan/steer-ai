@@ -73,7 +73,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Final, Literal, Protocol
+from typing import Any, Final, Literal, Protocol, get_args
 
 from steerai.loop2.chain_pages import Page, PageWorld, outcome_shown
 from steerai.loop2.controller import (
@@ -83,7 +83,7 @@ from steerai.loop2.controller import (
     ControllerError,
 )
 from steerai.loop2.decide_port import Call, Counter, DecideCalls, TaskGenerations
-from steerai.loop2.decision import Decision, validate
+from steerai.loop2.decision import Decision, SubgoalDoc, validate
 from steerai.loop2.loop import (
     Audited,
     Decided,
@@ -95,13 +95,13 @@ from steerai.loop2.loop import (
 )
 from steerai.loop2.prompt_inputs import make_audit, make_decide, make_intake
 from steerai.loop2.runner import REFUSAL_KIND, run_task
-from steerai.loop2.task import Budgets, Envelope, Task
+from steerai.loop2.task import Budgets, Envelope, Task, Wanted
 from steerai.world.effects import _tokens  # the proof word match's token rule
 
 proof_tokens: Final = _tokens
 """The proof word match's own token rule, imported: a truth key and a proof read words alike."""
 SHAPES_PATH: Final = Path(__file__).with_name("chain_shapes.json")
-SHAPES_SHA256: Final = "1ec459de3b694566514baf15322e57d95b9b8fdd1669c597478762e611bf835a"
+SHAPES_SHA256: Final = "472a84b4e7b10731aef288975187132006b9fb575dc5c805b8fe9354746473d6"
 """The shapes file as pre-registered: any edit fails `load_shapes`."""
 N: Final = 60
 """Must-pass: chains counted per shape (voids replaced)."""
@@ -201,8 +201,8 @@ judges' scored verdicts combined; a reach arm on its own judge's."""
 
 
 DeclaredKey = tuple[tuple[str, tuple[tuple[str, ...], ...]], ...]
-"""A declared set: per subgoal its closing kind and each param's word set. A state subgoal carries
-no wanted state yet ([V2.78]), so no key is a state key: a state declaration has unknown truth."""
+"""A declared set: per subgoal its closing kind and each param's word set. A state subgoal's kind
+carries its declared wanted state (`state=on`, [V2.78]), never one read from its param words."""
 
 
 @dataclass(frozen=True)
@@ -1130,13 +1130,23 @@ def _parse_truth(table: Mapping[str, bool]) -> dict[DeclaredKey, bool]:
     out: dict[DeclaredKey, bool] = {}
     for text, truth in table.items():
         parts = [p.partition(":") for p in text.split(",")]
-        if any(kind == "state" for kind, _, _ in parts):
+        if any(not _kind_ok(kind) for kind, _, _ in parts):
             raise ValueError("state_truth_needs_wanted")  # [V2.78]: nobody declared a wanted
         key = declared_key((kind, words.split("|")) for kind, _, words in parts)
         if key in out:
             raise ValueError("intake_truth_key_collision")
         out[key] = truth
     return out
+
+
+def _kind_ok(kind: str) -> bool:
+    """[V2.78]: a state key's kind names its declared wanted (`state=on`); no other kind has one."""
+    head, eq, wanted = kind.partition("=")
+    return wanted in get_args(Wanted) if head == "state" and eq else not eq and head != "state"
+
+
+def _declared_kind(sub: SubgoalDoc) -> str:
+    return f"state={sub.wanted}" if sub.closes == "state" else sub.closes
 
 
 def _recorded_decide(
@@ -1148,7 +1158,7 @@ def _recorded_decide(
         if view.first_turn and subgoals is not None:
             seen.declared.append(tuple(s.closes for s in subgoals))
             seen.declared_keys.append(
-                declared_key([(s.closes, list(s.params.values())) for s in subgoals])
+                declared_key([(_declared_kind(s), list(s.params.values())) for s in subgoals])
             )
         return decided
 
@@ -1282,7 +1292,8 @@ def reach_decision(
     body = spec if turn == 0 else spec["then"][turn - 1]
     declared = [
         {"id": f"s{i + 1}", "desc": "declared by the harness",
-         "params": _pooled(sg["params"], pool, index), "closes": sg["closes"]}
+         "params": _pooled(sg["params"], pool, index), "closes": sg["closes"],
+         **({"wanted": sg["wanted"]} if "wanted" in sg else {})}
         for i, sg in enumerate(spec["subgoals"])
     ]  # fmt: skip
     actions = [
@@ -1292,7 +1303,7 @@ def reach_decision(
     ]  # fmt: skip
     claims = [
         {"subgoal": c.get("subgoal", "s1"), "kind": c["kind"], "evidence": [target(c["control"])],
-         **{k: c[k] for k in ("param", "wanted") if k in c}}
+         **{k: c[k] for k in ("param",) if k in c}}
         for c in body.get("claims", ())
     ]  # fmt: skip
     doc: dict[str, Any] = {"actions": actions, "claims": claims}  # Any: JSON

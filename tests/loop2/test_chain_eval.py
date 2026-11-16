@@ -703,8 +703,13 @@ def test_nothing_typed_is_not_measured() -> None:
 # ---- (7): every must-pass outcome is reachable through the loop ----------------------------------
 
 
-def _subgoal(sid: str, closes: str, param: str, words: str) -> dict[str, Any]:  # Any: JSON
-    return {"id": sid, "desc": "it is so", "params": {param: words}, "closes": closes}
+def _subgoal(
+    sid: str, closes: str, param: str, words: str, wanted: str = "on"
+) -> dict[str, Any]:  # Any: JSON
+    doc: dict[str, Any] = {  # Any: JSON
+        "id": sid, "desc": "it is so", "params": {param: words}, "closes": closes
+    }  # fmt: skip
+    return doc | ({"wanted": wanted} if closes == "state" else {})
 
 
 def _state_turns(name: str) -> list[Callable[[str], dict[str, Any]]]:
@@ -713,7 +718,7 @@ def _state_turns(name: str) -> list[Callable[[str], dict[str, Any]]]:
         lambda p: {"subgoals": [sub], "actions": [
             {"verb": "check", "target": handle(p, name), "subgoal": "s1", "param": "what"}]},
         lambda p: {"claims": [{"subgoal": "s1", "kind": "state", "evidence": [handle(p, name)],
-                               "param": "what", "wanted": "on"}]},
+                               "param": "what"}]},
     ]  # fmt: skip
 
 
@@ -1713,14 +1718,14 @@ def test_collapse_closes_the_select_and_a_select_on_the_control_itself_is_refuse
 
 
 def test_a_state_claim_that_kenya_is_selected_is_provable_through_the_loop_when_expanded() -> None:
-    sub = _subgoal("s1", "state", "what", "Kenya")
+    sub = _subgoal("s1", "state", "what", "Kenya", "selected")
     turns: list[Callable[[str], dict[str, Any]]] = [
         lambda p: {"subgoals": [sub], "actions": [
             {"verb": "expand", "target": handle(p, "Country"), "subgoal": "s1"}]},
         lambda p: {"actions": [
             {"verb": "select", "target": handle(p, "Kenya"), "subgoal": "s1"}]},
         lambda p: {"claims": [{"subgoal": "s1", "kind": "state", "evidence": [handle(p, "Kenya")],
-                               "param": "what", "wanted": "selected"}]},
+                               "param": "what"}]},
     ]  # fmt: skip
     record = run_chain(SHAPES["select"], index=0, provider=Scripted(turns, ALLOW))
     assert (record.status, record.reason, record.outcome_shown) == ("done", None, True)
@@ -1745,28 +1750,65 @@ def test_every_choice_shape_names_its_choice_by_value_as_sufficient() -> None:
             assert shape.intake_truth.get(key) is True, shape.id
 
 
-def test_no_shape_assigns_truth_to_a_state_declaration() -> None:
-    """[V2.78]: a state subgoal declares no wanted state yet, so nobody may assign truth to it
-    (a state key carries no wanted and maps to unknown); the schema change that moves `wanted`
-    onto state subgoals brings the keys back."""
-    for shape in SHAPES.values():
-        assert all(kind != "state" for key in shape.intake_truth for kind, _ in key), shape.id
-    for words in ("Kenya", "Kenya selected", "Dark mode"):
-        key = chain_eval.declared_key([("state", [words])])
-        assert all(key not in s.intake_truth for s in SHAPES.values())
+def _state_key(wanted: str, words: str) -> chain_eval.DeclaredKey:
+    return chain_eval.declared_key([(f"state={wanted}", [words])])
 
 
-def test_a_state_key_in_the_shapes_file_is_refused() -> None:
+STATE_TRUTH = {
+    "select": {("selected", "Kenya"): True, ("off", "Kenya"): False},
+    "toggle": {("on", "Dark mode"): True, ("off", "Dark mode"): False},
+    "heldout_toggle": {
+        ("on", "Remember this device"): True,
+        ("off", "Remember this device"): False,
+    },
+    "heldout_non_english": {("on", "Dunkelmodus"): True, ("off", "Dunkelmodus"): False},
+    "set_and_save": {("on", "Dark mode"): False},
+    "wrong_field_state": {("selected", "Kenya"): True, ("off", "Kenya"): False},
+}
+
+
+def test_state_truth_is_keyed_by_the_declared_wanted_for_every_choice_and_toggle_shape() -> None:
+    """[V2.78]: (kind, words, wanted) from the declaration. By rule: each choice or toggle shape
+    names its wanted state true and the opposite false; set_and_save's state set is insufficient
+    (the request also asks to save)."""
+    for shape_id, expected in STATE_TRUTH.items():
+        table = SHAPES[shape_id].intake_truth
+        for (wanted, words), truth in expected.items():
+            assert table.get(_state_key(wanted, words)) is truth, (shape_id, wanted, words)
+    keyed = {
+        sid
+        for sid, s in SHAPES.items()
+        if any(k[0][0].startswith("state=") for k in s.intake_truth)
+    }
+    assert keyed == set(STATE_TRUTH)
+
+
+def test_a_state_key_without_a_wanted_is_refused_and_one_with_it_loads() -> None:
     with pytest.raises(ValueError, match="state_truth_needs_wanted"):
         chain_eval._parse_truth({"state:Kenya": True})
+    with pytest.raises(ValueError, match="state_truth_needs_wanted"):
+        chain_eval._parse_truth({"state=bogus:Kenya": True})
+    with pytest.raises(ValueError, match="state_truth_needs_wanted"):
+        chain_eval._parse_truth({"value=on:Kenya": True})
+    assert chain_eval._parse_truth({"state=selected:Kenya": True}) == {
+        _state_key("selected", "Kenya"): True
+    }
 
 
-def test_a_state_declaration_in_a_chain_has_unknown_intake_truth() -> None:
+def test_a_wanted_never_comes_from_the_param_words() -> None:
+    assert _state_key("on", "Dark mode") != _state_key("on", "Dark mode on")
+    assert _state_key("on", "Dark mode") != _state_key("off", "Dark mode")
+    assert chain_eval.declared_key([("state", ["Dark mode"])]) not in {
+        k for s in SHAPES.values() for k in s.intake_truth
+    }
+
+
+def test_a_state_declaration_in_a_chain_is_scored_by_its_declared_wanted() -> None:
     record = run_chain(
         SHAPES["toggle"], index=0, provider=Scripted(_state_turns("Dark mode"), ALLOW)
     )
     intake = next(j for j in record.judges if j.judge == "intake")
-    assert intake.truth is None
+    assert intake.truth is True
     assert intake.declared == ("state",)
 
 

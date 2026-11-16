@@ -210,7 +210,7 @@ SAID = ValueFact(filled=True, digest="d:red shoes")
 
 
 def _claim(sid: str, kind: str, handle: int) -> Claim:
-    return Claim(subgoal=sid, kind=kind, evidence=[handle], param="text", wanted="on")  # type: ignore[arg-type]  # a claim kind under test
+    return Claim(subgoal=sid, kind=kind, evidence=[handle], param="text")  # type: ignore[arg-type]  # a claim kind under test
 
 
 def _taken_world(s1: SubgoalDoc, s2: SubgoalDoc, first: Claim | None, second: Claim) -> World:
@@ -258,7 +258,9 @@ def test_the_same_claim_on_another_element_with_the_same_words_closes() -> None:
 
 
 def test_another_closing_kind_may_cite_a_closed_subgoals_element() -> None:
-    state = SubgoalDoc(id="s2", desc="ticked", params={"text": "red shoes"}, closes="state")
+    state = SubgoalDoc(
+        id="s2", desc="ticked", params={"text": "red shoes"}, closes="state", wanted="on"
+    )
     world = _taken_world(
         PAGE_VALUE, state, _claim("s1", "value", TAKEN.id), _claim("s2", "state", TAKEN.id)
     )
@@ -279,8 +281,12 @@ def test_a_value_subgoal_with_a_disjoint_span_may_cite_a_closed_subgoals_element
 
 
 def test_a_state_claim_while_the_other_subgoal_is_open_is_not_evidence_taken() -> None:
-    one = SubgoalDoc(id="s1", desc="ticked", params={"text": "red shoes"}, closes="state")
-    two = SubgoalDoc(id="s2", desc="ticked again", params={"text": "red shoes"}, closes="state")
+    one = SubgoalDoc(
+        id="s1", desc="ticked", params={"text": "red shoes"}, closes="state", wanted="on"
+    )
+    two = SubgoalDoc(
+        id="s2", desc="ticked again", params={"text": "red shoes"}, closes="state", wanted="on"
+    )
     world = _taken_world(one, two, None, _claim("s2", "state", TAKEN.id))
     outcome = run_task(task(), world.ports())
     assert not _refusal(world)

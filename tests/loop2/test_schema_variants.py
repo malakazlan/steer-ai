@@ -68,7 +68,7 @@ def _fits(variant: dict[str, Any], doc: dict[str, object]) -> bool:  # Any: a sc
 
 
 def test_the_prompt_version_is_bumped() -> None:
-    assert PROMPT_VERSION == "controller-13"
+    assert PROMPT_VERSION == "controller-14"
 
 
 def test_only_the_first_turn_offers_subgoals() -> None:
@@ -149,7 +149,13 @@ def test_every_shape_the_schema_offers_is_one_validate_accepts() -> None:
         decision = Decision.model_validate(
             {
                 "subgoals": [
-                    {"id": "s1", "desc": "d", "params": {"text": "hello"}, "closes": "state"}
+                    {
+                        "id": "s1",
+                        "desc": "d",
+                        "params": {"text": "hello"},
+                        "closes": "state",
+                        "wanted": "on",
+                    }
                 ],
                 "actions": [doc],
             }
@@ -181,7 +187,8 @@ def test_a_claim_is_a_union_by_kind_with_only_that_kinds_fields() -> None:
         value, state, nav = variants["value"], variants["state"], variants["navigated"]
         assert {"param", "evidence"} <= set(value["required"])
         assert "wanted" not in value["properties"]
-        assert {"wanted", "evidence"} <= set(state["required"])
+        assert "evidence" in state["required"]
+        assert "wanted" not in state["properties"]  # [V2.78]: the subgoal declares it
         assert "param" in state["properties"]  # a hint: optional ([V2.39] (2))
         assert "param" not in state["required"]
         assert set(nav["properties"]) == {"subgoal", "kind", "evidence"}
@@ -202,8 +209,6 @@ def _minimal_claim(kind: str) -> dict[str, object]:
         doc["evidence"] = [1]
     if kind == "value":
         doc["param"] = "text"
-    if kind == "state":
-        doc["wanted"] = "on"
     return doc
 
 
@@ -251,7 +256,13 @@ def test_every_optional_field_the_schema_offers_is_one_validate_accepts() -> Non
         decision = Decision.model_validate(
             {
                 "subgoals": [
-                    {"id": "s1", "desc": "d", "params": {"text": "hello"}, "closes": "state"}
+                    {
+                        "id": "s1",
+                        "desc": "d",
+                        "params": {"text": "hello"},
+                        "closes": "state",
+                        "wanted": "on",
+                    }
                 ],
                 "actions": [doc],
             }

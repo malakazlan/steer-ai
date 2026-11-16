@@ -17,6 +17,8 @@ Status = Literal["open", "done", "blocked"]
 Mode = Literal["bootstrap", "envelope"]
 Closes = Literal["value", "state", "page"]
 """[V2.39]: the kind of fact that closes a subgoal."""
+Wanted = Literal["on", "off", "selected", "expanded", "collapsed"]
+"""[V2.78]: the state a state subgoal declares at intake, the closed set code can read."""
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,8 @@ class Subgoal:
     commit: Commit = "none"
     status: Status = "open"
     baseline_seq: int | None = None
+    wanted: Wanted | None = None
+    """[V2.78] the state a `closes=state` subgoal declares at intake; None for the other kinds."""
 
 
 def known_params(subgoals: Iterable[Subgoal]) -> dict[str, frozenset[str]]:

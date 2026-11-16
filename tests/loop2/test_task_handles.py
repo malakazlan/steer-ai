@@ -154,12 +154,14 @@ def test_claim_evidence_is_read_through_the_handles(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(runner, "check_claim", spy)
     monkeypatch.setattr(runner, "holds_words", lambda *_a: True)  # names are not this test's point
-    claim = Claim(subgoal="s1", kind="state", evidence=[GO.id], wanted="on")
+    claim = Claim(subgoal="s1", kind="state", evidence=[GO.id])
     world = World(
         [
             Decision(
                 subgoals=[
-                    SubgoalDoc(id="s1", desc="tick", params={"text": "shop"}, closes="state")
+                    SubgoalDoc(
+                        id="s1", desc="tick", params={"text": "shop"}, closes="state", wanted="on"
+                    )
                 ],
                 actions=[act("click", target=MENU.id)],
             ),
@@ -210,7 +212,7 @@ def test_evidence_naming_a_shared_runtime_id_reads_as_unlisted(
 
     monkeypatch.setattr(runner, "check_claim", spy)
     dup = element(11, "Button", "Archive", GO.runtime_id, 1)
-    claim = Claim(subgoal="s1", kind="state", evidence=[GO.id], wanted="on")
+    claim = Claim(subgoal="s1", kind="state", evidence=[GO.id])
     world = World(
         [decision(act("click", target=MENU.id), first=True), decision(claims=[claim])],
         effects=[report("content_changed")],

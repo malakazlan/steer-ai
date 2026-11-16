@@ -800,7 +800,7 @@ def _proven_at_turn_start(*others: SubgoalDoc) -> World:
 def test_a_proof_at_turn_start_stays_in_the_turn_that_then_decides() -> None:
     """M1: the turn-start judgement's Proven line is on the turn it opened, and the decide that
     follows adds to that turn, never replaces it."""
-    other = SubgoalDoc(id="s2", desc="other", params={"b": "shoes"}, closes="state")
+    other = SubgoalDoc(id="s2", desc="other", params={"b": "shoes"}, closes="state", wanted="on")
     records = _records(_proven_at_turn_start(other))
     last = records[-1]
     assert last["decision"] is not None

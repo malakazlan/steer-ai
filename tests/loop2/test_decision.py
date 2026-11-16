@@ -56,7 +56,7 @@ def test_id_not_listed_for_action() -> None:
 
 
 def test_id_not_listed_for_evidence() -> None:
-    d = Decision(claims=[Claim(subgoal="s1", kind="state", evidence=[99], wanted="on")])
+    d = Decision(claims=[Claim(subgoal="s1", kind="state", evidence=[99])])
     assert check(d) == ["id_not_listed"]
 
 
@@ -107,7 +107,9 @@ def test_param_name_bad() -> None:
 
 def test_subgoals_after_first() -> None:
     d = Decision(
-        subgoals=[SubgoalDoc(id="s1", desc="d", params={"text": "hello"}, closes="state")],
+        subgoals=[
+            SubgoalDoc(id="s1", desc="d", params={"text": "hello"}, closes="state", wanted="on")
+        ],
         actions=[action("click", target=1)],
     )
     assert check(d, first_turn=False) == ["subgoals_after_first"]
@@ -168,7 +170,7 @@ def test_param_unknown() -> None:
 
 def test_subgoal_unknown_for_action_and_claim() -> None:
     assert check(act("click", target=1), known_subgoals={}) == ["subgoal_unknown"]
-    d = Decision(claims=[Claim(subgoal="zz", kind="state", wanted="on")])
+    d = Decision(claims=[Claim(subgoal="zz", kind="state")])
     assert check(d) == ["subgoal_unknown"]
 
 
@@ -181,11 +183,6 @@ def test_claim_param_must_belong_to_subgoal() -> None:
 def test_value_claim_needs_param() -> None:
     d = Decision(claims=[Claim(subgoal="s1", kind="value")])
     assert check(d) == ["param_missing"]
-
-
-def test_state_claim_needs_wanted() -> None:
-    d = Decision(claims=[Claim(subgoal="s1", kind="state")])
-    assert check(d) == ["wanted_missing"]
 
 
 def test_empty_decision() -> None:
@@ -220,7 +217,8 @@ def test_too_many_actions() -> None:
 
 def test_too_many_subgoals() -> None:
     subs = [
-        SubgoalDoc(id=f"s{i}", desc="d", params={"text": "hello"}, closes="state") for i in range(6)
+        SubgoalDoc(id=f"s{i}", desc="d", params={"text": "hello"}, closes="state", wanted="on")
+        for i in range(6)
     ]
     d = Decision(subgoals=subs, actions=[action("click", target=1)])
     assert check(d, first_turn=True, known_subgoals={"s1": frozenset()}) == ["too_many_subgoals"]
@@ -228,8 +226,8 @@ def test_too_many_subgoals() -> None:
 
 def test_subgoal_duplicate() -> None:
     subs = [
-        SubgoalDoc(id="s1", desc="a", params={"text": "hello"}, closes="state"),
-        SubgoalDoc(id="s1", desc="b", params={"text": "hello"}, closes="state"),
+        SubgoalDoc(id="s1", desc="a", params={"text": "hello"}, closes="state", wanted="on"),
+        SubgoalDoc(id="s1", desc="b", params={"text": "hello"}, closes="state", wanted="on"),
     ]
     d = Decision(subgoals=subs, actions=[action("click", target=1)])
     assert check(d, first_turn=True) == ["subgoal_duplicate"]
@@ -238,7 +236,9 @@ def test_subgoal_duplicate() -> None:
 @pytest.mark.parametrize("bad", ["", "S1", "a b", "x" * 17, "s1\n", "s-1"])
 def test_subgoal_id_bad(bad: str) -> None:
     d = Decision(
-        subgoals=[SubgoalDoc(id=bad, desc="d", params={"text": "hello"}, closes="state")],
+        subgoals=[
+            SubgoalDoc(id=bad, desc="d", params={"text": "hello"}, closes="state", wanted="on")
+        ],
         claims=[Claim(subgoal="s1", kind="navigated")],
     )
     assert check(d, first_turn=True) == ["subgoal_id_bad"]
@@ -303,7 +303,8 @@ def test_desc_without_a_fence_passes_with_fences_given() -> None:
 
 def test_exactly_five_subgoals_are_accepted() -> None:
     subs = [
-        SubgoalDoc(id=f"s{i}", desc="d", params={"text": "hello"}, closes="state") for i in range(5)
+        SubgoalDoc(id=f"s{i}", desc="d", params={"text": "hello"}, closes="state", wanted="on")
+        for i in range(5)
     ]
     d = Decision(subgoals=subs, actions=[action("click", target=1)])
     assert "too_many_subgoals" not in check(d, first_turn=True, known_subgoals={"s1": frozenset()})
