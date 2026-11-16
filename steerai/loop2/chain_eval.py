@@ -84,7 +84,7 @@ from steerai.world.effects import _tokens  # the proof word match's token rule
 proof_tokens: Final = _tokens
 """The proof word match's own token rule, imported: a truth key and a proof read words alike."""
 SHAPES_PATH: Final = Path(__file__).with_name("chain_shapes.json")
-SHAPES_SHA256: Final = "c861193853c1b14b39ab813bb1fe55971cdf26c85acb4f163a753b607c288285"
+SHAPES_SHA256: Final = "efec1848865325d5fb005391811f1aefcdba41c86a97556babcbc56fe486e65d"
 """The shapes file as pre-registered: any edit fails `load_shapes`."""
 N: Final = 60
 """Must-pass: chains counted per shape (voids replaced)."""
@@ -178,8 +178,12 @@ truth as its own count per judge, a later one by the set it judged. The free arm
 judges' scored verdicts combined; a reach arm on its own judge's."""
 
 
-DeclaredKey = tuple[tuple[str, tuple[tuple[str, ...], ...]], ...]
-"""A declared set: per subgoal its closing kind and each param's word set."""
+WANTED_STATES: Final = ("on", "off", "selected", "expanded", "collapsed")
+"""The wanted states a state claim names (`decision.Claim.wanted`); one of them as the last word of a
+state param is that param's wanted state ([V2.77] (2))."""
+DeclaredKey = tuple[tuple[str, tuple[tuple[str, ...], ...], tuple[str | None, ...]], ...]
+"""A declared set: per subgoal its closing kind, each param's word set and each param's wanted
+state (None: the declared shape names none; a table that does not name that key reads unknown)."""
 
 
 @dataclass(frozen=True)
@@ -846,12 +850,21 @@ def declared_key(subgoals: Iterable[tuple[str, Sequence[str]]]) -> DeclaredKey:
     ordered contiguous match of `proof_tokens` (`effects._contains`), so its words keep their
     order; a value or state proof holds a set of them in any order (`holds_words`), so those are
     a sorted set. A tuple of tuples, never a delimited string, so no param can forge a key."""
-    return tuple((kind, tuple(_words(kind, w) for w in words)) for kind, words in subgoals)
+    out = []
+    for kind, words in subgoals:
+        parts = [_words(kind, w) for w in words]
+        out.append((kind, tuple(w for w, _ in parts), tuple(wanted for _, wanted in parts)))
+    return tuple(out)
 
 
-def _words(kind: str, text: str) -> tuple[str, ...]:
+def _words(kind: str, text: str) -> tuple[tuple[str, ...], str | None]:
+    """A param's words and its wanted state. A state param whose last word is a wanted state
+    (`WANTED_STATES`) and has a name before it carries that state apart from the name's words
+    ([V2.77] (2)); any other param has none."""
     tokens = proof_tokens(text)
-    return tuple(tokens) if kind == "page" else tuple(sorted(set(tokens)))
+    if kind == "state" and len(tokens) > 1 and tokens[-1] in WANTED_STATES:
+        return tuple(sorted(set(tokens[:-1]))), tokens[-1]
+    return (tuple(tokens) if kind == "page" else tuple(sorted(set(tokens)))), None
 
 
 def _parse_truth(table: Mapping[str, bool]) -> dict[DeclaredKey, bool]:

@@ -61,7 +61,9 @@
         }
       ],
       "intake_truth": {
-        "value:Kenya": true
+        "value:Kenya": true,
+        "state:Kenya selected": true,
+        "state:Kenya off": false
       }
     },
     {

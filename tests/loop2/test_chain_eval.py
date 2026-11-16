@@ -1023,7 +1023,7 @@ def test_the_wrong_field_oracle_tells_the_right_field_from_the_wrong_one() -> No
 def test_the_wrong_field_reach_arm_gives_the_audit_a_value_set_in_the_wrong_field() -> None:
     """The intake sees kinds only, so its truth for this set is sufficient; the audit's is no."""
     shape = SHAPES["wrong_field"]
-    assert shape.intake_truth == {(("value", (("ada", "lovelace"),)),): True}
+    assert shape.intake_truth == {(("value", (("ada", "lovelace"),), (None,)),): True}
     turns = [
         lambda p: {"claims": [{"subgoal": "s1", "kind": "value",
                                "evidence": [handle(p, "Email")], "param": "name"}]}
@@ -1185,7 +1185,7 @@ def test_every_intake_truth_key_names_its_kind_and_its_words() -> None:
     for shape in SHAPES.values():
         for key in shape.intake_truth:
             assert key, shape.id
-            assert all(kind and words for kind, words in key), (shape.id, key)
+            assert all(kind and words and wanted for kind, words, wanted in key), (shape.id, key)
 
 
 def test_a_partial_span_or_a_duplicated_value_is_never_true() -> None:
@@ -1713,3 +1713,44 @@ def test_a_state_claim_that_kenya_is_selected_is_provable_through_the_loop_when_
     ]  # fmt: skip
     record = run_chain(SHAPES["select"], index=0, provider=Scripted(turns, ALLOW))
     assert (record.status, record.reason, record.outcome_shown) == ("done", None, True)
+
+
+# ---- [V2.77] (2): a choice carried by value or by state, the truth key carries the wanted state --
+
+
+def _choice_shapes() -> list[Shape]:
+    return [s for s in SHAPES.values() if any(c["kind"] == "select" for c in s.page["controls"])]
+
+
+def test_every_choice_shape_names_its_choice_by_value_and_by_state() -> None:
+    """By rule, for every shape whose page has a select: the wanted option carried by value (the
+    control reads it) and by state (the option is selected) is sufficient; the option in another
+    state (off) is not; a state set that names no wanted state is not in the table (unknown)."""
+    assert [s.id for s in _choice_shapes()]
+    for shape in _choice_shapes():
+        wanted = [fact["value"][1] for fact in shape.oracle if "value" in fact]
+        assert wanted, shape.id
+        for option in wanted:
+            by = chain_eval.declared_key
+            assert shape.intake_truth.get(by([("value", [option])])) is True, shape.id
+            assert shape.intake_truth.get(by([("state", [f"{option} selected"])])) is True
+            assert shape.intake_truth.get(by([("state", [f"{option} off"])])) is False
+            assert by([("state", [option])]) not in shape.intake_truth  # no wanted: unknown
+
+
+def test_the_wanted_state_is_part_of_a_state_key_and_a_value_key_has_none() -> None:
+    by = chain_eval.declared_key
+    assert by([("state", ["Kenya selected"])]) != by([("state", ["Kenya"])])
+    assert by([("state", ["Kenya selected"])]) != by([("state", ["Kenya off"])])
+    assert by([("state", ["selected Kenya"])]) != by([("state", ["Kenya selected"])])
+    assert by([("value", ["Kenya selected"])]) == by([("value", ["selected Kenya"])])  # a set
+    assert by([("state", ["Dark mode"])]) == by([("state", ["mode Dark"])])
+
+
+def test_the_wanted_words_are_the_decisions_own_closed_set() -> None:
+    from typing import get_args  # noqa: PLC0415
+
+    from steerai.loop2.decision import Claim  # noqa: PLC0415
+
+    wanted = get_args(get_args(Claim.model_fields["wanted"].annotation)[0])
+    assert set(chain_eval.WANTED_STATES) == set(wanted)
