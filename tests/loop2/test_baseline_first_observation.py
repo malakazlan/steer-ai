@@ -14,15 +14,29 @@ import pytest
 from steerai.loop2.decision import Claim, Decision, SubgoalDoc
 from steerai.loop2.runner import _Run, run_task, spans_shared
 from steerai.loop2.task import GoalSpan, Subgoal
-from steerai.world.effects import Observed
+from steerai.world.effects import Observed, ValueFact
 from tests.loop2.test_auto_proof_every_observation import RESULTS, START
 from tests.loop2.test_navigated import QUERY_URL, page
-from tests.loop2.world_fakes import FIELD, GO, GOAL, RESULT, URL, World, act, report, task
+from tests.loop2.world_fakes import (
+    FIELD,
+    GO,
+    GOAL,
+    PAGE,
+    RESULT,
+    URL,
+    World,
+    act,
+    element,
+    observed,
+    report,
+    task,
+)
 
 PAGE_SUB = SubgoalDoc(id="s1", desc="results", params={"text": "red shoes"}, closes="page")
 VALUE_SUB = SubgoalDoc(id="s2", desc="field", params={"text": "red shoes"}, closes="value")
 MOVING = dataclasses.replace(RESULTS, snapshot=dataclasses.replace(RESULTS.snapshot, stable=False))
 """The results already there, on a read still unstable (never judged)."""
+PAGE_VALUE = SubgoalDoc(id="s1", desc="field", params={"text": "red shoes"}, closes="value")
 VALUE_CLAIM = Claim(subgoal="s2", kind="value", evidence=[FIELD.id], param="text")
 
 
@@ -140,7 +154,7 @@ def test_the_second_page_subgoal_closes_on_a_later_event_of_its_own() -> None:
     world.timeline = [(1, page([RESULT])), (2, item)]
     outcome = run_task(task(), world.ports())
     assert _proven(world, "s1")
-    assert outcome.status == "done"
+    assert outcome.status == "done"  # every subgoal is proven, s2 on its own event
 
 
 # ---- which params share a span ([V2.72] Two, #473 review 1) -----------------------------------
@@ -185,3 +199,91 @@ def test_a_close_moves_only_open_same_kind_subgoals_that_share_a_span() -> None:
     run.proven.add("s1")
     run._rebase(closed, START)
     assert run.baselines == {"s2": START}
+
+
+# ---- a closed subgoal's element is held apart ([V2.73]) ----------------------------------------
+
+TAKEN = element(42, "CheckBox", "Red shoes", (9, 42), 1)
+TWIN = element(43, "CheckBox", "Red shoes", (9, 43), 1)
+"""A second element holding the same words."""
+SAID = ValueFact(filled=True, digest="d:red shoes")
+
+
+def _claim(sid: str, kind: str, handle: int) -> Claim:
+    return Claim(subgoal=sid, kind=kind, evidence=[handle], param="text", wanted="on")  # type: ignore[arg-type]  # a claim kind under test
+
+
+def _taken_world(s1: SubgoalDoc, s2: SubgoalDoc, first: Claim | None, second: Claim) -> World:
+    """s1 (closed by `first`, or left open) then `second` on the next turn."""
+    turns = [
+        Decision(
+            subgoals=[s1, s2],
+            claims=[first] if first else [],
+            actions=[] if first else [act("wait", subgoal="s1")],
+        ),
+        Decision(claims=[second]),
+        Decision(stop="blocked"),
+    ]
+    world = World(turns, screen=observed([*PAGE, TAKEN, TWIN]))
+    for box in (TAKEN, TWIN):
+        world.values[box.runtime_id] = SAID
+        world.states[(box.runtime_id, "on")] = True
+    world.fact_text = True
+    return world
+
+
+def _refusal(world: World) -> bool:
+    return "claim:s2:evidence_taken" in world.views[-1].history
+
+
+def test_a_value_claim_on_a_closed_subgoals_element_is_evidence_taken() -> None:
+    world = _taken_world(
+        PAGE_VALUE, VALUE_SUB, _claim("s1", "value", TAKEN.id), _claim("s2", "value", TAKEN.id)
+    )
+    outcome = run_task(task(), world.ports())
+    assert _proven(world, "s1")
+    assert _refusal(world)
+    assert not _proven(world, "s2")
+    assert outcome.evidence_taken == 1
+    assert outcome.status != "done"
+
+
+def test_the_same_claim_on_another_element_with_the_same_words_closes() -> None:
+    world = _taken_world(
+        PAGE_VALUE, VALUE_SUB, _claim("s1", "value", TAKEN.id), _claim("s2", "value", TWIN.id)
+    )
+    outcome = run_task(task(), world.ports())
+    assert outcome.evidence_taken == 0
+    assert outcome.status == "done"  # s2 closed on the twin
+
+
+def test_another_closing_kind_may_cite_a_closed_subgoals_element() -> None:
+    state = SubgoalDoc(id="s2", desc="ticked", params={"text": "red shoes"}, closes="state")
+    world = _taken_world(
+        PAGE_VALUE, state, _claim("s1", "value", TAKEN.id), _claim("s2", "state", TAKEN.id)
+    )
+    outcome = run_task(task(), world.ports())
+    assert not _refusal(world)
+    assert outcome.evidence_taken == 0
+    assert outcome.status == "done"
+
+
+def test_a_value_subgoal_with_a_disjoint_span_may_cite_a_closed_subgoals_element() -> None:
+    other = SubgoalDoc(id="s2", desc="shop", params={"text": "shop"}, closes="value")
+    world = _taken_world(
+        PAGE_VALUE, other, _claim("s1", "value", TAKEN.id), _claim("s2", "value", TAKEN.id)
+    )
+    outcome = run_task(task(), world.ports())
+    assert not _refusal(world)
+    assert outcome.evidence_taken == 0
+
+
+def test_a_state_claim_while_the_other_subgoal_is_open_is_not_evidence_taken() -> None:
+    one = SubgoalDoc(id="s1", desc="ticked", params={"text": "red shoes"}, closes="state")
+    two = SubgoalDoc(id="s2", desc="ticked again", params={"text": "red shoes"}, closes="state")
+    world = _taken_world(one, two, None, _claim("s2", "state", TAKEN.id))
+    outcome = run_task(task(), world.ports())
+    assert not _refusal(world)
+    assert _proven(world, "s2")
+    assert not _proven(world, "s1")
+    assert outcome.evidence_taken == 0
