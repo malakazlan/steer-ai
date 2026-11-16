@@ -1082,12 +1082,9 @@ class _Run:
         return address is not None and address.lower().startswith("file:")
 
     def _tick(self, subgoal: Subgoal, *, how: ProvenHow, at: Observed) -> None:
-        """A proven subgoal, closed on the observation `at`. RT-06, §8.8: a commit subgoal is
-        never closed in step 3 (a standard proof never closes it; the strict tier is step 4)."""
-        if subgoal.commit != "none":
-            self._note(ClaimResult(subgoal.id, "standard_only"))
-            self.turn.claim_rejected = True
-            return
+        """A proven subgoal, closed on the observation `at`. RT-06, §8.8: never a commit subgoal
+        (`_refused` stops a claim on one, `_auto_proofs` skips it; the strict tier is step 4).
+        [V2.74]: code's own proof is never a refusal, so nothing here can refuse."""
         self.proven.add(subgoal.id)
         self.proven_how[subgoal.id] = how
         self.turn.ticked = True
@@ -1896,6 +1893,8 @@ class _Run:
                 continue
             if subgoal.closes != "page":
                 continue  # [V2.39]: the navigated auto proof closes only a page subgoal
+            if subgoal.commit != "none":
+                continue  # #474: a commit subgoal closes only in the strict tier (step 4)
             baseline = self._baseline(subgoal.id)  # [V2.72]: every open page subgoal is judged
             gate = None if skipped is not None else _change_gate(baseline, observed)
             if gate is None:
