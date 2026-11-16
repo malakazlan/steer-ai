@@ -1327,3 +1327,50 @@ def test_the_shape_report_has_the_five_numbers() -> None:
         {"audit": 1},
         {"audit_failed:audit_no_call": 1, "controller_stop": 1},
     )
+
+
+# ---- world refusals are reach misses; the intake truth is matched folded ------------------
+
+
+def test_after_refusal_with_a_world_token_is_a_reach_miss_and_a_model_token_counts() -> None:
+    from steerai.loop2.runner import REFUSAL_KIND  # noqa: PLC0415 - the runner's own table
+
+    world = next(t for t, k in REFUSAL_KIND.items() if k == "world")
+    other = next(t for t, k in REFUSAL_KIND.items() if k != "world")
+    miss = _rec("stopped", f"after_refusal:{world}")
+    out = score(SHAPES["g22"], _must_pass_run(*[miss] * 10))
+    assert (out.reach_misses, out.not_done_counted, out.result) == (10, 0, "pass")
+    counted = _rec("stopped", f"after_refusal:{other}")
+    out = score(SHAPES["g22"], _must_pass_run(*[counted] * 4))
+    assert (out.reach_misses, out.not_done_counted, out.result) == (0, 4, "inconclusive")
+    undeclared = _rec("stopped", "after_refusal:no_such_token_anywhere")
+    assert score(SHAPES["g22"], _must_pass_run(*[undeclared] * 4)).result == "inconclusive"
+    failed = _rec("stopped", f"after_refusal:{world}", [("audit", "failed")], truth=False)
+    assert score(SHAPES["g22"], _must_pass_run(*[failed] * 4)).result == "inconclusive"
+
+
+def test_intake_truth_keys_are_matched_folded() -> None:
+    table = SHAPES["g22"].intake_truth
+    for words in ("ada lovelace", "ADA  LOVELACE", " Ada\tLovelace ", "Ada Lovelace"):
+        assert chain_eval.truth_of(table, f"value:{words}") is True, words
+    assert chain_eval.truth_of(table, "value:ada") is None
+    assert chain_eval.truth_of(table, "state:ada lovelace") is None
+
+
+def test_the_recorder_folds_the_declared_set_before_the_lookup() -> None:
+    seen = chain_eval._Recorder(intake_truth=SHAPES["g22"].intake_truth)
+    seen.declared.append(("value",))
+    seen.declared_keys.append("value:ada   lovelace")
+    intake = recorded_judge("intake", lambda _view: Judgement(True, "facts_finish_request"), seen)
+    intake(object())
+    assert seen.judges[0].truth is True
+
+
+def test_the_header_records_the_world_refusal_tokens_the_runner_declares() -> None:
+    from steerai.loop2.runner import REFUSAL_KIND  # noqa: PLC0415 - the runner's own table
+
+    head = _head()
+    assert head["reach_miss_world_tokens"] == sorted(
+        t for t, k in REFUSAL_KIND.items() if k == "world"
+    )
+    assert "reach_miss_world_tokens" in chain_eval.FROZEN_KEYS

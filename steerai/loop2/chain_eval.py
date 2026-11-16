@@ -55,6 +55,7 @@ import statistics
 import subprocess
 import sys
 import time
+import unicodedata
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -71,7 +72,7 @@ from steerai.loop2.decide_port import Call, Counter, DecideCalls, TaskGeneration
 from steerai.loop2.decision import Decision, validate
 from steerai.loop2.loop import Decided, Ports, TaskOutcome, TokenUsage, TurnView
 from steerai.loop2.prompt_inputs import make_audit, make_decide, make_intake
-from steerai.loop2.runner import run_task
+from steerai.loop2.runner import REFUSAL_KIND, run_task
 from steerai.loop2.task import Budgets, Envelope, Task
 
 SHAPES_PATH: Final = Path(__file__).with_name("chain_shapes.json")
@@ -122,7 +123,9 @@ REACH_MISS_REASONS: Final = (
 )
 """[V2.75] Two, written before the run: the outcome's reason tokens of a stop that is the
 controller not reaching the outcome, not a judge: the controller's stop, no progress, the world
-refusing (the window gone or covered, the page not ready, an empty listing) and the step limit
+refusing (the window gone or covered, the page not ready, an empty listing, or an
+`after_refusal:<token>`
+whose token the runner's `REFUSAL_KIND` declares `world`) and the step limit
 (the action and model-call budgets). A chain that stopped for one of them, with no judge verdict
 missing or failed, is a reach miss. Any other reason, one not listed included, is counted."""
 MAX_COUNTED_NOT_DONE: Final = 3
@@ -452,11 +455,16 @@ def _reach_miss(record: ChainRecord) -> bool:
         or record.intake_no_call
         or any(j.verdict == "failed" for j in record.judges)
     )
-    return (
-        not judged_wrong
-        and (record.reason or "").split(":")[0] in REACH_MISS_REASONS
-        and not ((record.reason or "").startswith("after_refusal"))
-    )
+    return not judged_wrong and _world_stop(record.reason or "")
+
+
+def _world_stop(reason: str) -> bool:
+    """A listed non-judge reason, or `after_refusal:<token>` whose token the runner's own table
+    declares a `world` refusal (a token with no declared kind is not one)."""
+    head, _, rest = reason.partition(":")
+    if head == "after_refusal":
+        return REFUSAL_KIND.get(rest.partition(":")[0]) == "world"
+    return head in REACH_MISS_REASONS
 
 
 def _report_unscored(out: ShapeScore, record: ChainRecord, scoring: Sequence[JudgeCall]) -> None:
@@ -612,13 +620,14 @@ def header(*, model: str, effort: str, commit: str, dirty: bool) -> dict[str, ob
         "stopping": dict(STOPPING),
         "scoring": dict(SCORING),
         "reach_miss_reasons": list(REACH_MISS_REASONS),
+        "reach_miss_world_tokens": sorted(t for t, k in REFUSAL_KIND.items() if k == "world"),
         "max_counted_not_done": MAX_COUNTED_NOT_DONE,
     }
 
 
 FROZEN_KEYS: Final = (
     "controller", "intake", "audit", "commit", "shapes_sha256", "budgets", "stopping",
-    "scoring", "reach_miss_reasons", "max_counted_not_done",
+    "scoring", "reach_miss_reasons", "reach_miss_world_tokens", "max_counted_not_done",
 )  # fmt: skip
 
 
@@ -750,12 +759,23 @@ def _judged(  # noqa: PLR0913 - one judge call's facts, gathered once
         return JudgeCall(judge, verdict, reason, ms, escaped, truth=truth)
     scripted, seen.scripted_pending = seen.scripted_pending, False
     declared = seen.declared[-1] if seen.declared else None
-    key = seen.declared_keys[-1] if seen.declared_keys else None
-    known = seen.intake_truth.get(key) if key is not None else None
+    known = truth_of(seen.intake_truth, seen.declared_keys[-1]) if seen.declared_keys else None
     truth = False if scripted else known  # [V2.73]: the scripted insufficient set is known no
     return JudgeCall(
         judge, verdict, reason, ms, None, scripted=scripted, declared=declared, truth=truth
     )
+
+
+def fold(key: str) -> str:
+    """NFKC, casefolded, whitespace collapsed (and dropped around `:`, `,`, `|`)."""
+    spaced = " ".join(unicodedata.normalize("NFKC", key).casefold().split())
+    return re.sub(r" ?([:,|]) ?", r"", spaced)
+
+
+def truth_of(table: Mapping[str, bool], key: str) -> bool | None:
+    """The intake truth of a declared set, both sides folded; a set not in the table is unknown."""
+    folded = fold(key)
+    return next((v for k, v in table.items() if fold(k) == folded), None)
 
 
 def declared_key(subgoals: Iterable[tuple[str, Sequence[str]]]) -> str:
