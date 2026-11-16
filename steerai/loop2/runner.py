@@ -932,7 +932,7 @@ class _Run:
         if sid in self.baselines:
             return self.baselines[sid]
         if self.first_full is None:  # `observe` is a full read, taken before the first decide
-            raise AssertionError("no full observation")  # #473 review: never a poll that moves
+            raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "no full observation")  # #479: no poll
         return self.first_full
 
     def _claim(self, claim: Claim, observed: Observed) -> None:

@@ -11,6 +11,7 @@ import dataclasses
 
 import pytest
 
+from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.decision import Claim, Decision, SubgoalDoc
 from steerai.loop2.runner import _Run, run_task, spans_shared
 from steerai.loop2.task import GoalSpan, Subgoal
@@ -287,3 +288,11 @@ def test_a_state_claim_while_the_other_subgoal_is_open_is_not_evidence_taken() -
     assert _proven(world, "s2")
     assert not _proven(world, "s1")
     assert outcome.evidence_taken == 0
+
+
+def test_a_baseline_with_no_full_observation_is_a_typed_error() -> None:
+    """#479: the invariant breaks as a `SteerError` with a taxonomy code, never an assert."""
+    run = _Run(task(), World([]).ports())
+    with pytest.raises(SteerError) as caught:
+        run._baseline("s1")
+    assert caught.value.code is ErrorCode.PERCEPTION_DEGRADED
