@@ -40,7 +40,7 @@ from steerai.loop2.decision import (
     Claim,
     Decision,
     Stop,
-    subgoal_tokens,
+    SubgoalDoc,
     validate,
 )
 from steerai.loop2.form import ENTER_FIELDS, STATE_SET_VERB, scope_fields
@@ -53,6 +53,7 @@ from steerai.loop2.guards import (
     budget_hit,
     made_progress,
     same_action,
+    single_cause,
 )
 from steerai.loop2.history import (
     REFUSAL_TOKENS,
@@ -72,18 +73,25 @@ from steerai.loop2.history import (
     WorldMoved,
     log_role,
     record_ok,
+    refused_shape,
     render,
 )
 from steerai.loop2.listing import ListingTurn, words_of
 from steerai.loop2.loop import (
     AUDIT_COUNTS,
+    AUDIT_FAILED,
+    AUDIT_NO_CALL,
     COMMIT_RISK,
+    INTAKE_COUNTS,
     PARENT_KINDS,
     READ_BACK_VERBS,
     URL_READS,
     ActResult,
+    Audited,
     AuditView,
     Dispatch,
+    IntakeLine,
+    IntakeView,
     ParentKind,
     PendingText,
     PortInterrupted,
@@ -93,7 +101,9 @@ from steerai.loop2.loop import (
     ReadKind,
     Reason,
     RiskWhy,
+    RunnerAuditReason,
     Status,
+    SufficiencyReason,
     TaskOutcome,
     TokenUsage,
     TurnView,
@@ -446,6 +456,8 @@ class _Run:
         """The shakedown's #3: the last rejected turn's closed tokens, for the final line."""
         self.strikes = Strikes(STRIKE_LIMIT)
         self.strike_log: list[tuple[StrikeReason, ...]] = []
+        self.strike_words: list[frozenset[str]] = []
+        """[V2.69] Two: each strike's refusal tokens, beside `strike_log`, for the single cause."""
         self.refusal: tuple[RefusalKind, str] | None = None
         self.typed: list[_Typed] = []
         self.pending: list[_Pending] = []
@@ -485,10 +497,15 @@ class _Run:
         self.unread_aids = 0
         self.proven_how: dict[str, ProvenHow] = {}
         """[V2.64] One: how each subgoal was proven (a claim, or the auto proof's token)."""
-        self.audit: tuple[str, str] | None = None
+        self.audit: tuple[str, SufficiencyReason | RunnerAuditReason] | None = None
         """[V2.64] One: the final audit's outcome and reason, when it ran."""
         self.audit_counts: dict[str, int] = dict.fromkeys(AUDIT_COUNTS, 0)
         """[V2.69] One, packet rev 4 item 4: the audit's counts (`_audit`)."""
+        self.intake_counts: dict[str, int] = dict.fromkeys(INTAKE_COUNTS, 0)
+        """[V2.68] One, packet rev 4 item 4: the intake check's counts (`_intake_passes`)."""
+        self.intake_memo: dict[str, bool] = {}
+        """Packet rev 5 item 1 (P4): each declared set's verdict by its digest, passed or
+        rejected; a set already judged makes no new call."""
         self.free_texts: list[str] = []
         """Packet rev 5 item 5: the free text of each `type` Steer sent with `text` (not a
         param), kept in memory only, masked out of the audit's view."""
@@ -565,6 +582,7 @@ class _Run:
             url_reads=tuple(self.url_reads.items()),
             audit=self.audit,
             **self.audit_counts,
+            **self.intake_counts,
             query_combobox_listed=self.query_combobox_listed,
             typed_into_combobox=self.typed_into_combobox,
             partial_page_calls=self.partial_page_calls,
@@ -647,8 +665,9 @@ class _Run:
                 observed = self._rejected_turn(rejected, observed)
                 self._trace_turn()  # [V2.67] D: one record per rejected turn
                 continue
-            self._check_interrupt()  # #326, [V2.40] Q4: a Decision after the kill is discarded
             if self.ports.turn_trace is not None:  # #444: no trace work without a sink
+                # #457 review: shaped before the intake check, so a refused intake turn's record
+                # carries the Decision it judged (None means no call)
                 self.turn.shape = decision_shape(
                     decision,
                     known_subgoals=known_params(self.subgoals),
@@ -656,6 +675,11 @@ class _Run:
                     turn=self.turn.number,
                     attempt=0,
                 )
+            if not self._intake_passes(decision):  # [V2.68] One: refused before anything freezes
+                observed = self._record_strike(observed)
+                self._trace_turn()  # [V2.67] D: one record per refused intake turn (#457 P5)
+                continue
+            self._check_interrupt()  # #326, [V2.40] Q4: a Decision after the kill is discarded
             fresh = self._observe()
             if fresh.read_cost is not None:
                 self.read_costs.append(fresh.read_cost)  # [V2.34]: this re-read is paid for too
@@ -691,6 +715,8 @@ class _Run:
             raise rejected
         # on the turn the loop opened ([V2.67] A): a close at its start still counts
         self._refuse(*tokens)  # type: ignore[arg-type]  # each one checked against the set above
+        if not self.frozen:  # [V2.69] Three: the next intake turn sees what it declared
+            self._note(refused_shape(rejected.shape))
         return self._record_strike(observed)
 
     def _observe(self) -> Observed:
@@ -851,8 +877,6 @@ class _Run:
             listed &= self.listing.shown
         first = not self.frozen
         goal = self.task.goal
-        if first and decision.subgoals and not subgoal_tokens(decision, goal=goal):
-            self._intake(decision)  # valid subgoals are taken even when an action is refused
         tokens = validate(
             decision,
             listed_ids=listed,
@@ -863,6 +887,10 @@ class _Run:
         if tokens:
             self._refuse(*tokens, subgoal=_step_subgoal(decision))
             return observed
+        if first and decision.subgoals:
+            # packet rev 5 §4: subgoals freeze only on a turn that is not stale, after validate
+            # and the intake check (`_intake_passes`) both passed
+            self._intake(decision)
         for claim in decision.claims:
             self._claim(claim, observed)
         self._check_done(observed)
@@ -1075,13 +1103,93 @@ class _Run:
                 if proofs
                 else ("navigated" if how == "claim" else how)
             )
-            params = tuple(
-                (n, subgoal.params[name].text) for n, name in enumerate(sorted(subgoal.params), 1)
-            )
+            params = tuple((n, param.text) for n, param in numbered_params(subgoal.params))
             lines.append(
                 (position, subgoal.closes, how, kind, _read_token(subgoal, how, proofs), params)
             )
         return tuple(lines)
+
+    def _intake_passes(self, decision: Decision) -> bool:
+        """[V2.68] One, [V2.69] Two and Four, packet rev 5 §4: a first Decision whose declared
+        subgoals are all value or state (no ask, no stop) is checked once for sufficiency on the
+        request and the subgoals alone, before anything freezes. A set already judged takes its
+        verdict from the memo with no call. A spent budget pauses with its token, no call. A
+        failed call made ends `blocked/intake_failed`; a port error takes decide's path. An
+        insufficient set is refused (`intake_insufficient`): one strike, nothing frozen,
+        nothing dispatched. True: the Decision goes on."""
+        subs = decision.subgoals or []
+        due = not self.frozen and bool(subs) and decision.ask is None and decision.stop is None
+        intake = self.ports.intake
+        if not due or intake is None or any(s.closes not in {"value", "state"} for s in subs):
+            return True
+        lines = _intake_lines(subs)
+        key = hashlib.sha256(repr([(c, p) for _pos, c, p in lines]).encode()).hexdigest()
+        if key in self.intake_memo:
+            if self.intake_memo[key]:
+                return True
+            self.intake_counts["intake_memo_refused"] += 1
+            self._refuse("intake_insufficient")
+            self._note(refused_shape([s.closes for s in subs]))  # [V2.69] Three
+            return False
+        self._intake_budget()
+        self._check_interrupt()  # #457 P2: a latched switch sends nothing and counts nothing
+        judged = self._intake_call(intake, IntakeView(subgoals=lines))
+        passed = judged.sufficient and judged.reason == "facts_finish_request"
+        self.intake_memo[key] = passed
+        self.intake_counts["intake_passed" if passed else "intake_rejected"] += 1
+        self._check_interrupt()  # #326: a verdict after the kill is discarded, its counts kept
+        if not passed:
+            self._refuse("intake_insufficient")
+            self._note(refused_shape([s.closes for s in subs]))  # [V2.69] Three
+        return passed
+
+    def _intake_budget(self) -> None:
+        """[V2.69] Four: a budget spent before the intake call: no call, `paused`, counted."""
+        used = Usage(
+            actions=len(self.dispatched),
+            model_calls=self.model_calls,
+            cost_usd=self._cost(),
+            wall_s=self.ports.clock() - self.started,
+            tokens=self.tokens,
+        )
+        hit = budget_hit(self.task.budgets, used)
+        if hit is not None:
+            self.intake_counts["intake_budget_stops"] += 1
+            raise _End("paused", Reason(hit))
+
+    def _intake_call(self, intake: Callable[[IntakeView], Audited], view: IntakeView) -> Audited:
+        """Packet rev 5 item 1 (failures): no call (over the bound) keeps the no-call path; a port
+        error or an interrupt takes decide's path, counted as a failed call; an unusable reply
+        (unparsed, schema-invalid, a provider refusal) ends `blocked/intake_failed`."""
+        try:
+            judged = intake(view)
+        except ControllerError as exc:
+            if exc.record is None:
+                self.intake_counts["intake_no_call"] += 1
+                raise
+            self._intake_failed(exc.record.calls)
+            self._spend(exc.usage)
+            if exc.usage is not None:  # #457 P1, as #452 G3: a failed call's reported tokens
+                self.intake_counts["intake_tokens"] += sum(_counts(exc.usage) or ())
+            raise _End("blocked", Reason("intake_failed")) from None
+        except (PortInterrupted, SteerError) as exc:
+            if isinstance(exc, PortInterrupted) and not exc.sent:
+                raise  # #457 P2, packet §4 F3: nothing went out, so nothing is counted
+            self._intake_failed(1)
+            self.tokens = math.nan  # abandoned or failed: billed, never reported ([V2.41] (1))
+            self.usage_incomplete = True
+            raise
+        self.model_calls += 1
+        self.intake_counts["intake_checks"] += 1
+        self._spend(judged.usage)
+        if judged.usage is not None:
+            self.intake_counts["intake_tokens"] += sum(_counts(judged.usage) or ())
+        return judged
+
+    def _intake_failed(self, calls: int) -> None:
+        self.model_calls += calls
+        self.intake_counts["intake_checks"] += calls
+        self.intake_counts["intake_failed"] += calls
 
     def _audit(self, observed: Observed, lines: tuple[ProofLine, ...]) -> None:
         """[V2.64] One, [V2.68] One, [V2.69] One and Four (audit-2): one sufficiency call. A spent
@@ -1103,7 +1211,7 @@ class _Run:
             raise _End("paused", Reason(hit))
         if audit is None:
             self.audit_counts["audit_no_call"] += 1
-            self.audit = ("failed", "audit_no_call")
+            self.audit = ("failed", AUDIT_NO_CALL)
             raise _End("blocked", Reason("audit_failed"))
         cited = {
             self.handles.by_handle[p.handle]
@@ -1126,7 +1234,7 @@ class _Run:
             if isinstance(exc, ControllerError) and exc.record is None:
                 # refused before any call (the bound, a fence in the data): no call is counted
                 self.audit_counts["audit_no_call"] += 1
-                self.audit = ("failed", "audit_no_call")
+                self.audit = ("failed", AUDIT_NO_CALL)
                 raise _End("blocked", Reason("audit_failed")) from None
             self.model_calls += 1
             self.audit_counts["audit_calls"] += 1
@@ -1139,7 +1247,7 @@ class _Run:
             self._spend(usage)
             if usage is not None:  # #452 tester G3: a failed call's reported tokens are counted
                 self.audit_counts["audit_tokens"] += sum(_counts(usage) or ())
-            self.audit = ("failed", "audit_failed")
+            self.audit = ("failed", AUDIT_FAILED)
             raise _End("blocked", Reason("audit_failed")) from None
         self.model_calls += 1
         self.audit_counts["audit_calls"] += 1
@@ -1920,10 +2028,12 @@ class _Run:
         reasons = self.strikes.record(facts)
         if reasons:
             self.strike_log.append(reasons)
+            self.strike_words.append(frozenset(f.refusal for f in self.turn.refusals))
         if self.strikes.paused:
             held = self._hold(observed)
-            if held is None:
-                raise _End("paused", Reason("no_progress"))
+            if held is None:  # [V2.69] Two: one cause behind every strike is named
+                cause = single_cause(zip(self.strike_log, self.strike_words, strict=True))
+                raise _End("paused", Reason("no_progress", detail=cause))
             return held
         return observed
 
@@ -2199,3 +2309,23 @@ def _read_token(subgoal: Subgoal, how: str, proofs: Mapping[str, _Proof]) -> tup
         wanted = {p.wanted for p in proofs.values() if p.wanted is not None}
         return ("state_read", next(iter(wanted)) if len(wanted) == 1 else "mixed")
     return ("navigated", how)
+
+
+def numbered_params[V](params: Mapping[str, V]) -> tuple[tuple[int, V], ...]:
+    """#457 review, coordinator ruling: the one numbering both judges read: a subgoal's params
+    by their names' sorted order, 1-based (`param:1`), each with its value. The model's names
+    are never shown, only their order."""
+    return tuple((n, params[name]) for n, name in enumerate(sorted(params), 1))
+
+
+def _intake_lines(subs: Sequence[SubgoalDoc]) -> tuple[IntakeLine, ...]:
+    """[V2.68] One, packet rev 5 (P1): each declared subgoal by position and closing kind, its
+    params by sorted position with their words; never the model's id, param names or desc."""
+    return tuple(
+        (
+            position,
+            doc.closes,
+            numbered_params(doc.params),
+        )
+        for position, doc in enumerate(subs, 1)
+    )

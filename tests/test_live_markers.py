@@ -20,6 +20,9 @@ LIVE_MODULES = frozenset(
 MARKS = frozenset({"windows", "live", "probe"})
 FAKED: frozenset[str] = frozenset(
     {
+        # #459: stage 1's own 3d run with every live edge faked (no Chrome, no child, no input)
+        "loop2/test_chrome_lost.py::"
+        "test_the_3d_run_voids_when_chrome_goes_away_before_the_log_is_read",
         # v1's keyboard tests: `send_inputs` / `build_keyboard_unicode` over a fake user32
         "action/test_keyboard.py::test_send_inputs_of_an_empty_batch_never_loads_user32",
         "action/test_keyboard.py::test_send_inputs_forwards_every_record_to_one_sendinput_call",

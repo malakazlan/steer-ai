@@ -306,3 +306,12 @@ def test_a_calculator_it_launched_is_closed_after_use() -> None:
     ) as hwnd:
         assert hwnd == 5
     assert closed == [5]
+
+
+def test_only_the_committed_2a_acts_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """#428 (8): the 2a table check also pins the acts file it reads."""
+    edited = tmp_path / "acts.json"
+    edited.write_text(stage2a.ACTS.read_text(encoding="utf-8") + " ", encoding="utf-8")
+    monkeypatch.setattr(stage2a, "ACTS", edited)
+    with pytest.raises(ValueError, match="not the committed 2a acts"):
+        stage2a.check_table(stage2a.TABLE.read_text(encoding="utf-8"))
