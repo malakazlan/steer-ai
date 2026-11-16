@@ -53,6 +53,7 @@ from steerai.loop2.guards import (
     budget_hit,
     made_progress,
     same_action,
+    single_cause,
 )
 from steerai.loop2.history import (
     REFUSAL_TOKENS,
@@ -72,11 +73,14 @@ from steerai.loop2.history import (
     WorldMoved,
     log_role,
     record_ok,
+    refused_shape,
     render,
 )
 from steerai.loop2.listing import ListingTurn, words_of
 from steerai.loop2.loop import (
     AUDIT_COUNTS,
+    AUDIT_FAILED,
+    AUDIT_NO_CALL,
     COMMIT_RISK,
     INTAKE_COUNTS,
     PARENT_KINDS,
@@ -97,7 +101,9 @@ from steerai.loop2.loop import (
     ReadKind,
     Reason,
     RiskWhy,
+    RunnerAuditReason,
     Status,
+    SufficiencyReason,
     TaskOutcome,
     TokenUsage,
     TurnView,
@@ -450,6 +456,8 @@ class _Run:
         """The shakedown's #3: the last rejected turn's closed tokens, for the final line."""
         self.strikes = Strikes(STRIKE_LIMIT)
         self.strike_log: list[tuple[StrikeReason, ...]] = []
+        self.strike_words: list[frozenset[str]] = []
+        """[V2.69] Two: each strike's refusal tokens, beside `strike_log`, for the single cause."""
         self.refusal: tuple[RefusalKind, str] | None = None
         self.typed: list[_Typed] = []
         self.pending: list[_Pending] = []
@@ -467,6 +475,8 @@ class _Run:
         """[V2.67] D: the turns the loop opened (its trace's turn numbers), never the calls."""
         self.turn_trace_dropped = 0
         """[V2.67] D: turn records the no-free-text check dropped."""
+        self.turn_trace_errors = 0
+        """#463 (1): turns whose record could not be built or written."""
         self.read_costs: list[ReadCost] = []
         self.reasked: set[tuple[int, ...]] = set()
         """[V2.38] RT-12: the top Documents already re-asked on (once per Document)."""
@@ -489,7 +499,7 @@ class _Run:
         self.unread_aids = 0
         self.proven_how: dict[str, ProvenHow] = {}
         """[V2.64] One: how each subgoal was proven (a claim, or the auto proof's token)."""
-        self.audit: tuple[str, str] | None = None
+        self.audit: tuple[str, SufficiencyReason | RunnerAuditReason] | None = None
         """[V2.64] One: the final audit's outcome and reason, when it ran."""
         self.audit_counts: dict[str, int] = dict.fromkeys(AUDIT_COUNTS, 0)
         """[V2.69] One, packet rev 4 item 4: the audit's counts (`_audit`)."""
@@ -584,6 +594,7 @@ class _Run:
             submit_parents=tuple(self.submit_parents.items()),
             history_dropped=self.history_dropped,
             turn_trace_dropped=self.turn_trace_dropped,
+            turn_trace_errors=self.turn_trace_errors,
             listings=tuple(self.listing.turns),
             focus_moved_after_press=self.counts.focus_moved_after_press,
             observations_focus_unread=self.counts.observations_focus_unread,
@@ -707,6 +718,8 @@ class _Run:
             raise rejected
         # on the turn the loop opened ([V2.67] A): a close at its start still counts
         self._refuse(*tokens)  # type: ignore[arg-type]  # each one checked against the set above
+        if not self.frozen:  # [V2.69] Three: the next intake turn sees what it declared
+            self._note(refused_shape(rejected.shape))
         return self._record_strike(observed)
 
     def _observe(self) -> Observed:
@@ -1154,6 +1167,7 @@ class _Run:
                 return True
             self.intake_counts["intake_memo_refused"] += 1
             self._refuse("intake_insufficient")
+            self._note(refused_shape([s.closes for s in subs]))  # [V2.69] Three
             return False
         self._intake_budget()
         self._check_interrupt()  # #457 P2: a latched switch sends nothing and counts nothing
@@ -1164,6 +1178,7 @@ class _Run:
         self._check_interrupt()  # #326: a verdict after the kill is discarded, its counts kept
         if not passed:
             self._refuse("intake_insufficient")
+            self._note(refused_shape([s.closes for s in subs]))  # [V2.69] Three
         return passed
 
     def _intake_budget(self) -> None:
@@ -1234,7 +1249,7 @@ class _Run:
             raise _End("paused", Reason(hit))
         if audit is None:
             self.audit_counts["audit_no_call"] += 1
-            self.audit = ("failed", "audit_no_call")
+            self.audit = ("failed", AUDIT_NO_CALL)
             raise _End("blocked", Reason("audit_failed"))
         cited = {
             self.handles.by_handle[p.handle]
@@ -1257,7 +1272,7 @@ class _Run:
             if isinstance(exc, ControllerError) and exc.record is None:
                 # refused before any call (the bound, a fence in the data): no call is counted
                 self.audit_counts["audit_no_call"] += 1
-                self.audit = ("failed", "audit_no_call")
+                self.audit = ("failed", AUDIT_NO_CALL)
                 raise _End("blocked", Reason("audit_failed")) from None
             self.model_calls += 1
             self.audit_counts["audit_calls"] += 1
@@ -1270,7 +1285,7 @@ class _Run:
             self._spend(usage)
             if usage is not None:  # #452 tester G3: a failed call's reported tokens are counted
                 self.audit_counts["audit_tokens"] += sum(_counts(usage) or ())
-            self.audit = ("failed", "audit_failed")
+            self.audit = ("failed", AUDIT_FAILED)
             raise _End("blocked", Reason("audit_failed")) from None
         self.model_calls += 1
         self.audit_counts["audit_calls"] += 1
@@ -1991,8 +2006,9 @@ class _Run:
     def _trace_turn(self) -> None:
         """[V2.67] D: the turn's closed record to the trace port; a record that fails the
         no-free-text check is dropped and counted, never written in part. #444: an exception
-        while building or writing it is counted the same way and never raised: the turn is often
-        the one the task ends in (`_outcome`), and its outcome must never be lost."""
+        while building or writing it is never raised: the turn is often the one the task ends in
+        (`_outcome`), and its outcome must never be lost. #463 (1): it is counted as a trace
+        error, apart from the drops; an interrupt is not an `Exception` and propagates."""
         sink = self.ports.turn_trace
         turn = self.turn
         if sink is None or turn.seen is None or turn.traced:
@@ -2001,7 +2017,7 @@ class _Run:
         try:
             self._write_turn(sink, turn)
         except Exception:  # noqa: BLE001 - a trace failure never loses the task; it is counted
-            self.turn_trace_dropped += 1
+            self.turn_trace_errors += 1
 
     def _write_turn(self, sink: Callable[[Mapping[str, object]], None], turn: _Turn) -> None:
         seen = turn.seen
@@ -2047,10 +2063,12 @@ class _Run:
         reasons = self.strikes.record(facts)
         if reasons:
             self.strike_log.append(reasons)
+            self.strike_words.append(frozenset(f.refusal for f in self.turn.refusals))
         if self.strikes.paused:
             held = self._hold(observed)
-            if held is None:
-                raise _End("paused", Reason("no_progress"))
+            if held is None:  # [V2.69] Two: one cause behind every strike is named
+                cause = single_cause(zip(self.strike_log, self.strike_words, strict=True))
+                raise _End("paused", Reason("no_progress", detail=cause))
             return held
         return observed
 
