@@ -1616,3 +1616,32 @@ def test_the_per_chain_veto_count_is_report_only_and_the_row_reports_false_vetoe
     row = summary([out])["shapes"][0]  # type: ignore[index]  # JSON
     assert row["false_vetoes"] == {"intake": 0, "audit": 3}
     assert row["chains_with_veto"] == 3
+
+
+# ---- pilot findings ([V2.77]) -------------------------------------------------------------------
+
+
+def test_a_search_field_is_exposed_as_a_searchbox_and_other_fields_are_not() -> None:
+    seen = PageWorld(Page.from_spec(SHAPES["g23"].page)).observe()
+    field_rid = Page.from_spec(SHAPES["g23"].page).rid(0)
+    assert seen.aria_roles == {field_rid: "searchbox"}
+    plain = PageWorld(Page.from_spec(SHAPES["g22"].page)).observe()
+    assert plain.aria_roles == {}
+
+
+def _search_turn(p: str) -> dict[str, Any]:
+    return {
+        "subgoals": [_subgoal("s1", "page", "query", "automation")],
+        "actions": [
+            {"verb": "focus", "target": handle(p, "Find articles"), "subgoal": "s1"},
+            {"verb": "type", "target": handle(p, "Find articles"), "subgoal": "s1",
+             "param": "query"},
+            {"verb": "click", "target": handle(p, "Search"), "subgoal": "s1"},
+        ],
+    }  # fmt: skip
+
+
+@pytest.mark.parametrize("shape_id", ["g23", "two_outcome", "heldout_injection"])
+def test_typed_text_then_a_search_click_is_a_query_not_a_commit(shape_id: str) -> None:
+    record = run_chain(SHAPES[shape_id], index=0, provider=Scripted([_search_turn], ALLOW))
+    assert (record.status, record.reason) != ("blocked", "commit_not_in_step")

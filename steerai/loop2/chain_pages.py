@@ -141,6 +141,17 @@ class Page:
     def rid(self, index: int) -> tuple[int, ...]:
         return (42, self.document, 10 + index)
 
+    def roles(self) -> dict[tuple[int, ...], str]:
+        """The AriaRole map as the real observer reports it: a text field that carries a `search`
+        behaviour is a `searchbox`; no other control has an entry. A results page has no field."""
+        if self.query is not None:
+            return {}
+        return {
+            self.rid(i): "searchbox"
+            for i, c in enumerate(self.controls)
+            if c.kind == "field" and c.search is not None
+        }
+
     def observed(self) -> Observed:
         self.taken += 1
         elements = self.elements()
@@ -162,7 +173,7 @@ class Page:
             windows=(HWND,),
             focus=focus,
             headings={},
-            aria_roles={},
+            aria_roles=self.roles(),
             document_url=self.url,
             landmarks={e.runtime_id: None for e in elements},
         )
