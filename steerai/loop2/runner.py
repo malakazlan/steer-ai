@@ -178,15 +178,58 @@ REFUSAL_KIND: Final[Mapping[str, RefusalKind]] = {
     "secure_unread": "policy",
     "text_changed": "policy",
     "not_in_step": "step",
-    "target_changed": "world",
     "not_delivered": "world",
     "press_not_at_focus": "world",
     "press_target_gone": "world",
     "press_target_changed": "world",
     "type_not_at_focus": "world",
     "field_not_empty": "world",
+    "not_foreground": "world",
+    "screen_changed_during_ask": "world",
+    "composer_unreadable": "world",
+    "composer_differs": "world",
+    "ask_empty": "model",
+    "ask_with_actions": "model",
+    "ask_with_stop": "model",
+    "commit_cannot_apply": "model",
+    "commit_conflict": "model",
+    "commit_undeclared": "model",
+    "desc_bad": "model",
+    "done_already": "model",
+    "empty_decision": "model",
+    "focus_needs_field": "model",
+    "id_not_listed": "model",
+    "intake_insufficient": "model",
+    "key_missing": "model",
+    "no_strict_shape": "model",
+    "not_own_text": "model",
+    "option_missing": "model",
+    "page_without_param": "model",
+    "param_missing": "model",
+    "param_name_bad": "model",
+    "param_not_span": "model",
+    "param_unknown": "model",
+    "repeat_send": "model",
+    "state_without_param": "model",
+    "stop_with_actions": "model",
+    "subgoal_duplicate": "model",
+    "subgoal_id_bad": "model",
+    "subgoal_unknown": "model",
+    "subgoals_after_first": "model",
+    "subgoals_missing": "model",
+    "target_missing": "model",
+    "target_on_untargeted_verb": "model",
+    "text_bad": "model",
+    "text_missing": "model",
+    "too_many_actions": "model",
+    "too_many_subgoals": "model",
+    "type_text_and_param": "model",
+    "value_without_param": "model",
+    "wanted_missing": "model",
 }
-"""[V2.12], [V2.37] P5: each refusal token's kind; any other token is a model fault."""
+"""[V2.12], [V2.37] P5, [V2.74]: each refusal token's kind, declared for every token (no default;
+a token without a kind fails a test). [V2.43]: a world fact the person-ask
+step meets is `world`."""
 KIND_ORDER: Final[tuple[RefusalKind, ...]] = ("policy", "step", "world", "model")
 """[V2.42] RT-29: several refusal reasons take the kind by this priority, never token order."""
 CLOCK_DOMAIN_S: Final = 3600.0
@@ -2154,7 +2197,7 @@ def _window_gone(observed: Observed) -> bool:
 def refusal_of(tokens: Sequence[str]) -> tuple[RefusalKind, str]:
     """[V2.42] RT-29: the kind of a refusal with these tokens, by a fixed priority (policy, step
     limit, world, model fault), never by their order; the token is the first of that kind."""
-    kinds = [(REFUSAL_KIND.get(t, "model"), t) for t in tokens]
+    kinds = [(REFUSAL_KIND[t], t) for t in tokens]
     for kind in KIND_ORDER:
         for found, token in kinds:
             if found == kind:

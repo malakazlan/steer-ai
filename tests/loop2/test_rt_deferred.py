@@ -337,9 +337,9 @@ def test_a_priced_cost_cap_of_zero_pauses_before_the_first_call() -> None:
     [
         (["id_not_listed", "not_in_step"], "step", "not_in_step"),
         (["not_in_step", "id_not_listed"], "step", "not_in_step"),
-        (["id_not_listed", "target_changed"], "world", "target_changed"),
-        (["target_changed", "id_not_listed"], "world", "target_changed"),
-        (["target_changed", "not_in_step", "secure_field"], "policy", "secure_field"),
+        (["id_not_listed", "not_delivered"], "world", "not_delivered"),
+        (["not_delivered", "id_not_listed"], "world", "not_delivered"),
+        (["not_delivered", "not_in_step", "secure_field"], "policy", "secure_field"),
         (["repeat_send", "id_not_listed"], "model", "repeat_send"),
     ],
 )
