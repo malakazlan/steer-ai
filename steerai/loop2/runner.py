@@ -77,6 +77,8 @@ from steerai.loop2.history import (
 from steerai.loop2.listing import ListingTurn, words_of
 from steerai.loop2.loop import (
     AUDIT_COUNTS,
+    AUDIT_FAILED,
+    AUDIT_NO_CALL,
     COMMIT_RISK,
     INTAKE_COUNTS,
     PARENT_KINDS,
@@ -97,7 +99,9 @@ from steerai.loop2.loop import (
     ReadKind,
     Reason,
     RiskWhy,
+    RunnerAuditReason,
     Status,
+    SufficiencyReason,
     TaskOutcome,
     TokenUsage,
     TurnView,
@@ -487,7 +491,7 @@ class _Run:
         self.unread_aids = 0
         self.proven_how: dict[str, ProvenHow] = {}
         """[V2.64] One: how each subgoal was proven (a claim, or the auto proof's token)."""
-        self.audit: tuple[str, str] | None = None
+        self.audit: tuple[str, SufficiencyReason | RunnerAuditReason] | None = None
         """[V2.64] One: the final audit's outcome and reason, when it ran."""
         self.audit_counts: dict[str, int] = dict.fromkeys(AUDIT_COUNTS, 0)
         """[V2.69] One, packet rev 4 item 4: the audit's counts (`_audit`)."""
@@ -1196,7 +1200,7 @@ class _Run:
             raise _End("paused", Reason(hit))
         if audit is None:
             self.audit_counts["audit_no_call"] += 1
-            self.audit = ("failed", "audit_no_call")
+            self.audit = ("failed", AUDIT_NO_CALL)
             raise _End("blocked", Reason("audit_failed"))
         cited = {
             self.handles.by_handle[p.handle]
@@ -1219,7 +1223,7 @@ class _Run:
             if isinstance(exc, ControllerError) and exc.record is None:
                 # refused before any call (the bound, a fence in the data): no call is counted
                 self.audit_counts["audit_no_call"] += 1
-                self.audit = ("failed", "audit_no_call")
+                self.audit = ("failed", AUDIT_NO_CALL)
                 raise _End("blocked", Reason("audit_failed")) from None
             self.model_calls += 1
             self.audit_counts["audit_calls"] += 1
@@ -1232,7 +1236,7 @@ class _Run:
             self._spend(usage)
             if usage is not None:  # #452 tester G3: a failed call's reported tokens are counted
                 self.audit_counts["audit_tokens"] += sum(_counts(usage) or ())
-            self.audit = ("failed", "audit_failed")
+            self.audit = ("failed", AUDIT_FAILED)
             raise _End("blocked", Reason("audit_failed")) from None
         self.model_calls += 1
         self.audit_counts["audit_calls"] += 1
