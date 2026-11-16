@@ -73,6 +73,7 @@ from steerai.loop2.history import (
     WorldMoved,
     log_role,
     record_ok,
+    refused_shape,
     render,
 )
 from steerai.loop2.listing import ListingTurn, words_of
@@ -711,6 +712,8 @@ class _Run:
             raise rejected
         # on the turn the loop opened ([V2.67] A): a close at its start still counts
         self._refuse(*tokens)  # type: ignore[arg-type]  # each one checked against the set above
+        if not self.frozen:  # [V2.69] Three: the next intake turn sees what it declared
+            self._note(refused_shape(rejected.shape))
         return self._record_strike(observed)
 
     def _observe(self) -> Observed:
@@ -1123,6 +1126,7 @@ class _Run:
                 return True
             self.intake_counts["intake_memo_refused"] += 1
             self._refuse("intake_insufficient")
+            self._note(refused_shape([s.closes for s in subs]))  # [V2.69] Three
             return False
         self._intake_budget()
         self._check_interrupt()  # #457 P2: a latched switch sends nothing and counts nothing
@@ -1133,6 +1137,7 @@ class _Run:
         self._check_interrupt()  # #326: a verdict after the kill is discarded, its counts kept
         if not passed:
             self._refuse("intake_insufficient")
+            self._note(refused_shape([s.closes for s in subs]))  # [V2.69] Three
         return passed
 
     def _intake_budget(self) -> None:
