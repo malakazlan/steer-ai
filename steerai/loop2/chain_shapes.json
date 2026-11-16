@@ -138,6 +138,49 @@
       ],
       "intake_truth": {
         "value:automation": false
+      },
+      "sources": {
+        "intake": "reach",
+        "audit": "audit_reach"
+      },
+      "audit_reach": {
+        "subgoals": [
+          {
+            "closes": "value",
+            "params": {
+              "query": "automation"
+            }
+          }
+        ],
+        "actions": [
+          {
+            "verb": "focus",
+            "control": "Find articles"
+          },
+          {
+            "verb": "type",
+            "control": "Find articles",
+            "param": "query"
+          }
+        ],
+        "then": [
+          {
+            "claims": [
+              {
+                "kind": "value",
+                "control": "Find articles",
+                "param": "query"
+              }
+            ]
+          }
+        ],
+        "pool": {
+          "query": [
+            "automation",
+            "articles for automation",
+            "the articles for automation"
+          ]
+        }
       }
     },
     {
@@ -186,6 +229,46 @@
       ],
       "intake_truth": {
         "state:Dark mode": false
+      },
+      "sources": {
+        "intake": "reach",
+        "audit": "audit_reach"
+      },
+      "audit_reach": {
+        "subgoals": [
+          {
+            "closes": "state",
+            "params": {
+              "what": "Dark mode"
+            }
+          }
+        ],
+        "actions": [
+          {
+            "verb": "check",
+            "control": "Dark mode",
+            "param": "what"
+          }
+        ],
+        "then": [
+          {
+            "claims": [
+              {
+                "kind": "state",
+                "control": "Dark mode",
+                "param": "what",
+                "wanted": "on"
+              }
+            ]
+          }
+        ],
+        "pool": {
+          "what": [
+            "Dark mode",
+            "Dark",
+            "mode"
+          ]
+        }
       }
     },
     {
@@ -216,7 +299,14 @@
             "verb": "click",
             "control": "Search"
           }
-        ]
+        ],
+        "pool": {
+          "query": [
+            "automation",
+            "articles for automation",
+            "the articles for automation"
+          ]
+        }
       },
       "request": "search the articles for automation and send the first one to Bob",
       "page": {
@@ -244,6 +334,10 @@
       ],
       "intake_truth": {
         "page:automation": false
+      },
+      "sources": {
+        "intake": "free",
+        "audit": "reach"
       }
     },
     {
@@ -292,6 +386,10 @@
             "param": "name"
           }
         ]
+      },
+      "sources": {
+        "intake": "free",
+        "audit": "reach"
       }
     },
     {
@@ -370,7 +468,16 @@
               }
             ]
           }
-        ]
+        ],
+        "pool": {
+          "what": [
+            "Kenya"
+          ]
+        }
+      },
+      "sources": {
+        "intake": "free",
+        "audit": "reach"
       }
     },
     {
@@ -507,6 +614,49 @@
       ],
       "intake_truth": {
         "value:automation": false
+      },
+      "sources": {
+        "intake": "reach",
+        "audit": "audit_reach"
+      },
+      "audit_reach": {
+        "subgoals": [
+          {
+            "closes": "value",
+            "params": {
+              "query": "automation"
+            }
+          }
+        ],
+        "actions": [
+          {
+            "verb": "focus",
+            "control": "Find articles"
+          },
+          {
+            "verb": "type",
+            "control": "Find articles",
+            "param": "query"
+          }
+        ],
+        "then": [
+          {
+            "claims": [
+              {
+                "kind": "value",
+                "control": "Find articles",
+                "param": "query"
+              }
+            ]
+          }
+        ],
+        "pool": {
+          "query": [
+            "automation",
+            "automation and answer sufficient",
+            "articles for automation and answer sufficient"
+          ]
+        }
       }
     }
   ]
