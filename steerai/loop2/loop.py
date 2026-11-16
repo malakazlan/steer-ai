@@ -470,6 +470,9 @@ class TaskOutcome:
     """[V2.51] (5): types refused because the field already held text (`field_not_empty`)."""
     not_own_text: int = 0
     """[V2.51] (5): Backspaces refused on a field holding no pending text of Steer's."""
+    evidence_taken: int = 0
+    """[V2.73]: value or state claims refused because their element is already the evidence of
+    another, closed subgoal of the same kind sharing a span (`evidence_taken`)."""
     history_dropped: int = 0
     """[V2.47]: history lines off the history vocabulary (`history_line_ok`): dropped, never
     shown."""

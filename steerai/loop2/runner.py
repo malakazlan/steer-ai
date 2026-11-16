@@ -236,6 +236,7 @@ class _ActCounts:
     toggles_settled_on_reread: int = 0
     fields_not_empty: int = 0
     not_own_text: int = 0
+    evidence_taken: int = 0
 
 
 @dataclass
@@ -350,11 +351,10 @@ class _Handles:
 @dataclass(frozen=True)
 class _Ever:
     """[V2.38] RT-39: one type Steer sent in this task, never pruned (unlike pending text): the
-    field, the subgoal it was typed under, and the words when typed by param (None: generated
-    text, whose words are not kept)."""
+    field and the words when typed by param (None: generated text, whose words are not kept).
+    [V2.73]: the subgoal it was typed under is not kept; a label never decides evidence."""
 
     field: tuple[int, ...]
-    subgoal: str
     words: str | None
 
 
@@ -584,6 +584,7 @@ class _Run:
             toggles_settled_on_reread=self.counts.toggles_settled_on_reread,
             fields_not_empty=self.counts.fields_not_empty,
             not_own_text=self.counts.not_own_text,
+            evidence_taken=self.counts.evidence_taken,
         )
 
     def _cost(self) -> float | None:
@@ -912,10 +913,9 @@ class _Run:
         subgoal an action was dispatched under plays no part: the model assigns those labels."""
         if sid in self.baselines:
             return self.baselines[sid]
-        first = self.first_full or self.first
-        if first is None:  # set before the first decide
-            raise AssertionError("no first observation")
-        return first
+        if self.first_full is None:  # `observe` is a full read, taken before the first decide
+            raise AssertionError("no full observation")  # #473 review: never a poll that moves
+        return self.first_full
 
     def _claim(self, claim: Claim, observed: Observed) -> None:
         """One claim: code's refusals first (`_refused`), then the claim check. A page claim
@@ -934,7 +934,7 @@ class _Run:
             observed,
             readers=self._readers(observed),
             typed=self._typed_fields(),
-            acted=self._acted(subgoal),
+            acted=self._acted(),
             echo=self._echo(subgoal),
             allow_file=self._allow_file(),
         )
@@ -959,7 +959,8 @@ class _Run:
         ([V2.39]); a value or state claim must name one param and cite exactly one element (#422:
         the claim check's own count tokens, before anything reads it), an element that proves no
         other param (#334 review), and a state claim's element must hold the param's words
-        ([V2.40] Q7)."""
+        ([V2.40] Q7). [V2.73]: nor one that is already the evidence of a closed subgoal of the
+        same kind sharing a span (`evidence_taken`, counted)."""
         if subgoal.commit != "none":
             return "standard_only"
         if CLAIM_CLOSES.get(claim.kind) != subgoal.closes:
@@ -972,8 +973,27 @@ class _Run:
             return "too_much_evidence" if claim.evidence else "evidence_missing"
         if self._reused(subgoal, param, claim.evidence[0]):
             return "evidence_reused"
+        if self._taken(subgoal, param, claim.evidence[0]):
+            self.counts.evidence_taken += 1
+            return "evidence_taken"
         named = claim.kind != "state" or self._named(subgoal, param, claim.evidence[0], observed)
         return None if named else "words_missing"
+
+    def _taken(self, subgoal: Subgoal, param: str, handle: int) -> bool:
+        """[V2.73], extending [V2.40]'s one-handle rule across subgoals: an element that is the
+        evidence of a closed subgoal cannot be the evidence of another subgoal of the same kind
+        whose param shares a span with that closed subgoal's (`spans_shared`)."""
+        span = subgoal.params[param]
+        for other in self.subgoals:
+            if other.id == subgoal.id or other.id not in self.proven:
+                continue
+            if other.closes != subgoal.closes:
+                continue
+            for name, proof in self.proofs.get(other.id, {}).items():
+                shared = name in other.params and spans_shared(other.params[name], span)
+                if proof.handle == handle and shared:
+                    return True
+        return False
 
     def _named(self, subgoal: Subgoal, param: str, handle: int, observed: Observed) -> bool:
         """[V2.40] Q7: a state claim proves a param only when the cited element's name, or its
@@ -1062,11 +1082,10 @@ class _Run:
         subgoal with the same closing kind and a shared param span takes `at` as its baseline,
         so its evidence must be newer. Same kind only: a value and a page subgoal sharing a span
         may both close on one type (a field's digest and a page's carriers differ)."""
-        spans = {_folded(span.text) for span in closed.params.values()}
         for other in self.subgoals:
             if other.id in self.proven or other.closes != closed.closes:
                 continue
-            if spans & {_folded(span.text) for span in other.params.values()}:
+            if _shares_span(closed, other):
                 self.baselines[other.id] = at
 
     def _check_done(self, observed: Observed) -> None:
@@ -1516,13 +1535,11 @@ class _Run:
         task, whether its text is still pending or not."""
         return tuple(dict.fromkeys(e.field for e in self.ever))
 
-    def _acted(self, subgoal: Subgoal) -> tuple[int, ...] | None:
-        """The field whose Document scopes a subgoal's carriers: the last one typed under it,
-        else the last one typed in the task, else none (#331 review B8b)."""
-        mine = [e.field for e in self.ever if e.subgoal == subgoal.id]
-        if mine:
-            return mine[-1]
-        return self.ever[-1].field if self.ever else None
+    def _acted(self) -> tuple[int, ...] | None:
+        """[V2.73]: the element whose outermost Document scopes the carriers (the [V2.3]
+        observer scope rule): the most recently acted element in the task, whatever subgoal its
+        action was labelled with; None when nothing was acted on (the observer's own rule)."""
+        return None if self.last_acted is None else self.last_acted.runtime_id
 
     def _log_entry(self, sent: Dispatch, act: ActResult, report: EffectReport) -> LogEntry:
         """[V2.46], §8.6: the action as closed tokens and its task handle; never the target's
@@ -1737,7 +1754,7 @@ class _Run:
         words = (
             subgoal.params[param].text if param is not None and param in subgoal.params else None
         )
-        self.ever.append(_Ever(element.runtime_id, subgoal.id, words))
+        self.ever.append(_Ever(element.runtime_id, words))
         if param is None and sent.text:  # packet rev 5 item 5: masked out of the audit's view
             self.free_texts.append(sent.text)
 
@@ -1796,7 +1813,7 @@ class _Run:
                 baseline,
                 observed,
                 typed=self._typed_fields(),
-                acted=self._acted(subgoal),
+                acted=self._acted(),
                 echo=self._echo(subgoal),
                 allow_file=self._allow_file(),
             )
@@ -2068,6 +2085,18 @@ def _shared_rids(observed: Observed) -> frozenset[tuple[int, ...]]:
 def _folded(text: str) -> str:
     """Words as the echo guard compares them: NFKC, collapsed whitespace, case-folded."""
     return normalise_name(text).casefold()
+
+
+def spans_shared(a: GoalSpan, b: GoalSpan) -> bool:
+    """[V2.72] Two, #473 review: two params share a span when their ranges of the request
+    overlap (one contains the other included) or their words are the same, folded (the same
+    words at another place in the request)."""
+    overlap = a.start < b.end and b.start < a.end
+    return overlap or _folded(a.text) == _folded(b.text)
+
+
+def _shares_span(one: Subgoal, other: Subgoal) -> bool:
+    return any(spans_shared(a, b) for a in one.params.values() for b in other.params.values())
 
 
 def _proved_param(claim: Claim, subgoal: Subgoal) -> str | None:

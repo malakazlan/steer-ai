@@ -632,6 +632,7 @@ OUTCOME_COUNTS: Final = (
     "toggles_settled_on_reread",
     "fields_not_empty",
     "not_own_text",
+    "evidence_taken",
     "target_changes",
     "focus_losses",
     "history_dropped",

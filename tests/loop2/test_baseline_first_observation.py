@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import dataclasses
 
+import pytest
+
 from steerai.loop2.decision import Claim, Decision, SubgoalDoc
-from steerai.loop2.runner import run_task
+from steerai.loop2.runner import _Run, run_task, spans_shared
+from steerai.loop2.task import GoalSpan, Subgoal
 from steerai.world.effects import Observed
 from tests.loop2.test_auto_proof_every_observation import RESULTS, START
 from tests.loop2.test_navigated import QUERY_URL, page
-from tests.loop2.world_fakes import FIELD, RESULT, World, act, report, task
+from tests.loop2.world_fakes import FIELD, GO, GOAL, RESULT, URL, World, act, report, task
 
 PAGE_SUB = SubgoalDoc(id="s1", desc="results", params={"text": "red shoes"}, closes="page")
 VALUE_SUB = SubgoalDoc(id="s2", desc="field", params={"text": "red shoes"}, closes="value")
@@ -114,3 +117,71 @@ def test_a_value_and_a_page_subgoal_over_one_span_both_close_on_one_type() -> No
     outcome = run_task(task(), world.ports())
     assert _proven(world, "s2")  # the value closed first, on turn 2
     assert outcome.status == "done"  # and the page on the same type's results
+
+
+def test_the_second_page_subgoal_closes_on_a_later_event_of_its_own() -> None:
+    """#473 review 2, newer and not never: after the first page subgoal closed on the results,
+    a later navigation that carries the second's words (a title it did not have) closes it."""
+    search = SubgoalDoc(id="s1", desc="search", params={"text": "red shoes"}, closes="page")
+    open_page = SubgoalDoc(id="s2", desc="open", params={"name": "red shoes"}, closes="page")
+    item = page([], url=URL + "item/42", title="Red shoes")
+    world = World(
+        [
+            Decision(
+                subgoals=[search, open_page],
+                actions=[act("click", target=GO.id, subgoal="s1")],
+            ),
+            Decision(actions=[act("click", target=RESULT.id, subgoal="s2")]),
+            Decision(stop="blocked"),
+        ],
+        effects=[report("navigated"), report("navigated")],
+        screen=START,
+    )
+    world.timeline = [(1, page([RESULT])), (2, item)]
+    outcome = run_task(task(), world.ports())
+    assert _proven(world, "s1")
+    assert outcome.status == "done"
+
+
+# ---- which params share a span ([V2.72] Two, #473 review 1) -----------------------------------
+
+
+def _span(text: str) -> GoalSpan:
+    start = GOAL.index(text)
+    return GoalSpan(text, start, start + len(text))
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "shared"),
+    [
+        (_span("red shoes"), _span("red shoes"), True),
+        (_span("red shoes"), _span("shoes"), True),  # contained
+        (_span("the shop for red"), _span("red shoes"), True),  # overlapping
+        (_span("red shoes"), _span("shop"), False),  # disjoint
+        (_span("red shoes"), GoalSpan("Red  Shoes", 40, 50), True),  # the same words elsewhere
+    ],
+    ids=["same", "contained", "overlapping", "disjoint", "same_words_elsewhere"],
+)
+def test_two_params_share_a_span_when_they_overlap_or_say_the_same_words(
+    a: GoalSpan, b: GoalSpan, shared: bool
+) -> None:
+    assert spans_shared(a, b) is shared
+    assert spans_shared(b, a) is shared
+
+
+def _sub(sid: str, text: str, closes: str = "page") -> Subgoal:
+    return Subgoal(id=sid, desc="x", params={"p": _span(text)}, closes=closes)  # type: ignore[arg-type]  # a closing kind under test
+
+
+def test_a_close_moves_only_open_same_kind_subgoals_that_share_a_span() -> None:
+    closed = _sub("s1", "red shoes")
+    run = _Run(task(), World([]).ports())
+    run.subgoals = (
+        closed,
+        _sub("s2", "shoes"),  # contained: moved
+        _sub("s3", "shop"),  # disjoint: kept
+        _sub("s4", "red shoes", "value"),  # another kind: kept
+    )
+    run.proven.add("s1")
+    run._rebase(closed, START)
+    assert run.baselines == {"s2": START}

@@ -416,8 +416,8 @@ def test_the_file_start_is_the_documents_address_not_the_bar() -> None:
 
 
 def test_the_auto_proof_never_closes_a_commit_subgoal() -> None:
-    """An undeclared action on a commit subgoal sets its baseline, so the auto proof reaches it;
-    `_tick` refuses (RT-06)."""
+    """[V2.72]: the auto proof reaches every open page subgoal from the task's first full read,
+    a commit subgoal too; `_tick` refuses it (RT-06). #474: the auto path should skip it."""
     subs = [
         SubgoalDoc(
             id="s1", desc="search", params={"text": "red shoes"}, closes="page", commit="submit"
