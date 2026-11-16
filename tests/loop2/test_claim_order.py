@@ -4,7 +4,6 @@ event (`_rebase`); the auto proof already runs first on every full read, in decl
 
 from __future__ import annotations
 
-
 from steerai.loop2.decision import Claim
 from steerai.loop2.runner import _Run
 from steerai.loop2.task import GoalSpan, Subgoal
@@ -38,3 +37,17 @@ def test_a_rebased_subgoal_is_refused_not_newer_and_stays_open() -> None:
     run._claims([CLAIM_S1, CLAIM_S2], RESULTS)
     assert run.proven == {"s1"}
     assert "s2" not in run.proven
+
+
+def test_a_rebased_subgoal_that_ends_open_is_counted() -> None:
+    run = _run()
+    run._claims([CLAIM_S1, CLAIM_S2], RESULTS)
+    outcome = run._outcome("stopped", None)
+    assert outcome.rebased_open == 1
+
+
+def test_a_rebased_subgoal_that_closes_later_is_not_counted() -> None:
+    run = _run()
+    run._claims([CLAIM_S1], RESULTS)
+    run.proven.add("s2")
+    assert run._outcome("stopped", None).rebased_open == 0

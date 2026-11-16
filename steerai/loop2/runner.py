@@ -457,6 +457,8 @@ class _Run:
         self.baselines: dict[str, Observed] = {}
         self.first: Observed | None = None
         self.first_full: Observed | None = None
+        self.rebased: set[str] = set()
+        """[V2.74]: the subgoals a close rebased (`_rebase`), counted if they end open."""
         """[V2.72]: the task's first full observation, every subgoal's baseline."""
         self.last_acted: _Acted | None = None
         self.batch_last: tuple[ActionKey, EffectReport] | None = None
@@ -595,6 +597,7 @@ class _Run:
             fields_not_empty=self.counts.fields_not_empty,
             not_own_text=self.counts.not_own_text,
             evidence_taken=self.counts.evidence_taken,
+            rebased_open=len(self.rebased - self.proven),
         )
 
     def _cost(self) -> float | None:
@@ -1109,6 +1112,7 @@ class _Run:
                 continue
             if _shares_span(closed, other):
                 self.baselines[other.id] = at
+                self.rebased.add(other.id)
 
     def _check_done(self, observed: Observed) -> None:
         """A task with zero subgoals never ends `done` ([V2.11] decision 1). [V2.69] One: every

@@ -506,6 +506,9 @@ class TaskOutcome:
     evidence_taken: int = 0
     """[V2.73]: value or state claims refused because their element is already the evidence of
     another, closed subgoal of the same kind sharing a span (`evidence_taken`)."""
+    rebased_open: int = 0
+    """[V2.74] (#475): subgoals another's close rebased (`_rebase`) that the task ended without
+    closing."""
     history_dropped: int = 0
     """[V2.47]: history lines off the history vocabulary (`history_line_ok`): dropped, never
     shown."""

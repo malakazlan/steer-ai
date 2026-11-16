@@ -517,6 +517,7 @@ def _result(
             "fields_not_empty": outcome.fields_not_empty,
             "not_own_text": outcome.not_own_text,
             "evidence_taken": outcome.evidence_taken,  # [V2.73]
+            "rebased_open": outcome.rebased_open,  # [V2.74]
             "target_changes": outcome.target_changes,
             "focus_losses": outcome.focus_losses,
             "history_dropped": outcome.history_dropped,
