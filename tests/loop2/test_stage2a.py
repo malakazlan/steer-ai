@@ -18,9 +18,11 @@ from steerai.loop2.stage1_expected import Expected
 from steerai.loop2.stage2_expected import (
     DecidingFacts,
     TableRow,
+    check_rated_from,
     load_acts,
     load_table,
     load_unrated,
+    recorded_acts,
     table_from_reads,
 )
 from steerai.loop2.stage2a import (
@@ -308,10 +310,41 @@ def test_a_calculator_it_launched_is_closed_after_use() -> None:
     assert closed == [5]
 
 
-def test_only_the_committed_2a_acts_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """#428 (8): the 2a table check also pins the acts file it reads."""
+def test_the_committed_table_runs_only_against_the_acts_it_was_rated_from(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#466 (2): the committed table records its acts' SHA-256; the run refuses any other acts."""
     edited = tmp_path / "acts.json"
     edited.write_text(stage2a.ACTS.read_text(encoding="utf-8") + " ", encoding="utf-8")
     monkeypatch.setattr(stage2a, "ACTS", edited)
-    with pytest.raises(ValueError, match="not the committed 2a acts"):
+    with pytest.raises(ValueError, match="not the acts the table was rated from"):
         stage2a.check_table(stage2a.TABLE.read_text(encoding="utf-8"))
+
+
+def test_a_table_rated_from_acts_a_refuses_to_run_against_acts_b(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#466 (2), the coordinator's ruling: rating records the SHA-256 of the acts it rated from,
+    and a table is valid only for those exact acts. B parses as A; only its bytes differ."""
+    from tests.loop2.test_stage2_expected import TYPE_ENTER, read, saved  # noqa: PLC0415
+
+    task = local_tasks()[0]
+    (tmp_path / f"{task.task_id}.json").write_bytes(saved(read()))
+    rows = table_from_reads({task.task_id: TYPE_ENTER}, tmp_path, tasks=local_tasks())
+    acts_a = stage2a.ACTS.read_text(encoding="utf-8")
+    acts_b = acts_a + "\n"
+    assert load_acts(acts_b) == load_acts(acts_a)
+    rated: list[tuple[object, Path]] = []
+
+    def rate(acts: object, reads: Path) -> list[TableRow]:
+        rated.append((acts, reads))
+        return rows
+
+    monkeypatch.setattr(stage2a, "rate_2a", rate)
+    table = stage2a.rated_table(acts_a, tmp_path)
+    assert rated == [(load_acts(acts_a), tmp_path)]
+    assert set(load_table(table)) == {task.task_id}
+    assert recorded_acts(table) == hashlib.sha256(acts_a.encode("utf-8")).hexdigest()
+    check_rated_from(table, acts_a)
+    with pytest.raises(ValueError, match="not the acts the table was rated from"):
+        check_rated_from(table, acts_b)
