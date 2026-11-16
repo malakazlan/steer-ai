@@ -262,7 +262,18 @@ class Decided:
     estimate_low: bool = False
     """[V2.61]: the turn's calls held more input tokens than the guard's bound said."""
     calls: int = 1
-    """Invariant 9, [V2.68]: the model calls the turn made (a repaired turn is two)."""
+    """Invariant 9, [V2.68]: the model calls the turn made (a repaired turn is two); 0 for a
+    Decision no model made (the chain eval's scripted reach, [V2.71] (a)), which spends
+    nothing and whose usage is not read."""
+
+    def __post_init__(self) -> None:
+        """#454 round 2 (2): never fewer than no calls, and a Decision no model made reports
+        exactly no usage, so it can never hide a real call's tokens."""
+        if self.calls < 0:
+            raise ValueError("negative_calls")
+        if self.calls == 0 and self.usage != TokenUsage(0, 0):
+            raise ValueError("no_call_with_usage")
+
     rejections: tuple[str, ...] = ()
     """[V2.67] D: the closed rejection tokens of each attempt that failed before it, in order."""
 

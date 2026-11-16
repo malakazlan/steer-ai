@@ -46,6 +46,8 @@ OUTSIDE_ACT_PATH = {
     "action/launcher.py": "the `open` verb's launcher; the act port refuses `open` in step 3",
     "orchestrator/loop.py": "v1's Session: its step evidence, never an act port result",
     "probes/layer_b.py": "a probe's own recorded result, never sent through the act port",
+    "loop2/chain_pages.py": "the chain eval's fake page (#454) plays the act port offline; its "
+    "details are checked closed below",
 }
 """Files that build an act result but are not on the v2 act path, each with why."""
 
@@ -237,3 +239,10 @@ def test_each_dynamic_detail_value_is_in_the_shared_set() -> None:
 
 def test_the_two_sets_name_no_token_twice() -> None:
     assert not REFUSAL_DETAILS & PORT_DETAILS, sorted(REFUSAL_DETAILS & PORT_DETAILS)
+
+
+def test_the_chain_evals_fake_page_gives_only_closed_details() -> None:
+    """#454: the fake page's act results reach the runner as the act port's do."""
+    found = _constants(frozenset({"loop2/chain_pages.py"}))
+    assert found
+    assert found <= ALL, sorted(found - ALL)
