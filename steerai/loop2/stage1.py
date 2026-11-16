@@ -48,6 +48,8 @@ from steerai.loop2.loop import (
     PARENT_KINDS,
     REASON_TOKEN,
     URL_READS,
+    RunnerAuditReason,
+    SufficiencyReason,
 )
 from steerai.loop2.stage1_expected import LARGE_TASKS, Expected, large_expected
 from steerai.orchestrator.contracts import RISKS
@@ -212,6 +214,9 @@ MTA_COMPARABILITY: Final[Mapping[str, Any]] = {  # Any: JSON values
     "trusted_in_every_run": 10,
     "differ": [],
     "g12": "explained: the probe's executor had no option source (#406, #414)",
+    "artefact": "D:/steerai-data/probes/2026-11-15/mta_act.json",
+    "artefact_summary": "local only, not in the repo; its summary verbatim in PR #400's body",
+    "artefact_sha256": "02f8e6d1cbcfca359ecc8aa3ea143faab455d6b8c2d3975eaeea6527c9667e8a",
 }
 """[V2.64] Four, closed by [V2.65] Four: v1's executors behave the same in both apartments, so
 the stage 1 report states executor behaviour under the MTA as compared, not as unseparated."""
@@ -339,9 +344,9 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
         )
     if task.never_reason is not None and reason == task.never_reason:
         return verdict("fail", f"reason:{reason}")
-    if task.reason is not None and reason != task.reason:
+    if task.reason is not None and not reason_matches(task.reason, reason):
         return verdict("fail", f"reason:{reason}")
-    if task.reasons and reason not in task.reasons:
+    if task.reasons and not any(reason_matches(r, reason) for r in task.reasons):
         return verdict("fail", f"reason:{reason}")
     met = {
         "done": status == "done",
@@ -571,8 +576,18 @@ def _closed_reason(reason: str | None) -> str | None:  # noqa: PLR0911 - one ret
 
 
 def _token(text: str) -> bool:
-    bare = text.removeprefix("after_refusal:")
-    return REASON_TOKEN.fullmatch(bare) is not None
+    """A run's reason: a token, `after_refusal:<token>`, or `<class>:<token>` ([V2.70])."""
+    parts = text.removeprefix("after_refusal:").split(":")
+    return len(parts) <= 2 and all(REASON_TOKEN.fullmatch(p) is not None for p in parts)
+
+
+def reason_matches(expected: str, got: object) -> bool:
+    """[V2.70]: an expected ending scored by its reason class. Only `no_progress` has a class
+    (its single cause, [V2.69] Two, is diagnostic detail): it matches `no_progress` and any
+    `no_progress:<token>`. Every other expectation matches only itself (#460 review)."""
+    if not isinstance(got, str):
+        return False
+    return got == expected or (expected == "no_progress" and got.startswith("no_progress:"))
 
 
 _START_CODES: Final = frozenset({c.value for c in ErrorCode} | {"None"})
@@ -935,6 +950,9 @@ def _start_nudges(finals: Sequence[Json]) -> dict[str, int]:
 
 
 AUDIT_RESULTS: Final = ("allowed", "vetoed", "failed")
+AUDIT_REASONS: Final = frozenset({*get_args(SufficiencyReason), *get_args(RunnerAuditReason)})
+"""#425 (3): the closed audit reasons (the controller's verdicts and the runner's failures); any
+other text is counted as `other`, so a model's words never become report keys."""
 
 
 def _audits(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures
@@ -956,7 +974,8 @@ def _audits(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures
             continue
         ran += 1
         results[result] = results.get(result, 0) + 1
-        reasons[reason] = reasons.get(reason, 0) + 1
+        key = reason if reason in AUDIT_REASONS else "other"
+        reasons[key] = reasons.get(key, 0) + 1
     return {"ran": ran, "result": results, "reason": reasons, "incomplete": incomplete}
 
 

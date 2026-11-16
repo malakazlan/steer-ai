@@ -54,7 +54,7 @@ def test_rejected_turns_end_only_through_the_strike_limit() -> None:
     world = World([])
     world.decide_errors = [_rejected("param_not_span")] * 10
     outcome = run_task(task(), world.ports())
-    assert (outcome.status, outcome.reason) == ("paused", "no_progress")
+    assert (outcome.status, outcome.reason) == ("paused", "no_progress:param_not_span")
     assert len(world.views) == 3
 
 
@@ -95,7 +95,7 @@ def test_repairs_and_retries_never_stack_past_the_strike_limit() -> None:
     world = World([])
     world.decide_errors = [_rejected("subgoal_id_bad")] * 10
     outcome = run_task(task(), world.ports())
-    assert (outcome.status, outcome.reason) == ("paused", "no_progress")
+    assert (outcome.status, outcome.reason) == ("paused", "no_progress:subgoal_id_bad")
     assert len(world.views) == 3
     assert outcome.model_calls == 6
 

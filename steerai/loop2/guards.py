@@ -3,6 +3,7 @@ step 3 packet §3)."""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -115,6 +116,21 @@ def made_progress(verb: str, effect: EffectReport | None) -> bool:
     if verb in KEY_VERBS:
         return bool(effect.classes - {"none", "unknown"}) or bool(effect.tokens & PROGRESS_TOKENS)
     return bool(effect.classes & STRONG)
+
+
+def single_cause(strikes: Iterable[tuple[tuple[StrikeReason, ...], frozenset[str]]]) -> str | None:
+    """[V2.69] Two, intake packet rev 5 §4 and its note: the one refusal token behind every
+    strike of the run, else None (mixed, or no strike). A strike has a cause only when its
+    reasons are `refused`, alone or with `state_seen` (implied when nothing was dispatched: the
+    page did not change), and its refusal had exactly one token; that token is the cause."""
+    causes: set[str] = set()
+    for reasons, words in strikes:
+        if "refused" not in reasons or not set(reasons) <= {"refused", "state_seen"}:
+            return None
+        if len(words) != 1:
+            return None
+        causes |= words
+    return next(iter(causes)) if len(causes) == 1 else None
 
 
 class Strikes:

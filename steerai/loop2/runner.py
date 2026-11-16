@@ -53,6 +53,7 @@ from steerai.loop2.guards import (
     budget_hit,
     made_progress,
     same_action,
+    single_cause,
 )
 from steerai.loop2.history import (
     REFUSAL_TOKENS,
@@ -78,6 +79,8 @@ from steerai.loop2.history import (
 from steerai.loop2.listing import ListingTurn, words_of
 from steerai.loop2.loop import (
     AUDIT_COUNTS,
+    AUDIT_FAILED,
+    AUDIT_NO_CALL,
     COMMIT_RISK,
     INTAKE_COUNTS,
     PARENT_KINDS,
@@ -98,7 +101,9 @@ from steerai.loop2.loop import (
     ReadKind,
     Reason,
     RiskWhy,
+    RunnerAuditReason,
     Status,
+    SufficiencyReason,
     TaskOutcome,
     TokenUsage,
     TurnView,
@@ -451,6 +456,8 @@ class _Run:
         """The shakedown's #3: the last rejected turn's closed tokens, for the final line."""
         self.strikes = Strikes(STRIKE_LIMIT)
         self.strike_log: list[tuple[StrikeReason, ...]] = []
+        self.strike_words: list[frozenset[str]] = []
+        """[V2.69] Two: each strike's refusal tokens, beside `strike_log`, for the single cause."""
         self.refusal: tuple[RefusalKind, str] | None = None
         self.typed: list[_Typed] = []
         self.pending: list[_Pending] = []
@@ -488,7 +495,7 @@ class _Run:
         self.unread_aids = 0
         self.proven_how: dict[str, ProvenHow] = {}
         """[V2.64] One: how each subgoal was proven (a claim, or the auto proof's token)."""
-        self.audit: tuple[str, str] | None = None
+        self.audit: tuple[str, SufficiencyReason | RunnerAuditReason] | None = None
         """[V2.64] One: the final audit's outcome and reason, when it ran."""
         self.audit_counts: dict[str, int] = dict.fromkeys(AUDIT_COUNTS, 0)
         """[V2.69] One, packet rev 4 item 4: the audit's counts (`_audit`)."""
@@ -1201,7 +1208,7 @@ class _Run:
             raise _End("paused", Reason(hit))
         if audit is None:
             self.audit_counts["audit_no_call"] += 1
-            self.audit = ("failed", "audit_no_call")
+            self.audit = ("failed", AUDIT_NO_CALL)
             raise _End("blocked", Reason("audit_failed"))
         cited = {
             self.handles.by_handle[p.handle]
@@ -1224,7 +1231,7 @@ class _Run:
             if isinstance(exc, ControllerError) and exc.record is None:
                 # refused before any call (the bound, a fence in the data): no call is counted
                 self.audit_counts["audit_no_call"] += 1
-                self.audit = ("failed", "audit_no_call")
+                self.audit = ("failed", AUDIT_NO_CALL)
                 raise _End("blocked", Reason("audit_failed")) from None
             self.model_calls += 1
             self.audit_counts["audit_calls"] += 1
@@ -1237,7 +1244,7 @@ class _Run:
             self._spend(usage)
             if usage is not None:  # #452 tester G3: a failed call's reported tokens are counted
                 self.audit_counts["audit_tokens"] += sum(_counts(usage) or ())
-            self.audit = ("failed", "audit_failed")
+            self.audit = ("failed", AUDIT_FAILED)
             raise _End("blocked", Reason("audit_failed")) from None
         self.model_calls += 1
         self.audit_counts["audit_calls"] += 1
@@ -2017,10 +2024,12 @@ class _Run:
         reasons = self.strikes.record(facts)
         if reasons:
             self.strike_log.append(reasons)
+            self.strike_words.append(frozenset(f.refusal for f in self.turn.refusals))
         if self.strikes.paused:
             held = self._hold(observed)
-            if held is None:
-                raise _End("paused", Reason("no_progress"))
+            if held is None:  # [V2.69] Two: one cause behind every strike is named
+                cause = single_cause(zip(self.strike_log, self.strike_words, strict=True))
+                raise _End("paused", Reason("no_progress", detail=cause))
             return held
         return observed
 
