@@ -462,6 +462,8 @@ class _Run:
         """[V2.74] (#475): the non-commit subgoals another subgoal's close through a model claim
         rebased (`_rebase`); `rebased_open` counts those still open when the task ends. An auto
         proof's close rebases too, but is not counted: no claim order decided it."""
+        self.rebased_commit: set[str] = set()
+        """[V2.76]: as `rebased`, for commit subgoals."""
         self.last_acted: _Acted | None = None
         self.batch_last: tuple[ActionKey, EffectReport] | None = None
         self.fresh: dict[tuple[int, ...], ValueFact | None] = {}
@@ -600,6 +602,7 @@ class _Run:
             not_own_text=self.counts.not_own_text,
             evidence_taken=self.counts.evidence_taken,
             rebased_open=len(self.rebased - self.proven),
+            rebased_open_commit=len(self.rebased_commit - self.proven),
         )
 
     def _cost(self) -> float | None:
@@ -1116,8 +1119,8 @@ class _Run:
                 continue
             if _shares_span(closed, other):
                 self.baselines[other.id] = at
-                if by_claim and other.commit == "none":
-                    self.rebased.add(other.id)
+                if by_claim:
+                    (self.rebased if other.commit == "none" else self.rebased_commit).add(other.id)
 
     def _check_done(self, observed: Observed) -> None:
         """A task with zero subgoals never ends `done` ([V2.11] decision 1). [V2.69] One: every

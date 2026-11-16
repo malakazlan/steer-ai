@@ -61,11 +61,20 @@ def test_a_subgoal_rebased_by_an_auto_close_is_not_counted() -> None:
     assert run._outcome("stopped", None).rebased_open == 0
 
 
-def test_a_commit_subgoal_rebased_by_a_claims_close_is_not_counted() -> None:
+def test_a_commit_subgoal_rebased_by_a_claims_close_is_counted_apart() -> None:
     run = _run()
     run.subgoals = (SEARCH, dataclasses.replace(OPEN, commit="submit"))
     run._claims([CLAIM_S1], RESULTS)
-    assert run._outcome("stopped", None).rebased_open == 0
+    outcome = run._outcome("stopped", None)
+    assert outcome.rebased_open == 0
+    assert outcome.rebased_open_commit == 1
+
+
+def test_a_commit_subgoal_rebased_by_an_auto_close_is_not_counted() -> None:
+    run = _run()
+    run.subgoals = (SEARCH, dataclasses.replace(OPEN, commit="submit"))
+    run._tick(SEARCH, how="results_with_url", at=RESULTS)
+    assert run._outcome("stopped", None).rebased_open_commit == 0
 
 
 def test_the_auto_path_reaching_a_commit_subgoal_is_a_code_bug() -> None:

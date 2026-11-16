@@ -642,6 +642,7 @@ OUTCOME_COUNTS: Final = (
     "not_own_text",
     "evidence_taken",
     "rebased_open",
+    "rebased_open_commit",
     "target_changes",
     "focus_losses",
     "history_dropped",
