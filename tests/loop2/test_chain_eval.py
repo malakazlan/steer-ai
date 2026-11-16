@@ -697,7 +697,10 @@ def test_nothing_typed_is_not_measured() -> None:
 
 
 def _subgoal(sid: str, closes: str, param: str, words: str) -> dict[str, Any]:  # Any: JSON
-    return {"id": sid, "desc": "it is so", "params": {param: words}, "closes": closes}
+    doc: dict[str, Any] = {  # Any: JSON
+        "id": sid, "desc": "it is so", "params": {param: words}, "closes": closes
+    }  # fmt: skip
+    return doc | ({"wanted": "on"} if closes == "state" else {})
 
 
 def _state_turns(name: str) -> list[Callable[[str], dict[str, Any]]]:
@@ -706,7 +709,7 @@ def _state_turns(name: str) -> list[Callable[[str], dict[str, Any]]]:
         lambda p: {"subgoals": [sub], "actions": [
             {"verb": "check", "target": handle(p, name), "subgoal": "s1", "param": "what"}]},
         lambda p: {"claims": [{"subgoal": "s1", "kind": "state", "evidence": [handle(p, name)],
-                               "param": "what", "wanted": "on"}]},
+                               "param": "what"}]},
     ]  # fmt: skip
 
 

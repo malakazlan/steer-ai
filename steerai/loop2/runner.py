@@ -226,6 +226,7 @@ REFUSAL_KIND: Final[Mapping[str, RefusalKind]] = {
     "type_text_and_param": "model",
     "value_without_param": "model",
     "wanted_missing": "model",
+    "wanted_not_state": "model",
 }
 """[V2.12], [V2.37] P5, [V2.74]: each refusal token's kind, declared for every token (no default;
 a token without a kind fails a test). [V2.43]: a world fact the person-ask
@@ -418,7 +419,6 @@ class _Proof:
 
     handle: int
     kind: str
-    wanted: str | None
 
 
 @dataclass(frozen=True)
@@ -984,6 +984,7 @@ class _Run:
                 params={name: _span(goal, text) for name, text in doc.params.items()},
                 closes=doc.closes,
                 commit=doc.commit,
+                wanted=doc.wanted,
             )
             for doc in docs
         )
@@ -1038,7 +1039,7 @@ class _Run:
             self._tick(subgoal, how="claim", at=observed)
             return
         proofs = self.proofs.setdefault(subgoal.id, {})
-        proofs[param or ""] = _Proof(claim.evidence[0], claim.kind, claim.wanted)
+        proofs[param or ""] = _Proof(claim.evidence[0], claim.kind)
         if set(proofs) >= set(subgoal.params) and self._still(subgoal, observed):
             self._tick(subgoal, how="claim", at=observed)
             return
@@ -1113,9 +1114,9 @@ class _Run:
                 return False
             if proof.kind == "state":
                 words = holds_words(observed.snapshot, element, subgoal.params[param].text)
-                if not words or proof.wanted is None:
+                if not words or subgoal.wanted is None:
                     return False
-                if readers.read_state(element, proof.wanted) is not True:
+                if readers.read_state(element, subgoal.wanted) is not True:
                     return False
                 continue
             want = readers.fact_of(subgoal.params[param].text)
@@ -1205,9 +1206,7 @@ class _Run:
                 else ("navigated" if how == "claim" else how)
             )
             params = tuple((n, param.text) for n, param in numbered_params(subgoal.params))
-            lines.append(
-                (position, subgoal.closes, how, kind, _read_token(subgoal, how, proofs), params)
-            )
+            lines.append((position, subgoal.closes, how, kind, _read_token(subgoal, how), params))
         return tuple(lines)
 
     def _intake_passes(self, decision: Decision) -> bool:
@@ -1224,7 +1223,7 @@ class _Run:
         if not due or intake is None or any(s.closes not in {"value", "state"} for s in subs):
             return True
         lines = _intake_lines(subs)
-        key = hashlib.sha256(repr([(c, p) for _pos, c, p in lines]).encode()).hexdigest()
+        key = hashlib.sha256(repr([(c, p, w) for _pos, c, p, w in lines]).encode()).hexdigest()
         if key in self.intake_memo:
             if self.intake_memo[key]:
                 return True
@@ -2412,14 +2411,15 @@ def _attempt(  # noqa: PLR0913, PLR0917 - one attempt's facts, positional for br
     )
 
 
-def _read_token(subgoal: Subgoal, how: str, proofs: Mapping[str, _Proof]) -> tuple[ReadKind, str]:
+def _read_token(subgoal: Subgoal, how: str) -> tuple[ReadKind, str]:
     """[V2.68] One: what code verified for a proven subgoal, as a closed (kind, detail) pair that
     the audit's prompt renders (`kind:detail`); no string is built here (#347 decision B)."""
     if subgoal.closes == "value":
         return ("value_read", "equals_param")
     if subgoal.closes == "state":
-        wanted = {p.wanted for p in proofs.values() if p.wanted is not None}
-        return ("state_read", next(iter(wanted)) if len(wanted) == 1 else "mixed")
+        if subgoal.wanted is None:  # `validate` refused a state subgoal without one
+            raise AssertionError("state subgoal without wanted")
+        return ("state_read", subgoal.wanted)
     return ("navigated", how)
 
 
@@ -2438,6 +2438,7 @@ def _intake_lines(subs: Sequence[SubgoalDoc]) -> tuple[IntakeLine, ...]:
             position,
             doc.closes,
             numbered_params(doc.params),
+            doc.wanted,
         )
         for position, doc in enumerate(subs, 1)
     )

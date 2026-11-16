@@ -48,13 +48,13 @@ from tests.loop2.world_fakes import (
 from tests.loop2.world_fakes import PAGE as SCREEN
 
 NEWLINE = chr(10)
-INTAKE_FIXED = "979763949ff64f8048a89f2820706164af5a286b7b96271c550f580bd092e109"
+INTAKE_FIXED = "51f0de21f916ad1a7c99e84e1a5cc02a7e8fd0f9b01bcae3968eb3ab4885d180"
 """V4: sha256 of the intake's rules and schema blocks, joined by newlines."""
 AUDIT_FIXED = "01ecdb87fd3fd46261f36161d45a342fc04fb0f4aaa9fa3eff2f28e4c17c48fe"
 """V4: sha256 of the audit's rules and schema blocks, joined by newlines."""
 
 VALUE = SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value")
-STATE = SubgoalDoc(id="s2", desc="x", params={"what": "shoes"}, closes="state")
+STATE = SubgoalDoc(id="s2", desc="x", params={"what": "shoes"}, closes="state", wanted="on")
 PAGE = SubgoalDoc(id="s3", desc="x", params={"text": "red shoes"}, closes="page")
 
 
@@ -300,7 +300,7 @@ def test_the_prompt_takes_no_observation() -> None:
 
 
 def test_the_prompt_holds_positions_spans_and_no_model_text() -> None:
-    view = IntakeView(subgoals=((1, "value", ((1, "red shoes"),)),))
+    view = IntakeView(subgoals=((1, "value", ((1, "red shoes"),), None),))
     system, user = build_intake_prompt(
         "type red shoes in the field", view.subgoals, task_fence="taskfence01"
     )
@@ -318,7 +318,7 @@ def test_the_runner_hands_the_check_positions_never_model_ids() -> None:
     world = _world_with([_first([leak]), Decision(stop="blocked")])
     run_task(task(), world.ports())
     (view,) = world.intakes
-    assert view.subgoals == ((1, "value", ((1, "red shoes"),)),)
+    assert view.subgoals == ((1, "value", ((1, "red shoes"),), None),)
     system, user = build_intake_prompt(task().goal, view.subgoals, task_fence="taskfence01")
     text = NEWLINE.join([*system, *user])
     for word in ("zqleakid", "zqdesc", "zqparam"):  # #457 principal: the whole prompt
@@ -329,9 +329,9 @@ def test_the_runner_hands_the_check_positions_never_model_ids() -> None:
 
 
 def test_the_intake_prompt_version_and_header() -> None:
-    assert INTAKE_PROMPT_VERSION == "intake-2"
+    assert INTAKE_PROMPT_VERSION == "intake-3"
     live, _ = _world()
-    assert live.header(task())["intake_prompt_version"] == "intake-2"
+    assert live.header(task())["intake_prompt_version"] == "intake-3"
 
 
 def test_both_judges_share_the_criterion() -> None:
@@ -350,7 +350,7 @@ def test_each_judges_fixed_blocks_are_pinned_with_its_version() -> None:
     audit, _ = build_audit_prompt("g", (), "w", [], task_fence="taskfence01",
                                   screen_fence="scrfence01")  # fmt: skip
     pinned = (INTAKE_PROMPT_VERSION, _fixed(intake), controller.AUDIT_PROMPT_VERSION, _fixed(audit))
-    assert pinned == ("intake-2", INTAKE_FIXED, "audit-4", AUDIT_FIXED)
+    assert pinned == ("intake-3", INTAKE_FIXED, "audit-4", AUDIT_FIXED)
 
 
 def test_intake_insufficient_is_told_to_the_model() -> None:
@@ -371,7 +371,11 @@ def _both_numbered(world: World) -> tuple[list[str], list[str]]:
 
     def numbered(block: str) -> list[str]:
         rows = block.split(NEWLINE)
-        return [r.split(" proven=")[0] for r in rows if r.startswith(("subgoal ", "  param:"))]
+        return [
+            r.split(" proven=")[0].split(" wanted=")[0]
+            for r in rows
+            if r.startswith(("subgoal ", "  param:"))
+        ]
 
     return numbered(intake_user[0]), numbered(audit_user[0])
 
@@ -405,21 +409,21 @@ def test_two_subgoals_with_unsorted_params_number_alike_in_both_judges() -> None
     shoes = element(43, "CheckBox", "Shoes", (9, 43), 1)
     subs = [
         SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value"),
-        SubgoalDoc(id="s2", desc="x", params={"zz": "red", "aa": "shoes"}, closes="state"),
+        SubgoalDoc(
+            id="s2", desc="x", params={"zz": "red", "aa": "shoes"}, closes="state", wanted="on"
+        ),
     ]
     world = World(
         [
             Decision(
                 subgoals=subs,
                 actions=[act("type", target=FIELD.id, param="text", subgoal="s1")],
-                claims=[
-                    Claim(subgoal="s2", kind="state", evidence=[red.id], param="zz", wanted=on)
-                ],
+                claims=[Claim(subgoal="s2", kind="state", evidence=[red.id], param="zz")],
             ),
             Decision(
                 claims=[
                     Claim(subgoal="s1", kind="value", evidence=[FIELD.id], param="text"),
-                    Claim(subgoal="s2", kind="state", evidence=[shoes.id], param="aa", wanted=on),
+                    Claim(subgoal="s2", kind="state", evidence=[shoes.id], param="aa"),
                 ]
             ),
         ],
@@ -447,7 +451,10 @@ def test_params_are_numbered_by_their_names_sorted_order() -> None:
 
 def test_the_intake_user_block_renders_exactly() -> None:
     """#457 review: one rendered user block, pinned whole, so a format change is seen."""
-    lines = ((1, "value", ((1, "red shoes"),)), (2, "state", ((1, "shoes"), (2, "red"))))
+    lines = (
+        (1, "value", ((1, "red shoes"),), None),
+        (2, "state", ((1, "shoes"), (2, "red")), "off"),
+    )
     _, user = build_intake_prompt("search red shoes", lines, task_fence="taskfence01")
     assert user == [
         NEWLINE.join(
@@ -459,7 +466,7 @@ def test_the_intake_user_block_renders_exactly() -> None:
                 "<<<subgoals taskfence01",
                 "subgoal 1 closes=value",
                 "  param:1 red shoes",
-                "subgoal 2 closes=state",
+                "subgoal 2 closes=state wanted=off",
                 "  param:1 shoes",
                 "  param:2 red",
                 "taskfence01>>>",

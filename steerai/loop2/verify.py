@@ -111,9 +111,9 @@ def check_claim(  # noqa: PLR0911, PLR0913 - one return per outcome; keyword-onl
         return rejected
     element = next(e for e in now.snapshot.elements if e.id == claim.evidence[0])
     if claim.kind == "state":
-        if claim.wanted is None:  # validate refuses this shape first
+        if subgoal.wanted is None:  # validate refuses this shape first
             raise ValueError("wanted_missing")
-        held = readers.read_state(element, claim.wanted)
+        held = readers.read_state(element, subgoal.wanted)
         if held is None:
             return ("state_unread",)
         return () if held else ("state_mismatch",)

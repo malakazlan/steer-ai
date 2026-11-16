@@ -84,7 +84,7 @@ from steerai.world.effects import _tokens  # the proof word match's token rule
 proof_tokens: Final = _tokens
 """The proof word match's own token rule, imported: a truth key and a proof read words alike."""
 SHAPES_PATH: Final = Path(__file__).with_name("chain_shapes.json")
-SHAPES_SHA256: Final = "c861193853c1b14b39ab813bb1fe55971cdf26c85acb4f163a753b607c288285"
+SHAPES_SHA256: Final = "1b6d6093429af916d12a060af64083bf38b298796102f9c3e1ed5c601dfd2aaa"
 """The shapes file as pre-registered: any edit fails `load_shapes`."""
 N: Final = 60
 """Must-pass: chains counted per shape (voids replaced)."""
@@ -941,7 +941,7 @@ def reach_decision(spec: Mapping[str, Any], view: TurnView, *, goal: str) -> Dec
 
     subgoals = [
         {"id": f"s{i + 1}", "desc": "declared by the harness", "params": dict(sg["params"]),
-         "closes": sg["closes"]}
+         "closes": sg["closes"], **({"wanted": sg["wanted"]} if "wanted" in sg else {})}
         for i, sg in enumerate(spec["subgoals"])
     ]  # fmt: skip
     actions = [

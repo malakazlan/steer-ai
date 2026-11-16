@@ -234,8 +234,8 @@ def _claims_world(*claims: Claim, closes_both: bool = False) -> World:
     red = element(42, "CheckBox", "Red", (9, 42), 1)
     params = {"a": "red", "b": "shoes"} if not closes_both else {"a": "red"}
     subs = [
-        SubgoalDoc(id="s1", desc="tick", params=params, closes="state"),
-        SubgoalDoc(id="s2", desc="other", params={"b": "shoes"}, closes="state"),
+        SubgoalDoc(id="s1", desc="tick", params=params, closes="state", wanted="on"),
+        SubgoalDoc(id="s2", desc="other", params={"b": "shoes"}, closes="state", wanted="on"),
     ]
     world = World(
         [
@@ -254,7 +254,7 @@ RED_ID = 42
 
 def test_a_claim_result_is_its_own_line_never_a_field_of_the_action() -> None:
     """[V2.47] (b): one fact, one place: a batch can hold several actions and one claim."""
-    proof = Claim(subgoal="s1", kind="state", evidence=[RED_ID], param="a", wanted="on")
+    proof = Claim(subgoal="s1", kind="state", evidence=[RED_ID], param="a")
     world = _claims_world(proof, closes_both=True)
     run_task(task(), world.ports())
     log = world.views[-1].log
@@ -265,7 +265,7 @@ def test_a_claim_result_is_its_own_line_never_a_field_of_the_action() -> None:
 
 
 def test_an_accepted_claim_gets_its_own_line() -> None:
-    half = Claim(subgoal="s1", kind="state", evidence=[RED_ID], param="a", wanted="on")
+    half = Claim(subgoal="s1", kind="state", evidence=[RED_ID], param="a")
     world = _claims_world(half)
     run_task(task(), world.ports())
     assert ClaimResult("s1", "accepted") in world.views[-1].log
@@ -273,8 +273,8 @@ def test_an_accepted_claim_gets_its_own_line() -> None:
 
 
 def test_each_claim_result_is_its_own_line() -> None:
-    wrong = Claim(subgoal="s1", kind="state", evidence=[MENU.id], param="a", wanted="on")
-    half = Claim(subgoal="s1", kind="state", evidence=[RED_ID], param="a", wanted="on")
+    wrong = Claim(subgoal="s1", kind="state", evidence=[MENU.id], param="a")
+    half = Claim(subgoal="s1", kind="state", evidence=[RED_ID], param="a")
     world = _claims_world(wrong, half)
     run_task(task(), world.ports())
     claims = [line for line in world.views[-1].history if line.startswith("claim:")]

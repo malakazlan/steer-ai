@@ -15,12 +15,20 @@ CASES: list[tuple[ClaimKind, Closes]] = [("value", "value"), ("state", "state")]
 
 def _claim(kind: ClaimKind, evidence: list[int]) -> Claim:
     if kind == "state":
-        return Claim(subgoal="s1", kind="state", evidence=evidence, param="text", wanted="on")
+        return Claim(subgoal="s1", kind="state", evidence=evidence, param="text")
     return Claim(subgoal="s1", kind="value", evidence=evidence, param="text")
 
 
 def _run(kind: ClaimKind, closes: Closes, evidence: list[int]) -> World:
-    subs = [SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes=closes)]
+    subs = [
+        SubgoalDoc(
+            id="s1",
+            desc="x",
+            params={"text": "red shoes"},
+            closes=closes,
+            wanted="on" if closes == "state" else None,
+        )
+    ]
     world = World([Decision(subgoals=subs, claims=[_claim(kind, evidence)])])
     outcome = run_task(task(), world.ports())
     assert outcome.status != "done"

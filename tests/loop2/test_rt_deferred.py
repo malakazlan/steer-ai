@@ -56,9 +56,9 @@ def test_a_decision_returning_after_the_kill_is_discarded() -> None:
 
 
 def test_a_claim_returning_after_the_kill_never_closes_the_task() -> None:
-    subs = [SubgoalDoc(id="s1", desc="tick", params={"text": "shop"}, closes="state")]
+    subs = [SubgoalDoc(id="s1", desc="tick", params={"text": "shop"}, closes="state", wanted="on")]
     box = element(42, "CheckBox", "Shop", (9, 42), 1)
-    claim = Claim(subgoal="s1", kind="state", evidence=[box.id], param="text", wanted="on")
+    claim = Claim(subgoal="s1", kind="state", evidence=[box.id], param="text")
     world = World(
         [Decision(subgoals=subs, claims=[claim])],
         screen=observed([*PAGE, box]),
@@ -355,7 +355,15 @@ def test_a_decision_refused_for_a_step_limit_and_a_model_fault_is_a_step_refusal
     status, and both tokens are recorded."""
     bad = Decision.model_validate(
         {
-            "subgoals": [{"id": "s1", "desc": "x", "params": {"text": "shop"}, "closes": "state"}],
+            "subgoals": [
+                {
+                    "id": "s1",
+                    "desc": "x",
+                    "params": {"text": "shop"},
+                    "closes": "state",
+                    "wanted": "on",
+                }
+            ],
             "actions": [
                 {"verb": "click", "target": 999, "subgoal": "s1"},
                 {"verb": "open", "subgoal": "s1"},
@@ -396,10 +404,10 @@ def test_a_policy_refusal_ends_when_its_subgoal_is_proven() -> None:
     controller's own."""
     box = element(42, "CheckBox", "Shop", (9, 42), 1)
     subs = [
-        SubgoalDoc(id="s1", desc="tick", params={"text": "shop"}, closes="state"),
+        SubgoalDoc(id="s1", desc="tick", params={"text": "shop"}, closes="state", wanted="on"),
         SubgoalDoc(id="s2", desc="find", params={"text": "red shoes"}, closes="page"),
     ]
-    claim = Claim(subgoal="s1", kind="state", evidence=[box.id], param="text", wanted="on")
+    claim = Claim(subgoal="s1", kind="state", evidence=[box.id], param="text")
     world = World(
         [
             Decision(subgoals=subs, actions=[act("type", target=PASSWORD.id, text="x")]),
@@ -448,7 +456,7 @@ def test_max_actions_counts_an_attempt_that_delivered_nothing() -> None:
 
 # ---- [V2.42] RT-42: a declared commit on a verb that cannot commit -------------------------------
 
-SUB1 = {"id": "s1", "desc": "x", "params": {"text": "shop"}, "closes": "state"}
+SUB1 = {"id": "s1", "desc": "x", "params": {"text": "shop"}, "closes": "state", "wanted": "on"}
 
 
 @pytest.mark.parametrize(
@@ -526,7 +534,9 @@ def test_a_step_limit_refusal_stands_through_progress_on_its_subgoal() -> None:
     """[V2.42] RT-30: the step-limit refusal attaches to the subgoal of the refused action (the
     `open`), and a later click's progress does not clear it. Intake packet rev 5 §4 P2: the
     refused first Decision freezes nothing, so the next turn re-declares the same subgoal."""
-    subgoals = [{"id": "s1", "desc": "x", "params": {"text": "shop"}, "closes": "state"}]
+    subgoals = [
+        {"id": "s1", "desc": "x", "params": {"text": "shop"}, "closes": "state", "wanted": "on"}
+    ]
     first = Decision.model_validate(
         {"subgoals": subgoals, "actions": [{"verb": "open", "subgoal": "s1"}]}
     )

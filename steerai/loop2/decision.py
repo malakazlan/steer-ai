@@ -12,7 +12,7 @@ from typing import Final, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
-from steerai.loop2.task import Commit
+from steerai.loop2.task import Commit, Wanted
 from steerai.loop2.text import clean_line, has_control
 
 Verb = Literal[
@@ -89,6 +89,7 @@ ValidateToken = Literal[
     "too_many_subgoals",
     "type_text_and_param",
     "wanted_missing",
+    "wanted_not_state",
     "value_without_param",
     "state_without_param",
     "page_without_param",
@@ -148,6 +149,8 @@ class SubgoalDoc(_Strict):
     """[V2.39] the kind of fact that closes it, declared at intake and frozen with it."""
     params: dict[str, str] = Field(default_factory=dict)
     commit: Commit = "none"
+    wanted: Wanted | None = None
+    """[V2.78] required when it closes with a state, refused on any other kind."""
 
 
 class ActionDoc(_Strict):
@@ -166,7 +169,6 @@ class Claim(_Strict):
     kind: ClaimKind
     evidence: list[StrictInt] = Field(default_factory=list)
     param: str | None = None
-    wanted: Literal["on", "off", "selected", "expanded", "collapsed"] | None = None
     answer: str | None = None
 
 
@@ -235,8 +237,6 @@ def _claim_tokens(
         tokens.append("param_unknown")
     if claim.kind == "value" and claim.param is None:
         tokens.append("param_missing")
-    if claim.kind == "state" and claim.wanted is None:
-        tokens.append("wanted_missing")
     return tokens
 
 
@@ -251,6 +251,10 @@ def _subgoal_doc_tokens(sub: SubgoalDoc, goal: str, fences: frozenset[str]) -> l
         tokens.append("param_name_bad")
     if any(not value or value not in goal for value in sub.params.values()):
         tokens.append("param_not_span")
+    if sub.closes == "state" and sub.wanted is None:
+        tokens.append("wanted_missing")  # [V2.78]: declared before acting, never at the claim
+    if sub.closes != "state" and sub.wanted is not None:
+        tokens.append("wanted_not_state")
     if not sub.params:
         # [V2.39], [V2.40] Q7: every closing kind proves params (page_without_param,
         # value_without_param, state_without_param); with none it could never close

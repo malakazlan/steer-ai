@@ -147,6 +147,7 @@
         "subgoals": [
           {
             "closes": "state",
+            "wanted": "on",
             "params": {
               "what": "Dark mode"
             }

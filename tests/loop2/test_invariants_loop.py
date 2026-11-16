@@ -379,7 +379,7 @@ def test_a_first_decision_may_be_a_stop_with_no_subgoals() -> None:
 
 
 def test_a_task_with_zero_subgoals_never_ends_done() -> None:
-    claim = Claim(subgoal="s1", kind="state", evidence=[GO.id], wanted="on")
+    claim = Claim(subgoal="s1", kind="state", evidence=[GO.id])
     world = World([Decision(claims=[claim]) for _ in range(3)])
     outcome = run_task(task(), world.ports())
     assert outcome.status != "done"
@@ -399,7 +399,7 @@ def test_a_first_turn_action_on_a_declared_subgoal_is_dispatched() -> None:
 
 def test_the_subgoals_are_frozen_after_the_first_decision() -> None:
     again = Decision(
-        subgoals=[*SUBGOALS, SubgoalDoc(id="s2", desc="more", closes="state")],
+        subgoals=[*SUBGOALS, SubgoalDoc(id="s2", desc="more", closes="state", wanted="on")],
         actions=[act("click", target=MENU.id)],
     )
     world = World([decision(act("click", target=GO.id), first=True), again])

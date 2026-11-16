@@ -44,7 +44,7 @@ def _system() -> list[str]:
 
 
 def test_the_prompt_version_moved() -> None:
-    assert PROMPT_VERSION == "controller-13"
+    assert PROMPT_VERSION == "controller-14"
 
 
 def test_a_rule_says_param_is_a_subgoal_params_name_never_its_words() -> None:
@@ -83,8 +83,6 @@ def test_the_prompt_offers_exactly_the_claim_kinds_validate_accepts_for_the_step
     accepted = set()
     for kind in get_args(ClaimKind):
         claim: dict[str, Any] = {"subgoal": "s1", "kind": kind, "param": "text"}  # Any: JSON
-        if kind == "state":
-            claim["wanted"] = "on"
         decision = Decision.model_validate({
             "subgoals": [{"id": "s1", "desc": "d", "params": {"text": "red shoes"},
                           "closes": "page"}],

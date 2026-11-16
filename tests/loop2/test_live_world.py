@@ -709,7 +709,7 @@ def test_the_run_header_names_the_model_effort_prompt_trace_and_price() -> None:
         "effort": "medium",
         "prompt_version": PROMPT_VERSION,
         "audit_prompt_version": "audit-4",  # [V2.69] (packet rev 5 P7); #457 schema title
-        "intake_prompt_version": "intake-2",  # [V2.68] One
+        "intake_prompt_version": "intake-3",  # [V2.68] One
         "trace_level": "redacted",
         "price": "not configured",
         "listing_cap": "150",
