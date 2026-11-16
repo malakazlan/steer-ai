@@ -416,7 +416,9 @@ def days_bound(bound: Mapping[str, int]) -> dict[str, int]:
     """The most days each host's bound can take ([V2.65] (3), #428 (5)): every load in the
     bound may need its wall confirmation, and an attempt starts only with its
     `ATTEMPT_LOADS` left today, so a day holds `DAILY_CAP // ATTEMPT_LOADS` of them at
-    worst. Never fewer days than a run can take."""
+    worst. Never fewer days than a run can take. #466 (5): a control is counted here as a full
+    attempt, though it never needs a confirmation, so the bound over-states the days (the safe
+    direction)."""
     per_day = DAILY_CAP // ATTEMPT_LOADS
     return {host: -(-loads // per_day) for host, loads in bound.items()}
 
@@ -566,7 +568,8 @@ def _live_site(  # noqa: PLR0911 - one return per way a run ends  # pragma: no c
 
         def record(log_read: bool, check: bool | None) -> RunRecord:
             return RunRecord(task_id, run, ran.final, True, log_read, check, None,
-                             killed=ran.killed, code=ran.code, memory=memory)  # fmt: skip
+                             killed=ran.killed, code=ran.code, memory=memory,
+                             kill_failure=ran.kill_failure)  # fmt: skip
 
         try:
             left = json.loads(_read(port, _WALL_EXPRESSION, "after") or "{}")

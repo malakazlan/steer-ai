@@ -520,6 +520,7 @@ def _result(
             "focus_losses": outcome.focus_losses,
             "history_dropped": outcome.history_dropped,
             "turn_trace_dropped": outcome.turn_trace_dropped,  # [V2.67] D
+            "turn_trace_errors": outcome.turn_trace_errors,  # #463 (1)
             "pre_task_draft_clicks": outcome.pre_task_draft_clicks,  # [V2.64] Two
             **{name: getattr(outcome, name) for name in AUDIT_COUNTS},  # [V2.69] One
             **{name: getattr(outcome, name) for name in INTAKE_COUNTS},  # [V2.68] One

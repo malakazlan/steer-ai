@@ -66,13 +66,33 @@ def _start(argv: list[str]) -> Child:
     return subprocess.Popen(argv)  # noqa: S603 - our own module, a fixed argument list, no shell
 
 
-def kill_tree(pid: int) -> None:
-    """End one child and every process it started (its Chrome), by that child's pid only."""
-    subprocess.run(  # noqa: S603 - taskkill with our child's pid, no shell
-        ["taskkill", "/PID", str(pid), "/T", "/F"],  # noqa: S607 - taskkill on PATH
-        capture_output=True,
-        check=False,
-    )
+KILL_TIMEOUT_S = 10.0
+"""How long taskkill may take before the kill is reported as `kill_timeout` (unmeasured)."""
+_TASKKILL_NOT_FOUND = 128
+"""taskkill's exit code when the pid is already gone (measured 2026-11-15 on this box)."""
+
+
+def kill_tree(
+    pid: int,
+    *,
+    timeout_s: float = KILL_TIMEOUT_S,
+    run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+) -> str | None:
+    """End one child and every process it started (its Chrome), by that child's pid only,
+    bounded by `timeout_s`. None when it ended (or was already gone); else a closed token:
+    `kill_failed:<exit code>` or `kill_timeout`. v1's callers may ignore the result."""
+    try:
+        done = run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return "kill_timeout"
+    if done.returncode in (0, _TASKKILL_NOT_FOUND):
+        return None
+    return f"kill_failed:{done.returncode}"
 
 
 def remove_tree(
@@ -112,7 +132,7 @@ def run_chunked(  # noqa: PLR0913 - the plan, the child's arguments and the inje
     write_row: Callable[[dict[str, Any]], None],  # Any: the suite's JSON rows
     read_free: Callable[[], int] | None = None,
     start: Callable[[list[str]], Child] | None = None,
-    kill_tree: Callable[[int], None] = kill_tree,
+    kill_tree: Callable[[int], object] = kill_tree,  # v1 reads no result
     remove: Callable[[Path], None] = remove_tree,
     clock: Callable[[], float] = time.monotonic,
 ) -> int:
@@ -158,7 +178,7 @@ def _one_chunk(  # noqa: PLR0913 - one chunk of run_chunked, its arguments passe
     tmp_parent: Path,
     write_row: Callable[[dict[str, Any]], None],  # Any: the suite's JSON rows
     start: Callable[[list[str]], Child],
-    kill: Callable[[int], None],
+    kill: Callable[[int], object],
     remove: Callable[[Path], None],
     clock: Callable[[], float],
 ) -> int | None:
