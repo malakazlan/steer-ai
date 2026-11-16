@@ -25,7 +25,7 @@ from steerai.loop2.decision import (
     PARAM_NAME,
     SUBGOAL_ID,
 )
-from steerai.loop2.history import REFUSAL_TOKENS, ClaimWord, RunnerClaim, _words
+from steerai.loop2.history import REFUSAL_TOKENS, RunnerClaim, _words
 from steerai.loop2.runner import REFUSAL_KIND
 from steerai.loop2.verify import ClaimCheck
 
@@ -238,6 +238,20 @@ def test_every_claim_result_the_model_can_get_is_explained_in_the_prompt() -> No
     assert unexplained == [], f"no meaning line in the prompt: {unexplained}"
 
 
-def test_no_claim_result_is_left_out_of_both_sets() -> None:
-    reached = _words(ClaimWord) - {"accepted"}
-    assert reached == _claim_results_the_model_can_get() | STRICT_ONLY
+def test_the_strict_claim_tokens_are_left_out_only_while_step_3_cannot_emit_them() -> None:
+    """Tripwire: fails once the runner uses `loop2.claims` or its checks stop being pending
+    (built in step 4); the strict tokens must then be explained, and `STRICT_ONLY` is emptied."""
+    import inspect  # noqa: PLC0415
+
+    from steerai.loop2 import runner  # noqa: PLC0415
+    from steerai.loop2._stub import PENDING  # noqa: PLC0415
+
+    source = inspect.getsource(runner)
+    assert "loop2.claims" not in source
+    assert "loop2 import claims" not in source
+    assert {
+        "steerai.loop2.claims.check_content",
+        "steerai.loop2.claims.closes",
+        "steerai.loop2.claims.strict_reason",
+    } <= PENDING
+    assert STRICT_ONLY, "no strict-only token left: delete STRICT_ONLY and this test"
