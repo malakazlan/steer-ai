@@ -637,7 +637,7 @@ def test_the_provider_call_sends_v1s_model_and_effort_and_reads_text_and_usage()
     assert messages.kwargs["max_tokens"] == 4096
     assert messages.kwargs["system"] == [
         {"type": "text", "text": "rules"},
-        {"type": "text", "text": "schema"},
+        {"type": "text", "text": "schema", "cache_control": {"type": "ephemeral"}},
     ]
     assert messages.kwargs["messages"] == [
         {
