@@ -178,7 +178,6 @@ REFUSAL_KIND: Final[Mapping[str, RefusalKind]] = {
     "secure_unread": "policy",
     "text_changed": "policy",
     "not_in_step": "step",
-    "target_changed": "world",
     "not_delivered": "world",
     "press_not_at_focus": "world",
     "press_target_gone": "world",

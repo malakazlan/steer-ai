@@ -213,6 +213,7 @@ def test_the_desc_halves_left_to_the_validator_are_still_refused() -> None:
 def test_every_refusal_token_declares_its_kind() -> None:
     """[V2.74] (#446): no default; a token without a kind is a missing fact, not a model fault."""
     assert sorted(REFUSAL_TOKENS - set(REFUSAL_KIND)) == []
+    assert sorted(set(REFUSAL_KIND) - REFUSAL_TOKENS) == []
 
 
 @pytest.mark.parametrize(
