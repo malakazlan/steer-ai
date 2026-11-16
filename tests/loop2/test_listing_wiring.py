@@ -242,7 +242,7 @@ def test_the_listing_note_is_outside_the_screen_fence() -> None:
 
 
 def test_the_legend_says_a_cut_element_cannot_be_named() -> None:
-    assert PROMPT_VERSION == "controller-12"
+    assert PROMPT_VERSION == "controller-13"
     assert (
         "- `listing: shown S of E` means code left E-S elements out to fit; an element not "
         "listed cannot be named." in SYSTEM_RULES

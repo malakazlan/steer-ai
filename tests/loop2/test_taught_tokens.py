@@ -10,11 +10,13 @@ default that are world or step facts the model cannot avoid by a rule, and step 
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from typing import Any, Final
 
 import pytest
 
+from steerai.loop2.claims import ClaimToken
 from steerai.loop2.controller import SYSTEM_RULES, _prompt_schema
 from steerai.loop2.decision import (
     MAX_ACTIONS,
@@ -23,8 +25,9 @@ from steerai.loop2.decision import (
     PARAM_NAME,
     SUBGOAL_ID,
 )
-from steerai.loop2.history import REFUSAL_TOKENS
+from steerai.loop2.history import REFUSAL_TOKENS, RunnerClaim, _words
 from steerai.loop2.runner import REFUSAL_KIND
+from steerai.loop2.verify import ClaimCheck
 
 Schema = Mapping[str, Any]  # Any: a JSON schema document
 
@@ -214,3 +217,41 @@ def test_the_desc_halves_left_to_the_validator_are_still_refused() -> None:
         tokens = validate(decision, listed_ids=frozenset(), goal=goal, first_turn=True,
                           fences=frozenset({"f1f1f1f1"}))  # fmt: skip
         assert "desc_bad" in tokens
+
+
+STRICT_ONLY: Final = _words(ClaimToken) - _words(ClaimCheck) - _words(RunnerClaim)
+"""Claim results only the strict tier (`loop2.consent` / `claims.py`, step 4) gives: the runner
+does not use it (the tripwire above), so no claim line carries them yet."""
+
+
+def _claim_results_the_model_can_get() -> frozenset[str]:
+    """[V2.74] (i): the step 3 claim results (`claim:<id>:<result>` history lines), less the
+    accepted proof, which is a success."""
+    return (_words(ClaimCheck) | _words(RunnerClaim)) - {"accepted"}
+
+
+def test_every_claim_result_the_model_can_get_is_explained_in_the_prompt() -> None:
+    legend = next(r for r in SYSTEM_RULES.split("\n") if r.startswith("- claim:<subgoal>:"))
+    unexplained = sorted(
+        t for t in _claim_results_the_model_can_get() if not re.search(rf"\b{t}\b", legend)
+    )
+    assert unexplained == [], f"no meaning line in the prompt: {unexplained}"
+
+
+def test_the_strict_claim_tokens_are_left_out_only_while_step_3_cannot_emit_them() -> None:
+    """Tripwire: fails once the runner uses `loop2.claims` or its checks stop being pending
+    (built in step 4); the strict tokens must then be explained, and `STRICT_ONLY` is emptied."""
+    import inspect  # noqa: PLC0415
+
+    from steerai.loop2 import runner  # noqa: PLC0415
+    from steerai.loop2._stub import PENDING  # noqa: PLC0415
+
+    source = inspect.getsource(runner)
+    assert "loop2.claims" not in source
+    assert "loop2 import claims" not in source
+    assert {
+        "steerai.loop2.claims.check_content",
+        "steerai.loop2.claims.closes",
+        "steerai.loop2.claims.strict_reason",
+    } <= PENDING
+    assert STRICT_ONLY, "no strict-only token left: delete STRICT_ONLY and this test"
