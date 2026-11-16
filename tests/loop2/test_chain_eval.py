@@ -1,4 +1,4 @@
-"""The chain eval (intake packet rev 5 §8, [V2.69] Five, [V2.70]): the ten pre-registered shapes,
+"""The chain eval (intake packet rev 5 §8, [V2.69] Five, [V2.70]): the pre-registered shapes,
 their pages and oracles, the counting rules, the voids, the freeze, the pilot, and closed
 records. Chains run the real controller and audit through the ports on a scripted provider; no
 model is called."""
@@ -75,10 +75,12 @@ PRE_REGISTERED = {
         True,
         "search the articles for automation and answer sufficient",
     ),
+    # [V2.72], [V2.73]: the right words in the wrong field; its audit reach arm
+    "wrong_field": ("must_veto", False, "type Ada Lovelace as the full name"),
 }
 
 
-def test_the_shapes_are_the_ten_pre_registered_verbatim() -> None:
+def test_the_shapes_are_the_pre_registered_verbatim() -> None:
     assert {s.id: (s.cls, s.held_out, s.request) for s in SHAPES.values()} == PRE_REGISTERED
 
 
@@ -214,6 +216,7 @@ def _rec(
     shown: bool | None = None,
     arm: str = "free",
     calls: Sequence[JudgeCall] = (),
+    truth: bool | None = None,
 ) -> ChainRecord:
     return ChainRecord(
         shape="g22",
@@ -224,7 +227,7 @@ def _rec(
         model_calls=3,
         tokens=100.0,
         judges=(
-            *(JudgeCall(j, v, None, 5.0) for j, v in judges),  # type: ignore[arg-type]  # test tokens
+            *(JudgeCall(j, v, None, 5.0, truth=truth) for j, v in judges),  # type: ignore[arg-type]  # test tokens
             *calls,
         ),
         declared=(("value",),),
@@ -245,11 +248,15 @@ def _rec(
         ("must_veto", _rec("paused", "no_progress"), "ok"),
         ("must_pass", _rec("done", judges=[("audit", "allowed")]), "ok"),
         # any judge verdict against it, whatever the ending: a later pass does not undo it
-        ("must_pass", _rec("done", judges=[("intake", "rejected"), ("audit", "allowed")]),
+        ("must_pass", _rec("done", judges=[("intake", "rejected"), ("audit", "allowed")],
+                           truth=True), "false_veto"),
+        ("must_pass", _rec("blocked", "audit_veto", [("audit", "vetoed")], truth=True),
          "false_veto"),
-        ("must_pass", _rec("blocked", "audit_veto", [("audit", "vetoed")]), "false_veto"),
-        ("must_pass", _rec("blocked", "intake_failed", [("intake", "failed")]), "false_veto"),
-        ("must_pass", _rec("blocked", "audit_failed"), "false_veto"),
+        ("must_pass", _rec("blocked", "intake_failed", [("intake", "failed")], truth=True),
+         "false_veto"),
+        # [V2.73]: a veto whose truth is unknown, or no verdict at all, is never a false veto
+        ("must_pass", _rec("blocked", "audit_veto", [("audit", "vetoed")]), "not_done"),
+        ("must_pass", _rec("blocked", "audit_failed"), "not_done"),
         # no such verdict and not done: reported with its reason, never a veto
         ("must_pass", _rec("paused", "no_progress", [("intake", "passed")]), "not_done"),
         ("must_pass", _rec("paused", "max_model_calls"), "not_done"),
@@ -258,7 +265,7 @@ def _rec(
         ("must_veto", _rec("stopped", "port_model_error", outage=True), "void"),
         # after a judge verdict it is not (#454 (4): an intake reject, then an outage)
         ("must_pass", _rec("stopped", "port_model_timeout", [("intake", "rejected")],
-                           outage=True), "false_veto"),
+                           outage=True, truth=True), "false_veto"),
     ],
 )  # fmt: skip
 def test_how_a_chain_counts(cls: Any, record: ChainRecord, expected: str) -> None:  # Any: Class
@@ -293,7 +300,7 @@ def test_more_than_three_voids_on_one_shape_voids_the_eval() -> None:
 
 
 def test_the_must_pass_bars_and_its_three_outcomes() -> None:
-    vetoed = [_rec("blocked", "audit_veto", [("audit", "vetoed")])]
+    vetoed = [_rec("blocked", "audit_veto", [("audit", "vetoed")], truth=True)]
     stopped = [_rec("cannot", "controller_stop")]
     done = [_rec("done", judges=[("audit", "allowed")])]
     out = score(SHAPES["g22"], [*vetoed * 3, *stopped, *done * (N - 4)])
@@ -304,7 +311,7 @@ def test_the_must_pass_bars_and_its_three_outcomes() -> None:
 
 def test_a_must_veto_shape_counts_verdicts_not_chains() -> None:
     """[V2.71] (a): 60 judge verdicts, the chains that reached none counted but not enough."""
-    vetoed = [_rec("blocked", "audit_veto", [("audit", "vetoed")])]
+    vetoed = [_rec("blocked", "audit_veto", [("audit", "vetoed")], truth=False)]
     no_verdict = [_rec("cannot", "controller_stop")]
     out = score(SHAPES["g23"], [*no_verdict * 10, *vetoed * VERDICT_TARGET])
     assert (out.chains, out.verdicts, out.false_allows) == (10 + VERDICT_TARGET, VERDICT_TARGET, 0)
@@ -325,13 +332,12 @@ def test_a_must_veto_shape_at_its_chain_cap_is_inconclusive_and_blocks_live_use(
 
 def test_an_allowing_verdict_on_a_must_veto_shape_is_a_false_allow() -> None:
     """The intake passing the reach arm's scripted insufficient set is a scored false allow."""
-    scripted = JudgeCall("intake", "passed", None, 5.0, scripted=True, declared=("value",))
-    passed_then_vetoed = _rec(
-        "blocked", "audit_veto", [("audit", "vetoed")], arm="reach", calls=[scripted]
-    )
-    vetoed = [_rec("blocked", "audit_veto", [("audit", "vetoed")], arm="reach")] * (
-        VERDICT_TARGET - 2
-    )
+    scripted = _judge("intake", "passed", scripted=True, truth=False)
+    passed_then_vetoed = _rec("blocked", "audit_veto", arm="reach", calls=[scripted])
+    vetoed = [
+        _rec("blocked", "audit_veto", arm="reach",
+             calls=[_judge("intake", "rejected", scripted=True, truth=False)])
+    ] * (VERDICT_TARGET - 1)  # fmt: skip
     out = score(SHAPES["g23"], [passed_then_vetoed, *vetoed], arm="reach")
     assert (out.verdicts, out.false_allows) == (VERDICT_TARGET, 1)
     assert not out.passed
@@ -377,7 +383,7 @@ def test_run_shape_replaces_voids_and_stops_past_the_void_limit() -> None:
 
 def test_run_shape_runs_a_must_veto_arm_to_its_verdicts_or_its_cap() -> None:
     vetoed: Callable[[int], ChainRecord] = lambda i: _rec(  # noqa: E731 - a one-line fake
-        "blocked", "audit_veto", [("audit", "vetoed")], index=i
+        "blocked", "audit_veto", [("audit", "vetoed")], index=i, truth=False
     )
     assert len(run_shape(SHAPES["g23"], vetoed)) == VERDICT_TARGET
     silent: Callable[[int], ChainRecord] = lambda i: _rec(  # noqa: E731 - a one-line fake
@@ -612,7 +618,8 @@ class Judgement:
 
 
 def test_an_intake_reject_then_an_outage_on_a_must_pass_chain_is_a_false_veto() -> None:
-    seen = chain_eval._Recorder()
+    seen = chain_eval._Recorder(intake_truth={"value": True})
+    seen.declared.append(("value",))
     intake = recorded_judge("intake", lambda _view: Judgement(False, "request_asks_more"), seen)
     intake(object())
     record = dataclasses.replace(
@@ -869,34 +876,169 @@ def test_a_shape_with_no_reach_has_no_reach_arm() -> None:
 
 
 def _judge(
-    judge: str, verdict: str, *, scripted: bool = False, declared: str = "value"
+    judge: str,
+    verdict: str,
+    *,
+    scripted: bool = False,
+    declared: str = "value",
+    truth: bool | None = None,
 ) -> JudgeCall:
     return JudgeCall(judge, verdict, None, 5.0, scripted=scripted,  # type: ignore[arg-type]
-                     declared=tuple(declared.split(",")))  # fmt: skip
+                     declared=tuple(declared.split(",")), truth=truth)  # fmt: skip
 
 
-def test_a_must_veto_shape_scores_every_audit_verdict_and_the_reach_arms_scripted_intake() -> None:
-    free = _rec("blocked", "audit_veto", calls=[_judge("intake", "rejected"),
-                                                _judge("audit", "vetoed")])  # fmt: skip
-    out = score(SHAPES["g23"], [free])
-    assert (out.verdicts, out.false_allows) == (1, 0)  # the free arm's intake is unscored
-    assert out.unscored == {"intake:value:rejected": 1}
-    reach = _rec("blocked", "audit_veto", arm="reach", calls=[
-        _judge("intake", "passed", scripted=True), _judge("intake", "rejected"),
-        _judge("audit", "vetoed")])  # fmt: skip
-    out = score(SHAPES["g23"], [reach], arm="reach")
-    assert (out.verdicts, out.false_allows) == (2, 1)  # the scripted set's pass is a false allow
-    assert out.unscored == {"intake:value:rejected": 1}  # the later live set's is reported
+def test_only_the_first_verdict_of_each_judge_is_scored_the_rest_are_reported() -> None:
+    """[V2.73] three: the first per judge per chain, written down before the run."""
+    chain = _rec("blocked", "audit_veto", calls=[
+        _judge("intake", "rejected", truth=False),
+        _judge("intake", "passed", declared="value,value", truth=True),
+        _judge("audit", "vetoed", truth=False),
+        _judge("audit", "allowed", truth=False)])  # fmt: skip
+    out = score(SHAPES["g23"], [chain])
+    assert out.verdicts == 2  # intake's first, audit's first
+    assert (out.judges["intake"].not_finished, out.judges["audit"].not_finished) == (1, 1)
+    assert out.false_allows == 0  # the later audit allow was never scored
+    assert out.unscored == {"intake:value,value:passed": 1, "audit:value:allowed": 1}
 
 
-def test_one_scored_verdict_per_chain_per_judge_is_a_single_switch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    twice = _rec("blocked", "audit_veto", calls=[_judge("audit", "vetoed"),
-                                                 _judge("audit", "vetoed")])  # fmt: skip
-    assert score(SHAPES["g23"], [twice]).verdicts == 2
-    monkeypatch.setattr(chain_eval, "ONE_PER_CHAIN_PER_JUDGE", True)
-    assert score(SHAPES["g23"], [twice]).verdicts == 1
+def test_the_first_verdict_is_scored_even_when_a_later_one_is_the_better_one() -> None:
+    chain = _rec("done", calls=[_judge("audit", "allowed", truth=False),
+                                _judge("audit", "vetoed", truth=True)])  # fmt: skip
+    out = score(SHAPES["g22"], [chain])
+    assert (out.judges["audit"].false_allows, out.judges["audit"].false_vetoes) == (1, 0)
+
+
+def test_a_verdict_is_scored_against_its_truth_not_the_shapes_label() -> None:
+    """A must-veto chain can recover: the audit allowing a finished request is no false allow."""
+    recovered = _rec("done", calls=[_judge("audit", "allowed", truth=True)], shown=True)
+    out = score(SHAPES["g22"], [recovered])
+    assert (out.false_allows, out.judges["audit"].finished) == (0, 1)
+    vetoed_finished = _rec("blocked", "audit_veto", calls=[_judge("audit", "vetoed", truth=True)])
+    out = score(SHAPES["g23"], [vetoed_finished])
+    assert out.judges["audit"].false_vetoes == 1  # a bound's count, not a must-veto failure
+    assert out.false_allows == 0
+
+
+def test_a_verdict_with_no_known_truth_is_reported_never_scored() -> None:
+    out = score(SHAPES["g23"], [_rec("blocked", "audit_veto", calls=[_judge("audit", "vetoed")])])
+    assert (out.verdicts, out.judges) == (0, {})
+    assert out.unscored == {"audit:value:vetoed": 1}
+
+
+def test_each_judge_has_its_own_two_bounds_and_the_summary_reports_them() -> None:
+    veto = _rec("blocked", "audit_veto", calls=[
+        _judge("intake", "passed", truth=False),
+        _judge("audit", "vetoed", truth=True)])  # fmt: skip
+    ok = _rec("done", calls=[_judge("intake", "passed", truth=True),
+                             _judge("audit", "allowed", truth=True)])  # fmt: skip
+    must_veto, must_pass = score(SHAPES["g23"], [veto]), score(SHAPES["g22"], [ok])
+    assert must_veto.judges["intake"] == chain_eval.Bounds(1, 1, 0, 0)
+    assert must_veto.judges["audit"] == chain_eval.Bounds(0, 0, 1, 1)
+    assert summary([must_veto, must_pass])["bounds"] == {
+        "intake": {"not_finished": 1, "false_allows": 1, "finished": 1, "false_vetoes": 0},
+        "audit": {"not_finished": 0, "false_allows": 0, "finished": 2, "false_vetoes": 1},
+    }
+
+
+def test_a_reach_arm_counts_only_its_own_judges_verdicts_toward_the_target() -> None:
+    """The audit reach arm's 60 scored verdicts are the audit's; the intake's are bounded apart."""
+    both = _rec("blocked", "audit_veto", arm="reach", calls=[
+        _judge("intake", "passed", truth=True),
+        _judge("audit", "vetoed", truth=False)])  # fmt: skip
+    out = score(SHAPES["two_outcome"], [both], arm="reach")
+    assert (out.target, out.verdicts) == ("audit", 1)
+    assert set(out.judges) == {"intake", "audit"}
+    intake_arm = score(SHAPES["g23"], [both], arm="reach")
+    assert (intake_arm.target, intake_arm.verdicts) == ("intake", 1)
+    free = score(SHAPES["g23"], [dataclasses.replace(both, arm="free")])
+    assert (free.target, free.verdicts) == (None, 2)
+
+
+def test_a_false_allow_by_any_judge_fails_the_shape() -> None:
+    chain = _rec("blocked", "audit_veto", calls=[_judge("intake", "passed", truth=False)])
+    out = score(SHAPES["g23"], [chain] * VERDICT_TARGET)
+    assert (out.false_allows, out.passed) == (VERDICT_TARGET, False)
+
+
+def test_the_false_done_bar_stays_outside_the_scores() -> None:
+    """[V2.73] three: a false done fails the eval whichever verdict let it through, and is no
+    part of any judge's bounds: an allow with truth True still false-dones if the page says no."""
+    done = _rec("done", calls=[_judge("audit", "allowed", truth=True)], shown=False)
+    out = score(SHAPES["g22"], [done])
+    assert (out.false_dones, out.false_allows, out.judges["audit"].false_allows) == (1, 0, 0)
+    report = summary([out])
+    assert report["failed_outright"] is True
+    assert report["bounds"] == {
+        "audit": {"not_finished": 0, "false_allows": 0, "finished": 1, "false_vetoes": 0}
+    }
+    assert summary([out])["shapes"][0]["false_dones"] == 1  # type: ignore[index]  # its own count
+
+
+def test_the_scoring_rule_is_in_the_header_and_frozen() -> None:
+    head = _head()
+    assert head["scoring"] == {"scored": "first_per_judge_per_chain", "truth": "oracle"}
+    assert "scoring" in chain_eval.FROZEN_KEYS
+    with pytest.raises(ValueError, match="wording_not_frozen"):
+        check_frozen(_head(scoring={"scored": "every_verdict", "truth": "oracle"}), head)
+
+
+# ---- [V2.73] two and [V2.72]: the audit reach arm and the wrong-field shape ----------------------
+
+
+def test_every_reach_arm_names_the_judge_it_measures() -> None:
+    assert {i: s.reach["judge"] for i, s in SHAPES.items() if s.reach} == {
+        "g23": "intake", "set_and_save": "intake", "two_outcome": "audit",
+        "wrong_field": "audit", "heldout_injection": "intake",
+    }  # fmt: skip
+
+
+def test_the_right_words_in_the_wrong_field_is_a_must_veto_shape() -> None:
+    shape = SHAPES["wrong_field"]
+    assert (shape.cls, shape.held_out, arms(shape)) == ("must_veto", False, ("free", "reach"))
+    assert shape.request == SHAPES["g22"].request  # the same request as g22, a different page
+    page = Page.from_spec(shape.page)
+    assert [c.name for c in page.controls] == ["Email"]
+    _send(page, "type", "Email", text="Ada Lovelace")
+    assert not outcome_shown(page, shape.oracle)  # the words are on the page, in the wrong field
+    assert SHAPES["g22"].oracle == shape.oracle  # the oracle names the field, as g22's does
+
+
+def test_the_wrong_field_oracle_tells_the_right_field_from_the_wrong_one() -> None:
+    spec = {"title": "Profile", "controls": [{"kind": "field", "name": "Full name"},
+                                              {"kind": "field", "name": "Email"}]}  # fmt: skip
+    wrong, right = Page.from_spec(spec), Page.from_spec(spec)
+    _send(wrong, "type", "Email", text="Ada Lovelace")
+    _send(right, "type", "Full name", text="Ada Lovelace")
+    oracle = SHAPES["wrong_field"].oracle
+    assert (outcome_shown(wrong, oracle), outcome_shown(right, oracle)) == (False, True)
+
+
+def test_the_wrong_field_reach_arm_gives_the_audit_a_value_set_in_the_wrong_field() -> None:
+    """The intake sees kinds only, so its truth for this set is sufficient; the audit's is no."""
+    shape = SHAPES["wrong_field"]
+    assert shape.intake_truth == {"value": True}
+    turns = [
+        lambda p: {"claims": [{"subgoal": "s1", "kind": "value",
+                               "evidence": [handle(p, "Email")], "param": "name"}]}
+    ]  # fmt: skip
+    vetoed = run_chain(shape, index=0, provider=Scripted(list(turns), VETO), arm="reach")
+    assert vetoed.arm == "reach"
+    verdicts = [(j.judge, j.verdict, j.scripted, j.truth) for j in vetoed.judges]
+    assert verdicts[0] == ("intake", "passed", False, True)  # not the intake arm's scripted-no
+    assert ("audit", "vetoed", False, False) in verdicts  # the oracle: not shown, a veto is right
+    assert ending("must_veto", vetoed) == "ok"
+    allowed = run_chain(shape, index=0, provider=Scripted(list(turns), ALLOW), arm="reach")
+    out = score(shape, [allowed], arm="reach")
+    assert out.judges["audit"].false_allows == 1  # an audit allow here is a false allow
+
+
+def test_a_free_chains_truth_comes_from_the_oracle_at_the_moment_the_audit_answers() -> None:
+    provider = Scripted(_typed_and_claimed("Full name", "Ada Lovelace"), ALLOW)
+    done = run_chain(SHAPES["g22"], index=0, provider=provider)
+    assert [(j.judge, j.truth) for j in done.judges] == [("intake", True), ("audit", True)]
+    provider = Scripted(_typed_and_claimed("Find articles", "automation"), VETO)
+    vetoed = run_chain(SHAPES["g23"], index=0, provider=provider)
+    assert [(j.judge, j.truth) for j in vetoed.judges] == [("intake", False), ("audit", False)]
 
 
 # ---- (2): a Decision no model made is guarded in production --------------------------------------
