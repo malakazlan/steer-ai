@@ -307,7 +307,7 @@ def _caps(control: Control) -> tuple[str, ...]:
     if control.kind == "field":
         return ("editable",)
     if control.kind == "select":
-        return ("expanded" if control.expanded else "collapsed", "readonly")
+        return ("expanded",) if control.expanded else ("collapsed",)
     if control.kind in {"switch", "checkbox"}:
         return ("toggle:on",) if control.on else ("toggle:off",)
     return ()

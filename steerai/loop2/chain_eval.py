@@ -281,8 +281,9 @@ def sources(shape: Shape) -> Mapping[Judge, Arm]:
     for judge in JUDGES:
         arm = declared[judge]
         script = {"free": True, "reach": shape.reach, "audit_reach": shape.audit_reach}.get(arm)
-        if not script:
-            raise ValueError("sources_invalid")
+        measured = {"reach": (shape.reach or {}).get("judge"), "audit_reach": "audit"}.get(arm)
+        if not script or (arm != "free" and measured != judge):
+            raise ValueError("sources_invalid")  # an arm that cannot supply that judge
         out[judge] = arm  # type: ignore[assignment]  # checked above: one of the three arms
     return out
 
@@ -371,6 +372,11 @@ class ChainRecord:
     """[V2.77] (7): every reported token of the chain by category (the runner's own sum)."""
     scripted_turns: int = 0
     """[V2.71] (a), [V2.77]: the Decisions a scripted arm supplied (no model made them)."""
+    script_complete: bool = False
+    """Every Decision of the arm's script was supplied."""
+    went_live: bool = False
+    """A controller turn came after the script began (it ran out, or an intake reject re-opened
+    the first turn and the script was dropped)."""
 
 
 class EvalAbortedError(RuntimeError):
@@ -717,7 +723,7 @@ def _count(shape: Shape, out: ShapeScore, record: ChainRecord) -> None:
     out.counted += 1
     _count_no_calls(out, record)
     if kind == "false_done":
-        out.false_dones += 1
+        out.false_dones += not out.forced_intake  # [V2.78]: after a forced allow, not end-to-end
     elif kind == "false_veto":
         out.chains_with_veto += 1
     elif kind == "not_done":
@@ -772,6 +778,8 @@ def bounds(scores: Sequence[ShapeScore]) -> dict[str, dict[str, int]]:
     """[V2.73] (4): per judge over the whole eval, the two bounds' counts."""
     out: dict[str, Bounds] = {}
     for s in scores:
+        if s.forced_intake:
+            continue  # [V2.78]: reported apart (`audit_after_forced_intake_allow`)
         for judge, b in s.judges.items():
             total = out.setdefault(judge, Bounds())
             total.not_finished += b.not_finished
@@ -954,6 +962,11 @@ class _Recorder:
     outage_code: str | None = None
     scripted_turns: int = 0
     """The Decisions the arm's script supplied (the first and each later one)."""
+    script_complete: bool = False
+    """Every Decision of the arm's script was supplied."""
+    went_live: bool = False
+    """A controller turn was taken after the script began (it ended, or an intake reject re-opened
+    the first turn)."""
     forced: int = 0
     """The forced intake allows the audit reach arm's fake port gave."""
     scripted_pending: bool = False
@@ -1216,9 +1229,11 @@ def _arm(
         at = step[0]
         if at >= turns or view.first_turn != (at == 0):
             step[0] = turns
+            seen.went_live = True
             return port(view)
         step[0] += 1
         seen.scripted_turns += 1
+        seen.script_complete = step[0] == turns
         decision = reach_decision(spec, view, goal=shape.request, turn=at, index=index)
         if at:
             return Decided(decision, SCRIPTED_USAGE, None)
@@ -1400,6 +1415,8 @@ def _record(  # noqa: PLR0913 - one chain's facts, gathered once
         intake_no_call=outcome.intake_no_call > 0,
         usage=_real_usage(outcome.usage, seen),
         scripted_turns=seen.scripted_turns,
+        script_complete=seen.script_complete,
+        went_live=seen.went_live,
     )
 
 
@@ -1564,6 +1581,25 @@ WORDING_KEYS: Final = ("controller", "intake", "audit", "shapes_sha256")
 """The prompt pins and the shapes pin: a re-roll after a no-op commit keeps them."""
 
 
+def _scripts(
+    shapes: Sequence[Shape], records: Sequence[ChainRecord]
+) -> dict[str, dict[str, dict[str, int]]]:
+    """Per scripted arm: chains, those that completed their script, those that went live."""
+    out: dict[str, dict[str, dict[str, int]]] = {}
+    for shape in shapes:
+        for arm in arms(shape):
+            if arm == "free":
+                continue
+            mine = [r for r in records if r.shape == shape.id and r.arm == arm]
+            if mine:
+                out.setdefault(shape.id, {})[arm] = {
+                    "chains": len(mine),
+                    "completed": sum(r.script_complete for r in mine),
+                    "went_live": sum(r.went_live for r in mine),
+                }
+    return out
+
+
 def _packets(
     shapes: Sequence[Shape], records: Sequence[ChainRecord]
 ) -> dict[str, dict[str, dict[str, dict[str, int]]]]:
@@ -1593,6 +1629,7 @@ def report(
         "mask_escape_share": mask_escape_share(records),
         "usage": usage_report(records),
         "packets": _packets(shapes, records),
+        "scripts": _scripts(shapes, records),
         "ledger": [
             {
                 "event": e["event"],

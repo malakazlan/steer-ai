@@ -1671,10 +1671,10 @@ def _option(page: Page, world: PageWorld, name: str) -> Any:  # Any: Element
 def test_a_collapsed_select_lists_no_options_and_expand_opens_it() -> None:
     page, world, names = _country()
     assert "Kenya" not in names()
-    assert names()["Country"].caps == ("collapsed", "readonly")
+    assert names()["Country"].caps == ("collapsed",)  # the real observer: no readonly
     assert _send(page, "expand", "Country") is True
     listed = names()
-    assert listed["Country"].caps == ("expanded", "readonly")
+    assert listed["Country"].caps == ("expanded",)
     assert [listed[o].caps for o in ("Kenya", "Ghana", "Peru")] == [("selectable",)] * 3
     assert {listed[o].role for o in ("Kenya", "Ghana", "Peru")} == {"ListItem"}
     control = world.observe().snapshot.elements[1]
@@ -2166,3 +2166,80 @@ def test_audit_after_forced_intake_allow_is_reported_apart_and_a_false_allow_fai
     bad = summary([score(shape, [allowed], arm="audit_reach")])
     assert bad["result"] == "fail"
     assert bad["audit_after_forced_intake_allow"]["g23"]["false_allows"] == 1  # type: ignore[index]  # JSON
+
+
+# ---- #486 principal round: forced-arm accounting, source arms, script completion ---------------
+
+
+def test_the_forced_arms_audit_allow_fails_by_false_allow_not_by_false_done() -> None:
+    shape = SHAPES["g23"]
+    allowed = run_chain(shape, index=0, provider=Scripted([], ALLOW), arm="audit_reach")
+    assert allowed.status == "done"
+    out = score(shape, [allowed], arm="audit_reach")
+    assert (out.false_dones, out.false_allows) == (0, 1)
+    free = score(shape, [_rec("cannot", "controller_stop")], arm="free")
+    report = summary([free, out])
+    assert report["failed_outright"] is False  # not an end-to-end false done ([V2.78])
+    assert report["result"] == "fail"  # but the gate fails on the false allow
+    assert report["bounds"] == {}  # left out of the end-to-end bounds
+    assert report["audit_after_forced_intake_allow"]["g23"]["false_allows"] == 1  # type: ignore[index]  # JSON
+
+
+def test_a_free_arm_false_done_is_still_end_to_end() -> None:
+    bad = _rec("done", judges=[("audit", "allowed")], shown=False)
+    out = summary([score(SHAPES["g23"], [bad], arm="free")])
+    assert out["failed_outright"] is True
+
+
+def test_a_forced_verdict_is_in_neither_unscored_nor_unknown_first() -> None:
+    record = run_chain(SHAPES["g23"], index=0, provider=Scripted([], VETO), arm="audit_reach")
+    out = score(SHAPES["g23"], [record], arm="audit_reach")
+    assert (out.unscored, out.unknown_first) == ({}, {})
+
+
+@pytest.mark.parametrize(
+    ("changes", "shape_id"),
+    [
+        ({"intake": "audit_reach", "audit": "audit_reach"}, "g23"),  # the audit arm has no intake
+        ({"intake": "reach", "audit": "reach"}, "g23"),  # g23's reach arm measures the intake
+        ({"intake": "reach", "audit": "audit_reach"}, "two_outcome"),  # its reach is the audit's
+    ],
+)
+def test_a_source_arm_that_cannot_supply_the_judge_is_refused_at_load(
+    tmp_path: Path, changes: dict[str, str], shape_id: str
+) -> None:
+    doc = json.loads(chain_eval.SHAPES_PATH.read_text(encoding="utf-8"))
+    shape = next(s for s in doc["shapes"] if s["id"] == shape_id)
+    shape["sources"] = changes
+    shape.setdefault("audit_reach", SHAPES["g23"].audit_reach)
+    path = tmp_path / "shapes.json"
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    pin = hashlib.sha256(path.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="sources_invalid"):
+        load_shapes(path, pin=pin)
+
+
+def test_a_chain_records_whether_its_script_completed_or_went_live() -> None:
+    done = run_chain(SHAPES["g23"], index=0, provider=Scripted([], VETO), arm="audit_reach")
+    assert (done.script_complete, done.went_live) == (True, False)
+    state = SHAPES["wrong_field_state"]
+    rejected = run_chain(state, index=0, provider=Scripted([], VETO, intake=VETO), arm="reach")
+    assert (rejected.script_complete, rejected.went_live) == (False, True)  # re-opened first turn
+    free = run_chain(SHAPES["g22"], index=0, provider=Scripted([], VETO))
+    assert (free.script_complete, free.went_live) == (False, False)
+
+
+def test_the_report_counts_per_scripted_arm_the_chains_that_completed_or_went_live(
+    tmp_path: Path,
+) -> None:
+    state = SHAPES["wrong_field_state"]
+    records = [
+        run_chain(state, index=0, provider=Scripted([], VETO), arm="reach"),
+        run_chain(state, index=1, provider=Scripted([], VETO, intake=VETO), arm="reach"),
+    ]
+    out = chain_eval.report(
+        "pilot", [state], records, ledger=Ledger(tmp_path / "l.jsonl"), head=_wired()
+    )
+    assert out["scripts"] == {
+        "wrong_field_state": {"reach": {"chains": 2, "completed": 1, "went_live": 1}}
+    }
