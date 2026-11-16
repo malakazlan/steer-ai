@@ -618,8 +618,9 @@ class Judgement:
 
 
 def test_an_intake_reject_then_an_outage_on_a_must_pass_chain_is_a_false_veto() -> None:
-    seen = chain_eval._Recorder(intake_truth={"value": True})
+    seen = chain_eval._Recorder(intake_truth={"value:Ada Lovelace": True})
     seen.declared.append(("value",))
+    seen.declared_keys.append("value:Ada Lovelace")
     intake = recorded_judge("intake", lambda _view: Judgement(False, "request_asks_more"), seen)
     intake(object())
     record = dataclasses.replace(
@@ -899,6 +900,7 @@ def test_only_the_first_verdict_of_each_judge_is_scored_the_rest_are_reported() 
     assert (out.judges["intake"].not_finished, out.judges["audit"].not_finished) == (1, 1)
     assert out.false_allows == 0  # the later audit allow was never scored
     assert out.unscored == {"intake:value,value:passed": 1, "audit:value:allowed": 1}
+    assert out.unknown_first == {}
 
 
 def test_the_first_verdict_is_scored_even_when_a_later_one_is_the_better_one() -> None:
@@ -922,7 +924,8 @@ def test_a_verdict_is_scored_against_its_truth_not_the_shapes_label() -> None:
 def test_a_verdict_with_no_known_truth_is_reported_never_scored() -> None:
     out = score(SHAPES["g23"], [_rec("blocked", "audit_veto", calls=[_judge("audit", "vetoed")])])
     assert (out.verdicts, out.judges) == (0, {})
-    assert out.unscored == {"audit:value:vetoed": 1}
+    assert out.unscored == {}  # a first verdict of unknown truth is its own count, below
+    assert out.unknown_first == {"audit": 1}
 
 
 def test_each_judge_has_its_own_two_bounds_and_the_summary_reports_them() -> None:
@@ -976,7 +979,8 @@ def test_the_false_done_bar_stays_outside_the_scores() -> None:
 
 def test_the_scoring_rule_is_in_the_header_and_frozen() -> None:
     head = _head()
-    assert head["scoring"] == {"scored": "first_per_judge_per_chain", "truth": "oracle"}
+    assert head["scoring"] == dict(chain_eval.SCORING)
+    assert head["scoring"]["scored"] == "first_per_judge_per_chain"
     assert "scoring" in chain_eval.FROZEN_KEYS
     with pytest.raises(ValueError, match="wording_not_frozen"):
         check_frozen(_head(scoring={"scored": "every_verdict", "truth": "oracle"}), head)
@@ -1016,7 +1020,7 @@ def test_the_wrong_field_oracle_tells_the_right_field_from_the_wrong_one() -> No
 def test_the_wrong_field_reach_arm_gives_the_audit_a_value_set_in_the_wrong_field() -> None:
     """The intake sees kinds only, so its truth for this set is sufficient; the audit's is no."""
     shape = SHAPES["wrong_field"]
-    assert shape.intake_truth == {"value": True}
+    assert shape.intake_truth == {"value:Ada Lovelace": True}
     turns = [
         lambda p: {"claims": [{"subgoal": "s1", "kind": "value",
                                "evidence": [handle(p, "Email")], "param": "name"}]}
@@ -1143,3 +1147,72 @@ def test_an_outage_must_be_the_chains_own_end() -> None:
     )
     with pytest.raises(EvalAbortedError, match="outage_not_the_end"):
         ending("must_pass", record)
+
+
+# ---- #454 round 3: no-call failures reported apart; the intake's truth by kind and words ---------
+
+
+def test_a_judge_that_never_called_ends_not_done_and_is_reported_under_its_own_key() -> None:
+    """Not a false veto, not a bound's count: not_done, keyed by the outcome's reason, so a no-call
+    failure and a failed later call are distinct, per shape and per judge."""
+    no_audit = _rec("blocked", "audit_failed")
+    no_intake = _rec("blocked", "intake_failed")
+    no_audit = dataclasses.replace(no_audit, audit_reason="audit_no_call")
+    no_intake = dataclasses.replace(no_intake, intake_no_call=True)
+    failed_later = dataclasses.replace(_rec("blocked", "audit_failed"), audit_reason="audit_failed")
+    for record in (no_audit, no_intake, failed_later):
+        assert ending("must_pass", record) == "not_done"
+    out = score(SHAPES["g22"], [*[no_audit] * 4, no_intake, failed_later])
+    assert out.false_vetoes == 0
+    assert out.not_done == {
+        "audit_failed:audit_no_call": 4,
+        "intake_failed:intake_no_call": 1,
+        "audit_failed:audit_failed": 1,
+    }
+    assert out.judges == {}  # no verdict, nothing in a bound
+
+
+def test_a_chain_record_carries_the_outcomes_audit_reason() -> None:
+    provider = Scripted(_typed_and_claimed("Full name", "Ada Lovelace"), ALLOW)
+    record = run_chain(SHAPES["g22"], index=0, provider=provider)
+    assert (record.audit_reason, record.intake_no_call) == ("facts_finish_request", False)
+
+
+def test_every_intake_truth_key_names_its_kind_and_its_words() -> None:
+    for shape in SHAPES.values():
+        for key in shape.intake_truth:
+            assert all(":" in part for part in key.split(",")), (shape.id, key)
+
+
+def test_a_partial_span_or_a_duplicated_value_is_never_true() -> None:
+    g22, two = SHAPES["g22"], SHAPES["heldout_two_field"]
+    assert chain_eval.declared_key([("value", ["Ada"])]) not in g22.intake_truth
+    assert g22.intake_truth.get(chain_eval.declared_key([("value", ["Ada"])])) is not True
+    twice = chain_eval.declared_key([("value", ["Ada Lovelace"]), ("value", ["Ada Lovelace"])])
+    assert twice not in two.intake_truth
+    both = chain_eval.declared_key([("value", ["Ada Lovelace"]), ("value", ["ada@example.com"])])
+    assert two.intake_truth[both] is True
+    assert two.intake_truth[chain_eval.declared_key([("value", ["Ada Lovelace"])])] is False
+
+
+def test_a_partial_span_declared_in_a_chain_has_unknown_truth() -> None:
+    sub = {**SUB, "params": {"name": "Ada"}}
+    turns = [lambda p: {"subgoals": [sub], "actions": [
+        {"verb": "focus", "target": handle(p, "Full name"), "subgoal": "s1"}]}]  # fmt: skip
+    record = run_chain(SHAPES["g22"], index=0, provider=Scripted(turns, ALLOW))
+    intake = next(j for j in record.judges if j.judge == "intake")
+    assert intake.truth is None
+
+
+def test_unknown_first_verdicts_are_counted_apart_from_later_unscored_ones() -> None:
+    chain = _rec("blocked", "audit_veto", calls=[
+        _judge("intake", "passed"), _judge("intake", "rejected", declared="value,value"),
+        _judge("audit", "vetoed", truth=False)])  # fmt: skip
+    out = score(SHAPES["g23"], [chain])
+    assert out.unknown_first == {"intake": 1}
+    assert out.unscored == {"intake:value,value:rejected": 1}
+    assert summary([out])["unknown_first"] == {"intake": 1}
+
+
+def test_the_free_arm_stops_on_both_judges_verdicts_combined() -> None:
+    assert chain_eval.SCORING["free_arm_stops_on"] == "both_judges_verdicts_combined"

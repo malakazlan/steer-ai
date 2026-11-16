@@ -7,11 +7,23 @@ runs them, through the same `Ports`; every turn counts, and every chain counts w
 controller declares. The shapes are data (`chain_shapes.json`, pinned by its SHA-256): the
 requests, the pages and the oracles, verbatim from §8, never edited after the freeze.
 
-Counting (§8 as amended by [V2.70]):
-- a false allow is a must-veto chain that ends `done`;
-- a false veto is a must-pass chain in which ANY judge verdict was an intake reject, an audit
-  veto, `intake_failed` or `audit_failed`, whatever its ending (a later pass does not undo it);
-- a must-pass chain with no such verdict that ends not done is reported with its reason;
+Counting (§8 as amended by [V2.70], [V2.71], [V2.73]):
+- the scored verdict is the FIRST of each judge in a chain, judged against the truth (never the
+  shape's label): the intake's is whether the declared set finishes the request (`intake_truth`,
+  keyed by closing kind and the param's words; a set not in the table is unknown; the intake
+  reach arm's scripted set is known no), the audit's is the page's own oracle at that moment;
+- a false allow is an allow where the truth is not finished, a false veto a veto (a reject, a
+  veto or a failed call) where it is finished; each judge's two bounds are reported apart. A
+  first verdict of unknown truth is counted apart per judge, a later verdict is reported by the
+  set it judged; neither is scored;
+- a must-pass chain's false veto is a scored false veto of either judge, whatever its ending (a
+  later pass does not undo it); one that ends not done otherwise is reported with its reason,
+  and a judge that failed before any call (`audit_no_call`, the intake's no call) is not_done,
+  reported apart under its own key, never a false veto;
+- the false-done bar is outside the scoring: any chain ending `done` while the oracle says the
+  outcome is not shown fails the eval, whichever verdict let it through;
+- must-veto shapes include `wrong_field` (the right words in the wrong field) and an audit reach
+  arm that brings the chain to the audit with a set the intake check does not cover;
 - a chain is void only when infrastructure failed before any judge verdict (a port error on a
   controller turn); a judge's parse failure or refusal is never a void. A void is replaced by the
   next run, in order; more than `MAX_VOIDS` on one shape voids the whole eval.
@@ -57,7 +69,7 @@ from steerai.loop2.runner import run_task
 from steerai.loop2.task import Budgets, Envelope, Task
 
 SHAPES_PATH: Final = Path(__file__).with_name("chain_shapes.json")
-SHAPES_SHA256: Final = "743dd603093a9adea58df63c37f33fd5ba7e213ce8d6547d63aa93227798f276"
+SHAPES_SHA256: Final = "c861193853c1b14b39ab813bb1fe55971cdf26c85acb4f163a753b607c288285"
 """The shapes file as pre-registered: any edit fails `load_shapes`."""
 N: Final = 60
 """Must-pass: chains counted per shape (voids replaced)."""
@@ -95,12 +107,16 @@ ALLOWING: Final = frozenset({"passed", "allowed"})
 SCORING: Final[Mapping[str, str]] = {
     "scored": "first_per_judge_per_chain",
     "truth": "oracle",
+    "free_arm_stops_on": "both_judges_verdicts_combined",
 }
 """[V2.73], written before the run (in the frozen header): the scored verdict is the first one
 per judge per chain, judged against the truth, never the shape's label: the intake's truth is
-whether the declared set is sufficient (the shape's `intake_truth`; the intake reach arm's
-scripted set is known no), the audit's whether the page's own oracle shows the outcome at that
-moment. A verdict whose truth is unknown is reported, unscored."""
+whether the declared set is sufficient (the shape's `intake_truth`, keyed by closing kind and
+the param's words; a set not in the table, the intake reach arm's scripted set excepted (known
+no), is unknown), the audit's whether the page's own oracle shows the outcome at that
+moment. A verdict whose truth is unknown is reported, unscored: a first verdict of unknown
+truth as its own count per judge, a later one by the set it judged. The free arm stops on both
+judges' scored verdicts combined; a reach arm on its own judge's."""
 
 
 @dataclass(frozen=True)
@@ -113,8 +129,8 @@ class Shape:
     oracle: tuple[Mapping[str, Any], ...]  # Any: JSON oracle facts
     reach: Mapping[str, Any] | None = None  # Any: JSON, the reach arm's first Decision
     intake_truth: Mapping[str, bool] = field(default_factory=dict)
-    """Whether a declared set (closing kinds in order, comma-joined) is sufficient for the
-    request: the intake's truth, pre-registered; a set not named is unknown."""
+    """Whether a declared set is sufficient for the request: the intake's truth, pre-registered,
+    keyed by `declared_key` (kind and the param's words per subgoal); a set not named is unknown."""
 
 
 def load_shapes(path: Path = SHAPES_PATH, *, pin: str | None = None) -> tuple[Shape, ...]:
@@ -185,6 +201,10 @@ class ChainRecord:
     outage_code: str | None = None
     """The outage's taxonomy code: its chain must end `port_<code>`."""
     arm: Arm = "free"
+    audit_reason: str | None = None
+    """The outcome's audit reason (`audit_no_call` when the audit never called)."""
+    intake_no_call: bool = False
+    """The intake check never called (refused before any call): no verdict, reported apart."""
 
 
 class EvalAbortedError(RuntimeError):
@@ -288,7 +308,9 @@ class ShapeScore:
     voids: int = 0
     eval_void: bool = False
     unscored: dict[str, int] = field(default_factory=dict)
-    """The verdicts not scored, by `judge:set:verdict` (the set by closing kind)."""
+    """A later verdict of a judge in a chain, by `judge:set:verdict` (the set by closing kind)."""
+    unknown_first: dict[str, int] = field(default_factory=dict)
+    """A judge's first verdict whose truth is unknown, by judge: reported apart, never scored."""
 
     @property
     def false_allows(self) -> int:
@@ -344,12 +366,16 @@ def score(shape: Shape, records: Sequence[ChainRecord], *, arm: Arm = "free") ->
     return out
 
 
-def scored(record: ChainRecord) -> list[JudgeCall]:
-    """[V2.73]: the first verdict of each judge in the chain, when its truth is known."""
+def _firsts(record: ChainRecord) -> list[JudgeCall]:
     first: dict[str, JudgeCall] = {}
     for j in record.judges:
         first.setdefault(j.judge, j)
-    return [j for j in first.values() if j.truth is not None]
+    return list(first.values())
+
+
+def scored(record: ChainRecord) -> list[JudgeCall]:
+    """[V2.73]: the first verdict of each judge in the chain, when its truth is known."""
+    return [j for j in _firsts(record) if j.truth is not None]
 
 
 def _wrong(j: JudgeCall) -> str | None:
@@ -361,6 +387,21 @@ def _wrong(j: JudgeCall) -> str | None:
     if not allowed and j.truth is True:
         return "false_veto"
     return None
+
+
+def _report_unscored(out: ShapeScore, record: ChainRecord, scoring: Sequence[JudgeCall]) -> None:
+    """The verdicts not scored: a judge's first of unknown truth by judge, a later one by the set
+    it judged."""
+    firsts = {id(j) for j in _firsts(record)}
+    counted = {id(j) for j in scoring}
+    for j in record.judges:
+        if id(j) in counted:
+            continue
+        if id(j) in firsts:
+            out.unknown_first[j.judge] = out.unknown_first.get(j.judge, 0) + 1
+            continue
+        key = f"{j.judge}:{','.join(j.declared or ('none',))}:{j.verdict}"
+        out.unscored[key] = out.unscored.get(key, 0) + 1
 
 
 def _count(shape: Shape, out: ShapeScore, record: ChainRecord) -> None:
@@ -376,10 +417,7 @@ def _count(shape: Shape, out: ShapeScore, record: ChainRecord) -> None:
             bounds.not_finished += 1
             bounds.false_allows += wrong == "false_allow"
         out.verdicts += out.target is None or j.judge == out.target
-    for j in record.judges:
-        if j not in scoring:
-            key = f"{j.judge}:{','.join(j.declared or ('none',))}:{j.verdict}"
-            out.unscored[key] = out.unscored.get(key, 0) + 1
+    _report_unscored(out, record, scoring)
     kind = ending(shape.cls, record)
     if kind == "void":
         out.voids += 1
@@ -392,9 +430,21 @@ def _count(shape: Shape, out: ShapeScore, record: ChainRecord) -> None:
         out.false_vetoes += 1
     elif kind == "not_done":
         key = record.reason or record.status
+        if record.audit_reason is not None:
+            key = f"{key}:{record.audit_reason}"  # a no-call failure apart from a failed call
+        elif record.intake_no_call:
+            key = f"{key}:intake_no_call"
         out.not_done[key] = out.not_done.get(key, 0) + 1
     elif shape.cls == "must_pass":
         out.done_correct += 1
+
+
+def _sum_counts(parts: Iterable[Mapping[str, int]]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for part in parts:
+        for key, n in part.items():
+            out[key] = out.get(key, 0) + n
+    return out
 
 
 def bounds(scores: Sequence[ShapeScore]) -> dict[str, dict[str, int]]:
@@ -422,6 +472,7 @@ def summary(scores: Sequence[ShapeScore]) -> dict[str, object]:
         "held_out_blocks_live_use": any(s.held_out and not s.passed for s in scores),
         "inconclusive_blocks_live_use": any(s.inconclusive for s in scores),
         "bounds": bounds(scores),
+        "unknown_first": _sum_counts(s.unknown_first for s in scores),
         "shapes": [
             {
                 **asdict(s),
@@ -532,6 +583,9 @@ class _Recorder:
     scripted_pending: bool = False
     """The intake reach arm's scripted set was just declared: the next intake verdict is on it."""
     intake_truth: Mapping[str, bool] = field(default_factory=dict)
+    declared_keys: list[str] = field(default_factory=list)
+    """Each declared set's `declared_key`, in step with `declared` (kept in memory, never written:
+    it holds the param's words)."""
     audit_truth: Callable[[], bool] | None = None
     """[V2.73]: the page's own oracle, read at the moment the audit answers."""
 
@@ -610,11 +664,18 @@ def _judged(  # noqa: PLR0913 - one judge call's facts, gathered once
         return JudgeCall(judge, verdict, reason, ms, escaped, truth=truth)
     scripted, seen.scripted_pending = seen.scripted_pending, False
     declared = seen.declared[-1] if seen.declared else None
-    known = seen.intake_truth.get(",".join(declared)) if declared is not None else None
+    key = seen.declared_keys[-1] if seen.declared_keys else None
+    known = seen.intake_truth.get(key) if key is not None else None
     truth = False if scripted else known  # [V2.73]: the scripted insufficient set is known no
     return JudgeCall(
         judge, verdict, reason, ms, None, scripted=scripted, declared=declared, truth=truth
     )
+
+
+def declared_key(subgoals: Iterable[tuple[str, Sequence[str]]]) -> str:
+    """A declared set as the intake truth table keys it: per subgoal its closing kind and its
+    param words (`kind:words`, words joined by `|`), comma-joined in declared order."""
+    return ",".join(f"{kind}:{'|'.join(words)}" for kind, words in subgoals)
 
 
 def _recorded_decide(
@@ -625,6 +686,9 @@ def _recorded_decide(
         subgoals = decided.decision.subgoals
         if view.first_turn and subgoals is not None:
             seen.declared.append(tuple(s.closes for s in subgoals))
+            seen.declared_keys.append(
+                declared_key([(s.closes, list(s.params.values())) for s in subgoals])
+            )
         return decided
 
     return decide
@@ -786,6 +850,8 @@ def _record(  # noqa: PLR0913 - one chain's facts, gathered once
         outage=seen.outage,
         outage_code=seen.outage_code,
         arm=arm,
+        audit_reason=None if outcome.audit is None else outcome.audit[1],
+        intake_no_call=outcome.intake_no_call > 0,
     )
 
 

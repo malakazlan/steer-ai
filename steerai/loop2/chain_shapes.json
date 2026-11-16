@@ -1,5 +1,5 @@
 {
-  "note": "Intake packet rev 5 section 8 (pre-registered 2026-11-15) and [V2.71], [V2.73] (2026-11-16): the chain-eval shapes, verbatim; each must-veto shape's reach is the scripted first Decision of its reach arm and names the judge it measures (intake: an insufficient value or state set; audit: a set the intake check does not cover, or covers rightly, that code can prove); intake_truth is whether a declared set (closing kinds in order) finishes the request; wrong_field is [V2.72]'s right words in the wrong field.",
+  "note": "Intake packet rev 5 section 8 (pre-registered 2026-11-15) and [V2.71], [V2.73] (2026-11-16): the chain-eval shapes, verbatim; each must-veto shape's reach is the scripted first Decision of its reach arm and names the judge it measures (intake: an insufficient value or state set; audit: a set the intake check does not cover, or covers rightly, that code can prove); intake_truth is whether a declared set finishes the request, keyed by closing kind and the param's words per subgoal in order (kind:words, comma-joined); a set not named is unknown; wrong_field is [V2.72]'s right words in the wrong field.",
   "pilot": [
     "g22",
     "select",
@@ -30,7 +30,7 @@
         }
       ],
       "intake_truth": {
-        "value": true
+        "value:Ada Lovelace": true
       }
     },
     {
@@ -61,7 +61,7 @@
         }
       ],
       "intake_truth": {
-        "value": true
+        "value:Kenya": true
       }
     },
     {
@@ -84,7 +84,7 @@
         }
       ],
       "intake_truth": {
-        "state": true
+        "state:Dark mode": true
       }
     },
     {
@@ -135,7 +135,7 @@
         }
       ],
       "intake_truth": {
-        "value": false
+        "value:automation": false
       }
     },
     {
@@ -183,7 +183,7 @@
         }
       ],
       "intake_truth": {
-        "state": false
+        "state:Dark mode": false
       }
     },
     {
@@ -241,7 +241,7 @@
         }
       ],
       "intake_truth": {
-        "value": false
+        "page:automation": false
       }
     },
     {
@@ -267,7 +267,7 @@
         }
       ],
       "intake_truth": {
-        "value": true
+        "value:Ada Lovelace": true
       },
       "reach": {
         "judge": "audit",
@@ -325,8 +325,9 @@
         }
       ],
       "intake_truth": {
-        "value,value": true,
-        "value": false
+        "value:Ada Lovelace,value:ada@example.com": true,
+        "value:Ada Lovelace": false,
+        "value:ada@example.com": false
       }
     },
     {
@@ -349,7 +350,7 @@
         }
       ],
       "intake_truth": {
-        "state": true
+        "state:Remember this device": true
       }
     },
     {
@@ -373,7 +374,7 @@
         }
       ],
       "intake_truth": {
-        "state": true
+        "state:Dunkelmodus": true
       }
     },
     {
@@ -424,7 +425,7 @@
         }
       ],
       "intake_truth": {
-        "value": false
+        "value:automation": false
       }
     }
   ]
