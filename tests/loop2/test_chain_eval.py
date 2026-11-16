@@ -1645,3 +1645,71 @@ def _search_turn(p: str) -> dict[str, Any]:
 def test_typed_text_then_a_search_click_is_a_query_not_a_commit(shape_id: str) -> None:
     record = run_chain(SHAPES[shape_id], index=0, provider=Scripted([_search_turn], ALLOW))
     assert (record.status, record.reason) != ("blocked", "commit_not_in_step")
+
+
+def _country() -> tuple[Page, PageWorld, Any]:
+    page = Page.from_spec(SHAPES["select"].page)
+    world = PageWorld(page)
+    return page, world, lambda: {e.name: e for e in world.observe().snapshot.elements}
+
+
+def _option(page: Page, world: PageWorld, name: str) -> Any:  # Any: Element
+    return next(e for e in world.observe().snapshot.elements if e.name == name and e.id != 10)
+
+
+def test_a_collapsed_select_lists_no_options_and_expand_opens_it() -> None:
+    page, world, names = _country()
+    assert "Kenya" not in names()
+    assert names()["Country"].caps == ("collapsed", "readonly")
+    assert _send(page, "expand", "Country") is True
+    listed = names()
+    assert listed["Country"].caps == ("expanded", "readonly")
+    assert [listed[o].caps for o in ("Kenya", "Ghana", "Peru")] == [("selectable",)] * 3
+    assert {listed[o].role for o in ("Kenya", "Ghana", "Peru")} == {"ListItem"}
+    control = world.observe().snapshot.elements[1]
+    assert world.read_state(control, "expanded") is True
+    assert world.read_state(control, "collapsed") is False
+
+
+def test_select_on_an_option_selects_it_and_the_control_reads_it() -> None:
+    page, world, names = _country()
+    _send(page, "expand", "Country")
+    kenya = _option(page, world, "Kenya")
+    sent = Dispatch(ActionDoc.model_validate({"verb": "select", "target": 1, "subgoal": "s1"}),
+                    kenya.runtime_id, "", "", "R0", None)  # fmt: skip
+    assert page.act(sent) is True
+    listed = names()
+    assert listed["Kenya"].caps == ("selected",)
+    assert listed["Ghana"].caps == ("selectable",)
+    assert page.controls[0].text == "Kenya"
+    assert outcome_shown(page, SHAPES["select"].oracle)
+    assert world.read_state(_option(page, world, "Kenya"), "selected") is True
+    assert world.read_state(_option(page, world, "Ghana"), "selected") is False
+    assert world.read_state(_option(page, world, "Kenya"), "on") is None
+
+
+def test_collapse_closes_the_select_and_a_select_on_the_control_itself_is_refused() -> None:
+    page, world, names = _country()
+    assert _send(page, "select", "Country") is False  # a ComboBox has no SelectionItem
+    _send(page, "expand", "Country")
+    assert _send(page, "collapse", "Country") is True
+    assert "Kenya" not in names()
+    control = world.observe().snapshot.elements[1]
+    assert (world.read_state(control, "collapsed"), world.read_state(control, "expanded")) == (
+        True,
+        False,
+    )
+
+
+def test_a_state_claim_that_kenya_is_selected_is_provable_through_the_loop_when_expanded() -> None:
+    sub = _subgoal("s1", "state", "what", "Kenya")
+    turns: list[Callable[[str], dict[str, Any]]] = [
+        lambda p: {"subgoals": [sub], "actions": [
+            {"verb": "expand", "target": handle(p, "Country"), "subgoal": "s1"}]},
+        lambda p: {"actions": [
+            {"verb": "select", "target": handle(p, "Kenya"), "subgoal": "s1"}]},
+        lambda p: {"claims": [{"subgoal": "s1", "kind": "state", "evidence": [handle(p, "Kenya")],
+                               "param": "what", "wanted": "selected"}]},
+    ]  # fmt: skip
+    record = run_chain(SHAPES["select"], index=0, provider=Scripted(turns, ALLOW))
+    assert (record.status, record.reason, record.outcome_shown) == ("done", None, True)

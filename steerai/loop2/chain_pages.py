@@ -4,8 +4,11 @@ same `Ports` a live task uses.
 
 A page is data (`chain_shapes.json`), built here from a closed set of control kinds and
 behaviours, never from a site or an app:
-- `field`: an Edit; a `type` sets its text and reads it back;
-- `select`: a ComboBox with its options; a `choose` of one of them sets it and reads it back;
+- `field`: an Edit; a `type` sets its text and reads it back; with a `search` behaviour it reads
+  as a `searchbox` (AriaRole), as a real search field does;
+- `select`: a ComboBox (ExpandCollapse) with its options; a `choose` of one of them sets it and
+  reads it back; `expand` lists the options as ListItems (SelectionItem, `selected` or
+  `selectable`), `select` on one makes it the chosen option, `collapse` closes it;
 - `switch`: a Button with Toggle (`toggle:off`); `check`/`uncheck`, or a click (Invoke toggles
   a switch), set it and read back;
 - `checkbox`: a CheckBox, unchecked; as the switch;
@@ -50,6 +53,8 @@ ROLES: Final[Mapping[str, str]] = {
 HWND: Final = 0x4C0
 PROCESS: Final = "chrome.exe"
 BASE_URL: Final = "https://pages.test/"
+OPTION_ID: Final = 1000
+"""The first element id of a select's options: select `i`'s option `j` is `OPTION_ID + 100 * i + j`."""
 RESULTS: Final = 3
 """Result items a results page shows."""
 TICK_S: Final = 0.01
@@ -65,6 +70,8 @@ class Control:
     text: str = ""
     """A field's text, or a select's chosen option."""
     on: bool = False
+    expanded: bool = False
+    """A select's popup is open: its options are listed."""
 
 
 @dataclass
@@ -136,10 +143,36 @@ class Page:
                     caps=_caps(control),
                 )
             )
+            if control.kind == "select" and control.expanded:
+                out += [
+                    Element(
+                        id=OPTION_ID + 100 * i + j,
+                        depth=2,
+                        role="ListItem",
+                        name=option,
+                        box=(20, 70 + 40 * i + 24 * j, 390, 90 + 40 * i + 24 * j),
+                        runtime_id=self.option_rid(i, j),
+                        parent_id=10 + i,
+                        caps=("selected",) if control.text == option else ("selectable",),
+                    )
+                    for j, option in enumerate(control.options)
+                ]
         return out
 
     def rid(self, index: int) -> tuple[int, ...]:
         return (42, self.document, 10 + index)
+
+    def option_rid(self, index: int, option: int) -> tuple[int, ...]:
+        return (42, self.document, OPTION_ID + 100 * index + option)
+
+    def option_of(self, rid: tuple[int, ...]) -> tuple[int, str] | None:
+        """The (select index, option) an open select's listed option is; None for anything else."""
+        for i, control in enumerate(self.controls):
+            if control.kind == "select" and control.expanded and self.query is None:
+                for j, option in enumerate(control.options):
+                    if self.option_rid(i, j) == rid:
+                        return i, option
+        return None
 
     def roles(self) -> dict[tuple[int, ...], str]:
         """The AriaRole map as the real observer reports it: a text field that carries a `search`
@@ -189,6 +222,9 @@ class Page:
     def act(self, sent: Dispatch) -> bool | None:  # noqa: PLR0911, PLR0912 - a rule per verb
         """Apply one dispatch; the read-back of a read-back verb (True, False), else None."""
         verb = sent.action.verb
+        picked = self.option_of(sent.runtime_id) if sent.runtime_id else None
+        if picked is not None:
+            return self._pick(verb, *picked)
         index = self.index_of(sent.runtime_id) if sent.runtime_id else self.focus
         control = None if index is None else self.controls[index]
         if control is None:
@@ -207,6 +243,12 @@ class Page:
             if control.kind != "select" or option not in control.options:
                 return False
             control.text = option
+            control.expanded = False
+            return True
+        if verb in {"expand", "collapse"}:
+            if control.kind != "select":
+                return False
+            control.expanded = verb == "expand"
             return True
         if verb in {"check", "uncheck"}:
             if control.kind not in {"switch", "checkbox"}:
@@ -224,6 +266,15 @@ class Page:
                 self._search()
             return None
         return None if verb not in READ_BACK_VERBS else False
+
+    def _pick(self, verb: str, index: int, option: str) -> bool | None:
+        """A verb on a listed option (a ListItem with SelectionItem): select, or a click, makes it
+        the select's chosen one; every other read-back verb is refused (no such pattern)."""
+        if verb in {"select", "click"}:
+            self.controls[index].text = option
+            self.focus = index
+            return True if verb in READ_BACK_VERBS else None
+        return False if verb in READ_BACK_VERBS else None
 
     def _search(self) -> None:
         typed = next((c.text for c in self.controls if c.kind == "field"), "")
@@ -255,7 +306,7 @@ def _caps(control: Control) -> tuple[str, ...]:
     if control.kind == "field":
         return ("editable",)
     if control.kind == "select":
-        return ("collapsed", "readonly")
+        return ("expanded" if control.expanded else "collapsed", "readonly")
     if control.kind in {"switch", "checkbox"}:
         return ("toggle:on",) if control.on else ("toggle:off",)
     return ()
@@ -327,16 +378,18 @@ class PageWorld:
         return value_fact(self.page.controls[index].text, key=self.key)
 
     def read_state(self, element: Element, wanted: str) -> bool | None:
+        picked = self.page.option_of(element.runtime_id)
+        if picked is not None:
+            index, option = picked
+            return self.page.controls[index].text == option if wanted == "selected" else None
         index = self.page.index_of(element.runtime_id)
         if index is None:
             return None
         control = self.page.controls[index]
         if wanted in {"on", "off"} and control.kind in {"switch", "checkbox"}:
             return control.on == (wanted == "on")
-        if wanted == "collapsed" and control.kind == "select":
-            return True
-        if wanted == "expanded" and control.kind == "select":
-            return False
+        if wanted in {"collapsed", "expanded"} and control.kind == "select":
+            return control.expanded == (wanted == "expanded")
         return None
 
     def fact_of(self, text: str) -> ValueFact:
