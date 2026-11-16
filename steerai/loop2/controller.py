@@ -36,6 +36,7 @@ from steerai.loop2.decision import (
     SUBGOAL_ID_CHARS,
     UNTARGETED,
     ClaimKind,
+    Closes,
     Decision,
     Verb,
     validate,
@@ -54,7 +55,7 @@ from steerai.world.capabilities import TOKENS as CAPABILITY_TOKENS
 from steerai.world.elements import format_lines, safe_name
 from steerai.world.model import Snapshot
 
-PROMPT_VERSION = "controller-11"
+PROMPT_VERSION = "controller-13"
 PROMPT_TOKEN_CEILING = 50_000
 """[V2.55] (2): the most input tokens a rendered prompt may hold before any model call. A policy
 limit, six times the largest capped prompt measured (8,339 tokens, count_tokens on claude-opus-5,
@@ -108,9 +109,25 @@ SYSTEM_RULES = (
     "- The action log names an element by its id and role only; while it is listed, read its "
     "name in the listing by that id. An action line is act:verb:id:role:subgoal:param:"
     "delivery:effect classes:effect tokens; the other lines are what code saw: refused, claim, "
-    "proven, target_changed, focus_lost, stale_observation, load_guard, enter.\n"
+    "proven, target_changed, focus_lost, stale_observation, load_guard, enter, refused_shape.\n"
     "- refused:intake_insufficient means your subgoals would not finish the request: declare "
     "what the person would check, a page result if the request asks for one.\n"
+    "- refused_shape lists the subgoals of your refused reply by position and closing kind; "
+    "declare the subgoals again.\n"
+    "- claim:<subgoal>:accepted: one param held, subgoal not closed yet; any other word says "
+    "why a claim did not close it. evidence_missing, too_much_evidence (none, or more than "
+    "one), id_not_listed. The element cannot show it: outside_scope (outside the page), "
+    "not_in_delta (already there before), under_suggestions (in a menu), option_evidence (an "
+    "option of text you typed), inside_field, owned_by_combobox, owned_by_controller_for, "
+    "owned_by_parent, owned_by_search_landmark (a field you typed in, or owned by one). "
+    "state_mismatch, value_mismatch: it does not hold your claim. Unread: state_unread, "
+    "value_unread, url_unread, landmarks_unread; tier_mismatch: the reads could not be "
+    "compared. secure_field, secure_unread: a password field is never evidence. param_missing, "
+    "param_unproven, words_missing: a param is absent, unproven or not on the element. "
+    "kind_mismatch, standard_only: that kind cannot close the subgoal. The page does not show "
+    "it: no_scope (no single top document), no_change, no_carrier, no_content, not_a_page. "
+    "evidence_reused: it already proves another param. evidence_taken: it already proves "
+    "another closed subgoal of the same kind.\n"
     "- A ComboBox can be a text field: `type` is allowed on it.\n"
     "- Focus a text field before you type into it (focus and type can be one batch); `focus` "
     "is for text fields only. Backspace edits only text you typed; a field that already holds "
@@ -246,6 +263,9 @@ class ControllerError(Exception):
         self.estimate_low = False
         """[V2.61]: the turn's calls held more input tokens than the bound said (set by the
         decide port)."""
+        self.shape: tuple[Closes, ...] | None = None
+        """[V2.69] Three: the closing kinds of the last attempt's parsed Decision, in order;
+        None when the last attempt did not parse. Closed tokens, never model text."""
 
 
 @dataclass(frozen=True)
@@ -991,6 +1011,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
             )
             return decision, record
         error = ControllerError("rejected", tokens)
+        error.shape = tuple(s.closes for s in decision.subgoals or [])  # [V2.69] Three
         rejected.extend(tokens)
         if on_rejected is not None:  # #386: the rejected Decision's shape, closed tokens only
             shape = decision_shape(decision, known_subgoals=known_subgoals, tokens=tokens,

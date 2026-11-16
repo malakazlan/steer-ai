@@ -41,7 +41,7 @@ def test_focus_on_a_non_field_is_a_model_fault() -> None:
     outcome = run_task(task(), world.ports())
     assert world.dispatched == []
     assert (outcome.status, outcome.reason) == ("cannot", "after_refusal:focus_needs_field")
-    assert REFUSAL_KIND.get("focus_needs_field", "model") == "model"
+    assert REFUSAL_KIND["focus_needs_field"] == "model"
 
 
 def test_focus_on_a_field_is_dispatched() -> None:
@@ -214,12 +214,12 @@ def test_the_new_refusals_are_closed_tokens_of_their_kinds() -> None:
     assert new <= REFUSAL_TOKENS
     assert REFUSAL_KIND["type_not_at_focus"] == "world"  # as `press_not_at_focus`
     assert REFUSAL_KIND["field_not_empty"] == "world"
-    assert "focus_needs_field" not in REFUSAL_KIND  # a model fault
-    assert "not_own_text" not in REFUSAL_KIND
+    assert REFUSAL_KIND["focus_needs_field"] == "model"
+    assert REFUSAL_KIND["not_own_text"] == "model"
 
 
 def test_the_prompt_says_to_focus_a_field_before_typing() -> None:
-    assert PROMPT_VERSION == "controller-11"
+    assert PROMPT_VERSION == "controller-13"
     assert "Focus a text field before you type into it" in SYSTEM_RULES
 
 

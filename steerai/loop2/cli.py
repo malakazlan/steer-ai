@@ -516,10 +516,14 @@ def _result(
             "toggles_settled_on_reread": outcome.toggles_settled_on_reread,
             "fields_not_empty": outcome.fields_not_empty,
             "not_own_text": outcome.not_own_text,
+            "evidence_taken": outcome.evidence_taken,  # [V2.73]
+            "rebased_open": outcome.rebased_open,  # [V2.74]
+            "rebased_open_commit": outcome.rebased_open_commit,  # [V2.76]
             "target_changes": outcome.target_changes,
             "focus_losses": outcome.focus_losses,
             "history_dropped": outcome.history_dropped,
             "turn_trace_dropped": outcome.turn_trace_dropped,  # [V2.67] D
+            "turn_trace_errors": outcome.turn_trace_errors,  # #463 (1)
             "pre_task_draft_clicks": outcome.pre_task_draft_clicks,  # [V2.64] Two
             **{name: getattr(outcome, name) for name in AUDIT_COUNTS},  # [V2.69] One
             **{name: getattr(outcome, name) for name in INTAKE_COUNTS},  # [V2.68] One

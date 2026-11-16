@@ -73,6 +73,7 @@ from steerai.loop2.history import (
     WorldMoved,
     log_role,
     record_ok,
+    refused_shape,
     render,
 )
 from steerai.loop2.listing import ListingTurn, words_of
@@ -177,15 +178,58 @@ REFUSAL_KIND: Final[Mapping[str, RefusalKind]] = {
     "secure_unread": "policy",
     "text_changed": "policy",
     "not_in_step": "step",
-    "target_changed": "world",
     "not_delivered": "world",
     "press_not_at_focus": "world",
     "press_target_gone": "world",
     "press_target_changed": "world",
     "type_not_at_focus": "world",
     "field_not_empty": "world",
+    "not_foreground": "world",
+    "screen_changed_during_ask": "world",
+    "composer_unreadable": "world",
+    "composer_differs": "world",
+    "ask_empty": "model",
+    "ask_with_actions": "model",
+    "ask_with_stop": "model",
+    "commit_cannot_apply": "model",
+    "commit_conflict": "model",
+    "commit_undeclared": "model",
+    "desc_bad": "model",
+    "done_already": "model",
+    "empty_decision": "model",
+    "focus_needs_field": "model",
+    "id_not_listed": "model",
+    "intake_insufficient": "model",
+    "key_missing": "model",
+    "no_strict_shape": "model",
+    "not_own_text": "model",
+    "option_missing": "model",
+    "page_without_param": "model",
+    "param_missing": "model",
+    "param_name_bad": "model",
+    "param_not_span": "model",
+    "param_unknown": "model",
+    "repeat_send": "model",
+    "state_without_param": "model",
+    "stop_with_actions": "model",
+    "subgoal_duplicate": "model",
+    "subgoal_id_bad": "model",
+    "subgoal_unknown": "model",
+    "subgoals_after_first": "model",
+    "subgoals_missing": "model",
+    "target_missing": "model",
+    "target_on_untargeted_verb": "model",
+    "text_bad": "model",
+    "text_missing": "model",
+    "too_many_actions": "model",
+    "too_many_subgoals": "model",
+    "type_text_and_param": "model",
+    "value_without_param": "model",
+    "wanted_missing": "model",
 }
-"""[V2.12], [V2.37] P5: each refusal token's kind; any other token is a model fault."""
+"""[V2.12], [V2.37] P5, [V2.74]: each refusal token's kind, declared for every token (no default;
+a token without a kind fails a test). [V2.43]: a world fact the person-ask
+step meets is `world`."""
 KIND_ORDER: Final[tuple[RefusalKind, ...]] = ("policy", "step", "world", "model")
 """[V2.42] RT-29: several refusal reasons take the kind by this priority, never token order."""
 CLOCK_DOMAIN_S: Final = 3600.0
@@ -245,6 +289,7 @@ class _ActCounts:
     toggles_settled_on_reread: int = 0
     fields_not_empty: int = 0
     not_own_text: int = 0
+    evidence_taken: int = 0
 
 
 @dataclass
@@ -359,11 +404,10 @@ class _Handles:
 @dataclass(frozen=True)
 class _Ever:
     """[V2.38] RT-39: one type Steer sent in this task, never pruned (unlike pending text): the
-    field, the subgoal it was typed under, and the words when typed by param (None: generated
-    text, whose words are not kept)."""
+    field and the words when typed by param (None: generated text, whose words are not kept).
+    [V2.73]: the subgoal it was typed under is not kept; a label never decides evidence."""
 
     field: tuple[int, ...]
-    subgoal: str
     words: str | None
 
 
@@ -463,6 +507,14 @@ class _Run:
         """#335 review: the pending fields as the last `_pending` found them, for row 2."""
         self.baselines: dict[str, Observed] = {}
         self.first: Observed | None = None
+        self.first_full: Observed | None = None
+        """[V2.72]: the task's first full observation, every subgoal's baseline."""
+        self.rebased: set[str] = set()
+        """[V2.74] (#475): the non-commit subgoals another subgoal's close through a model claim
+        rebased (`_rebase`); `rebased_open` counts those still open when the task ends. An auto
+        proof's close rebases too, but is not counted: no claim order decided it."""
+        self.rebased_commit: set[str] = set()
+        """[V2.76]: as `rebased`, for commit subgoals."""
         self.last_acted: _Acted | None = None
         self.batch_last: tuple[ActionKey, EffectReport] | None = None
         self.fresh: dict[tuple[int, ...], ValueFact | None] = {}
@@ -472,6 +524,8 @@ class _Run:
         """[V2.67] D: the turns the loop opened (its trace's turn numbers), never the calls."""
         self.turn_trace_dropped = 0
         """[V2.67] D: turn records the no-free-text check dropped."""
+        self.turn_trace_errors = 0
+        """#463 (1): turns whose record could not be built or written."""
         self.read_costs: list[ReadCost] = []
         self.reasked: set[tuple[int, ...]] = set()
         """[V2.38] RT-12: the top Documents already re-asked on (once per Document)."""
@@ -589,6 +643,7 @@ class _Run:
             submit_parents=tuple(self.submit_parents.items()),
             history_dropped=self.history_dropped,
             turn_trace_dropped=self.turn_trace_dropped,
+            turn_trace_errors=self.turn_trace_errors,
             listings=tuple(self.listing.turns),
             focus_moved_after_press=self.counts.focus_moved_after_press,
             observations_focus_unread=self.counts.observations_focus_unread,
@@ -599,6 +654,9 @@ class _Run:
             toggles_settled_on_reread=self.counts.toggles_settled_on_reread,
             fields_not_empty=self.counts.fields_not_empty,
             not_own_text=self.counts.not_own_text,
+            evidence_taken=self.counts.evidence_taken,
+            rebased_open=len(self.rebased - self.proven),
+            rebased_open_commit=len(self.rebased_commit - self.proven),
         )
 
     def _cost(self) -> float | None:
@@ -711,6 +769,8 @@ class _Run:
             raise rejected
         # on the turn the loop opened ([V2.67] A): a close at its start still counts
         self._refuse(*tokens)  # type: ignore[arg-type]  # each one checked against the set above
+        if not self.frozen:  # [V2.69] Three: the next intake turn sees what it declared
+            self._note(refused_shape(rejected.shape))
         return self._record_strike(observed)
 
     def _observe(self) -> Observed:
@@ -761,6 +821,8 @@ class _Run:
         beyond `CLOCK_DOMAIN_S`, or not finite, is another clock (small skew is clamped by the
         load guard)."""
         observed = self.ports.stamp(observed)
+        if self.first_full is None and observed.tier == "full":
+            self.first_full = observed  # [V2.72]: every subgoal's baseline
         self.unread_aids += observed.snapshot.unread_automation_id_count  # #301: counted
         self.url_reads[url_read(observed)] += 1
         focus = focus_state(observed.snapshot, observed.focus)  # [V2.52] (b): counted
@@ -889,8 +951,7 @@ class _Run:
             # packet rev 5 §4: subgoals freeze only on a turn that is not stale, after validate
             # and the intake check (`_intake_passes`) both passed
             self._intake(decision)
-        for claim in decision.claims:
-            self._claim(claim, observed)
+        self._claims(decision.claims, observed)
         self._check_done(observed)
         if decision.ask is not None:
             raise _End("asked", Reason("controller_ask"))
@@ -932,13 +993,22 @@ class _Run:
         return next(s for s in self.subgoals if s.id == sid)
 
     def _baseline(self, sid: str) -> Observed:
-        """[V2.38] RT-39: the observation before the first action dispatched under `sid`
-        (mid-batch, the previous action's after); with none yet, the task's first observation."""
+        """[V2.38] RT-39 as [V2.72] tightens it: the task's first full observation, for every
+        subgoal; it never moves later, except where [V2.72] Two moves it (`_rebase`). Which
+        subgoal an action was dispatched under plays no part: the model assigns those labels."""
         if sid in self.baselines:
             return self.baselines[sid]
-        if self.first is None:  # set before the first decide
-            raise AssertionError("no first observation")
-        return self.first
+        if self.first_full is None:  # `observe` is a full read, taken before the first decide
+            raise AssertionError("no full observation")  # #473 review: never a poll that moves
+        return self.first_full
+
+    def _claims(self, claims: Sequence[Claim], observed: Observed) -> None:
+        """[V2.74] (#475): the claims of one Decision, judged in the subgoals' declaration order
+        (stable for one subgoal's own), so the model's listing never decides which close
+        rebases which. An unknown subgoal sorts last; `validate` has refused it before."""
+        order = {s.id: i for i, s in enumerate(self.subgoals)}
+        for claim in sorted(claims, key=lambda c: order.get(c.subgoal, len(order))):
+            self._claim(claim, observed)
 
     def _claim(self, claim: Claim, observed: Observed) -> None:
         """One claim: code's refusals first (`_refused`), then the claim check. A page claim
@@ -957,7 +1027,7 @@ class _Run:
             observed,
             readers=self._readers(observed),
             typed=self._typed_fields(),
-            acted=self._acted(subgoal),
+            acted=self._acted(),
             echo=self._echo(subgoal),
             allow_file=self._allow_file(),
         )
@@ -965,12 +1035,12 @@ class _Run:
             self._reject(subgoal, rejected)
             return
         if subgoal.closes == "page":
-            self._tick(subgoal, how="claim")
+            self._tick(subgoal, how="claim", at=observed)
             return
         proofs = self.proofs.setdefault(subgoal.id, {})
         proofs[param or ""] = _Proof(claim.evidence[0], claim.kind, claim.wanted)
         if set(proofs) >= set(subgoal.params) and self._still(subgoal, observed):
-            self._tick(subgoal, how="claim")
+            self._tick(subgoal, how="claim", at=observed)
             return
         self._note(ClaimResult(subgoal.id, "accepted"))  # [V2.47]: one param held, not closed
 
@@ -982,7 +1052,8 @@ class _Run:
         ([V2.39]); a value or state claim must name one param and cite exactly one element (#422:
         the claim check's own count tokens, before anything reads it), an element that proves no
         other param (#334 review), and a state claim's element must hold the param's words
-        ([V2.40] Q7)."""
+        ([V2.40] Q7). [V2.73]: nor one that is already the evidence of a closed subgoal of the
+        same kind sharing a span (`evidence_taken`, counted)."""
         if subgoal.commit != "none":
             return "standard_only"
         if CLAIM_CLOSES.get(claim.kind) != subgoal.closes:
@@ -995,8 +1066,27 @@ class _Run:
             return "too_much_evidence" if claim.evidence else "evidence_missing"
         if self._reused(subgoal, param, claim.evidence[0]):
             return "evidence_reused"
+        if self._taken(subgoal, param, claim.evidence[0]):
+            self.counts.evidence_taken += 1
+            return "evidence_taken"
         named = claim.kind != "state" or self._named(subgoal, param, claim.evidence[0], observed)
         return None if named else "words_missing"
+
+    def _taken(self, subgoal: Subgoal, param: str, handle: int) -> bool:
+        """[V2.73], extending [V2.40]'s one-handle rule across subgoals: an element that is the
+        evidence of a closed subgoal cannot be the evidence of another subgoal of the same kind
+        whose param shares a span with that closed subgoal's (`spans_shared`)."""
+        span = subgoal.params[param]
+        for other in self.subgoals:
+            if other.id == subgoal.id or other.id not in self.proven:
+                continue
+            if other.closes != subgoal.closes:
+                continue
+            for name, proof in self.proofs.get(other.id, {}).items():
+                shared = name in other.params and spans_shared(other.params[name], span)
+                if proof.handle == handle and shared:
+                    return True
+        return False
 
     def _named(self, subgoal: Subgoal, param: str, handle: int, observed: Observed) -> bool:
         """[V2.40] Q7: a state claim proves a param only when the cited element's name, or its
@@ -1066,18 +1156,31 @@ class _Run:
         address = None if first is None else (first.document_url or first.url)
         return address is not None and address.lower().startswith("file:")
 
-    def _tick(self, subgoal: Subgoal, *, how: ProvenHow) -> None:
-        """A proven subgoal. RT-06, §8.8: a commit subgoal is never closed in step 3 (a standard
-        proof never closes it; the strict tier is step 4)."""
+    def _tick(self, subgoal: Subgoal, *, how: ProvenHow, at: Observed) -> None:
+        """A proven subgoal, closed on the observation `at`. RT-06, §8.8: never a commit subgoal
+        (`_refused` stops a claim on one, `_auto_proofs` skips it; the strict tier is step 4).
+        [V2.74]: code's own proof is never a refusal, so nothing here can refuse."""
         if subgoal.commit != "none":
-            self._note(ClaimResult(subgoal.id, "standard_only"))
-            self.turn.claim_rejected = True
-            return
+            raise AssertionError("auto proof reached a commit subgoal")
         self.proven.add(subgoal.id)
         self.proven_how[subgoal.id] = how
         self.turn.ticked = True
         self.refusal = None
         self._note(Proven(subgoal.id, how))
+        self._rebase(subgoal, at, by_claim=how == "claim")
+
+    def _rebase(self, closed: Subgoal, at: Observed, *, by_claim: bool = False) -> None:
+        """[V2.72] Two: one event cannot close two subgoals of the same kind. Every other open
+        subgoal with the same closing kind and a shared param span takes `at` as its baseline,
+        so its evidence must be newer. Same kind only: a value and a page subgoal sharing a span
+        may both close on one type (a field's digest and a page's carriers differ)."""
+        for other in self.subgoals:
+            if other.id in self.proven or other.closes != closed.closes:
+                continue
+            if _shares_span(closed, other):
+                self.baselines[other.id] = at
+                if by_claim:
+                    (self.rebased if other.commit == "none" else self.rebased_commit).add(other.id)
 
     def _check_done(self, observed: Observed) -> None:
         """A task with zero subgoals never ends `done` ([V2.11] decision 1). [V2.69] One: every
@@ -1127,6 +1230,7 @@ class _Run:
                 return True
             self.intake_counts["intake_memo_refused"] += 1
             self._refuse("intake_insufficient")
+            self._note(refused_shape([s.closes for s in subs]))  # [V2.69] Three
             return False
         self._intake_budget()
         self._check_interrupt()  # #457 P2: a latched switch sends nothing and counts nothing
@@ -1137,6 +1241,7 @@ class _Run:
         self._check_interrupt()  # #326: a verdict after the kill is discarded, its counts kept
         if not passed:
             self._refuse("intake_insufficient")
+            self._note(refused_shape([s.closes for s in subs]))  # [V2.69] Three
         return passed
 
     def _intake_budget(self) -> None:
@@ -1604,13 +1709,11 @@ class _Run:
         task, whether its text is still pending or not."""
         return tuple(dict.fromkeys(e.field for e in self.ever))
 
-    def _acted(self, subgoal: Subgoal) -> tuple[int, ...] | None:
-        """The field whose Document scopes a subgoal's carriers: the last one typed under it,
-        else the last one typed in the task, else none (#331 review B8b)."""
-        mine = [e.field for e in self.ever if e.subgoal == subgoal.id]
-        if mine:
-            return mine[-1]
-        return self.ever[-1].field if self.ever else None
+    def _acted(self) -> tuple[int, ...] | None:
+        """[V2.73]: the element whose outermost Document scopes the carriers (the [V2.3]
+        observer scope rule): the most recently acted element in the task, whatever subgoal its
+        action was labelled with; None when nothing was acted on (the observer's own rule)."""
+        return None if self.last_acted is None else self.last_acted.runtime_id
 
     def _log_entry(self, sent: Dispatch, act: ActResult, report: EffectReport) -> LogEntry:
         """[V2.46], §8.6: the action as closed tokens and its task handle; never the target's
@@ -1653,7 +1756,6 @@ class _Run:
         observed: Observed,
         key: ActionKey | None,
     ) -> tuple[Observed, tuple[ActResult, EffectReport]] | None:
-        self.baselines.setdefault(sent.action.subgoal, observed)
         before = observed
         if element is not None:  # [V2.28] item 3: the target's own value, just before dispatch
             before = _with_value(observed, self._read_value(element, observed))
@@ -1826,7 +1928,7 @@ class _Run:
         words = (
             subgoal.params[param].text if param is not None and param in subgoal.params else None
         )
-        self.ever.append(_Ever(element.runtime_id, subgoal.id, words))
+        self.ever.append(_Ever(element.runtime_id, words))
         if param is None and sent.text:  # packet rev 5 item 5: masked out of the audit's view
             self.free_texts.append(sent.text)
 
@@ -1868,11 +1970,13 @@ class _Run:
         elif not observed.snapshot.stable:
             skipped = "unstable"
         for position, subgoal in enumerate(self.subgoals):  # the trace's 0-based positions
-            if subgoal.id in self.proven or subgoal.id not in self.baselines:
+            if subgoal.id in self.proven:
                 continue
             if subgoal.closes != "page":
                 continue  # [V2.39]: the navigated auto proof closes only a page subgoal
-            baseline = self.baselines[subgoal.id]
+            if subgoal.commit != "none":
+                continue  # #474: a commit subgoal closes only in the strict tier (step 4)
+            baseline = self._baseline(subgoal.id)  # [V2.72]: every open page subgoal is judged
             gate = None if skipped is not None else _change_gate(baseline, observed)
             if gate is None:
                 if tracing:
@@ -1885,14 +1989,14 @@ class _Run:
                 baseline,
                 observed,
                 typed=self._typed_fields(),
-                acted=self._acted(subgoal),
+                acted=self._acted(),
                 echo=self._echo(subgoal),
                 allow_file=self._allow_file(),
             )
             if tracing:
                 self.turn.proofs.append(_attempt(position, read_kind, observed, None, gate, judged))
             if judged.proof is not None:
-                self._tick(subgoal, how=judged.proof)
+                self._tick(subgoal, how=judged.proof, at=observed)
         if skipped is None:
             self._check_done(observed)
 
@@ -1967,8 +2071,9 @@ class _Run:
     def _trace_turn(self) -> None:
         """[V2.67] D: the turn's closed record to the trace port; a record that fails the
         no-free-text check is dropped and counted, never written in part. #444: an exception
-        while building or writing it is counted the same way and never raised: the turn is often
-        the one the task ends in (`_outcome`), and its outcome must never be lost."""
+        while building or writing it is never raised: the turn is often the one the task ends in
+        (`_outcome`), and its outcome must never be lost. #463 (1): it is counted as a trace
+        error, apart from the drops; an interrupt is not an `Exception` and propagates."""
         sink = self.ports.turn_trace
         turn = self.turn
         if sink is None or turn.seen is None or turn.traced:
@@ -1977,7 +2082,7 @@ class _Run:
         try:
             self._write_turn(sink, turn)
         except Exception:  # noqa: BLE001 - a trace failure never loses the task; it is counted
-            self.turn_trace_dropped += 1
+            self.turn_trace_errors += 1
 
     def _write_turn(self, sink: Callable[[Mapping[str, object]], None], turn: _Turn) -> None:
         seen = turn.seen
@@ -2096,7 +2201,7 @@ def _window_gone(observed: Observed) -> bool:
 def refusal_of(tokens: Sequence[str]) -> tuple[RefusalKind, str]:
     """[V2.42] RT-29: the kind of a refusal with these tokens, by a fixed priority (policy, step
     limit, world, model fault), never by their order; the token is the first of that kind."""
-    kinds = [(REFUSAL_KIND.get(t, "model"), t) for t in tokens]
+    kinds = [(REFUSAL_KIND[t], t) for t in tokens]
     for kind in KIND_ORDER:
         for found, token in kinds:
             if found == kind:
@@ -2159,6 +2264,18 @@ def _shared_rids(observed: Observed) -> frozenset[tuple[int, ...]]:
 def _folded(text: str) -> str:
     """Words as the echo guard compares them: NFKC, collapsed whitespace, case-folded."""
     return normalise_name(text).casefold()
+
+
+def spans_shared(a: GoalSpan, b: GoalSpan) -> bool:
+    """[V2.72] Two, #473 review: two params share a span when their ranges of the request
+    overlap (one contains the other included) or their words are the same, folded (the same
+    words at another place in the request)."""
+    overlap = a.start < b.end and b.start < a.end
+    return overlap or _folded(a.text) == _folded(b.text)
+
+
+def _shares_span(one: Subgoal, other: Subgoal) -> bool:
+    return any(spans_shared(a, b) for a in one.params.values() for b in other.params.values())
 
 
 def _proved_param(claim: Claim, subgoal: Subgoal) -> str | None:

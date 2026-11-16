@@ -11,7 +11,7 @@ refuses one. No page or model text can be a field: names, values, titles and URL
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal, get_args
 
@@ -19,7 +19,7 @@ from steerai.action.dispositions import Delivery
 from steerai.loop2.claims import ClaimToken
 from steerai.loop2.consent import CommitToken
 from steerai.loop2.consent import RefusalToken as StrictRefusal
-from steerai.loop2.decision import ValidateToken, Verb
+from steerai.loop2.decision import MAX_SUBGOALS, Closes, ValidateToken, Verb
 from steerai.loop2.query import EnterToken, RowId
 from steerai.loop2.verify import ClaimCheck, ProofToken
 from steerai.world.effects import EffectClass, Token
@@ -66,7 +66,7 @@ PolicyRefusal = Literal["secure_field", "secure_unread", "text_changed"]
 """The type and risk rules' refusals (`loop.type_refusal`, `RiskVerdict.refusal`)."""
 RunnerClaim = Literal[
     "evidence_reused", "kind_mismatch", "param_missing", "standard_only", "words_missing",
-    "accepted",
+    "evidence_taken", "accepted",
 ]  # fmt: skip
 """The runner's own claim results: `_refused`'s refusals, and a param proof held (`accepted`)."""
 RefusalWord = ValidateToken | RunnerRefusal | PolicyRefusal | StrictRefusal | CommitToken
@@ -183,6 +183,27 @@ class LoadGuard:
     """[V2.31]: the load guard held the page before the decision."""
 
 
+CLOSES: Final = frozenset(get_args(Closes))
+
+
+@dataclass(frozen=True)
+class RefusedShape:
+    """[V2.69] Three, intake packet rev 5 §4: the subgoals of a refused first Decision, by
+    position and closing kind, so the next intake turn can see what it declared (the prompt is
+    rebuilt every turn). None: the last attempt did not parse. At most `MAX_SUBGOALS` kinds;
+    `more` counts the rest."""
+
+    closes: tuple[Closes, ...] | None
+    more: int = 0
+
+
+def refused_shape(closes: Sequence[Closes] | None) -> RefusedShape:
+    """The record for a refused first Decision's declared kinds, cut at `MAX_SUBGOALS`."""
+    if closes is None:
+        return RefusedShape(None)
+    return RefusedShape(tuple(closes[:MAX_SUBGOALS]), max(0, len(closes) - MAX_SUBGOALS))
+
+
 HistoryRecord = (
     LogEntry
     | Refused
@@ -192,6 +213,7 @@ HistoryRecord = (
     | Proven
     | Entered
     | LoadGuard
+    | RefusedShape
 )
 RECORD_TYPES: Final = (
     LogEntry,
@@ -202,6 +224,7 @@ RECORD_TYPES: Final = (
     Proven,
     Entered,
     LoadGuard,
+    RefusedShape,
 )
 _MOVED: Final[Mapping[str, str]] = {
     "page": "stale_observation",
@@ -240,7 +263,20 @@ def render(record: HistoryRecord) -> str:  # noqa: PLR0911 - one form per record
         return f"proven:{record.subgoal}:{record.how}"
     if isinstance(record, Entered):
         return f"enter:{record.token}:{record.row}"
+    if isinstance(record, RefusedShape):
+        return _shape_line(record)
     return "load_guard"
+
+
+def _shape_line(record: RefusedShape) -> str:
+    if record.closes is None:
+        return "refused_shape:unparsed"
+    if not record.closes:
+        return "refused_shape:none"
+    parts = [f"{n}={kind}" for n, kind in enumerate(record.closes, 1)]
+    if record.more:
+        parts.append(f"more={record.more}")
+    return "refused_shape:" + ",".join(parts)
 
 
 def _slot(handle: int | None) -> str:
@@ -261,6 +297,7 @@ def _alt(words: frozenset[str]) -> str:
 
 
 _H = r"[0-9]{1,9}"
+_KIND = rf"[1-{MAX_SUBGOALS}]=(?:{_alt(CLOSES)})"
 _ID = r"[a-z0-9_]{1,24}"
 _CLS = _alt(EFFECT_CLASSES)
 _TOK = _alt(EFFECT_TOKENS)
@@ -282,6 +319,8 @@ def history_grammar(subgoal: str, param: str) -> re.Pattern[str]:
                 rf"(?:target_changed|focus_lost|focus_moved_after_press)(?::{_H})?",
                 r"stale_observation",
                 r"load_guard",
+                rf"refused_shape:(?:unparsed|none|{_KIND}(?:,{_KIND}){{0,{MAX_SUBGOALS - 1}}}"
+                r"(?:,more=[0-9]{1,3})?)",
                 rf"enter:(?:{_alt(ENTER_TOKENS)}):(?:{_alt(ROWS)})",
                 rf"claim:(?:{subgoal}):(?:{_alt(CLAIM_RESULTS)})",
                 rf"proven:(?:{subgoal}):(?:{_alt(PROVEN_HOW)})",
@@ -331,7 +370,17 @@ def _fields_ok(record: HistoryRecord, vocab: Vocab) -> bool:  # noqa: PLR0911 - 
         return record.subgoal in vocab.known and record.how in PROVEN_HOW
     if isinstance(record, Entered):
         return record.token in ENTER_TOKENS and record.row in ROWS
+    if isinstance(record, RefusedShape):
+        return _shape_ok(record)
     return True
+
+
+def _shape_ok(record: RefusedShape) -> bool:
+    if record.closes is None:
+        return record.more == 0
+    full = len(record.closes) == MAX_SUBGOALS
+    more_ok = not isinstance(record.more, bool) and record.more >= 0 and (full or not record.more)
+    return len(record.closes) <= MAX_SUBGOALS and set(record.closes) <= CLOSES and more_ok
 
 
 def _entry_ok(entry: LogEntry, vocab: Vocab) -> bool:

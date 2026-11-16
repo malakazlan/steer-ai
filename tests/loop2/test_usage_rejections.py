@@ -51,7 +51,7 @@ def test_a_rejected_turn_carries_the_usage_of_both_its_calls() -> None:
 def test_the_runner_counts_a_rejected_turns_usage_and_names_the_rejection() -> None:
     failed = ControllerError("rejected", ("id_not_listed",))
     failed.usage = TokenUsage(200, 40)
-    failed.record = DecideRecord("controller-11", 2, True, True)  # the call and its repair
+    failed.record = DecideRecord("controller-13", 2, True, True)  # the call and its repair
     world = World([Decision(stop="blocked")])
     world.decide_errors = [failed]  # [V2.68]: a refused turn, then the task goes on
     outcome = run_task(task(), world.ports())
@@ -63,7 +63,7 @@ def test_the_runner_counts_a_rejected_turns_usage_and_names_the_rejection() -> N
 
 def test_an_unreported_usage_on_a_rejected_turn_stays_unknown() -> None:
     failed = ControllerError("rejected", ("schema",))
-    failed.record = DecideRecord("controller-11", 2, True, True)  # the call and its repair
+    failed.record = DecideRecord("controller-13", 2, True, True)  # the call and its repair
     world = World([decision(act("wait"), first=True)])
     world.decide_errors = [failed]
     outcome = run_task(task(), world.ports())
