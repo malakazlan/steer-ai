@@ -58,17 +58,24 @@ class Reason:
 
     token: str
     after_refusal: bool = False
+    detail: str | None = None
+    """[V2.69] Two, [V2.70]: diagnostic detail on the reason class, a closed token (the single
+    cause of a `no_progress`), rendered `<token>:<detail>`."""
 
     def __post_init__(self) -> None:
         if REASON_TOKEN.fullmatch(self.token) is None:
             raise ValueError("reason_token")
+        if self.detail is not None and REASON_TOKEN.fullmatch(self.detail) is None:
+            raise ValueError("reason_detail")
 
 
 def render_reason(reason: Reason | None) -> str | None:
-    """`<token>`, or `after_refusal:<token>` for a model fault; None for no reason."""
+    """`<token>`, `<token>:<detail>`, or `after_refusal:<token>` for a model fault; None for no
+    reason."""
     if reason is None:
         return None
-    return f"after_refusal:{reason.token}" if reason.after_refusal else reason.token
+    token = reason.token if reason.detail is None else f"{reason.token}:{reason.detail}"
+    return f"after_refusal:{token}" if reason.after_refusal else token
 
 
 Provenance = Literal["goal_span", "generated"]
@@ -204,9 +211,12 @@ class PortInterrupted(Exception):  # noqa: N818 - the packet's name ([V2.40] Q4)
     no authority: the runner re-reads `interrupted()`, and only the latched switch stops the task
     as killed."""
 
-    def __init__(self, token: str) -> None:
+    def __init__(self, token: str, *, sent: bool = True) -> None:
         super().__init__(token)
         self.token = token
+        self.sent = sent
+        """False when the port gave up before its model request went out (#457 principal 2):
+        such a wait is no call. True otherwise, the safe default for counting."""
 
 
 UrlRead = Literal["read", "no_bar", "document_url_unread", "not_composed"]
@@ -257,9 +267,14 @@ class Decided:
     """[V2.67] D: the closed rejection tokens of each attempt that failed before it, in order."""
 
 
-AuditReason = Literal["facts_finish_request", "request_asks_more", "unclear"]
+SufficiencyReason = Literal["facts_finish_request", "request_asks_more", "unclear"]
 """[V2.68] One, packet rev 4 item 4: the sufficiency judges' closed reasons; only
 `facts_finish_request` with `sufficient` lets a task end done."""
+RunnerAuditReason = Literal["audit_failed", "audit_no_call"]
+"""[V2.64] One, #432: the runner's own audit endings: the audit failed, or was refused before
+any call (closed; the outcome's `audit` reason is one of these or a `SufficiencyReason`)."""
+AUDIT_FAILED: Final[RunnerAuditReason] = "audit_failed"
+AUDIT_NO_CALL: Final[RunnerAuditReason] = "audit_no_call"
 ReadKind = Literal["value_read", "state_read", "navigated"]
 """[V2.68] One: what kind of fact code verified for a proven subgoal (the audit's read token)."""
 AUDIT_COUNTS: Final = (
@@ -273,6 +288,20 @@ AUDIT_COUNTS: Final = (
 )
 """[V2.69] One, packet rev 4 item 4: the audit's counts on the outcome and the final line;
 `audit_calls == audit_allowed + audit_vetoed + audit_failed`."""
+
+
+INTAKE_COUNTS: Final = (
+    "intake_checks",
+    "intake_passed",
+    "intake_rejected",
+    "intake_failed",
+    "intake_no_call",
+    "intake_memo_refused",
+    "intake_budget_stops",
+    "intake_tokens",
+)
+"""[V2.68] One, packet rev 4 item 4: the intake check's counts; `intake_checks` (calls made) ==
+`intake_passed + intake_rejected + intake_failed`; the no-call counts sit outside it."""
 
 
 ProofParam = tuple[int, str]
@@ -308,8 +337,21 @@ class Audited:
     the call's usage ([V2.68] One)."""
 
     sufficient: bool
-    reason: AuditReason
+    reason: SufficiencyReason
     usage: TokenUsage | None = None
+
+
+IntakeLine = tuple[int, str, tuple[ProofParam, ...]]
+"""[V2.68] One, packet rev 5 §4: one declared subgoal for the intake check, by position, never
+its id: (position, closes, params by sorted position with their spans of the request)."""
+
+
+@dataclass(frozen=True)
+class IntakeView:
+    """[V2.68] One: what the intake check sees: the declared subgoals as positions, closing kinds
+    and spans; the request comes from the task. No observation: no page text."""
+
+    subgoals: tuple[IntakeLine, ...]
 
 
 @dataclass(frozen=True)
@@ -350,11 +392,14 @@ class Ports:
     """The value fact a field holding exactly this text reads as (the session key and the
     normalisation `read_value` uses), so a value claim compares digests, never text."""
     audit: Callable[[AuditView], Audited] | None = None
+    """[V2.64] One: the final audit, called only when every proof is self-written; None means
+    there is none, so such a task fails closed (`audit_failed`), never ends done unaudited."""
     turn_trace: Callable[[Mapping[str, object]], None] | None = None
     """[V2.67] D: each turn's closed record (`turn_trace.closed`) for the redacted trace; None
     writes none."""
-    """[V2.64] One: the final audit, called only when every proof is self-written; None means
-    there is none, so such a task fails closed (`audit_failed`), never ends done unaudited."""
+    intake: Callable[[IntakeView], Audited] | None = None
+    """[V2.68] One: the intake sufficiency check, on a first Decision of value or state subgoals
+    only; None means there is none, and such a Decision is not checked."""
 
 
 WatchKind = Literal["plain", "trigger", "submit", "wait"]
@@ -476,6 +521,9 @@ class TaskOutcome:
     turn_trace_dropped: int = 0
     """[V2.67] D: turn records that failed the no-free-text check (`turn_trace.closed`): dropped,
     never written in part, and counted so a gap in the trace never reads as a clean run."""
+    turn_trace_errors: int = 0
+    """#463 (1): turns whose record could not be built or written (an exception in
+    `turn_record` or the sink): counted apart from the drops, so a bug is never hidden as one."""
     wall_s: float = 0.0
     """7b: the task's wall time on the ports' clock, start to end (use against `max_wall_s`)."""
     cost_usd: float | None = None
@@ -498,7 +546,7 @@ class TaskOutcome:
     Stage 1 runs with caching off and asserts every cache counter here is zero."""
     exact_counts: int = 0
     """[V2.61]: turns on which the prompt guard spent an exact count (near the ceiling)."""
-    audit: tuple[str, str] | None = None
+    audit: tuple[str, SufficiencyReason | RunnerAuditReason] | None = None
     """[V2.64] One, [V2.69] One: the final audit's (`allowed` | `vetoed` | `failed`, reason token);
     None when no audit was due (the task did not reach done)."""
     audit_calls: int = 0
@@ -513,6 +561,15 @@ class TaskOutcome:
     """[V2.69] Four: an audit due with a budget spent: no call, the task paused."""
     audit_tokens: int = 0
     """The audit call's reported input and output tokens."""
+    intake_checks: int = 0
+    """[V2.68] One: intake check calls made (`INTAKE_COUNTS`)."""
+    intake_passed: int = 0
+    intake_rejected: int = 0
+    intake_failed: int = 0
+    intake_no_call: int = 0
+    intake_memo_refused: int = 0
+    intake_budget_stops: int = 0
+    intake_tokens: int = 0
     query_combobox_listed: bool = False
     """[V2.64] Two: a query-class ComboBox (searchbox AriaRole, or under a Search landmark) was
     among the rows the model was shown."""

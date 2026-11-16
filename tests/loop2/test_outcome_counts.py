@@ -34,6 +34,7 @@ OUTCOME = TaskOutcome(
     focus_losses=7,
     history_dropped=8,
     turn_trace_dropped=10,
+    turn_trace_errors=11,
     pre_task_draft_clicks=9,
     audit_calls=3,
     audit_allowed=1,
@@ -42,6 +43,14 @@ OUTCOME = TaskOutcome(
     audit_no_call=1,
     audit_budget_stops=1,
     audit_tokens=55,
+    intake_checks=3,
+    intake_passed=1,
+    intake_rejected=1,
+    intake_failed=1,
+    intake_no_call=1,
+    intake_memo_refused=1,
+    intake_budget_stops=1,
+    intake_tokens=66,
     saved_calls=10,
     submit_parents=(("document", 1), ("main", 0), ("narrower", 2)),
 )
@@ -55,6 +64,7 @@ COUNTS = {
     "focus_losses": 7,
     "history_dropped": 8,
     "turn_trace_dropped": 10,
+    "turn_trace_errors": 11,
     "pre_task_draft_clicks": 9,
     "audit_calls": 3,
     "audit_allowed": 1,
@@ -63,6 +73,14 @@ COUNTS = {
     "audit_no_call": 1,
     "audit_budget_stops": 1,
     "audit_tokens": 55,
+    "intake_checks": 3,
+    "intake_passed": 1,
+    "intake_rejected": 1,
+    "intake_failed": 1,
+    "intake_no_call": 1,
+    "intake_memo_refused": 1,
+    "intake_budget_stops": 1,
+    "intake_tokens": 66,
     "saved_calls": 10,
     "submit_parents": {"document": 1, "main": 0, "narrower": 2},
 }
@@ -121,6 +139,7 @@ def test_the_stage_summary_sums_the_counts_and_says_odd_ones() -> None:
     json.dumps(report, allow_nan=False)
     assert report["counts"]["history_dropped"] == 24
     assert report["counts"]["turn_trace_dropped"] == 30
+    assert report["counts"]["turn_trace_errors"] == 33  # #463 (1)
     assert report["counts"]["focus_losses"] == 14  # the odd run's is said, not summed
     assert report["counts"]["submit_parents"] == {"document": 3, "main": 0, "narrower": 4}
     assert report["run_facts_incomplete"] == 2  # "x" and "elsewhere"
