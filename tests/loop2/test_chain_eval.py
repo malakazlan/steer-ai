@@ -1031,7 +1031,7 @@ def test_the_wrong_field_oracle_tells_the_right_field_from_the_wrong_one() -> No
 def test_the_wrong_field_reach_arm_gives_the_audit_a_value_set_in_the_wrong_field() -> None:
     """The intake sees kinds only, so its truth for this set is sufficient; the audit's is no."""
     shape = SHAPES["wrong_field"]
-    assert shape.intake_truth == {(("value", (("ada", "lovelace"),), (None,)),): True}
+    assert shape.intake_truth == {(("value", (("ada", "lovelace"),)),): True}
     turns = [
         lambda p: {"claims": [{"subgoal": "s1", "kind": "value",
                                "evidence": [handle(p, "Email")], "param": "name"}]}
@@ -1193,7 +1193,7 @@ def test_every_intake_truth_key_names_its_kind_and_its_words() -> None:
     for shape in SHAPES.values():
         for key in shape.intake_truth:
             assert key, shape.id
-            assert all(kind and words and wanted for kind, words, wanted in key), (shape.id, key)
+            assert all(kind and words for kind, words in key), (shape.id, key)
 
 
 def test_a_partial_span_or_a_duplicated_value_is_never_true() -> None:
@@ -1726,45 +1726,48 @@ def test_a_state_claim_that_kenya_is_selected_is_provable_through_the_loop_when_
     assert (record.status, record.reason, record.outcome_shown) == ("done", None, True)
 
 
-# ---- [V2.77] (2): a choice carried by value or by state, the truth key carries the wanted state --
+# ---- [V2.77] (2), [V2.78]: a choice by value is known; a state declaration has unknown truth -----
 
 
 def _choice_shapes() -> list[Shape]:
     return [s for s in SHAPES.values() if any(c["kind"] == "select" for c in s.page["controls"])]
 
 
-def test_every_choice_shape_names_its_choice_by_value_and_by_state() -> None:
+def test_every_choice_shape_names_its_choice_by_value_as_sufficient() -> None:
     """By rule, for every shape whose page has a select: the wanted option carried by value (the
-    control reads it) and by state (the option is selected) is sufficient; the option in another
-    state (off) is not; a state set that names no wanted state is not in the table (unknown)."""
+    control reads it) is sufficient."""
     assert [s.id for s in _choice_shapes()]
     for shape in _choice_shapes():
         wanted = [fact["value"][1] for fact in shape.oracle if "value" in fact]
         assert wanted, shape.id
         for option in wanted:
-            by = chain_eval.declared_key
-            assert shape.intake_truth.get(by([("value", [option])])) is True, shape.id
-            assert shape.intake_truth.get(by([("state", [f"{option} selected"])])) is True
-            assert shape.intake_truth.get(by([("state", [f"{option} off"])])) is False
-            assert by([("state", [option])]) not in shape.intake_truth  # no wanted: unknown
+            key = chain_eval.declared_key([("value", [option])])
+            assert shape.intake_truth.get(key) is True, shape.id
 
 
-def test_the_wanted_state_is_part_of_a_state_key_and_a_value_key_has_none() -> None:
-    by = chain_eval.declared_key
-    assert by([("state", ["Kenya selected"])]) != by([("state", ["Kenya"])])
-    assert by([("state", ["Kenya selected"])]) != by([("state", ["Kenya off"])])
-    assert by([("state", ["selected Kenya"])]) != by([("state", ["Kenya selected"])])
-    assert by([("value", ["Kenya selected"])]) == by([("value", ["selected Kenya"])])  # a set
-    assert by([("state", ["Dark mode"])]) == by([("state", ["mode Dark"])])
+def test_no_shape_assigns_truth_to_a_state_declaration() -> None:
+    """[V2.78]: a state subgoal declares no wanted state yet, so nobody may assign truth to it
+    (a state key carries no wanted and maps to unknown); the schema change that moves `wanted`
+    onto state subgoals brings the keys back."""
+    for shape in SHAPES.values():
+        assert all(kind != "state" for key in shape.intake_truth for kind, _ in key), shape.id
+    for words in ("Kenya", "Kenya selected", "Dark mode"):
+        key = chain_eval.declared_key([("state", [words])])
+        assert all(key not in s.intake_truth for s in SHAPES.values())
 
 
-def test_the_wanted_words_are_the_decisions_own_closed_set() -> None:
-    from typing import get_args  # noqa: PLC0415
+def test_a_state_key_in_the_shapes_file_is_refused() -> None:
+    with pytest.raises(ValueError, match="state_truth_needs_wanted"):
+        chain_eval._parse_truth({"state:Kenya": True})
 
-    from steerai.loop2.decision import Claim  # noqa: PLC0415
 
-    wanted = get_args(get_args(Claim.model_fields["wanted"].annotation)[0])
-    assert set(chain_eval.WANTED_STATES) == set(wanted)
+def test_a_state_declaration_in_a_chain_has_unknown_intake_truth() -> None:
+    record = run_chain(
+        SHAPES["toggle"], index=0, provider=Scripted(_state_turns("Dark mode"), ALLOW)
+    )
+    intake = next(j for j in record.judges if j.judge == "intake")
+    assert intake.truth is None
+    assert intake.declared == ("state",)
 
 
 # ---- [V2.77] (7): token usage per chain and per judge call, cache categories included -----------
@@ -1944,7 +1947,8 @@ def test_the_audit_reach_arm_brings_the_chain_to_the_audit_with_no_intake_call(
     provider = Scripted([], VETO)
     record = run_chain(SHAPES[shape_id], index=0, provider=provider, arm="audit_reach")
     assert (record.arm, record.status, record.reason) == ("audit_reach", "blocked", "audit_veto")
-    assert [(j.judge, j.verdict, j.truth) for j in record.judges] == [("audit", "vetoed", False)]
+    scoring = [(j.judge, j.verdict, j.truth) for j in chain_eval.scored(record)]
+    assert scoring == [("audit", "vetoed", False)]
     assert provider.calls == ["audit"]  # the Decisions are the script's: no controller call
     assert record.scripted_turns == 2
     assert ending("must_veto", record) == "ok"
@@ -1996,7 +2000,9 @@ def test_the_report_names_the_distinct_packet_digests_per_shape_and_arm(tmp_path
 def test_a_packet_digest_is_a_closed_hex_token() -> None:
     record = run_chain(SHAPES["g23"], index=0, provider=Scripted([], VETO), arm="audit_reach")
     assert closed_record(record_json(record))
-    assert re.fullmatch(r"[0-9a-f]{16}", next(j.packet for j in record.judges) or "")
+    assert re.fullmatch(
+        r"[0-9a-f]{16}", next(j.packet for j in record.judges if j.judge == "audit") or ""
+    )
 
 
 # ---- (6): the gate unit is (shape, judge) ------------------------------------------------------
@@ -2092,3 +2098,71 @@ def test_the_free_arm_of_a_judge_sourced_from_it_still_blocks_when_short() -> No
     out = score(two, _lost(chain_eval.CHAIN_CAP), arm="free")
     assert (out.required, out.result) == (("intake",), "inconclusive")
     assert out.causes == ["reach"]
+
+
+# ---- [V2.78]: the audit reach arm's forced intake allow ---------------------------------------
+
+
+def test_the_header_declares_the_intake_mode_of_each_audit_reach_arm_and_freezes_it() -> None:
+    head = _head()
+    declared = {
+        "g23": "forced_allow",
+        "set_and_save": "forced_allow",
+        "heldout_injection": "forced_allow",
+    }
+    assert head["audit_intake"] == declared
+    assert "audit_intake" in chain_eval.FROZEN_KEYS
+    with pytest.raises(ValueError, match="wording_not_frozen"):
+        check_frozen(_head(audit_intake={**declared, "g23": "real"}), head)
+
+
+def test_an_audit_reach_script_with_no_declared_intake_mode_is_refused_at_load(
+    tmp_path: Path,
+) -> None:
+    doc = json.loads(chain_eval.SHAPES_PATH.read_text(encoding="utf-8"))
+    del next(s for s in doc["shapes"] if s["id"] == "g23")["audit_reach"]["intake"]
+    path = tmp_path / "shapes.json"
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    pin = hashlib.sha256(path.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="audit_intake_not_declared"):
+        load_shapes(path, pin=pin)
+
+
+def test_the_forced_intake_allow_is_a_scripted_verdict_never_scored() -> None:
+    provider = Scripted([], VETO)
+    record = run_chain(SHAPES["g23"], index=0, provider=provider, arm="audit_reach")
+    assert provider.calls == ["audit"]  # the forced allow is no provider call
+    forced = [j for j in record.judges if j.judge == "intake"]
+    assert [(j.verdict, j.scripted, j.forced, j.truth) for j in forced] == [
+        ("passed", True, True, None)
+    ]
+    assert [j.judge for j in chain_eval.scored(record)] == ["audit"]
+    out = score(SHAPES["g23"], [record], arm="audit_reach")
+    assert out.unknown_first == {}
+    assert set(out.judges) == {"audit"}
+
+
+def test_scripted_turns_are_left_out_of_usage_and_latency_and_reported_apart() -> None:
+    record = run_chain(SHAPES["g23"], index=0, provider=Cached([], VETO), arm="audit_reach")
+    assert record.scripted_turns == 2
+    assert record.usage == chain_eval.UsageRecord(50, 5, 13, 0, 30)  # the audit's reply alone
+    usage = chain_eval.usage_report([record])
+    assert set(usage) == {"chains", "audit", "scripted"}  # no intake row: its verdict was forced
+    assert usage["scripted"] == {"turns": 2, "forced_intake": 1}
+    assert chain_eval.latency([record])["intake"]["calls"] == 0.0
+
+
+def test_audit_after_forced_intake_allow_is_reported_apart_and_a_false_allow_fails() -> None:
+    shape = SHAPES["g23"]
+    vetoed = [
+        run_chain(shape, index=i, provider=Scripted([], VETO), arm="audit_reach") for i in (0, 1)
+    ]
+    scores = [score(shape, vetoed, arm="audit_reach")]
+    out = summary(scores)
+    assert out["audit_after_forced_intake_allow"] == {
+        "g23": {"not_finished": 2, "false_allows": 0, "finished": 0, "false_vetoes": 0}
+    }
+    allowed = run_chain(shape, index=0, provider=Scripted([], ALLOW), arm="audit_reach")
+    bad = summary([score(shape, [allowed], arm="audit_reach")])
+    assert bad["result"] == "fail"
+    assert bad["audit_after_forced_intake_allow"]["g23"]["false_allows"] == 1  # type: ignore[index]  # JSON

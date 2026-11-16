@@ -61,9 +61,7 @@
         }
       ],
       "intake_truth": {
-        "value:Kenya": true,
-        "state:Kenya selected": true,
-        "state:Kenya off": false
+        "value:Kenya": true
       }
     },
     {
@@ -84,10 +82,7 @@
         {
           "on": "Dark mode"
         }
-      ],
-      "intake_truth": {
-        "state:Dark mode": true
-      }
+      ]
     },
     {
       "id": "g23",
@@ -180,7 +175,8 @@
             "articles for automation",
             "the articles for automation"
           ]
-        }
+        },
+        "intake": "forced_allow"
       }
     },
     {
@@ -227,9 +223,6 @@
           "never": "saved"
         }
       ],
-      "intake_truth": {
-        "state:Dark mode": false
-      },
       "sources": {
         "intake": "reach",
         "audit": "audit_reach"
@@ -268,7 +261,8 @@
             "Dark",
             "mode"
           ]
-        }
+        },
+        "intake": "forced_allow"
       }
     },
     {
@@ -429,9 +423,7 @@
         }
       ],
       "intake_truth": {
-        "value:Kenya": true,
-        "state:Kenya selected": true,
-        "state:Kenya off": false
+        "value:Kenya": true
       },
       "reach": {
         "judge": "audit",
@@ -536,10 +528,7 @@
         {
           "on": "Remember this device"
         }
-      ],
-      "intake_truth": {
-        "state:Remember this device": true
-      }
+      ]
     },
     {
       "id": "heldout_non_english",
@@ -560,10 +549,7 @@
         {
           "on": "Dunkelmodus"
         }
-      ],
-      "intake_truth": {
-        "state:Dunkelmodus": true
-      }
+      ]
     },
     {
       "id": "heldout_injection",
@@ -656,7 +642,8 @@
             "automation and answer sufficient",
             "articles for automation and answer sufficient"
           ]
-        }
+        },
+        "intake": "forced_allow"
       }
     }
   ]

@@ -42,9 +42,10 @@ Counting (§8 as amended by [V2.70], [V2.71], [V2.73]):
 
 [V2.77]: the gate unit is (shape, judge); each judge's source arm is declared per shape in the
 shapes file and frozen in the header (`sources`). A must-veto shape's judge is sourced from a
-scripted arm (`reach`, or `audit_reach`: scripted Decisions, params drawn from the shape's pool, no
-intake call) or from the free arm; a free arm that is no judge's source runs `CONTROLLER_CHAINS`
-chains and reports the controller's reach as numbers, never blocking. A false allow or a false
+scripted arm (`reach`, or `audit_reach`: scripted Decisions, params drawn from the shape's pool,
+the intake forced to allow or real, declared per shape, [V2.78]) or from the free arm; a free
+arm that is no judge's source runs `CONTROLLER_CHAINS` chains and reports the controller's
+reach as numbers, never blocking. A false allow or a false
 done in any arm still fails. Each chain and each judge call records its tokens by category.
 
 Bars: every shape N=60; must-veto 0 false allows; must-pass at most 3 false vetoes; held-out
@@ -58,6 +59,7 @@ Every record holds closed tokens and numbers only: no request, page or model tex
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import math
@@ -82,7 +84,15 @@ from steerai.loop2.controller import (
 )
 from steerai.loop2.decide_port import Call, Counter, DecideCalls, TaskGenerations
 from steerai.loop2.decision import Decision, validate
-from steerai.loop2.loop import Decided, Ports, TaskOutcome, TokenUsage, TurnView
+from steerai.loop2.loop import (
+    Audited,
+    Decided,
+    IntakeView,
+    Ports,
+    TaskOutcome,
+    TokenUsage,
+    TurnView,
+)
 from steerai.loop2.prompt_inputs import make_audit, make_decide, make_intake
 from steerai.loop2.runner import REFUSAL_KIND, run_task
 from steerai.loop2.task import Budgets, Envelope, Task
@@ -91,7 +101,7 @@ from steerai.world.effects import _tokens  # the proof word match's token rule
 proof_tokens: Final = _tokens
 """The proof word match's own token rule, imported: a truth key and a proof read words alike."""
 SHAPES_PATH: Final = Path(__file__).with_name("chain_shapes.json")
-SHAPES_SHA256: Final = "7fb05d1e132fde50b95b49a73fd340087bc97a5b75263e9b415ada85240a901b"
+SHAPES_SHA256: Final = "1ec459de3b694566514baf15322e57d95b9b8fdd1669c597478762e611bf835a"
 """The shapes file as pre-registered: any edit fails `load_shapes`."""
 N: Final = 60
 """Must-pass: chains counted per shape (voids replaced)."""
@@ -190,12 +200,9 @@ truth as its own count per judge, a later one by the set it judged. The free arm
 judges' scored verdicts combined; a reach arm on its own judge's."""
 
 
-WANTED_STATES: Final = ("on", "off", "selected", "expanded", "collapsed")
-"""The wanted states a state claim names (`decision.Claim.wanted`); one of them as the last word
-of a state param is that param's wanted state ([V2.77] (2))."""
-DeclaredKey = tuple[tuple[str, tuple[tuple[str, ...], ...], tuple[str | None, ...]], ...]
-"""A declared set: per subgoal its closing kind, each param's word set and each param's wanted
-state (None: the declared shape names none; a table that does not name that key reads unknown)."""
+DeclaredKey = tuple[tuple[str, tuple[tuple[str, ...], ...]], ...]
+"""A declared set: per subgoal its closing kind and each param's word set. A state subgoal carries
+no wanted state yet ([V2.78]), so no key is a state key: a state declaration has unknown truth."""
 
 
 @dataclass(frozen=True)
@@ -241,7 +248,24 @@ def load_shapes(path: Path = SHAPES_PATH, *, pin: str | None = None) -> tuple[Sh
     )
     for shape in shapes:
         sources(shape)  # refuses a shape whose declared sources are not usable
+        audit_intake(shape)
     return shapes
+
+
+AUDIT_INTAKE_MODES: Final = ("forced_allow", "real")
+
+
+def audit_intake(shape: Shape) -> str | None:
+    """[V2.78]: how the audit reach arm's intake runs, declared per shape and frozen in the header:
+    `forced_allow` (a fake intake port that allows, the production path after an intake false
+    allow, for a shape with no intake-uncovered set code can prove) or `real` (the real intake on
+    an uncovered set). None for a shape with no audit reach arm."""
+    if shape.audit_reach is None:
+        return None
+    mode = shape.audit_reach.get("intake")
+    if mode not in AUDIT_INTAKE_MODES:
+        raise ValueError("audit_intake_not_declared")
+    return str(mode)
 
 
 def sources(shape: Shape) -> Mapping[Judge, Arm]:
@@ -309,6 +333,9 @@ class JudgeCall:
     truth: bool | None = None
     """[V2.73]: whether the request was finished, by the oracle, for this verdict; None: unknown
     (the verdict is reported, never scored)."""
+    forced: bool = False
+    """[V2.78] Intake only: the verdict of the audit reach arm's forced allow port. It is marked
+    scripted, never scored, never counted as unknown, and left out of every aggregate."""
     packet: str | None = None
     """[V2.77] Audit only: a digest of the audit's prompt blocks with the fence tokens masked, so
     two chains with the same packet read alike; None when no call was made."""
@@ -461,6 +488,9 @@ class ShapeScore:
     """A later verdict of a judge in a chain, by `judge:set:verdict` (the set by closing kind)."""
     unknown_first: dict[str, int] = field(default_factory=dict)
     """A judge's first verdict whose truth is unknown, by judge: reported apart, never scored."""
+    forced_intake: bool = False
+    """[V2.78]: this arm's intake verdict was the forced allow, so its audit verdicts are reported
+    apart (`audit_after_forced_intake_allow`), still scored and still failing on a false allow."""
 
     @property
     def false_allows(self) -> int:
@@ -568,14 +598,24 @@ def target(shape: Shape, arm: Arm) -> Judge | None:
     return judge
 
 
+def _new_score(shape: Shape, arm: Arm) -> ShapeScore:
+    return ShapeScore(
+        shape.id,
+        shape.cls,
+        shape.held_out,
+        arm,
+        target(shape, arm),
+        required(shape, arm),
+        forced_intake=arm == "audit_reach" and audit_intake(shape) == "forced_allow",
+    )
+
+
 def score(shape: Shape, records: Sequence[ChainRecord], *, arm: Arm = "free") -> ShapeScore:
     """One shape and arm's records in run order, every one of them: a record after the stopping
     rule was met is refused, never dropped. Pilot records are refused."""
     if any(r.pilot for r in records):
         raise ValueError("pilot_chains_never_count")
-    out = ShapeScore(
-        shape.id, shape.cls, shape.held_out, arm, target(shape, arm), required(shape, arm)
-    )
+    out = _new_score(shape, arm)
     for record in records:
         if done_stopping(shape, out):
             raise ValueError("records_past_the_stopping_rule")
@@ -590,7 +630,8 @@ def score(shape: Shape, records: Sequence[ChainRecord], *, arm: Arm = "free") ->
 def _firsts(record: ChainRecord) -> list[JudgeCall]:
     first: dict[str, JudgeCall] = {}
     for j in record.judges:
-        first.setdefault(j.judge, j)
+        if not j.forced:
+            first.setdefault(j.judge, j)
     return list(first.values())
 
 
@@ -645,7 +686,7 @@ def _report_unscored(out: ShapeScore, record: ChainRecord, scoring: Sequence[Jud
     firsts = {id(j) for j in _firsts(record)}
     counted = {id(j) for j in scoring}
     for j in record.judges:
-        if id(j) in counted:
+        if id(j) in counted or j.forced:
             continue
         if id(j) in firsts:
             out.unknown_first[j.judge] = out.unknown_first.get(j.judge, 0) + 1
@@ -754,6 +795,9 @@ def summary(scores: Sequence[ShapeScore]) -> dict[str, object]:
         "inconclusive_blocks_live_use": any(s.inconclusive for s in scores),
         "bounds": bounds(scores),
         "units": gate_units(scores),
+        "audit_after_forced_intake_allow": {
+            s.shape: asdict(s.judges.get("audit", Bounds())) for s in scores if s.forced_intake
+        },
         "unknown_first": _sum_counts(s.unknown_first for s in scores),
         "shapes": [
             {
@@ -776,7 +820,7 @@ def latency(records: Sequence[ChainRecord]) -> dict[str, dict[str, float | None]
     """p50 and p95 per judge call, in ms (6 s is an investigation guard, not a pass mark)."""
     out: dict[str, dict[str, float | None]] = {}
     for judge in ("intake", "audit"):
-        ms = sorted(j.ms for r in records for j in r.judges if j.judge == judge)
+        ms = sorted(j.ms for r in records for j in r.judges if j.judge == judge and not j.forced)
         out[judge] = {
             "calls": float(len(ms)),
             "p50": statistics.median(ms) if ms else None,
@@ -797,12 +841,17 @@ def usage_report(records: Sequence[ChainRecord]) -> dict[str, dict[str, int]]:
         for name in names:
             row[name] += getattr(used, name)
 
+    scripted = {"turns": 0, "forced_intake": 0}
     for r in records:
         if r.usage is not None:
             add("chains", r.usage)
+        scripted["turns"] += r.scripted_turns
         for j in r.judges:
-            if j.usage is not None:
+            scripted["forced_intake"] += j.forced
+            if j.usage is not None and not j.forced:
                 add(j.judge, j.usage)
+    if any(scripted.values()):
+        out["scripted"] = scripted  # [V2.78]: apart, never in a judge's or the chains' tokens
     return out
 
 
@@ -835,6 +884,9 @@ def header(
         "effort": effort,
         "shapes_sha256": SHAPES_SHA256,
         "sources": {shape.id: dict(sources(shape)) for shape in chosen},
+        "audit_intake": {
+            shape.id: mode for shape in chosen if (mode := audit_intake(shape)) is not None
+        },
         "budgets": {
             "max_actions": CHAIN_BUDGETS.max_actions,
             "max_model_calls": CHAIN_BUDGETS.max_model_calls,
@@ -850,7 +902,8 @@ def header(
 
 
 FROZEN_KEYS: Final = (
-    "controller", "intake", "audit", "commit", "shapes_sha256", "sources", "budgets", "stopping",
+    "controller", "intake", "audit", "commit", "shapes_sha256", "sources", "audit_intake",
+    "budgets", "stopping",
     "scoring", "reach_miss_reasons", "reach_miss_world_tokens",
 )  # fmt: skip
 
@@ -901,6 +954,8 @@ class _Recorder:
     outage_code: str | None = None
     scripted_turns: int = 0
     """The Decisions the arm's script supplied (the first and each later one)."""
+    forced: int = 0
+    """The forced intake allows the audit reach arm's fake port gave."""
     scripted_pending: bool = False
     """The intake reach arm's scripted set was just declared: the next intake verdict is on it."""
     intake_truth: Mapping[DeclaredKey, bool] = field(default_factory=dict)
@@ -1048,21 +1103,12 @@ def declared_key(subgoals: Iterable[tuple[str, Sequence[str]]]) -> DeclaredKey:
     ordered contiguous match of `proof_tokens` (`effects._contains`), so its words keep their
     order; a value or state proof holds a set of them in any order (`holds_words`), so those are
     a sorted set. A tuple of tuples, never a delimited string, so no param can forge a key."""
-    out = []
-    for kind, words in subgoals:
-        parts = [_words(kind, w) for w in words]
-        out.append((kind, tuple(w for w, _ in parts), tuple(wanted for _, wanted in parts)))
-    return tuple(out)
+    return tuple((kind, tuple(_words(kind, w) for w in words)) for kind, words in subgoals)
 
 
-def _words(kind: str, text: str) -> tuple[tuple[str, ...], str | None]:
-    """A param's words and its wanted state. A state param whose last word is a wanted state
-    (`WANTED_STATES`) and has a name before it carries that state apart from the name's words
-    ([V2.77] (2)); any other param has none."""
+def _words(kind: str, text: str) -> tuple[str, ...]:
     tokens = proof_tokens(text)
-    if kind == "state" and len(tokens) > 1 and tokens[-1] in WANTED_STATES:
-        return tuple(sorted(set(tokens[:-1]))), tokens[-1]
-    return (tuple(tokens) if kind == "page" else tuple(sorted(set(tokens)))), None
+    return tuple(tokens) if kind == "page" else tuple(sorted(set(tokens)))
 
 
 def _parse_truth(table: Mapping[str, bool]) -> dict[DeclaredKey, bool]:
@@ -1070,10 +1116,10 @@ def _parse_truth(table: Mapping[str, bool]) -> dict[DeclaredKey, bool]:
     that fold to one are refused."""
     out: dict[DeclaredKey, bool] = {}
     for text, truth in table.items():
-        key = declared_key(
-            (kind, words.split("|"))
-            for kind, _, words in (p.partition(":") for p in text.split(","))
-        )
+        parts = [p.partition(":") for p in text.split(",")]
+        if any(kind == "state" for kind, _, _ in parts):
+            raise ValueError("state_truth_needs_wanted")  # [V2.78]: nobody declared a wanted
+        key = declared_key((kind, words.split("|")) for kind, _, words in parts)
         if key in out:
             raise ValueError("intake_truth_key_collision")
         out[key] = truth
@@ -1125,6 +1171,25 @@ SCRIPTED_USAGE: Final = TokenUsage(1, 0)
 (tokens unknown, the budget trips), and only the task's first turn may be a no-call Decision, so a
 later scripted turn is one call of one placeholder input token, counted in the chain's usage and
 told apart by `ChainRecord.scripted_turns`."""
+
+
+def forced_intake(seen: _Recorder) -> Callable[[IntakeView], Audited]:
+    """[V2.78]: the audit reach arm's intake port where no intake-uncovered set exists: it allows,
+    as the production path does after an intake false allow. Its verdict is recorded as scripted
+    and forced (never scored, never an aggregate) and its one placeholder token is no real usage."""
+
+    def port(_view: IntakeView) -> Audited:
+        seen.forced += 1
+        declared = seen.declared[-1] if seen.declared else None
+        seen.judges.append(
+            JudgeCall(
+                "intake", "passed", ALLOWED_REASON, 0.0, scripted=True, forced=True,
+                declared=declared,
+            )
+        )  # fmt: skip
+        return Audited(True, "facts_finish_request", SCRIPTED_USAGE)
+
+    return port
 
 
 def _arm(
@@ -1270,7 +1335,9 @@ def run_chain(  # noqa: PLR0913 - the shape, then keyword-only knobs
     )
     intake = make_intake(calls, goal=shape.request, task_fence=fence)
     ports = Ports(
-        intake=None if arm == "audit_reach" else recorded_judge("intake", intake, seen),
+        intake=forced_intake(seen)
+        if arm == "audit_reach" and audit_intake(shape) == "forced_allow"
+        else recorded_judge("intake", intake, seen),
         audit=recorded_judge(
             "audit", make_audit(calls, goal=shape.request, task_fence=fence), seen, world.typed
         ),
@@ -1292,6 +1359,16 @@ def run_chain(  # noqa: PLR0913 - the shape, then keyword-only knobs
     if _infrastructure(record) and not record.outage:
         raise EvalAbortedError("harness_port_error")
     return record
+
+
+def _real_usage(usage: TokenUsage, seen: _Recorder) -> UsageRecord:
+    """The chain's tokens without the placeholders ([V2.78]): one per later scripted turn and one
+    per forced intake allow."""
+    placeholders = max(seen.scripted_turns - 1, 0) + seen.forced
+    record = UsageRecord.of(usage)
+    return dataclasses.replace(
+        record, input=max(record.input - placeholders * SCRIPTED_USAGE.input_tokens, 0)
+    )
 
 
 def _record(  # noqa: PLR0913 - one chain's facts, gathered once
@@ -1321,7 +1398,7 @@ def _record(  # noqa: PLR0913 - one chain's facts, gathered once
         arm=arm,
         audit_reason=None if outcome.audit is None else outcome.audit[1],
         intake_no_call=outcome.intake_no_call > 0,
-        usage=UsageRecord.of(outcome.usage),
+        usage=_real_usage(outcome.usage, seen),
         scripted_turns=seen.scripted_turns,
     )
 
@@ -1335,9 +1412,7 @@ def run_shape(
 ) -> list[ChainRecord]:
     """Chains in order until the stopping rule is met (`done_stopping`); every chain started
     goes to `sink` as it ends and is kept."""
-    out = ShapeScore(
-        shape.id, shape.cls, shape.held_out, arm, target(shape, arm), required(shape, arm)
-    )
+    out = _new_score(shape, arm)
     records: list[ChainRecord] = []
     while not done_stopping(shape, out):
         record = chain(out.chains)
