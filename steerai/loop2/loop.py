@@ -270,6 +270,11 @@ class Decided:
 SufficiencyReason = Literal["facts_finish_request", "request_asks_more", "unclear"]
 """[V2.68] One, packet rev 4 item 4: the sufficiency judges' closed reasons; only
 `facts_finish_request` with `sufficient` lets a task end done."""
+RunnerAuditReason = Literal["audit_failed", "audit_no_call"]
+"""[V2.64] One, #432: the runner's own audit endings: the audit failed, or was refused before
+any call (closed; the outcome's `audit` reason is one of these or a `SufficiencyReason`)."""
+AUDIT_FAILED: Final[RunnerAuditReason] = "audit_failed"
+AUDIT_NO_CALL: Final[RunnerAuditReason] = "audit_no_call"
 ReadKind = Literal["value_read", "state_read", "navigated"]
 """[V2.68] One: what kind of fact code verified for a proven subgoal (the audit's read token)."""
 AUDIT_COUNTS: Final = (
@@ -538,7 +543,7 @@ class TaskOutcome:
     Stage 1 runs with caching off and asserts every cache counter here is zero."""
     exact_counts: int = 0
     """[V2.61]: turns on which the prompt guard spent an exact count (near the ceiling)."""
-    audit: tuple[str, str] | None = None
+    audit: tuple[str, SufficiencyReason | RunnerAuditReason] | None = None
     """[V2.64] One, [V2.69] One: the final audit's (`allowed` | `vetoed` | `failed`, reason token);
     None when no audit was due (the task did not reach done)."""
     audit_calls: int = 0
