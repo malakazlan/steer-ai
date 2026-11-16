@@ -473,6 +473,8 @@ class _Run:
         """[V2.67] D: the turns the loop opened (its trace's turn numbers), never the calls."""
         self.turn_trace_dropped = 0
         """[V2.67] D: turn records the no-free-text check dropped."""
+        self.turn_trace_errors = 0
+        """#463 (1): turns whose record could not be built or written."""
         self.read_costs: list[ReadCost] = []
         self.reasked: set[tuple[int, ...]] = set()
         """[V2.38] RT-12: the top Documents already re-asked on (once per Document)."""
@@ -590,6 +592,7 @@ class _Run:
             submit_parents=tuple(self.submit_parents.items()),
             history_dropped=self.history_dropped,
             turn_trace_dropped=self.turn_trace_dropped,
+            turn_trace_errors=self.turn_trace_errors,
             listings=tuple(self.listing.turns),
             focus_moved_after_press=self.counts.focus_moved_after_press,
             observations_focus_unread=self.counts.observations_focus_unread,
@@ -1968,8 +1971,9 @@ class _Run:
     def _trace_turn(self) -> None:
         """[V2.67] D: the turn's closed record to the trace port; a record that fails the
         no-free-text check is dropped and counted, never written in part. #444: an exception
-        while building or writing it is counted the same way and never raised: the turn is often
-        the one the task ends in (`_outcome`), and its outcome must never be lost."""
+        while building or writing it is never raised: the turn is often the one the task ends in
+        (`_outcome`), and its outcome must never be lost. #463 (1): it is counted as a trace
+        error, apart from the drops; an interrupt is not an `Exception` and propagates."""
         sink = self.ports.turn_trace
         turn = self.turn
         if sink is None or turn.seen is None or turn.traced:
@@ -1978,7 +1982,7 @@ class _Run:
         try:
             self._write_turn(sink, turn)
         except Exception:  # noqa: BLE001 - a trace failure never loses the task; it is counted
-            self.turn_trace_dropped += 1
+            self.turn_trace_errors += 1
 
     def _write_turn(self, sink: Callable[[Mapping[str, object]], None], turn: _Turn) -> None:
         seen = turn.seen

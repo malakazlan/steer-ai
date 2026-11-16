@@ -116,6 +116,10 @@ class CdpSession:
                 reply = parse_cdp_message(str(self._ws.recv(timeout=10)))
                 if reply.id == message_id:
                     return reply.result or {}
+        # ConnectionClosed is the base of ConnectionClosedOK and ConnectionClosedError
+        # (https://websockets.readthedocs.io/en/stable/reference/exceptions.html). A socket
+        # error such as a TCP reset also ends as ConnectionClosedError, chained to the OSError
+        # (websockets 17.1 sync/connection.py, recv_events and send_context; #469's reset test).
         except ConnectionClosed as exc:
             raise ChromeLost(CHROME_LOST) from exc
 
