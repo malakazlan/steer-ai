@@ -415,19 +415,48 @@ def test_the_file_start_is_the_documents_address_not_the_bar() -> None:
     assert run_task(task(), _file_start(FILE, URL).ports()).status != "done"
 
 
-def test_the_auto_proof_never_closes_a_commit_subgoal() -> None:
-    """[V2.72]: the auto proof reaches every open page subgoal from the task's first full read,
-    a commit subgoal too; `_tick` refuses it (RT-06). #474: the auto path should skip it."""
-    subs = [
-        SubgoalDoc(
-            id="s1", desc="search", params={"text": "red shoes"}, closes="page", commit="submit"
-        )
-    ]
-    world = World(
-        [Decision(subgoals=subs, actions=[act("click", target=GO.id)])],
+def _commit_world(*decisions: Decision) -> World:
+    return World(
+        list(decisions),
         effects=[report("navigated")],
         later=page([], url=URL + "?q=red%20shoes", title="red shoes"),
     )
+
+
+COMMIT_SUB = SubgoalDoc(
+    id="s1", desc="search", params={"text": "red shoes"}, closes="page", commit="submit"
+)
+
+
+def test_the_auto_proof_skips_a_commit_subgoal() -> None:
+    """[V2.72], #474: the auto proof reaches every open page subgoal, but a commit subgoal
+    closes only in the strict tier (step 4); the auto path skips it, so a claim the model never
+    made is neither refused with `standard_only` nor a strike."""
+    world = _commit_world(Decision(subgoals=[COMMIT_SUB], actions=[act("click", target=GO.id)]))
+    outcome = run_task(task(), world.ports())
+    assert outcome.status != "done"
+    assert "claim:s1:standard_only" not in [t for v in world.views for t in v.history]
+    assert outcome.strikes == ()
+
+
+def test_the_auto_proof_writes_no_claim_line_at_all() -> None:
+    """[V2.74]: an auto proof attempt is code's own act; it never yields a `claim:` refusal on
+    any subgoal, and a plain page subgoal beside a commit one still closes by it."""
+    plain = SubgoalDoc(id="s2", desc="results", params={"text": "red shoes"}, closes="page")
+    world = _commit_world(
+        Decision(subgoals=[COMMIT_SUB, plain], actions=[act("click", target=GO.id)])
+    )
+    outcome = run_task(task(), world.ports())
+    seen = [t for v in world.views for t in v.history]
+    assert not [t for t in seen if t.startswith("claim:")]
+    assert "proven:s2:title" in seen
+    assert outcome.strikes == ()
+
+
+def test_a_model_claim_on_a_commit_subgoal_is_still_standard_only() -> None:
+    """RT-06 holds for a claim the model made: refused, never closed in step 3."""
+    claim = Claim(subgoal="s1", kind="navigated")
+    world = _commit_world(Decision(subgoals=[COMMIT_SUB], claims=[claim]))
     outcome = run_task(task(), world.ports())
     assert outcome.status != "done"
     assert "claim:s1:standard_only" in [t for v in world.views for t in v.history]
