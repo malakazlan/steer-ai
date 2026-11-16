@@ -507,8 +507,9 @@ class TaskOutcome:
     """[V2.73]: value or state claims refused because their element is already the evidence of
     another, closed subgoal of the same kind sharing a span (`evidence_taken`)."""
     rebased_open: int = 0
-    """[V2.74] (#475): subgoals another's close rebased (`_rebase`) that the task ended without
-    closing."""
+    """[V2.74] (#475): non-commit subgoals that another subgoal's close through a model claim
+    rebased (`_rebase`) and that were still open when the task ended. An auto-proof close does
+    not count."""
     history_dropped: int = 0
     """[V2.47]: history lines off the history vocabulary (`history_line_ok`): dropped, never
     shown."""

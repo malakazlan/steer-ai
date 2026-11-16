@@ -457,9 +457,11 @@ class _Run:
         self.baselines: dict[str, Observed] = {}
         self.first: Observed | None = None
         self.first_full: Observed | None = None
-        self.rebased: set[str] = set()
-        """[V2.74]: the subgoals a close rebased (`_rebase`), counted if they end open."""
         """[V2.72]: the task's first full observation, every subgoal's baseline."""
+        self.rebased: set[str] = set()
+        """[V2.74] (#475): the non-commit subgoals another subgoal's close through a model claim
+        rebased (`_rebase`); `rebased_open` counts those still open when the task ends. An auto
+        proof's close rebases too, but is not counted: no claim order decided it."""
         self.last_acted: _Acted | None = None
         self.batch_last: tuple[ActionKey, EffectReport] | None = None
         self.fresh: dict[tuple[int, ...], ValueFact | None] = {}
@@ -1095,14 +1097,16 @@ class _Run:
         """A proven subgoal, closed on the observation `at`. RT-06, §8.8: never a commit subgoal
         (`_refused` stops a claim on one, `_auto_proofs` skips it; the strict tier is step 4).
         [V2.74]: code's own proof is never a refusal, so nothing here can refuse."""
+        if subgoal.commit != "none":
+            raise AssertionError("auto proof reached a commit subgoal")
         self.proven.add(subgoal.id)
         self.proven_how[subgoal.id] = how
         self.turn.ticked = True
         self.refusal = None
         self._note(Proven(subgoal.id, how))
-        self._rebase(subgoal, at)
+        self._rebase(subgoal, at, by_claim=how == "claim")
 
-    def _rebase(self, closed: Subgoal, at: Observed) -> None:
+    def _rebase(self, closed: Subgoal, at: Observed, *, by_claim: bool = False) -> None:
         """[V2.72] Two: one event cannot close two subgoals of the same kind. Every other open
         subgoal with the same closing kind and a shared param span takes `at` as its baseline,
         so its evidence must be newer. Same kind only: a value and a page subgoal sharing a span
@@ -1112,7 +1116,8 @@ class _Run:
                 continue
             if _shares_span(closed, other):
                 self.baselines[other.id] = at
-                self.rebased.add(other.id)
+                if by_claim and other.commit == "none":
+                    self.rebased.add(other.id)
 
     def _check_done(self, observed: Observed) -> None:
         """A task with zero subgoals never ends `done` ([V2.11] decision 1). [V2.69] One: every

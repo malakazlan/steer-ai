@@ -4,12 +4,18 @@ event (`_rebase`); the auto proof already runs first on every full read, in decl
 
 from __future__ import annotations
 
+import dataclasses
+
+import pytest
+
 from steerai.loop2.decision import Claim, Decision, SubgoalDoc
+from steerai.loop2.history import ClaimResult
 from steerai.loop2.runner import _Run, run_task
 from steerai.loop2.task import GoalSpan, Subgoal
 from tests.loop2.test_auto_proof_every_observation import RESULTS, START
+from tests.loop2.test_baseline_first_observation import PAGE_VALUE, SAID, TAKEN, VALUE_SUB
 from tests.loop2.test_navigated import page
-from tests.loop2.world_fakes import GO, GOAL, RESULT, URL, World, act, report, task
+from tests.loop2.world_fakes import GO, GOAL, PAGE, RESULT, URL, World, act, observed, report, task
 
 _START = GOAL.index("red shoes")
 SPAN = GoalSpan("red shoes", _START, _START + len("red shoes"))
@@ -38,13 +44,34 @@ def test_a_rebased_subgoal_is_refused_not_newer_and_stays_open() -> None:
     run._claims([CLAIM_S1, CLAIM_S2], RESULTS)
     assert run.proven == {"s1"}
     assert "s2" not in run.proven
+    assert ClaimResult("s2", "no_change") in run.log
 
 
-def test_a_rebased_subgoal_that_ends_open_is_counted() -> None:
+def test_a_subgoal_rebased_by_a_claims_close_and_open_at_the_end_is_counted_once() -> None:
     run = _run()
     run._claims([CLAIM_S1, CLAIM_S2], RESULTS)
     outcome = run._outcome("stopped", None)
     assert outcome.rebased_open == 1
+
+
+def test_a_subgoal_rebased_by_an_auto_close_is_not_counted() -> None:
+    run = _run()
+    run._tick(SEARCH, how="results_with_url", at=RESULTS)
+    assert run.baselines == {"s2": RESULTS}
+    assert run._outcome("stopped", None).rebased_open == 0
+
+
+def test_a_commit_subgoal_rebased_by_a_claims_close_is_not_counted() -> None:
+    run = _run()
+    run.subgoals = (SEARCH, dataclasses.replace(OPEN, commit="submit"))
+    run._claims([CLAIM_S1], RESULTS)
+    assert run._outcome("stopped", None).rebased_open == 0
+
+
+def test_the_auto_path_reaching_a_commit_subgoal_is_a_code_bug() -> None:
+    run = _run()
+    with pytest.raises(AssertionError, match="auto proof reached a commit subgoal"):
+        run._tick(dataclasses.replace(OPEN, commit="submit"), how="results_with_url", at=RESULTS)
 
 
 def test_a_rebased_subgoal_that_closes_later_is_not_counted() -> None:
@@ -104,7 +131,28 @@ def test_the_rebased_open_page_closes_when_it_is_opened() -> None:
     assert outcome.rebased_open == 0
 
 
-def test_a_rebased_page_never_opened_ends_the_task_open_and_counted() -> None:
+def test_a_page_rebased_by_the_auto_proof_and_never_opened_is_not_counted() -> None:
     outcome = run_task(task(), _scripted(opens=False).ports())
     assert outcome.status != "done"
-    assert outcome.rebased_open == 1
+    assert outcome.rebased_open == 0  # an auto close rebased it: not the counted case
+
+
+def test_one_decisions_claims_are_judged_in_declaration_order_through_run_task() -> None:
+    """Two value subgoals over one span the auto proof cannot close: the model lists s2 first;
+    s1 is judged first, so s2's claim on the same element is refused (`evidence_taken`)."""
+    first = Claim(subgoal="s1", kind="value", evidence=[TAKEN.id], param="text")
+    second = Claim(subgoal="s2", kind="value", evidence=[TAKEN.id], param="text")
+    world = World(
+        [
+            Decision(subgoals=[PAGE_VALUE, VALUE_SUB], claims=[second, first]),
+            Decision(stop="blocked"),
+        ],
+        screen=observed([*PAGE, TAKEN]),
+    )
+    world.values[TAKEN.runtime_id] = SAID
+    world.fact_text = True
+    run_task(task(), world.ports())
+    seen = _seen(world)
+    assert any(t.startswith("proven:s1:") for t in seen)
+    assert not any(t.startswith("proven:s2:") for t in seen)
+    assert "claim:s2:evidence_taken" in seen
