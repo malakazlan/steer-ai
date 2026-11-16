@@ -81,7 +81,7 @@ def test_the_strike_limit_on_a_young_page_is_re_asked_once() -> None:
     world.decisions = [Decision(claims=[]) for _ in range(6)]
     outcome = run_task(task(), world.ports())
     assert world.events.count("settle") == 1
-    assert (outcome.status, outcome.reason) == ("paused", "no_progress")
+    assert (outcome.status, outcome.reason) == ("paused", "no_progress:empty_decision")
     assert len(world.views) == 4, "three strikes, the hold, one more turn"
 
 
@@ -261,7 +261,7 @@ def test_p3_a_wait_beside_a_refused_action_is_still_a_strike() -> None:
     world = World([decision(act("wait"), act("click", target=99), first=True) for _ in range(4)])
     world.screen = dataclasses.replace(observed(), growing=True, document_since=0.0)
     outcome = run_task(task(), world.ports())
-    assert (outcome.status, outcome.reason) == ("paused", "no_progress")
+    assert (outcome.status, outcome.reason) == ("paused", "no_progress:id_not_listed")
 
 
 def test_rt23_the_settle_guard_is_capped_by_the_wall_budget_left() -> None:

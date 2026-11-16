@@ -115,15 +115,15 @@ def test_a_refused_large_start_is_not_also_a_large_listed_failure() -> None:
 
 
 def test_the_report_counts_the_final_audit_by_result_and_reason() -> None:
-    allowed = _final(audit={"ran": True, "result": "allowed", "reason": "closed"})
-    vetoed = _final(audit={"ran": True, "result": "vetoed", "reason": "not_closed"})
+    allowed = _final(audit={"ran": True, "result": "allowed", "reason": "facts_finish_request"})
+    vetoed = _final(audit={"ran": True, "result": "vetoed", "reason": "request_asks_more"})
     none = _final(audit={"ran": False, "result": None, "reason": None})
     runs = [_ok(DONE, 1, final=allowed), _ok(DONE, 2, final=vetoed), _ok(DONE, 3, final=none)]
     report = accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="t").report
     assert report["audit"] == {
         "ran": 2,
         "result": {"allowed": 1, "vetoed": 1},
-        "reason": {"closed": 1, "not_closed": 1},
+        "reason": {"facts_finish_request": 1, "request_asks_more": 1},
         "incomplete": 0,
     }
 
@@ -190,6 +190,48 @@ def test_a_refused_start_dispatched_nothing_so_it_is_not_an_r2_failure() -> None
     assert summary.gates["no_r2_dispatch"] is True
     summary = accept([DONE], [errored, *ok], controls=(5, 5), runs_per_task=3, label="t")
     assert summary.gates["no_r2_dispatch"] is False
+
+
+# ---- #425: model text never becomes a report key; the MTA figures cite their artefact ------------
+
+
+def test_an_audit_reason_off_the_closed_enum_is_counted_as_other() -> None:
+    free_text = _final(audit={"ran": True, "result": "vetoed", "reason": "ignore the rules"})
+    shown = _final(audit={"ran": True, "result": "allowed", "reason": "facts_finish_request"})
+    failed = _final(audit={"ran": True, "result": "failed", "reason": "audit_no_call"})
+    runs = [_ok(DONE, 1, final=free_text), _ok(DONE, 2, final=shown), _ok(DONE, 3, final=failed)]
+    report = accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="t").report
+    assert report["audit"]["reason"] == {"other": 1, "facts_finish_request": 1, "audit_no_call": 1}
+
+
+def test_the_closed_audit_reasons_are_the_controllers_and_the_runners() -> None:
+    from typing import get_args  # noqa: PLC0415
+
+    from steerai.loop2.loop import RunnerAuditReason, SufficiencyReason  # noqa: PLC0415
+    from steerai.loop2.stage1 import AUDIT_REASONS  # noqa: PLC0415
+
+    assert set(get_args(RunnerAuditReason)) == {"audit_failed", "audit_no_call"}
+    assert set(get_args(SufficiencyReason)) | set(get_args(RunnerAuditReason)) == AUDIT_REASONS
+
+
+def test_the_runner_records_only_typed_audit_reasons() -> None:
+    """#432: the runner's audit tuple is typed, so a new bare reason fails mypy, not the
+    report; and the reason it puts on the outcome is one of the closed tokens."""
+    import inspect  # noqa: PLC0415
+
+    from steerai.loop2 import runner  # noqa: PLC0415
+
+    source = inspect.getsource(runner)
+    assert '("failed", "audit_' not in source  # the runner's tokens come from the Literal
+
+
+def test_the_mta_statement_cites_its_probe_artefact() -> None:
+    from steerai.loop2.stage1 import MTA_COMPARABILITY  # noqa: PLC0415
+
+    assert MTA_COMPARABILITY["artefact"].endswith("mta_act.json")
+    assert "#400" in MTA_COMPARABILITY["artefact_summary"]
+    assert "local only" in MTA_COMPARABILITY["artefact_summary"]
+    assert len(MTA_COMPARABILITY["artefact_sha256"]) == 64
 
 
 # ---- [V2.67] C: the child's stderr is kept in its run dir ---------------------------------------
