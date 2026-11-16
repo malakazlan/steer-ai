@@ -1754,3 +1754,60 @@ def test_the_wanted_words_are_the_decisions_own_closed_set() -> None:
 
     wanted = get_args(get_args(Claim.model_fields["wanted"].annotation)[0])
     assert set(chain_eval.WANTED_STATES) == set(wanted)
+
+
+# ---- [V2.77] (7): token usage per chain and per judge call, cache categories included -----------
+
+
+class Cached(Scripted):
+    """The scripted provider with cache usage on every reply, and the replies kept."""
+
+    USAGE = {
+        "decide": TokenUsage(100, 10, 7, 3, 50),
+        "intake": TokenUsage(40, 5, 0, 11, 20),
+        "audit": TokenUsage(50, 5, 13, 0, 30),
+    }
+
+    def __init__(self, *args: Any, **kw: Any) -> None:  # Any: Scripted's arguments
+        super().__init__(*args, **kw)
+        self.replies: list[tuple[str, TokenUsage]] = []
+
+    def __call__(self, system: list[str], blocks: list[str]) -> Reply:
+        reply = super().__call__(system, blocks)
+        usage = self.USAGE[self.calls[-1]]
+        self.replies.append((self.calls[-1], usage))
+        return Reply(reply.text, reply.stop_reason, usage)
+
+
+def test_a_chain_records_its_usage_and_each_judge_call_its_own_by_category() -> None:
+    provider = Cached(_typed_and_claimed("Full name", "Ada Lovelace"), ALLOW)
+    record = run_chain(SHAPES["g22"], index=0, provider=provider)
+    assert record.status == "done"
+    total = [sum(dataclasses.astuple(u)[i] for _, u in provider.replies) for i in range(5)]
+    assert record.usage is not None
+    assert dataclasses.astuple(record.usage) == tuple(total)
+    by_judge = {j.judge: j.usage for j in record.judges}
+    assert by_judge["intake"] == chain_eval.UsageRecord(40, 5, 0, 11, 20)
+    assert by_judge["audit"] == chain_eval.UsageRecord(50, 5, 13, 0, 30)
+    assert closed_record(record_json(record))
+
+
+def test_a_judge_call_that_failed_after_the_reply_still_records_its_usage() -> None:
+    provider = Cached(_typed_and_claimed("Full name", "Ada Lovelace"), "not json")
+    record = run_chain(SHAPES["g22"], index=0, provider=provider)
+    audit = next(j for j in record.judges if j.judge == "audit")
+    assert (audit.verdict, audit.usage) == ("failed", chain_eval.UsageRecord(50, 5, 13, 0, 30))
+
+
+def test_the_report_sums_usage_per_judge_and_per_chain_by_category() -> None:
+    records = [
+        run_chain(SHAPES["g22"], index=i, provider=Cached(_typed_and_claimed("Full name", "Ada Lovelace"), ALLOW))
+        for i in range(2)
+    ]  # fmt: skip
+    usage = chain_eval.usage_report(records)
+    assert usage["intake"] == {"calls": 2, "input": 80, "output": 10, "cache_write_5m": 0,
+                               "cache_write_1h": 22, "cache_read": 40}  # fmt: skip
+    assert usage["audit"] == {"calls": 2, "input": 100, "output": 10, "cache_write_5m": 26,
+                              "cache_write_1h": 0, "cache_read": 60}  # fmt: skip
+    assert usage["chains"]["calls"] == 2
+    assert usage["chains"]["cache_read"] == sum(r.usage.cache_read for r in records if r.usage)

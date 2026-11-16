@@ -231,6 +231,28 @@ def pilot_ids(path: Path = SHAPES_PATH) -> tuple[str, ...]:
 
 
 @dataclass(frozen=True)
+class UsageRecord:
+    """One call's, or one chain's, provider-reported tokens by category ([V2.77] (7)): numbers
+    only. `input` excludes the cache categories."""
+
+    input: int
+    output: int
+    cache_write_5m: int
+    cache_write_1h: int
+    cache_read: int
+
+    @classmethod
+    def of(cls, usage: TokenUsage) -> UsageRecord:
+        return cls(
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_write_5m,
+            usage.cache_write_1h,
+            usage.cache_read,
+        )
+
+
+@dataclass(frozen=True)
 class JudgeCall:
     judge: Judge
     verdict: Verdict
@@ -247,6 +269,8 @@ class JudgeCall:
     truth: bool | None = None
     """[V2.73]: whether the request was finished, by the oracle, for this verdict; None: unknown
     (the verdict is reported, never scored)."""
+    usage: UsageRecord | None = None
+    """[V2.77] (7): the tokens of this call's provider replies; None when no reply came back."""
 
 
 @dataclass(frozen=True)
@@ -273,6 +297,8 @@ class ChainRecord:
     """The outcome's audit reason (`audit_no_call` when the audit never called)."""
     intake_no_call: bool = False
     """The intake check never called (refused before any call): no verdict, reported apart."""
+    usage: UsageRecord | None = None
+    """[V2.77] (7): every reported token of the chain by category (the runner's own sum)."""
 
 
 class EvalAbortedError(RuntimeError):
@@ -669,6 +695,27 @@ def latency(records: Sequence[ChainRecord]) -> dict[str, dict[str, float | None]
     return out
 
 
+def usage_report(records: Sequence[ChainRecord]) -> dict[str, dict[str, int]]:
+    """[V2.77] (7): tokens by category and calls, per judge over every judge call, and for the
+    chains over every chain's own sum."""
+    names = ("input", "output", "cache_write_5m", "cache_write_1h", "cache_read")
+    out: dict[str, dict[str, int]] = {}
+
+    def add(key: str, used: UsageRecord) -> None:
+        row = out.setdefault(key, {"calls": 0, **dict.fromkeys(names, 0)})
+        row["calls"] += 1
+        for name in names:
+            row[name] += getattr(used, name)
+
+    for r in records:
+        if r.usage is not None:
+            add("chains", r.usage)
+        for j in r.judges:
+            if j.usage is not None:
+                add(j.judge, j.usage)
+    return out
+
+
 def mask_escape_share(records: Sequence[ChainRecord]) -> float | None:
     """The share of audit prompts where a typed free text's word escaped the mask."""
     seen = [j.typed_text_escaped for r in records for j in r.judges if j.judge == "audit"]
@@ -761,6 +808,8 @@ class _Recorder:
     it holds the param's words)."""
     audit_truth: Callable[[], bool] | None = None
     """[V2.73]: the page's own oracle, read at the moment the audit answers."""
+    used: list[TokenUsage] = field(default_factory=list)
+    """The usage of each provider reply inside the judge call in progress ([V2.77] (7))."""
 
 
 def typed_text_escaped(typed: Sequence[str], blocks: Sequence[str]) -> bool | None:
@@ -795,6 +844,7 @@ def recorded_judge[V, J: _Judgement](
         started = time.perf_counter()
         seen.judge, seen.paid = judge, 0
         seen.prompts.clear()
+        seen.used.clear()
         try:
             answer = port(view)
         except ControllerError as failed:
@@ -821,6 +871,19 @@ def recorded_judge[V, J: _Judgement](
     return call
 
 
+def _summed(used: Sequence[TokenUsage]) -> UsageRecord | None:
+    """The tokens of a judge call's replies, by category; None when no reply reported any."""
+    if not used:
+        return None
+    return UsageRecord(
+        sum(u.input_tokens for u in used),
+        sum(u.output_tokens for u in used),
+        sum(u.cache_write_5m for u in used),
+        sum(u.cache_write_1h for u in used),
+        sum(u.cache_read for u in used),
+    )
+
+
 def _judged(  # noqa: PLR0913 - one judge call's facts, gathered once
     judge: Judge,
     verdict: Verdict,
@@ -834,14 +897,15 @@ def _judged(  # noqa: PLR0913 - one judge call's facts, gathered once
     ms = (time.perf_counter() - started) * 1000.0
     if judge == "audit":
         truth = None if seen.audit_truth is None else seen.audit_truth()
-        return JudgeCall(judge, verdict, reason, ms, escaped, truth=truth)
+        return JudgeCall(judge, verdict, reason, ms, escaped, truth=truth, usage=_summed(seen.used))
     scripted, seen.scripted_pending = seen.scripted_pending, False
     declared = seen.declared[-1] if seen.declared else None
     known = seen.intake_truth.get(seen.declared_keys[-1]) if seen.declared_keys else None
     truth = False if scripted else known  # [V2.73]: the scripted insufficient set is known no
     return JudgeCall(
-        judge, verdict, reason, ms, None, scripted=scripted, declared=declared, truth=truth
-    )
+        judge, verdict, reason, ms, None, scripted=scripted, declared=declared, truth=truth,
+        usage=_summed(seen.used),
+    )  # fmt: skip
 
 
 def declared_key(subgoals: Iterable[tuple[str, Sequence[str]]]) -> DeclaredKey:
@@ -908,7 +972,10 @@ def _watching(call: Call, seen: _Recorder) -> Call:
             seen.paid += 1
             seen.prompts.extend(blocks)
         try:
-            return call(system, blocks)
+            reply = call(system, blocks)
+            if seen.judge is not None and reply.usage is not None:
+                seen.used.append(reply.usage)
+            return reply
         except Exception as exc:
             if seen.judge is None:
                 seen.outage = True
@@ -1056,6 +1123,7 @@ def _record(  # noqa: PLR0913 - one chain's facts, gathered once
         arm=arm,
         audit_reason=None if outcome.audit is None else outcome.audit[1],
         intake_no_call=outcome.intake_no_call > 0,
+        usage=UsageRecord.of(outcome.usage),
     )
 
 
@@ -1235,6 +1303,7 @@ def report(
     out: dict[str, object] = {
         "latency_ms": latency(records),
         "mask_escape_share": mask_escape_share(records),
+        "usage": usage_report(records),
         "ledger": [
             {
                 "event": e["event"],
