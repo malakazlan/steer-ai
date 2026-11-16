@@ -883,8 +883,7 @@ class _Run:
             # packet rev 5 §4: subgoals freeze only on a turn that is not stale, after validate
             # and the intake check (`_intake_passes`) both passed
             self._intake(decision)
-        for claim in decision.claims:
-            self._claim(claim, observed)
+        self._claims(decision.claims, observed)
         self._check_done(observed)
         if decision.ask is not None:
             raise _End("asked", Reason("controller_ask"))
@@ -934,6 +933,14 @@ class _Run:
         if self.first_full is None:  # `observe` is a full read, taken before the first decide
             raise SteerError(ErrorCode.PERCEPTION_DEGRADED, "no full observation")  # #479: no poll
         return self.first_full
+
+    def _claims(self, claims: Sequence[Claim], observed: Observed) -> None:
+        """[V2.74] (#475): the claims of one Decision, judged in the subgoals' declaration order
+        (stable for one subgoal's own), so the model's listing never decides which close
+        rebases which. An unknown subgoal sorts last; `validate` has refused it before."""
+        order = {s.id: i for i, s in enumerate(self.subgoals)}
+        for claim in sorted(claims, key=lambda c: order.get(c.subgoal, len(order))):
+            self._claim(claim, observed)
 
     def _claim(self, claim: Claim, observed: Observed) -> None:
         """One claim: code's refusals first (`_refused`), then the claim check. A page claim
