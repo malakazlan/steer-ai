@@ -4,9 +4,8 @@ is `model`) maps to a line of the system prompt (its rules or its listing legend
 constraint of the schema the prompt shows; a token with no entry fails. The repair legend does
 not count: it is shown only after a rejection.
 
-Excluded, with a reason each (`EXCLUDED`): tokens counted as `model` only by `REFUSAL_KIND`'s
-default that are world or step facts the model cannot avoid by a rule, and step 4 tokens no step
-3 code produces (`loop2.consent` is not wired into the runner)."""
+Excluded, with a reason each (`EXCLUDED`): a step fact the model cannot avoid by a rule, and
+step 4 tokens no step 3 code produces (`loop2.consent` is not wired into the runner)."""
 
 from __future__ import annotations
 
@@ -134,22 +133,17 @@ TAUGHT: Final[Mapping[str, Taught]] = {
 }
 
 EXCLUDED: Final[Mapping[str, str]] = {
-    "not_foreground": "a world fact (another window has the foreground); no rule avoids it",
-    "screen_changed_during_ask": "a world fact (the page moved while the person was asked)",
-    "composer_unreadable": "a world fact (the composer's text could not be read)",
-    "composer_differs": "a world fact (the composer holds other text than Steer typed)",
     "done_already": "a step fact (the admission found the action already done)",
     "commit_conflict": "step 4: only `loop2.consent` gives it, and the runner does not use it",
     "no_strict_shape": "step 4: only `loop2.consent` gives it, and the runner does not use it",
 }
-"""The first five are `model` only by `REFUSAL_KIND`'s default: reclassifying them as `world`
-would change which token names an `after_refusal` ending when tokens mix (`KIND_ORDER`), so it
-waits for a ruling (#446). The step 4 two are taught when the runner wires `consent` (the
-tripwire below fails then)."""
+"""`done_already` is a `model` fault by [V2.74] (repeating a delivered commit is the model's
+choice) and stays excluded: no rule avoids the admission's finding. The step 4 two
+are taught when the runner wires `consent` (the tripwire below fails then)."""
 
 
 def _model_faults() -> set[str]:
-    return {t for t in REFUSAL_TOKENS if REFUSAL_KIND.get(t, "model") == "model"}
+    return {t for t in REFUSAL_TOKENS if REFUSAL_KIND[t] == "model"}
 
 
 def test_every_model_fault_is_taught_or_excluded_with_a_reason() -> None:
@@ -214,3 +208,27 @@ def test_the_desc_halves_left_to_the_validator_are_still_refused() -> None:
         tokens = validate(decision, listed_ids=frozenset(), goal=goal, first_turn=True,
                           fences=frozenset({"f1f1f1f1"}))  # fmt: skip
         assert "desc_bad" in tokens
+
+
+def test_every_refusal_token_declares_its_kind() -> None:
+    """[V2.74] (#446): no default; a token without a kind is a missing fact, not a model fault."""
+    assert sorted(REFUSAL_TOKENS - set(REFUSAL_KIND)) == []
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["not_foreground", "screen_changed_during_ask", "composer_unreadable", "composer_differs"],
+)
+def test_a_consent_world_fact_is_world_and_names_the_ending_over_a_model_fault(token: str) -> None:
+    from steerai.loop2.runner import refusal_of  # noqa: PLC0415
+
+    assert REFUSAL_KIND[token] == "world"
+    assert token not in _model_faults()
+    assert refusal_of(["id_not_listed", token]) == ("world", token)
+    assert refusal_of([token, "id_not_listed"]) == ("world", token)
+
+
+def test_done_already_stays_a_model_fault() -> None:
+    from steerai.loop2.runner import refusal_of  # noqa: PLC0415
+
+    assert refusal_of(["done_already"]) == ("model", "done_already")
