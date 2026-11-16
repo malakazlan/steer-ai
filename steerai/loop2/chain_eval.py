@@ -40,6 +40,14 @@ Counting (§8 as amended by [V2.70], [V2.71], [V2.73]):
   controller turn); a judge's parse failure or refusal is never a void. A void is replaced by the
   next run, in order; more than `MAX_VOIDS` on one shape voids the whole eval.
 
+[V2.77]: the gate unit is (shape, judge); each judge's source arm is declared per shape in the
+shapes file and frozen in the header (`sources`). A must-veto shape's judge is sourced from a
+scripted arm (`reach`, or `audit_reach`: scripted Decisions, params drawn from the shape's pool,
+the intake forced to allow or real, declared per shape, [V2.78]) or from the free arm; a free
+arm that is no judge's source runs `CONTROLLER_CHAINS` chains and reports the controller's
+reach as numbers, never blocking. A false allow or a false
+done in any arm still fails. Each chain and each judge call records its tokens by category.
+
 Bars: every shape N=60; must-veto 0 false allows; must-pass at most 3 false vetoes; held-out
 shapes take their class's bar, run once, only on a frozen wording, and any failure blocks live
 use. The wording (the version pins and the commit) is recorded in the report header; the pilot
@@ -51,6 +59,7 @@ Every record holds closed tokens and numbers only: no request, page or model tex
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import math
@@ -75,7 +84,15 @@ from steerai.loop2.controller import (
 )
 from steerai.loop2.decide_port import Call, Counter, DecideCalls, TaskGenerations
 from steerai.loop2.decision import Decision, validate
-from steerai.loop2.loop import Decided, Ports, TaskOutcome, TokenUsage, TurnView
+from steerai.loop2.loop import (
+    Audited,
+    Decided,
+    IntakeView,
+    Ports,
+    TaskOutcome,
+    TokenUsage,
+    TurnView,
+)
 from steerai.loop2.prompt_inputs import make_audit, make_decide, make_intake
 from steerai.loop2.runner import REFUSAL_KIND, run_task
 from steerai.loop2.task import Budgets, Envelope, Task
@@ -84,7 +101,7 @@ from steerai.world.effects import _tokens  # the proof word match's token rule
 proof_tokens: Final = _tokens
 """The proof word match's own token rule, imported: a truth key and a proof read words alike."""
 SHAPES_PATH: Final = Path(__file__).with_name("chain_shapes.json")
-SHAPES_SHA256: Final = "c861193853c1b14b39ab813bb1fe55971cdf26c85acb4f163a753b607c288285"
+SHAPES_SHA256: Final = "1ec459de3b694566514baf15322e57d95b9b8fdd1669c597478762e611bf835a"
 """The shapes file as pre-registered: any edit fails `load_shapes`."""
 N: Final = 60
 """Must-pass: chains counted per shape (voids replaced)."""
@@ -100,6 +117,10 @@ NOT_DONE_ONE_PER: Final = 20
 scored verdicts of a judge (rounded down: 3 at 60, 5 at 100); counted not-done chains at most one
 per this many counted chains. False allows and false dones: none."""
 
+CONTROLLER_CHAINS: Final = VERDICT_TARGET
+"""[V2.77]: the chains a free arm runs when no judge is sourced from it (the controller's own
+reach is then a number to report, `ShapeScore.controller`, never a bar)."""
+
 
 def false_veto_limit(scored: int) -> int:
     """The false vetoes a judge may have over `scored` scored verdicts."""
@@ -111,6 +132,7 @@ STOPPING: Final[Mapping[str, int]] = {
     "must_pass_verdicts_per_judge": VERDICT_TARGET,
     "must_veto_verdicts": VERDICT_TARGET,
     "chain_cap": CHAIN_CAP,
+    "controller_chains": CONTROLLER_CHAINS,
     "max_voids": MAX_VOIDS,
     "false_veto_one_per": FALSE_VETO_ONE_PER,
     "not_done_one_per": NOT_DONE_ONE_PER,
@@ -135,7 +157,7 @@ Class = Literal["must_pass", "must_veto"]
 Judge = Literal["intake", "audit"]
 Verdict = Literal["passed", "rejected", "allowed", "vetoed", "failed"]
 Ending = Literal["ok", "false_done", "false_veto", "not_done", "void"]
-Arm = Literal["free", "reach"]
+Arm = Literal["free", "reach", "audit_reach"]
 """[V2.71] (a): `free`, the controller runs from its first turn (it measures reach); `reach`,
 the first Decision is the shape's scripted insufficient set, so the judge sees it (it measures
 the judge). Must-veto shapes run both; must-pass shapes run `free` only."""
@@ -179,7 +201,8 @@ judges' scored verdicts combined; a reach arm on its own judge's."""
 
 
 DeclaredKey = tuple[tuple[str, tuple[tuple[str, ...], ...]], ...]
-"""A declared set: per subgoal its closing kind and each param's word set."""
+"""A declared set: per subgoal its closing kind and each param's word set. A state subgoal carries
+no wanted state yet ([V2.78]), so no key is a state key: a state declaration has unknown truth."""
 
 
 @dataclass(frozen=True)
@@ -190,7 +213,11 @@ class Shape:
     request: str
     page: Mapping[str, Any]  # Any: JSON, built by `chain_pages.Page.from_spec`
     oracle: tuple[Mapping[str, Any], ...]  # Any: JSON oracle facts
-    reach: Mapping[str, Any] | None = None  # Any: JSON, the reach arm's first Decision
+    reach: Mapping[str, Any] | None = None  # Any: JSON, the reach arm's script
+    audit_reach: Mapping[str, Any] | None = None  # Any: JSON, the audit reach arm's script
+    sources: Mapping[str, str] = field(default_factory=dict)
+    """[V2.77]: the arm each judge's scored verdicts are sourced from, declared in the file;
+    a must-pass shape declares none (both judges come from the free arm)."""
     intake_truth: Mapping[DeclaredKey, bool] = field(default_factory=dict)
     """Whether a declared set is sufficient for the request: the intake's truth, pre-registered,
     keyed by `declared_key` (kind and the param's words per subgoal, folded); a set not named is
@@ -204,7 +231,7 @@ def load_shapes(path: Path = SHAPES_PATH, *, pin: str | None = None) -> tuple[Sh
     if hashlib.sha256(raw).hexdigest() != want:
         raise ValueError("chain_shapes_changed")
     doc = json.loads(raw)
-    return tuple(
+    shapes = tuple(
         Shape(
             id=s["id"],
             cls=s["class"],
@@ -213,10 +240,52 @@ def load_shapes(path: Path = SHAPES_PATH, *, pin: str | None = None) -> tuple[Sh
             page=s["page"],
             oracle=tuple(s["oracle"]),
             reach=s.get("reach"),
+            audit_reach=s.get("audit_reach"),
+            sources=s.get("sources", {}),
             intake_truth=_parse_truth(s.get("intake_truth", {})),
         )
         for s in doc["shapes"]
     )
+    for shape in shapes:
+        sources(shape)  # refuses a shape whose declared sources are not usable
+        audit_intake(shape)
+    return shapes
+
+
+AUDIT_INTAKE_MODES: Final = ("forced_allow", "real")
+
+
+def audit_intake(shape: Shape) -> str | None:
+    """[V2.78]: how the audit reach arm's intake runs, declared per shape and frozen in the header:
+    `forced_allow` (a fake intake port that allows, the production path after an intake false
+    allow, for a shape with no intake-uncovered set code can prove) or `real` (the real intake on
+    an uncovered set). None for a shape with no audit reach arm."""
+    if shape.audit_reach is None:
+        return None
+    mode = shape.audit_reach.get("intake")
+    if mode not in AUDIT_INTAKE_MODES:
+        raise ValueError("audit_intake_not_declared")
+    return str(mode)
+
+
+def sources(shape: Shape) -> Mapping[Judge, Arm]:
+    """[V2.77]: the arm each judge's scored verdicts come from, declared before any run: a
+    must-pass shape's two judges from the free arm; a must-veto shape declares both, and each
+    scripted arm named must have its script."""
+    if shape.cls == "must_pass":
+        return {"intake": "free", "audit": "free"}
+    declared = shape.sources
+    if set(declared) != set(JUDGES):
+        raise ValueError("sources_not_declared")
+    out: dict[Judge, Arm] = {}
+    for judge in JUDGES:
+        arm = declared[judge]
+        script = {"free": True, "reach": shape.reach, "audit_reach": shape.audit_reach}.get(arm)
+        measured = {"reach": (shape.reach or {}).get("judge"), "audit_reach": "audit"}.get(arm)
+        if not script or (arm != "free" and measured != judge):
+            raise ValueError("sources_invalid")  # an arm that cannot supply that judge
+        out[judge] = arm  # type: ignore[assignment]  # checked above: one of the three arms
+    return out
 
 
 def pilot_ids(path: Path = SHAPES_PATH) -> tuple[str, ...]:
@@ -224,6 +293,28 @@ def pilot_ids(path: Path = SHAPES_PATH) -> tuple[str, ...]:
 
 
 # ---- one chain's record ------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class UsageRecord:
+    """One call's, or one chain's, provider-reported tokens by category ([V2.77] (7)): numbers
+    only. `input` excludes the cache categories."""
+
+    input: int
+    output: int
+    cache_write_5m: int
+    cache_write_1h: int
+    cache_read: int
+
+    @classmethod
+    def of(cls, usage: TokenUsage) -> UsageRecord:
+        return cls(
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_write_5m,
+            usage.cache_write_1h,
+            usage.cache_read,
+        )
 
 
 @dataclass(frozen=True)
@@ -243,6 +334,14 @@ class JudgeCall:
     truth: bool | None = None
     """[V2.73]: whether the request was finished, by the oracle, for this verdict; None: unknown
     (the verdict is reported, never scored)."""
+    forced: bool = False
+    """[V2.78] Intake only: the verdict of the audit reach arm's forced allow port. It is marked
+    scripted, never scored, never counted as unknown, and left out of every aggregate."""
+    packet: str | None = None
+    """[V2.77] Audit only: a digest of the audit's prompt blocks with the fence tokens masked, so
+    two chains with the same packet read alike; None when no call was made."""
+    usage: UsageRecord | None = None
+    """[V2.77] (7): the tokens of this call's provider replies; None when no reply came back."""
 
 
 @dataclass(frozen=True)
@@ -269,6 +368,15 @@ class ChainRecord:
     """The outcome's audit reason (`audit_no_call` when the audit never called)."""
     intake_no_call: bool = False
     """The intake check never called (refused before any call): no verdict, reported apart."""
+    usage: UsageRecord | None = None
+    """[V2.77] (7): every reported token of the chain by category (the runner's own sum)."""
+    scripted_turns: int = 0
+    """[V2.71] (a), [V2.77]: the Decisions a scripted arm supplied (no model made them)."""
+    script_complete: bool = False
+    """Every Decision of the arm's script was supplied."""
+    went_live: bool = False
+    """A controller turn came after the script began (it ran out, or an intake reject re-opened
+    the first turn and the script was dropped)."""
 
 
 class EvalAbortedError(RuntimeError):
@@ -386,6 +494,9 @@ class ShapeScore:
     """A later verdict of a judge in a chain, by `judge:set:verdict` (the set by closing kind)."""
     unknown_first: dict[str, int] = field(default_factory=dict)
     """A judge's first verdict whose truth is unknown, by judge: reported apart, never scored."""
+    forced_intake: bool = False
+    """[V2.78]: this arm's intake verdict was the forced allow, so its audit verdicts are reported
+    apart (`audit_after_forced_intake_allow`), still scored and still failing on a false allow."""
 
     @property
     def false_allows(self) -> int:
@@ -394,21 +505,41 @@ class ShapeScore:
     @property
     def causes(self) -> list[str]:
         """[V2.75], [V2.76]: why the shape is inconclusive, sorted; empty when it is not."""
+        found: set[str] = {"no_call"} if self.no_calls else set()
+        found |= self._arm_causes()
+        for judge in self.required:
+            found |= self.judge_causes(judge)
+        return sorted(found)
+
+    def _arm_causes(self) -> set[str]:
+        """What stops every judge sourced from this arm: counted not-done chains over the rate, or
+        a must-pass shape short of chains that are not reach misses."""
         found: set[str] = set()
-        if self.no_calls:
-            found.add("no_call")
         if self.not_done_counted > self.counted // NOT_DONE_ONE_PER:
             found.add("not_done")
         if self.cls == "must_pass" and self.counted - self.reach_misses < N:
             found.add("reach")
-        for judge in self.required:
-            unknown = self.unknown_first.get(judge, 0)
-            if self.scored(judge) < VERDICT_TARGET:
-                if unknown:
-                    found.add("unknown_truth")
-                if self.scored(judge) + unknown < VERDICT_TARGET:
-                    found.add("reach")
-        return sorted(found)
+        return found
+
+    def judge_causes(self, judge: str) -> set[str]:
+        """[V2.77]: why one judge's unit on this arm is short (the arm's causes apart from a
+        no-call, which is the shape's)."""
+        found = self._arm_causes()
+        unknown = self.unknown_first.get(judge, 0)
+        if self.scored(judge) < VERDICT_TARGET:
+            if unknown:
+                found.add("unknown_truth")
+            if self.scored(judge) + unknown < VERDICT_TARGET:
+                found.add("reach")
+        return found
+
+    @property
+    def controller(self) -> dict[str, int]:
+        """[V2.77]: a free arm's scored verdicts of each judge it is not the source of: the
+        controller's reach, reported as a number and never a bar."""
+        if self.arm != "free":
+            return {}
+        return {j: self.scored(j) for j in JUDGES if j not in self.required}
 
     @property
     def inconclusive(self) -> bool:
@@ -441,12 +572,11 @@ class ShapeScore:
 
 
 def required(shape: Shape, arm: Arm) -> tuple[str, ...]:
-    """The judges an arm supplies the 60 scored verdicts of ([V2.76]): a must-pass shape's free
-    arm both; a must-veto shape's reach arm the judge it measures, its free arm the other."""
-    measured = target(shape, "reach") if shape.cls == "must_veto" else None
-    if measured is None:
-        return JUDGES
-    return (measured,) if arm == "reach" else tuple(j for j in JUDGES if j != measured)
+    """The judges an arm supplies the 60 scored verdicts of ([V2.76], [V2.77]): those declared
+    sourced from it (`sources`): a must-pass shape's free arm both; a must-veto shape's scripted
+    arm the judge it is declared for, its free arm the judge sourced from it, if any."""
+    declared = sources(shape)
+    return tuple(j for j in JUDGES if declared[j] == arm)
 
 
 def done_stopping(shape: Shape, out: ShapeScore) -> bool:
@@ -456,17 +586,34 @@ def done_stopping(shape: Shape, out: ShapeScore) -> bool:
     change (a false allow, a false done) or a void eval."""
     if out.eval_void or out.false_dones or out.false_allows or out.chains >= CHAIN_CAP:
         return True
+    if not out.required:
+        return out.chains >= CONTROLLER_CHAINS
     if not all(out.scored(j) >= VERDICT_TARGET for j in out.required):
         return False
     return shape.cls != "must_pass" or out.counted - out.reach_misses >= N
 
 
 def target(shape: Shape, arm: Arm) -> Judge | None:
-    """The judge a reach arm measures (its spec names it); a free arm counts every judge."""
+    """The judge a scripted arm measures (the reach spec names it; the audit reach arm is the
+    audit's); a free arm counts every judge."""
+    if arm == "audit_reach":
+        return "audit"
     if arm == "free" or shape.reach is None:
         return None
     judge: Judge = shape.reach["judge"]
     return judge
+
+
+def _new_score(shape: Shape, arm: Arm) -> ShapeScore:
+    return ShapeScore(
+        shape.id,
+        shape.cls,
+        shape.held_out,
+        arm,
+        target(shape, arm),
+        required(shape, arm),
+        forced_intake=arm == "audit_reach" and audit_intake(shape) == "forced_allow",
+    )
 
 
 def score(shape: Shape, records: Sequence[ChainRecord], *, arm: Arm = "free") -> ShapeScore:
@@ -474,9 +621,7 @@ def score(shape: Shape, records: Sequence[ChainRecord], *, arm: Arm = "free") ->
     rule was met is refused, never dropped. Pilot records are refused."""
     if any(r.pilot for r in records):
         raise ValueError("pilot_chains_never_count")
-    out = ShapeScore(
-        shape.id, shape.cls, shape.held_out, arm, target(shape, arm), required(shape, arm)
-    )
+    out = _new_score(shape, arm)
     for record in records:
         if done_stopping(shape, out):
             raise ValueError("records_past_the_stopping_rule")
@@ -491,7 +636,8 @@ def score(shape: Shape, records: Sequence[ChainRecord], *, arm: Arm = "free") ->
 def _firsts(record: ChainRecord) -> list[JudgeCall]:
     first: dict[str, JudgeCall] = {}
     for j in record.judges:
-        first.setdefault(j.judge, j)
+        if not j.forced:
+            first.setdefault(j.judge, j)
     return list(first.values())
 
 
@@ -546,7 +692,7 @@ def _report_unscored(out: ShapeScore, record: ChainRecord, scoring: Sequence[Jud
     firsts = {id(j) for j in _firsts(record)}
     counted = {id(j) for j in scoring}
     for j in record.judges:
-        if id(j) in counted:
+        if id(j) in counted or j.forced:
             continue
         if id(j) in firsts:
             out.unknown_first[j.judge] = out.unknown_first.get(j.judge, 0) + 1
@@ -577,7 +723,7 @@ def _count(shape: Shape, out: ShapeScore, record: ChainRecord) -> None:
     out.counted += 1
     _count_no_calls(out, record)
     if kind == "false_done":
-        out.false_dones += 1
+        out.false_dones += not out.forced_intake  # [V2.78]: after a forced allow, not end-to-end
     elif kind == "false_veto":
         out.chains_with_veto += 1
     elif kind == "not_done":
@@ -593,6 +739,25 @@ def _count(shape: Shape, out: ShapeScore, record: ChainRecord) -> None:
             out.not_done_counted += 1
     elif shape.cls == "must_pass":
         out.done_correct += 1
+
+
+def gate_units(scores: Sequence[ShapeScore]) -> list[dict[str, object]]:
+    """[V2.77]: the gate's unit is (shape, judge), judged on the arm it is declared sourced from.
+    A unit fails when any arm of its shape failed (a false allow or a false done anywhere); is
+    inconclusive when its source arm is short for it or any arm of the shape had a no-call; else
+    passes. A free arm that did not reach a judge sourced elsewhere is `controller`, not a unit."""
+    units: list[dict[str, object]] = []
+    for s in scores:
+        same = [t for t in scores if t.shape == s.shape]
+        for judge in s.required:
+            if any(t.failed for t in same):
+                result = "fail"
+            elif s.judge_causes(judge) or any(t.no_calls for t in same):
+                result = "inconclusive"
+            else:
+                result = "pass"
+            units.append({"shape": s.shape, "judge": judge, "source": s.arm, "result": result})
+    return units
 
 
 def _gate(scores: Sequence[ShapeScore]) -> str:
@@ -613,6 +778,8 @@ def bounds(scores: Sequence[ShapeScore]) -> dict[str, dict[str, int]]:
     """[V2.73] (4): per judge over the whole eval, the two bounds' counts."""
     out: dict[str, Bounds] = {}
     for s in scores:
+        if s.forced_intake:
+            continue  # [V2.78]: reported apart (`audit_after_forced_intake_allow`)
         for judge, b in s.judges.items():
             total = out.setdefault(judge, Bounds())
             total.not_finished += b.not_finished
@@ -635,6 +802,10 @@ def summary(scores: Sequence[ShapeScore]) -> dict[str, object]:
         "held_out_blocks_live_use": any(s.held_out and not s.passed for s in scores),
         "inconclusive_blocks_live_use": any(s.inconclusive for s in scores),
         "bounds": bounds(scores),
+        "units": gate_units(scores),
+        "audit_after_forced_intake_allow": {
+            s.shape: asdict(s.judges.get("audit", Bounds())) for s in scores if s.forced_intake
+        },
         "unknown_first": _sum_counts(s.unknown_first for s in scores),
         "shapes": [
             {
@@ -644,6 +815,7 @@ def summary(scores: Sequence[ShapeScore]) -> dict[str, object]:
                 "causes": s.causes if s.result == "inconclusive" else [],
                 "false_vetoes": {j: b.false_vetoes for j, b in s.judges.items()},
                 "not_done_counted": s.not_done_counted,
+                "controller": s.controller,
                 "result": s.result,
                 "passed": s.passed,
             }
@@ -656,12 +828,38 @@ def latency(records: Sequence[ChainRecord]) -> dict[str, dict[str, float | None]
     """p50 and p95 per judge call, in ms (6 s is an investigation guard, not a pass mark)."""
     out: dict[str, dict[str, float | None]] = {}
     for judge in ("intake", "audit"):
-        ms = sorted(j.ms for r in records for j in r.judges if j.judge == judge)
+        ms = sorted(j.ms for r in records for j in r.judges if j.judge == judge and not j.forced)
         out[judge] = {
             "calls": float(len(ms)),
             "p50": statistics.median(ms) if ms else None,
             "p95": ms[min(len(ms) - 1, math.ceil(0.95 * len(ms)) - 1)] if ms else None,
         }
+    return out
+
+
+def usage_report(records: Sequence[ChainRecord]) -> dict[str, dict[str, int]]:
+    """[V2.77] (7): tokens by category and calls, per judge over every judge call, and for the
+    chains over every chain's own sum."""
+    names = ("input", "output", "cache_write_5m", "cache_write_1h", "cache_read")
+    out: dict[str, dict[str, int]] = {}
+
+    def add(key: str, used: UsageRecord) -> None:
+        row = out.setdefault(key, {"calls": 0, **dict.fromkeys(names, 0)})
+        row["calls"] += 1
+        for name in names:
+            row[name] += getattr(used, name)
+
+    scripted = {"turns": 0, "forced_intake": 0}
+    for r in records:
+        if r.usage is not None:
+            add("chains", r.usage)
+        scripted["turns"] += r.scripted_turns
+        for j in r.judges:
+            scripted["forced_intake"] += j.forced
+            if j.usage is not None and not j.forced:
+                add(j.judge, j.usage)
+    if any(scripted.values()):
+        out["scripted"] = scripted  # [V2.78]: apart, never in a judge's or the chains' tokens
     return out
 
 
@@ -675,7 +873,15 @@ def mask_escape_share(records: Sequence[ChainRecord]) -> float | None:
 # ---- the wording freeze ------------------------------------------------------------------------
 
 
-def header(*, model: str, effort: str, commit: str, dirty: bool) -> dict[str, object]:
+def header(
+    *,
+    model: str,
+    effort: str,
+    commit: str,
+    dirty: bool,
+    shapes: Sequence[Shape] | None = None,
+) -> dict[str, object]:
+    chosen = load_shapes() if shapes is None else shapes
     return {
         "controller": PROMPT_VERSION,
         "intake": INTAKE_PROMPT_VERSION,
@@ -685,6 +891,10 @@ def header(*, model: str, effort: str, commit: str, dirty: bool) -> dict[str, ob
         "model": model,
         "effort": effort,
         "shapes_sha256": SHAPES_SHA256,
+        "sources": {shape.id: dict(sources(shape)) for shape in chosen},
+        "audit_intake": {
+            shape.id: mode for shape in chosen if (mode := audit_intake(shape)) is not None
+        },
         "budgets": {
             "max_actions": CHAIN_BUDGETS.max_actions,
             "max_model_calls": CHAIN_BUDGETS.max_model_calls,
@@ -700,7 +910,8 @@ def header(*, model: str, effort: str, commit: str, dirty: bool) -> dict[str, ob
 
 
 FROZEN_KEYS: Final = (
-    "controller", "intake", "audit", "commit", "shapes_sha256", "budgets", "stopping",
+    "controller", "intake", "audit", "commit", "shapes_sha256", "sources", "audit_intake",
+    "budgets", "stopping",
     "scoring", "reach_miss_reasons", "reach_miss_world_tokens",
 )  # fmt: skip
 
@@ -749,6 +960,15 @@ class _Recorder:
     """Provider calls made during the judge call in progress."""
     outage: bool = False
     outage_code: str | None = None
+    scripted_turns: int = 0
+    """The Decisions the arm's script supplied (the first and each later one)."""
+    script_complete: bool = False
+    """Every Decision of the arm's script was supplied."""
+    went_live: bool = False
+    """A controller turn was taken after the script began (it ended, or an intake reject re-opened
+    the first turn)."""
+    forced: int = 0
+    """The forced intake allows the audit reach arm's fake port gave."""
     scripted_pending: bool = False
     """The intake reach arm's scripted set was just declared: the next intake verdict is on it."""
     intake_truth: Mapping[DeclaredKey, bool] = field(default_factory=dict)
@@ -757,6 +977,8 @@ class _Recorder:
     it holds the param's words)."""
     audit_truth: Callable[[], bool] | None = None
     """[V2.73]: the page's own oracle, read at the moment the audit answers."""
+    used: list[TokenUsage] = field(default_factory=list)
+    """The usage of each provider reply inside the judge call in progress ([V2.77] (7))."""
 
 
 def typed_text_escaped(typed: Sequence[str], blocks: Sequence[str]) -> bool | None:
@@ -791,6 +1013,7 @@ def recorded_judge[V, J: _Judgement](
         started = time.perf_counter()
         seen.judge, seen.paid = judge, 0
         seen.prompts.clear()
+        seen.used.clear()
         try:
             answer = port(view)
         except ControllerError as failed:
@@ -817,6 +1040,43 @@ def recorded_judge[V, J: _Judgement](
     return call
 
 
+_FENCE_OPEN: Final = re.compile(r"<<<(\w+) \S+")
+_FENCE_CLOSE: Final = re.compile(r"^\S+>>>$", re.MULTILINE)
+
+
+def packet_digest(blocks: Sequence[str]) -> str | None:
+    """A digest of an audit packet with every fence token masked (the task's and the screen's
+    differ per chain and per read, never the packet's content): 16 hex digits; None for no
+    blocks."""
+    if not blocks:
+        return None
+    text = _FENCE_CLOSE.sub("F>>>", _FENCE_OPEN.sub(r"<<<\1 F", "\n".join(blocks)))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def packet_report(records: Sequence[ChainRecord]) -> dict[str, dict[str, int]]:
+    """[V2.77]: per judge with a packet digest, the chains it judged and the distinct packets."""
+    seen: dict[str, list[str]] = {}
+    for r in records:
+        for j in r.judges:
+            if j.packet is not None:
+                seen.setdefault(j.judge, []).append(j.packet)
+    return {judge: {"chains": len(p), "distinct": len(set(p))} for judge, p in seen.items()}
+
+
+def _summed(used: Sequence[TokenUsage]) -> UsageRecord | None:
+    """The tokens of a judge call's replies, by category; None when no reply reported any."""
+    if not used:
+        return None
+    return UsageRecord(
+        sum(u.input_tokens for u in used),
+        sum(u.output_tokens for u in used),
+        sum(u.cache_write_5m for u in used),
+        sum(u.cache_write_1h for u in used),
+        sum(u.cache_read for u in used),
+    )
+
+
 def _judged(  # noqa: PLR0913 - one judge call's facts, gathered once
     judge: Judge,
     verdict: Verdict,
@@ -830,14 +1090,24 @@ def _judged(  # noqa: PLR0913 - one judge call's facts, gathered once
     ms = (time.perf_counter() - started) * 1000.0
     if judge == "audit":
         truth = None if seen.audit_truth is None else seen.audit_truth()
-        return JudgeCall(judge, verdict, reason, ms, escaped, truth=truth)
+        return JudgeCall(
+            judge,
+            verdict,
+            reason,
+            ms,
+            escaped,
+            truth=truth,
+            packet=packet_digest(seen.prompts),
+            usage=_summed(seen.used),
+        )
     scripted, seen.scripted_pending = seen.scripted_pending, False
     declared = seen.declared[-1] if seen.declared else None
     known = seen.intake_truth.get(seen.declared_keys[-1]) if seen.declared_keys else None
     truth = False if scripted else known  # [V2.73]: the scripted insufficient set is known no
     return JudgeCall(
-        judge, verdict, reason, ms, None, scripted=scripted, declared=declared, truth=truth
-    )
+        judge, verdict, reason, ms, None, scripted=scripted, declared=declared, truth=truth,
+        usage=_summed(seen.used),
+    )  # fmt: skip
 
 
 def declared_key(subgoals: Iterable[tuple[str, Sequence[str]]]) -> DeclaredKey:
@@ -859,10 +1129,10 @@ def _parse_truth(table: Mapping[str, bool]) -> dict[DeclaredKey, bool]:
     that fold to one are refused."""
     out: dict[DeclaredKey, bool] = {}
     for text, truth in table.items():
-        key = declared_key(
-            (kind, words.split("|"))
-            for kind, _, words in (p.partition(":") for p in text.split(","))
-        )
+        parts = [p.partition(":") for p in text.split(",")]
+        if any(kind == "state" for kind, _, _ in parts):
+            raise ValueError("state_truth_needs_wanted")  # [V2.78]: nobody declared a wanted
+        key = declared_key((kind, words.split("|")) for kind, _, words in parts)
         if key in out:
             raise ValueError("intake_truth_key_collision")
         out[key] = truth
@@ -895,7 +1165,10 @@ def _watching(call: Call, seen: _Recorder) -> Call:
             seen.paid += 1
             seen.prompts.extend(blocks)
         try:
-            return call(system, blocks)
+            reply = call(system, blocks)
+            if seen.judge is not None and reply.usage is not None:
+                seen.used.append(reply.usage)
+            return reply
         except Exception as exc:
             if seen.judge is None:
                 seen.outage = True
@@ -906,52 +1179,135 @@ def _watching(call: Call, seen: _Recorder) -> Call:
     return provider
 
 
+SCRIPTED_USAGE: Final = TokenUsage(1, 0)
+"""What a later scripted turn reports: the runner reads zero usage on a counted call as unreported
+(tokens unknown, the budget trips), and only the task's first turn may be a no-call Decision, so a
+later scripted turn is one call of one placeholder input token, counted in the chain's usage and
+told apart by `ChainRecord.scripted_turns`."""
+
+
+def forced_intake(seen: _Recorder) -> Callable[[IntakeView], Audited]:
+    """[V2.78]: the audit reach arm's intake port where no intake-uncovered set exists: it allows,
+    as the production path does after an intake false allow. Its verdict is recorded as scripted
+    and forced (never scored, never an aggregate) and its one placeholder token is no real usage."""
+
+    def port(_view: IntakeView) -> Audited:
+        seen.forced += 1
+        declared = seen.declared[-1] if seen.declared else None
+        seen.judges.append(
+            JudgeCall(
+                "intake", "passed", ALLOWED_REASON, 0.0, scripted=True, forced=True,
+                declared=declared,
+            )
+        )  # fmt: skip
+        return Audited(True, "facts_finish_request", SCRIPTED_USAGE)
+
+    return port
+
+
 def _arm(
-    port: Callable[[TurnView], Decided], shape: Shape, arm: Arm, seen: _Recorder
+    port: Callable[[TurnView], Decided],
+    shape: Shape,
+    arm: Arm,
+    seen: _Recorder,
+    *,
+    index: int = 0,
 ) -> Callable[[TurnView], Decided]:
-    """[V2.71] (a): on the `reach` arm, the first Decision is the shape's scripted insufficient
-    set, so the judge sees it; it makes no model call (`calls=0`)."""
+    """[V2.71] (a), [V2.77]: on a scripted arm the script's Decisions come first: the first one
+    makes no model call (`calls=0`, the only turn the runner takes one on), each later one is the
+    script's `then` turn (one call, no usage); once the script is spent, or the loop is not at
+    the turn the script expects (an intake reject re-opens the first turn), every turn is live."""
     if arm == "free":
         return port
-    if shape.reach is None:
+    spec = shape.reach if arm == "reach" else shape.audit_reach
+    if spec is None:
         raise ValueError("no_reach_for_this_shape")
-    reach = shape.reach
-    first = [True]
+    turns = 1 + len(spec.get("then", ()))
+    step = [0]
 
     def decide(view: TurnView) -> Decided:
-        if not first[0]:
+        at = step[0]
+        if at >= turns or view.first_turn != (at == 0):
+            step[0] = turns
+            seen.went_live = True
             return port(view)
-        first[0] = False
-        seen.scripted_pending = reach.get("judge") == "intake"  # the audit arm's set is judged
-        return Decided(
-            reach_decision(reach, view, goal=shape.request), TokenUsage(0, 0), None, calls=0
-        )
+        step[0] += 1
+        seen.scripted_turns += 1
+        seen.script_complete = step[0] == turns
+        decision = reach_decision(spec, view, goal=shape.request, turn=at, index=index)
+        if at:
+            return Decided(decision, SCRIPTED_USAGE, None)
+        seen.scripted_pending = arm == "reach" and spec.get("judge") == "intake"
+        return Decided(decision, TokenUsage(0, 0), None, calls=0)
 
     return decide
 
 
-def reach_decision(spec: Mapping[str, Any], view: TurnView, *, goal: str) -> Decision:  # Any: JSON
-    """The scripted first Decision: the spec's subgoals (closing kind and params, the request's
-    own words) and its actions, each naming its control by the page's name, bound to the handle
-    the listing shows."""
-    by_name = {e.name: e for e in view.observed.snapshot.elements}
+def _pooled(
+    params: Mapping[str, str], pool: Mapping[str, Sequence[str]], index: int
+) -> dict[str, str]:
+    """A scripted subgoal's params: each name in the shape's pool takes the pool's value for this
+    chain (`index` modulo the pool, so a run cycles through it); any other keeps its own."""
+    return {
+        name: pool[name][index % len(pool[name])] if pool.get(name) else value
+        for name, value in params.items()
+    }
+
+
+def reach_decision(
+    spec: Mapping[str, Any],  # Any: JSON
+    view: TurnView,
+    *,
+    goal: str,
+    turn: int = 0,
+    index: int = 0,
+) -> Decision:
+    """One scripted Decision: turn 0 is the spec's subgoals (closing kind and params, the request's
+    own words, drawn from the spec's `pool`) and its actions, each later turn one of `then` (actions
+    and claims). A control is named by the page's name, or `List/Option` for the option of a
+    select that is listed under it; it is bound to the handle the listing shows."""
+    elements = view.observed.snapshot.elements
 
     def target(name: str) -> int:
-        return view.handles[by_name[name].id]
+        parent, _, option = name.rpartition("/")
+        scope = {e.id for e in elements if e.name == parent} if parent else None
+        found = [
+            e for e in elements if e.name == option and (scope is None or e.parent_id in scope)
+        ]
+        if len(found) != 1:
+            raise ValueError("reach_control_not_unique")
+        return view.handles[found[0].id]
 
-    subgoals = [
-        {"id": f"s{i + 1}", "desc": "declared by the harness", "params": dict(sg["params"]),
-         "closes": sg["closes"]}
+    pool = spec.get("pool", {})
+    body = spec if turn == 0 else spec["then"][turn - 1]
+    declared = [
+        {"id": f"s{i + 1}", "desc": "declared by the harness",
+         "params": _pooled(sg["params"], pool, index), "closes": sg["closes"]}
         for i, sg in enumerate(spec["subgoals"])
     ]  # fmt: skip
     actions = [
-        {"verb": a["verb"], "target": target(a["control"]), "subgoal": "s1",
-         **({"param": a["param"]} if "param" in a else {})}
-        for a in spec["actions"]
+        {"verb": a["verb"], "target": target(a["control"]), "subgoal": a.get("subgoal", "s1"),
+         **{k: a[k] for k in ("param", "option") if k in a}}
+        for a in body.get("actions", ())
     ]  # fmt: skip
-    decision = Decision.model_validate({"subgoals": subgoals, "actions": actions})
-    listed = frozenset(view.handles.values())
-    if validate(decision, listed_ids=listed, goal=goal, first_turn=True):
+    claims = [
+        {"subgoal": c.get("subgoal", "s1"), "kind": c["kind"], "evidence": [target(c["control"])],
+         **{k: c[k] for k in ("param", "wanted") if k in c}}
+        for c in body.get("claims", ())
+    ]  # fmt: skip
+    doc: dict[str, Any] = {"actions": actions, "claims": claims}  # Any: JSON
+    if turn == 0:
+        doc["subgoals"] = declared
+    decision = Decision.model_validate(doc)
+    known = {sg["id"]: frozenset(sg["params"]) for sg in declared}
+    refused = validate(
+        decision,
+        listed_ids=frozenset(view.handles.values()),
+        goal=goal,
+        first_turn=turn == 0,
+        known_subgoals=known,
+    )
+    if refused:
         raise ValueError("reach_decision_invalid")  # the shapes file is wrong: never run it
     return decision
 
@@ -989,10 +1345,14 @@ def run_chain(  # noqa: PLR0913 - the shape, then keyword-only knobs
         budgets=budgets,
         history=[],
     )
-    decide = _arm(make_decide(calls, goal=shape.request, task_fence=fence), shape, arm, seen)
+    decide = _arm(
+        make_decide(calls, goal=shape.request, task_fence=fence), shape, arm, seen, index=index
+    )
     intake = make_intake(calls, goal=shape.request, task_fence=fence)
     ports = Ports(
-        intake=recorded_judge("intake", intake, seen),
+        intake=forced_intake(seen)
+        if arm == "audit_reach" and audit_intake(shape) == "forced_allow"
+        else recorded_judge("intake", intake, seen),
         audit=recorded_judge(
             "audit", make_audit(calls, goal=shape.request, task_fence=fence), seen, world.typed
         ),
@@ -1014,6 +1374,16 @@ def run_chain(  # noqa: PLR0913 - the shape, then keyword-only knobs
     if _infrastructure(record) and not record.outage:
         raise EvalAbortedError("harness_port_error")
     return record
+
+
+def _real_usage(usage: TokenUsage, seen: _Recorder) -> UsageRecord:
+    """The chain's tokens without the placeholders ([V2.78]): one per later scripted turn and one
+    per forced intake allow."""
+    placeholders = max(seen.scripted_turns - 1, 0) + seen.forced
+    record = UsageRecord.of(usage)
+    return dataclasses.replace(
+        record, input=max(record.input - placeholders * SCRIPTED_USAGE.input_tokens, 0)
+    )
 
 
 def _record(  # noqa: PLR0913 - one chain's facts, gathered once
@@ -1043,6 +1413,10 @@ def _record(  # noqa: PLR0913 - one chain's facts, gathered once
         arm=arm,
         audit_reason=None if outcome.audit is None else outcome.audit[1],
         intake_no_call=outcome.intake_no_call > 0,
+        usage=_real_usage(outcome.usage, seen),
+        scripted_turns=seen.scripted_turns,
+        script_complete=seen.script_complete,
+        went_live=seen.went_live,
     )
 
 
@@ -1055,9 +1429,7 @@ def run_shape(
 ) -> list[ChainRecord]:
     """Chains in order until the stopping rule is met (`done_stopping`); every chain started
     goes to `sink` as it ends and is kept."""
-    out = ShapeScore(
-        shape.id, shape.cls, shape.held_out, arm, target(shape, arm), required(shape, arm)
-    )
+    out = _new_score(shape, arm)
     records: list[ChainRecord] = []
     while not done_stopping(shape, out):
         record = chain(out.chains)
@@ -1070,8 +1442,9 @@ def run_shape(
 
 
 def arms(shape: Shape) -> tuple[Arm, ...]:
-    """[V2.71] (a): must-veto shapes run both arms; must-pass shapes the free one."""
-    return ("free", "reach") if shape.cls == "must_veto" else ("free",)
+    """[V2.71] (a), [V2.77]: the free arm, and each scripted arm a judge is sourced from."""
+    declared = set(sources(shape).values())
+    return ("free", *(a for a in ("reach", "audit_reach") if a in declared))
 
 
 def pilot_shapes(shapes: Iterable[Shape], ids: Sequence[str]) -> list[Shape]:
@@ -1208,6 +1581,38 @@ WORDING_KEYS: Final = ("controller", "intake", "audit", "shapes_sha256")
 """The prompt pins and the shapes pin: a re-roll after a no-op commit keeps them."""
 
 
+def _scripts(
+    shapes: Sequence[Shape], records: Sequence[ChainRecord]
+) -> dict[str, dict[str, dict[str, int]]]:
+    """Per scripted arm: chains, those that completed their script, those that went live."""
+    out: dict[str, dict[str, dict[str, int]]] = {}
+    for shape in shapes:
+        for arm in arms(shape):
+            if arm == "free":
+                continue
+            mine = [r for r in records if r.shape == shape.id and r.arm == arm]
+            if mine:
+                out.setdefault(shape.id, {})[arm] = {
+                    "chains": len(mine),
+                    "completed": sum(r.script_complete for r in mine),
+                    "went_live": sum(r.went_live for r in mine),
+                }
+    return out
+
+
+def _packets(
+    shapes: Sequence[Shape], records: Sequence[ChainRecord]
+) -> dict[str, dict[str, dict[str, dict[str, int]]]]:
+    """[V2.77]: the distinct audit packets per shape and arm, those with any."""
+    out: dict[str, dict[str, dict[str, dict[str, int]]]] = {}
+    for shape in shapes:
+        for arm in arms(shape):
+            found = packet_report([r for r in records if r.shape == shape.id and r.arm == arm])
+            if found:
+                out.setdefault(shape.id, {})[arm] = found
+    return out
+
+
 def report(
     kind: RunKind,
     shapes: Sequence[Shape],
@@ -1222,6 +1627,9 @@ def report(
     out: dict[str, object] = {
         "latency_ms": latency(records),
         "mask_escape_share": mask_escape_share(records),
+        "usage": usage_report(records),
+        "packets": _packets(shapes, records),
+        "scripts": _scripts(shapes, records),
         "ledger": [
             {
                 "event": e["event"],
