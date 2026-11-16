@@ -24,6 +24,8 @@ Counting (§8 as amended by [V2.70], [V2.71], [V2.73]):
 - a must-pass shape with more than `MAX_COUNTED_NOT_DONE` not-done chains is inconclusive, but
   a reach miss (a stop on `REACH_MISS_REASONS`, no judge verdict missing or failed) is reported
   and never counted; any other reason counts;
+- a must-pass shape passes only with each judge at `VERDICT_TARGET` scored verdicts, and stops
+  at `N` non-reach-miss chains with that, or at `CHAIN_CAP` chains (then inconclusive);
 - precedence is fail, then inconclusive, then pass; any inconclusive shape means the gate is not
   passed;
 - the false-done bar is outside the scoring: any chain ending `done` while the oracle says the
@@ -89,12 +91,17 @@ MAX_VOIDS: Final = 3
 MAX_FALSE_VETOES: Final = 3
 STOPPING: Final[Mapping[str, int]] = {
     "must_pass_chains": N,
+    "must_pass_verdicts_per_judge": VERDICT_TARGET,
     "must_veto_verdicts": VERDICT_TARGET,
     "chain_cap": CHAIN_CAP,
     "max_voids": MAX_VOIDS,
     "max_false_vetoes": MAX_FALSE_VETOES,
 }
-"""The stopping rule and the bars, written before the run ([V2.71] (a))."""
+"""The stopping rule and the bars, written before the run ([V2.71] (a), [V2.75]): a must-pass
+shape stops at `must_pass_chains` chains that are not reach misses AND each judge at
+`must_pass_verdicts_per_judge` scored verdicts, or at `chain_cap` chains, whichever is first;
+short of both at the cap it is inconclusive."""
+JUDGES: Final = ("intake", "audit")
 CHAIN_BUDGETS: Final = Budgets(
     max_actions=40, max_model_calls=20, max_tokens=400_000, max_cost_usd=10.0, max_wall_s=300.0
 )
@@ -146,6 +153,10 @@ truth as its own count per judge, a later one by the set it judged. The free arm
 judges' scored verdicts combined; a reach arm on its own judge's."""
 
 
+DeclaredKey = tuple[tuple[str, tuple[str, ...]], ...]
+"""A declared set: per subgoal its closing kind and its folded param words."""
+
+
 @dataclass(frozen=True)
 class Shape:
     id: str
@@ -155,9 +166,10 @@ class Shape:
     page: Mapping[str, Any]  # Any: JSON, built by `chain_pages.Page.from_spec`
     oracle: tuple[Mapping[str, Any], ...]  # Any: JSON oracle facts
     reach: Mapping[str, Any] | None = None  # Any: JSON, the reach arm's first Decision
-    intake_truth: Mapping[str, bool] = field(default_factory=dict)
+    intake_truth: Mapping[DeclaredKey, bool] = field(default_factory=dict)
     """Whether a declared set is sufficient for the request: the intake's truth, pre-registered,
-    keyed by `declared_key` (kind and the param's words per subgoal); a set not named is unknown."""
+    keyed by `declared_key` (kind and the param's words per subgoal, folded); a set not named is
+    unknown. The file keeps readable `kind:words` strings, parsed at load."""
 
 
 def load_shapes(path: Path = SHAPES_PATH, *, pin: str | None = None) -> tuple[Shape, ...]:
@@ -176,7 +188,7 @@ def load_shapes(path: Path = SHAPES_PATH, *, pin: str | None = None) -> tuple[Sh
             page=s["page"],
             oracle=tuple(s["oracle"]),
             reach=s.get("reach"),
-            intake_truth=dict(s.get("intake_truth", {})),
+            intake_truth=_parse_truth(s.get("intake_truth", {})),
         )
         for s in doc["shapes"]
     )
@@ -360,7 +372,16 @@ class ShapeScore:
             return True
         if self.cls == "must_veto":
             return self.verdicts < VERDICT_TARGET
-        return self.counted < N or self.not_done_counted > MAX_COUNTED_NOT_DONE
+        return (
+            self.counted - self.reach_misses < N
+            or any(self.scored(j) < VERDICT_TARGET for j in JUDGES)
+            or self.not_done_counted > MAX_COUNTED_NOT_DONE
+        )
+
+    def scored(self, judge: str) -> int:
+        """One judge's scored verdicts on this shape and arm."""
+        b = self.judges.get(judge)
+        return 0 if b is None else b.not_finished + b.finished
 
     @property
     def failed(self) -> bool:
@@ -381,13 +402,17 @@ class ShapeScore:
 
 
 def done_stopping(shape: Shape, out: ShapeScore) -> bool:
-    """The stopping rule, written before the run: must-pass at `N` counted chains, must-veto at
-    `VERDICT_TARGET` scored verdicts or `CHAIN_CAP` chains; any shape once its voids exceed
-    `MAX_VOIDS`."""
+    """The stopping rule, written before the run: must-pass at `N` counted chains that are not
+    reach misses and each judge at `VERDICT_TARGET` scored verdicts, or `CHAIN_CAP` chains;
+    must-veto at `VERDICT_TARGET` scored verdicts or `CHAIN_CAP` chains; any shape once its voids
+    exceed `MAX_VOIDS`."""
     if out.eval_void:
         return True
     if shape.cls == "must_pass":
-        return out.counted >= N
+        reached = out.counted - out.reach_misses >= N
+        return (reached and all(out.scored(j) >= VERDICT_TARGET for j in JUDGES)) or (
+            out.chains >= CHAIN_CAP
+        )
     return out.verdicts >= VERDICT_TARGET or out.chains >= CHAIN_CAP
 
 
@@ -567,7 +592,7 @@ def summary(scores: Sequence[ShapeScore]) -> dict[str, object]:
             {
                 **asdict(s),
                 "false_allows": s.false_allows,
-                "inconclusive": s.inconclusive,
+                "inconclusive": s.result == "inconclusive",
                 "not_done_counted": s.not_done_counted,
                 "result": s.result,
                 "passed": s.passed,
@@ -677,8 +702,8 @@ class _Recorder:
     outage_code: str | None = None
     scripted_pending: bool = False
     """The intake reach arm's scripted set was just declared: the next intake verdict is on it."""
-    intake_truth: Mapping[str, bool] = field(default_factory=dict)
-    declared_keys: list[str] = field(default_factory=list)
+    intake_truth: Mapping[DeclaredKey, bool] = field(default_factory=dict)
+    declared_keys: list[DeclaredKey] = field(default_factory=list)
     """Each declared set's `declared_key`, in step with `declared` (kept in memory, never written:
     it holds the param's words)."""
     audit_truth: Callable[[], bool] | None = None
@@ -759,29 +784,38 @@ def _judged(  # noqa: PLR0913 - one judge call's facts, gathered once
         return JudgeCall(judge, verdict, reason, ms, escaped, truth=truth)
     scripted, seen.scripted_pending = seen.scripted_pending, False
     declared = seen.declared[-1] if seen.declared else None
-    known = truth_of(seen.intake_truth, seen.declared_keys[-1]) if seen.declared_keys else None
+    known = seen.intake_truth.get(seen.declared_keys[-1]) if seen.declared_keys else None
     truth = False if scripted else known  # [V2.73]: the scripted insufficient set is known no
     return JudgeCall(
         judge, verdict, reason, ms, None, scripted=scripted, declared=declared, truth=truth
     )
 
 
-def fold(key: str) -> str:
-    """NFKC, casefolded, whitespace collapsed (and dropped around `:`, `,`, `|`)."""
-    spaced = " ".join(unicodedata.normalize("NFKC", key).casefold().split())
-    return re.sub(r" ?([:,|]) ?", r"", spaced)
+def fold(text: str) -> str:
+    """NFKC, casefolded, whitespace collapsed: a param's words compared by this."""
+    return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
 
 
-def truth_of(table: Mapping[str, bool], key: str) -> bool | None:
-    """The intake truth of a declared set, both sides folded; a set not in the table is unknown."""
-    folded = fold(key)
-    return next((v for k, v in table.items() if fold(k) == folded), None)
+def declared_key(subgoals: Iterable[tuple[str, Sequence[str]]]) -> DeclaredKey:
+    """A declared set as the intake truth table keys it: per subgoal, in declared order, its
+    closing kind and its folded param words. A tuple of tuples, never a delimited string, so no
+    param can forge another set's key."""
+    return tuple((kind, tuple(fold(w) for w in words)) for kind, words in subgoals)
 
 
-def declared_key(subgoals: Iterable[tuple[str, Sequence[str]]]) -> str:
-    """A declared set as the intake truth table keys it: per subgoal its closing kind and its
-    param words (`kind:words`, words joined by `|`), comma-joined in declared order."""
-    return ",".join(f"{kind}:{'|'.join(words)}" for kind, words in subgoals)
+def _parse_truth(table: Mapping[str, bool]) -> dict[DeclaredKey, bool]:
+    """The shapes file's readable keys (`kind:words|words,kind:words`) as folded tuples; two keys
+    that fold to one are refused."""
+    out: dict[DeclaredKey, bool] = {}
+    for text, truth in table.items():
+        key = declared_key(
+            (kind, words.split("|"))
+            for kind, _, words in (p.partition(":") for p in text.split(","))
+        )
+        if key in out:
+            raise ValueError("intake_truth_key_collision")
+        out[key] = truth
+    return out
 
 
 def _recorded_decide(

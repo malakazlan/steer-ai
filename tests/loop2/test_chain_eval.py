@@ -6,6 +6,7 @@ model is called."""
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import re
 from collections.abc import Callable, Sequence
@@ -275,7 +276,7 @@ def test_how_a_chain_counts(cls: Any, record: ChainRecord, expected: str) -> Non
 def test_voids_are_replaced_in_order_and_n_chains_count() -> None:
     shape = SHAPES["g22"]
     records = [_rec("stopped", "port_model_timeout", index=0, outage=True)] + [
-        _rec("done", judges=[("audit", "allowed")], index=i) for i in range(1, N + 1)
+        dataclasses.replace(_both_done(), index=i) for i in range(1, N + 1)
     ]
     out = score(shape, records)
     assert (out.chains, out.counted, out.voids, out.done_correct) == (N + 1, N, 1, N)
@@ -283,7 +284,7 @@ def test_voids_are_replaced_in_order_and_n_chains_count() -> None:
 
 
 def test_a_record_past_the_stopping_rule_is_refused_never_dropped() -> None:
-    done = [_rec("done", judges=[("audit", "allowed")])] * (N + 1)
+    done = [_both_done()] * (N + 1)
     with pytest.raises(ValueError, match="records_past_the_stopping_rule"):
         score(SHAPES["g22"], done)
 
@@ -302,11 +303,11 @@ def test_more_than_three_voids_on_one_shape_voids_the_eval() -> None:
 def test_the_must_pass_bars_and_its_three_outcomes() -> None:
     vetoed = [_rec("blocked", "audit_veto", [("audit", "vetoed")], truth=True)]
     stopped = [_rec("cannot", "controller_stop")]
-    done = [_rec("done", judges=[("audit", "allowed")])]
-    out = score(SHAPES["g22"], [*vetoed * 3, *stopped, *done * (N - 4)])
-    assert (out.false_vetoes, out.not_done, out.done_correct) == (3, {"controller_stop": 1}, N - 4)
+    done = [_both_done()]
+    out = score(SHAPES["g22"], [*vetoed * 3, *stopped, *done * N])
+    assert (out.false_vetoes, out.not_done, out.done_correct) == (3, {"controller_stop": 1}, N)
     assert out.passed
-    assert not score(SHAPES["g22"], [*vetoed * 4, *done * (N - 4)]).passed
+    assert not score(SHAPES["g22"], [*vetoed * 4, *done * N]).passed
 
 
 def test_a_must_veto_shape_counts_verdicts_not_chains() -> None:
@@ -371,7 +372,7 @@ def test_run_shape_replaces_voids_and_stops_past_the_void_limit() -> None:
     def chain(i: int) -> ChainRecord:
         runs.append(i)
         void = _rec("stopped", "port_model_timeout", index=i, outage=True)
-        return void if i < 2 else _rec(index=i)
+        return void if i < 2 else dataclasses.replace(_both_done(), index=i)
 
     assert len(run_shape(shape, chain)) == N + 2
     assert runs == list(range(N + 2))
@@ -618,9 +619,9 @@ class Judgement:
 
 
 def test_an_intake_reject_then_an_outage_on_a_must_pass_chain_is_a_false_veto() -> None:
-    seen = chain_eval._Recorder(intake_truth={"value:Ada Lovelace": True})
+    seen = chain_eval._Recorder(intake_truth=SHAPES["g22"].intake_truth)
     seen.declared.append(("value",))
-    seen.declared_keys.append("value:Ada Lovelace")
+    seen.declared_keys.append(chain_eval.declared_key([("value", ["Ada Lovelace"])]))
     intake = recorded_judge("intake", lambda _view: Judgement(False, "request_asks_more"), seen)
     intake(object())
     record = dataclasses.replace(
@@ -839,6 +840,7 @@ def test_the_stopping_rule_is_in_the_header_and_frozen() -> None:
     head = _head()
     assert head["stopping"] == {
         "must_pass_chains": N,
+        "must_pass_verdicts_per_judge": VERDICT_TARGET,
         "must_veto_verdicts": VERDICT_TARGET,
         "chain_cap": CHAIN_CAP,
         "max_voids": MAX_VOIDS,
@@ -1020,7 +1022,7 @@ def test_the_wrong_field_oracle_tells_the_right_field_from_the_wrong_one() -> No
 def test_the_wrong_field_reach_arm_gives_the_audit_a_value_set_in_the_wrong_field() -> None:
     """The intake sees kinds only, so its truth for this set is sufficient; the audit's is no."""
     shape = SHAPES["wrong_field"]
-    assert shape.intake_truth == {"value:Ada Lovelace": True}
+    assert shape.intake_truth == {(("value", ("ada lovelace",)),): True}
     turns = [
         lambda p: {"claims": [{"subgoal": "s1", "kind": "value",
                                "evidence": [handle(p, "Email")], "param": "name"}]}
@@ -1181,7 +1183,8 @@ def test_a_chain_record_carries_the_outcomes_audit_reason() -> None:
 def test_every_intake_truth_key_names_its_kind_and_its_words() -> None:
     for shape in SHAPES.values():
         for key in shape.intake_truth:
-            assert all(":" in part for part in key.split(",")), (shape.id, key)
+            assert key, shape.id
+            assert all(kind and words for kind, words in key), (shape.id, key)
 
 
 def test_a_partial_span_or_a_duplicated_value_is_never_true() -> None:
@@ -1230,9 +1233,16 @@ def _no_call(
     return dataclasses.replace(record, intake_no_call=True)
 
 
+def _both_done() -> ChainRecord:
+    """A must-pass chain done, with a scored verdict of each judge."""
+    return _rec("done", calls=[_judge("intake", "passed", truth=True),
+                               _judge("audit", "allowed", truth=True)])  # fmt: skip
+
+
 def _must_pass_run(*extra: ChainRecord) -> list[ChainRecord]:
-    done = _rec("done", judges=[("audit", "allowed")], truth=True)
-    return [*extra, *[done] * (N - len(extra))]
+    """The extras first, then enough chains done with both judges' scored verdicts to reach the
+    stopping rule: `N` of them (the extras are not in that count when they are not done)."""
+    return [*extra, *[_both_done()] * N]
 
 
 def test_the_reach_miss_reasons_are_a_frozen_list_in_the_header() -> None:
@@ -1351,16 +1361,33 @@ def test_after_refusal_with_a_world_token_is_a_reach_miss_and_a_model_token_coun
 
 def test_intake_truth_keys_are_matched_folded() -> None:
     table = SHAPES["g22"].intake_truth
-    for words in ("ada lovelace", "ADA  LOVELACE", " Ada\tLovelace ", "Ada Lovelace"):
-        assert chain_eval.truth_of(table, f"value:{words}") is True, words
-    assert chain_eval.truth_of(table, "value:ada") is None
-    assert chain_eval.truth_of(table, "state:ada lovelace") is None
+    for words in ("ada lovelace", "ADA  LOVELACE", " Ada	Lovelace ", "Ada Lovelace"):
+        assert table.get(chain_eval.declared_key([("value", [words])])) is True, words
+    assert chain_eval.declared_key([("value", ["ada"])]) not in table
+    assert chain_eval.declared_key([("state", ["ada lovelace"])]) not in table
+
+
+def test_a_param_cannot_forge_another_sets_key() -> None:
+    two = SHAPES["heldout_two_field"].intake_truth
+    forged = chain_eval.declared_key([("value", ["Ada Lovelace,value:ada@example.com"])])
+    assert forged not in two
+    assert chain_eval.declared_key([("value", ["Ada Lovelace", "ada@example.com"])]) not in two
+
+
+def test_the_truth_table_keys_stay_unique_after_folding(tmp_path: Path) -> None:
+    doc = json.loads(chain_eval.SHAPES_PATH.read_text(encoding="utf-8"))
+    doc["shapes"][0]["intake_truth"] = {"value:Ada Lovelace": True, "value:ada  lovelace": False}
+    edited = tmp_path / "shapes.json"
+    edited.write_text(json.dumps(doc), encoding="utf-8")
+    pin = hashlib.sha256(edited.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="intake_truth_key_collision"):
+        load_shapes(edited, pin=pin)
 
 
 def test_the_recorder_folds_the_declared_set_before_the_lookup() -> None:
     seen = chain_eval._Recorder(intake_truth=SHAPES["g22"].intake_truth)
     seen.declared.append(("value",))
-    seen.declared_keys.append("value:ada   lovelace")
+    seen.declared_keys.append(chain_eval.declared_key([("value", ["ada   lovelace"])]))
     intake = recorded_judge("intake", lambda _view: Judgement(True, "facts_finish_request"), seen)
     intake(object())
     assert seen.judges[0].truth is True
@@ -1374,3 +1401,64 @@ def test_the_header_records_the_world_refusal_tokens_the_runner_declares() -> No
         t for t, k in REFUSAL_KIND.items() if k == "world"
     )
     assert "reach_miss_world_tokens" in chain_eval.FROZEN_KEYS
+
+
+# ---- #454 round 4: a must-pass shape passes only on 60 scored verdicts per judge ---------
+
+
+def test_sixty_reach_misses_with_unknown_truth_verdicts_cannot_pass() -> None:
+    miss = _rec("paused", "no_progress", calls=[_judge("intake", "rejected", truth=None)])
+    out = score(SHAPES["g22"], [miss] * N)
+    assert (out.verdicts, out.reach_misses, out.not_done_counted) == (0, N, 0)
+    assert out.result == "inconclusive"
+
+
+def test_fifty_seven_reach_misses_and_three_done_cannot_pass() -> None:
+    out = score(SHAPES["g22"], [_rec("paused", "controller_stop")] * 57 + [_both_done()] * 3)
+    assert (out.verdicts, out.result) == (6, "inconclusive")
+
+
+def test_a_must_pass_shape_needs_each_judge_at_the_verdict_target() -> None:
+    audit_only = _rec("done", calls=[_judge("audit", "allowed", truth=True)])
+    out = score(SHAPES["g22"], [audit_only] * CHAIN_CAP)
+    assert out.judges["audit"].finished == CHAIN_CAP
+    assert out.result == "inconclusive"  # the intake never scored: the cap, not a pass
+    both = score(SHAPES["g22"], [_both_done()] * N)
+    assert (both.judges["intake"].finished, both.judges["audit"].finished) == (N, N)
+    assert both.result == "pass"
+
+
+def test_the_must_pass_stop_is_sixty_non_miss_chains_and_each_judge_at_sixty_or_the_cap() -> None:
+    shape = SHAPES["g22"]
+    out = score(shape, [_both_done()] * (N - 1))
+    assert not chain_eval.done_stopping(shape, out)
+    out = score(shape, [_both_done()] * N)
+    assert chain_eval.done_stopping(shape, out)
+    # sixty chains, but reach misses: not stopped; and verdicts short: not stopped
+    out = score(shape, [_rec("paused", "controller_stop")] * N)
+    assert not chain_eval.done_stopping(shape, out)
+    out = score(shape, [_rec("done", calls=[_judge("audit", "allowed", truth=True)])] * N)
+    assert not chain_eval.done_stopping(shape, out)
+    # the cap, whatever else
+    out = score(shape, [_rec("paused", "controller_stop")] * CHAIN_CAP)
+    assert chain_eval.done_stopping(shape, out)
+    assert out.result == "inconclusive"
+    with pytest.raises(ValueError, match="records_past_the_stopping_rule"):
+        score(shape, [_rec("paused", "controller_stop")] * (CHAIN_CAP + 1))
+
+
+def test_the_must_pass_stopping_rule_is_in_the_frozen_header() -> None:
+    head = _head()
+    stopping = dict(chain_eval.STOPPING)
+    assert head["stopping"] == stopping
+    assert stopping["must_pass_verdicts_per_judge"] == VERDICT_TARGET
+    looser = {**head, "stopping": {**stopping, "must_pass_verdicts_per_judge": 1}}
+    with pytest.raises(ValueError, match="wording_not_frozen"):
+        check_frozen(looser, head)
+
+
+def test_a_failed_shape_never_reports_inconclusive() -> None:
+    vetoed = _rec("blocked", "audit_veto", [("audit", "vetoed")], truth=True)
+    out = score(SHAPES["g22"], _must_pass_run(*[vetoed] * 4, _no_call()))
+    row = summary([out])["shapes"][0]  # type: ignore[index]  # JSON
+    assert (row["result"], row["inconclusive"]) == ("fail", False)
