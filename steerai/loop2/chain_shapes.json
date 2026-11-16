@@ -295,6 +295,85 @@
       }
     },
     {
+      "id": "wrong_field_state",
+      "class": "must_veto",
+      "held_out": false,
+      "request": "keep Kenya selected in the Shipping list",
+      "page": {
+        "title": "Order",
+        "controls": [
+          {
+            "kind": "select",
+            "name": "Shipping",
+            "options": [
+              "Kenya",
+              "Ghana",
+              "Peru"
+            ]
+          },
+          {
+            "kind": "select",
+            "name": "Billing",
+            "options": [
+              "Kenya",
+              "Ghana",
+              "Peru"
+            ]
+          }
+        ]
+      },
+      "oracle": [
+        {
+          "value": [
+            "Shipping",
+            "Kenya"
+          ]
+        }
+      ],
+      "intake_truth": {
+        "value:Kenya": true,
+        "state:Kenya selected": true,
+        "state:Kenya off": false
+      },
+      "reach": {
+        "judge": "audit",
+        "subgoals": [
+          {
+            "closes": "state",
+            "params": {
+              "what": "Kenya"
+            }
+          }
+        ],
+        "actions": [
+          {
+            "verb": "expand",
+            "control": "Billing"
+          }
+        ],
+        "then": [
+          {
+            "actions": [
+              {
+                "verb": "select",
+                "control": "Billing/Kenya"
+              }
+            ]
+          },
+          {
+            "claims": [
+              {
+                "kind": "state",
+                "control": "Billing/Kenya",
+                "param": "what",
+                "wanted": "selected"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "id": "heldout_two_field",
       "class": "must_pass",
       "held_out": true,

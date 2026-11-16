@@ -84,7 +84,7 @@ from steerai.world.effects import _tokens  # the proof word match's token rule
 proof_tokens: Final = _tokens
 """The proof word match's own token rule, imported: a truth key and a proof read words alike."""
 SHAPES_PATH: Final = Path(__file__).with_name("chain_shapes.json")
-SHAPES_SHA256: Final = "efec1848865325d5fb005391811f1aefcdba41c86a97556babcbc56fe486e65d"
+SHAPES_SHA256: Final = "a50349afea4612c6c81381a44ab5f13d07d56927f0760326e15629696c2d9c81"
 """The shapes file as pre-registered: any edit fails `load_shapes`."""
 N: Final = 60
 """Must-pass: chains counted per shape (voids replaced)."""
@@ -135,7 +135,7 @@ Class = Literal["must_pass", "must_veto"]
 Judge = Literal["intake", "audit"]
 Verdict = Literal["passed", "rejected", "allowed", "vetoed", "failed"]
 Ending = Literal["ok", "false_done", "false_veto", "not_done", "void"]
-Arm = Literal["free", "reach"]
+Arm = Literal["free", "reach", "audit_reach"]
 """[V2.71] (a): `free`, the controller runs from its first turn (it measures reach); `reach`,
 the first Decision is the shape's scripted insufficient set, so the judge sees it (it measures
 the judge). Must-veto shapes run both; must-pass shapes run `free` only."""
@@ -179,8 +179,8 @@ judges' scored verdicts combined; a reach arm on its own judge's."""
 
 
 WANTED_STATES: Final = ("on", "off", "selected", "expanded", "collapsed")
-"""The wanted states a state claim names (`decision.Claim.wanted`); one of them as the last word of a
-state param is that param's wanted state ([V2.77] (2))."""
+"""The wanted states a state claim names (`decision.Claim.wanted`); one of them as the last word
+of a state param is that param's wanted state ([V2.77] (2))."""
 DeclaredKey = tuple[tuple[str, tuple[tuple[str, ...], ...], tuple[str | None, ...]], ...]
 """A declared set: per subgoal its closing kind, each param's word set and each param's wanted
 state (None: the declared shape names none; a table that does not name that key reads unknown)."""
@@ -194,7 +194,8 @@ class Shape:
     request: str
     page: Mapping[str, Any]  # Any: JSON, built by `chain_pages.Page.from_spec`
     oracle: tuple[Mapping[str, Any], ...]  # Any: JSON oracle facts
-    reach: Mapping[str, Any] | None = None  # Any: JSON, the reach arm's first Decision
+    reach: Mapping[str, Any] | None = None  # Any: JSON, the reach arm's script
+    audit_reach: Mapping[str, Any] | None = None  # Any: JSON, the audit reach arm's script
     intake_truth: Mapping[DeclaredKey, bool] = field(default_factory=dict)
     """Whether a declared set is sufficient for the request: the intake's truth, pre-registered,
     keyed by `declared_key` (kind and the param's words per subgoal, folded); a set not named is
@@ -217,6 +218,7 @@ def load_shapes(path: Path = SHAPES_PATH, *, pin: str | None = None) -> tuple[Sh
             page=s["page"],
             oracle=tuple(s["oracle"]),
             reach=s.get("reach"),
+            audit_reach=s.get("audit_reach"),
             intake_truth=_parse_truth(s.get("intake_truth", {})),
         )
         for s in doc["shapes"]
@@ -299,6 +301,8 @@ class ChainRecord:
     """The intake check never called (refused before any call): no verdict, reported apart."""
     usage: UsageRecord | None = None
     """[V2.77] (7): every reported token of the chain by category (the runner's own sum)."""
+    scripted_turns: int = 0
+    """[V2.71] (a), [V2.77]: the Decisions a scripted arm supplied (no model made them)."""
 
 
 class EvalAbortedError(RuntimeError):
@@ -800,6 +804,8 @@ class _Recorder:
     """Provider calls made during the judge call in progress."""
     outage: bool = False
     outage_code: str | None = None
+    scripted_turns: int = 0
+    """The Decisions the arm's script supplied (the first and each later one)."""
     scripted_pending: bool = False
     """The intake reach arm's scripted set was just declared: the next intake verdict is on it."""
     intake_truth: Mapping[DeclaredKey, bool] = field(default_factory=dict)
@@ -986,52 +992,114 @@ def _watching(call: Call, seen: _Recorder) -> Call:
     return provider
 
 
+SCRIPTED_USAGE: Final = TokenUsage(1, 0)
+"""What a later scripted turn reports: the runner reads zero usage on a counted call as unreported
+(tokens unknown, the budget trips), and only the task's first turn may be a no-call Decision, so a
+later scripted turn is one call of one placeholder input token, counted in the chain's usage and
+told apart by `ChainRecord.scripted_turns`."""
+
+
 def _arm(
-    port: Callable[[TurnView], Decided], shape: Shape, arm: Arm, seen: _Recorder
+    port: Callable[[TurnView], Decided],
+    shape: Shape,
+    arm: Arm,
+    seen: _Recorder,
+    *,
+    index: int = 0,
 ) -> Callable[[TurnView], Decided]:
-    """[V2.71] (a): on the `reach` arm, the first Decision is the shape's scripted insufficient
-    set, so the judge sees it; it makes no model call (`calls=0`)."""
+    """[V2.71] (a), [V2.77]: on a scripted arm the script's Decisions come first: the first one
+    makes no model call (`calls=0`, the only turn the runner takes one on), each later one is the
+    script's `then` turn (one call, no usage); once the script is spent, or the loop is not at
+    the turn the script expects (an intake reject re-opens the first turn), every turn is live."""
     if arm == "free":
         return port
-    if shape.reach is None:
+    spec = shape.reach if arm == "reach" else shape.audit_reach
+    if spec is None:
         raise ValueError("no_reach_for_this_shape")
-    reach = shape.reach
-    first = [True]
+    turns = 1 + len(spec.get("then", ()))
+    step = [0]
 
     def decide(view: TurnView) -> Decided:
-        if not first[0]:
+        at = step[0]
+        if at >= turns or view.first_turn != (at == 0):
+            step[0] = turns
             return port(view)
-        first[0] = False
-        seen.scripted_pending = reach.get("judge") == "intake"  # the audit arm's set is judged
-        return Decided(
-            reach_decision(reach, view, goal=shape.request), TokenUsage(0, 0), None, calls=0
-        )
+        step[0] += 1
+        seen.scripted_turns += 1
+        decision = reach_decision(spec, view, goal=shape.request, turn=at, index=index)
+        if at:
+            return Decided(decision, SCRIPTED_USAGE, None)
+        seen.scripted_pending = arm == "reach" and spec.get("judge") == "intake"
+        return Decided(decision, TokenUsage(0, 0), None, calls=0)
 
     return decide
 
 
-def reach_decision(spec: Mapping[str, Any], view: TurnView, *, goal: str) -> Decision:  # Any: JSON
-    """The scripted first Decision: the spec's subgoals (closing kind and params, the request's
-    own words) and its actions, each naming its control by the page's name, bound to the handle
-    the listing shows."""
-    by_name = {e.name: e for e in view.observed.snapshot.elements}
+def _pooled(
+    params: Mapping[str, str], pool: Mapping[str, Sequence[str]], index: int
+) -> dict[str, str]:
+    """A scripted subgoal's params: each name in the shape's pool takes the pool's value for this
+    chain (`index` modulo the pool, so a run cycles through it); any other keeps its own."""
+    return {
+        name: pool[name][index % len(pool[name])] if pool.get(name) else value
+        for name, value in params.items()
+    }
+
+
+def reach_decision(
+    spec: Mapping[str, Any],  # Any: JSON
+    view: TurnView,
+    *,
+    goal: str,
+    turn: int = 0,
+    index: int = 0,
+) -> Decision:
+    """One scripted Decision: turn 0 is the spec's subgoals (closing kind and params, the request's
+    own words, drawn from the spec's `pool`) and its actions, each later turn one of `then` (actions
+    and claims). A control is named by the page's name, or `List/Option` for the option of a
+    select that is listed under it; it is bound to the handle the listing shows."""
+    elements = view.observed.snapshot.elements
 
     def target(name: str) -> int:
-        return view.handles[by_name[name].id]
+        parent, _, option = name.rpartition("/")
+        scope = {e.id for e in elements if e.name == parent} if parent else None
+        found = [
+            e for e in elements if e.name == option and (scope is None or e.parent_id in scope)
+        ]
+        if len(found) != 1:
+            raise ValueError("reach_control_not_unique")
+        return view.handles[found[0].id]
 
-    subgoals = [
-        {"id": f"s{i + 1}", "desc": "declared by the harness", "params": dict(sg["params"]),
-         "closes": sg["closes"]}
+    pool = spec.get("pool", {})
+    body = spec if turn == 0 else spec["then"][turn - 1]
+    declared = [
+        {"id": f"s{i + 1}", "desc": "declared by the harness",
+         "params": _pooled(sg["params"], pool, index), "closes": sg["closes"]}
         for i, sg in enumerate(spec["subgoals"])
     ]  # fmt: skip
     actions = [
-        {"verb": a["verb"], "target": target(a["control"]), "subgoal": "s1",
-         **({"param": a["param"]} if "param" in a else {})}
-        for a in spec["actions"]
+        {"verb": a["verb"], "target": target(a["control"]), "subgoal": a.get("subgoal", "s1"),
+         **{k: a[k] for k in ("param", "option") if k in a}}
+        for a in body.get("actions", ())
     ]  # fmt: skip
-    decision = Decision.model_validate({"subgoals": subgoals, "actions": actions})
-    listed = frozenset(view.handles.values())
-    if validate(decision, listed_ids=listed, goal=goal, first_turn=True):
+    claims = [
+        {"subgoal": c.get("subgoal", "s1"), "kind": c["kind"], "evidence": [target(c["control"])],
+         **{k: c[k] for k in ("param", "wanted") if k in c}}
+        for c in body.get("claims", ())
+    ]  # fmt: skip
+    doc: dict[str, Any] = {"actions": actions, "claims": claims}  # Any: JSON
+    if turn == 0:
+        doc["subgoals"] = declared
+    decision = Decision.model_validate(doc)
+    known = {sg["id"]: frozenset(sg["params"]) for sg in declared}
+    refused = validate(
+        decision,
+        listed_ids=frozenset(view.handles.values()),
+        goal=goal,
+        first_turn=turn == 0,
+        known_subgoals=known,
+    )
+    if refused:
         raise ValueError("reach_decision_invalid")  # the shapes file is wrong: never run it
     return decision
 
@@ -1069,7 +1137,9 @@ def run_chain(  # noqa: PLR0913 - the shape, then keyword-only knobs
         budgets=budgets,
         history=[],
     )
-    decide = _arm(make_decide(calls, goal=shape.request, task_fence=fence), shape, arm, seen)
+    decide = _arm(
+        make_decide(calls, goal=shape.request, task_fence=fence), shape, arm, seen, index=index
+    )
     intake = make_intake(calls, goal=shape.request, task_fence=fence)
     ports = Ports(
         intake=recorded_judge("intake", intake, seen),
@@ -1124,6 +1194,7 @@ def _record(  # noqa: PLR0913 - one chain's facts, gathered once
         audit_reason=None if outcome.audit is None else outcome.audit[1],
         intake_no_call=outcome.intake_no_call > 0,
         usage=UsageRecord.of(outcome.usage),
+        scripted_turns=seen.scripted_turns,
     )
 
 

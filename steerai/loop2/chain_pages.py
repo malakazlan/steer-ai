@@ -54,7 +54,8 @@ HWND: Final = 0x4C0
 PROCESS: Final = "chrome.exe"
 BASE_URL: Final = "https://pages.test/"
 OPTION_ID: Final = 1000
-"""The first element id of a select's options: select `i`'s option `j` is `OPTION_ID + 100 * i + j`."""
+"""The first element id of a select's options: select `i`'s option `j` is
+`OPTION_ID + 100 * i + j`."""
 RESULTS: Final = 3
 """Result items a results page shows."""
 TICK_S: Final = 0.01
@@ -380,8 +381,8 @@ class PageWorld:
     def read_state(self, element: Element, wanted: str) -> bool | None:
         picked = self.page.option_of(element.runtime_id)
         if picked is not None:
-            index, option = picked
-            return self.page.controls[index].text == option if wanted == "selected" else None
+            owner, option = picked
+            return self.page.controls[owner].text == option if wanted == "selected" else None
         index = self.page.index_of(element.runtime_id)
         if index is None:
             return None
