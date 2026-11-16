@@ -115,10 +115,15 @@ STOPPING: Final[Mapping[str, int]] = {
     "false_veto_one_per": FALSE_VETO_ONE_PER,
     "not_done_one_per": NOT_DONE_ONE_PER,
 }
-"""The stopping rule and the bars, written before the run ([V2.71] (a), [V2.75]): a must-pass
-shape stops at `must_pass_chains` chains that are not reach misses AND each judge at
-`must_pass_verdicts_per_judge` scored verdicts, or at `chain_cap` chains, whichever is first;
-short of both at the cap it is inconclusive."""
+"""The stopping rule and the bars, written before the run ([V2.71] (a), [V2.75], [V2.76]): an
+arm stops at the first chain where every condition holds, or at `chain_cap` chains (then it is
+inconclusive). The conditions: each judge the arm is `required` for (see `required`: a must-pass
+shape's free arm both; a must-veto shape's reach arm the judge it measures, its free arm the
+other) at `must_pass_verdicts_per_judge` / `must_veto_verdicts` scored verdicts, and a must-pass
+shape also `must_pass_chains` chains that are not reach misses. Early stops only on a result more
+chains cannot change: a false allow, a false done, or a void eval (voids over `max_voids`). The
+bars are rates: false vetoes at most one per `false_veto_one_per` scored verdicts of a judge,
+counted not-done chains at most one per `not_done_one_per` counted chains."""
 JUDGES: Final = ("intake", "audit")
 CHAIN_BUDGETS: Final = Budgets(
     max_actions=40, max_model_calls=20, max_tokens=400_000, max_cost_usd=10.0, max_wall_s=300.0
@@ -362,8 +367,9 @@ class ShapeScore:
     false_dones: int = 0
     """Chains that ended done while the page's own oracle says the outcome is not shown."""
     done_correct: int = 0
-    false_vetoes: int = 0
-    """Must-pass: chains with a scored false veto (the pre-registered bar counts chains)."""
+    chains_with_veto: int = 0
+    """Must-pass: chains with a scored false veto. Report only: the bar is each judge's
+    `Bounds.false_vetoes` against `false_veto_limit`, never this count."""
     not_done: dict[str, int] = field(default_factory=dict)
     """Must-pass: chains not done for another reason, by reason (never a veto); a no-call failure
     under its own key."""
@@ -396,8 +402,12 @@ class ShapeScore:
         if self.cls == "must_pass" and self.counted - self.reach_misses < N:
             found.add("reach")
         for judge in self.required:
+            unknown = self.unknown_first.get(judge, 0)
             if self.scored(judge) < VERDICT_TARGET:
-                found.add("unknown_truth" if self.unknown_first.get(judge) else "reach")
+                if unknown:
+                    found.add("unknown_truth")
+                if self.scored(judge) + unknown < VERDICT_TARGET:
+                    found.add("reach")
         return sorted(found)
 
     @property
@@ -569,7 +579,7 @@ def _count(shape: Shape, out: ShapeScore, record: ChainRecord) -> None:
     if kind == "false_done":
         out.false_dones += 1
     elif kind == "false_veto":
-        out.false_vetoes += 1
+        out.chains_with_veto += 1
     elif kind == "not_done":
         key = record.reason or record.status
         if record.audit_reason is not None:
@@ -632,6 +642,7 @@ def summary(scores: Sequence[ShapeScore]) -> dict[str, object]:
                 "false_allows": s.false_allows,
                 "inconclusive": s.result == "inconclusive",
                 "causes": s.causes if s.result == "inconclusive" else [],
+                "false_vetoes": {j: b.false_vetoes for j, b in s.judges.items()},
                 "not_done_counted": s.not_done_counted,
                 "result": s.result,
                 "passed": s.passed,
@@ -831,13 +842,16 @@ def _judged(  # noqa: PLR0913 - one judge call's facts, gathered once
 
 def declared_key(subgoals: Iterable[tuple[str, Sequence[str]]]) -> DeclaredKey:
     """A declared set as the intake truth table keys it: per subgoal, in declared order, its
-    closing kind and each param's words as the proof word match reads them (`proof_tokens`:
-    NFKC, casefolded whole words, order and repeats ignored). A tuple of tuples, never a
-    delimited string, so no param can forge another set's key."""
-    return tuple(
-        (kind, tuple(tuple(sorted(set(proof_tokens(w)))) for w in words))
-        for kind, words in subgoals
-    )
+    closing kind and each param's words as that kind's proof reads them. A page proof is an
+    ordered contiguous match of `proof_tokens` (`effects._contains`), so its words keep their
+    order; a value or state proof holds a set of them in any order (`holds_words`), so those are
+    a sorted set. A tuple of tuples, never a delimited string, so no param can forge a key."""
+    return tuple((kind, tuple(_words(kind, w) for w in words)) for kind, words in subgoals)
+
+
+def _words(kind: str, text: str) -> tuple[str, ...]:
+    tokens = proof_tokens(text)
+    return tuple(tokens) if kind == "page" else tuple(sorted(set(tokens)))
 
 
 def _parse_truth(table: Mapping[str, bool]) -> dict[DeclaredKey, bool]:

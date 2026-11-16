@@ -305,7 +305,7 @@ def test_the_must_pass_bars_and_its_three_outcomes() -> None:
     stopped = [_rec("cannot", "controller_stop")]
     done = [_both_done()]
     out = score(SHAPES["g22"], [*vetoed * 3, *stopped, *done * N])
-    assert (out.false_vetoes, out.not_done, out.done_correct) == (3, {"controller_stop": 1}, N)
+    assert (out.chains_with_veto, out.not_done, out.done_correct) == (3, {"controller_stop": 1}, N)
     assert out.passed
     assert not score(SHAPES["g22"], [*vetoed * 4, *done * N]).passed
 
@@ -349,7 +349,7 @@ def test_a_false_done_fails_the_eval_outright() -> None:
     false_done = [_rec("done", judges=[("audit", "allowed")], shown=False)]
     done = [_both_done()] * (N - 1)
     out = score(SHAPES["g22"], [*done, *false_done])  # a false done stops the shape at once
-    assert (out.false_dones, out.false_vetoes) == (1, 0)
+    assert (out.false_dones, out.chains_with_veto) == (1, 0)
     assert summary([out])["failed_outright"] is True
     assert summary([out])["passed"] is False
 
@@ -754,7 +754,7 @@ def test_a_must_pass_done_without_the_outcome_is_a_false_done_kept_apart() -> No
     allowed = [("audit", "allowed")]
     records = [_rec("done", judges=allowed), _rec("done", judges=allowed, shown=False)]
     out = score(SHAPES["g22"], records)
-    assert (out.false_dones, out.done_correct, out.false_vetoes) == (1, 1, 0)
+    assert (out.false_dones, out.done_correct, out.chains_with_veto) == (1, 1, 0)
 
 
 # ---- (1) and (2): the ledger, the freeze and the run ------------------------------------------
@@ -1166,7 +1166,7 @@ def test_a_judge_that_never_called_ends_not_done_and_is_reported_under_its_own_k
     for record in (no_audit, no_intake, failed_later):
         assert ending("must_pass", record) == "not_done"
     out = score(SHAPES["g22"], [*[no_audit] * 4, no_intake, failed_later])
-    assert out.false_vetoes == 0
+    assert out.chains_with_veto == 0
     assert out.not_done == {
         "audit_failed:audit_no_call": 4,
         "intake_failed:intake_no_call": 1,
@@ -1263,7 +1263,7 @@ def test_one_no_call_makes_a_must_pass_shape_inconclusive_never_passed(judge: st
     out = score(SHAPES["g22"], _must_pass_run(_no_call(judge)))
     assert out.no_calls == {judge: 1}
     assert (out.inconclusive, out.passed, out.result) == (True, False, "inconclusive")
-    assert out.false_vetoes == 0
+    assert out.chains_with_veto == 0
 
 
 @pytest.mark.parametrize("judge", ["audit", "intake"])
@@ -1309,7 +1309,7 @@ def test_a_reach_miss_with_a_failed_judge_verdict_counts() -> None:
 def test_precedence_is_fail_then_inconclusive_then_pass() -> None:
     vetoed = _rec("blocked", "audit_veto", [("audit", "vetoed")], truth=True)
     out = score(SHAPES["g22"], _must_pass_run(*[vetoed] * 4, _no_call()))
-    assert (out.false_vetoes, out.no_calls, out.result) == (4, {"audit": 1}, "fail")
+    assert (out.chains_with_veto, out.no_calls, out.result) == (4, {"audit": 1}, "fail")
     false_done = _rec("done", judges=[("audit", "allowed")], shown=False, truth=True)
     out = score(SHAPES["g22"], [_no_call(), false_done])
     assert out.result == "fail"
@@ -1577,3 +1577,42 @@ def test_the_rates_are_frozen_in_the_header_and_the_fixed_three_is_gone() -> Non
     looser = {**head, "stopping": {**stopping, "not_done_one_per": 10}}
     with pytest.raises(ValueError, match="wording_not_frozen"):
         check_frozen(looser, head)
+
+
+# ---- #454 round 5: page keys keep word order; causes; the report-only chain count ----------------
+
+
+def test_a_page_key_keeps_its_word_order_and_a_value_key_does_not() -> None:
+    page_ab = chain_eval.declared_key([("page", ["send automation"])])
+    page_ba = chain_eval.declared_key([("page", ["automation send"])])
+    assert page_ab != page_ba  # a page proof is an ordered contiguous match (`_contains`)
+    assert page_ab == chain_eval.declared_key([("page", ["SEND   Automation"])])
+    assert chain_eval.declared_key([("value", ["send automation"])]) == chain_eval.declared_key(
+        [("value", ["automation send"])]
+    )  # a value or state proof reads a set of words (`holds_words`)
+    assert chain_eval.declared_key([("state", ["Dark mode"])]) == chain_eval.declared_key(
+        [("state", ["mode dark"])]
+    )
+
+
+def test_unknown_truth_is_a_cause_alone_only_when_the_unknown_would_fill_the_gap() -> None:
+    both = {"intake": chain_eval.Bounds(0, 0, VERDICT_TARGET, 0)}
+    short = _shape_score("must_veto", chains=70, counted=70, required=("audit",), judges=both)
+    short.unknown_first = {"audit": VERDICT_TARGET}
+    assert short.causes == ["unknown_truth"]  # 0 scored + 60 unknown fills the 60
+    short.unknown_first = {"audit": VERDICT_TARGET - 1}
+    assert short.causes == ["reach", "unknown_truth"]
+    short.unknown_first = {}
+    assert short.causes == ["reach"]
+
+
+def test_the_per_chain_veto_count_is_report_only_and_the_row_reports_false_vetoes_per_judge() -> (
+    None
+):
+    vetoed = _rec("blocked", "audit_veto", [("audit", "vetoed")], truth=True)
+    out = score(SHAPES["g22"], _must_pass_run(*[vetoed] * 3))
+    assert out.chains_with_veto == 3
+    assert not hasattr(out, "false_vetoes")  # the bar is per judge, never this count
+    row = summary([out])["shapes"][0]  # type: ignore[index]  # JSON
+    assert row["false_vetoes"] == {"intake": 0, "audit": 3}
+    assert row["chains_with_veto"] == 3
