@@ -16,6 +16,7 @@ import pytest
 from steerai.loop2.stage1_expected import Act, Expected
 from steerai.loop2.stage2_expected import (
     ACTS,
+    ACTS_KEY,
     SITE_SPACING_S,
     TABLE,
     TABLE_SHA256,
@@ -26,6 +27,7 @@ from steerai.loop2.stage2_expected import (
     Spacer,
     StartDocument,
     calendar_day,
+    check_rated_from,
     check_table,
     deciding_facts,
     dump_table,
@@ -33,6 +35,7 @@ from steerai.loop2.stage2_expected import (
     load_table,
     load_unrated,
     real_site_tasks,
+    recorded_acts,
     site_check,
     start_document,
     table_row,
@@ -139,6 +142,30 @@ def test_the_table_holds_the_reads_digest_and_never_its_text() -> None:
     assert row.read_sha256 in text
     assert "private headline" not in text
     assert load_table(text) == {"t1": row}
+
+
+def test_a_table_records_the_acts_it_was_rated_from_and_loads_as_before() -> None:
+    """#466 (2): the recorded acts hash is kept apart from the rows and the unrated markers."""
+    rows = [table_row("t1", TYPE_CLICK, GOAL, saved(read()))]
+    acts = hashlib.sha256(b"acts").hexdigest()
+    text = dump_table(rows, unrated={"t9": "pressed_unread"}, acts_sha256=acts)
+    assert recorded_acts(text) == acts
+    assert load_table(text) == load_table(dump_table(rows))
+    assert load_unrated(text) == {"t9": "pressed_unread"}
+    check_rated_from(text, "acts")
+
+
+def test_a_table_with_no_recorded_acts_is_refused() -> None:
+    text = dump_table([table_row("t1", TYPE_CLICK, GOAL, saved(read()))])
+    with pytest.raises(ValueError, match="no record of the acts"):
+        check_rated_from(text, "acts")
+
+
+@pytest.mark.parametrize("bad", ["", "ab", "A" * 64, 7, None])
+def test_a_recorded_acts_hash_that_is_not_a_sha256_is_refused(bad: object) -> None:
+    raw = json.loads(dump_table([table_row("t1", TYPE_CLICK, GOAL, saved(read()))]))
+    with pytest.raises(ValueError, match="no record of the acts"):
+        recorded_acts(json.dumps({ACTS_KEY: bad} | raw))
 
 
 def test_the_table_text_is_stable() -> None:

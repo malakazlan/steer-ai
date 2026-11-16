@@ -69,8 +69,10 @@ _RISKS: Final[dict[object, Risk]] = {r: r for r in RISKS}
 SITE_SPACING_S: Final = 60.0
 """§2.3, [V2.63] Q4: the least time between two page loads of one host, controls included."""
 DAILY_CAP: Final = 12
-"""[V2.65] (3): the most loads of one host in one day at the spacing, a hard cap (#419): an
-attempt starts only with its whole budget left today."""
+"""[V2.65] Five (stage 2 volume, the lead's ruling of 2026-11-15: "cap any host at 12 loads a
+day at the 60 s spacing, a host at the cap stops for the day"; introduced in #413): the most
+loads of one host in one day, a hard cap (#419): an attempt starts only with its whole budget
+left today. A policy limit, unmeasured against any site's own rate limit."""
 ATTEMPT_LOADS: Final = 2
 """#419: the loads one attempt can make on its host, before its control: the run's own load and a
 possible wall confirmation."""
@@ -568,9 +570,22 @@ def opener_table_row(
     return TableRow(task_id, hashlib.sha256(raw_opened).hexdigest(), facts, expected)
 
 
-def dump_table(rows: Sequence[TableRow], *, unrated: Mapping[str, str] | None = None) -> str:
+ACTS_KEY: Final = "acts_sha256"
+"""#466 (2): the table's record of the SHA-256 of the acts file it was rated from (the
+coordinator's ruling, 2026-11-16): a table is valid only for the exact acts it was rated from."""
+
+
+def dump_table(
+    rows: Sequence[TableRow],
+    *,
+    unrated: Mapping[str, str] | None = None,
+    acts_sha256: str | None = None,
+) -> str:
     """The committed table as stable JSON, by task id; an unrated task is kept out of it as
-    `{"unrated": reason}` (the coordinator's ruling, 2026-11-15)."""
+    `{"unrated": reason}` (the coordinator's ruling, 2026-11-15). Given `acts_sha256`, the table
+    records it first, under `ACTS_KEY`."""
+    if acts_sha256 is not None and not _SHA256.fullmatch(acts_sha256):
+        raise ValueError("table: the acts hash is not a SHA-256")
     entries: dict[str, object] = {
         r.task_id: {
             "read_sha256": r.read_sha256,
@@ -580,8 +595,24 @@ def dump_table(rows: Sequence[TableRow], *, unrated: Mapping[str, str] | None = 
         for r in rows
     }
     entries |= {task_id: {"unrated": reason} for task_id, reason in (unrated or {}).items()}
-    payload = {task_id: entries[task_id] for task_id in sorted(entries)}
+    payload: dict[str, object] = {} if acts_sha256 is None else {ACTS_KEY: acts_sha256}
+    payload |= {task_id: entries[task_id] for task_id in sorted(entries)}
     return json.dumps(payload, indent=2, sort_keys=False) + "\n"
+
+
+def recorded_acts(text: str) -> str:
+    """#466 (2): the SHA-256 of the acts file the table was rated from, as the table records it."""
+    raw = json.loads(text)
+    sha = raw.get(ACTS_KEY) if isinstance(raw, dict) else None
+    if not isinstance(sha, str) or not _SHA256.fullmatch(sha):
+        raise ValueError("table: no record of the acts it was rated from")
+    return sha
+
+
+def check_rated_from(table: str, acts: str) -> None:
+    """#466 (2): the acts are the exact ones the table was rated from, byte for byte."""
+    if hashlib.sha256(acts.encode("utf-8")).hexdigest() != recorded_acts(table):
+        raise ValueError("acts: not the acts the table was rated from")
 
 
 UNRATED_REASONS: Final = frozenset({"target_after_opener", "pressed_unread", "copies_disagree"})
@@ -611,11 +642,15 @@ def _unrated(task_id: str, entry: Mapping[str, object]) -> str:
 
 
 def _rated(raw: Mapping[str, object]) -> dict[str, object]:
-    """The entries that are not unrated markers (each marker checked)."""
+    """The entries that are not unrated markers (each marker checked) nor the recorded acts."""
     for task_id, entry in raw.items():
         if isinstance(entry, dict) and "unrated" in entry:
             _unrated(str(task_id), entry)
-    return {str(k): v for k, v in raw.items() if not (isinstance(v, dict) and "unrated" in v)}
+    return {
+        str(k): v
+        for k, v in raw.items()
+        if k != ACTS_KEY and not (isinstance(v, dict) and "unrated" in v)
+    }
 
 
 def load_table(text: str) -> dict[str, TableRow]:
