@@ -659,6 +659,7 @@ OUTCOME_COUNTS: Final = (
     "focus_losses",
     "history_dropped",
     "turn_trace_dropped",
+    "turn_trace_errors",
     "pre_task_draft_clicks",
     *AUDIT_COUNTS,
     *INTAKE_COUNTS,
