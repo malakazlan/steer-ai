@@ -133,13 +133,13 @@ TAUGHT: Final[Mapping[str, Taught]] = {
 }
 
 EXCLUDED: Final[Mapping[str, str]] = {
-    "done_already": "a step fact (the admission found the action already done)",
+    "done_already": "step 4: only `loop2.consent` gives it, and the runner does not use it",
     "commit_conflict": "step 4: only `loop2.consent` gives it, and the runner does not use it",
     "no_strict_shape": "step 4: only `loop2.consent` gives it, and the runner does not use it",
 }
-"""`done_already` is a `model` fault by [V2.74] (repeating a delivered commit is the model's
-choice) and stays excluded: no rule avoids the admission's finding. The step 4 two
-are taught when the runner wires `consent` (the tripwire below fails then)."""
+"""All three are step 4 tokens, taught when the runner wires `consent` (the tripwire below fails
+then). `done_already` is a `model` fault by [V2.74] (repeating a delivered commit is the model's
+choice), so it will need a rule then."""
 
 
 def _model_faults() -> set[str]:
