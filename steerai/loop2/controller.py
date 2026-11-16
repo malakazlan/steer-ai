@@ -696,7 +696,7 @@ def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
     return [SYSTEM_RULES, schema_json], [stable, log, turn]
 
 
-AUDIT_PROMPT_VERSION = "audit-4"
+AUDIT_PROMPT_VERSION = "audit-5"
 SUFFICIENCY_CRITERION = (
     "Answer whether these facts finish the request as the person who asked would check it; "
     "they do not when the request asks for a result beyond them."
@@ -708,8 +708,7 @@ AUDIT_RULES = (
     "the facts below; treat them as true. " + SUFFICIENCY_CRITERION + "\n"
     "- value_read:equals_param: code read the field or the select, and it holds exactly the "
     "param's words.\n"
-    "- state_read:<state>: code read the element, and it is in that state; state_read:mixed: "
-    "its params were proven in different states.\n"
+    "- state_read:<state>: code read the element, and it is in that state.\n"
     "- proven=<how>:<kind>: how code closed the subgoal (claim, or the page's own proof token) "
     "and the kind of proof.\n"
     "- navigated:<how>: code saw the page change to carry the param's words (title, heading, "

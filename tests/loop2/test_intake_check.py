@@ -13,7 +13,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import inspect
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any, Literal
 
 import pytest
@@ -34,6 +34,7 @@ from steerai.loop2.decision import Claim, Decision, SubgoalDoc
 from steerai.loop2.loop import Audited, IntakeView, PortInterrupted, TokenUsage
 from steerai.loop2.prompt_inputs import make_intake
 from steerai.loop2.runner import numbered_params, run_task
+from steerai.loop2.task import Wanted
 from tests.loop2.test_live_world import _world
 from tests.loop2.world_fakes import (
     FIELD,
@@ -50,7 +51,7 @@ from tests.loop2.world_fakes import PAGE as SCREEN
 NEWLINE = chr(10)
 INTAKE_FIXED = "51f0de21f916ad1a7c99e84e1a5cc02a7e8fd0f9b01bcae3968eb3ab4885d180"
 """V4: sha256 of the intake's rules and schema blocks, joined by newlines."""
-AUDIT_FIXED = "01ecdb87fd3fd46261f36161d45a342fc04fb0f4aaa9fa3eff2f28e4c17c48fe"
+AUDIT_FIXED = "0b9a5f1b1945c7119c5fdc399a23a67ef682e973a5904106efca38d53e79d251"
 """V4: sha256 of the audit's rules and schema blocks, joined by newlines."""
 
 VALUE = SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value")
@@ -155,6 +156,36 @@ def test_a_passed_set_redeclared_after_a_stale_read_makes_no_second_call() -> No
     assert len(world.intakes) == 1
     assert outcome.intake_checks == 1
     assert world.views[1].first_turn  # the stale turn froze nothing
+
+
+def _state(wanted: Wanted) -> SubgoalDoc:
+    return SubgoalDoc(id="s2", desc="x", params={"what": "shoes"}, closes="state", wanted=wanted)
+
+
+def test_a_passed_set_redeclared_with_another_wanted_is_judged_again() -> None:
+    """[V2.78]: the memo key holds the declared wanted; on and off are different sets."""
+    from tests.loop2.test_auto_proof_every_observation import RESULTS, START  # noqa: PLC0415
+
+    world = _world_with([_first([_state("on")]), _first([_state("off")]), Decision(stop="blocked")])
+    world.screen = START
+    world.observations = [START, RESULTS]  # the first decision's re-read is stale
+    run_task(task(), world.ports())
+    assert len(world.intakes) == 2
+    assert [view.subgoals[0][3] for view in world.intakes] == ["on", "off"]
+
+
+def test_a_refused_wanted_never_memo_refuses_the_other_wanted() -> None:
+    world = _world_with([_first([_state("off")]), _first([_state("on")]), Decision(stop="blocked")])
+    replies = iter([_reject(), _pass()])
+    ports = dataclasses.replace(world.ports(), intake=lambda view: _judge(world, view, replies))
+    outcome = run_task(task(), ports)
+    assert len(world.intakes) == 2
+    assert outcome.intake_memo_refused == 0
+
+
+def _judge(world: World, view: IntakeView, replies: Iterator[Audited]) -> Audited:
+    world.intakes.append(view)
+    return next(replies)
 
 
 # ---- failures, F1-F4 ------------------------------------------------------------------------
@@ -350,7 +381,7 @@ def test_each_judges_fixed_blocks_are_pinned_with_its_version() -> None:
     audit, _ = build_audit_prompt("g", (), "w", [], task_fence="taskfence01",
                                   screen_fence="scrfence01")  # fmt: skip
     pinned = (INTAKE_PROMPT_VERSION, _fixed(intake), controller.AUDIT_PROMPT_VERSION, _fixed(audit))
-    assert pinned == ("intake-3", INTAKE_FIXED, "audit-4", AUDIT_FIXED)
+    assert pinned == ("intake-3", INTAKE_FIXED, "audit-5", AUDIT_FIXED)
 
 
 def test_intake_insufficient_is_told_to_the_model() -> None:
