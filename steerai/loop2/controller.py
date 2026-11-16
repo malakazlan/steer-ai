@@ -55,7 +55,7 @@ from steerai.world.capabilities import TOKENS as CAPABILITY_TOKENS
 from steerai.world.elements import format_lines, safe_name
 from steerai.world.model import Snapshot
 
-PROMPT_VERSION = "controller-12"
+PROMPT_VERSION = "controller-13"
 PROMPT_TOKEN_CEILING = 50_000
 """[V2.55] (2): the most input tokens a rendered prompt may hold before any model call. A policy
 limit, six times the largest capped prompt measured (8,339 tokens, count_tokens on claude-opus-5,
@@ -114,6 +114,8 @@ SYSTEM_RULES = (
     "what the person would check, a page result if the request asks for one.\n"
     "- refused_shape lists the subgoals of your refused reply by position and closing kind; "
     "declare the subgoals again.\n"
+    "- claim:<subgoal>:evidence_taken means the element you cited is already the evidence of "
+    "another closed subgoal of the same kind.\n"
     "- A ComboBox can be a text field: `type` is allowed on it.\n"
     "- Focus a text field before you type into it (focus and type can be one batch); `focus` "
     "is for text fields only. Backspace edits only text you typed; a field that already holds "

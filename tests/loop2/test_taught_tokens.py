@@ -214,3 +214,9 @@ def test_the_desc_halves_left_to_the_validator_are_still_refused() -> None:
         tokens = validate(decision, listed_ids=frozenset(), goal=goal, first_turn=True,
                           fences=frozenset({"f1f1f1f1"}))  # fmt: skip
         assert "desc_bad" in tokens
+
+
+def test_evidence_taken_is_explained_in_the_prompt() -> None:
+    """[V2.74] (i): `evidence_taken` is a claim result, not a refusal word (so the sets above do
+    not hold it), yet the model reads it in its history: one meaning line in the rules."""
+    assert "claim:<subgoal>:evidence_taken means" in SYSTEM_RULES
