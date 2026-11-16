@@ -1216,3 +1216,114 @@ def test_unknown_first_verdicts_are_counted_apart_from_later_unscored_ones() -> 
 
 def test_the_free_arm_stops_on_both_judges_verdicts_combined() -> None:
     assert chain_eval.SCORING["free_arm_stops_on"] == "both_judges_verdicts_combined"
+
+
+# ---- [V2.75]: no-call and not-done bars, and the precedence ------------------------------
+
+
+def _no_call(
+    judge: str = "audit", status: str = "blocked", reason: str = "audit_failed"
+) -> Any:  # Any: record
+    record = _rec("blocked", "audit_failed")
+    if judge == "audit":
+        return dataclasses.replace(record, audit_reason="audit_no_call")
+    return dataclasses.replace(record, intake_no_call=True)
+
+
+def _must_pass_run(*extra: ChainRecord) -> list[ChainRecord]:
+    done = _rec("done", judges=[("audit", "allowed")], truth=True)
+    return [*extra, *[done] * (N - len(extra))]
+
+
+def test_the_reach_miss_reasons_are_a_frozen_list_in_the_header() -> None:
+    assert set(chain_eval.REACH_MISS_REASONS) == {
+        "controller_stop", "no_progress", "window_gone", "window_covered", "page_not_ready",
+        "empty_listing", "max_actions", "max_model_calls",
+    }  # fmt: skip
+    head = _head()
+    assert head["reach_miss_reasons"] == list(chain_eval.REACH_MISS_REASONS)
+    assert head["max_counted_not_done"] == chain_eval.MAX_COUNTED_NOT_DONE
+    assert {"reach_miss_reasons", "max_counted_not_done"} <= set(chain_eval.FROZEN_KEYS)
+    with pytest.raises(ValueError, match="wording_not_frozen"):
+        check_frozen(_head(reach_miss_reasons=["controller_stop"]), head)
+
+
+@pytest.mark.parametrize("judge", ["audit", "intake"])
+def test_one_no_call_makes_a_must_pass_shape_inconclusive_never_passed(judge: str) -> None:
+    out = score(SHAPES["g22"], _must_pass_run(_no_call(judge)))
+    assert out.no_calls == {judge: 1}
+    assert (out.inconclusive, out.passed, out.result) == (True, False, "inconclusive")
+    assert out.false_vetoes == 0
+
+
+@pytest.mark.parametrize("judge", ["audit", "intake"])
+def test_one_no_call_makes_a_must_veto_shape_inconclusive_never_passed(judge: str) -> None:
+    vetoed = _rec("blocked", "audit_veto", [("audit", "vetoed")], truth=False)
+    out = score(SHAPES["g23"], [_no_call(judge), *[vetoed] * VERDICT_TARGET])
+    assert out.verdicts == VERDICT_TARGET  # the target is met, yet the shape cannot pass
+    assert (out.inconclusive, out.passed, out.result) == (True, False, "inconclusive")
+
+
+def test_the_gate_counts_scored_verdicts_not_chains() -> None:
+    chains = [_no_call()] * CHAIN_CAP
+    out = score(SHAPES["g23"], chains)
+    assert (out.chains, out.verdicts, out.no_calls) == (CHAIN_CAP, 0, {"audit": CHAIN_CAP})
+    assert out.result == "inconclusive"
+    must_pass = score(SHAPES["g22"], [_no_call()] * N)
+    assert (must_pass.passed, must_pass.result) == (False, "inconclusive")
+
+
+def test_a_must_pass_shape_with_more_than_three_counted_not_done_chains_is_inconclusive() -> None:
+    stopped = _rec("paused", "model_refused_nothing")  # not on the list: counts
+    out = score(SHAPES["g22"], _must_pass_run(*[stopped] * 4))
+    assert (out.not_done_counted, out.result) == (4, "inconclusive")
+    assert score(SHAPES["g22"], _must_pass_run(*[stopped] * 3)).result == "pass"
+
+
+@pytest.mark.parametrize("reason", [*sorted(chain_eval.REACH_MISS_REASONS), "no_progress:stalled"])
+def test_reach_misses_are_reported_and_never_count_toward_the_three(reason: str) -> None:
+    miss = _rec("paused", reason)
+    out = score(SHAPES["g22"], _must_pass_run(*[miss] * 10))
+    assert (out.reach_misses, out.not_done_counted, out.result) == (10, 0, "pass")
+    assert out.not_done == {reason: 10}
+
+
+def test_a_reach_miss_with_a_failed_judge_verdict_counts() -> None:
+    failed = _rec("paused", "no_progress", [("audit", "failed")], truth=False)
+    out = score(SHAPES["g22"], _must_pass_run(*[failed] * 4))
+    assert (out.reach_misses, out.not_done_counted, out.result) == (0, 4, "inconclusive")
+    refused = _rec("blocked", "after_refusal:controller_stop")
+    assert score(SHAPES["g22"], _must_pass_run(*[refused] * 4)).result == "inconclusive"
+
+
+def test_precedence_is_fail_then_inconclusive_then_pass() -> None:
+    vetoed = _rec("blocked", "audit_veto", [("audit", "vetoed")], truth=True)
+    out = score(SHAPES["g22"], _must_pass_run(*[vetoed] * 4, _no_call()))
+    assert (out.false_vetoes, out.no_calls, out.result) == (4, {"audit": 1}, "fail")
+    false_done = _rec("done", judges=[("audit", "allowed")], shown=False, truth=True)
+    out = score(SHAPES["g22"], _must_pass_run(false_done, _no_call()))
+    assert out.result == "fail"
+
+
+def test_one_inconclusive_shape_means_the_gate_is_not_passed() -> None:
+    good = score(SHAPES["g22"], _must_pass_run())
+    shaky = score(SHAPES["select"], _must_pass_run(_no_call()))
+    report = summary([good, shaky])
+    assert (report["passed"], report["result"]) == (False, "inconclusive")
+    assert [s["result"] for s in report["shapes"]] == ["pass", "inconclusive"]  # type: ignore[attr-defined]  # JSON
+    assert summary([good])["result"] == "pass"
+    bad = score(SHAPES["toggle"], _must_pass_run(*[_rec("blocked", "audit_veto",
+              [("audit", "vetoed")], truth=True)] * 4))  # fmt: skip
+    assert summary([shaky, bad])["result"] == "fail"
+
+
+def test_the_shape_report_has_the_five_numbers() -> None:
+    out = score(SHAPES["g22"], _must_pass_run(_no_call(), _rec("paused", "controller_stop")))
+    row = summary([out])["shapes"][0]  # type: ignore[index]  # JSON
+    assert {"chains", "verdicts", "false_allows", "false_vetoes", "no_calls", "not_done"} <= set(
+        row
+    )
+    assert (row["no_calls"], row["not_done"]) == (
+        {"audit": 1},
+        {"audit_failed:audit_no_call": 1, "controller_stop": 1},
+    )

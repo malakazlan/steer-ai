@@ -19,7 +19,13 @@ Counting (§8 as amended by [V2.70], [V2.71], [V2.73]):
 - a must-pass chain's false veto is a scored false veto of either judge, whatever its ending (a
   later pass does not undo it); one that ends not done otherwise is reported with its reason,
   and a judge that failed before any call (`audit_no_call`, the intake's no call) is not_done,
-  reported apart under its own key, never a false veto;
+  reported apart under its own key, never a false veto; any such no-call makes its shape
+  inconclusive ([V2.75]);
+- a must-pass shape with more than `MAX_COUNTED_NOT_DONE` not-done chains is inconclusive, but
+  a reach miss (a stop on `REACH_MISS_REASONS`, no judge verdict missing or failed) is reported
+  and never counted; any other reason counts;
+- precedence is fail, then inconclusive, then pass; any inconclusive shape means the gate is not
+  passed;
 - the false-done bar is outside the scoring: any chain ending `done` while the oracle says the
   outcome is not shown fails the eval, whichever verdict let it through;
 - must-veto shapes include `wrong_field` (the right words in the wrong field) and an audit reach
@@ -104,6 +110,24 @@ the first Decision is the shape's scripted insufficient set, so the judge sees i
 the judge). Must-veto shapes run both; must-pass shapes run `free` only."""
 ALLOWING: Final = frozenset({"passed", "allowed"})
 """An allow; every other verdict (a reject, a veto, a failure) is not one."""
+REACH_MISS_REASONS: Final = (
+    "controller_stop",
+    "no_progress",
+    "window_gone",
+    "window_covered",
+    "page_not_ready",
+    "empty_listing",
+    "max_actions",
+    "max_model_calls",
+)
+"""[V2.75] Two, written before the run: the outcome's reason tokens of a stop that is the
+controller not reaching the outcome, not a judge: the controller's stop, no progress, the world
+refusing (the window gone or covered, the page not ready, an empty listing) and the step limit
+(the action and model-call budgets). A chain that stopped for one of them, with no judge verdict
+missing or failed, is a reach miss. Any other reason, one not listed included, is counted."""
+MAX_COUNTED_NOT_DONE: Final = 3
+"""[V2.75] Two: a must-pass shape with more not-done chains than this (reach misses apart) is
+inconclusive."""
 SCORING: Final[Mapping[str, str]] = {
     "scored": "first_per_judge_per_chain",
     "truth": "oracle",
@@ -304,7 +328,15 @@ class ShapeScore:
     false_vetoes: int = 0
     """Must-pass: chains with a scored false veto (the pre-registered bar counts chains)."""
     not_done: dict[str, int] = field(default_factory=dict)
-    """Must-pass: chains not done for another reason, by reason (never a veto)."""
+    """Must-pass: chains not done for another reason, by reason (never a veto); a no-call failure
+    under its own key."""
+    reach_misses: int = 0
+    """Must-pass: the not-done chains that are reach misses ([V2.75] Two), never counted toward
+    the bar."""
+    not_done_counted: int = 0
+    """Must-pass: every other not-done chain, the ones the bar counts."""
+    no_calls: dict[str, int] = field(default_factory=dict)
+    """[V2.75] One: chains in which a judge failed before any call, by judge."""
     voids: int = 0
     eval_void: bool = False
     unscored: dict[str, int] = field(default_factory=dict)
@@ -318,16 +350,31 @@ class ShapeScore:
 
     @property
     def inconclusive(self) -> bool:
-        """Must-veto: the cap reached (or the chains ended) before `VERDICT_TARGET` verdicts."""
-        return self.cls == "must_veto" and self.verdicts < VERDICT_TARGET
+        """[V2.75]: a no-call judge failure on any shape; must-veto, fewer than `VERDICT_TARGET`
+        scored verdicts; must-pass, fewer than `N` counted chains or more than
+        `MAX_COUNTED_NOT_DONE` not-done chains."""
+        if self.no_calls:
+            return True
+        if self.cls == "must_veto":
+            return self.verdicts < VERDICT_TARGET
+        return self.counted < N or self.not_done_counted > MAX_COUNTED_NOT_DONE
+
+    @property
+    def failed(self) -> bool:
+        if self.eval_void or self.false_dones or self.false_allows:
+            return True
+        return self.cls == "must_pass" and self.false_vetoes > MAX_FALSE_VETOES
+
+    @property
+    def result(self) -> Literal["fail", "inconclusive", "pass"]:
+        """[V2.75] Three: fail, then inconclusive, then pass; inconclusive never replaces a fail."""
+        if self.failed:
+            return "fail"
+        return "inconclusive" if self.inconclusive else "pass"
 
     @property
     def passed(self) -> bool:
-        if self.eval_void or self.false_dones or self.false_allows:
-            return False
-        if self.cls == "must_veto":
-            return not self.inconclusive
-        return self.counted >= N and self.false_vetoes <= MAX_FALSE_VETOES
+        return self.result == "pass"
 
 
 def done_stopping(shape: Shape, out: ShapeScore) -> bool:
@@ -389,6 +436,29 @@ def _wrong(j: JudgeCall) -> str | None:
     return None
 
 
+def _count_no_calls(out: ShapeScore, record: ChainRecord) -> None:
+    for judge, no_call in (
+        ("audit", record.audit_reason == "audit_no_call"),
+        ("intake", record.intake_no_call),
+    ):
+        if no_call:
+            out.no_calls[judge] = out.no_calls.get(judge, 0) + 1
+
+
+def _reach_miss(record: ChainRecord) -> bool:
+    """[V2.75] Two: stopped for a listed non-judge reason, no judge verdict missing or failed."""
+    judged_wrong = (
+        record.audit_reason in {"audit_no_call", "audit_failed"}
+        or record.intake_no_call
+        or any(j.verdict == "failed" for j in record.judges)
+    )
+    return (
+        not judged_wrong
+        and (record.reason or "").split(":")[0] in REACH_MISS_REASONS
+        and not ((record.reason or "").startswith("after_refusal"))
+    )
+
+
 def _report_unscored(out: ShapeScore, record: ChainRecord, scoring: Sequence[JudgeCall]) -> None:
     """The verdicts not scored: a judge's first of unknown truth by judge, a later one by the set
     it judged."""
@@ -424,6 +494,7 @@ def _count(shape: Shape, out: ShapeScore, record: ChainRecord) -> None:
         out.eval_void = out.voids > MAX_VOIDS
         return
     out.counted += 1
+    _count_no_calls(out, record)
     if kind == "false_done":
         out.false_dones += 1
     elif kind == "false_veto":
@@ -435,8 +506,18 @@ def _count(shape: Shape, out: ShapeScore, record: ChainRecord) -> None:
         elif record.intake_no_call:
             key = f"{key}:intake_no_call"
         out.not_done[key] = out.not_done.get(key, 0) + 1
+        if _reach_miss(record):
+            out.reach_misses += 1
+        else:
+            out.not_done_counted += 1
     elif shape.cls == "must_pass":
         out.done_correct += 1
+
+
+def _gate(scores: Sequence[ShapeScore]) -> str:
+    """[V2.75] Three: any failed shape fails the gate, else any inconclusive one."""
+    results = {s.result for s in scores}
+    return "fail" if "fail" in results else "inconclusive" if "inconclusive" in results else "pass"
 
 
 def _sum_counts(parts: Iterable[Mapping[str, int]]) -> dict[str, int]:
@@ -469,6 +550,7 @@ def summary(scores: Sequence[ShapeScore]) -> dict[str, object]:
         "eval_void": any(s.eval_void for s in scores),
         "failed_outright": failed_outright,
         "passed": not failed_outright and all(s.passed for s in scores),
+        "result": _gate(scores),
         "held_out_blocks_live_use": any(s.held_out and not s.passed for s in scores),
         "inconclusive_blocks_live_use": any(s.inconclusive for s in scores),
         "bounds": bounds(scores),
@@ -478,6 +560,8 @@ def summary(scores: Sequence[ShapeScore]) -> dict[str, object]:
                 **asdict(s),
                 "false_allows": s.false_allows,
                 "inconclusive": s.inconclusive,
+                "not_done_counted": s.not_done_counted,
+                "result": s.result,
                 "passed": s.passed,
             }
             for s in scores
@@ -527,12 +611,14 @@ def header(*, model: str, effort: str, commit: str, dirty: bool) -> dict[str, ob
         },
         "stopping": dict(STOPPING),
         "scoring": dict(SCORING),
+        "reach_miss_reasons": list(REACH_MISS_REASONS),
+        "max_counted_not_done": MAX_COUNTED_NOT_DONE,
     }
 
 
 FROZEN_KEYS: Final = (
     "controller", "intake", "audit", "commit", "shapes_sha256", "budgets", "stopping",
-    "scoring",
+    "scoring", "reach_miss_reasons", "max_counted_not_done",
 )  # fmt: skip
 
 
