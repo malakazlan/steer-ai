@@ -466,6 +466,12 @@ class _Run:
         self.first: Observed | None = None
         self.first_full: Observed | None = None
         """[V2.72]: the task's first full observation, every subgoal's baseline."""
+        self.rebased: set[str] = set()
+        """[V2.74] (#475): the non-commit subgoals another subgoal's close through a model claim
+        rebased (`_rebase`); `rebased_open` counts those still open when the task ends. An auto
+        proof's close rebases too, but is not counted: no claim order decided it."""
+        self.rebased_commit: set[str] = set()
+        """[V2.76]: as `rebased`, for commit subgoals."""
         self.last_acted: _Acted | None = None
         self.batch_last: tuple[ActionKey, EffectReport] | None = None
         self.fresh: dict[tuple[int, ...], ValueFact | None] = {}
@@ -606,6 +612,8 @@ class _Run:
             fields_not_empty=self.counts.fields_not_empty,
             not_own_text=self.counts.not_own_text,
             evidence_taken=self.counts.evidence_taken,
+            rebased_open=len(self.rebased - self.proven),
+            rebased_open_commit=len(self.rebased_commit - self.proven),
         )
 
     def _cost(self) -> float | None:
@@ -896,8 +904,7 @@ class _Run:
             # packet rev 5 §4: subgoals freeze only on a turn that is not stale, after validate
             # and the intake check (`_intake_passes`) both passed
             self._intake(decision)
-        for claim in decision.claims:
-            self._claim(claim, observed)
+        self._claims(decision.claims, observed)
         self._check_done(observed)
         if decision.ask is not None:
             raise _End("asked", Reason("controller_ask"))
@@ -947,6 +954,14 @@ class _Run:
         if self.first_full is None:  # `observe` is a full read, taken before the first decide
             raise AssertionError("no full observation")  # #473 review: never a poll that moves
         return self.first_full
+
+    def _claims(self, claims: Sequence[Claim], observed: Observed) -> None:
+        """[V2.74] (#475): the claims of one Decision, judged in the subgoals' declaration order
+        (stable for one subgoal's own), so the model's listing never decides which close
+        rebases which. An unknown subgoal sorts last; `validate` has refused it before."""
+        order = {s.id: i for i, s in enumerate(self.subgoals)}
+        for claim in sorted(claims, key=lambda c: order.get(c.subgoal, len(order))):
+            self._claim(claim, observed)
 
     def _claim(self, claim: Claim, observed: Observed) -> None:
         """One claim: code's refusals first (`_refused`), then the claim check. A page claim
@@ -1095,20 +1110,19 @@ class _Run:
         return address is not None and address.lower().startswith("file:")
 
     def _tick(self, subgoal: Subgoal, *, how: ProvenHow, at: Observed) -> None:
-        """A proven subgoal, closed on the observation `at`. RT-06, §8.8: a commit subgoal is
-        never closed in step 3 (a standard proof never closes it; the strict tier is step 4)."""
+        """A proven subgoal, closed on the observation `at`. RT-06, §8.8: never a commit subgoal
+        (`_refused` stops a claim on one, `_auto_proofs` skips it; the strict tier is step 4).
+        [V2.74]: code's own proof is never a refusal, so nothing here can refuse."""
         if subgoal.commit != "none":
-            self._note(ClaimResult(subgoal.id, "standard_only"))
-            self.turn.claim_rejected = True
-            return
+            raise AssertionError("auto proof reached a commit subgoal")
         self.proven.add(subgoal.id)
         self.proven_how[subgoal.id] = how
         self.turn.ticked = True
         self.refusal = None
         self._note(Proven(subgoal.id, how))
-        self._rebase(subgoal, at)
+        self._rebase(subgoal, at, by_claim=how == "claim")
 
-    def _rebase(self, closed: Subgoal, at: Observed) -> None:
+    def _rebase(self, closed: Subgoal, at: Observed, *, by_claim: bool = False) -> None:
         """[V2.72] Two: one event cannot close two subgoals of the same kind. Every other open
         subgoal with the same closing kind and a shared param span takes `at` as its baseline,
         so its evidence must be newer. Same kind only: a value and a page subgoal sharing a span
@@ -1118,6 +1132,8 @@ class _Run:
                 continue
             if _shares_span(closed, other):
                 self.baselines[other.id] = at
+                if by_claim:
+                    (self.rebased if other.commit == "none" else self.rebased_commit).add(other.id)
 
     def _check_done(self, observed: Observed) -> None:
         """A task with zero subgoals never ends `done` ([V2.11] decision 1). [V2.69] One: every
@@ -1911,6 +1927,8 @@ class _Run:
                 continue
             if subgoal.closes != "page":
                 continue  # [V2.39]: the navigated auto proof closes only a page subgoal
+            if subgoal.commit != "none":
+                continue  # #474: a commit subgoal closes only in the strict tier (step 4)
             baseline = self._baseline(subgoal.id)  # [V2.72]: every open page subgoal is judged
             gate = None if skipped is not None else _change_gate(baseline, observed)
             if gate is None:
