@@ -21,11 +21,15 @@ Counting (§8 as amended by [V2.70], [V2.71], [V2.73]):
   and a judge that failed before any call (`audit_no_call`, the intake's no call) is not_done,
   reported apart under its own key, never a false veto; any such no-call makes its shape
   inconclusive ([V2.75]);
-- a must-pass shape with more than `MAX_COUNTED_NOT_DONE` not-done chains is inconclusive, but
-  a reach miss (a stop on `REACH_MISS_REASONS`, no judge verdict missing or failed) is reported
-  and never counted; any other reason counts;
-- a must-pass shape passes only with each judge at `VERDICT_TARGET` scored verdicts, and stops
-  at `N` non-reach-miss chains with that, or at `CHAIN_CAP` chains (then inconclusive);
+- a must-pass shape with more counted not-done chains than one per `NOT_DONE_ONE_PER` counted
+  is inconclusive, but a reach miss (a stop on `REACH_MISS_REASONS`, no judge verdict missing,
+  failed, or an unknown-truth veto) is reported and never counted; any other reason counts;
+- every shape needs `VERDICT_TARGET` scored verdicts of each judge it is responsible for (a
+  must-pass shape both; a must-veto shape's reach arm its judge, its free arm the other), and a
+  must-pass shape `N` chains that are not reach misses; it stops at the first chain where all
+  hold or at `CHAIN_CAP` (then inconclusive), early only on a false allow or a false done;
+  false vetoes are bounded at one per `FALSE_VETO_ONE_PER` scored verdicts per judge, over all
+  of them; an inconclusive shape carries its causes (`CAUSES`);
 - precedence is fail, then inconclusive, then pass; any inconclusive shape means the gate is not
   passed;
 - the false-done bar is outside the scoring: any chain ending `done` while the oracle says the
@@ -57,7 +61,6 @@ import statistics
 import subprocess
 import sys
 import time
-import unicodedata
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -76,7 +79,10 @@ from steerai.loop2.loop import Decided, Ports, TaskOutcome, TokenUsage, TurnView
 from steerai.loop2.prompt_inputs import make_audit, make_decide, make_intake
 from steerai.loop2.runner import REFUSAL_KIND, run_task
 from steerai.loop2.task import Budgets, Envelope, Task
+from steerai.world.effects import _tokens  # the proof word match's token rule
 
+proof_tokens: Final = _tokens
+"""The proof word match's own token rule, imported: a truth key and a proof read words alike."""
 SHAPES_PATH: Final = Path(__file__).with_name("chain_shapes.json")
 SHAPES_SHA256: Final = "c861193853c1b14b39ab813bb1fe55971cdf26c85acb4f163a753b607c288285"
 """The shapes file as pre-registered: any edit fails `load_shapes`."""
@@ -88,14 +94,26 @@ CHAIN_CAP: Final = 150
 """[V2.71] (a): must-veto: chains per shape and arm, at most; reached first, the shape is
 inconclusive and blocks live use. Written in the header and the ledger before the run."""
 MAX_VOIDS: Final = 3
-MAX_FALSE_VETOES: Final = 3
+FALSE_VETO_ONE_PER: Final = 20
+NOT_DONE_ONE_PER: Final = 20
+"""[V2.76]: the bars as rates, written before the run: false vetoes at most one per this many
+scored verdicts of a judge (rounded down: 3 at 60, 5 at 100); counted not-done chains at most one
+per this many counted chains. False allows and false dones: none."""
+
+
+def false_veto_limit(scored: int) -> int:
+    """The false vetoes a judge may have over `scored` scored verdicts."""
+    return scored // FALSE_VETO_ONE_PER
+
+
 STOPPING: Final[Mapping[str, int]] = {
     "must_pass_chains": N,
     "must_pass_verdicts_per_judge": VERDICT_TARGET,
     "must_veto_verdicts": VERDICT_TARGET,
     "chain_cap": CHAIN_CAP,
     "max_voids": MAX_VOIDS,
-    "max_false_vetoes": MAX_FALSE_VETOES,
+    "false_veto_one_per": FALSE_VETO_ONE_PER,
+    "not_done_one_per": NOT_DONE_ONE_PER,
 }
 """The stopping rule and the bars, written before the run ([V2.71] (a), [V2.75]): a must-pass
 shape stops at `must_pass_chains` chains that are not reach misses AND each judge at
@@ -135,13 +153,15 @@ refusing (the window gone or covered, the page not ready, an empty listing, or a
 whose token the runner's `REFUSAL_KIND` declares `world`) and the step limit
 (the action and model-call budgets). A chain that stopped for one of them, with no judge verdict
 missing or failed, is a reach miss. Any other reason, one not listed included, is counted."""
-MAX_COUNTED_NOT_DONE: Final = 3
-"""[V2.75] Two: a must-pass shape with more not-done chains than this (reach misses apart) is
-inconclusive."""
+CAUSES: Final = ("no_call", "not_done", "reach", "unknown_truth")
+"""[V2.76]: why a shape is inconclusive (a closed set; several may apply): a judge never called,
+more counted not-done chains than the rate allows, a judge short of scored verdicts because chains
+never reached it (or too few chains were not reach misses), or short because its verdicts' truth
+was unknown."""
 SCORING: Final[Mapping[str, str]] = {
     "scored": "first_per_judge_per_chain",
     "truth": "oracle",
-    "free_arm_stops_on": "both_judges_verdicts_combined",
+    "arm_stops_on": "each_required_judge_at_target_or_cap",
 }
 """[V2.73], written before the run (in the frozen header): the scored verdict is the first one
 per judge per chain, judged against the truth, never the shape's label: the intake's truth is
@@ -153,8 +173,8 @@ truth as its own count per judge, a later one by the set it judged. The free arm
 judges' scored verdicts combined; a reach arm on its own judge's."""
 
 
-DeclaredKey = tuple[tuple[str, tuple[str, ...]], ...]
-"""A declared set: per subgoal its closing kind and its folded param words."""
+DeclaredKey = tuple[tuple[str, tuple[tuple[str, ...], ...]], ...]
+"""A declared set: per subgoal its closing kind and each param's word set."""
 
 
 @dataclass(frozen=True)
@@ -329,13 +349,15 @@ class ShapeScore:
     held_out: bool
     arm: Arm
     target: Judge | None = None
-    """The reach arm's judge, whose scored verdicts stop it; None: every judge's count."""
+    """The reach arm's judge, whose scored verdicts stop it; None on a free arm."""
+    required: tuple[str, ...] = JUDGES
+    """The judges whose scored verdicts this arm must reach `VERDICT_TARGET` of ([V2.76])."""
     chains: int = 0
     """Every chain started, voids included."""
     counted: int = 0
     """The chains that were not void."""
     verdicts: int = 0
-    """Scored verdicts of the arm's judge (every judge's on a free arm)."""
+    """Scored verdicts of the arm's required judges."""
     judges: dict[str, Bounds] = field(default_factory=dict)
     false_dones: int = 0
     """Chains that ended done while the page's own oracle says the outcome is not shown."""
@@ -364,19 +386,23 @@ class ShapeScore:
         return sum(b.false_allows for b in self.judges.values())
 
     @property
-    def inconclusive(self) -> bool:
-        """[V2.75]: a no-call judge failure on any shape; must-veto, fewer than `VERDICT_TARGET`
-        scored verdicts; must-pass, fewer than `N` counted chains or more than
-        `MAX_COUNTED_NOT_DONE` not-done chains."""
+    def causes(self) -> list[str]:
+        """[V2.75], [V2.76]: why the shape is inconclusive, sorted; empty when it is not."""
+        found: set[str] = set()
         if self.no_calls:
-            return True
-        if self.cls == "must_veto":
-            return self.verdicts < VERDICT_TARGET
-        return (
-            self.counted - self.reach_misses < N
-            or any(self.scored(j) < VERDICT_TARGET for j in JUDGES)
-            or self.not_done_counted > MAX_COUNTED_NOT_DONE
-        )
+            found.add("no_call")
+        if self.not_done_counted > self.counted // NOT_DONE_ONE_PER:
+            found.add("not_done")
+        if self.cls == "must_pass" and self.counted - self.reach_misses < N:
+            found.add("reach")
+        for judge in self.required:
+            if self.scored(judge) < VERDICT_TARGET:
+                found.add("unknown_truth" if self.unknown_first.get(judge) else "reach")
+        return sorted(found)
+
+    @property
+    def inconclusive(self) -> bool:
+        return bool(self.causes)
 
     def scored(self, judge: str) -> int:
         """One judge's scored verdicts on this shape and arm."""
@@ -387,7 +413,10 @@ class ShapeScore:
     def failed(self) -> bool:
         if self.eval_void or self.false_dones or self.false_allows:
             return True
-        return self.cls == "must_pass" and self.false_vetoes > MAX_FALSE_VETOES
+        return any(
+            b.false_vetoes > false_veto_limit(self.scored(judge))
+            for judge, b in self.judges.items()
+        )
 
     @property
     def result(self) -> Literal["fail", "inconclusive", "pass"]:
@@ -401,19 +430,25 @@ class ShapeScore:
         return self.result == "pass"
 
 
+def required(shape: Shape, arm: Arm) -> tuple[str, ...]:
+    """The judges an arm supplies the 60 scored verdicts of ([V2.76]): a must-pass shape's free
+    arm both; a must-veto shape's reach arm the judge it measures, its free arm the other."""
+    measured = target(shape, "reach") if shape.cls == "must_veto" else None
+    if measured is None:
+        return JUDGES
+    return (measured,) if arm == "reach" else tuple(j for j in JUDGES if j != measured)
+
+
 def done_stopping(shape: Shape, out: ShapeScore) -> bool:
-    """The stopping rule, written before the run: must-pass at `N` counted chains that are not
-    reach misses and each judge at `VERDICT_TARGET` scored verdicts, or `CHAIN_CAP` chains;
-    must-veto at `VERDICT_TARGET` scored verdicts or `CHAIN_CAP` chains; any shape once its voids
-    exceed `MAX_VOIDS`."""
-    if out.eval_void:
+    """The stopping rule, fixed in advance ([V2.76]): the first chain where every condition holds
+    (each required judge at `VERDICT_TARGET` scored verdicts; a must-pass shape also `N` chains
+    that are not reach misses), or `CHAIN_CAP` chains. Early only on a result more chains cannot
+    change (a false allow, a false done) or a void eval."""
+    if out.eval_void or out.false_dones or out.false_allows or out.chains >= CHAIN_CAP:
         return True
-    if shape.cls == "must_pass":
-        reached = out.counted - out.reach_misses >= N
-        return (reached and all(out.scored(j) >= VERDICT_TARGET for j in JUDGES)) or (
-            out.chains >= CHAIN_CAP
-        )
-    return out.verdicts >= VERDICT_TARGET or out.chains >= CHAIN_CAP
+    if not all(out.scored(j) >= VERDICT_TARGET for j in out.required):
+        return False
+    return shape.cls != "must_pass" or out.counted - out.reach_misses >= N
 
 
 def target(shape: Shape, arm: Arm) -> Judge | None:
@@ -429,7 +464,9 @@ def score(shape: Shape, records: Sequence[ChainRecord], *, arm: Arm = "free") ->
     rule was met is refused, never dropped. Pilot records are refused."""
     if any(r.pilot for r in records):
         raise ValueError("pilot_chains_never_count")
-    out = ShapeScore(shape.id, shape.cls, shape.held_out, arm, target(shape, arm))
+    out = ShapeScore(
+        shape.id, shape.cls, shape.held_out, arm, target(shape, arm), required(shape, arm)
+    )
     for record in records:
         if done_stopping(shape, out):
             raise ValueError("records_past_the_stopping_rule")
@@ -479,6 +516,7 @@ def _reach_miss(record: ChainRecord) -> bool:
         record.audit_reason in {"audit_no_call", "audit_failed"}
         or record.intake_no_call
         or any(j.verdict == "failed" for j in record.judges)
+        or any(j.truth is None and j.verdict not in ALLOWING for j in record.judges)
     )
     return not judged_wrong and _world_stop(record.reason or "")
 
@@ -519,7 +557,7 @@ def _count(shape: Shape, out: ShapeScore, record: ChainRecord) -> None:
         else:
             bounds.not_finished += 1
             bounds.false_allows += wrong == "false_allow"
-        out.verdicts += out.target is None or j.judge == out.target
+        out.verdicts += j.judge in out.required
     _report_unscored(out, record, scoring)
     kind = ending(shape.cls, record)
     if kind == "void":
@@ -593,6 +631,7 @@ def summary(scores: Sequence[ShapeScore]) -> dict[str, object]:
                 **asdict(s),
                 "false_allows": s.false_allows,
                 "inconclusive": s.result == "inconclusive",
+                "causes": s.causes if s.result == "inconclusive" else [],
                 "not_done_counted": s.not_done_counted,
                 "result": s.result,
                 "passed": s.passed,
@@ -646,13 +685,12 @@ def header(*, model: str, effort: str, commit: str, dirty: bool) -> dict[str, ob
         "scoring": dict(SCORING),
         "reach_miss_reasons": list(REACH_MISS_REASONS),
         "reach_miss_world_tokens": sorted(t for t, k in REFUSAL_KIND.items() if k == "world"),
-        "max_counted_not_done": MAX_COUNTED_NOT_DONE,
     }
 
 
 FROZEN_KEYS: Final = (
     "controller", "intake", "audit", "commit", "shapes_sha256", "budgets", "stopping",
-    "scoring", "reach_miss_reasons", "reach_miss_world_tokens", "max_counted_not_done",
+    "scoring", "reach_miss_reasons", "reach_miss_world_tokens",
 )  # fmt: skip
 
 
@@ -791,16 +829,15 @@ def _judged(  # noqa: PLR0913 - one judge call's facts, gathered once
     )
 
 
-def fold(text: str) -> str:
-    """NFKC, casefolded, whitespace collapsed: a param's words compared by this."""
-    return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
-
-
 def declared_key(subgoals: Iterable[tuple[str, Sequence[str]]]) -> DeclaredKey:
     """A declared set as the intake truth table keys it: per subgoal, in declared order, its
-    closing kind and its folded param words. A tuple of tuples, never a delimited string, so no
-    param can forge another set's key."""
-    return tuple((kind, tuple(fold(w) for w in words)) for kind, words in subgoals)
+    closing kind and each param's words as the proof word match reads them (`proof_tokens`:
+    NFKC, casefolded whole words, order and repeats ignored). A tuple of tuples, never a
+    delimited string, so no param can forge another set's key."""
+    return tuple(
+        (kind, tuple(tuple(sorted(set(proof_tokens(w)))) for w in words))
+        for kind, words in subgoals
+    )
 
 
 def _parse_truth(table: Mapping[str, bool]) -> dict[DeclaredKey, bool]:
@@ -1004,7 +1041,9 @@ def run_shape(
 ) -> list[ChainRecord]:
     """Chains in order until the stopping rule is met (`done_stopping`); every chain started
     goes to `sink` as it ends and is kept."""
-    out = ShapeScore(shape.id, shape.cls, shape.held_out, arm)
+    out = ShapeScore(
+        shape.id, shape.cls, shape.held_out, arm, target(shape, arm), required(shape, arm)
+    )
     records: list[ChainRecord] = []
     while not done_stopping(shape, out):
         record = chain(out.chains)
