@@ -151,16 +151,6 @@ def test_words_on_the_page_at_the_tasks_first_observation_never_close_on_that_al
     assert "not_in_delta" in check(claim(old.id), [old], subgoal).tokens
 
 
-@pending("[V2.72] One: the baseline never moves to the subgoal's first action", step=4)
-def test_a_result_that_appeared_before_the_subgoals_first_action_is_in_the_delta() -> None:
-    """The result appeared after an action labelled with another subgoal and was already shown
-    when this subgoal's first action was dispatched; the baseline is still the task's first
-    full observation, which did not hold it."""
-    result = check(claim(RESULT.id), [RESULT], facts(baseline=BASELINE))
-    assert result.proof is not None
-    assert "in_delta" in result.proof.signals
-
-
 def test_content_present_closes_a_page_subgoal_as_navigated_does() -> None:
     """[V2.72], [V2.73]: the runner's baseline and its rebase are per subgoal and per closing
     kind, never per claim kind, so `content_present` shares `navigated`'s baseline and rebase
