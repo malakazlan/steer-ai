@@ -64,7 +64,7 @@ def test_capture_what_the_real_hooks_see(capfd: pytest.CaptureFixture[str]) -> N
                 f"lost={monitor.lost_hooks()}"
             )
         high = iter((0x8000_0001, 0xC0DE_BEEF, 0xFFFF_FFFE))
-        core._tags._rand32 = lambda: next(high)  # type: ignore[attr-defined]  # tags with bit 31 set
+        core._tags._rand32 = lambda: next(high)  # tags with bit 31 set
         for n in range(1, 4):
             step(f"monitor.probe_now() high-bit tag #{n}", monitor.probe_now)
             rows.append(
