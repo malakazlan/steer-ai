@@ -838,3 +838,40 @@ def test_each_probe_publishes_a_fresh_tag_and_the_old_one_is_not_proof() -> None
     rig.heartbeat()
     rig.monitor.probe_now()
     assert rig.helper.config.get("probe_tag") == rig.probes[1] != first
+
+
+def test_the_retired_ring_is_published_before_the_new_probe_tag() -> None:
+    """PT-03: the helper must never see a new tag without the ring that retires the old one."""
+    rig = _rig()
+    order: list[str] = []
+    real = rig.helper.config.set
+
+    def spy(name: str, value: int) -> None:
+        order.append(name)
+        real(name, value)
+
+    rig.helper.config.set = spy  # type: ignore[method-assign]  # a spy on every store, in order
+    rig.monitor.probe_now()
+    rig.at(102.0)
+    rig.heartbeat()
+    rig.monitor.probe_now()
+    last = len(order) - 1 - order[::-1].index("probe_tag")
+    assert all(name.startswith("retired_") for name in order[last - 16 : last])
+    assert order[last] == "probe_tag"
+    assert rig.helper.config.get("retired_0") == rig.probes[0]
+
+
+def test_an_echo_after_the_deadline_in_the_words_is_a_lost_hook() -> None:
+    """PT-02, helper mode: the helper's QPC proof time against the probe's send time."""
+    rig = _rig()
+    rig.monitor.probe_now()
+    tag = rig.probes[0]
+    late = int((100.0 + DEADLINE_S + 0.001) * FREQ)
+    for hook in ("mouse", "keyboard"):
+        rig.helper.status_w.set(f"proof_{hook}", tag)
+        rig.helper.status_w.set(f"proof_qpc_{hook}", late)
+        rig.helper.status_w.set(f"last_own_qpc_{hook}", late)
+    rig.at(100.0 + DEADLINE_S + 0.005)
+    rig.heartbeat()
+    assert not rig.monitor.probe_seen()
+    assert not rig.monitor.healthy()

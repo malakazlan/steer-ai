@@ -2010,3 +2010,47 @@ def test_the_monitor_and_the_header_get_the_derived_deadline(timeout: int | None
     world, _ = _world(platform)
     assert platform.monitor_deadline == probe_deadline_s(timeout)
     assert world.header(task())["probe_deadline_ms"] == str(round(probe_deadline_s(timeout) * 1000))
+
+
+def test_the_self_check_ends_only_on_a_kill_not_on_any_switch_token() -> None:
+    """Principal 2: a lock or a lost monitor during the check is not a pass."""
+    platform = Platform()
+    platform.monitor.seen = False
+    platform.locked = True
+    with pytest.raises(SteerError) as failed:
+        _world(platform)
+    assert failed.value.message == "probe_unproven_at_start"
+    killed = Platform()
+    killed.monitor.seen = False
+    killed.monitor.killed = True
+    _world(killed)  # a kill ends the wait; the task's first send reads it
+
+
+def test_a_monitor_fault_during_the_self_check_keeps_its_own_reason() -> None:
+    """PT-05/06: unproven is only 'sent, deadline passed, tag unseen'; a fault is not that."""
+    platform = Platform()
+    platform.monitor.seen = False
+    platform.monitor.ok = False  # a callback error, a dead thread or a failed send
+    platform.monitor.lost_hooks = lambda: ()  # type: ignore[method-assign]  # no deadline loss
+    with pytest.raises(SteerError) as failed:
+        _world(platform)
+    assert failed.value.code is ErrorCode.GATE_BLOCKED
+    assert failed.value.message == "monitor_unavailable"
+
+
+def test_a_first_probe_lost_to_a_physical_move_is_retried_once_after_idle() -> None:
+    """PT-07: the person's move can merge with the probe's; one retry after the idle wait, and
+    the retry is counted apart."""
+    platform = Platform()
+    monitor = platform.monitor
+
+    def probe_now() -> None:
+        monitor.probes += 1
+        monitor.seen = monitor.probes >= 2
+
+    monitor.seen = False
+    monitor.probe_now = probe_now  # type: ignore[method-assign]  # the second probe is answered
+    monitor.last = 1e9  # the person was active at the first failure
+    world, _ = _world(platform)
+    assert monitor.probes == 2
+    assert world.start_probe_retries == 1

@@ -477,3 +477,28 @@ def test_the_warm_up_runs_a_numbered_probe_through_both_hooks(
         tags = [extra for name, extra in seen if name == hook]
         assert tags
         assert all(0 < t < 1 << 32 and t != RUN_TAG for t in tags)
+
+
+def test_a_probe_the_helper_never_saw_is_own_and_stale_through_the_published_ring() -> None:
+    """The parent publishes the retired ring before `probe_tag`: A then B with no event between,
+    then A's key-up: own and stale (counted as steer), no proof, never the person's."""
+    core, cfg, status = _core()
+    a, b = 0x3333_00A1, 0x3333_00B2
+    cfg.set("probe_tag", a)
+    cfg.set("retired_0", a)  # ring published for B: A is the newest retired tag
+    cfg.set("probe_tag", b)
+    assert not _key(core, extra=a, vk=PROBE, up=True, at_ms=2_000, injected=True)
+    assert status.get("proof_keyboard") == 0
+    assert status.get("last_user") == 0
+    assert status.get("count_steer") == 1
+    assert _key(core, extra=b, vk=PROBE, up=True, at_ms=2_001, injected=True)
+    assert status.get("proof_keyboard") == b
+
+
+def test_the_helper_records_when_a_hook_was_proven() -> None:
+    core, cfg, status = _core()
+    cfg.set("probe_tag", PT)
+    assert core.mouse(message=WM_MOUSEMOVE, flags=LLMHF_INJECTED, extra=PT, pt=(1, 1),
+                      event_ms=2_000, entry_ms=2_000, entry_qpc=2_000 * MS)  # fmt: skip
+    assert status.get("proof_qpc_mouse") == 2_000 * MS
+    assert status.get("proof_qpc_keyboard") == 0
