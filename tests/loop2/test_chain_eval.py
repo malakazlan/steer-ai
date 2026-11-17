@@ -571,8 +571,10 @@ ALLOW = json.dumps({"sufficient": True, "reason": "facts_finish_request"})
 VETO = json.dumps({"sufficient": False, "reason": "request_asks_more"})
 
 
-def _typed_and_claimed(field: str, words: str) -> list[Callable[[str], dict[str, Any]]]:
-    sub = {**SUB, "params": {"name": words}}
+def _typed_and_claimed(
+    field: str, words: str, declared: str = "unnamed"
+) -> list[Callable[[str], dict[str, Any]]]:
+    sub = {**SUB, "params": {"name": words}, "field": declared}
     return [
         lambda p: {"subgoals": [sub], "actions": [
             {"verb": "focus", "target": handle(p, field), "subgoal": "s1"},
@@ -1141,6 +1143,22 @@ def test_an_intake_veto_on_the_wrong_field_audit_arm_is_a_scored_intake_false_ve
     out = score(shape, [record], arm="audit_reach")
     assert out.judges["intake"] == chain_eval.Bounds(0, 0, 1, 1)  # sufficient set, vetoed
     assert out.unknown_first == {}
+
+
+def test_a_declared_field_on_the_wrong_element_is_refused_by_code_before_any_audit() -> None:
+    """[V2.84] (1): the words typed into Email with the field declared as the request names it
+    (full name) is a code test, not a judge case: code refuses the claim (`field_mismatch`), so the
+    chain never ends done and no audit is asked, though both judges are scripted to allow."""
+    shape = next(s for s in load_shapes() if s.id == "wrong_field")  # unfixed: every pool value
+    for i in range(len(shape.pool)):
+        words = shape.at(i).value["v"]
+        provider = Scripted(_typed_and_claimed("Email", words, declared="full name"), ALLOW)
+        record = run_chain(shape, index=i, provider=provider)
+        assert record.status != "done", words
+        assert record.field_mismatch == 1, words
+        assert "audit" not in provider.calls
+        assert [j.judge for j in record.judges] == ["intake"]  # the audit never judged
+        assert not record.outcome_shown
 
 
 def test_a_free_chains_truth_comes_from_the_oracle_at_the_moment_the_audit_answers() -> None:

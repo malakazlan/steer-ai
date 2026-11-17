@@ -528,6 +528,9 @@ class ChainRecord:
     went_live: bool = False
     """A controller turn came after the script began (it ran out, or an intake reject re-opened
     the first turn and the script was dropped)."""
+    field_mismatch: int = 0
+    """[V2.84] (1): value claims (and closing re-reads) code refused because the cited element does
+    not hold the declared field: a wrong field is a code refusal, counted, no judge involved."""
 
 
 class EvalAbortedError(RuntimeError):
@@ -1675,6 +1678,7 @@ def _record(  # noqa: PLR0913 - one chain's facts, gathered once
         scripted_turns=seen.scripted_turns,
         script_complete=seen.script_complete,
         went_live=seen.went_live,
+        field_mismatch=outcome.field_mismatch,
     )
 
 
