@@ -26,7 +26,16 @@ from steerai.world.elements import Element
 if TYPE_CHECKING:  # the runner imports `history`, which imports this module's token types
     from steerai.loop2.runner import RefusalKind
 
-CommitToken = Literal["commit_conflict", "commit_undeclared", "not_in_step", "no_strict_shape"]
+CommitToken = Literal[
+    "commit_conflict",
+    "commit_undeclared",
+    "not_in_step",
+    "no_strict_shape",
+    "composer_differs",
+    "composer_unreadable",
+]
+"""The refusals before any ask. `composer_differs` and `composer_unreadable` are a failed
+read-back of the content's pending-text record, world facts, never a model strike."""
 RefusalToken = Literal[
     "commit_conflict",
     "commit_undeclared",
@@ -72,9 +81,11 @@ def commit_refusal(  # noqa: PLR0913 - the closed facts of §3.3, keyword-only
     those classes ask and the live read proves the state); a delete or pay (`not_in_step`); a
     send or submit (`no_strict_shape`) unless the subgoal has exactly one param, the content
     ([V2.88] L2), and `pending`, the content field's pending-text record, holds that param's
-    span with an equal digest ([V2.88] L3: the label on the `type` is ignored; a missing or
-    unread record fails closed). `prior` are the declared commits of the subgoal's dispatched
-    actions; `params` are the subgoal's params."""
+    span ([V2.88] L3: the label on the `type` is ignored; a missing record, another span or
+    generated text is `no_strict_shape`) with an equal digest: a read-back that differs is
+    `composer_differs`, an unread one `composer_unreadable` (both world facts; the mapping is
+    pending the lead's confirmation). `prior` are the declared commits of the subgoal's
+    dispatched actions; `params` are the subgoal's params."""
     raise NotImplementedError("step 4: commit checks")
 
 
@@ -187,6 +198,13 @@ class GateSteps:
     """Step 6."""
     ask: Callable[[Ask], str]
     """Steps 7 and 8: the person's answer token."""
+    foreground_at_ask: bool
+    """[V2.88] L4: whether the bound window was in front just before the ask was shown."""
+    raise_window: Callable[[], bool]
+    """[V2.88] L4, the narrow exception to never-raise: called only after a yes and only when
+    `foreground_at_ask`, at most once per pass, before the recheck (so never after a failed
+    one). True when the same window handle is in front after it; False (another handle) is
+    `not_foreground`, and nothing is written or dispatched."""
     after_yes: Callable[[], GateRequest | RefusalToken]
     """Step 9: the fresh observe: the asked element, the foreground and the value digest again
     (a token when one fails), else the request recomputed on it, risk and form facts included.
@@ -196,7 +214,12 @@ class GateSteps:
     """Step 10: False when the record could not be written."""
     quiet: Callable[[], bool]
     """[V2.88] L5, just before the dispatch: True when no input reached anything but Steer's
-    own ask window since the answer; any other input means no dispatch."""
+    own ask window since the answer; any other input means no dispatch: the pass calls `void`
+    and refuses `screen_changed_during_ask`, a world refusal."""
+    void: Callable[[GateDecision], None]
+    """Closes the record written for `decision` as not delivered: the dispatch was never
+    called, which is provable, so the key is released (`record.RELEASED`). Never leaves an
+    open record behind a dispatch that did not happen."""
     dispatch: Callable[[GateDecision], ActionResult]
     """Step 11, returning v1's result. [V2.25] (c): a `not_delivered` with v1's retry codes and
     no step tried gets v1's one local retry under the SAME decision: one ask, one write-ahead,
@@ -219,8 +242,10 @@ def gate_pass(
 ) -> GateEnd:
     """§3.4 in order: checks, admission (`done` refuses `done_already`; `confirm` asks with
     `previous_attempt`), goal check, ask, answer (`no` ends blocked `user_declined`; `killed`
-    ends stopped `killed`; anything else but a yes ends paused `unanswered`), the after-yes
-    checks, write-ahead (a failed write ends blocked `wal_unavailable`), the input check, one
-    dispatch. [V2.88] L2: a commit ask shows the full request (`goal`) and the closed reason
+    ends stopped `killed`; anything else but a yes ends paused `unanswered`), the raise
+    ([V2.88] L4, only after a yes and only when the window was in front before the ask), the
+    after-yes checks, write-ahead (a failed write ends blocked `wal_unavailable`), the input
+    check (input since the answer voids the record and dispatches nothing), one dispatch.
+    [V2.88] L2: a commit ask shows the full request (`goal`) and the closed reason
     `recipient_unchecked` (Steer did not check the recipient)."""
     raise NotImplementedError("step 4: the gate pass")

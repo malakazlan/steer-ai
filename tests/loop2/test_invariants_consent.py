@@ -67,6 +67,10 @@ class Script:
     """The request recomputed on the fresh observe after the yes; None: the one asked about."""
     quiet: bool = True
     """[V2.88] L5: no input but to Steer's own ask window between the answer and the dispatch."""
+    foreground_at_ask: bool = True
+    """[V2.88] L4: the bound window was in front just before the ask."""
+    raised: bool = True
+    """[V2.88] L4: the same window handle is in front after the raise."""
     written: bool = True
     request: GateRequest = field(default_factory=lambda: REQUEST)
     events: list[str] = field(default_factory=list)
@@ -94,6 +98,10 @@ class Script:
         self.asks.append(ask)
         return self.answer(ask)
 
+    def _raise(self) -> bool:
+        self.events.append("raise_window")
+        return self.raised
+
     def _after(self) -> GateRequest | RefusalToken:
         self.events.append("after_yes")
         if self.after is not None:
@@ -108,6 +116,9 @@ class Script:
         self.events.append("input_check")
         return self.quiet
 
+    def _void(self, decision: GateDecision) -> None:  # noqa: ARG002 - the GateSteps shape
+        self.events.append("void")
+
     def _dispatch(self, decision: GateDecision) -> ActionResult:
         self.events.append("dispatch")
         self.dispatched.append(decision)
@@ -121,9 +132,12 @@ class Script:
             admit=self._admit,
             goal_check=self._goal,
             ask=self._ask,
+            foreground_at_ask=self.foreground_at_ask,
+            raise_window=self._raise,
             after_yes=self._after,
             write_ahead=self._write,
             quiet=self._quiet,
+            void=self._void,
             dispatch=self._dispatch,
         )
 
@@ -140,6 +154,7 @@ ORDER = [
     "admit",
     "goal_check",
     "ask",
+    "raise_window",
     "after_yes",
     "write_ahead",
     "input_check",
@@ -147,9 +162,7 @@ ORDER = [
 ]
 
 
-@pending(
-    "§3.4, [V2.88] L5: checks, ledger, goal, ask, recheck, write-ahead, input, dispatch", step=4
-)
+@pending("§3.4, [V2.88] L4, L5: checks to dispatch, raise and input check included", step=4)
 def test_a_yes_runs_every_step_in_order_and_dispatches_once() -> None:
     script = Script()
     end = run(script)
@@ -286,11 +299,69 @@ def test_a_yes_voided_by_a_changed_recheck_is_never_spent_later() -> None:
     assert consents.spend(decision_id=asked, action_key=KEY) is False
 
 
-@pending("[V2.88] L5: input between the answer and the dispatch means no dispatch", step=4)
+@pending("[V2.88] L5: input after the answer voids the written record, no dispatch", step=4)
 def test_input_after_the_answer_dispatches_nothing() -> None:
     script = Script(quiet=False)
     end = run(script)
-    assert end.kind != "dispatched"
+    assert (end.kind, end.token) == ("refused", "screen_changed_during_ask")
+    assert end.token is not None
+    assert REFUSAL_KIND[end.token] == "world"
+    assert script.events[-2:] == ["input_check", "void"]
+    assert "dispatch" not in script.events
+    assert script.dispatched == []
+
+
+# ---- the raise after a yes ([V2.88] L4) ------------------------------------------------------
+
+
+@pending("[V2.88] L4: the window is raised once, only after a yes", step=4)
+def test_a_yes_raises_the_window_once_before_the_recheck() -> None:
+    script = Script()
+    run(script)
+    assert script.events.count("raise_window") == 1
+    assert script.events.index("raise_window") == script.events.index("ask") + 1
+    assert script.events.index("raise_window") < script.events.index("after_yes")
+
+
+@pending("[V2.88] L4: no raise without a yes", step=4)
+@pytest.mark.parametrize("answer", ["no", "unanswered", "killed", "y"])
+def test_no_yes_never_raises_the_window(answer: str) -> None:
+    script = Script(answer=lambda _ask: answer)
+    run(script)
+    assert "raise_window" not in script.events
+
+
+@pending("[V2.88] L4: no raise when the window was not in front before the ask", step=4)
+def test_a_window_not_in_front_before_the_ask_is_never_raised() -> None:
+    script = Script(foreground_at_ask=False)
+    run(script)
+    assert "raise_window" not in script.events
+
+
+@pending("[V2.88] L4: no second raise, and none after a failed recheck", step=4)
+@pytest.mark.parametrize(
+    "script",
+    [
+        Script(after="screen_changed_during_ask"),
+        Script(after="not_foreground"),
+        Script(recheck=dataclasses.replace(REQUEST, risk="R3")),
+    ],
+    ids=["screen_changed", "not_foreground", "recheck_differs"],
+)
+def test_a_failed_recheck_is_never_followed_by_a_raise(script: Script) -> None:
+    run(script)
+    assert script.events.count("raise_window") == 1
+    assert "raise_window" not in script.events[script.events.index("after_yes") :]
+    assert script.dispatched == []
+
+
+@pending("[V2.88] L4: another window handle in front after the raise is not_foreground", step=4)
+def test_a_different_handle_after_the_raise_is_not_foreground() -> None:
+    script = Script(raised=False)
+    end = run(script)
+    assert (end.kind, end.token) == ("refused", "not_foreground")
+    assert script.events.count("raise_window") == 1
+    assert "write_ahead" not in script.events
     assert script.dispatched == []
 
 
@@ -360,17 +431,16 @@ def test_the_world_facts_at_the_ask_are_world_and_done_already_is_a_model_fault(
     assert REFUSAL_KIND["done_already"] == "model"
 
 
-@pending("[V2.74]: a world fact met at the ask is a world refusal", step=4)
-@pytest.mark.parametrize("token", WORLD)
+@pending("[V2.74], [V2.88] L8: every gate refusal's kind is the table's but one", step=4)
+@pytest.mark.parametrize("token", get_args(RefusalToken))
 @pytest.mark.parametrize("on_row", [True, False])
-def test_a_world_fact_at_the_ask_is_world(token: RefusalToken, on_row: bool) -> None:
-    assert refusal_kind(token, commit_on_row=on_row) == "world"
-
-
-@pending("[V2.74]: repeating a delivered commit is the model's choice, a strike", step=4)
-@pytest.mark.parametrize("on_row", [True, False])
-def test_done_already_is_a_model_fault(on_row: bool) -> None:
-    assert refusal_kind("done_already", commit_on_row=on_row) == "model"
+def test_every_refusal_kind_is_the_declared_one_but_an_off_row_commit_undeclared(
+    token: RefusalToken, on_row: bool
+) -> None:
+    """Total over the tokens: the declared kind, except `commit_undeclared` with the commit fact
+    off the acted row, a step limit (`test_invariants_commit.py`)."""
+    expected = "step" if (token, on_row) == ("commit_undeclared", False) else REFUSAL_KIND[token]
+    assert refusal_kind(token, commit_on_row=on_row) == expected
 
 
 # ---- the goal check ([V2.15] Q5, packet §3.5) -----------------------------------------------

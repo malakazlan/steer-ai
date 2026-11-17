@@ -24,6 +24,7 @@ from steerai.loop2.claims import (
 )
 from steerai.loop2.consent import commit_refusal
 from steerai.loop2.decision import Claim
+from steerai.loop2.runner import REFUSAL_KIND
 from steerai.loop2.task import Commit, GoalSpan
 from steerai.world.elements import Element
 from tests.loop2.world_fakes import element, pending, snapshot
@@ -173,19 +174,28 @@ def test_a_commit_subgoal_without_exactly_one_param_is_no_strict_shape(
 @pending("[V2.88] L3: no_strict_shape binds to the field's pending-text record", step=4)
 @pytest.mark.parametrize(
     "record",
-    [
-        None,
-        dataclasses.replace(SENT, span=OTHER),
-        dataclasses.replace(SENT, span=None),
-        dataclasses.replace(SENT, read_back=False),
-        dataclasses.replace(SENT, read_back=None),
-    ],
-    ids=["missing", "another_span", "generated_text", "digest_differs", "unread"],
+    [None, dataclasses.replace(SENT, span=OTHER), dataclasses.replace(SENT, span=None)],
+    ids=["missing", "another_span", "generated_text"],
 )
 def test_a_send_whose_record_does_not_hold_the_param_is_no_strict_shape(
     record: Sent | None,
 ) -> None:
     assert refusal(pending=record) == "no_strict_shape"
+
+
+@pending("[V2.88] L3, [V2.74]: a failed read-back is a world fact, never a model strike", step=4)
+@pytest.mark.parametrize(
+    ("read_back", "token"),
+    [(False, "composer_differs"), (None, "composer_unreadable")],
+    ids=["digest_differs", "unread"],
+)
+def test_a_failed_read_back_of_the_record_is_a_world_refusal(
+    read_back: bool | None, token: str
+) -> None:
+    """Pending the lead's confirmation: the record holds the param's span, but its digest
+    read back differs or was never read."""
+    assert refusal(pending=dataclasses.replace(SENT, read_back=read_back)) == token
+    assert REFUSAL_KIND[token] == "world"
 
 
 @pending("§3.3 strict rule 4, T1 not_new ([V2.17].7)", step=4)
