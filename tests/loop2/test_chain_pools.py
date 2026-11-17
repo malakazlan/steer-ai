@@ -249,9 +249,10 @@ def test_the_header_freezes_the_seed_and_the_draw_order() -> None:
             check_frozen({**head, **change}, head)
 
 
-DRAW_ORDER_SHA256 = "9e7ef6b8284af4495a1c6e26299898e3e30add112c855e1ae051cd17ec1bb592"
+DRAW_ORDER_SHA256 = "8ab2cc210a01e705e10b828fcb22be0d19926adcaf3ec322cac73e0eee73e5e4"
 """The draw order the header freezes, re-pinned on purpose with the shapes ([V2.84] fields and the
-held-out wrong-field shape): a change to a pool, the seed or the slot rule shows here."""
+held-out wrong-field shape; [V2.89] the narrower-field unit's new pool): a change to a pool, the
+seed or the slot rule shows here."""
 
 
 def test_the_draw_order_hash_is_the_pinned_one() -> None:
