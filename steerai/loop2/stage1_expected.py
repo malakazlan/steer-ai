@@ -46,6 +46,9 @@ from steerai.world.read_json import observed_from_json
 
 Outcome = Literal["done", "blocked", "never_done"]
 ProofKind = Literal["state", "value", "navigated"]
+Cannot = Literal["needs_commit", "outcome_unobservable"]
+"""[V2.85] (v), #503: why a task cannot finish in step 3: an act the gate rates at R2 or above
+(step 3 dispatches none), or no step 3 proof kind reads its end state."""
 COMMIT_REASON: Final = "commit_not_in_step"
 """The runner's token for an action at R2 or above in step 3 (`runner._one`)."""
 _R2: Final = RISKS.index("R2")
@@ -204,6 +207,16 @@ def outcome_of(risk: Risk, proof: ProofKind | None) -> tuple[Outcome, str | None
     if proof is not None:
         return "done", None
     return "never_done", None
+
+
+def cannot_finish(risk: Risk | None, proof: ProofKind | None) -> Cannot | None:
+    """[V2.85] (v), #503: the rule that picks the rows that cannot finish in step 3, over every
+    stage 1 row; `risk` is None for a row ruled, not rated. None when the row can finish."""
+    if risk is not None and RISKS.index(risk) >= _R2:
+        return "needs_commit"
+    if proof is None:
+        return "outcome_unobservable"
+    return None
 
 
 def rate(
