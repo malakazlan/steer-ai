@@ -197,7 +197,8 @@ def test_the_other_options_of_a_select_are_never_the_drawn_value() -> None:
 @pytest.mark.parametrize(
     ("shape_id", "arm"),
     [("g23", "audit_reach"), ("g23", "reach"), ("set_and_save", "audit_reach"),
-     ("set_and_save", "reach"), ("two_outcome", "reach"), ("wrong_field", "reach"),
+     ("set_and_save", "reach"), ("two_outcome", "reach"), ("two_outcome", "audit_reach"),
+     ("wrong_field", "audit_reach"),
      ("wrong_field_state", "reach"), ("heldout_injection", "audit_reach"),
      ("heldout_injection", "reach"), ("heldout_filter", "audit_reach"),
      ("heldout_filter", "reach")],
@@ -382,7 +383,7 @@ def test_an_excess_false_allow_is_in_its_judges_headline_bound() -> None:
 @pytest.mark.parametrize(
     ("shape_id", "arm", "judge"),
     [("g23", "reach", "intake"), ("g23", "audit_reach", "audit"),
-     ("two_outcome", "reach", "audit"),
+     ("two_outcome", "reach", "intake"), ("two_outcome", "audit_reach", "audit"),
      ("set_and_save", "reach", "intake"), ("heldout_injection", "audit_reach", "audit"),
      ("heldout_filter", "reach", "intake"), ("heldout_filter", "audit_reach", "audit")],
 )  # fmt: skip
