@@ -34,7 +34,13 @@ from steerai.loop2.form import (
     form_facts,
 )
 from steerai.loop2.guards import StrikeReason
-from steerai.loop2.history import RECORD_TYPES, HistoryRecord, RefusalWord, render
+from steerai.loop2.history import (
+    RECORD_TYPES,
+    HistoryRecord,
+    PortDetail,
+    RefusalWord,
+    render,
+)
 from steerai.loop2.listing import ListingTurn
 from steerai.loop2.query import SearchFacts, classify, search_landmark_of
 from steerai.loop2.task import Commit, Subgoal
@@ -441,46 +447,11 @@ class Ports:
 
 
 WatchKind = Literal["plain", "trigger", "submit", "wait"]
-PortDetail = Literal[
-    # the act port's own refusals and results
-    "port_error",
-    "screen_changed_during_wait",
-    "target_gone",
-    "expand_needs_click",
-    "control_expanded",
-    "not_in_step",
-    "commit_not_in_step",
-    "shape",
-    "text_missing",
-    "focus_needs_field",
-    "key_not_allowed",
-    "not_own_text",
-    "secure_unread",
-    "wall_budget",
-    "press_not_at_focus",
-    # the input guard and the toggle guard
-    "idle_unread",
-    "not_armed",
-    "toggle_limit",
-    "second_toggle_refused",
-    "second_toggle_uncertain",
-    "settled_on_reread",
-    # the tap check, the takeover and the switch (`interrupted`)
-    "hands_on",
-    "foreground_elevated",
-    "tap_unreadable",
-    "takeover",
-    "other_steer_input",
-    "killed",
-    "monitor_lost",
-    "session_locked",
-    "generation",
-]
-"""[V2.67] D: every `detail` the act port, its guards and the switch put on an act result, on
-top of the executors' (`execution.RefusalDetail`). Pinned to its producers by
-`tests/action/test_refusal_details.py`."""
-PORT_DETAILS: Final = frozenset(get_args(PortDetail))
 """[V2.48]: the watch classes, each with its own deadline (`world_ports.WorldTimes`)."""
+PORT_DETAILS: Final = frozenset(get_args(PortDetail))
+"""[V2.67] D: every `detail` the act port, its guards and the switch put on an act result, on top
+of the executors' (`execution.RefusalDetail`); the type is `history.PortDetail`. Pinned to its
+producers by `tests/action/test_refusal_details.py`."""
 
 
 def watch_kind(dispatch: Dispatch) -> WatchKind:

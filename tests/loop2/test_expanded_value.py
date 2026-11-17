@@ -7,8 +7,8 @@ from __future__ import annotations
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.loop2.controller import REPAIR_LEGEND, SYSTEM_RULES
 from steerai.loop2.decision import Claim, Decision, SubgoalDoc
-from steerai.loop2.runner import run_task
 from steerai.loop2.history import CLAIM_RESULTS
+from steerai.loop2.runner import run_task
 from steerai.world.effects import ValueFact
 from tests.loop2.test_act_port import COMBO, Executor, _dispatch, _port, ok
 from tests.loop2.world_fakes import PAGE, World, act, element, observed, task
@@ -19,9 +19,7 @@ SHOWN = [*PAGE, BOX]
 
 
 def _claim_world(expanded: bool | None) -> World:
-    sub = SubgoalDoc(
-        id="s1", desc="x", params={"text": "red shoes"}, closes="value", field="shop"
-    )
+    sub = SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value", field="shop")
     turns = [
         Decision(subgoals=[sub], actions=[act("wait", subgoal="s1")]),
         Decision(claims=[Claim(subgoal="s1", kind="value", evidence=[BOX.id], param="text")]),

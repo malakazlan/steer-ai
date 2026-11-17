@@ -13,9 +13,10 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Final, Literal, get_args
+from typing import Final, Literal, TypeGuard, get_args
 
 from steerai.action.dispositions import Delivery
+from steerai.action.execution import REFUSAL_DETAILS, RefusalDetail
 from steerai.loop2.claims import ClaimToken
 from steerai.loop2.consent import CommitToken
 from steerai.loop2.consent import RefusalToken as StrictRefusal
@@ -69,6 +70,57 @@ RunnerClaim = Literal[
     "evidence_taken", "accepted",
 ]  # fmt: skip
 """The runner's own claim results: `_refused`'s refusals, and a param proof held (`accepted`)."""
+PortDetail = Literal[
+    # the act port's own refusals and results
+    "port_error",
+    "screen_changed_during_wait",
+    "target_gone",
+    "expand_needs_click",
+    "control_expanded",
+    "not_in_step",
+    "commit_not_in_step",
+    "shape",
+    "text_missing",
+    "focus_needs_field",
+    "key_not_allowed",
+    "not_own_text",
+    "secure_unread",
+    "wall_budget",
+    "press_not_at_focus",
+    # the input guard and the toggle guard
+    "idle_unread",
+    "not_armed",
+    "toggle_limit",
+    "second_toggle_refused",
+    "second_toggle_uncertain",
+    "settled_on_reread",
+    # the tap check, the takeover and the switch (`interrupted`)
+    "hands_on",
+    "foreground_elevated",
+    "tap_unreadable",
+    "takeover",
+    "other_steer_input",
+    "killed",
+    "monitor_lost",
+    "session_locked",
+    "generation",
+]
+"""[V2.67] D: every `detail` the act port, its guards and the switch put on an act result, on
+top of the executors' (`execution.RefusalDetail`). Pinned to its producers by
+`tests/action/test_refusal_details.py`; the type lives here because the history shows each as a
+refusal cause (`Cause`), and `loop` imports this module."""
+Cause = RefusalDetail | PortDetail
+"""[V2.85] (iv): the specific cause of a refused act, when code knows one: an executor's or the
+act port's closed detail, shown as the refusal itself (`refused:expand_needs_click:<id>`) rather
+than the broader `not_delivered`."""
+ACT_CAUSES: Final = REFUSAL_DETAILS | frozenset(get_args(PortDetail))
+
+
+def is_cause(detail: object) -> TypeGuard[Cause]:
+    """The detail is one of the closed causes (`ACT_CAUSES`)."""
+    return isinstance(detail, str) and detail in ACT_CAUSES
+
+
 RefusalWord = ValidateToken | RunnerRefusal | PolicyRefusal | StrictRefusal | CommitToken
 """#349: a refusal token, by the producers' own Literals ([V2.49]: an enum)."""
 ClaimWord = ClaimCheck | ClaimToken | RunnerClaim
@@ -131,7 +183,7 @@ class Refused:
     """A refusal: its token, and the refused element's task handle when there is one ([V2.47]
     (a)). `id_not_listed` never has one: the model's number may never have been issued."""
 
-    token: RefusalWord
+    token: RefusalWord | Cause
     handle: int | None = None
 
 
@@ -317,7 +369,7 @@ def history_grammar(subgoal: str, param: str) -> re.Pattern[str]:
                 rf":(?:{param}|-):(?:{_alt(DELIVERIES)}):(?:empty|(?:{_CLS})(?:\.(?:{_CLS}))*)"
                 rf":(?:none|(?:{_TOK})(?:\.(?:{_TOK}))*)(?::read_back_(?:mismatch|unread))?",
                 r"refused:id_not_listed",
-                rf"refused:(?:{_alt(REFUSAL_TOKENS - {'id_not_listed'})})(?::{_H})?",
+                rf"refused:(?:{_alt((REFUSAL_TOKENS | ACT_CAUSES) - {'id_not_listed'})})(?::{_H})?",
                 rf"(?:target_changed|focus_lost|focus_moved_after_press)(?::{_H})?",
                 r"stale_observation",
                 r"load_guard",
@@ -360,7 +412,11 @@ def _fields_ok(record: HistoryRecord, vocab: Vocab) -> bool:  # noqa: PLR0911 - 
         return _entry_ok(record, vocab)
     if isinstance(record, Refused):
         no_slot = record.token != "id_not_listed" or record.handle is None  # noqa: S105 - a refusal token
-        return record.token in REFUSAL_TOKENS and no_slot and _handle_ok(record.handle, vocab)
+        return (
+            (record.token in REFUSAL_TOKENS or record.token in ACT_CAUSES)
+            and no_slot
+            and _handle_ok(record.handle, vocab)
+        )
     if isinstance(record, FocusMovedAfterPress):
         return _handle_ok(record.handle, vocab)
     if isinstance(record, WorldMoved):

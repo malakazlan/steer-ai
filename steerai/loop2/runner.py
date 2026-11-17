@@ -71,6 +71,7 @@ from steerai.loop2.history import (
     RunnerClaim,
     Vocab,
     WorldMoved,
+    is_cause,
     log_role,
     record_ok,
     refused_shape,
@@ -1137,12 +1138,13 @@ class _Run:
                 if readers.read_state(element, subgoal.wanted) is not True:
                     return False
                 continue
-            if not field_held(observed.snapshot, element, subgoal):
-                return False
-            if readers.read_state(element, "expanded") is True:  # [V2.85]
-                return False
+            closed = readers.read_state(element, "expanded") is not True  # [V2.85]
             want = readers.fact_of(subgoal.params[param].text)
-            if readers.read_value(element) != want:
+            if not (
+                field_held(observed.snapshot, element, subgoal)
+                and closed
+                and readers.read_value(element) == want
+            ):
                 return False
         return True
 
@@ -1853,7 +1855,7 @@ class _Run:
             self.counts.fields_not_empty += 1
             self._refuse("field_not_empty", handle=self._handle_of(element), detail=detail)
             return
-        self._refuse("not_delivered", handle=self._handle_of(element), detail=detail)
+        self._refuse("not_delivered", handle=self._handle_of(element), detail=detail, cause=detail)
 
     def _judge_submit(
         self,
@@ -2038,18 +2040,25 @@ class _Run:
         subgoal: str | None = None,
         handle: int | None = None,
         detail: object = None,
+        cause: object = None,
     ) -> None:
         """[V2.11] decision 4, [V2.37] P5: nothing dispatched is a refusal with a token and a
         strike; it replaces the latest refusal, whatever its kind. [V2.42] RT-29: several tokens
         take the kind by priority and every token is recorded. RT-30: a policy or step-limit
-        refusal also attaches to the refused action's subgoal and stands until it is proven."""
+        refusal also attaches to the refused action's subgoal and stands until it is proven.
+        [V2.85] (iv): the history shows `cause`, the act's own closed detail, in place of the
+        broader `not_delivered` when code knows one; the kind and the counts stay the token's."""
         kind, token = refusal_of(tokens)
         self.refusal = (kind, token)
         shown = detail_token(detail)  # [V2.67] D: every token, closed, with its detail
         self.turn.refusals.extend(RefusalFact(word, shown) for word in tokens)
         for word in tokens:  # every token is counted, as every token is recorded (RT-29)
             self.refusal_counts[word] = self.refusal_counts.get(word, 0) + 1
-        self._notes(Refused(token, handle) for token in tokens)  # [V2.47]: its element
+        specific = cause if is_cause(cause) else None
+        self._notes(  # [V2.47]: its element
+            Refused(specific if specific is not None and word == "not_delivered" else word, handle)
+            for word in tokens
+        )
         self.turn.refused = True
         if kind in ("policy", "step") and subgoal is not None:
             self.refused_seq += 1
