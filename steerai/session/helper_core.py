@@ -38,6 +38,7 @@ from steerai.session.hook_layout import (
     LATENCY_BUCKETS,
     LAYOUT_VERSION,
     MAGIC,
+    RETIRED_WORDS,
     STATE_CLOSED,
     STATE_FAILED,
     STATE_READY,
@@ -74,7 +75,9 @@ EXIT_MAP: Final = 3
 """The status section could not be mapped, so nothing could be published."""
 EXIT_FAILED: Final = 4
 """A failure was published in the status words (`state = failed`, an error code)."""
-_STEERS_OWN: Final = frozenset({"crc", "ask_depth", "kill_ack", "end_self_failures", "probe_tag"})
+_STEERS_OWN: Final = frozenset(
+    {"crc", "ask_depth", "kill_ack", "end_self_failures", "probe_tag", *RETIRED_WORDS}
+)
 _IMMUTABLE: Final = tuple(n for n in CONFIG_WORDS if n not in _STEERS_OWN)
 _COUNTS: Final = ("user", "injected_other", "steer", "answer", "other_steer")
 _TICK_WRAP: Final = 0xFFFF_FFFF
@@ -180,7 +183,7 @@ class HelperCore:
             extra_info=config.get("run_tag"),
             probe_vk=config.get("probe_vk"),
             dead_band_px=config.get("dead_band_px"),
-            numbered_probes=True,
+            probe_tags=True,
         )
         self._published_user: float | None = None
         self._seen_probe_tag = 0
@@ -314,7 +317,8 @@ class HelperCore:
         tag = self._config.get("probe_tag")
         if tag != self._seen_probe_tag:
             self._seen_probe_tag = tag
-            self._classifier.set_probe_tag(tag)
+            ring = [self._config.get(name) for name in RETIRED_WORDS]  # written before the tag
+            self._classifier.sync_probe(tag, ring)
 
     def _resumed(self, qpc: int) -> None:
         """HH-01: the wake input happened while the hooks were blind: counted as the person's."""
@@ -354,6 +358,7 @@ class HelperCore:
         seen = c.proof(hook)
         if seen == delivered_before:
             return False
+        s.set(f"proof_qpc_{hook}", int(c.proof_at(hook)))
         s.set(f"proof_{hook}", seen)  # last: after the times it vouches for (§5.2)
         return True
 

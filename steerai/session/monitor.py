@@ -206,7 +206,7 @@ class MonitorCore:
             extra_info=extra_info,
             probe_vk=probe_vk,
             dead_band_px=dead_band_px,
-            numbered_probes=per_hook,
+            probe_tags=per_hook,
         )
         self._tags = ProbeTags(extra_info)
         self._ledger = ProbeLedger(per_hook=per_hook, deadline_s=deadline_s)
@@ -266,8 +266,9 @@ class MonitorCore:
         return self._ledger.probe_due(now=now, counts=self._classifier)
 
     def probe_seen(self) -> bool:
-        """LW-01, #364 P1, [V2.80] #492: the last probe was seen on both hooks by its own
-        sequence number (never by timestamp, never by another own event)."""
+        """LW-01, #364 P1, [V2.81] #492: the last probe was seen on both hooks by its own tag,
+        within its deadline (never by timestamp, never by another own event). v1 never proves
+        by a probe tag: it draws none."""
         return self._ledger.probe_seen(counts=self._classifier)
 
     def lost_hooks(self, *, now: float) -> tuple[str, ...]:
@@ -499,7 +500,7 @@ class HookMonitor:
             self._core.on_probe_failed()  # fails closed: the next boundary stops (D4)
 
     def probe_seen(self) -> bool:
-        """LW-01: both hooks saw an own event since the last probe."""
+        """LW-01: both hooks saw the last probe's own tag, within its deadline."""
         return self._core.probe_seen()
 
     def latency(self) -> tuple[int, int | None, int | None]:

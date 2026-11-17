@@ -35,6 +35,8 @@ PINNED_STATUS = (
     "heartbeat_count",
     "proof_keyboard",
     "proof_mouse",
+    "proof_qpc_keyboard",
+    "proof_qpc_mouse",
     "last_own_qpc_keyboard",
     "last_own_qpc_mouse",
     "last_user_qpc_keyboard",
@@ -75,6 +77,7 @@ PINNED_CONFIG = (
     "kill_ack",
     "end_self_failures",
     "probe_tag",
+    *(f"retired_{i}" for i in range(16)),
 )
 NO_INPUT_CONTENT = ("vk", "scan", "key_code", "char", "text", "point", "pos", "_x", "_y", "data")
 

@@ -13,6 +13,7 @@ from steerai.session.hook_classifier import (
     LLKHF_INJECTED,
     LLKHF_UP,
     LLMHF_INJECTED,
+    RECENT_DRAWN,
     RETIRED_KEPT,
     TAKEOVER,
     V1_TAG,
@@ -28,7 +29,7 @@ WM_MOUSEMOVE = 0x0200
 WM_LBUTTONDOWN = 0x0201
 INJ_UP = LLKHF_INJECTED | LLKHF_UP
 
-LAYOUT_DIGESTS = {4: "0d87873d6ce8558cd0f774153f738937012ad9a27fb5251092775488bed74ab2"}
+LAYOUT_DIGESTS = {5: "642bf125e654818b1e1302940beae3f142f9fd00880e4ed006f1b0f52141a9d5"}
 """LAYOUT_VERSION -> sha256 of the status and config word lists. A changed word list fails the
 test until the version moves and a new digest is pinned."""
 
@@ -39,7 +40,7 @@ def _digest() -> str:
 
 
 def test_the_word_lists_are_pinned_to_the_layout_version() -> None:
-    assert LAYOUT_VERSION == 4, "the words carry probe tags now ([V2.81]): version 4"
+    assert LAYOUT_VERSION == 5, "the words carry the retired ring and proof times: version 5"
     assert LAYOUT_DIGESTS[LAYOUT_VERSION] == _digest()
 
 
@@ -77,7 +78,7 @@ def test_a_run_tag_wider_than_32_bits_is_refused() -> None:
 
 
 def _c(*, v2: bool = True) -> Classifier:
-    return Classifier(started_at=1.0, extra_info=RUN, probe_vk=PROBE, numbered_probes=v2)
+    return Classifier(started_at=1.0, extra_info=RUN, probe_vk=PROBE, probe_tags=v2)
 
 
 def _move(c: Classifier, extra: int, *, flags: int = LLMHF_INJECTED, now: float = 2.0) -> None:
@@ -102,8 +103,8 @@ def test_an_action_event_with_the_run_tag_proves_nothing_and_is_not_the_person()
     c = _c()
     c.set_probe_tag(0xAAAA_0001)
     _move(c, RUN)
-    c.on_mouse(message=WM_LBUTTONDOWN, flags=0, extra=RUN, pt=(1, 1), now=2.1)
-    c.on_keyboard(flags=0, extra=RUN, now=2.2, vk=0x41)
+    c.on_mouse(message=WM_LBUTTONDOWN, flags=LLMHF_INJECTED, extra=RUN, pt=(1, 1), now=2.1)
+    c.on_keyboard(flags=LLKHF_INJECTED, extra=RUN, now=2.2, vk=0x41)
     _key(c, RUN)  # even the probe key's injected key-up, with the run tag
     assert (c.proof("mouse"), c.proof("keyboard")) == (0, 0)
     assert c.last_user() is None
@@ -116,10 +117,9 @@ def test_a_retired_probe_tag_is_own_and_stale_never_the_person() -> None:
     c.set_probe_tag(0xAAAA_0002)
     _move(c, 0xAAAA_0001)
     _key(c, 0xAAAA_0001)
-    c.on_mouse(message=WM_LBUTTONDOWN, flags=0, extra=0xAAAA_0001, pt=(1, 1), now=2.1)
     assert (c.proof("mouse"), c.proof("keyboard")) == (0, 0)
     assert c.last_user() is None
-    assert c.counts() == {"steer": 3}
+    assert c.counts() == {"steer": 2}
 
 
 def test_the_retired_set_is_bounded_and_forgets_the_oldest() -> None:
@@ -265,3 +265,118 @@ def test_two_threads_never_share_a_probe_tag() -> None:
     b.join(2)
     assert len(got) == 2
     assert got[0] != got[1]
+
+
+# ---- [V2.81] review: the injected flag for every own class, the pen/touch range -----------------
+
+
+def test_the_run_tag_counts_only_on_an_injected_event_in_v2() -> None:
+    c = _c()
+    c.on_mouse(message=WM_LBUTTONDOWN, flags=0, extra=RUN, pt=(1, 1), now=2.0)
+    assert "steer" not in c.counts()
+    assert c.last_user() == 2.0  # a person's, whatever it carries
+    c.on_keyboard(flags=0, extra=RUN, now=2.1, vk=0x41)
+    assert "steer" not in c.counts()
+    _move(c, RUN)
+    assert c.counts()["steer"] == 1
+
+
+def test_a_retired_probe_tag_counts_only_on_an_injected_probe_shaped_event() -> None:
+    c = _c()
+    c.set_probe_tag(0xAAAA_0001)
+    c.set_probe_tag(0xAAAA_0002)
+    c.on_mouse(message=WM_LBUTTONDOWN, flags=0, extra=0xAAAA_0001, pt=(1, 1), now=2.0)
+    assert c.last_user() == 2.0  # a click with a stale tag, not injected: a person
+    c2 = _c()
+    c2.set_probe_tag(0xAAAA_0001)
+    c2.set_probe_tag(0xAAAA_0002)
+    c2.on_mouse(message=WM_LBUTTONDOWN, flags=LLMHF_INJECTED, extra=0xAAAA_0001, pt=(1, 1), now=2.0)
+    assert c2.last_user() == 2.0  # injected but not probe-shaped: still a person
+    assert "steer" not in c2.counts()
+
+
+def test_a_17th_back_probe_tag_is_foreign_and_never_proof() -> None:
+    c = _c()
+    for i in range(RETIRED_KEPT + 2):
+        c.set_probe_tag(0xCCCC_0000 + i)
+    c.on_keyboard(flags=INJ_UP, extra=0xCCCC_0000, now=2.0, vk=PROBE)
+    assert c.proof("keyboard") == 0
+    assert c.counts() == {"injected_other": 1}
+
+
+def test_the_recent_drawn_window_is_wider_than_the_retired_one() -> None:
+    assert RECENT_DRAWN > RETIRED_KEPT
+
+
+@pytest.mark.parametrize("pen", [0xFF51_5700, 0xFF51_5780, 0xFF51_57FF])
+def test_the_pen_and_touch_signature_range_is_never_drawn_or_a_run_tag(pen: int) -> None:
+    with pytest.raises(ValueError, match="pen"):
+        ProbeTags(pen)
+    tags = _scripted(pen, 9)
+    assert tags.draw() == 9
+
+
+def test_a_draw_that_cannot_find_a_tag_gives_up() -> None:
+    tags = ProbeTags(RUN, rand32=lambda: 0)
+    with pytest.raises(RuntimeError, match="probe tag"):
+        tags.draw()
+
+
+def test_the_tags_before_the_latest_are_the_retired_ring_newest_first() -> None:
+    tags = _scripted(11, 12, 13)
+    assert tags.retired() == ()
+    tags.draw()
+    assert tags.retired() == ()
+    tags.draw()
+    tags.draw()
+    assert tags.retired() == (12, 11)
+
+
+# ---- PT-02: an echo after the deadline is a lost hook ------------------------------------------
+
+
+def _timed(c: Classifier, tag: int, *, at: float) -> None:
+    c.on_mouse(message=WM_MOUSEMOVE, flags=LLMHF_INJECTED, extra=tag, pt=(1, 1), now=at)
+    c.on_keyboard(flags=INJ_UP, extra=tag, now=at, vk=PROBE)
+
+
+def _sent(c: Classifier, ledger: ProbeLedger, tags: ProbeTags, now: float) -> int:
+    return ledger.probe_sent(now=now, begin=lambda: _begin(c, tags))
+
+
+def test_an_echo_at_the_deadline_counts_and_one_a_millisecond_later_is_lost() -> None:
+    for at, proven in ((21.05, True), (21.051, False)):
+        c = _c()
+        ledger, tags = _ledger()
+        tag = _sent(c, ledger, tags, 20.0)
+        _timed(c, tag, at=at)
+        assert ledger.probe_seen(counts=c) is proven
+        assert ledger.lost_hooks(now=21.055, counts=c) == (() if proven else ("keyboard", "mouse"))
+        assert ledger.probe_ok(now=21.055, counts=c) is proven
+
+
+# ---- v1 never draws; a superseded probe's echo is not the watch probe's -------------------------
+
+
+def test_v1_never_draws_a_probe_tag() -> None:
+    from steerai.session.monitor import MonitorCore  # noqa: PLC0415 - this test only
+
+    core = MonitorCore(started_at=1.0)
+    assert core.probe_sent(now=2.0) == 0
+    assert core._tags.retired() == ()
+    assert not core._tags._recent
+
+
+def test_a_superseded_probes_late_echo_is_not_the_next_probes_proof() -> None:
+    """The loss watch sends one probe after the loss; the first, unanswered probe's echo that
+    arrives inside the window is stale: the hook is still unproven, never 'slow'."""
+    from steerai.session.monitor import MonitorCore  # noqa: PLC0415 - this test only
+
+    core = MonitorCore(started_at=1.0, per_hook=True, extra_info=RUN, deadline_s=1.05)
+    first = core.probe_sent(now=10.0)
+    second = core.probe_sent(now=12.0)  # the watch probe
+    assert second != first
+    core.on_mouse(message=WM_MOUSEMOVE, flags=LLMHF_INJECTED, extra=first, pt=(1, 1), now=12.1)
+    core.on_keyboard(flags=INJ_UP, extra=first, now=12.1, vk=PROBE)
+    assert core.probe_seen() is False
+    assert core.lost_hooks(now=13.2) == ("keyboard", "mouse")
