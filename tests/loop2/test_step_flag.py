@@ -44,6 +44,13 @@ from tests.loop2.world_fakes import GO, World, act, decision, task
 GOAL = "type Ada Lovelace as the full name"
 
 
+@pytest.fixture(autouse=True)
+def _localappdata(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """As `test_cli_v2.py`: `parse_v2` without `--price-file` reads LOCALAPPDATA, which a Linux
+    CI runner does not set; every test here runs with its own."""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+
 # ---- the flag's default ----------------------------------------------------------------------
 
 
