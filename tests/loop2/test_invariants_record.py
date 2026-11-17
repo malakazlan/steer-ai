@@ -4,6 +4,8 @@ pinned, passing, in `test_ledger_keys.py`."""
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from steerai.loop2.record import (
@@ -178,6 +180,16 @@ def test_an_open_record_refuses_the_start_and_names_the_action() -> None:
 @pending("[V2.15] Q9: an unknown outcome is unsettled", step=4)
 def test_an_unknown_outcome_refuses_the_start() -> None:
     assert start_refusal([record("k-1")], {"k-1": "unknown"}) is not None
+
+
+@pending("[V2.88] L11, [V2.15] Q9: a crash after the ledger write refuses the start", step=4)
+def test_a_written_record_with_no_outcome_refuses_the_start() -> None:
+    """The process died after the write-ahead and before the dispatch was marked: the record is
+    still `written` and the ledger holds no outcome for its key at all."""
+    written = dataclasses.replace(record("k-1", "click", "Button"), phase="written")
+    refusal = start_refusal([written], {})
+    assert refusal is not None
+    assert (refusal.token, refusal.verb, refusal.role) == ("unsettled_action", "click", "Button")
 
 
 @pending("[V2.15] Q9: settled records never refuse", step=4)

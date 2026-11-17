@@ -1,13 +1,19 @@
 """`content_present` at the standard tier (packet v2-step4-claims §3.1, §3.2; [V2.3], [V2.15] Q4
-and amendment 1). Red on the step 4 stub."""
+and amendment 1), refreshed to the later rulings: the baseline and its rebase ([V2.72],
+[V2.73]), task-wide echo guards ([V2.38]), every param on one observation with one element per
+param ([V2.39], [V2.40]), the scope ([V2.73] (1)), the own name only ([V2.88] L10) and the
+step 3 field-owned function applied to every field typed in the task ([V2.90] (2)) and the
+typed-words-only rule ([V2.91]). Red on the step 4 stub."""
 
 from __future__ import annotations
 
 import dataclasses
 from collections.abc import Mapping, Sequence
 
+import pytest
+
 from steerai.loop2.claims import Checked, RuntimeId, SubgoalFacts, check_content
-from steerai.loop2.decision import Claim
+from steerai.loop2.decision import CLAIM_CLOSES, Claim
 from steerai.loop2.task import GoalSpan
 from steerai.world.elements import Element
 from steerai.world.landmarks import Landmark
@@ -18,27 +24,32 @@ TEXT = GoalSpan.of(GOAL, 20, 29)
 """`red shoes`."""
 SHORT = GoalSpan.of("go ox", 3, 5)
 BASELINE = snapshot(PAGE)
+"""The task's first full observation ([V2.72] One)."""
 RESULT = element(10, "Text", "Red shoes in stock", (9, 10), 1)
 
 
-BASE = SubgoalFacts(params={"text": TEXT, "short": SHORT}, commit="none", baseline=BASELINE)
+BASE = SubgoalFacts(params={"text": TEXT}, commit="none", baseline=BASELINE)
 
 
 def facts(
     *,
+    params: Mapping[str, GoalSpan] | None = None,
     baseline: Snapshot = BASELINE,
     typed_fields: tuple[RuntimeId, ...] = (),
     revealed_roots: tuple[RuntimeId, ...] = (),
     controlled: tuple[RuntimeId, ...] = (),
     typed_params: frozenset[str] = frozenset(),
+    typed_words: frozenset[str] = frozenset(),
 ) -> SubgoalFacts:
     return dataclasses.replace(
         BASE,
+        params=BASE.params if params is None else params,
         baseline=baseline,
         typed_fields=typed_fields,
         revealed_roots=revealed_roots,
         controlled=controlled,
         typed_params=typed_params,
+        typed_words=typed_words,
     )
 
 
@@ -138,11 +149,39 @@ def test_the_address_bar_is_outside_scope() -> None:
     assert "outside_scope" in check(claim(bar.id), [bar]).tokens
 
 
-@pending("§3.1 rule 5 not_in_delta", step=4)
-def test_an_element_already_in_the_baseline_is_not_in_delta() -> None:
+@pending("§3.1 rule 5 not_in_delta; [V2.72] One: the task's first full observation", step=4)
+def test_words_on_the_page_at_the_tasks_first_observation_never_close_on_that_alone() -> None:
     old = element(11, "Text", "Red shoes", (9, 11), 1)
     subgoal = facts(baseline=snapshot([*PAGE, old]))
     assert "not_in_delta" in check(claim(old.id), [old], subgoal).tokens
+
+
+def test_content_present_closes_a_page_subgoal_as_navigated_does() -> None:
+    """[V2.72], [V2.73]: the runner's baseline and its rebase are per subgoal and per closing
+    kind, never per claim kind, so `content_present` shares `navigated`'s baseline and rebase
+    exactly while both close a page subgoal."""
+    assert CLAIM_CLOSES["content_present"] == CLAIM_CLOSES["navigated"] == "page"
+
+
+CLOSED_ON = snapshot([*PAGE, RESULT])
+"""The observation another page subgoal sharing the `red shoes` span closed on."""
+
+
+@pending("[V2.72] Two: one content_present proof never closes two page subgoals", step=4)
+def test_one_proof_does_not_close_two_page_subgoals_sharing_a_span() -> None:
+    """`search red shoes` closed citing RESULT; `open the red shoes page` shares the span, so it
+    was rebased to the observation of that close, and the same element proves nothing more."""
+    rebased = facts(baseline=CLOSED_ON)
+    result = check(claim(RESULT.id), [RESULT], rebased)
+    assert result.proof is None
+    assert "not_in_delta" in result.tokens
+
+
+@pending("[V2.72] Two: after a rebase, only newer evidence closes", step=4)
+def test_after_a_rebase_newer_evidence_closes_the_second_subgoal() -> None:
+    newer = element(12, "Heading", "Red shoes", (9, 12), 1)
+    result = check(claim(newer.id), [RESULT, newer], facts(baseline=CLOSED_ON))
+    assert result.proof is not None
 
 
 @pending("§3.1 rule 5: a changed name is in the delta", step=4)
@@ -164,8 +203,9 @@ def test_a_replaced_top_document_gives_the_new_top_document_signal() -> None:
     assert "new_top_document" in result.proof.signals
 
 
-@pending("§3.1 rule 6 inside_field", step=4)
-def test_an_element_inside_the_typed_fields_container_is_inside_field() -> None:
+@pending("§3.1 rule 6 inside_field; [V2.38]: every field typed in the task", step=4)
+def test_an_element_inside_a_typed_fields_container_is_inside_field() -> None:
+    """The field was typed into under another subgoal: the echo guards are task-wide."""
     group = element(50, "Group", "", (9, 50), 1)
     field = element(51, "Edit", "Search", (9, 51), 50)
     hint = element(52, "Text", "red shoes", (9, 52), 50)
@@ -173,10 +213,125 @@ def test_an_element_inside_the_typed_fields_container_is_inside_field() -> None:
     assert "inside_field" in check(claim(hint.id), [group, field, hint], subgoal).tokens
 
 
+@pending("[V2.88] L10, [V2.90] (2): a field Steer typed into is never evidence", step=4)
+def test_a_field_steer_typed_never_counts_even_when_its_name_holds_the_words() -> None:
+    typed = element(53, "Edit", "red shoes", (9, 53), 1)
+    result = check(claim(typed.id), [typed], facts(typed_fields=(typed.runtime_id,)))
+    assert result.proof is None
+    assert "inside_field" in result.tokens
+
+
 @pending("§3.1 rule 10 too_short", step=4)
 def test_a_single_token_under_three_characters_is_too_short() -> None:
     ox = element(11, "Text", "ox", (9, 11), 1)
-    assert "too_short" in check(claim(ox.id, param="short"), [ox]).tokens
+    subgoal = facts(params={"short": SHORT})
+    assert "too_short" in check(claim(ox.id, param="short"), [ox], subgoal).tokens
+
+
+# ---- the element's own name only ([V2.88] L10) -----------------------------------------------
+
+NAMED_GROUP = element(55, "Group", "Red shoes", (9, 55), 1)
+
+
+@pending("[V2.88] L10: the element's own name only, never its group name", step=4)
+def test_words_only_in_the_group_name_are_words_missing() -> None:
+    inside = element(56, "Text", "In stock", (9, 56), 55)
+    result = check(claim(inside.id), [NAMED_GROUP, inside])
+    assert result.proof is None
+    assert "words_missing" in result.tokens
+
+
+@pending("[V2.88] L10: an unnamed element never takes its group's name", step=4)
+def test_an_unnamed_element_in_a_named_group_is_words_missing() -> None:
+    unnamed = element(57, "Text", "", (9, 57), 55)
+    result = check(claim(unnamed.id), [NAMED_GROUP, unnamed])
+    assert result.proof is None
+    assert "words_missing" in result.tokens
+
+
+# ---- every param on one observation, one element per param ([V2.39], [V2.40]) ----------------
+
+PAIR_GOAL = "find red shoes and blue hats"
+PAIR = facts(params={"text": GoalSpan.of(PAIR_GOAL, 5, 14), "hats": GoalSpan.of(PAIR_GOAL, 19, 28)})
+SHOES = element(90, "Text", "Red shoes in stock", (9, 90), 1)
+HATS = element(91, "Text", "Blue hats on sale", (9, 91), 1)
+BOTH = element(92, "Text", "Red shoes and blue hats", (9, 92), 1)
+
+
+@pending("[V2.39]: a page subgoal never closes on a subset of its params", step=4)
+def test_a_claim_holding_one_of_two_params_is_param_unproven() -> None:
+    result = check(claim(SHOES.id), [SHOES, HATS], PAIR)
+    assert result.proof is None
+    assert "param_unproven" in result.tokens
+
+
+@pending("[V2.39]: every param proven on the same observation", step=4)
+def test_each_param_held_by_its_own_element_on_one_observation_is_a_proof() -> None:
+    assert check(claim(SHOES.id, HATS.id), [SHOES, HATS], PAIR).proof is not None
+
+
+@pending("[V2.39]: a param shown only on an earlier observation proves nothing now", step=4)
+def test_a_param_whose_element_is_gone_from_this_observation_is_unproven() -> None:
+    result = check(claim(SHOES.id, HATS.id), [HATS], PAIR)
+    assert result.proof is None
+    assert "id_not_listed" in result.tokens
+
+
+@pending("[V2.40]: one element proves at most one param", step=4)
+def test_one_element_holding_two_params_is_evidence_reused() -> None:
+    result = check(claim(BOTH.id), [BOTH], PAIR)
+    assert result.proof is None
+    assert "evidence_reused" in result.tokens
+
+
+@pending("[V2.40]: one element per param, whichever params the element also holds", step=4)
+def test_an_element_holding_both_params_and_one_holding_one_is_a_proof() -> None:
+    assert check(claim(BOTH.id, HATS.id), [BOTH, HATS], PAIR).proof is not None
+
+
+# ---- the scope ([V2.73] (1)) -----------------------------------------------------------------
+
+FRAME = element(95, "Document", "Reviews", (9, 95), 1)
+"""A Document nested in the scope Document (an iframe)."""
+OTHER_DOC = element(96, "Document", "Other", (7, 96), None)
+"""A second top Document, holding nothing Steer acted on."""
+
+
+@pending("[V2.73] (1): nothing acted in the task, the scope is the top Document", step=4)
+def test_with_nothing_acted_the_scope_is_the_top_document() -> None:
+    result = check_content(
+        claim(RESULT.id), snapshot([*PAGE, RESULT]), facts(), scope_document=None
+    )
+    assert result.proof is not None
+
+
+@pending("[V2.73] (1): with nothing acted, a tab name is still outside the scope", step=4)
+def test_with_nothing_acted_a_tab_name_is_outside_scope() -> None:
+    tab = element(30, "TabItem", "Red shoes - results", (9, 30), None)
+    after = snapshot([*PAGE, tab])
+    assert (
+        "outside_scope" in check_content(claim(tab.id), after, facts(), scope_document=None).tokens
+    )
+
+
+@pending("[V2.73] (1): nothing acted and no single top Document fails closed", step=4)
+def test_with_nothing_acted_and_two_top_documents_there_is_no_scope() -> None:
+    after = snapshot([*PAGE, RESULT, OTHER_DOC])
+    result = check_content(claim(RESULT.id), after, facts(), scope_document=None)
+    assert result.proof is None
+    assert "no_scope" in result.tokens
+
+
+@pending("[V2.73] (1): the outermost Document holding the acted element is the scope", step=4)
+def test_an_element_in_a_document_nested_in_the_scope_is_in_scope() -> None:
+    review = element(97, "Text", "Red shoes fit well", (9, 97), 95)
+    assert check(claim(review.id), [FRAME, review]).proof is not None
+
+
+@pending("[V2.73] (1): another Document than the acted element's is outside the scope", step=4)
+def test_an_element_in_another_top_document_is_outside_scope() -> None:
+    elsewhere = element(98, "Text", "Red shoes", (7, 98), 96)
+    assert "outside_scope" in check(claim(elsewhere.id), [OTHER_DOC, elsewhere]).tokens
 
 
 @pending("§3.1: a proof and reject tokens never come together", step=4)
@@ -376,6 +531,77 @@ def test_an_unread_controller_for_never_fails_closed() -> None:
     assert "landmarks_unread" not in result.tokens
 
 
+BOX = element(170, "Group", "", (9, 170), 1)
+BOX_FIELD = element(171, "Edit", "Search", (9, 171), 170)
+BOX_HINTS = element(172, "List", "", (9, 172), 170)
+BOX_HINT = element(173, "Text", "red shoes", (9, 173), 172)
+TWO_FIELDS = [COMBO, COMBO_FIELD, COMBO_LIST, COMBO_ITEM, BOX, BOX_FIELD, BOX_HINTS, BOX_HINT]
+
+
+@pending("[V2.90] (2): the step 3 field-owned rules apply to every field typed in the task", step=4)
+@pytest.mark.parametrize(
+    ("cited", "rule"),
+    [(COMBO_ITEM, "owned_by_combobox"), (BOX_HINT, "owned_by_parent")],
+    ids=["first_field_rule_1", "second_field_rule_4"],
+)
+@pytest.mark.parametrize("order", [1, -1], ids=["typed_in_order", "typed_in_reverse"])
+def test_every_field_typed_in_the_task_owns_its_lists(
+    cited: Element, rule: str, order: int
+) -> None:
+    """Two fields were typed into, under two subgoals; neither is privileged, so a list each one
+    owns is rejected whichever was typed last."""
+    typed = (COMBO_FIELD.runtime_id, BOX_FIELD.runtime_id)[::order]
+    tokens = check(claim(cited.id), TWO_FIELDS, facts(typed_fields=typed)).tokens
+    assert "under_suggestions" in tokens
+    assert rule in tokens
+
+
+NO_RESULTS = element(180, "Text", "No results for red shoes", (9, 180), 1)
+"""A page's answer to a search that found nothing: outside the field, a new element whose own
+name holds every typed word."""
+
+
+@pending("[V2.90] (2), [V2.91], #511 must-not-prove: 'No results for <typed words>'", step=4)
+def test_a_no_results_line_echoing_the_typed_words_never_proves_content_present() -> None:
+    """#511, closed by [V2.91] once this passes: every word of the param is a word Steer typed
+    in the task, so `content_present` cannot prove it, whatever element holds them. Pending
+    until 4b; any mark on it names #511 and [V2.91]."""
+    subgoal = facts(
+        typed_fields=(FIELD.runtime_id,),
+        typed_params=frozenset({"text"}),
+        typed_words=frozenset({"red", "shoes"}),
+    )
+    result = check(claim(NO_RESULTS.id), [NO_RESULTS], subgoal)
+    assert result.proof is None
+    assert "typed_words_only" in result.tokens
+
+
+@pending("[V2.91]: a param of typed words only is never proven, an honest result included", step=4)
+def test_a_real_result_holding_only_typed_words_is_typed_words_only() -> None:
+    """The accepted consequence: such a search closes by the page or address kind instead."""
+    subgoal = facts(typed_fields=(FIELD.runtime_id,), typed_words=frozenset({"red", "shoes"}))
+    result = check(claim(RESULT.id), [RESULT], subgoal)
+    assert result.proof is None
+    assert "typed_words_only" in result.tokens
+
+
+@pending("[V2.91]: a param with a word Steer did not type stays provable", step=4)
+def test_a_param_mixing_typed_and_untyped_words_is_proven_by_an_element_holding_all() -> None:
+    subgoal = facts(typed_fields=(FIELD.runtime_id,), typed_words=frozenset({"red"}))
+    result = check(claim(RESULT.id), [RESULT], subgoal)
+    assert result.proof is not None
+    assert "typed_words_only" not in result.tokens
+
+
+@pending("[V2.91]: the echo lacks the untyped word, so it never proves the param", step=4)
+def test_an_echo_of_the_typed_words_only_does_not_prove_a_mixed_param() -> None:
+    echo = element(181, "Text", "No results for red", (9, 181), 1)
+    subgoal = facts(typed_fields=(FIELD.runtime_id,), typed_words=frozenset({"red"}))
+    result = check(claim(echo.id), [echo], subgoal)
+    assert result.proof is None
+    assert "words_missing" in result.tokens
+
+
 @pending("[V2.21] #9: the option rule stays on top of the field-owned rules", step=4)
 def test_the_option_rule_comes_before_the_field_owned_rules() -> None:
     box = element(160, "Group", "", (9, 160), 1)
@@ -395,7 +621,7 @@ def test_the_option_rule_comes_before_the_field_owned_rules() -> None:
     assert tokens[0] == "option_evidence"
 
 
-@pending("[V2.17].2: a selectable ListItem is never evidence for text Steer typed", step=4)
+@pending("[V2.17].2, [V2.38]: a selectable ListItem is never evidence for typed text", step=4)
 def test_a_selectable_list_item_is_option_evidence_for_typed_text() -> None:
     option = Element(
         id=75,
@@ -429,8 +655,9 @@ def test_a_selected_list_item_is_option_evidence_for_typed_text() -> None:
     assert "option_evidence" in check(claim(option.id), shown, subgoal).tokens
 
 
-@pending("[V2.17].2: the option rule covers only the param Steer typed under the subgoal", step=4)
-def test_a_list_option_is_evidence_when_the_subgoal_typed_something_else() -> None:
+@pending("[V2.17].2, [V2.38]: the option rule covers only words Steer typed in the task", step=4)
+def test_a_list_option_is_evidence_for_words_steer_never_typed() -> None:
+    """Steer typed other text in the task (the field-owned rules are on), never these words."""
     option = Element(
         id=77,
         depth=2,
@@ -441,7 +668,7 @@ def test_a_list_option_is_evidence_when_the_subgoal_typed_something_else() -> No
         parent_id=73,
         caps=("selectable",),
     )
-    subgoal = facts(typed_fields=(FORM_FIELD.runtime_id,), typed_params=frozenset({"short"}))
+    subgoal = facts(typed_fields=(FORM_FIELD.runtime_id,), typed_params=frozenset())
     shown = [FORM, INNER, FORM_FIELD, FORM_LIST, option]
     assert check(claim(option.id), shown, subgoal).proof is not None
 

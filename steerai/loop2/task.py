@@ -19,6 +19,9 @@ Closes = Literal["value", "state", "page"]
 """[V2.39]: the kind of fact that closes a subgoal."""
 Wanted = Literal["on", "off", "selected", "expanded", "collapsed"]
 """[V2.78]: the state a state subgoal declares at intake, the closed set code can read."""
+Step = Literal[3, 4]
+"""[V2.86] (4), [V2.88]: the V2 step a task runs under (V2 §12); 3 unless chosen. Not
+`Envelope.mode`: the step picks the wording and the tables, the mode the consent rule."""
 
 
 UNNAMED: Final = "unnamed"
@@ -177,6 +180,8 @@ class Task:
     envelope: Envelope
     budgets: Budgets
     history: list[Turn]
+    step: Step = 3
+    """[V2.86] (4): step 3 unless the run chose step 4 (`--step 4`, refused until `ready(4)`)."""
 
 
 def _positive(value: object, *, integer: bool) -> bool:
