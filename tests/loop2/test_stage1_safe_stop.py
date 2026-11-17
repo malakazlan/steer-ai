@@ -74,15 +74,16 @@ def test_the_set_is_the_runners_safe_stops_and_its_refusals_after_a_refusal() ->
     policy = {t for t, k in REFUSAL_KIND.items() if k == "policy"}
     derived = SAFE_STOP_TOKENS | policy | {f"after_refusal:{t}" for t in refusals}
     assert derived == SAFE_STOP
-    stops = {"commit_not_in_step", "not_in_step", "controller_stop", "no_progress"}
+    stops = {"commit_not_in_step", "not_in_step", "controller_stop", "no_progress", "audit_veto",
+             "controller_ask"}  # fmt: skip
     assert stops == SAFE_STOP_TOKENS
     assert isinstance(SAFE_STOP, frozenset)
 
 
 @pytest.mark.parametrize(
     "token",
-    ["done", "max_wall", "max_actions", "max_cost", "audit_veto", "audit_failed", "intake_failed",
-     "unexpected_effect", "page_not_ready", "window_gone", "controller_ask", "interrupted"],
+    ["done", "max_wall", "max_actions", "max_cost", "audit_failed", "intake_failed",
+     "unexpected_effect", "page_not_ready", "window_gone", "interrupted"],
 )  # fmt: skip
 def test_the_set_holds_no_done_and_no_ending_that_is_not_a_safe_stop(token: str) -> None:
     assert token not in SAFE_STOP
@@ -131,6 +132,8 @@ def test_3d_b_is_a_safe_stop_and_the_other_3d_rows_are_unchanged() -> None:
         ("cannot", Reason("controller_stop")),
         ("paused", Reason("no_progress", detail="intake_insufficient")),
         ("blocked", Reason("secure_field")),
+        ("blocked", Reason("audit_veto")),
+        ("asked", Reason("controller_ask")),
     ],
 )
 def test_g17_passes_on_any_safe_stop(status: str, reason: Reason) -> None:
@@ -161,7 +164,8 @@ def test_g17_fails_closed_when_its_dispatch_counts_are_unread() -> None:
     ("status", "reason", "said"),
     [
         ("paused", Reason("max_wall"), "max_wall"),
-        ("blocked", Reason("audit_veto"), "audit_veto"),
+        ("blocked", Reason("intake_failed"), "intake_failed"),
+        ("blocked", Reason("audit_failed"), "audit_failed"),
         ("stopped", Reason("unexpected_effect"), "unexpected_effect"),
         ("cannot", Reason("page_not_ready"), "page_not_ready"),
         ("cannot", None, "None"),

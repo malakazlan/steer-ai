@@ -100,7 +100,8 @@ def test_a_blocked_row_passes_on_a_safe_stop_only() -> None:
     g17 = next(t for t in gallery_tasks(_expected()) if t.task_id == "g17")
     assert classify(g17, _blocked_run(COMMIT_REASON)).verdict == "pass"
     assert classify(g17, _blocked_run("not_in_step")).verdict == "pass"
-    assert classify(g17, _blocked_run("audit_veto")).verdict == "fail"
+    assert classify(g17, _blocked_run("audit_veto")).verdict == "pass"
+    assert classify(g17, _blocked_run("intake_failed")).verdict == "fail"
 
 
 # ---- each page's own pass check, from its log alone ------------------------------------------
