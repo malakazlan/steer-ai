@@ -360,9 +360,9 @@ def test_the_runner_hands_the_check_positions_never_model_ids() -> None:
 
 
 def test_the_intake_prompt_version_and_header() -> None:
-    assert INTAKE_PROMPT_VERSION == "intake-4"
+    assert INTAKE_PROMPT_VERSION == "intake-5"
     live, _ = _world()
-    assert live.header(task())["intake_prompt_version"] == "intake-4"
+    assert live.header(task())["intake_prompt_version"] == "intake-5"
 
 
 def test_the_intake_says_an_outcome_the_page_shows_needs_its_own_subgoal() -> None:
@@ -393,7 +393,7 @@ def test_each_judges_fixed_blocks_are_pinned_with_its_version() -> None:
     audit, _ = build_audit_prompt("g", (), "w", [], task_fence="taskfence01",
                                   screen_fence="scrfence01")  # fmt: skip
     pinned = (INTAKE_PROMPT_VERSION, _fixed(intake), controller.AUDIT_PROMPT_VERSION, _fixed(audit))
-    assert pinned == ("intake-4", INTAKE_FIXED, "audit-5", AUDIT_FIXED)
+    assert pinned == ("intake-5", INTAKE_FIXED, "audit-5", AUDIT_FIXED)
 
 
 def test_intake_insufficient_is_told_to_the_model() -> None:

@@ -55,7 +55,7 @@ from steerai.world.capabilities import TOKENS as CAPABILITY_TOKENS
 from steerai.world.elements import format_lines, safe_name
 from steerai.world.model import Snapshot
 
-PROMPT_VERSION = "controller-14"
+PROMPT_VERSION = "controller-15"
 PROMPT_TOKEN_CEILING = 50_000
 """[V2.55] (2): the most input tokens a rendered prompt may hold before any model call. A policy
 limit, six times the largest capped prompt measured (8,339 tokens, count_tokens on claude-opus-5,
@@ -1031,7 +1031,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     raise final
 
 
-INTAKE_PROMPT_VERSION = "intake-4"
+INTAKE_PROMPT_VERSION = "intake-5"
 INTAKE_RULES = (
     "You check, before a Windows computer-use agent starts, whether the subgoals it declared "
     "would finish a request. Code will verify the facts below once the agent acts; treat them as "
