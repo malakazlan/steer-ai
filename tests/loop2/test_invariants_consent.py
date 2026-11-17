@@ -1,11 +1,15 @@
 """The gate ask inside the v2 loop, `bootstrap` mode (V2 §7.2, §8.3, §8.4, §8.5; packet
-v2-step4-claims §3.4, §3.5; [V2.15] Q5, Q6, Q7). Red on the step 4 stub."""
+v2-step4-claims §3.4, §3.5; [V2.15] Q5, Q6, Q7), refreshed to the refusal kinds ([V2.74]) and
+[V2.88]: the full request and the unchecked recipient on the ask (L2), the yes consumed only when
+the recheck matches what the ask showed (L4), no dispatch after other input (L5), and the
+scripted no, timeout and state-change cases (L11). Red on the step 4 stub."""
 
 from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import get_args
 
 import pytest
 
@@ -23,7 +27,10 @@ from steerai.loop2.consent import (
     goal_prompt,
     goal_reasons,
     goal_row,
+    refusal_kind,
 )
+from steerai.loop2.runner import REFUSAL_KIND
+from steerai.loop2.task import Commit
 from steerai.orchestrator.contracts import GateDecision, Risk
 from steerai.orchestrator.gate import Ask
 from steerai.orchestrator.ledger import Admission
@@ -56,7 +63,12 @@ class Script:
     verdict: Verdict = "serves"
     answer: Callable[[Ask], str] = yes
     after: RefusalToken | None = None
+    recheck: GateRequest | None = None
+    """The request recomputed on the fresh observe after the yes; None: the one asked about."""
+    quiet: bool = True
+    """[V2.88] L5: no input but to Steer's own ask window between the answer and the dispatch."""
     written: bool = True
+    request: GateRequest = field(default_factory=lambda: REQUEST)
     events: list[str] = field(default_factory=list)
     asks: list[Ask] = field(default_factory=list)
     rows: list[GoalRow] = field(default_factory=list)
@@ -82,13 +94,19 @@ class Script:
         self.asks.append(ask)
         return self.answer(ask)
 
-    def _after(self) -> RefusalToken | None:
+    def _after(self) -> GateRequest | RefusalToken:
         self.events.append("after_yes")
-        return self.after
+        if self.after is not None:
+            return self.after
+        return self.request if self.recheck is None else self.recheck
 
     def _write(self, decision: GateDecision) -> bool:  # noqa: ARG002 - the GateSteps shape
         self.events.append("write_ahead")
         return self.written
+
+    def _quiet(self) -> bool:
+        self.events.append("input_check")
+        return self.quiet
 
     def _dispatch(self, decision: GateDecision) -> ActionResult:
         self.events.append("dispatch")
@@ -105,6 +123,7 @@ class Script:
             ask=self._ask,
             after_yes=self._after,
             write_ahead=self._write,
+            quiet=self._quiet,
             dispatch=self._dispatch,
         )
 
@@ -112,14 +131,24 @@ class Script:
 def run(
     script: Script, request: GateRequest = REQUEST, consents: Consents | None = None
 ) -> GateEnd:
+    script.request = request
     return gate_pass(request, script.steps(), consents or Consents(), task_id="t", goal=GOAL)
 
 
-ORDER = ["checks", "admit", "goal_check", "ask", "after_yes", "write_ahead", "dispatch"]
+ORDER = [
+    "checks",
+    "admit",
+    "goal_check",
+    "ask",
+    "after_yes",
+    "write_ahead",
+    "input_check",
+    "dispatch",
+]
 
 
 @pending(
-    "§3.4: checks, ledger, goal check, ask, after-yes, write-ahead, dispatch, in order", step=4
+    "§3.4, [V2.88] L5: checks, ledger, goal, ask, recheck, write-ahead, input, dispatch", step=4
 )
 def test_a_yes_runs_every_step_in_order_and_dispatches_once() -> None:
     script = Script()
@@ -226,6 +255,74 @@ def test_a_failed_after_yes_check_refuses_and_dispatches_nothing(token: RefusalT
     assert script.dispatched == []
 
 
+@pending("[V2.88] L4: risk and form facts are recomputed after the yes", step=4)
+@pytest.mark.parametrize(
+    "recheck",
+    [
+        dataclasses.replace(REQUEST, risk="R3"),
+        dataclasses.replace(REQUEST, reasons=("secure_type",)),
+        dataclasses.replace(REQUEST, name="Send all"),
+        dataclasses.replace(REQUEST, text="red boots"),
+        dataclasses.replace(REQUEST, window="Other"),
+    ],
+    ids=["tier", "ask_reasons", "name", "text", "window"],
+)
+def test_any_change_from_what_the_ask_showed_is_screen_changed_during_ask(
+    recheck: GateRequest,
+) -> None:
+    script = Script(recheck=recheck)
+    end = run(script)
+    assert (end.kind, end.token) == ("refused", "screen_changed_during_ask")
+    assert "write_ahead" not in script.events
+    assert script.dispatched == []
+
+
+@pending("[V2.88] L4: a yes is consumed only by a dispatch whose recheck matched", step=4)
+def test_a_yes_voided_by_a_changed_recheck_is_never_spent_later() -> None:
+    consents = Consents()
+    script = Script(recheck=dataclasses.replace(REQUEST, risk="R3"))
+    run(script, consents=consents)
+    asked = script.asks[0].decision_id
+    assert consents.spend(decision_id=asked, action_key=KEY) is False
+
+
+@pending("[V2.88] L5: input between the answer and the dispatch means no dispatch", step=4)
+def test_input_after_the_answer_dispatches_nothing() -> None:
+    script = Script(quiet=False)
+    end = run(script)
+    assert end.kind != "dispatched"
+    assert script.dispatched == []
+
+
+@pending("[V2.88] L11: the scripted no, timeout and state change each dispatch nothing", step=4)
+@pytest.mark.parametrize(
+    "script",
+    [
+        Script(answer=lambda ask: f"no:{ask.decision_id}"),
+        Script(answer=lambda _ask: "unanswered"),
+        Script(recheck=dataclasses.replace(REQUEST, name="Delete")),
+    ],
+    ids=["no", "timeout", "state_change_after_ask"],
+)
+def test_a_scripted_no_timeout_or_state_change_dispatches_nothing(script: Script) -> None:
+    end = run(script)
+    assert end.kind != "dispatched"
+    assert script.dispatched == []
+    assert "write_ahead" not in script.events
+
+
+@pending("[V2.88] L2: the ask shows the full request and the unchecked recipient", step=4)
+@pytest.mark.parametrize("commit", ["send", "submit"])
+def test_a_commit_ask_shows_the_full_request_and_that_the_recipient_was_not_checked(
+    commit: Commit,
+) -> None:
+    script = Script()
+    run(script, dataclasses.replace(REQUEST, commit=commit))
+    ask = script.asks[0]
+    assert GOAL in ask.params.values()
+    assert "recipient_unchecked" in ask.reasons
+
+
 @pending("§8.4: a failed write-ahead dispatches nothing and ends blocked", step=4)
 def test_a_failed_write_ahead_ends_blocked_wal_unavailable() -> None:
     script = Script(written=False)
@@ -246,6 +343,34 @@ def test_generated_text_is_asked_with_the_generated_reason() -> None:
     script = Script()
     run(script, dataclasses.replace(REQUEST, text_from="agent"))
     assert "generated_text" in script.asks[0].reasons
+
+
+# ---- refusal kinds ([V2.74]) -----------------------------------------------------------------
+
+WORLD = ("not_foreground", "screen_changed_during_ask", "composer_unreadable", "composer_differs")
+
+
+def test_every_gate_refusal_token_declares_its_kind() -> None:
+    """[V2.74]: no default kind; a token without one is the missing-fact-read-as-safe error."""
+    assert sorted(set(get_args(RefusalToken)) - set(REFUSAL_KIND)) == []
+
+
+def test_the_world_facts_at_the_ask_are_world_and_done_already_is_a_model_fault() -> None:
+    assert {t: REFUSAL_KIND[t] for t in WORLD} == dict.fromkeys(WORLD, "world")
+    assert REFUSAL_KIND["done_already"] == "model"
+
+
+@pending("[V2.74]: a world fact met at the ask is a world refusal", step=4)
+@pytest.mark.parametrize("token", WORLD)
+@pytest.mark.parametrize("on_row", [True, False])
+def test_a_world_fact_at_the_ask_is_world(token: RefusalToken, on_row: bool) -> None:
+    assert refusal_kind(token, commit_on_row=on_row) == "world"
+
+
+@pending("[V2.74]: repeating a delivered commit is the model's choice, a strike", step=4)
+@pytest.mark.parametrize("on_row", [True, False])
+def test_done_already_is_a_model_fault(on_row: bool) -> None:
+    assert refusal_kind("done_already", commit_on_row=on_row) == "model"
 
 
 # ---- the goal check ([V2.15] Q5, packet §3.5) -----------------------------------------------

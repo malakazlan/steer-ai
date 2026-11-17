@@ -22,7 +22,9 @@ Tier = Literal["exact", "standard", "strict"]
 Phase = Literal["written", "acting", "verified"]
 ClaimToken = Literal[
     "param_missing",
+    "param_unproven",
     "evidence_missing",
+    "evidence_reused",
     "too_much_evidence",
     "id_not_listed",
     "outside_scope",
@@ -55,9 +57,11 @@ ClaimToken = Literal[
     "pending_status",
     "failed_status",
 ]
-"""Step 4's own tokens, then the strict tier's: `inside_composer` and `composer_not_cleared` are
-new in v2 (T1 has no equivalent); `no_scope` to `failed_status` are T1's `Appeared` reasons,
-passed through unchanged ([V2.17] item 7)."""
+"""Step 4's own tokens ([V2.39]: `param_unproven`, a param no cited element holds on this
+observation; [V2.40]: `evidence_reused`, one element cited for two params), then the strict
+tier's: `inside_composer` and `composer_not_cleared` are new in v2 (T1 has no equivalent);
+`no_scope` to `failed_status` are T1's `Appeared` reasons, passed through unchanged ([V2.17]
+item 7)."""
 T1_REASONS: Final = (
     "no_scope",
     "anchor_vanished",
@@ -91,22 +95,30 @@ class Proof:
 
 @dataclass(frozen=True)
 class SubgoalFacts:
-    """What the checker knows about one subgoal. Every field is written by code."""
+    """What the checker knows about one subgoal. Every field is written by code. [V2.72]: the
+    subgoal label on an action never decides what counts as evidence; only the strict tier's
+    binding to its write-ahead record uses it."""
 
     params: Mapping[str, GoalSpan]
     commit: Commit
     """The effective commit (§3.3): declared, raised by the dispatched actions' commits."""
     baseline: Snapshot
-    """The snapshot before the subgoal's first action; the task's first one if it has none."""
+    """[V2.72], [V2.73]: the task's first full observation, for every subgoal; it never moves
+    later, except that a close of another subgoal of the same closing kind sharing a param span
+    rebases it to the observation that close was made on. `content_present` closes a page
+    subgoal, so it shares `navigated`'s baseline and rebase."""
     typed_fields: tuple[RuntimeId, ...] = ()
-    """Fields a `type` of this subgoal went into."""
+    """[V2.38]: every field Steer typed into in the task, whatever subgoal the `type` was
+    labelled with (the echo guards are task-wide)."""
     revealed_roots: tuple[RuntimeId, ...] = ()
-    """Revealed roots of this subgoal's effect reports since the baseline (§3.2)."""
+    """Revealed roots of the task's effect reports since the baseline (§3.2)."""
     controlled: tuple[RuntimeId, ...] = ()
     """Elements named by a typed field's ControllerFor, as read (§3.2; probe P1)."""
     typed_params: frozenset[str] = frozenset()
-    """The params Steer itself typed under this subgoal. [V2.17] item 2: the selectable-option
-    rule applies only when the claim's param is one of them (the echo risk)."""
+    """[V2.38], [V2.17] item 2: this subgoal's params whose words are text Steer typed anywhere
+    in the task; every param once the task typed generated text (its words are not kept). The
+    selectable-option rule applies only when the claim's param is one of them (the echo
+    risk)."""
 
 
 @dataclass(frozen=True)
@@ -122,10 +134,16 @@ class CommitRecord:
 
 @dataclass(frozen=True)
 class Sent:
-    """The subgoal's last verified `type`: the param it used and the field it went into."""
+    """[V2.88] L3: the pending-text record of the field the content was typed into, as the
+    checker sees it. It binds by provenance and digest; the subgoal label on the `type` is not
+    in it ([V2.72]: a label never decides evidence)."""
 
-    param: str
     field: RuntimeId
+    span: GoalSpan | None
+    """The request span the text was typed from (its provenance); None for generated text."""
+    read_back: bool | None
+    """Whether the keyed digest read right after the verified type equals the span's (True),
+    differs (False), or was unread (None)."""
 
 
 @dataclass(frozen=True)
@@ -150,8 +168,16 @@ def check_content(  # noqa: PLR0913 - the claim, its screens, and keyword-only f
 ) -> Checked:
     """`content_present` on `after`: the standard rules (§3.1, §3.2) when the subgoal's commit is
     `none`, the strict rules (§3.3) otherwise. `records` are this task's write-ahead records;
+    `sent` the content field's pending-text record ([V2.88] L3; None: missing, fails closed);
     `field_filled` is the live read of `sent.field` (None: unread); `landmarks` each element's
     nearest landmark ancestor on `after` ([V2.13]).
+
+    [V2.73] (1): `scope_document` is the outermost Document holding the most recently acted
+    element in the task, whatever its subgoal label (the [V2.3] observer rule); None when
+    nothing was acted on, and then the top Document of `after` (none or several: `no_scope`).
+    [V2.39], [V2.40]: every param of the subgoal is held by a cited element on `after`, one
+    element per param. [V2.88] L10: a param's words count only in the element's own name, never
+    its group name, and text Steer typed (a typed field) never counts.
 
     [V2.21] #9 field-owned: after the option rule ([V2.17] item 2, on top), a cited element is
     field-owned (`under_suggestions`) when any holds, each adding the token of the rule that

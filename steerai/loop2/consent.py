@@ -8,19 +8,23 @@ Interface stub for step 4; the tests in `tests/loop2/test_invariants_consent.py`
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from steerai.action.dispositions import ActionResult
 from steerai.goal_match import Verdict
 from steerai.loop2._stub import stub
+from steerai.loop2.claims import Sent
 from steerai.loop2.decision import ActionDoc
-from steerai.loop2.task import Commit
+from steerai.loop2.task import Commit, GoalSpan
 from steerai.orchestrator.contracts import GateDecision, Risk
 from steerai.orchestrator.gate import Ask
 from steerai.orchestrator.ledger import Admission
 from steerai.world.elements import Element
+
+if TYPE_CHECKING:  # the runner imports `history`, which imports this module's token types
+    from steerai.loop2.runner import RefusalKind
 
 CommitToken = Literal["commit_conflict", "commit_undeclared", "not_in_step", "no_strict_shape"]
 RefusalToken = Literal[
@@ -59,15 +63,29 @@ def commit_refusal(  # noqa: PLR0913 - the closed facts of §3.3, keyword-only
     action_commit: Commit,
     verb: str,
     raised_by: WordClass | None,
-    typed_param: str | None,
+    params: Mapping[str, GoalSpan],
+    pending: Sent | None,
 ) -> CommitToken | None:
     """§3.3, before any ask: two non-`none` kinds on one subgoal (`commit_conflict`); a raise
     with declared commit `none` (`commit_undeclared`) by a deny word on any verb, or by a
     control, consent or billing word on a click or a key press ([V2.17] item 1; on a state verb
     those classes ask and the live read proves the state); a delete or pay (`not_in_step`); a
-    send or submit with no verified `type` of a subgoal param (`no_strict_shape`). `prior` are
-    the declared commits of the subgoal's dispatched actions."""
+    send or submit (`no_strict_shape`) unless the subgoal has exactly one param, the content
+    ([V2.88] L2), and `pending`, the content field's pending-text record, holds that param's
+    span with an equal digest ([V2.88] L3: the label on the `type` is ignored; a missing or
+    unread record fails closed). `prior` are the declared commits of the subgoal's dispatched
+    actions; `params` are the subgoal's params."""
     raise NotImplementedError("step 4: commit checks")
+
+
+@stub(4)
+def refusal_kind(token: RefusalToken, *, commit_on_row: bool) -> RefusalKind:
+    """[V2.74]: a gate refusal's kind, as the token declares it in `runner.REFUSAL_KIND` (no
+    default): `not_foreground`, `screen_changed_during_ask`, `composer_unreadable` and
+    `composer_differs` are `world`, `done_already` a `model` fault. [V2.88] L8: except
+    `commit_undeclared`, a `model` fault only when the commit fact was on the listing row the
+    model acted on (`commit_on_row`), else a `step` limit, with no strike."""
+    raise NotImplementedError("step 4: refusal kinds")
 
 
 @stub(4)
@@ -152,6 +170,9 @@ class GateRequest:
     text: str | None
     text_from: TextFrom | None
     window: str
+    reasons: tuple[str, ...] = ()
+    """The closed reason tokens code computed from the risk and the form facts (e.g.
+    `submit_rule`), shown on the ask."""
 
 
 @dataclass(frozen=True)
@@ -166,10 +187,16 @@ class GateSteps:
     """Step 6."""
     ask: Callable[[Ask], str]
     """Steps 7 and 8: the person's answer token."""
-    after_yes: Callable[[], RefusalToken | None]
-    """Step 9: the fresh observe, the asked element, the foreground, the value digest again."""
+    after_yes: Callable[[], GateRequest | RefusalToken]
+    """Step 9: the fresh observe: the asked element, the foreground and the value digest again
+    (a token when one fails), else the request recomputed on it, risk and form facts included.
+    [V2.88] L4: the yes is consumed only when that request equals the one the ask showed; any
+    difference, in tier or ask reasons too, is `screen_changed_during_ask`."""
     write_ahead: Callable[[GateDecision], bool]
     """Step 10: False when the record could not be written."""
+    quiet: Callable[[], bool]
+    """[V2.88] L5, just before the dispatch: True when no input reached anything but Steer's
+    own ask window since the answer; any other input means no dispatch."""
     dispatch: Callable[[GateDecision], ActionResult]
     """Step 11, returning v1's result. [V2.25] (c): a `not_delivered` with v1's retry codes and
     no step tried gets v1's one local retry under the SAME decision: one ask, one write-ahead,
@@ -193,5 +220,7 @@ def gate_pass(
     """§3.4 in order: checks, admission (`done` refuses `done_already`; `confirm` asks with
     `previous_attempt`), goal check, ask, answer (`no` ends blocked `user_declined`; `killed`
     ends stopped `killed`; anything else but a yes ends paused `unanswered`), the after-yes
-    checks, write-ahead (a failed write ends blocked `wal_unavailable`), one dispatch."""
+    checks, write-ahead (a failed write ends blocked `wal_unavailable`), the input check, one
+    dispatch. [V2.88] L2: a commit ask shows the full request (`goal`) and the closed reason
+    `recipient_unchecked` (Steer did not check the recipient)."""
     raise NotImplementedError("step 4: the gate pass")
