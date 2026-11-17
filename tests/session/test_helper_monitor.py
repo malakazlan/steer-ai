@@ -152,11 +152,14 @@ class Rig:
         s.set("heartbeat_qpc", int(self.t[0] * FREQ))
         s.set("heartbeat_count", s.get("heartbeat_count") + 1)
 
-    def deliver(self, *hooks: str) -> None:
+    def deliver(self, *hooks: str, seq: int | None = None) -> None:
+        """The helper saw a probe event on each hook: the last probe sent, unless `seq`."""
         s = self.helper.status_w
         for hook in hooks:
             s.set(f"last_own_qpc_{hook}", int(self.t[0] * FREQ))
-            s.set(f"delivered_{hook}", s.get(f"delivered_{hook}") + 1)
+            s.set(
+                f"probe_seq_{hook}", (self.probes[-1] if self.probes else 1) if seq is None else seq
+            )
 
 
 def _rig(*, probe_fails: bool = False, session: FakeSession | None = None) -> Rig:
@@ -166,10 +169,10 @@ def _rig(*, probe_fails: bool = False, session: FakeSession | None = None) -> Ri
     probes: list[int] = []
     ended: list[int] = []
 
-    def probe() -> None:
+    def probe(seq: int) -> None:
         if probe_fails:
             raise OSError(5, "UIPI")
-        probes.append(1)
+        probes.append(seq)
 
     monitor = HelperMonitor(
         helper,
@@ -224,7 +227,7 @@ def test_the_loop_threads_own_read_also_loses_and_ends_the_helper() -> None:
 
 
 def test_a_watchdog_read_in_the_middle_of_a_loop_read_is_no_false_decrease() -> None:
-    """Rev 2a: the loop thread has read `delivered_mouse` (old) when the helper moves on and the
+    """Rev 2a: the loop thread has read `probe_seq_mouse` (old) when the helper moves on and the
     watchdog reads the newer words. Were the last-read values shared, the loop's older value
     would look like a decrease and the monitor would be lost for nothing."""
     rig = _rig()
@@ -270,6 +273,36 @@ def test_a_probe_is_proven_only_when_both_hooks_delivered_it() -> None:
     rig.deliver("mouse")
     assert not rig.monitor.probe_seen()
     rig.deliver("keyboard")
+    assert rig.monitor.probe_seen()
+
+
+def test_a_late_own_action_event_is_no_proof_only_the_probes_number_is() -> None:
+    """#492, [V2.80], helper mode: the helper's word holds the last probe number it saw, and
+    the monitor proves a hook only when that is the probe it sent. An own action's event
+    leaves the word where it was (the helper never moves it)."""
+    rig = _rig()
+    rig.monitor.probe_now()
+    rig.at(100.01)
+    rig.deliver("keyboard")
+    rig.deliver("mouse", seq=0)  # what an own action's mouse event leaves in the word
+    assert not rig.monitor.probe_seen()
+    rig.deliver("mouse", seq=rig.probes[-1])
+    assert rig.monitor.probe_seen()
+
+
+def test_a_stale_probe_number_in_the_words_does_not_prove_the_next_probe() -> None:
+    rig = _rig()
+    rig.monitor.probe_now()
+    rig.deliver("mouse", "keyboard")
+    assert rig.monitor.probe_seen()
+    rig.at(102.0)
+    rig.heartbeat()
+    rig.monitor.probe_now()
+    assert rig.probes == [1, 2]
+    assert not rig.monitor.probe_seen()
+    rig.deliver("mouse", "keyboard", seq=1)
+    assert not rig.monitor.probe_seen()
+    rig.deliver("mouse", "keyboard", seq=2)
     assert rig.monitor.probe_seen()
 
 
@@ -596,7 +629,7 @@ def test_close_waits_for_a_watchdog_still_ending_the_helper() -> None:
         qpc=lambda: int(100.0 * FREQ),
         freq=FREQ,
         deadline_s=DEADLINE_S,
-        probe=lambda: None,
+        probe=lambda _seq: None,
         terminate_self=lambda: None,
     )
     assert helper.entered.wait(5)
@@ -714,8 +747,8 @@ def test_the_counts_fetch_the_words_on_every_read() -> None:
     rig = _rig()
     fresh = bytearray(len(rig.helper.status_buf))
     rig.helper.status_buf = fresh
-    rig.helper.status_w.set("delivered_keyboard", 5)
-    assert rig.monitor._counts.delivered("keyboard") == 5
+    rig.helper.status_w.set("probe_seq_keyboard", 5)
+    assert rig.monitor._counts.probe_seq("keyboard") == 5
 
 
 # ---- #385 HH4-14: every public method is safe after close -------------------------------------

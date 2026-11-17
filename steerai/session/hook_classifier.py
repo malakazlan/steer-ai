@@ -8,9 +8,9 @@ reference, or anything that grows with the input (K11, K15). The key code is com
 probe key and nothing else.
 
 Rules (edge cases TK-01..49, probe `hook-latency-2026-11-04`):
-- Only Steer's own `dwExtraInfo` tag exempts an event. Any other keyboard, button or wheel
-  event is the person's, injected bit or not; an injected bare mouse move is counted but is
-  never a takeover.
+- Only Steer's own `dwExtraInfo` tag (the low 32 bits; a probe's sequence number rides above it,
+  [V2.80]) exempts an event. Any other keyboard, button or wheel event is the person's,
+  injected bit or not; an injected bare mouse move is counted but is never a takeover.
 - Real mouse moves pass a dead band around the last cursor position any move set, so a nudged
   desk is not a takeover; wheel and button events always count.
 - Input while an ask is open is the person's answer, not a takeover.
@@ -41,6 +41,25 @@ another Steer, not a person at the keys."""
 TAKEOVER_TOKENS: Final = frozenset({TAKEOVER, OTHER_STEER_INPUT})
 """The closed tokens of a stop for someone else's input: a person, or another Steer."""
 
+TAG_MASK: Final = 0xFFFF_FFFF
+PROBE_SEQ_SHIFT: Final = 32
+PROBE_SEQ_MAX: Final = 0x7FFF_FFFF
+
+
+def probe_tag(run_tag: int, seq: int) -> int:
+    """[V2.80] #492: the `dwExtraInfo` of one probe event: the run's tag in the low 32 bits and
+    the probe's sequence number (1..PROBE_SEQ_MAX) above it. An action event carries the bare
+    run tag, so only a probe has a sequence. Needs a 64-bit `ULONG_PTR`."""
+    if not 0 < seq <= PROBE_SEQ_MAX:
+        raise ValueError("a probe sequence is 1..PROBE_SEQ_MAX")
+    return run_tag | seq << PROBE_SEQ_SHIFT
+
+
+def next_probe_seq(seq: int) -> int:
+    """The sequence after `seq`, wrapping past PROBE_SEQ_MAX to 1 (0 means no probe)."""
+    return seq % PROBE_SEQ_MAX + 1
+
+
 HOOKS: Final = ("keyboard", "mouse")
 UNASSIGNED_VKS: Final = frozenset({0x0E, 0x0F, *range(0x97, 0xA0), 0xE8})
 """Microsoft Learn, Virtual-Key Codes (Winuser.h): 0x0E-0F, 0x97-9F and 0xE8 are Unassigned; the
@@ -63,9 +82,10 @@ class Classifier:
         self._extra_info = extra_info
         self._probe_vk = probe_vk
         self._dead_band = dead_band_px
-        self._delivered = dict.fromkeys(HOOKS, 0)
-        """#364 P1: own events delivered per hook; the keyboard counts only the probe key's
-        key-up. A count, never a key code."""
+        self._probe_seq = dict.fromkeys(HOOKS, 0)
+        """[V2.80] #492: per hook, the sequence of the last probe event it saw (0: none). Only a
+        probe event sets it (the keyboard's is the probe key's key-up, the mouse's an absolute
+        move); no other own event is proof. A number, never a key code."""
         self._last_by = dict.fromkeys(HOOKS, started_at)
         """Each hook's last own event (LW-01)."""
         self._last_steer = started_at
@@ -81,9 +101,9 @@ class Classifier:
     # ---- what the hook thread feeds -------------------------------------------------------------
 
     def on_keyboard(self, *, flags: int, extra: int, now: float, vk: int = 0) -> None:
-        if extra == self._extra_info:
+        if extra & TAG_MASK == self._extra_info:
             probe = vk == self._probe_vk and bool(flags & LLKHF_UP)
-            self._steer(now, "keyboard", delivered=probe)
+            self._steer(now, "keyboard", seq=extra >> PROBE_SEQ_SHIFT if probe else 0)
             return
         if extra == V1_TAG:
             self._other_steer(now)
@@ -94,8 +114,9 @@ class Classifier:
         self, *, message: int, flags: int, extra: int, pt: tuple[int, int], now: float
     ) -> None:
         x, y = pt
-        if extra == self._extra_info:
-            self._steer(now, "mouse", delivered=True)
+        if extra & TAG_MASK == self._extra_info:
+            probe = message == WM_MOUSEMOVE
+            self._steer(now, "mouse", seq=extra >> PROBE_SEQ_SHIFT if probe else 0)
             if message == WM_MOUSEMOVE:
                 self._reference = (x, y)
             return
@@ -143,8 +164,8 @@ class Classifier:
 
     # ---- what the ledger and the loop read ------------------------------------------------------
 
-    def delivered(self, hook: str) -> int:
-        return self._delivered[hook]
+    def probe_seq(self, hook: str) -> int:
+        return self._probe_seq[hook]
 
     def last_own(self, hook: str) -> float:
         return self._last_by[hook]
@@ -173,11 +194,11 @@ class Classifier:
 
     # ---- internals -----------------------------------------------------------------------------
 
-    def _steer(self, now: float, hook: str, *, delivered: bool) -> None:
+    def _steer(self, now: float, hook: str, *, seq: int) -> None:
         self._last_steer = now
         self._last_by[hook] = now
-        if delivered:
-            self._delivered[hook] += 1
+        if seq:
+            self._probe_seq[hook] = seq
         self._count("steer")
 
     def _person(self, now: float, *, injected: bool) -> None:

@@ -10,6 +10,8 @@ import sys
 from collections.abc import Sequence
 from ctypes import wintypes
 
+from steerai.session.hook_classifier import probe_tag
+
 STEER_EXTRA_INFO = 0x5354_4545  # "STEE"
 _EXTRA_INFO = [STEER_EXTRA_INFO]
 """The tag every record carries: v1's constant unless a v2 run set its own ([V2.57] LW-02)."""
@@ -293,13 +295,25 @@ def _send(user32: ctypes.WinDLL, *records: INPUT) -> None:
         raise OSError(f"SendInput sent {sent}/{len(records)}: error {ctypes.get_last_error()}")
 
 
-def key_up_probe(vk: int, *, tag: int | None = None) -> None:
+def _probe_tag_of(tag: int | None, seq: int | None) -> int | None:
+    """[V2.80] #492: `tag` (None: the process tag) with the probe's sequence number above it.
+    The number needs a 64-bit `ULONG_PTR`; without one the probe cannot be sent (OSError, so the
+    monitor fails closed)."""
+    if seq is None:
+        return tag
+    if ctypes.sizeof(ULONG_PTR) < 8:
+        raise OSError("a probe sequence number needs a 64-bit dwExtraInfo")
+    return probe_tag(extra_info() if tag is None else tag, seq)
+
+
+def key_up_probe(vk: int, *, tag: int | None = None, seq: int | None = None) -> None:
     """[V2.57] LW-01: one tagged key-up of an unassigned virtual key, the v2 monitor's keyboard
-    hook probe (a key-up with no key-down; the key is chosen by probe, see `monitor.PROBE_VK`)."""
-    _send(_user32(), build_keyboard_input(vk=vk, keyup=True, tag=tag))
+    hook probe (a key-up with no key-down; the key is chosen by probe, see `monitor.PROBE_VK`).
+    `seq`: this probe's sequence number, carried in the tag ([V2.80])."""
+    _send(_user32(), build_keyboard_input(vk=vk, keyup=True, tag=_probe_tag_of(tag, seq)))
 
 
-def nudge_in_place(*, tag: int | None = None) -> None:
+def nudge_in_place(*, tag: int | None = None, seq: int | None = None) -> None:
     """A tagged absolute move to the cursor's current position: reaches a low-level hook as
     Steer's own event and leaves the cursor still (probe `hook-latency-2026-11-04`: a
     zero-delta relative move never reaches a hook)."""
@@ -312,7 +326,7 @@ def nudge_in_place(*, tag: int | None = None) -> None:
             dx=ax,
             dy=ay,
             flags=_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE | _MOUSEEVENTF_VIRTUALDESK,
-            tag=tag,
+            tag=_probe_tag_of(tag, seq),
         ),
     )
 

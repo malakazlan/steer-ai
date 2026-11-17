@@ -20,6 +20,7 @@ import pytest
 from steerai.errors import ErrorCode, SteerError
 from steerai.probes.win_input import STEER_EXTRA_INFO
 from steerai.session import monitor as monitor_module
+from steerai.session.hook_classifier import probe_tag
 from steerai.session.monitor import (
     HC_ACTION,
     HOTKEY_ID,
@@ -533,28 +534,33 @@ def test_the_v2_probe_proves_each_hook_with_its_own_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sent: list[object] = []
-    monkeypatch.setattr(monitor_module, "nudge_in_place", lambda: sent.append("nudge"))
-    monkeypatch.setattr(monitor_module, "key_up_probe", lambda vk: sent.append(("key_up", vk)))
+    monkeypatch.setattr(
+        monitor_module, "nudge_in_place", lambda seq=None: sent.append(("nudge", seq))
+    )
+    monkeypatch.setattr(
+        monitor_module, "key_up_probe", lambda vk, seq=None: sent.append(("key_up", vk, seq))
+    )
     monitor = _v2_started(monkeypatch, FakeUser32())
     try:
         monitor.probe_now()
+        monitor.probe_now()
     finally:
         monitor.close()
-    assert sent == ["nudge", ("key_up", PROBE_VK)]
+    assert sent == [("nudge", 1), ("key_up", PROBE_VK, 1), ("nudge", 2), ("key_up", PROBE_VK, 2)]
     v1 = _started(monkeypatch, FakeUser32())
     try:
         sent.clear()
         v1.probe_now()
     finally:
         v1.close()
-    assert sent == ["nudge"]  # v1's probe is unchanged
+    assert sent == [("nudge", None)]  # v1's probe is unchanged: no number, no key
 
 
 def test_a_key_probe_that_cannot_be_sent_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
-    def refused(_vk: int) -> None:
+    def refused(_vk: int, **_kw: int) -> None:
         raise OSError("SendInput sent 0/1: error 5")
 
-    monkeypatch.setattr(monitor_module, "nudge_in_place", lambda: None)
+    monkeypatch.setattr(monitor_module, "nudge_in_place", lambda **_kw: None)
     monkeypatch.setattr(monitor_module, "key_up_probe", refused)
     monitor = _v2_started(monkeypatch, FakeUser32())
     try:
@@ -575,8 +581,8 @@ def test_the_probe_key_is_an_unassigned_virtual_key(vk: int | None) -> None:
 def test_the_monitor_reports_whether_both_hooks_saw_the_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(monitor_module, "nudge_in_place", lambda: None)
-    monkeypatch.setattr(monitor_module, "key_up_probe", lambda _vk: None)
+    monkeypatch.setattr(monitor_module, "nudge_in_place", lambda **_kw: None)
+    monkeypatch.setattr(monitor_module, "key_up_probe", lambda _vk, **_kw: None)
     user32 = FakeUser32()
     clock = {"t": 100.0}
     _patch(monkeypatch, user32)
@@ -589,13 +595,16 @@ def test_the_monitor_reports_whether_both_hooks_saw_the_probe(
         monitor.probe_now()
         clock["t"] += 0.01
         assert monitor.probe_seen() is False
-        mouse = _mouse(flags=LLMHF_INJECTED, extra=STEER_EXTRA_INFO)
+        late = _mouse(flags=LLMHF_INJECTED, extra=STEER_EXTRA_INFO)  # an act's, no number
+        user32.procs[WH_MOUSE_LL](HC_ACTION, WM_MOUSEMOVE, ctypes.addressof(late))
+        assert monitor.probe_seen() is False  # #492: only the probe's own number proves it
+        mouse = _mouse(flags=LLMHF_INJECTED, extra=probe_tag(STEER_EXTRA_INFO, 1))
         user32.procs[WH_MOUSE_LL](HC_ACTION, WM_MOUSEMOVE, ctypes.addressof(mouse))
         assert monitor.probe_seen() is False
-        other = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=STEER_EXTRA_INFO)  # another key
-        user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x101, ctypes.addressof(other))
+        other = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=probe_tag(STEER_EXTRA_INFO, 1))
+        user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x101, ctypes.addressof(other))  # another key
         assert monitor.probe_seen() is False  # #364 P1: only the probe key's key-up proves it
-        key = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=STEER_EXTRA_INFO)
+        key = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=probe_tag(STEER_EXTRA_INFO, 1))
         key.vkCode = PROBE_VK
         user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x101, ctypes.addressof(key))
         assert monitor.probe_seen() is True
@@ -748,8 +757,8 @@ def test_a_stalled_probe_that_counts_late_cannot_prove_a_probe_sent_after_it(
 ) -> None:
     """Windows passes a timed-out event on, but the stalled callback still runs and counts it
     late; that late count proves its own probe only, never one sent after it."""
-    monkeypatch.setattr(monitor_module, "nudge_in_place", lambda: None)
-    monkeypatch.setattr(monitor_module, "key_up_probe", lambda _vk: None)
+    monkeypatch.setattr(monitor_module, "nudge_in_place", lambda **_kw: None)
+    monkeypatch.setattr(monitor_module, "key_up_probe", lambda _vk, **_kw: None)
     user32 = FakeUser32()
     clock = {"t": 100.0}
     _patch(monkeypatch, user32)
@@ -762,12 +771,14 @@ def test_a_stalled_probe_that_counts_late_cannot_prove_a_probe_sent_after_it(
         monitor.probe_now()  # A, whose callbacks stall
         clock["t"] += 0.01
         monitor.probe_now()  # B, sent while A is still out
-        key = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=STEER_EXTRA_INFO)
+        key = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=probe_tag(STEER_EXTRA_INFO, 1))
         key.vkCode = PROBE_VK
-        move = _mouse(flags=LLMHF_INJECTED, extra=STEER_EXTRA_INFO)
+        move = _mouse(flags=LLMHF_INJECTED, extra=probe_tag(STEER_EXTRA_INFO, 1))
         user32.procs[WH_MOUSE_LL](HC_ACTION, WM_MOUSEMOVE, ctypes.addressof(move))
         user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x101, ctypes.addressof(key))  # A, late
         assert monitor.probe_seen() is False
+        key.dwExtraInfo = probe_tag(STEER_EXTRA_INFO, 2)
+        move.dwExtraInfo = probe_tag(STEER_EXTRA_INFO, 2)
         user32.procs[WH_MOUSE_LL](HC_ACTION, WM_MOUSEMOVE, ctypes.addressof(move))
         user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x101, ctypes.addressof(key))  # B
         assert monitor.probe_seen() is True

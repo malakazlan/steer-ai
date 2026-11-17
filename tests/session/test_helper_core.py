@@ -16,7 +16,13 @@ from steerai.session.helper_core import (
     config_error,
     write_config,
 )
-from steerai.session.hook_classifier import LLKHF_UP, V1_TAG, WM_LBUTTONDOWN, WM_MOUSEMOVE
+from steerai.session.hook_classifier import (
+    LLKHF_UP,
+    V1_TAG,
+    WM_LBUTTONDOWN,
+    WM_MOUSEMOVE,
+    probe_tag,
+)
 from steerai.session.hook_layout import (
     ERROR_LAYOUT,
     KIND_OTHER_STEER,
@@ -125,17 +131,27 @@ def test_a_failure_and_a_close_are_states_with_a_code() -> None:
 def test_the_probe_keys_key_up_is_a_keyboard_delivery_and_wakes_steer() -> None:
     core, _cfg, status = _core()
     assert not _key(core, extra=RUN_TAG, vk=PROBE, up=False, at_ms=2_000)
-    assert _key(core, extra=RUN_TAG, vk=PROBE, up=True, at_ms=2_001)
-    assert status.get("delivered_keyboard") == 1
+    assert _key(core, extra=probe_tag(RUN_TAG, 3), vk=PROBE, up=True, at_ms=2_001)
+    assert status.get("probe_seq_keyboard") == 3
     assert status.get("last_own_qpc_keyboard") == 2_001 * MS
 
 
-def test_an_own_mouse_event_is_a_mouse_delivery() -> None:
+def test_a_probe_move_is_a_mouse_delivery_by_its_number() -> None:
     core, _cfg, status = _core()
-    assert core.mouse(message=WM_MOUSEMOVE, flags=0, extra=RUN_TAG, pt=(1, 1), event_ms=2_000,
-                      entry_ms=2_000, entry_qpc=2_000 * MS)  # fmt: skip
-    assert status.get("delivered_mouse") == 1
-    assert status.get("delivered_keyboard") == 0
+    assert core.mouse(message=WM_MOUSEMOVE, flags=0, extra=probe_tag(RUN_TAG, 4), pt=(1, 1),
+                      event_ms=2_000, entry_ms=2_000, entry_qpc=2_000 * MS)  # fmt: skip
+    assert status.get("probe_seq_mouse") == 4
+    assert status.get("probe_seq_keyboard") == 0
+
+
+def test_an_own_action_mouse_event_is_no_mouse_delivery_and_wakes_nothing() -> None:
+    """#492, [V2.80]: only the probe's number is proof; the helper's word stays put."""
+    core, _cfg, status = _core()
+    for message in (WM_MOUSEMOVE, WM_LBUTTONDOWN):
+        assert not core.mouse(message=message, flags=0, extra=RUN_TAG, pt=(1, 1), event_ms=2_000,
+                              entry_ms=2_000, entry_qpc=2_000 * MS)  # fmt: skip
+    assert status.get("probe_seq_mouse") == 0
+    assert status.get("last_own_qpc_mouse") == 2_000 * MS
 
 
 @pytest.mark.parametrize("hook", ["keyboard", "mouse"])
@@ -154,7 +170,7 @@ def test_a_persons_event_is_published_before_that_hooks_later_probe(hook: str) -
 
         def set(self, name: str, value: int) -> None:
             self.inner.set(name, value)
-            seen.append((status.get(f"delivered_{hook}"), status.get(f"last_user_qpc_{hook}")))
+            seen.append((status.get(f"probe_seq_{hook}"), status.get(f"last_user_qpc_{hook}")))
 
         def bump_bucket(self, histogram: str, bucket: int) -> None:
             self.inner.bump_bucket(histogram, bucket)
@@ -162,12 +178,12 @@ def test_a_persons_event_is_published_before_that_hooks_later_probe(hook: str) -
     core._status = Spy(status)  # type: ignore[assignment]  # a spy on every store, in order
     if hook == "keyboard":
         _key(core, extra=0, at_ms=3_000)
-        _key(core, extra=RUN_TAG, vk=PROBE, up=True, at_ms=3_001)
+        _key(core, extra=probe_tag(RUN_TAG, 1), vk=PROBE, up=True, at_ms=3_001)
     else:
         core.mouse(message=WM_LBUTTONDOWN, flags=0, extra=0, pt=(9, 9), event_ms=3_000,
                    entry_ms=3_000, entry_qpc=3_000 * MS)  # fmt: skip
-        core.mouse(message=WM_MOUSEMOVE, flags=0, extra=RUN_TAG, pt=(9, 9), event_ms=3_001,
-                   entry_ms=3_001, entry_qpc=3_001 * MS)  # fmt: skip
+        core.mouse(message=WM_MOUSEMOVE, flags=0, extra=probe_tag(RUN_TAG, 1), pt=(9, 9),
+                   event_ms=3_001, entry_ms=3_001, entry_qpc=3_001 * MS)  # fmt: skip
     assert all(user == 3_000 * MS for delivered, user in seen if delivered >= 1)
     assert seen[-1] == (1, 3_000 * MS)
 
@@ -356,11 +372,13 @@ def test_inside_one_publish_the_persons_time_is_stored_before_the_delivery() -> 
 
     status.set = set_spy  # type: ignore[method-assign]  # a spy on every store, in order
     classifier = core._classifier
-    before = classifier.delivered("keyboard")
+    before = classifier.probe_seq("keyboard")
     classifier.on_keyboard(flags=0, extra=0, now=float(3_000 * MS), vk=0x41)
-    classifier.on_keyboard(flags=LLKHF_UP, extra=RUN_TAG, now=float(3_001 * MS), vk=PROBE)
+    classifier.on_keyboard(
+        flags=LLKHF_UP, extra=probe_tag(RUN_TAG, 1), now=float(3_001 * MS), vk=PROBE
+    )
     assert core._publish("keyboard", before)
-    delivered = order.index("delivered_keyboard")
+    delivered = order.index("probe_seq_keyboard")
     assert order.index("last_user_qpc_keyboard") < delivered
     assert order.index("last_user") < delivered
     assert order.index("last_own_qpc_keyboard") < delivered

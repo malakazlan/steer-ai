@@ -213,7 +213,7 @@ class HelperCore:
         """One keyboard event; True when it delivered a probe (the caller wakes Steer)."""
         self._lag(event_ms, entry_ms)
         self._sync_ask()
-        before = self._classifier.delivered("keyboard")
+        before = self._classifier.probe_seq("keyboard")
         self._classifier.on_keyboard(flags=flags, extra=extra, now=float(entry_qpc), vk=vk)
         return self._publish("keyboard", before)
 
@@ -231,7 +231,7 @@ class HelperCore:
         """One mouse event; True when it delivered a probe. `pt` reaches only the dead band."""
         self._lag(event_ms, entry_ms)
         self._sync_ask()
-        before = self._classifier.delivered("mouse")
+        before = self._classifier.probe_seq("mouse")
         self._classifier.on_mouse(
             message=message, flags=flags, extra=extra, pt=pt, now=float(entry_qpc)
         )
@@ -335,10 +335,10 @@ class HelperCore:
         if own != self._published_own[hook]:
             s.set(f"last_own_qpc_{hook}", int(own))
             self._published_own[hook] = own
-        delivered = c.delivered(hook)
-        if delivered == delivered_before:
+        seen = c.probe_seq(hook)
+        if seen == delivered_before:
             return False
-        s.set(f"delivered_{hook}", delivered)  # last: after the times it vouches for (§5.2)
+        s.set(f"probe_seq_{hook}", seen)  # last: after the times it vouches for (§5.2)
         return True
 
 

@@ -262,16 +262,17 @@ class MonitorCore:
         return self._ledger.probe_due(now=now, counts=self._classifier)
 
     def probe_seen(self) -> bool:
-        """LW-01, #364 P1: every probe sent since the last proof was delivered on both hooks
-        (counted, never by timestamp)."""
+        """LW-01, #364 P1, [V2.80] #492: the last probe was seen on both hooks by its own
+        sequence number (never by timestamp, never by another own event)."""
         return self._ledger.probe_seen(counts=self._classifier)
 
     def lost_hooks(self, *, now: float) -> tuple[str, ...]:
         """LW-01: the hooks that have not seen the last probe past its deadline, in order."""
         return self._ledger.lost_hooks(now=now, counts=self._classifier)
 
-    def probe_sent(self, *, now: float) -> None:
-        self._ledger.probe_sent(now=now, counts=self._classifier)
+    def probe_sent(self, *, now: float) -> int:
+        """[V2.80] #492: the sequence number this probe's events must carry."""
+        return self._ledger.probe_sent(now=now)
 
     def healthy(self, *, now: float, thread_alive: bool) -> bool:
         c = self._classifier
@@ -466,11 +467,14 @@ class HookMonitor:
             self.probe_now()
 
     def probe_now(self) -> None:
-        self._core.probe_sent(now=self._monotonic())
+        seq = self._core.probe_sent(now=self._monotonic())
         try:
-            nudge_in_place()
-            if self._per_hook and self._probe_vk is not None:
-                key_up_probe(self._probe_vk)  # LW-01: the keyboard hook's own proof
+            if self._per_hook:  # v1 sends the bare tag and proves nothing by number
+                nudge_in_place(seq=seq)
+                if self._probe_vk is not None:
+                    key_up_probe(self._probe_vk, seq=seq)  # LW-01: the keyboard hook's own proof
+            else:
+                nudge_in_place()
         except OSError:
             self._core.on_probe_failed()  # fails closed: the next boundary stops (D4)
 

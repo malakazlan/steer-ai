@@ -325,14 +325,15 @@ def bound_probe(
     vk: int,
     nudge: Callable[..., None],
     key_up: Callable[..., None],
-) -> Callable[[], None]:
+) -> Callable[[int], None]:
     """LW-01: the helper's probe, the mouse nudge then the keyboard probe, bound to the run's
     tag (#385 HH4-11): never the process tag read at call time, so a late probe after the
-    restore still goes out as this run's own input."""
+    restore still goes out as this run's own input. Both events carry the probe's sequence
+    number ([V2.80] #492)."""
 
-    def probe() -> None:
-        nudge(tag=tag)
-        key_up(vk, tag=tag)
+    def probe(seq: int) -> None:
+        nudge(tag=tag, seq=seq)
+        key_up(vk, tag=tag, seq=seq)
 
     return probe
 

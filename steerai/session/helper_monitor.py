@@ -89,8 +89,8 @@ class _WordCounts:
         self._helper = helper  # the words fetched on every read, never kept (#383 note 1)
         self._freq = freq
 
-    def delivered(self, hook: str) -> int:
-        return self._helper.status.get(f"delivered_{hook}")
+    def probe_seq(self, hook: str) -> int:
+        return self._helper.status.get(f"probe_seq_{hook}")
 
     def last_own(self, hook: str) -> float:
         return self._helper.status.get(f"last_own_qpc_{hook}") / self._freq
@@ -111,7 +111,7 @@ class HelperMonitor:
         qpc: Callable[[], int],
         freq: int,
         deadline_s: float,
-        probe: Callable[[], None],
+        probe: Callable[[int], None],
         terminate_self: Callable[[], None],
         clock_resolution: float = CLOCK_RESOLUTION_S,
         start_thread: bool = True,
@@ -197,9 +197,9 @@ class HelperMonitor:
     def probe_now(self) -> None:
         if self._closed:
             return  # #385 HH4-14: no probe for a closed helper
-        self._ledger.probe_sent(now=self._now(), counts=self._counts)
+        seq = self._ledger.probe_sent(now=self._now())
         try:
-            self._probe()
+            self._probe(seq)
         except OSError:
             self._probe_failed = True  # fails closed: the next health check is false
 

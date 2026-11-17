@@ -33,8 +33,8 @@ PINNED_STATUS = (
     "nonce_echo_hi",
     "heartbeat_qpc",
     "heartbeat_count",
-    "delivered_keyboard",
-    "delivered_mouse",
+    "probe_seq_keyboard",
+    "probe_seq_mouse",
     "last_own_qpc_keyboard",
     "last_own_qpc_mouse",
     "last_user_qpc_keyboard",
@@ -107,9 +107,9 @@ def test_words_are_eight_byte_aligned_and_distinct() -> None:
 def test_a_word_reads_back_what_was_written() -> None:
     buf = bytearray(status_size())
     words = status_words(memoryview(buf))
-    words.set("delivered_mouse", 7)
+    words.set("probe_seq_mouse", 7)
     words.set("heartbeat_qpc", 2**63 - 1)
-    assert words.get("delivered_mouse") == 7
+    assert words.get("probe_seq_mouse") == 7
     assert words.get("heartbeat_qpc") == 2**63 - 1
     assert words.get("kill") == 0
 

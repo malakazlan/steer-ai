@@ -281,15 +281,15 @@ def test_the_helper_probe_is_bound_to_the_runs_tag() -> None:
     tag at call time, so a late probe after the restore still goes out with the run's tag."""
     sent: list[tuple[str, int]] = []
 
-    def nudge(*, tag: int) -> None:
-        sent.append(("nudge", tag))
+    def nudge(*, tag: int, seq: int) -> None:
+        sent.append((f"nudge:{seq}", tag))
 
-    def key_up(vk: int, *, tag: int) -> None:
-        sent.append((f"key_up:{vk:#x}", tag))
+    def key_up(vk: int, *, tag: int, seq: int) -> None:
+        sent.append((f"key_up:{vk:#x}:{seq}", tag))
 
     probe = live_world.bound_probe(0x2222_3333, vk=0x0E, nudge=nudge, key_up=key_up)
-    probe()
-    assert sent == [("nudge", 0x2222_3333), ("key_up:0xe", 0x2222_3333)]
+    probe(7)
+    assert sent == [("nudge:7", 0x2222_3333), ("key_up:0xe:7", 0x2222_3333)]
 
 
 def test_a_cleanup_that_raises_never_masks_the_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
