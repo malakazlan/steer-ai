@@ -12,11 +12,17 @@ import pytest
 from steerai.loop2.stage1 import (
     THREE_D,
     RunRecord,
+    StageTask,
+    _page_checks,
     accept,
     classify,
+    diagnostic_row,
+    diagnostic_tasks,
     gallery_tasks,
     large_tasks,
     page_check,
+    page_row,
+    read_page,
     tasks_for,
 )
 from steerai.loop2.stage1_expected import COMMIT_REASON, Expected, gallery_expected
@@ -131,3 +137,117 @@ def test_a_large_log_of_another_shape_is_an_error_never_a_pass() -> None:
 def test_a_3d_task_has_no_page_check_here() -> None:
     with pytest.raises(ValueError, match="no page check"):
         page_check(THREE_D[0], "[]")
+
+
+# ---- [V2.84] (2): the page check records what it observed, select rows split outcome/path ---
+
+
+def _tasks() -> dict[str, StageTask]:
+    return {t.task_id: t for t in (*gallery_tasks(_expected()), *large_tasks())}
+
+
+ROME: dict[str, object] = {"row": "g13", "value": "Europe/Rome"}
+TOKYO: dict[str, object] = {"row": "g13", "value": "Asia/Tokyo"}
+
+
+def test_one_trusted_rome_event_is_ok_with_path_one() -> None:
+    got = read_page(_tasks()["g13"], _log(ROME))
+    assert (got.ok, got.kind, got.events) == (True, "ok", 1)
+    assert json.loads(got.observed) == ROME
+
+
+def test_three_events_ending_trusted_rome_is_an_ok_outcome_with_path_three() -> None:
+    raw = _log({"row": "g13", "value": "Europe/Paris"}, TOKYO, ROME)
+    got = read_page(_tasks()["g13"], raw)
+    assert (got.ok, got.kind, got.events) == (True, "ok", 3)
+    assert page_check(_tasks()["g13"], raw) is True
+
+
+def test_three_events_ending_tokyo_is_wrong_value() -> None:
+    got = read_page(_tasks()["g13"], _log(ROME, ROME, TOKYO))
+    assert (got.ok, got.kind, got.events) == (False, "wrong_value", 3)
+    assert json.loads(got.observed) == TOKYO
+
+
+def test_an_untrusted_last_event_is_untrusted() -> None:
+    got = read_page(_tasks()["g13"], _log(ROME, {**ROME, "untrusted": True}))
+    assert (got.ok, got.kind, got.observed, got.events) == (False, "untrusted", "untrusted", 2)
+
+
+def test_no_event_and_a_bad_log_on_a_select_row() -> None:
+    assert read_page(_tasks()["g13"], "[]").kind == "events:0"
+    assert read_page(_tasks()["g13"], "not json").kind == "unread"
+
+
+@pytest.mark.parametrize("task_id", ["g12", "g14"])
+def test_every_select_row_takes_the_outcome_rule(task_id: str) -> None:
+    row: dict[str, dict[str, object]] = {
+        "g12": {"row": "g12", "value": "Kenya"},
+        "g14": {"row": "g14", "value": "Teal"},
+    }
+    other: dict[str, object] = {"row": task_id, "value": "Other"}
+    assert read_page(_tasks()[task_id], _log(other, row[task_id])).ok is True
+
+
+def test_a_non_select_row_keeps_its_check_and_names_the_failure() -> None:
+    task = _tasks()["g03"]
+    two = read_page(task, _log({"row": "g03", "on": True}, {"row": "g03", "on": True}))
+    assert (two.ok, two.kind, two.observed, two.events) == (False, "events:2", "events:2", 2)
+    assert read_page(task, _log({"row": "g03", "on": False})).kind == "wrong_value"
+    assert read_page(task, _log({"row": "g03", "on": True, "untrusted": True})).kind == "untrusted"
+    assert read_page(task, "[]").kind == "events:0"
+    assert read_page(task, "garbage").kind == "unread"
+
+
+def test_a_typed_value_is_never_kept_in_the_observed_string() -> None:
+    got = read_page(_tasks()["g22"], _log({"row": "g22", "value": "someone's secret"}))
+    assert (got.kind, got.observed) == ("wrong_value", "redacted:typed_value")
+
+
+def test_a_large_task_reads_closed() -> None:
+    got = read_page(_tasks()["lg2"], _log({"row": "large-menu", "open": True}))
+    assert (got.ok, got.kind, got.observed, got.events) == (False, "wrong_value", "large", None)
+
+
+DONE_FINAL = {"status": "done", "reason": None, "used": {"max_actions": 1}}
+
+
+def _run(task: StageTask, raw: str, run: int = 1) -> tuple[RunRecord, bool]:
+    page = read_page(task, raw)
+    return RunRecord(task.task_id, run, DONE_FINAL, True, True, page.ok, None, page=page), page.ok
+
+
+def test_a_false_done_keeps_its_observation_and_path_is_not_a_false_done() -> None:
+    task = _tasks()["g13"]
+    bad, _ = _run(task, _log(ROME, TOKYO))
+    got = classify(task, bad)
+    assert (got.verdict, got.page) == ("false_done", bad.page)
+    many, _ = _run(task, _log(TOKYO, ROME, ROME))
+    assert classify(task, many).verdict == "pass"
+
+
+def test_the_summary_reports_path_apart_from_the_verdicts() -> None:
+    task = _tasks()["g13"]
+    runs = [
+        classify(task, _run(task, raw, i)[0])
+        for i, raw in enumerate((_log(ROME), _log(TOKYO, ROME, ROME)), 1)
+    ]
+    got = _page_checks(runs)
+    assert got == {"kinds": {}, "select_path_events": {"g13": [1, 3]}, "select_path_over_one": 1}
+    assert page_row(runs[1].page) == {
+        "observed": json.dumps(ROME, sort_keys=True),
+        "check_kind": "ok",
+        "path_events": 3,
+    }
+
+
+def test_a_diagnostic_names_one_task_and_carries_no_gate() -> None:
+    tasks = tuple(_tasks().values())
+    assert [t.task_id for t in diagnostic_tasks(tasks, "g13")] == ["g13"]
+    assert diagnostic_tasks(tasks, None) == tasks
+    with pytest.raises(ValueError, match="no stage 1 task"):
+        diagnostic_tasks(tasks, "nope")
+    row = diagnostic_row([classify(_tasks()["g13"], _run(_tasks()["g13"], _log(ROME))[0])])
+    assert row["diagnostic"]["uncounted"] is True
+    assert "gates" not in row
+    assert "accepted" not in row
