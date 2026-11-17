@@ -28,7 +28,7 @@ WM_MOUSEMOVE = 0x0200
 WM_LBUTTONDOWN = 0x0201
 INJ_UP = LLKHF_INJECTED | LLKHF_UP
 
-LAYOUT_DIGESTS = {4: "PLACEHOLDER"}
+LAYOUT_DIGESTS = {4: "0d87873d6ce8558cd0f774153f738937012ad9a27fb5251092775488bed74ab2"}
 """LAYOUT_VERSION -> sha256 of the status and config word lists. A changed word list fails the
 test until the version moves and a new digest is pinned."""
 
