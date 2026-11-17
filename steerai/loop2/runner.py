@@ -168,6 +168,8 @@ from steerai.world.observe2 import FIRST_READY_S, YOUNG_S, document_nodes
 from steerai.world.reads import ReadCost
 from steerai.world.watch import Watched
 
+REPEATED: Final = 2
+"""[V2.85] (iii): the refusal on which a subgoal's `words_missing` counts as repeated."""
 STRIKE_LIMIT: Final = 3
 """[V2.4]: the pooled set runs with a limit of 3, frozen before H7."""
 RefusalKind = Literal["policy", "step", "model", "world"]
@@ -299,6 +301,8 @@ class _ActCounts:
     not_own_text: int = 0
     evidence_taken: int = 0
     field_mismatch: int = 0
+    turns_to_claim: int = 0
+    repeated_words_missing: int = 0
 
 
 @dataclass
@@ -529,6 +533,10 @@ class _Run:
         self.started = ports.clock()
         self.turn = _Turn()
         self.turns = 0
+        self.verified_at: dict[str, int] = {}
+        """[V2.85] (i): each subgoal's first turn with a delivered_verified action under it."""
+        self.words_missing: dict[str, int] = {}
+        """[V2.85] (iii): how many claims on each subgoal were refused `words_missing`."""
         """[V2.67] D: the turns the loop opened (its trace's turn numbers), never the calls."""
         self.turn_trace_dropped = 0
         """[V2.67] D: turn records the no-free-text check dropped."""
@@ -664,6 +672,8 @@ class _Run:
             not_own_text=self.counts.not_own_text,
             evidence_taken=self.counts.evidence_taken,
             field_mismatch=self.counts.field_mismatch,
+            turns_to_claim=self.counts.turns_to_claim,
+            repeated_words_missing=self.counts.repeated_words_missing,
             rebased_open=len(self.rebased - self.proven),
             rebased_open_commit=len(self.rebased_commit - self.proven),
         )
@@ -1036,6 +1046,10 @@ class _Run:
         param = _proved_param(claim, subgoal)
         refused = self._refused(claim, subgoal, param, observed)
         if refused is not None:
+            if refused == "words_missing":
+                seen = self.words_missing[subgoal.id] = self.words_missing.get(subgoal.id, 0) + 1
+                if seen == REPEATED:  # [V2.85] (iii): counted once, at the second refusal
+                    self.counts.repeated_words_missing += 1
             self._reject(subgoal, (refused,))
             return
         rejected = check_claim(
@@ -1189,6 +1203,8 @@ class _Run:
             raise AssertionError("auto proof reached a commit subgoal")
         self.proven.add(subgoal.id)
         self.proven_how[subgoal.id] = how
+        if how == "claim" and subgoal.id in self.verified_at:  # [V2.85] (i)
+            self.counts.turns_to_claim += self.turn.number - self.verified_at[subgoal.id]
         self.turn.ticked = True
         self.refusal = None
         self._note(Proven(subgoal.id, how))
@@ -1820,6 +1836,13 @@ class _Run:
         if element is not None:
             self.last_acted = _Acted(element.runtime_id, element.role, element.name)
         self._note(self._log_entry(sent, act, report))
+        owner = sent.action.subgoal
+        if (
+            owner is not None
+            and sent.action.verb != "wait"
+            and act.delivery is Delivery.DELIVERED_VERIFIED
+        ):
+            self.verified_at.setdefault(owner, self.turn.number)  # [V2.85] (i): the first one
         if element is not None and _focus_left(sent, element, watched.after):
             self.counts.focus_moved_after_press += 1  # [V2.43] (1): seen and counted, no extra read
             self._note(FocusMovedAfterPress(self._handle_of(element)))

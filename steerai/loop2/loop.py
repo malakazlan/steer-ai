@@ -532,6 +532,14 @@ class TaskOutcome:
     """[V2.84]: value claims refused because the cited element's name and group name do not hold
     the subgoal's declared field (`field_mismatch`): the count of correct tasks that can end not
     done because a field has no readable name."""
+    turns_to_claim: int = 0
+    """[V2.85] (i): for each subgoal closed by a model claim after a delivered_verified action
+    under it (a `wait` actuates nothing), the turns from that action's turn (the first one) to the
+    claim's turn, summed over subgoals. Large means the claim is late: closing value and state
+    subgoals in code is the real fix, a later step."""
+    repeated_words_missing: int = 0
+    """[V2.85] (iii): subgoals whose claims were refused `words_missing` more than once (a subgoal
+    counts once, at its second refusal): the dead end a narrowed param would loosen, left safe."""
     rebased_open: int = 0
     """[V2.74] (#475): non-commit subgoals that another subgoal's close through a model claim
     rebased (`_rebase`) and that were still open when the task ended. An auto-proof close does
