@@ -125,8 +125,11 @@ def check_claim(  # noqa: PLR0911, PLR0912, PLR0913 - one return per outcome; ke
         raise ValueError("param_missing")
     if not field_held(now.snapshot, element, subgoal):
         return ("field_mismatch",)
-    if readers.read_state(element, "expanded") is True:
+    closed = list_closed(now.snapshot, element, readers.read_state)
+    if closed is False:
         return ("control_expanded",)  # [V2.85]: a value read while its list is open proves nothing
+    if closed is None:
+        return ("value_unread",)
     read = readers.read_value(element)
     if read is None:
         return ("value_unread",)
@@ -408,14 +411,33 @@ def holds_words(snapshot: Snapshot, element: Element, text: str) -> bool:
     return bool(wanted) and any(wanted <= set(_tokens(name)) for name in names)
 
 
+def list_closed(
+    snapshot: Snapshot, element: Element, read_state: Callable[[Element, str], bool | None]
+) -> bool | None:
+    """[V2.85] H2 guard: whether a value may be read from the element. An element that lists
+    expanded or collapsed among its caps, or any element when the snapshot did not read caps,
+    must read Collapsed live: False is open (PartiallyExpanded is neither), None unread (an
+    absent pattern and a failed read look alike, so neither is taken as closed). An element a
+    read snapshot shows with neither cap has no list. Code never closes the list."""
+    if snapshot.caps_read and not {"expanded", "collapsed"} & set(element.caps):
+        return True
+    return read_state(element, "collapsed")
+
+
 def field_held(snapshot: Snapshot, element: Element, subgoal: Subgoal) -> bool:
     """[V2.84]: a value read counts only from an element that holds the subgoal's declared field
-    words, by the word match state proofs use (`holds_words`: its name, or its group name). An
-    `unnamed` field holds anything. Nearby text never counts; the label UIA gives
-    (`LabeledBy`) is not in the observation, so it is not read."""
-    if subgoal.field is None or subgoal.field == UNNAMED:
+    words. `unnamed` holds anything; a subgoal with no field fails closed. The words must be held
+    by the element's own name, and only an element with no name of its own falls back to its
+    group name (a named "Name" inside "Email preferences" is not the Email field). Word match as
+    state proofs use. Nearby text never counts; the label UIA gives (`LabeledBy`) is not in the
+    observation, so it is not read."""
+    if subgoal.field is None:
+        return False
+    if subgoal.field == UNNAMED:
         return True
-    return holds_words(snapshot, element, subgoal.field)
+    wanted = set(_tokens(subgoal.field))
+    name = element.name if normalise_name(element.name) else group_name(snapshot, element) or ""
+    return bool(wanted) and wanted <= set(_tokens(name))
 
 
 def _excluded(

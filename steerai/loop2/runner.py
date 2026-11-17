@@ -154,6 +154,7 @@ from steerai.loop2.verify import (
     Readers,
     check_claim,
     field_held,
+    list_closed,
     holds_words,
     judge,
 )
@@ -1152,13 +1153,12 @@ class _Run:
                 if readers.read_state(element, subgoal.wanted) is not True:
                     return False
                 continue
-            closed = readers.read_state(element, "expanded") is not True  # [V2.85]
+            if not field_held(observed.snapshot, element, subgoal):
+                self.counts.field_mismatch += 1  # a first proof that no longer holds the field
+                return False
+            closed = list_closed(observed.snapshot, element, readers.read_state)  # [V2.85]
             want = readers.fact_of(subgoal.params[param].text)
-            if not (
-                field_held(observed.snapshot, element, subgoal)
-                and closed
-                and readers.read_value(element) == want
-            ):
+            if closed is not True or readers.read_value(element) != want:
                 return False
         return True
 
@@ -1246,7 +1246,17 @@ class _Run:
                 else ("navigated" if how == "claim" else how)
             )
             params = tuple((n, param.text) for n, param in numbered_params(subgoal.params))
-            lines.append((position, subgoal.closes, how, kind, _read_token(subgoal, how), params))
+            lines.append(
+                (
+                    position,
+                    subgoal.closes,
+                    how,
+                    kind,
+                    _read_token(subgoal, how),
+                    params,
+                    subgoal.field,
+                )
+            )
         return tuple(lines)
 
     def _intake_passes(self, decision: Decision) -> bool:

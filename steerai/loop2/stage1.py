@@ -30,6 +30,7 @@ import argparse
 import base64
 import json
 import math
+import re
 import subprocess
 import sys
 import threading
@@ -53,9 +54,9 @@ from steerai.loop2.loop import (
 )
 from steerai.loop2.stage1_expected import LARGE_TASKS, Expected, large_expected
 from steerai.orchestrator.contracts import RISKS
-from steerai.probes.gallery_page import large_passes, parse_large_log
+from steerai.probes.gallery_page import large_passes, page_html, parse_large_log
 from steerai.probes.process_tree import Sample, summarize
-from steerai.probes.task_suite import GALLERY, h2_event
+from steerai.probes.task_suite import GALLERY, Task, h2_event
 
 Expect = Literal["done", "blocked", "never_done", "not_done", "unrated"]
 """`unrated` ([V2.65] (2)): a task held for the lead's ruling still runs and still meets the hard
@@ -233,29 +234,165 @@ MTA_COMPARABILITY: Final[Mapping[str, Any]] = {  # Any: JSON values
 the stage 1 report states executor behaviour under the MTA as compared, not as unseparated."""
 
 
-def report_header(name: str, *, runs: int) -> dict[str, Any]:  # Any: JSON values
+def report_header(
+    name: str, *, runs: int, diagnostic: bool = False
+) -> dict[str, Any]:  # Any: JSON values
     """The stage 1 report's first row: the set (a shakedown below `MIN_RUNS_PER_TASK` says so),
     the runs per task, the floor the runs start on and the MTA comparability statement."""
-    return {
+    header: dict[str, Any] = {  # Any: JSON values
         "set": name if runs >= MIN_RUNS_PER_TASK else f"{name}-shakedown",
         "runs_per_task": runs,
         "floor_mb": STAGE1_FLOOR_MB,
         "mta_comparability": dict(MTA_COMPARABILITY),
     }
+    if diagnostic:  # [V2.84] (2): the rows that follow are never counted
+        header["diagnostic"] = True
+    return header
 
 
-def page_check(task: StageTask, raw: str) -> bool:
-    """The page's own pass check on its log as read over DevTools; shares no code with the v2
-    loop or the verifier. Gallery: the one trusted event the row expects (v1's suite check);
-    large: `gallery_page.large_passes`. A large log of another shape is a `ValueError`."""
+SELECT_ROWS: Final = frozenset({"g12", "g13", "g14"})
+"""[V2.84] (2): the gallery rows whose expected outcome is a select or combobox value
+(`stage1_expected`: choose on a ComboBox). Their oracle is split: the outcome decides done
+against false done, the number of change events is the path, reported and never a false done."""
+FREE_TEXT_ROWS: Final = frozenset({"g22", "g23", "g24"})
+"""The gallery rows whose log carries a value Steer typed; their observed string is never kept
+beyond a closed kind (every other row logs only the fixture's own row id and fixed tokens)."""
+REDACTED_OBSERVED: Final = "redacted:typed_value"
+
+
+@dataclass(frozen=True)
+class PageRead:
+    """[V2.84] (2): what the page's own log said. `kind` is closed: `ok`, `events:<N>`,
+    `untrusted`, `wrong_value`, `dom_value_differs`, `other_row` or `unread`; `observed` is
+    `h2_event`'s own string (the fixture's row and fixed tokens, or `events:<N>`, `untrusted`,
+    `bad_log`); a typed row's value is never in it; `events` is the path."""
+
+    ok: bool
+    kind: str
+    observed: str
+    events: int | None
+    dom: str | None = None
+    """A select row's final DOM value over CDP (the fixture's own option token), else None."""
+    entries: tuple[LogEntry, ...] = ()
+    """A select row's log entries in order, kept so two readings of a miscount stay apart."""
+
+
+@dataclass(frozen=True)
+class LogEntry:
+    """One page-log entry of a select row's run: its row, its fixed option value (None when
+    the entry is another row's, whose value could be typed text) and its trusted flag."""
+
+    row: str
+    value: str | None
+    trusted: bool
+
+
+UNREAD: Final = PageRead(False, "unread", "unread", None)
+ENTRIES_CAP: Final = 50
+"""No more entries than this are kept in a record (a runaway log is still counted whole)."""
+
+
+def _entries(raw: str) -> list[Any] | None:  # Any: the page log's JSON entries
+    try:
+        entries = json.loads(raw or "[]")
+    except json.JSONDecodeError:
+        return None
+    return entries if isinstance(entries, list) else None
+
+
+def _option_values(select_id: str) -> frozenset[str]:
+    """The fixture's own option values for a select row, read from its page source."""
+    page = page_html()
+    if select_id == "g14":
+        block = re.search(r'<ul id="g14-list".*?</ul>', page, re.S)
+        return frozenset(re.findall(r">([^<]+)</li>", block.group(0) if block else ""))
+    block = re.search(rf'<select id="{select_id}">(.*?)</select>', page, re.S)
+    found = re.findall(r"<option([^>]*)>([^<]*)</option>", block.group(1) if block else "")
+    values = {
+        m.group(1) if (m := re.search(r'value="([^"]*)"', attrs)) else text for attrs, text in found
+    }
+    return frozenset(values)
+
+
+def _kept(entry: Mapping[str, Any], task_id: str) -> LogEntry:  # Any: a page log entry
+    """An entry as the record keeps it: a typed row's value is never kept, another row's value
+    is dropped; only the task's own fixed option value stays."""
+    row = str(entry.get("row"))
+    value = entry.get("value")
+    if row in FREE_TEXT_ROWS:
+        return LogEntry(row, REDACTED_OBSERVED, not entry.get("untrusted"))
+    kept = value if row == task_id and isinstance(value, str) else None
+    return LogEntry(row, kept, not entry.get("untrusted"))
+
+
+def _select_read(  # noqa: PLR0911 - one return per rule, in the rules' order
+    row: Task,
+    entries: list[Any],  # Any: the page log's JSON entries
+    dom: str | None,
+) -> PageRead:
+    """[V2.84] (2): outcome = the select's final DOM value is the expected one, every entry is
+    the task's own row and trusted, and the last one says so; path = the task row's entries."""
+    own = [e for e in entries if e.get("row") == row.task_id]
+    kept = tuple(_kept(e, row.task_id) for e in entries[:ENTRIES_CAP])
+    seen = dom if dom is None or dom in _option_values(row.task_id) else "other"
+
+    def read(ok: bool, kind: str, observed: str) -> PageRead:
+        return PageRead(ok, kind, observed, len(own), seen, kept)
+
+    if not entries:
+        return PageRead(False, "events:0", "events:0", 0, seen)
+    if dom is None:
+        return read(False, "unread", "dom_unread")
+    if len(own) != len(entries):
+        return read(False, "other_row", "other_row")
+    if any(e.get("untrusted") for e in own):
+        return read(False, "untrusted", "untrusted")
+    if dom != json.loads(row.expected)["value"]:
+        return read(False, "dom_value_differs", f"dom:{seen}")
+    text = json.dumps(own[-1], sort_keys=True)
+    if text != row.expected:
+        return read(False, "wrong_value", text)
+    return read(True, "ok", text)
+
+
+def _gallery_read(row: Task, raw: str, dom: str | None) -> PageRead:
+    entries = _entries(raw)
+    if entries is None or not all(isinstance(e, dict) for e in entries):
+        return PageRead(False, "unread", "bad_log", None)
+    count = len(entries)
+    if row.task_id in SELECT_ROWS:
+        return _select_read(row, entries, dom)
+    observed = h2_event(raw).strip()
+    if observed == row.expected:
+        return PageRead(True, "ok", observed, count)
+    if observed.startswith("events:"):
+        return PageRead(False, observed, observed, count)
+    if observed == "untrusted":
+        return PageRead(False, "untrusted", observed, count)
+    typed = count == 1 and entries[0].get("row") in FREE_TEXT_ROWS
+    return PageRead(False, "wrong_value", REDACTED_OBSERVED if typed else observed, count)
+
+
+def read_page(task: StageTask, raw: str, dom: str | None = None) -> PageRead:
+    """The page's own pass check on its log as read over DevTools, with what it observed
+    ([V2.84] (2)); shares no code with the v2 loop or the verifier. Gallery: the one trusted
+    event the row expects (v1's suite check), a select row on its last change; large:
+    `gallery_page.large_passes`. A large log of another shape is a `ValueError`. `dom`: a
+    select row's final DOM value (`SELECT_ROWS`); unread there fails closed."""
     if task.fixture == "gallery":
         row = next(t for t in GALLERY if t.task_id == task.task_id)
-        return h2_event(raw).strip() == row.expected
+        return _gallery_read(row, raw, dom)
     if task.fixture == "large":
         for large in LARGE_TASKS:
             if large.task_id == task.task_id:
-                return large_passes(large.task_id, parse_large_log(raw))
+                ok = large_passes(large.task_id, parse_large_log(raw))
+                return PageRead(ok, "ok" if ok else "wrong_value", "large", None)
     raise ValueError(f"no page check for {task.fixture} task {task.task_id}")
+
+
+def page_check(task: StageTask, raw: str, dom: str | None = None) -> bool:
+    """`read_page`'s verdict alone."""
+    return read_page(task, raw, dom).ok
 
 
 CHROME_LOST: Final = "chrome_lost"
@@ -263,6 +400,24 @@ CHROME_LOST: Final = "chrome_lost"
 no done claimed it is an infrastructure void, re-run within the bound and counted toward the
 1-in-10 void limit; a done it leaves unread fails closed as `done_log_unread:chrome_lost`. The
 same token as `chrome_a11y.CHROME_LOST`, which a test pins."""
+
+
+PAGE_CHECK_FILE: Final = "page_check.json"
+"""[V2.84] (2): the run's out dir keeps the page check's observation beside its final line."""
+
+
+def page_row(page: PageRead | None) -> dict[str, Any]:  # Any: JSON values
+    """The page check as the report rows and the out dir keep it (closed, redaction-safe)."""
+    read = UNREAD if page is None else page
+    row: dict[str, Any] = {  # Any: JSON values
+        "observed": read.observed, "check_kind": read.kind, "path_events": read.events,
+    }  # fmt: skip
+    if read.entries or read.dom is not None:  # a select row: every entry and the DOM value
+        row["dom_value"] = read.dom
+        row["entries"] = [
+            {"row": e.row, "value": e.value, "trusted": e.trusted} for e in read.entries
+        ]
+    return row
 
 
 @dataclass(frozen=True)
@@ -292,6 +447,8 @@ class RunRecord:
     """[V2.80]: the cap killed the child after its complete final line (`ChildRun`)."""
     lost: str | None = None
     """#459: the run's own Chrome went away under the harness (`CHROME_LOST`); None when not."""
+    page: PageRead | None = None
+    """[V2.84] (2): what the page check observed; None when the run never reached the log."""
 
 
 @dataclass(frozen=True)
@@ -308,6 +465,8 @@ class Classified:
     kill_after_final: bool = False
     """[V2.80]: the cap killed the child after its complete final line (its loss watch ran on):
     the final line stands and the kill is recorded, never read as a run that did not finish."""
+    page: PageRead | None = None
+    """[V2.84] (2): the page check's observed string, closed kind and path count."""
 
 
 def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' order
@@ -318,7 +477,7 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
     def verdict(v: Verdict, reason: str | None = None) -> Classified:
         lost = v == "monitor_lost"
         return Classified(record.task_id, record.run, v, reason, lost, record.final, record.memory,
-                          record.loss_watch, record.kill_after_final)  # fmt: skip
+                          record.loss_watch, record.kill_after_final, record.page)  # fmt: skip
 
     # #366 P2: the rules in this order
     if not record.fixture_ok:
@@ -959,10 +1118,29 @@ def _report(
         },
         "fail_reasons": _counts(_closed_reason(r.reason) for r in runs if r.verdict == "fail"),
         "void_causes": _counts(_closed_reason(r.reason) for r in runs if r.verdict == "void"),
+        "page_check": _page_checks(runs),
         "audit": _audits(finals),
         "start_nudge": _start_nudges(finals),
         **_watch_deadlines(finals),
         **_run_facts(finals),
+    }
+
+
+def _page_checks(runs: Sequence[Classified]) -> dict[str, Any]:  # Any: JSON figures
+    """[V2.84] (2): the closed failure kinds of the scored runs' page checks, and for the select
+    rows the path (change events a run logged) as its own number, never a false done."""
+    seen = [r for r in runs if r.page is not None and r.verdict not in ("void", "monitor_lost")]
+    paths = {
+        r.task_id: [q.page.events for q in seen if q.task_id == r.task_id and q.page is not None]
+        for r in seen
+        if r.task_id in SELECT_ROWS
+    }
+    return {
+        "kinds": _counts(r.page.kind for r in seen if r.page is not None and not r.page.ok),
+        "select_path_events": paths,
+        "select_path_over_one": sum(
+            1 for events in paths.values() for n in events if n is not None and n > 1
+        ),
     }
 
 
@@ -1096,7 +1274,7 @@ def run_task_runs(  # noqa: PLR0913 - the task, then keyword-only knobs
         scored += got.verdict not in ("void", "monitor_lost")
         emit({"task": got.task_id, "run": got.run, "verdict": got.verdict,
               "reason": got.reason, "monitor_lost": got.monitor_lost, "memory": got.memory,
-              **facts})  # fmt: skip
+              **page_row(got.page), **facts})  # fmt: skip
         if got.verdict == "void" and got.reason in NO_RETRY_VOIDS:
             break
     return classified, not_started
@@ -1484,14 +1662,14 @@ def _live_3d(
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
                                  killed=ran.killed, code=ran.code, memory=memory,
                                  kill_failure=ran.kill_failure, lost=CHROME_LOST,
-                                 loss_watch=ran.loss_watch,
+                                 loss_watch=ran.loss_watch, page=UNREAD,
                                  kill_after_final=ran.kill_after_final)  # fmt: skip
             except (OSError, RuntimeError, ValueError):
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
                                  killed=ran.killed, code=ran.code, memory=memory,
                                  kill_failure=ran.kill_failure,
                                  kill_after_final=ran.kill_after_final,
-                                 loss_watch=ran.loss_watch)  # fmt: skip
+                                 loss_watch=ran.loss_watch, page=UNREAD)  # fmt: skip
             finally:
                 cdp.close()
             enters = sum(e.ev == "enter" for e in entries)
@@ -1568,26 +1746,33 @@ def _live_page(
                 raw = evaluate(cdp, f'localStorage.getItem("{LOG_KEY}") || "[]"')
                 if not isinstance(raw, str):
                     raise ValueError("the page log is not text")
-                check = page_check(task, raw)
+                dom = None
+                if task.task_id in SELECT_ROWS:  # the select's own value, over CDP
+                    read = evaluate(cdp, f'document.getElementById("{task.task_id}").value')
+                    dom = read if isinstance(read, str) else None
+                page = read_page(task, raw, dom)
+                (run_dir / PAGE_CHECK_FILE).write_text(
+                    json.dumps(page_row(page), allow_nan=False), encoding="utf-8"
+                )
             except ChromeLost:  # #459: the browser went away; a void, never a crash
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
                                  killed=ran.killed, code=ran.code, memory=memory,
                                  kill_failure=ran.kill_failure, lost=CHROME_LOST,
-                                 loss_watch=ran.loss_watch,
+                                 loss_watch=ran.loss_watch, page=UNREAD,
                                  kill_after_final=ran.kill_after_final)  # fmt: skip
             except (OSError, RuntimeError, ValueError):
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
                                  killed=ran.killed, code=ran.code, memory=memory,
                                  kill_failure=ran.kill_failure,
                                  kill_after_final=ran.kill_after_final,
-                                 loss_watch=ran.loss_watch)  # fmt: skip
+                                 loss_watch=ran.loss_watch, page=UNREAD)  # fmt: skip
             finally:
                 cdp.close()
-            return RunRecord(task.task_id, run, ran.final, True, True, check, None,
+            return RunRecord(task.task_id, run, ran.final, True, True, page.ok, None,
                              killed=ran.killed, code=ran.code, memory=memory,
                                  kill_failure=ran.kill_failure,
                                  kill_after_final=ran.kill_after_final,
-                                 loss_watch=ran.loss_watch)  # fmt: skip
+                                 loss_watch=ran.loss_watch, page=page)  # fmt: skip
         finally:
             stop_chrome(proc, tmp / "profile")
             shutil.rmtree(tmp, ignore_errors=True)
@@ -1595,6 +1780,31 @@ def _live_page(
 
 GALLERY_READ: Final = Path("tests/world/fixtures/gallery/page_read.json")
 """The gallery's saved read, relative to the repo root (`probes.gallery_read`)."""
+
+
+def diagnostic_tasks(tasks: Sequence[StageTask], task_id: str | None) -> tuple[StageTask, ...]:
+    """[V2.84] (2): the one task a diagnostic run names; an unknown id is a `ValueError`."""
+    if task_id is None:
+        return tuple(tasks)
+    chosen = tuple(t for t in tasks if t.task_id == task_id)
+    if not chosen:
+        raise ValueError(f"no stage 1 task {task_id}")
+    return chosen
+
+
+def diagnostic_row(runs: Sequence[Classified]) -> dict[str, Any]:  # Any: JSON values
+    """[V2.84] (2): a diagnostic run's one summary row. It carries no gates and no `accepted`: it
+    is never counted toward acceptance."""
+    return {
+        "diagnostic": {
+            "uncounted": True,
+            "runs": [
+                {"task": r.task_id, "run": r.run, "verdict": r.verdict, "reason": r.reason,
+                 **page_row(r.page)}
+                for r in runs
+            ],
+        }
+    }  # fmt: skip
 
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, Windows only
@@ -1609,11 +1819,19 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--price-file", type=Path, required=True)
+    parser.add_argument("--task", help="one task id; only with --diagnostic")
+    parser.add_argument(
+        "--diagnostic",
+        action="store_true",
+        help="run --task --runs times uncounted: no gates, no acceptance",
+    )
     parser.add_argument("--gallery-read", type=Path, default=GALLERY_READ)
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
     expected = gallery_expected(observed_from_json(args.gallery_read.read_text("utf-8")))
-    tasks = tasks_for(args.set, expected)
-    header = report_header(args.set, runs=args.runs)
+    if (args.task is not None) != args.diagnostic:
+        parser.error("--task and --diagnostic go together")
+    tasks = diagnostic_tasks(tasks_for(args.set, expected), args.task)
+    header = report_header(args.set, runs=args.runs, diagnostic=args.diagnostic)
     _emit({"header": header})
     controls: tuple[int, int] | None = None
     if args.set == "3d":
@@ -1650,6 +1868,9 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
                                       row={"floor_mb": STAGE1_FLOOR_MB})  # fmt: skip
         classified += runs
         not_started += refused
+    if args.diagnostic:  # [V2.84] (2): uncounted, never an acceptance or a gate
+        _emit(diagnostic_row(classified))
+        return 0
     label = header["set"]
     summary = accept(tasks, classified, controls=controls,
                      runs_per_task=max(args.runs, MIN_RUNS_PER_TASK), label=label,

@@ -168,12 +168,12 @@ def test_a_page_proof_line_carries_its_proof_token() -> None:
 
 
 def test_the_audit_prompt_version_is_audit_4() -> None:
-    assert AUDIT_PROMPT_VERSION == "audit-5"  # the shared schema's title changed (#457)
+    assert AUDIT_PROMPT_VERSION == "audit-6"  # the shared schema's title changed (#457)
 
 
 def test_the_run_header_names_the_audit_prompt_version() -> None:
     world, _ = _world()
-    assert world.header(task())["audit_prompt_version"] == "audit-5"
+    assert world.header(task())["audit_prompt_version"] == "audit-6"
 
 
 def test_the_audit_rules_carry_the_shared_sufficiency_criterion() -> None:

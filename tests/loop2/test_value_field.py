@@ -16,7 +16,7 @@ from steerai.loop2.controller import (
     build_intake_prompt,
 )
 from steerai.loop2.decision import Claim, Decision, SubgoalDoc, validate
-from steerai.loop2.loop import TaskOutcome
+from steerai.loop2.loop import ProofLine, TaskOutcome
 from steerai.loop2.runner import REFUSAL_KIND, run_task
 from steerai.world.effects import ValueFact
 from tests.loop2.world_fakes import GOAL, PAGE, World, act, element, observed, task
@@ -145,3 +145,72 @@ def _world_with_two_fields(first: object) -> World:
 
 def test_the_outcome_carries_the_count() -> None:
     assert "field_mismatch" in {f.name for f in dataclasses.fields(TaskOutcome)}
+
+
+# ---- principal review: audit packet, group rule, fail closed, the re-read ----------------------
+
+GROUPED = element(48, "Edit", "Name", (9, 48), 49)
+EMAIL_GROUP = element(49, "Group", "Email preferences", (9, 49), 1)
+SECOND = element(50, "Edit", "Shop", (9, 50), 1)
+
+
+def test_the_audit_packet_shows_the_field_on_a_value_proof_line() -> None:
+    from steerai.loop2.controller import AUDIT_RULES, build_audit_prompt  # noqa: PLC0415
+
+    def packet(field: str | None) -> str:
+        line: ProofLine = (
+            1, "value", "claim", "value", ("value_read", "equals_param"), ((1, "red shoes"),), field
+        )  # fmt: skip
+        _, user = build_audit_prompt(
+            GOAL, (line,), "w", [], task_fence="taskfence01", screen_fence="scrfence01"
+        )
+        return NEWLINE.join(user)
+
+    assert "field=shop" in packet("shop")
+    assert "field=unnamed" in packet("unnamed")
+    assert "field=" not in packet(None)
+    assert "names a field" in AUDIT_RULES
+
+
+def test_a_group_name_counts_only_for_an_element_with_no_name_of_its_own() -> None:
+    from steerai.loop2.task import Subgoal  # noqa: PLC0415
+    from steerai.loop2.verify import field_held  # noqa: PLC0415
+
+    shot = observed([*PAGE, GROUPED, EMAIL_GROUP, IN_GROUP, GROUP]).snapshot
+    sub = Subgoal(id="s1", desc="x", params={}, closes="value", field="email")
+    assert not field_held(shot, GROUPED, sub)  # named "Name" inside "Email preferences"
+    assert field_held(shot, IN_GROUP, dataclasses.replace(sub, field="shop"))  # no name of its own
+
+
+def test_a_value_subgoal_with_no_field_fails_closed() -> None:
+    from steerai.loop2.task import Subgoal  # noqa: PLC0415
+    from steerai.loop2.verify import field_held  # noqa: PLC0415
+
+    shot = observed(ALL).snapshot
+    assert not field_held(shot, RIGHT, Subgoal(id="s1", desc="x", params={}, closes="value"))
+
+
+def test_a_first_proof_whose_element_stops_holding_the_field_does_not_close_the_subgoal() -> None:
+    doc = SubgoalDoc(
+        id="s1", desc="x", params={"a": "red", "b": "shoes"}, closes="value", field="shop"
+    )
+    renamed = dataclasses.replace(RIGHT, name="Email")
+    turns = [
+        Decision(subgoals=[doc], actions=[act("wait", subgoal="s1")]),
+        Decision(
+            claims=[Claim(subgoal="s1", kind="value", evidence=[RIGHT.id], param="a")],
+            actions=[act("wait", subgoal="s1")],
+        ),
+        Decision(claims=[Claim(subgoal="s1", kind="value", evidence=[SECOND.id], param="b")]),
+        Decision(stop="blocked"),
+    ]
+    world = World(turns, screen=observed([*PAGE, RIGHT, SECOND]))
+    world.later = observed([*PAGE, renamed, SECOND])
+    world.later_after_acts = 2  # after the first claim was accepted
+    world.values[RIGHT.runtime_id] = ValueFact(filled=True, digest="d:red")
+    world.values[SECOND.runtime_id] = ValueFact(filled=True, digest="d:shoes")
+    world.fact_text = True
+    outcome = run_task(task(), world.ports())
+    assert outcome.status != "done"
+    assert any("claim:s1:accepted" in view.history for view in world.views)
+    assert outcome.field_mismatch == 1  # the re-read of the first proof, counted

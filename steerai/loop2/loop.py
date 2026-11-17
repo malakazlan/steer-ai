@@ -348,7 +348,7 @@ INTAKE_COUNTS: Final = (
 ProofParam = tuple[int, str]
 """[V2.68], packet rev 5 §5: a proven param for the audit: its position among the subgoal's
 params (sorted by name, as `decision_shape`) and its span of the request (the person's words)."""
-ProofLine = tuple[int, str, str, str, tuple[ReadKind, str], tuple[ProofParam, ...]]
+ProofLine = tuple[int, str, str, str, tuple[ReadKind, str], tuple[ProofParam, ...], str | None]
 """[V2.68], [V2.69] One: one proven subgoal for the audit, by position, never its id: (position,
 closes, how, kind, read, params). `read` is what code verified, a closed (kind, detail) pair the
 prompt renders as `value_read:equals_param`, `state_read:<wanted>` or `navigated:<how>`."""
@@ -529,14 +529,13 @@ class TaskOutcome:
     """[V2.73]: value or state claims refused because their element is already the evidence of
     another, closed subgoal of the same kind sharing a span (`evidence_taken`)."""
     field_mismatch: int = 0
-    """[V2.84]: value claims refused because the cited element's name and group name do not hold
-    the subgoal's declared field (`field_mismatch`): the count of correct tasks that can end not
-    done because a field has no readable name."""
+    """[V2.84]: value claims refused, and closing re-reads failed, because the cited element does
+    not hold the subgoal's declared field (`field_mismatch`). Refused claims, not tasks."""
     turns_to_claim: int = 0
-    """[V2.85] (i): for each subgoal closed by a model claim after a delivered_verified action
-    under it (a `wait` actuates nothing), the turns from that action's turn (the first one) to the
-    claim's turn, summed over subgoals. Large means the claim is late: closing value and state
-    subgoals in code is the real fix, a later step."""
+    """[V2.85] (i): for each subgoal closed by a model claim, the turns from the last act under it
+    whose read-back verified (a type, a choose or a state verb) to the claim's turn, summed over
+    subgoals. Large means the claim is late: closing value and state subgoals in code is the real
+    fix, a later step."""
     repeated_words_missing: int = 0
     """[V2.85] (iii): subgoals whose claims were refused `words_missing` more than once (a subgoal
     counts once, at its second refusal): the dead end a narrowed param would loosen, left safe."""

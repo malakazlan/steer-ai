@@ -60,6 +60,7 @@ from steerai.loop2.act_guards import (
 )
 from steerai.loop2.actuate import key_targets
 from steerai.loop2.loop import ActResult, Dispatch, PortInterrupted, WindowCovered
+from steerai.loop2.verify import list_closed
 from steerai.loop2.world_ports import KILL_POLL_S, kill_sleep
 from steerai.orchestrator.loop import IDLE_S, MAX_WAIT_S, WAIT_POLL_S
 from steerai.verify.predicates import FIELD_ROLES
@@ -216,10 +217,13 @@ class ActPort:
             result = self._physical_send(dispatch, element, snapshot)
         if result.delivery is Delivery.NOT_DELIVERED and not result.skipped:
             return ActResult(result, None)
-        if verb == "choose" and result.skipped and self._expanded(element):
-            # [V2.85]: "already satisfied" read from an open list proves nothing; code does not
-            # close it
-            raise _Refused(ErrorCode.ELEMENT_NOT_ACTIONABLE, "control_expanded")
+        if verb == "choose" and result.skipped:
+            # [V2.85]: "already satisfied" read from an open or unread list proves nothing; code
+            # does not close it
+            closed = self._list_closed(element)
+            if closed is not True:
+                detail = "control_expanded" if closed is False else "unreadable_value"
+                raise _Refused(ErrorCode.ELEMENT_NOT_ACTIONABLE, detail)
         if verb == "focus":
             focused = self._read_focus(element, snapshot)
             return ActResult(dataclasses.replace(result, verb="focus"), focused)
@@ -390,16 +394,20 @@ class ActPort:
         if verb == "type" and dispatch.text is not None:
             return _equal(self._world.read_value(element), self._world.fact_of(dispatch.text))
         if verb == "choose" and dispatch.action.option is not None:
-            if self._expanded(element):  # [V2.85]: a value read while its list is open
-                return None
+            if self._list_closed(element) is not True:
+                return None  # [V2.85]: a value read while its list is open or unread
             return _equal(
                 self._world.read_value(element), self._world.fact_of(dispatch.action.option)
             )
         return None
 
-    def _expanded(self, element: Element) -> bool:
-        """[V2.85]: the control reads expanded now (an unread or unexpandable one does not)."""
-        return self._world.read_state(element, "expanded") is True
+    def _list_closed(self, element: Element) -> bool | None:
+        """[V2.85]: `verify.list_closed` over the last observation and the live read; None
+        (unread) when there is no observation."""
+        last = self._world.last
+        if last is None:
+            return None
+        return list_closed(last.snapshot, element, self._world.read_state)
 
     def _read_focus(self, element: Element, snapshot: Snapshot) -> bool | None:
         """[V2.51] (1): the live focus after a focus click, polled up to `FOCUS_READ_S`: True

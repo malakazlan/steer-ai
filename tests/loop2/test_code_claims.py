@@ -35,6 +35,7 @@ SUB = Subgoal(
     params={"text": GoalSpan.of(GOAL, START, START + len("red shoes"))},
 )
 STATE_SUB = dataclasses.replace(SUB, closes="state", wanted="on")
+VALUE_SUB = dataclasses.replace(SUB, closes="value", field="unnamed")
 TYPED = ValueFact(filled=True, digest="d:red shoes")
 
 
@@ -62,7 +63,7 @@ def readers(
 
 
 def check(claim: Claim, seen: Observed = SHOWN, **kw: object) -> tuple[str, ...]:
-    sub = STATE_SUB if claim.kind == "state" else SUB
+    sub = STATE_SUB if claim.kind == "state" else (VALUE_SUB if claim.kind == "value" else SUB)
     return check_claim(claim, sub, seen, seen, readers=readers(**kw))  # type: ignore[arg-type]  # test kwargs
 
 
