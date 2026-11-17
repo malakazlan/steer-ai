@@ -49,7 +49,7 @@ from tests.loop2.world_fakes import (
 from tests.loop2.world_fakes import PAGE as SCREEN
 
 NEWLINE = chr(10)
-INTAKE_FIXED = "86218b88dcf33070ffbbfae96431cf27638147c4c13bdff143d5b4ddb147f65a"
+INTAKE_FIXED = "2c1f51cf24e88bd2db585b999b46e09410fc109235329ce228b1dd581b9d0575"
 """V4: sha256 of the intake's rules and schema blocks, joined by newlines."""
 AUDIT_FIXED = "0b9a5f1b1945c7119c5fdc399a23a67ef682e973a5904106efca38d53e79d251"
 """V4: sha256 of the audit's rules and schema blocks, joined by newlines."""
@@ -369,7 +369,8 @@ def test_the_intake_says_an_outcome_the_page_shows_needs_its_own_subgoal() -> No
     """[V2.82] (1), intake-4: one general rule, no site, task or shape word in it (the held-back
     shape was pinned before it and shares none of its words)."""
     rules = controller.INTAKE_RULES
-    assert "when the outcome is something the page shows after an action" in rules
+    assert "a field or a select holds the words" in rules
+    assert "when the outcome is anything else the page shows after an action" in rules
     assert "needs a subgoal that closes on that outcome" in rules
     for word in ("articles", "search", "filter", "products", "results", "click"):
         assert word not in rules.casefold(), word
