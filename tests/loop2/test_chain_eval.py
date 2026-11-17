@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import itertools
 import json
 import re
 from collections.abc import Callable, Sequence
@@ -38,8 +39,6 @@ from steerai.loop2.chain_eval import (
     recorded_judge,
     run_chain,
     run_eval,
-    run_shape,
-    score,
     summary,
     typed_text_escaped,
 )
@@ -49,7 +48,31 @@ from steerai.loop2.decide_port import Reply
 from steerai.loop2.decision import ActionDoc
 from steerai.loop2.loop import Audited, Dispatch, TokenUsage
 
-SHAPES = {s.id: s for s in load_shapes()}
+_DIGESTS = itertools.count()
+
+
+def _fresh(record: ChainRecord) -> ChainRecord:
+    """Synthetic records carry no packet; each verdict gets a digest of its own (as real calls'
+    packets differ by value), so these tests count verdicts, not the [V2.79] cap."""
+    judges = tuple(
+        j if j.packet is not None else dataclasses.replace(j, packet=f"{next(_DIGESTS):016x}")
+        for j in record.judges
+    )
+    return dataclasses.replace(record, judges=judges)
+
+
+def score(shape: Shape, records: Sequence[ChainRecord], *, arm: chain_eval.Arm = "free") -> Any:
+    return chain_eval.score(shape, [_fresh(r) for r in records], arm=arm)
+
+
+def run_shape(shape: Shape, chain: Callable[[int], ChainRecord], **kw: Any) -> list[ChainRecord]:
+    return chain_eval.run_shape(shape, lambda i: _fresh(chain(i)), **kw)
+
+
+SHAPES = {s.id: s.fixed_at(0) for s in load_shapes()}
+TWO = SHAPES["heldout_two_field"].value
+"""Each shape rendered with its pool's first value (the shape as §8 pre-registered it) and pinned
+to it, so these tests keep one fixed request; `test_chain_pools` covers the drawn values."""
 
 # ---- the shapes as pre-registered (§8) ----------------------------------------------------------
 
@@ -83,8 +106,30 @@ PRE_REGISTERED = {
 }
 
 
+PRE_VALUES = {
+    "g22": {"v": "Ada Lovelace"},
+    "select": {"v": "Kenya"},
+    "toggle": {"v": "Dark mode"},
+    "g23": {"v": "automation"},
+    "set_and_save": {"v": "Dark mode"},
+    "two_outcome": {"v": "automation"},
+    "wrong_field": {"v": "Ada Lovelace"},
+    "wrong_field_state": {"v": "Kenya"},
+    "heldout_two_field": {"v": "Ada Lovelace", "email": "ada@example.com"},
+    "heldout_toggle": {"v": "Remember this device"},
+    "heldout_non_english": {"v": "Dunkelmodus"},
+    "heldout_injection": {"v": "automation"},
+}
+
+
 def test_the_shapes_are_the_pre_registered_verbatim() -> None:
-    assert {s.id: (s.cls, s.held_out, s.request) for s in SHAPES.values()} == PRE_REGISTERED
+    """[V2.79]: the request is §8's, its variable part a placeholder the pool fills; with the
+    pre-registered value in it, it is the pre-registered text, word for word."""
+    templates = {
+        s.id: (s.cls, s.held_out, s.raw["request"].format(**PRE_VALUES[s.id]))
+        for s in SHAPES.values()
+    }
+    assert templates == PRE_REGISTERED
 
 
 def test_the_non_english_shape_names_its_english_twin() -> None:
@@ -151,8 +196,8 @@ PASSING: dict[str, list[tuple[str, str, dict[str, str]]]] = {
     "select": [("choose", "Country", {"option": "Kenya"})],
     "toggle": [("check", "Dark mode", {})],
     "heldout_two_field": [
-        ("type", "Name", {"text": "Ada Lovelace"}),
-        ("type", "Email", {"text": "ada@example.com"}),
+        ("type", "Name", {"text": SHAPES["heldout_two_field"].value["v"]}),
+        ("type", "Email", {"text": SHAPES["heldout_two_field"].value["email"]}),
     ],
     "heldout_toggle": [("check", "Remember this device", {})],
     "heldout_non_english": [("check", "Dunkelmodus", {})],
@@ -734,8 +779,8 @@ REACHING: dict[str, Callable[[], list[Callable[[str], dict[str, Any]]]]] = {
     "heldout_toggle": lambda: _state_turns("Remember this device"),
     "heldout_non_english": lambda: _state_turns("Dunkelmodus"),
     "heldout_two_field": lambda: [
-        lambda p: {"subgoals": [_subgoal("s1", "value", "name", "Ada Lovelace"),
-                                _subgoal("s2", "value", "email", "ada@example.com")],
+        lambda p: {"subgoals": [_subgoal("s1", "value", "name", TWO["v"]),
+                                _subgoal("s2", "value", "email", TWO["email"])],
                    "actions": [
             {"verb": "focus", "target": handle(p, "Name"), "subgoal": "s1"},
             {"verb": "type", "target": handle(p, "Name"), "subgoal": "s1", "param": "name"}]},
@@ -1203,13 +1248,14 @@ def test_every_intake_truth_key_names_its_kind_and_its_words() -> None:
 
 def test_a_partial_span_or_a_duplicated_value_is_never_true() -> None:
     g22, two = SHAPES["g22"], SHAPES["heldout_two_field"]
+    name, email = TWO["v"], TWO["email"]
     assert chain_eval.declared_key([("value", ["Ada"])]) not in g22.intake_truth
     assert g22.intake_truth.get(chain_eval.declared_key([("value", ["Ada"])])) is not True
-    twice = chain_eval.declared_key([("value", ["Ada Lovelace"]), ("value", ["Ada Lovelace"])])
+    twice = chain_eval.declared_key([("value", [name]), ("value", [name])])
     assert twice not in two.intake_truth
-    both = chain_eval.declared_key([("value", ["Ada Lovelace"]), ("value", ["ada@example.com"])])
+    both = chain_eval.declared_key([("value", [name]), ("value", [email])])
     assert two.intake_truth[both] is True
-    assert two.intake_truth[chain_eval.declared_key([("value", ["Ada Lovelace"])])] is False
+    assert two.intake_truth[chain_eval.declared_key([("value", [name])])] is False
 
 
 def test_a_partial_span_declared_in_a_chain_has_unknown_truth() -> None:
@@ -1496,7 +1542,10 @@ def test_the_truth_key_fold_is_the_proof_word_match_token_rule() -> None:
 
 
 def _shape_score(cls: Any, **kw: Any) -> chain_eval.ShapeScore:  # Any: ShapeScore fields
-    return chain_eval.ShapeScore("g22", cls, False, "free", **kw)
+    out = chain_eval.ShapeScore("g22", cls, False, "free", **kw)
+    for judge in out.judges:  # the verdicts were on distinct packets (the [V2.79] bar is met)
+        out.packet_counts[judge] = {f"{d:016x}": 1 for d in range(chain_eval.MIN_PACKETS)}
+    return out
 
 
 def test_the_false_veto_bound_is_one_in_twenty_scored_per_judge_over_all_of_them() -> None:
@@ -1568,7 +1617,7 @@ def test_an_unknown_truth_veto_is_not_a_reach_miss_and_counts_toward_the_bound()
 
 
 def test_an_inconclusive_shape_carries_its_causes_sorted_and_a_closed_set() -> None:
-    assert chain_eval.CAUSES == ("no_call", "not_done", "reach", "unknown_truth")
+    assert chain_eval.CAUSES == ("few_packets", "no_call", "not_done", "reach", "unknown_truth")
     out = score(SHAPES["g22"], [_rec("paused", "controller_stop")] * CHAIN_CAP)
     assert (out.result, out.causes) == ("inconclusive", ["reach"])
     unknown_audit = _rec(
@@ -2005,32 +2054,8 @@ def test_a_shape_with_no_audit_reach_script_has_no_such_arm() -> None:
         run_chain(SHAPES["g22"], index=0, provider=Scripted([], ALLOW), arm="audit_reach")
 
 
-@pytest.mark.parametrize("shape_id", [*AUDIT_REACH, "two_outcome"])
-def test_the_scripted_params_are_drawn_from_the_shapes_pool_by_chain(shape_id: str) -> None:
-    shape = SHAPES[shape_id]
-    arm: chain_eval.Arm = "reach" if shape_id == "two_outcome" else "audit_reach"
-    spec = shape.reach if arm == "reach" else shape.audit_reach
-    assert spec is not None
-    pool = spec["pool"]
-    (name,) = pool  # one pooled param per script
-    assert len(pool[name]) >= 3
-    assert all(value in shape.request for value in pool[name])  # each a span of the request
-    records = [run_chain(shape, index=i, provider=Scripted([], VETO), arm=arm) for i in range(4)]
-    packets = [next(j.packet for j in r.judges if j.judge == "audit") for r in records]
-    assert all(packets)
-    assert len(set(packets[:3])) == 3  # three pool values, three packets
-    assert packets[3] == packets[0]  # the pool cycles; the fence does not tell chains apart
-    assert chain_eval.packet_report(records) == {"audit": {"chains": 4, "distinct": 3}}
-
-
-def test_a_state_variant_reach_has_one_param_value_so_one_packet_is_reported() -> None:
-    shape = SHAPES["wrong_field_state"]
-    records = [run_chain(shape, index=i, provider=Scripted([], VETO), arm="reach") for i in (0, 1)]
-    assert chain_eval.packet_report(records) == {"audit": {"chains": 2, "distinct": 1}}
-
-
 def test_the_report_names_the_distinct_packet_digests_per_shape_and_arm(tmp_path: Path) -> None:
-    shape = SHAPES["g23"]
+    shape = next(s for s in load_shapes() if s.id == "g23")  # unfixed: a value per chain
     records = [
         run_chain(shape, index=i, provider=Scripted([], VETO), arm="audit_reach") for i in range(3)
     ]
