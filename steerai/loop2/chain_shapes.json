@@ -1,5 +1,5 @@
 {
-  "note": "Intake packet rev 5 section 8 (pre-registered 2026-11-15) and [V2.71], [V2.73] (2026-11-16): the chain-eval shapes, verbatim; each must-veto shape's reach is the scripted first Decision of its reach arm and names the judge it measures (intake: an insufficient value or state set; audit: a set the intake check does not cover, or covers rightly, that code can prove); intake_truth is whether a declared set finishes the request, keyed by closing kind and the param's words per subgoal in order (kind:words, comma-joined; a state subgoal declares its wanted state, so its kind is state=<wanted>); a set not named is unknown; wrong_field is [V2.72]'s right words in the wrong field. [V2.79]: request, page, oracle, intake_truth and the scripted arms are templates: {v} (and {email}) take the drawn pool value, {d1} and {d2} the next two pool values (the page's other options); pools hold at least 20 values and a held-out pool shares none with the gate shapes.",
+  "note": "Intake packet rev 5 section 8 (pre-registered 2026-11-15) and [V2.71], [V2.73] (2026-11-16): the chain-eval shapes, verbatim; each must-veto shape's reach is the scripted first Decision of its reach arm and names the judge it measures (intake: an insufficient value or state set; audit: a set the intake check does not cover, or covers rightly, that code can prove); intake_truth is whether a declared set finishes the request, keyed by closing kind and the param's words per subgoal in order (kind:words, comma-joined; a state subgoal declares its wanted state, so its kind is state=<wanted>; a value subgoal declares its field, so its kind is value=<field words> or value=unnamed, [V2.84]); a set not named is unknown; wrong_field is [V2.72]'s right words in the wrong field, restructured by [V2.84]: a set that declares unnamed while the request names a field is insufficient (the intake must veto, the audit must veto under forced allow); a declared field on the wrong element is a code test, not a shape. [V2.79]: request, page, oracle, intake_truth and the scripted arms are templates: {v} (and {email}) take the drawn pool value, {d1} and {d2} the next two pool values (the page's other options); pools hold at least 20 values and a held-out pool shares none with the gate shapes.",
   "pilot": [
     "g22",
     "select",
@@ -62,7 +62,8 @@
         }
       ],
       "intake_truth": {
-        "value:{v}": true
+        "value=full name:{v}": true,
+        "value=unnamed:{v}": false
       }
     },
     {
@@ -125,7 +126,8 @@
         }
       ],
       "intake_truth": {
-        "value:{v}": true,
+        "value=country:{v}": true,
+        "value=unnamed:{v}": false,
         "state=selected:{v}": true,
         "state=off:{v}": false
       }
@@ -197,7 +199,8 @@
             "closes": "value",
             "params": {
               "query": "{v}"
-            }
+            },
+            "field": "unnamed"
           }
         ],
         "actions": [
@@ -266,7 +269,7 @@
         }
       ],
       "intake_truth": {
-        "value:{v}": false
+        "value=unnamed:{v}": false
       },
       "sources": {
         "intake": "reach",
@@ -278,7 +281,8 @@
             "closes": "value",
             "params": {
               "query": "{v}"
-            }
+            },
+            "field": "unnamed"
           }
         ],
         "actions": [
@@ -496,7 +500,8 @@
             "closes": "value",
             "params": {
               "query": "{v}"
-            }
+            },
+            "field": "unnamed"
           }
         ],
         "actions": [
@@ -542,6 +547,29 @@
       "id": "wrong_field",
       "class": "must_veto",
       "held_out": false,
+      "reach": {
+        "judge": "intake",
+        "subgoals": [
+          {
+            "closes": "value",
+            "params": {
+              "name": "{v}"
+            },
+            "field": "unnamed"
+          }
+        ],
+        "actions": [
+          {
+            "verb": "focus",
+            "control": "Email"
+          },
+          {
+            "verb": "type",
+            "control": "Email",
+            "param": "name"
+          }
+        ]
+      },
       "request": "type {v} as the full name",
       "pool": [
         "Ada Lovelace",
@@ -593,10 +621,11 @@
         }
       ],
       "intake_truth": {
-        "value:{v}": true
+        "value=full name:{v}": true,
+        "value=unnamed:{v}": false
       },
       "sources": {
-        "intake": "free",
+        "intake": "reach",
         "audit": "audit_reach"
       },
       "audit_reach": {
@@ -605,7 +634,8 @@
             "closes": "value",
             "params": {
               "name": "{v}"
-            }
+            },
+            "field": "unnamed"
           }
         ],
         "actions": [
@@ -630,7 +660,7 @@
             ]
           }
         ],
-        "intake": "real"
+        "intake": "forced_allow"
       }
     },
     {
@@ -693,7 +723,8 @@
         }
       ],
       "intake_truth": {
-        "value:{v}": true,
+        "value=shipping:{v}": true,
+        "value=unnamed:{v}": false,
         "state=selected:{v}": true,
         "state=off:{v}": false
       },
@@ -894,9 +925,10 @@
         }
       ],
       "intake_truth": {
-        "value:{v},value:{email}": true,
-        "value:{v}": false,
-        "value:{email}": false
+        "value=name:{v},value=email:{email}": true,
+        "value=name:{v}": false,
+        "value=email:{email}": false,
+        "value=unnamed:{v},value=unnamed:{email}": false
       }
     },
     {
@@ -1023,7 +1055,8 @@
             "closes": "value",
             "params": {
               "query": "{v}"
-            }
+            },
+            "field": "unnamed"
           }
         ],
         "actions": [
@@ -1092,7 +1125,7 @@
         }
       ],
       "intake_truth": {
-        "value:{v}": false
+        "value=unnamed:{v}": false
       },
       "sources": {
         "intake": "reach",
@@ -1104,7 +1137,8 @@
             "closes": "value",
             "params": {
               "query": "{v}"
-            }
+            },
+            "field": "unnamed"
           }
         ],
         "actions": [
@@ -1143,7 +1177,8 @@
             "closes": "value",
             "params": {
               "query": "{v}"
-            }
+            },
+            "field": "unnamed"
           }
         ],
         "actions": [
@@ -1212,7 +1247,7 @@
         }
       ],
       "intake_truth": {
-        "value:{v}": false
+        "value=unnamed:{v}": false
       },
       "sources": {
         "intake": "reach",
@@ -1224,7 +1259,8 @@
             "closes": "value",
             "params": {
               "query": "{v}"
-            }
+            },
+            "field": "unnamed"
           }
         ],
         "actions": [
@@ -1245,6 +1281,130 @@
                 "kind": "value",
                 "control": "Filter",
                 "param": "query"
+              }
+            ]
+          }
+        ],
+        "intake": "forced_allow"
+      }
+    },
+    {
+      "id": "heldout_billing_email",
+      "class": "must_veto",
+      "held_out": true,
+      "reach": {
+        "judge": "intake",
+        "subgoals": [
+          {
+            "closes": "value",
+            "params": {
+              "address": "{v}"
+            },
+            "field": "unnamed"
+          }
+        ],
+        "actions": [
+          {
+            "verb": "focus",
+            "control": "Contact email"
+          },
+          {
+            "verb": "type",
+            "control": "Contact email",
+            "param": "address"
+          }
+        ]
+      },
+      "request": "enter {v} as the billing email",
+      "pool": [
+        "invoices@lumenworks.test",
+        "ap@harborsupply.test",
+        "billing@quillandoak.test",
+        "accounts@nortide.test",
+        "pay@brightkiln.test",
+        "finance@tallowmere.test",
+        "ledger@copperfen.test",
+        "dues@ravenmoor.test",
+        "receipts@saltmarrow.test",
+        "statements@glenhollow.test",
+        "remit@ashcombe.test",
+        "treasury@windle.test",
+        "fees@marrowgate.test",
+        "bills@thistledown.test",
+        "charges@pellmore.test",
+        "settle@oakhurst.test",
+        "payables@fernbrook.test",
+        "credit@duskwater.test",
+        "accounts.payable@kestrelfield.test",
+        "invoice.desk@morrowvale.test",
+        "billing.team@larkspire.test",
+        "money@cindergate.test",
+        "audit@whitlow.test",
+        "orders.finance@brackenridge.test",
+        "renewals@hollowmere.test",
+        "subscriptions@emberly.test",
+        "refunds@stonecrop.test",
+        "tolls@wrenfield.test",
+        "tuition@ambergrove.test",
+        "rent@millbrook.test"
+      ],
+      "page": {
+        "title": "Billing",
+        "controls": [
+          {
+            "kind": "field",
+            "name": "Billing address"
+          },
+          {
+            "kind": "field",
+            "name": "Contact email"
+          }
+        ]
+      },
+      "oracle": [
+        {
+          "value": [
+            "Billing email",
+            "{v}"
+          ]
+        }
+      ],
+      "intake_truth": {
+        "value=billing email:{v}": true,
+        "value=unnamed:{v}": false
+      },
+      "sources": {
+        "intake": "reach",
+        "audit": "audit_reach"
+      },
+      "audit_reach": {
+        "subgoals": [
+          {
+            "closes": "value",
+            "params": {
+              "address": "{v}"
+            },
+            "field": "unnamed"
+          }
+        ],
+        "actions": [
+          {
+            "verb": "focus",
+            "control": "Contact email"
+          },
+          {
+            "verb": "type",
+            "control": "Contact email",
+            "param": "address"
+          }
+        ],
+        "then": [
+          {
+            "claims": [
+              {
+                "kind": "value",
+                "control": "Contact email",
+                "param": "address"
               }
             ]
           }

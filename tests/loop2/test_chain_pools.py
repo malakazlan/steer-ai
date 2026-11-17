@@ -198,10 +198,11 @@ def test_the_other_options_of_a_select_are_never_the_drawn_value() -> None:
     ("shape_id", "arm"),
     [("g23", "audit_reach"), ("g23", "reach"), ("set_and_save", "audit_reach"),
      ("set_and_save", "reach"), ("two_outcome", "reach"), ("two_outcome", "audit_reach"),
-     ("wrong_field", "audit_reach"),
+     ("wrong_field", "audit_reach"), ("wrong_field", "reach"),
      ("wrong_field_state", "reach"), ("heldout_injection", "audit_reach"),
      ("heldout_injection", "reach"), ("heldout_filter", "audit_reach"),
-     ("heldout_filter", "reach")],
+     ("heldout_filter", "reach"), ("heldout_billing_email", "audit_reach"),
+     ("heldout_billing_email", "reach")],
 )  # fmt: skip
 def test_a_scripted_arm_runs_on_every_drawn_value_of_its_pool(
     shape_id: str, arm: chain_eval.Arm
@@ -230,7 +231,7 @@ def test_a_must_pass_chain_reaches_its_outcome_on_every_drawn_value(shape_id: st
     for i in range(len(shape.pool)):
         value = shape.at(i).value["v"]
         turns = {
-            "g22": lambda v=value: _typed_and_claimed("Full name", v),
+            "g22": lambda v=value: _typed_and_claimed("Full name", v, declared="full name"),
             "select": lambda v=value: _select_turns(v),
         }.get(shape_id, lambda v=value: _state_turns(v))()
         record = run_chain(shape, index=i, provider=Scripted(turns, ALLOW))
@@ -246,6 +247,15 @@ def test_the_header_freezes_the_seed_and_the_draw_order() -> None:
     for change in ({"draw_seed": "other"}, {"draw_order_sha256": "0" * 64}):
         with pytest.raises(ValueError, match="wording_not_frozen"):
             check_frozen({**head, **change}, head)
+
+
+DRAW_ORDER_SHA256 = "9e7ef6b8284af4495a1c6e26299898e3e30add112c855e1ae051cd17ec1bb592"
+"""The draw order the header freezes, re-pinned on purpose with the shapes ([V2.84] fields and the
+held-out wrong-field shape): a change to a pool, the seed or the slot rule shows here."""
+
+
+def test_the_draw_order_hash_is_the_pinned_one() -> None:
+    assert chain_eval.draw_order_sha256(load_shapes()) == DRAW_ORDER_SHA256
 
 
 def test_the_draw_order_hash_changes_with_the_seed(monkeypatch: pytest.MonkeyPatch) -> None:
