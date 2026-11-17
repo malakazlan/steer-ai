@@ -29,7 +29,7 @@ WM_MOUSEMOVE = 0x0200
 WM_LBUTTONDOWN = 0x0201
 INJ_UP = LLKHF_INJECTED | LLKHF_UP
 
-LAYOUT_DIGESTS = {4: "0d87873d6ce8558cd0f774153f738937012ad9a27fb5251092775488bed74ab2"}
+LAYOUT_DIGESTS = {5: "642bf125e654818b1e1302940beae3f142f9fd00880e4ed006f1b0f52141a9d5"}
 """LAYOUT_VERSION -> sha256 of the status and config word lists. A changed word list fails the
 test until the version moves and a new digest is pinned."""
 
@@ -40,7 +40,7 @@ def _digest() -> str:
 
 
 def test_the_word_lists_are_pinned_to_the_layout_version() -> None:
-    assert LAYOUT_VERSION == 4, "the words carry probe tags now ([V2.81]): version 4"
+    assert LAYOUT_VERSION == 5, "the words carry the retired ring and proof times: version 5"
     assert LAYOUT_DIGESTS[LAYOUT_VERSION] == _digest()
 
 
@@ -291,9 +291,7 @@ def test_a_retired_probe_tag_counts_only_on_an_injected_probe_shaped_event() -> 
     c2 = _c()
     c2.set_probe_tag(0xAAAA_0001)
     c2.set_probe_tag(0xAAAA_0002)
-    c2.on_mouse(
-        message=WM_LBUTTONDOWN, flags=LLMHF_INJECTED, extra=0xAAAA_0001, pt=(1, 1), now=2.0
-    )
+    c2.on_mouse(message=WM_LBUTTONDOWN, flags=LLMHF_INJECTED, extra=0xAAAA_0001, pt=(1, 1), now=2.0)
     assert c2.last_user() == 2.0  # injected but not probe-shaped: still a person
     assert "steer" not in c2.counts()
 
@@ -350,9 +348,7 @@ def test_an_echo_at_the_deadline_counts_and_one_a_millisecond_later_is_lost() ->
         tag = ledger.probe_sent(now=20.0, begin=lambda c=c, tags=tags: _begin(c, tags))
         _timed(c, tag, at=at)
         assert ledger.probe_seen(counts=c) is proven
-        assert ledger.lost_hooks(now=21.055, counts=c) == (
-            () if proven else ("keyboard", "mouse")
-        )
+        assert ledger.lost_hooks(now=21.055, counts=c) == (() if proven else ("keyboard", "mouse"))
         assert ledger.probe_ok(now=21.055, counts=c) is proven
 
 

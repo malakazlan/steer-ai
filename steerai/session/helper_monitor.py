@@ -39,7 +39,7 @@ from steerai.session.helper_reader import (
     read_status,
 )
 from steerai.session.hook_classifier import HOOKS, OTHER_STEER_INPUT, TAKEOVER, ProbeTags
-from steerai.session.hook_layout import LATENCY_BUCKETS, Words
+from steerai.session.hook_layout import LATENCY_BUCKETS, RETIRED_WORDS, Words
 from steerai.session.probe_ledger import ProbeLedger
 
 CLOCK_RESOLUTION_S: Final = 0.015625
@@ -91,6 +91,9 @@ class _WordCounts:
 
     def proof(self, hook: str) -> int:
         return self._helper.status.get(f"proof_{hook}")
+
+    def proof_at(self, hook: str) -> float:
+        return self._helper.status.get(f"proof_qpc_{hook}") / self._freq
 
     def last_own(self, hook: str) -> float:
         return self._helper.status.get(f"last_own_qpc_{hook}") / self._freq
@@ -208,8 +211,19 @@ class HelperMonitor:
         """[V2.81]: the fresh tag into the shared word before the probe is injected, never
         after: the helper compares each event with it."""
         tag = self._tags.draw()
-        self._helper.config.set("probe_tag", tag)
+        config = self._helper.config
+        ring = self._tags.retired()
+        for i, name in enumerate(RETIRED_WORDS):  # the ring first: the helper reads it when the
+            config.set(name, ring[i] if i < len(ring) else 0)  # tag changes, so it is ready
+        config.set("probe_tag", tag)  # x64 stores are not reordered with each other (TSO)
         return tag
+
+    def lost_hooks(self) -> tuple[str, ...]:
+        """The hooks that missed the last probe past its deadline (the start self-check reads
+        it to tell an unproven first probe from a fault of the monitor)."""
+        if self._closed:
+            return ()
+        return self._ledger.lost_hooks(now=self._now(), counts=self._counts)
 
     def probe_seen(self) -> bool:
         return not self._closed and self._ledger.probe_seen(counts=self._counts)

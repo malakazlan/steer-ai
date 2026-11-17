@@ -28,6 +28,7 @@ class HookCounts(Protocol):
     event's time."""
 
     def proof(self, hook: str) -> int: ...
+    def proof_at(self, hook: str) -> float: ...
     def last_own(self, hook: str) -> float: ...
     def last_steer(self) -> float: ...
 
@@ -84,4 +85,8 @@ class ProbeLedger:
         return not missed
 
     def _unproven(self, counts: HookCounts) -> tuple[str, ...]:
-        return tuple(h for h in HOOKS if counts.proof(h) != self._tag)
+        """The hooks whose echo is not this probe's own, or came after its deadline: a late echo
+        is a lost hook, not a slow one ([V2.59], #364)."""
+        sent = self._probe_sent_at
+        late = float("inf") if sent is None else sent + self._deadline_s
+        return tuple(h for h in HOOKS if counts.proof(h) != self._tag or counts.proof_at(h) > late)

@@ -48,6 +48,8 @@ QPC_WORDS: Final = (
     "last_own_qpc_mouse",
     "last_user_qpc_keyboard",
     "last_user_qpc_mouse",
+    "proof_qpc_keyboard",
+    "proof_qpc_mouse",
 )
 _READ: Final = (
     "state",
