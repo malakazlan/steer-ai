@@ -110,6 +110,10 @@ class Monitor:
     def probe_seen(self) -> bool:
         return self.seen
 
+    def lost_hooks(self) -> tuple[str, ...]:
+        """The hooks that missed the probe past its deadline: the keyboard when it was not seen."""
+        return () if self.seen else ("keyboard",)
+
     def latency(self) -> tuple[int, int | None, int | None]:
         return self.timed
 

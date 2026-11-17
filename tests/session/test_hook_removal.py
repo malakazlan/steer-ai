@@ -18,7 +18,6 @@ import time
 
 import pytest
 
-from steerai.loop2.live_world import LiveWorld
 from steerai.loop2.loop import PortInterrupted
 from steerai.session.monitor import PROBE_VK, HookMonitor
 from tests.loop2.test_live_world import _RealTag, _world
@@ -48,15 +47,6 @@ class _RealMonitor(_RealTag):
         return self.real
 
 
-def _end(world: LiveWorld) -> None:
-    """Close the world and, as the CLI does after its final line, end the loss watch it hands
-    the open monitor to ([V2.64] Two): a lost probe leaves one, and a watch nobody ends keeps the
-    kill chord registered, so the next test's `RegisterHotKey` fails with error 1409."""
-    world.close()
-    if world.loss_watch is not None:
-        world.loss_watch.close()
-
-
 def test_a_keyboard_hook_removed_by_the_os_is_lost_and_nothing_is_sent() -> None:
     platform = _RealMonitor()
     world, _ = _world(platform, clock=time.monotonic, pause=time.sleep)
@@ -72,7 +62,7 @@ def test_a_keyboard_hook_removed_by_the_os_is_lost_and_nothing_is_sent() -> None
         assert platform.fake_input.clicks == []
         assert world.report()["monitor_lost"] == 1
     finally:
-        _end(world)
+        world.close()
 
 
 def test_an_echo_slower_than_the_deadline_is_lost_though_windows_keeps_the_hook() -> None:
@@ -91,4 +81,4 @@ def test_an_echo_slower_than_the_deadline_is_lost_though_windows_keeps_the_hook(
         time.sleep(STALL_S)  # the late echo lands; the loss stays latched
         assert world.interrupted() == "monitor_lost"
     finally:
-        _end(world)
+        world.close()

@@ -468,9 +468,9 @@ class HookMonitor:
     def probe_now(self) -> None:
         self._core.probe_sent(now=self._monotonic())
         try:
-            nudge_in_place()
-            if self._per_hook and self._probe_vk is not None:
-                key_up_probe(self._probe_vk)  # LW-01: the keyboard hook's own proof
+            nudge_in_place(tag=self._extra_info)  # [V2.80]: the monitor's own tag, never the
+            if self._per_hook and self._probe_vk is not None:  # process's current one
+                key_up_probe(self._probe_vk, tag=self._extra_info)  # LW-01: the keyboard's proof
         except OSError:
             self._core.on_probe_failed()  # fails closed: the next boundary stops (D4)
 
@@ -667,6 +667,15 @@ class HookMonitor:
         return hookproc(proc)
 
     def _install_and_pump(self, user32: Any, hookproc: Any, msg: Any, hooks: list[int]) -> None:
+        flags = sum(MOD_FLAGS[m] for m in self._mods) | _MOD_NOREPEAT
+        if not user32.RegisterHotKey(None, HOTKEY_ID, flags, self._vk):  # [V2.80]: the kill key
+            error = ctypes.get_last_error()  # first, so a second Steer fails here, hooks unset
+            self._error = (
+                f"kill_key_unavailable: RegisterHotKey failed (error {error}); "
+                "another program holds the chord, pass --kill-key"
+            )
+            return
+        self._hotkey_registered = True
         for mouse, kind in ((True, WH_MOUSE_LL), (False, WH_KEYBOARD_LL)):
             proc = self._make_proc(user32, hookproc, mouse=mouse)
             self._procs.append(proc)
@@ -676,15 +685,6 @@ class HookMonitor:
                 self._error = f"monitor_unavailable: SetWindowsHookEx failed (error {error})"
                 return
             hooks.append(int(hook))
-        flags = sum(MOD_FLAGS[m] for m in self._mods) | _MOD_NOREPEAT
-        if not user32.RegisterHotKey(None, HOTKEY_ID, flags, self._vk):
-            error = ctypes.get_last_error()
-            self._error = (
-                f"kill_key_unavailable: RegisterHotKey failed (error {error}); "
-                "another program holds the chord, pass --kill-key"
-            )
-            return
-        self._hotkey_registered = True
         self._ready.set()
         self._hotkey_registered = self._pump(user32, msg, hooks, hotkey=True)
 

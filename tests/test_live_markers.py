@@ -82,6 +82,8 @@ FAKED: frozenset[str] = frozenset(
         "test_a_failed_hook_install_is_a_refusal_that_unhooks_what_was_installed",
         "session/test_hook_callback.py::test_a_taken_hot_key_is_a_refusal_that_unhooks_both_hooks",
         "session/test_hook_callback.py::"
+        "test_a_second_steer_fails_on_the_kill_key_before_any_hook_or_input",
+        "session/test_hook_callback.py::"
         "test_an_exception_in_the_hook_thread_before_ready_is_a_start_refusal",
         "session/test_hook_callback.py::"
         "test_a_self_probe_that_cannot_be_sent_does_not_raise_and_fails_closed",

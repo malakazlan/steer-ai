@@ -37,7 +37,13 @@ from steerai.errors import (
 )
 from steerai.loop2 import ready as ready_step
 from steerai.loop2.decide_port import TaskGenerations
-from steerai.loop2.live_world import LiveConfig, LiveWorld, Platform, run_on_loop_thread
+from steerai.loop2.live_world import (
+    LiveConfig,
+    LiveWorld,
+    LossReport,
+    Platform,
+    run_on_loop_thread,
+)
 from steerai.loop2.loop import AUDIT_COUNTS, INTAKE_COUNTS, TaskOutcome
 from steerai.loop2.price import STALE_DAYS, PriceFile, load_price
 from steerai.loop2.runner import run_task
@@ -335,7 +341,7 @@ def _run(options: V2Options, deps: V2Deps, out: _Out, price: PriceFile, window: 
     worlds: list[LiveWorld] = []
 
     def work() -> tuple[TaskOutcome, dict[str, int | str | None]]:
-        with LiveWorld(config, platform) as world:
+        with LiveWorld(config, platform, watch_losses=True) as world:  # [V2.80]: only here
             worlds.append(world)  # [V2.64] Two: its loss watch is read after the final line
             world.bring_to_front()  # [V2.62]: a refusal here is a start refusal, its own reason
             started.append(True)
@@ -357,12 +363,36 @@ def _run(options: V2Options, deps: V2Deps, out: _Out, price: PriceFile, window: 
             work, platform=platform, task=task, options=options, out=out, done=done, started=started
         )
     finally:
-        watch = worlds[0].loss_watch if worlds else None
-        if watch is not None:  # [V2.64] Two: after the final line, never before it
-            watched = watch.run(deps.clock, deps.pause)
-            if watched is not None:
-                verdict, after_ms = watched
-                out.emit({"loss_watch": {"verdict": verdict, "after_ms": after_ms}}, options)
+        _after_the_final_line(worlds, out=out, options=options)
+
+
+def _after_the_final_line(worlds: list[LiveWorld], *, out: _Out, options: V2Options) -> None:
+    """[V2.64] Two, [V2.80]: after the final line, never before it: the loss watch's report (a
+    verdict, or why there is none) as its own record. Nothing here ever replaces the task's exit
+    code or its exception: a Ctrl+C or a write that fails ends the watch (the monitor is closed)
+    and goes on."""
+    world = worlds[0] if worlds else None
+    if world is None:
+        return
+    watch = world.loss_watch
+    try:
+        report = world.loss_report if watch is None else watch.run()
+        if report is not None:
+            out.emit({"loss_watch": _loss_record(report)}, options)
+    except (Exception, KeyboardInterrupt):  # noqa: BLE001 - see the docstring
+        out.note("warning: the loss watch record was not written")
+    finally:
+        if watch is not None:
+            try:
+                watch.close()  # the backstop: a close that failed in the thread is tried again
+            except (Exception, KeyboardInterrupt):  # noqa: BLE001 - never replaces the result
+                out.note("warning: the monitor did not close after the loss watch")
+
+
+def _loss_record(report: LossReport) -> dict[str, str | int | None]:
+    if report.verdict is not None:
+        return {"verdict": report.verdict, "after_ms": report.after_ms}
+    return {"no_verdict": report.no_verdict}
 
 
 def _run_and_emit(  # noqa: PLR0913 - the run's parts, passed on as they are
