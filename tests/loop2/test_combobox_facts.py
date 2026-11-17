@@ -32,7 +32,9 @@ def _screen(*, searchbox: bool) -> Observed:
 
 
 def _types_into_combo(*, searchbox: bool) -> World:
-    subs = [SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value")]
+    subs = [
+        SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value", field="unnamed")
+    ]
     world = World([Decision(subgoals=subs, actions=[act("type", target=COMBO.id, param="text")])])
     world.screen = _screen(searchbox=searchbox)
     return world
@@ -55,7 +57,9 @@ def test_a_task_with_no_combobox_sets_neither() -> None:
 
 
 def test_a_click_on_a_combobox_is_not_a_type() -> None:
-    subs = [SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value")]
+    subs = [
+        SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value", field="unnamed")
+    ]
     world = World([Decision(subgoals=subs, actions=[act("click", target=GO.id)])])
     world.screen = _screen(searchbox=True)
     outcome = run_task(task(), world.ports())

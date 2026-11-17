@@ -10,7 +10,7 @@ from typing import Final, Literal
 
 from steerai.loop2.decision import Claim
 from steerai.loop2.owned import OwnedToken, field_owned
-from steerai.loop2.task import Subgoal
+from steerai.loop2.task import UNNAMED, Subgoal
 from steerai.orchestrator.gate import group_name
 from steerai.world.effects import (
     CarrierHeld,
@@ -70,7 +70,7 @@ class Readers:
     normalisation), so a value claim compares digests."""
 
 
-def check_claim(  # noqa: PLR0911, PLR0913 - one return per outcome; keyword-only readers
+def check_claim(  # noqa: PLR0911, PLR0912, PLR0913 - one return per outcome; keyword-only readers
     claim: Claim,
     subgoal: Subgoal,
     baseline: Observed,
@@ -123,6 +123,8 @@ def check_claim(  # noqa: PLR0911, PLR0913 - one return per outcome; keyword-onl
         return ("secure_unread",)
     if claim.param is None or claim.param not in subgoal.params:  # validate refuses these first
         raise ValueError("param_missing")
+    if not field_held(now.snapshot, element, subgoal):
+        return ("field_mismatch",)
     read = readers.read_value(element)
     if read is None:
         return ("value_unread",)
@@ -163,6 +165,7 @@ CheckToken = Literal[
     "option_evidence",
     "no_scope",
     "inside_field",
+    "field_mismatch",
 ]
 """#349: every rejection the step 3 claim checks give (`_excluded` included), closed for mypy."""
 ClaimCheck = CheckToken | OwnedToken
@@ -400,6 +403,16 @@ def holds_words(snapshot: Snapshot, element: Element, text: str) -> bool:
     wanted = set(_tokens(text))
     names = (element.name, group_name(snapshot, element) or "")
     return bool(wanted) and any(wanted <= set(_tokens(name)) for name in names)
+
+
+def field_held(snapshot: Snapshot, element: Element, subgoal: Subgoal) -> bool:
+    """[V2.84]: a value read counts only from an element that holds the subgoal's declared field
+    words, by the word match state proofs use (`holds_words`: its name, or its group name). An
+    `unnamed` field holds anything. Nearby text never counts; the label UIA gives
+    (`LabeledBy`) is not in the observation, so it is not read."""
+    if subgoal.field is None or subgoal.field == UNNAMED:
+        return True
+    return holds_words(snapshot, element, subgoal.field)
 
 
 def _excluded(

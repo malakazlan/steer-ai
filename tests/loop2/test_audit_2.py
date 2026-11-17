@@ -58,7 +58,7 @@ def _page_only(audit: object) -> World:
 
 def _value_only(*, sid: str = "s1", param: str = "text") -> World:
     subs = [SubgoalDoc(id=sid, desc="the field holds it", params={param: "red shoes"},
-                       closes="value")]  # fmt: skip
+                       closes="value", field="unnamed")]  # fmt: skip
     world = World(
         [
             Decision(

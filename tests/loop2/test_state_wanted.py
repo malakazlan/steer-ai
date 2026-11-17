@@ -78,8 +78,9 @@ def test_a_state_subgoal_without_wanted_is_wanted_missing() -> None:
 
 @pytest.mark.parametrize("closes", ["value", "page"])
 def test_a_value_or_page_subgoal_with_wanted_is_wanted_not_state(closes: str) -> None:
-    assert _first(closes=closes, wanted="on") == ["wanted_not_state"]
-    assert _first(closes=closes) == []
+    field = {"field": "unnamed"} if closes == "value" else {}
+    assert _first(closes=closes, wanted="on", **field) == ["wanted_not_state"]
+    assert _first(closes=closes, **field) == []
 
 
 def test_the_new_token_is_taught_in_the_legend_and_the_rules() -> None:

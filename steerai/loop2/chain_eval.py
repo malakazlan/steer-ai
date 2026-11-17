@@ -116,7 +116,7 @@ from steerai.loop2.loop import (
 )
 from steerai.loop2.prompt_inputs import make_audit, make_decide, make_intake
 from steerai.loop2.runner import REFUSAL_KIND, run_task
-from steerai.loop2.task import Budgets, Envelope, Task, Wanted
+from steerai.loop2.task import UNNAMED, Budgets, Envelope, Task, Wanted
 from steerai.world.effects import _tokens  # the proof word match's token rule
 
 proof_tokens: Final = _tokens
@@ -1531,7 +1531,8 @@ def reach_decision(
     declared = [
         {"id": f"s{i + 1}", "desc": "declared by the harness",
          "params": dict(sg["params"]), "closes": sg["closes"],
-         **({"wanted": sg["wanted"]} if "wanted" in sg else {})}
+         **({"wanted": sg["wanted"]} if "wanted" in sg else {}),
+         **({"field": sg.get("field", UNNAMED)} if sg["closes"] == "value" else {})}
         for i, sg in enumerate(spec["subgoals"])
     ]  # fmt: skip
     actions = [

@@ -49,12 +49,12 @@ from tests.loop2.world_fakes import (
 from tests.loop2.world_fakes import PAGE as SCREEN
 
 NEWLINE = chr(10)
-INTAKE_FIXED = "2c1f51cf24e88bd2db585b999b46e09410fc109235329ce228b1dd581b9d0575"
+INTAKE_FIXED = "175a03d8d8db926d55e605b29ec261a118b8686900c227acb17c7ff41539a0e4"
 """V4: sha256 of the intake's rules and schema blocks, joined by newlines."""
 AUDIT_FIXED = "0b9a5f1b1945c7119c5fdc399a23a67ef682e973a5904106efca38d53e79d251"
 """V4: sha256 of the audit's rules and schema blocks, joined by newlines."""
 
-VALUE = SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value")
+VALUE = SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value", field="unnamed")
 STATE = SubgoalDoc(id="s2", desc="x", params={"what": "shoes"}, closes="state", wanted="on")
 PAGE = SubgoalDoc(id="s3", desc="x", params={"text": "red shoes"}, closes="page")
 
@@ -331,7 +331,7 @@ def test_the_prompt_takes_no_observation() -> None:
 
 
 def test_the_prompt_holds_positions_spans_and_no_model_text() -> None:
-    view = IntakeView(subgoals=((1, "value", ((1, "red shoes"),), None),))
+    view = IntakeView(subgoals=((1, "value", ((1, "red shoes"),), None, None),))
     system, user = build_intake_prompt(
         "type red shoes in the field", view.subgoals, task_fence="taskfence01"
     )
@@ -345,11 +345,11 @@ def test_the_prompt_holds_positions_spans_and_no_model_text() -> None:
 
 def test_the_runner_hands_the_check_positions_never_model_ids() -> None:
     leak = SubgoalDoc(id="zqleakid", desc="zqdesc", params={"zqparam": "red shoes"},
-                      closes="value")  # fmt: skip
+                      closes="value", field="unnamed")  # fmt: skip
     world = _world_with([_first([leak]), Decision(stop="blocked")])
     run_task(task(), world.ports())
     (view,) = world.intakes
-    assert view.subgoals == ((1, "value", ((1, "red shoes"),), None),)
+    assert view.subgoals == ((1, "value", ((1, "red shoes"),), None, "unnamed"),)
     system, user = build_intake_prompt(task().goal, view.subgoals, task_fence="taskfence01")
     text = NEWLINE.join([*system, *user])
     for word in ("zqleakid", "zqdesc", "zqparam"):  # #457 principal: the whole prompt
@@ -415,7 +415,7 @@ def _both_numbered(world: World) -> tuple[list[str], list[str]]:
     def numbered(block: str) -> list[str]:
         rows = block.split(NEWLINE)
         return [
-            r.split(" proven=")[0].split(" wanted=")[0]
+            r.split(" proven=")[0].split(" wanted=")[0].split(" field=")[0]
             for r in rows
             if r.startswith(("subgoal ", "  param:"))
         ]
@@ -427,7 +427,9 @@ def test_the_intake_and_the_audit_number_subgoals_and_params_alike() -> None:
     """Coordinator ruling on #455: both judges read 1-based positions in `decision_shape`'s
     order (0-based only in the trace), so one run's subgoal and param carry the same numbers in
     the intake prompt at the start and in the audit prompt at the end."""
-    subs = [SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value")]
+    subs = [
+        SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value", field="unnamed")
+    ]
     claim = Claim(subgoal="s1", kind="value", evidence=[FIELD.id], param="text")
     world = World(
         [
@@ -451,7 +453,9 @@ def test_two_subgoals_with_unsorted_params_number_alike_in_both_judges() -> None
     red = element(42, "CheckBox", "Red", (9, 42), 1)
     shoes = element(43, "CheckBox", "Shoes", (9, 43), 1)
     subs = [
-        SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value"),
+        SubgoalDoc(
+            id="s1", desc="x", params={"text": "red shoes"}, closes="value", field="unnamed"
+        ),
         SubgoalDoc(
             id="s2", desc="x", params={"zz": "red", "aa": "shoes"}, closes="state", wanted="on"
         ),
@@ -495,8 +499,9 @@ def test_params_are_numbered_by_their_names_sorted_order() -> None:
 def test_the_intake_user_block_renders_exactly() -> None:
     """#457 review: one rendered user block, pinned whole, so a format change is seen."""
     lines = (
-        (1, "value", ((1, "red shoes"),), None),
-        (2, "state", ((1, "shoes"), (2, "red")), "off"),
+        (1, "value", ((1, "red shoes"),), None, "unnamed"),
+        (2, "state", ((1, "shoes"), (2, "red")), "off", None),
+        (3, "value", ((1, "red"),), None, "shoes"),
     )
     _, user = build_intake_prompt("search red shoes", lines, task_fence="taskfence01")
     assert user == [
@@ -507,11 +512,13 @@ def test_the_intake_user_block_renders_exactly() -> None:
                 "taskfence01>>>",
                 "subgoals:",
                 "<<<subgoals taskfence01",
-                "subgoal 1 closes=value",
+                "subgoal 1 closes=value field=unnamed",
                 "  param:1 red shoes",
                 "subgoal 2 closes=state wanted=off",
                 "  param:1 shoes",
                 "  param:2 red",
+                "subgoal 3 closes=value field=shoes",
+                "  param:1 red",
                 "taskfence01>>>",
             ]
         )

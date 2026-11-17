@@ -56,7 +56,7 @@ def test_the_prompt_asks_for_the_closing_kind_generically() -> None:
     """Each closing kind is named and described generically ([V2.64] One: the page kind
     describes the request, not what the step can prove), naming no task."""
     assert "closes" in SYSTEM_RULES
-    for kind in ("value (a field holds the text)",
+    for kind in ("value (a field holds the text",
                  "state (an element is in a state; declare `wanted` with it",
                  "page: the page shows the result the request asks for"):  # fmt: skip
         assert kind in SYSTEM_RULES
@@ -65,7 +65,10 @@ def test_the_prompt_asks_for_the_closing_kind_generically() -> None:
 def _world(
     closes: str, claim: Claim, *, values: dict[tuple[int, ...], ValueFact] | None = None
 ) -> World:
-    subs = [SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes=closes)]  # type: ignore[arg-type]  # a closed literal
+    field = "unnamed" if closes == "value" else None
+    subs = [
+        SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes=closes, field=field)  # type: ignore[arg-type]  # a closed literal
+    ]
     world = World(
         [
             Decision(subgoals=subs, actions=[act("type", target=FIELD.id, param="text")]),
@@ -102,7 +105,9 @@ def test_the_auto_proof_never_closes_a_value_subgoal(monkeypatch: pytest.MonkeyP
     moved = dataclasses.replace(
         observed(), url=URL + "?q=red%20shoes", document_url=URL + "?q=red%20shoes"
     )
-    subs = [SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value")]
+    subs = [
+        SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value", field="unnamed")
+    ]
     world = World(
         [Decision(subgoals=subs, actions=[act("click", target=GO.id)])],
         effects=[report("url_changed_in_place")],
@@ -152,7 +157,7 @@ def _fill_world(name_now: ValueFact, *, gone: bool = False) -> World:
     """Name proven, then a click (the page may change), then city claimed. `gone`: the click's
     page no longer holds the name field."""
     spans = {"name": "Ada", "city": "Rome"}
-    subs = [SubgoalDoc(id="s1", desc="fill", params=spans, closes="value")]
+    subs = [SubgoalDoc(id="s1", desc="fill", params=spans, closes="value", field="unnamed")]
     screen = observed([*PAGE, NAME, CITY])
     world = World(
         [
@@ -269,7 +274,9 @@ def test_a_task_started_on_the_web_never_closes_on_a_file_page() -> None:
 
 
 def test_a_value_subgoal_without_a_param_is_refused_into_the_repair_turn() -> None:
-    bare = Decision(subgoals=[SubgoalDoc(id="s1", desc="fill", closes="value")], stop="cannot")
+    bare = Decision(
+        subgoals=[SubgoalDoc(id="s1", desc="fill", closes="value", field="unnamed")], stop="cannot"
+    )
     assert "value_without_param" in validate(
         bare, listed_ids=frozenset(), goal=GOAL, first_turn=True
     )

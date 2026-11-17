@@ -560,7 +560,13 @@ def handle(prompt: str, name: str) -> int:
     return int(found[-1])
 
 
-SUB = {"id": "s1", "desc": "it is set", "params": {"name": "Ada Lovelace"}, "closes": "value"}
+SUB = {
+    "id": "s1",
+    "desc": "it is set",
+    "params": {"name": "Ada Lovelace"},
+    "closes": "value",
+    "field": "unnamed",
+}
 ALLOW = json.dumps({"sufficient": True, "reason": "facts_finish_request"})
 VETO = json.dumps({"sufficient": False, "reason": "request_asks_more"})
 
@@ -780,7 +786,7 @@ def _subgoal(
     doc: dict[str, Any] = {  # Any: JSON
         "id": sid, "desc": "it is so", "params": {param: words}, "closes": closes
     }  # fmt: skip
-    return doc | ({"wanted": wanted} if closes == "state" else {})
+    return doc | ({"wanted": wanted} if closes == "state" else {"field": "unnamed"})
 
 
 def _state_turns(name: str) -> list[Callable[[str], dict[str, Any]]]:

@@ -142,6 +142,21 @@ TAUGHT: Final[Mapping[str, Taught]] = {
         "state (an element is in a state; declare `wanted` with it: on, off, selected, "
         "expanded or collapsed; no other kind has one)",
     ),
+    "field_missing": (
+        "rule",
+        "declare `field` with it: words of the request naming that field, or unnamed when the "
+        "request names none; no other kind has one",
+    ),
+    "field_not_value": (
+        "rule",
+        "declare `field` with it: words of the request naming that field, or unnamed when the "
+        "request names none; no other kind has one",
+    ),
+    "field_not_span": (
+        "rule",
+        "declare `field` with it: words of the request naming that field, or unnamed when the "
+        "request names none; no other kind has one",
+    ),
 }
 
 EXCLUDED: Final[Mapping[str, str]] = {

@@ -677,6 +677,7 @@ OUTCOME_COUNTS: Final = (
     "fields_not_empty",
     "not_own_text",
     "evidence_taken",
+    "field_mismatch",
     "rebased_open",
     "rebased_open_commit",
     "target_changes",

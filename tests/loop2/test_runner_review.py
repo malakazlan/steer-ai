@@ -401,7 +401,11 @@ def test_rt39_a_subgoal_with_no_action_yet_is_judged_from_the_first_observation(
     monkeypatch.setattr(runner, "check_claim", spy)
     claim = Claim(subgoal="s1", kind="value", evidence=[FIELD.id], param="text")
     first = observed(QUERY_PAGE)
-    fill = [SubgoalDoc(id="s1", desc="fill", params={"text": "red shoes"}, closes="value")]
+    fill = [
+        SubgoalDoc(
+            id="s1", desc="fill", params={"text": "red shoes"}, closes="value", field="unnamed"
+        )
+    ]
     opening = Decision(subgoals=fill, actions=[act("wait")])  # [V2.39]: a value subgoal
     world = World([opening, decision(claims=[claim])], screen=first)
     world.later = observed([*QUERY_PAGE, PAGE[3]])

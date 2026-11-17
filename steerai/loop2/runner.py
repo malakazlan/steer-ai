@@ -152,6 +152,7 @@ from steerai.loop2.verify import (
     Judged,
     Readers,
     check_claim,
+    field_held,
     holds_words,
     judge,
 )
@@ -229,6 +230,9 @@ REFUSAL_KIND: Final[Mapping[str, RefusalKind]] = {
     "value_without_param": "model",
     "wanted_missing": "model",
     "wanted_not_state": "model",
+    "field_missing": "model",
+    "field_not_value": "model",
+    "field_not_span": "model",
 }
 """[V2.12], [V2.37] P5, [V2.74]: each refusal token's kind, declared for every token (no default;
 a token without a kind fails a test). [V2.43]: a world fact the person-ask
@@ -293,6 +297,7 @@ class _ActCounts:
     fields_not_empty: int = 0
     not_own_text: int = 0
     evidence_taken: int = 0
+    field_mismatch: int = 0
 
 
 @dataclass
@@ -657,6 +662,7 @@ class _Run:
             fields_not_empty=self.counts.fields_not_empty,
             not_own_text=self.counts.not_own_text,
             evidence_taken=self.counts.evidence_taken,
+            field_mismatch=self.counts.field_mismatch,
             rebased_open=len(self.rebased - self.proven),
             rebased_open_commit=len(self.rebased_commit - self.proven),
         )
@@ -994,6 +1000,7 @@ class _Run:
                 closes=doc.closes,
                 commit=doc.commit,
                 wanted=doc.wanted,
+                field=doc.field,
             )
             for doc in docs
         )
@@ -1042,6 +1049,8 @@ class _Run:
             allow_file=self._allow_file(),
         )
         if rejected:
+            if "field_mismatch" in rejected:
+                self.counts.field_mismatch += 1
             self._reject(subgoal, rejected)
             return
         if subgoal.closes == "page":
@@ -1128,6 +1137,8 @@ class _Run:
                 if readers.read_state(element, subgoal.wanted) is not True:
                     return False
                 continue
+            if not field_held(observed.snapshot, element, subgoal):
+                return False
             want = readers.fact_of(subgoal.params[param].text)
             if readers.read_value(element) != want:
                 return False
@@ -1232,7 +1243,9 @@ class _Run:
         if not due or intake is None or any(s.closes not in {"value", "state"} for s in subs):
             return True
         lines = _intake_lines(subs)
-        key = hashlib.sha256(repr([(c, p, w) for _pos, c, p, w in lines]).encode()).hexdigest()
+        key = hashlib.sha256(
+            repr([(c, p, w, f) for _pos, c, p, w, f in lines]).encode()
+        ).hexdigest()
         if key in self.intake_memo:
             if self.intake_memo[key]:
                 return True
@@ -2455,6 +2468,7 @@ def _intake_lines(subs: Sequence[SubgoalDoc]) -> tuple[IntakeLine, ...]:
             doc.closes,
             numbered_params(doc.params),
             doc.wanted,
+            doc.field,
         )
         for position, doc in enumerate(subs, 1)
     )

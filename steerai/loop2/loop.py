@@ -376,10 +376,11 @@ class Audited:
     usage: TokenUsage | None = None
 
 
-IntakeLine = tuple[int, str, tuple[ProofParam, ...], str | None]
+IntakeLine = tuple[int, str, tuple[ProofParam, ...], str | None, str | None]
 """[V2.68] One, packet rev 5 §4: one declared subgoal for the intake check, by position, never
 its id: (position, closes, params by sorted position with their spans of the request, [V2.78]
-the wanted state a state subgoal declared, else None)."""
+the wanted state a state subgoal declared, else None, [V2.84] the field a value subgoal declared,
+else None)."""
 
 
 @dataclass(frozen=True)
@@ -555,6 +556,10 @@ class TaskOutcome:
     evidence_taken: int = 0
     """[V2.73]: value or state claims refused because their element is already the evidence of
     another, closed subgoal of the same kind sharing a span (`evidence_taken`)."""
+    field_mismatch: int = 0
+    """[V2.84]: value claims refused because the cited element's name and group name do not hold
+    the subgoal's declared field (`field_mismatch`): the count of correct tasks that can end not
+    done because a field has no readable name."""
     rebased_open: int = 0
     """[V2.74] (#475): non-commit subgoals that another subgoal's close through a model claim
     rebased (`_rebase`) and that were still open when the task ended. An auto-proof close does

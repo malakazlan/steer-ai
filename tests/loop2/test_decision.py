@@ -40,7 +40,7 @@ def act(verb: str, **kw: object) -> Decision:
 
 def first(params: dict[str, str], **sub: object) -> Decision:
     params = params or {"text": "hello"}  # [V2.39], [V2.40] Q7: every subgoal proves a param
-    doc = {"id": "s1", "desc": "d", "params": params, "closes": "value"} | sub
+    doc = {"id": "s1", "desc": "d", "params": params, "closes": "value", "field": "unnamed"} | sub
     return Decision(
         subgoals=[SubgoalDoc.model_validate(doc)],
         actions=[action("click", target=1)],

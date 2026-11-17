@@ -120,7 +120,8 @@ SYSTEM_RULES = (
     "not_in_delta (already there before), under_suggestions (in a menu), option_evidence (an "
     "option of text you typed), inside_field, owned_by_combobox, owned_by_controller_for, "
     "owned_by_parent, owned_by_search_landmark (a field you typed in, or owned by one). "
-    "state_mismatch, value_mismatch: it does not hold your claim. Unread: state_unread, "
+    "state_mismatch, value_mismatch: it does not hold your claim. field_mismatch: the element's "
+    "name and its group name do not hold the subgoal's field. Unread: state_unread, "
     "value_unread, url_unread, landmarks_unread; tier_mismatch: the reads could not be "
     "compared. secure_field, secure_unread: a password field is never evidence. param_missing, "
     "param_unproven, words_missing: a param is absent, unproven or not on the element. "
@@ -133,7 +134,9 @@ SYSTEM_RULES = (
     "is for text fields only. Backspace edits only text you typed; a field that already holds "
     "text is never cleared.\n"
     "- Each subgoal declares `closes`, the kind of fact that proves it done: value (a field "
-    "holds the text), state (an element is in a state; declare `wanted` with it: on, off, "
+    "holds the text; declare `field` with it: words of the request naming that field, or "
+    "unnamed when the request names none; no other kind has one), state (an element is in a "
+    "state; declare `wanted` with it: on, off, "
     "selected, expanded or collapsed; no other kind has one) or page: the page shows the "
     "result the request asks for. In this step it can be proven only when the address or "
     "title shows it; otherwise stop with blocked. A page subgoal needs at least one param.\n"
@@ -200,6 +203,9 @@ REPAIR_LEGEND: Final[Mapping[str, str]] = {
     "type_text_and_param": "a type with both text and param",
     "wanted_missing": "a state subgoal with no wanted state",
     "wanted_not_state": "a wanted state on a subgoal that is not a state subgoal",
+    "field_missing": "a value subgoal with no field",
+    "field_not_value": "a field on a subgoal that is not a value subgoal",
+    "field_not_span": "a field that is not words of the request, nor unnamed",
     "value_without_param": "a value subgoal with no param",
     "state_without_param": "a state subgoal with no param",
     "page_without_param": "a page subgoal with no param",
@@ -1030,7 +1036,10 @@ INTAKE_RULES = (
     "You check, before a Windows computer-use agent starts, whether the subgoals it declared "
     "would finish a request. Code will verify the facts below once the agent acts; treat them as "
     "true. " + SUFFICIENCY_CRITERION + "\n"
-    "- closes=value: a field or a select will hold exactly the param's words.\n"
+    "- closes=value: a field or a select will hold exactly the param's words; when it declares "
+    "field=<words>, the field's name will hold those words, and field=unnamed means the "
+    "subgoal names no field. A request that names a field while the subgoal says unnamed is "
+    "not finished by it.\n"
     "- closes=state: an element named with the param's words will be in the state the subgoal "
     "wants (wanted=<state>).\n"
     "- A value or state set is sufficient only when the request's outcome is that a field or a "
@@ -1055,10 +1064,12 @@ def build_intake_prompt(
     its span of the request. No observation: no listing, no title, no page text."""
     _check_task_fence(task_fence)
     lines: list[str] = []
-    for position, closes, params, wanted in subgoals:
+    for position, closes, params, wanted, field in subgoals:
         if wanted is not None and wanted not in get_args(Wanted):
             raise ControllerError("unsafe_token")
         tail = "" if wanted is None else f" wanted={wanted}"
+        if field is not None:
+            tail += f" field={_data(field, task_fence)}"
         lines.append(f"subgoal {position} closes={closes}{tail}")
         lines.extend(f"  param:{n} {_data(span, task_fence)}" for n, span in params)
     stable = "\n".join(

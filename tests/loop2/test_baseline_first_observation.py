@@ -33,10 +33,14 @@ from tests.loop2.world_fakes import (
 )
 
 PAGE_SUB = SubgoalDoc(id="s1", desc="results", params={"text": "red shoes"}, closes="page")
-VALUE_SUB = SubgoalDoc(id="s2", desc="field", params={"text": "red shoes"}, closes="value")
+VALUE_SUB = SubgoalDoc(
+    id="s2", desc="field", params={"text": "red shoes"}, closes="value", field="unnamed"
+)
 MOVING = dataclasses.replace(RESULTS, snapshot=dataclasses.replace(RESULTS.snapshot, stable=False))
 """The results already there, on a read still unstable (never judged)."""
-PAGE_VALUE = SubgoalDoc(id="s1", desc="field", params={"text": "red shoes"}, closes="value")
+PAGE_VALUE = SubgoalDoc(
+    id="s1", desc="field", params={"text": "red shoes"}, closes="value", field="unnamed"
+)
 VALUE_CLAIM = Claim(subgoal="s2", kind="value", evidence=[FIELD.id], param="text")
 
 
@@ -271,7 +275,9 @@ def test_another_closing_kind_may_cite_a_closed_subgoals_element() -> None:
 
 
 def test_a_value_subgoal_with_a_disjoint_span_may_cite_a_closed_subgoals_element() -> None:
-    other = SubgoalDoc(id="s2", desc="shop", params={"text": "shop"}, closes="value")
+    other = SubgoalDoc(
+        id="s2", desc="shop", params={"text": "shop"}, closes="value", field="unnamed"
+    )
     world = _taken_world(
         PAGE_VALUE, other, _claim("s1", "value", TAKEN.id), _claim("s2", "value", TAKEN.id)
     )

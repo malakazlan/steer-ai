@@ -27,6 +27,7 @@ def _run(kind: ClaimKind, closes: Closes, evidence: list[int]) -> World:
             params={"text": "red shoes"},
             closes=closes,
             wanted="on" if closes == "state" else None,
+            field="unnamed" if closes == "value" else None,
         )
     ]
     world = World([Decision(subgoals=subs, claims=[_claim(kind, evidence)])])

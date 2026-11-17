@@ -573,6 +573,7 @@ def _result(
             "fields_not_empty": outcome.fields_not_empty,
             "not_own_text": outcome.not_own_text,
             "evidence_taken": outcome.evidence_taken,  # [V2.73]
+            "field_mismatch": outcome.field_mismatch,  # [V2.84]
             "rebased_open": outcome.rebased_open,  # [V2.74]
             "rebased_open_commit": outcome.rebased_open_commit,  # [V2.76]
             "target_changes": outcome.target_changes,

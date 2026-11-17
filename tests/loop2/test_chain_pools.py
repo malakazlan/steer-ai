@@ -406,7 +406,13 @@ def test_the_digest_ignores_the_fence_so_one_value_is_one_packet_across_chains(
 def test_an_intake_memo_return_is_never_a_recorded_or_scored_verdict() -> None:
     shape = SHAPES["g22"].fixed_at(0)
     value = shape.value["v"]
-    sub = {"id": "s1", "desc": "it is set", "params": {"name": value}, "closes": "value"}
+    sub = {
+        "id": "s1",
+        "desc": "it is set",
+        "params": {"name": value},
+        "closes": "value",
+        "field": "unnamed",
+    }
 
     def declare(prompt: str) -> dict[str, object]:
         field = handle(prompt, "Full name")

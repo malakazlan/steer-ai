@@ -10,7 +10,7 @@ import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date
-from typing import Literal
+from typing import Final, Literal
 
 Commit = Literal["none", "send", "submit", "delete", "pay"]
 Status = Literal["open", "done", "blocked"]
@@ -19,6 +19,10 @@ Closes = Literal["value", "state", "page"]
 """[V2.39]: the kind of fact that closes a subgoal."""
 Wanted = Literal["on", "off", "selected", "expanded", "collapsed"]
 """[V2.78]: the state a state subgoal declares at intake, the closed set code can read."""
+
+
+UNNAMED: Final = "unnamed"
+"""[V2.84]: the closed token a value subgoal declares when the request names no field."""
 
 
 @dataclass(frozen=True)
@@ -53,6 +57,9 @@ class Subgoal:
     baseline_seq: int | None = None
     wanted: Wanted | None = None
     """[V2.78] the state a `closes=state` subgoal declares at intake; None for the other kinds."""
+    field: str | None = None
+    """[V2.84] the field words a `closes=value` subgoal declares at intake (a span of the request,
+    or `UNNAMED`); None for the other kinds."""
 
 
 def known_params(subgoals: Iterable[Subgoal]) -> dict[str, frozenset[str]]:
