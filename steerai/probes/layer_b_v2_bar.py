@@ -21,6 +21,7 @@ from types import MappingProxyType
 from typing import Final
 
 from steerai.probes.layer_b_pages import (
+    LB16_UNTYPED,
     LB16_VARIANTS,
     LB17_WORDINGS,
     Lb16Variant,
@@ -41,9 +42,31 @@ LB16_RUNS_PER_VARIANT: Final = 5
 LB16_EXPECTED_DONE: Final[Mapping[str, bool]] = MappingProxyType(
     {"e1": False, "e2": True, "e3": True, "e4": False}
 )
-"""Written from the rules before any run: e1 not done (a title is never evidence), e2 done by
-`navigated`, e3 done by `content_present`. Only e4 is a bar: its query lives only in the field
-Steer typed into and the list, neither of which is ever evidence ([V2.88] L10)."""
+"""Written from the rules before any run and restated under [V2.91], each with its reason in
+`LB16_EXPECTED_REASON`. Only e4 is a bar."""
+LB16_EXPECTED_REASON: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "e1": (
+            "not done: the title is the only change and a title is never evidence; [V2.91] it "
+            "holds only the words Steer typed, which content_present never proves"
+        ),
+        "e2": (
+            "done by navigated (the address changed: url_param and title carriers); [V2.91] a "
+            "search closes by the page or address kind, and its rule binds content_present only"
+        ),
+        "e3": (
+            f"done by content_present only through '{LB16_UNTYPED}', words the request names and "
+            "Steer never types, held only by the result element; [V2.91] the echo heading holds "
+            "only typed words and never proves"
+        ),
+        "e4": (
+            "not done, a bar: the list is never evidence (under_suggestions, option_evidence), "
+            "and the field Steer typed into never is ([V2.88] L10); [V2.91] options holding only "
+            "the typed words never prove, and the list rule stops one holding an untyped request "
+            "word ('notes')"
+        ),
+    }
+)
 LB16_MAX_TIER_E1_E3: Final = "R1"
 _TIERS: Final = ("", "R0", "R1", "R2", "R3")
 """A run's highest dispatched tier; empty when nothing was dispatched."""

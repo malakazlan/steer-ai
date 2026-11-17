@@ -23,7 +23,10 @@ from steerai.orchestrator.gate import (
 )
 from steerai.probes import layer_b_v2_bar as bar
 from steerai.probes.layer_b_pages import (
+    LB16_GOALS,
     LB16_QUERY,
+    LB16_RESULT,
+    LB16_UNTYPED,
     LB16_VARIANTS,
     LB17,
     LB17_WORDINGS,
@@ -482,3 +485,53 @@ def test_an_invalid_lb16_run_is_never_scored_and_an_unknown_tier_fails_closed() 
     assert bar.lb16_violations([invalid]) == []
     with pytest.raises(ValueError, match="tier"):
         bar.lb16_violations([_lb16("e1", tier="R9")])
+
+
+# ---- [V2.91]: a param whose every word Steer typed is never content_present evidence -------
+
+
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.casefold()))
+
+
+def test_e3_expected_done_rests_on_a_request_word_steer_never_types() -> None:
+    """[V2.91]: e3 closes by content_present only through words the request names and the typed
+    query lacks; the echo heading holds typed words only, which never prove."""
+    assert bar.LB16_EXPECTED_DONE["e3"] is True
+    untyped = _words(LB16_UNTYPED)
+    assert untyped
+    assert not untyped & _words(LB16_QUERY), "Steer types the quoted query only"
+    assert f'"{LB16_QUERY}"' in LB16_GOALS["e3"]
+    assert untyped <= _words(LB16_GOALS["e3"]), "the request names them"
+    assert untyped <= _words(LB16_RESULT), "the real result element holds them"
+    echo = f"Results for {LB16_QUERY} No notes match."
+    assert not untyped & _words(echo), "the echo never holds them"
+
+
+def test_the_untyped_words_are_on_no_lb16_page_before_the_search() -> None:
+    """Absent before the baseline: only the e3 script (never in the accessibility tree) holds
+    them, and it shows them only in the result element after the search."""
+    for variant in LB16_VARIANTS:
+        visible = re.sub(r"<script>.*?</script>", "", render_lb16(variant), flags=re.S)
+        assert not _words(LB16_UNTYPED) & _words(visible), variant
+    assert json.dumps(LB16_RESULT) in _tags(render_lb16("e3")).scripts
+    for variant in ("e1", "e2", "e4"):
+        assert LB16_RESULT not in render_lb16(variant), variant
+
+
+def test_e1_e2_e4_requests_name_no_untyped_word_to_prove() -> None:
+    for variant in ("e1", "e2", "e4"):
+        goal = LB16_GOALS[variant]
+        assert f'"{LB16_QUERY}"' in goal
+        assert not _words(LB16_UNTYPED) & _words(goal), variant
+
+
+def test_every_lb16_expectation_is_restated_with_its_v2_91_reason() -> None:
+    assert set(bar.LB16_EXPECTED_REASON) == set(LB16_VARIANTS)
+    for variant, reason in bar.LB16_EXPECTED_REASON.items():
+        assert "[V2.91]" in reason, variant
+        assert reason.startswith("done" if bar.LB16_EXPECTED_DONE[variant] else "not done"), variant
+    assert "navigated" in bar.LB16_EXPECTED_REASON["e2"]
+    assert "content_present" in bar.LB16_EXPECTED_REASON["e3"]
+    assert LB16_UNTYPED in bar.LB16_EXPECTED_REASON["e3"]
+    assert "option_evidence" in bar.LB16_EXPECTED_REASON["e4"]
