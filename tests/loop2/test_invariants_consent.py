@@ -322,9 +322,18 @@ def test_input_after_the_answer_ends_as_a_takeover_and_voids_the_record(who: Inp
     assert script.dispatched == []
 
 
-@pending("[V2.90] (3): a takeover is never relabelled as a changed screen", step=4)
-def test_a_failed_recheck_with_input_since_the_answer_ends_as_a_takeover() -> None:
-    script = Script(recheck=dataclasses.replace(REQUEST, name="Send all"), input="takeover")
+@pending("[V2.90] (3): a takeover is never relabelled as a failed check or raise", step=4)
+@pytest.mark.parametrize(
+    "script",
+    [
+        Script(after="not_foreground", input="takeover"),
+        Script(after="screen_changed_during_ask", input="takeover"),
+        Script(raised=False, input="takeover"),
+        Script(recheck=dataclasses.replace(REQUEST, name="Send all"), input="takeover"),
+    ],
+    ids=["not_foreground", "screen_changed", "raise_failed", "recheck_differs"],
+)
+def test_a_failed_recheck_with_input_since_the_answer_ends_as_a_takeover(script: Script) -> None:
     end = run(script)
     assert (end.kind, end.token, end.status) == ("ended", "takeover", "stopped")
     assert "write_ahead" not in script.events

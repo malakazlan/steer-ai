@@ -223,8 +223,8 @@ class GateSteps:
     input_since_answer: Callable[[], InputClass | None]
     """[V2.88] L5, [V2.90] (3): the monitor's class of any input since the answer that is not
     the ask bracket's own (`input_after_answer`); None when there is none. Read just before the
-    dispatch, and before a failed recheck is reported: a takeover is never relabelled, so any
-    input ends the task with its class (stopped), never `screen_changed_during_ask`."""
+    dispatch, and before a failed after-yes check or raise is reported: a takeover is never
+    relabelled, so any input ends the task with its class (stopped), never as that refusal."""
     void: Callable[[GateDecision], None]
     """[V2.90] (3): closes the record written for `decision` as not delivered. Called only on
     the branch where the dispatch call was never made (input after the write-ahead); never
@@ -273,10 +273,10 @@ def gate_pass(
     `previous_attempt`), goal check, ask, answer (`no` ends blocked `user_declined`; `killed`
     ends stopped `killed`; anything else but a yes ends paused `unanswered`), the raise
     ([V2.88] L4, only after a yes and only when the window was in front before the ask), the
-    after-yes checks (a failed one is `screen_changed_during_ask` only with no input since the
-    answer), write-ahead (a failed write ends blocked `wal_unavailable`), the input check (any
-    input since the answer ends the task stopped with its class, voids the record and
-    dispatches nothing), one dispatch.
+    after-yes checks (a failed after-yes check or raise ends the task stopped with the input's
+    class when there was input since the answer, never relabelled), write-ahead (a failed
+    write ends blocked `wal_unavailable`), the input check (any input since the answer ends
+    the task stopped with its class, voids the record and dispatches nothing), one dispatch.
     [V2.88] L2: a commit ask shows the full request (`goal`) and the closed reason
     `recipient_unchecked` (Steer did not check the recipient)."""
     raise NotImplementedError("step 4: the gate pass")

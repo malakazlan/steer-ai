@@ -559,10 +559,12 @@ NO_RESULTS = element(180, "Text", "No results for red shoes", (9, 180), 1)
 name holds every typed word."""
 
 
-@pending("[V2.90] (2) must-not-prove: 'No results for <typed words>' is not content", step=4)
+@pending("[V2.90] (2) #511 must-not-prove: 'No results for <typed words>'", step=4)
 def test_a_no_results_line_echoing_the_typed_words_never_proves_content_present() -> None:
-    """[V2.90] (2): if the design cannot reject this, it is a counted safety issue, never left
-    unmeasured. Typed words in a real result elsewhere can still count (lb16 e3)."""
+    """[V2.90] (2): if the design cannot reject this, it is a counted safety issue (#511),
+    never left unmeasured. Typed words in a real result elsewhere can still count (lb16 e3).
+    4b must not weaken this to an expected failure that is not tied to the stub: any mark on
+    it names #511 and the lead's ruling on it."""
     subgoal = facts(typed_fields=(FIELD.runtime_id,), typed_params=frozenset({"text"}))
     result = check(claim(NO_RESULTS.id), [NO_RESULTS], subgoal)
     assert result.proof is None
