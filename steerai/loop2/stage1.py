@@ -280,6 +280,8 @@ class RunRecord:
     """[V2.64] Two: the child's `loss_watch` line after a declared monitor loss; None: none."""
     kill_failure: str | None = None
     """#431: the cap's kill did not end the child (`ChildRun.kill_failure`)."""
+    kill_after_final: bool = False
+    """[V2.80]: the cap killed the child after its complete final line (`ChildRun`)."""
     lost: str | None = None
     """#459: the run's own Chrome went away under the harness (`CHROME_LOST`); None when not."""
 
@@ -295,6 +297,9 @@ class Classified:
     memory: Json | None = None
     loss_watch: LossVerdict | None = None
     """[V2.64] Two: "slow" or "gone"; None on a monitor_lost run is "unknown"."""
+    kill_after_final: bool = False
+    """[V2.80]: the cap killed the child after its complete final line (its loss watch ran on):
+    the final line stands and the kill is recorded, never read as a run that did not finish."""
 
 
 def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' order
@@ -305,12 +310,12 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
     def verdict(v: Verdict, reason: str | None = None) -> Classified:
         lost = v == "monitor_lost"
         return Classified(record.task_id, record.run, v, reason, lost, record.final, record.memory,
-                          record.loss_watch)  # fmt: skip
+                          record.loss_watch, record.kill_after_final)  # fmt: skip
 
     # #366 P2: the rules in this order
     if not record.fixture_ok:
         return verdict("void", "fixture_failed_before_start")
-    if record.killed:
+    if record.killed and not (record.kill_after_final and record.kill_failure is None):
         failure = record.kill_failure
         return verdict("fail", "cap_killed" if failure is None else f"cap_killed:{failure}")
     final = record.final
@@ -933,6 +938,7 @@ def _report(
         "cost_usd_total": round(sum(costs), 6) if costs else None,
         "void_rate": round(verdicts.get("void", 0) / total, 3) if total else None,
         "monitor_lost_rate": round(verdicts.get("monitor_lost", 0) / total, 3) if total else None,
+        "cap_kills_after_final": sum(r.kill_after_final for r in runs),  # [V2.80]
         "monitor_losses": {  # [V2.64] Two: real against slow losses, from the loss watch
             kind: sum(
                 r.verdict == "monitor_lost" and (r.loss_watch or "unknown") == kind for r in runs
@@ -1206,6 +1212,8 @@ class ChildRun:
     killed: bool
     code: int | None
     loss_watch: LossVerdict | None = None
+    kill_after_final: bool = False
+    """[V2.80]: killed at the cap with a complete final line already written."""
     kill_failure: str | None = None
     """#431: why the kill did not end the child (`kill_failed:<code>`, `kill_timeout`,
     `kill_raised:<type>`, `child_survived`); None when it did, or no kill was needed."""
@@ -1251,10 +1259,15 @@ def run_child(
         if stopped is not None:
             exc.add_note(f"child kill: {stopped}")
         raise
-    if killed:
-        return ChildRun(None, killed, code, kill_failure=failure)
-    final, watch = _read_out(out)
-    return ChildRun(final, killed, code, loss_watch=watch, kill_failure=failure)
+    final, watch = _read_out(out)  # [V2.80]: on the cap too; a cut-off line is no final line
+    return ChildRun(
+        final,
+        killed,
+        code,
+        loss_watch=watch,
+        kill_after_final=killed and final is not None,
+        kill_failure=failure,
+    )
 
 
 def _end(child: Child, kill: Callable[[int], str | None]) -> str | None:
@@ -1445,11 +1458,13 @@ def _live_3d(
             except ChromeLost:  # #459: the browser went away; a void, never a crash
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
                                  killed=ran.killed, code=ran.code, memory=memory,
-                                 kill_failure=ran.kill_failure, lost=CHROME_LOST)  # fmt: skip
+                                 kill_failure=ran.kill_failure, lost=CHROME_LOST,
+                                 kill_after_final=ran.kill_after_final)  # fmt: skip
             except (OSError, RuntimeError, ValueError):
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
                                  killed=ran.killed, code=ran.code, memory=memory,
                                  kill_failure=ran.kill_failure,
+                                 kill_after_final=ran.kill_after_final,
                                  loss_watch=ran.loss_watch)  # fmt: skip
             finally:
                 cdp.close()
@@ -1458,6 +1473,7 @@ def _live_3d(
             return RunRecord(task.task_id, run, ran.final, True, True, passed, enters,
                              killed=ran.killed, code=ran.code, memory=memory,
                                  kill_failure=ran.kill_failure,
+                                 kill_after_final=ran.kill_after_final,
                                  loss_watch=ran.loss_watch)  # fmt: skip
         finally:
             stop_chrome(proc, tmp / "profile")
@@ -1530,17 +1546,20 @@ def _live_page(
             except ChromeLost:  # #459: the browser went away; a void, never a crash
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
                                  killed=ran.killed, code=ran.code, memory=memory,
-                                 kill_failure=ran.kill_failure, lost=CHROME_LOST)  # fmt: skip
+                                 kill_failure=ran.kill_failure, lost=CHROME_LOST,
+                                 kill_after_final=ran.kill_after_final)  # fmt: skip
             except (OSError, RuntimeError, ValueError):
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
                                  killed=ran.killed, code=ran.code, memory=memory,
                                  kill_failure=ran.kill_failure,
+                                 kill_after_final=ran.kill_after_final,
                                  loss_watch=ran.loss_watch)  # fmt: skip
             finally:
                 cdp.close()
             return RunRecord(task.task_id, run, ran.final, True, True, check, None,
                              killed=ran.killed, code=ran.code, memory=memory,
                                  kill_failure=ran.kill_failure,
+                                 kill_after_final=ran.kill_after_final,
                                  loss_watch=ran.loss_watch)  # fmt: skip
         finally:
             stop_chrome(proc, tmp / "profile")
