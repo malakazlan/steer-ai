@@ -447,6 +447,7 @@ PortDetail = Literal[
     "screen_changed_during_wait",
     "target_gone",
     "expand_needs_click",
+    "control_expanded",
     "not_in_step",
     "commit_not_in_step",
     "shape",

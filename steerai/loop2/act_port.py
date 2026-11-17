@@ -216,6 +216,10 @@ class ActPort:
             result = self._physical_send(dispatch, element, snapshot)
         if result.delivery is Delivery.NOT_DELIVERED and not result.skipped:
             return ActResult(result, None)
+        if verb == "choose" and result.skipped and self._expanded(element):
+            # [V2.85]: "already satisfied" read from an open list proves nothing; code does not
+            # close it
+            raise _Refused(ErrorCode.ELEMENT_NOT_ACTIONABLE, "control_expanded")
         if verb == "focus":
             focused = self._read_focus(element, snapshot)
             return ActResult(dataclasses.replace(result, verb="focus"), focused)
@@ -386,10 +390,16 @@ class ActPort:
         if verb == "type" and dispatch.text is not None:
             return _equal(self._world.read_value(element), self._world.fact_of(dispatch.text))
         if verb == "choose" and dispatch.action.option is not None:
+            if self._expanded(element):  # [V2.85]: a value read while its list is open
+                return None
             return _equal(
                 self._world.read_value(element), self._world.fact_of(dispatch.action.option)
             )
         return None
+
+    def _expanded(self, element: Element) -> bool:
+        """[V2.85]: the control reads expanded now (an unread or unexpandable one does not)."""
+        return self._world.read_state(element, "expanded") is True
 
     def _read_focus(self, element: Element, snapshot: Snapshot) -> bool | None:
         """[V2.51] (1): the live focus after a focus click, polled up to `FOCUS_READ_S`: True

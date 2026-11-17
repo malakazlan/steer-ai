@@ -1139,6 +1139,8 @@ class _Run:
                 continue
             if not field_held(observed.snapshot, element, subgoal):
                 return False
+            if readers.read_state(element, "expanded") is True:  # [V2.85]
+                return False
             want = readers.fact_of(subgoal.params[param].text)
             if readers.read_value(element) != want:
                 return False

@@ -125,6 +125,8 @@ def check_claim(  # noqa: PLR0911, PLR0912, PLR0913 - one return per outcome; ke
         raise ValueError("param_missing")
     if not field_held(now.snapshot, element, subgoal):
         return ("field_mismatch",)
+    if readers.read_state(element, "expanded") is True:
+        return ("control_expanded",)  # [V2.85]: a value read while its list is open proves nothing
     read = readers.read_value(element)
     if read is None:
         return ("value_unread",)
@@ -166,6 +168,7 @@ CheckToken = Literal[
     "no_scope",
     "inside_field",
     "field_mismatch",
+    "control_expanded",
 ]
 """#349: every rejection the step 3 claim checks give (`_excluded` included), closed for mypy."""
 ClaimCheck = CheckToken | OwnedToken
