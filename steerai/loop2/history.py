@@ -269,6 +269,8 @@ def render(record: HistoryRecord) -> str:  # noqa: PLR0911 - one form per record
 
 
 def _shape_line(record: RefusedShape) -> str:
+    # `unparsed` is format-only (#472): the runner notes a shape only for a `rejected` error,
+    # which is raised after a parse and always sets one; the grammar keeps the form closed.
     if record.closes is None:
         return "refused_shape:unparsed"
     if not record.closes:
