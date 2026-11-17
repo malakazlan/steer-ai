@@ -105,7 +105,8 @@ SCHEMA_LATER = "c690da9591b6a17390c491bd30f3ef9547b56c7b431e11d8e5d3b5948f68c5a7
 # Guards the repair legend, its tokens, meanings and order; lead ruling ([V2.86] (4)).
 REPAIR_LEGEND = "beccde05fb42ac081f43acc3a9ec1a7f56f8dd5169d2b070ef58135174bd7be2"
 # Guards the prompt versions the frozen wording is recorded under; lead ruling ([V2.86] (4)).
-VERSIONS = ("controller-15", "intake-5", "audit-6", "goal-match-2")
+# intake-6 by lead ruling [V2.89] (c): the narrower-field line.
+VERSIONS = ("controller-15", "intake-6", "audit-6", "goal-match-2")
 
 
 def test_the_decide_system_rules_are_frozen() -> None:
@@ -211,8 +212,9 @@ def test_the_decide_packet_on_a_fixed_page_is_frozen() -> None:
 # ---- the judges ----------------------------------------------------------------------------------
 
 # Guards the intake prompt on fixed declared lines and fence; lead ruling ([V2.86] (4)).
+# The system block re-pinned at intake-6 by lead ruling [V2.89] (c); the user block is unchanged.
 INTAKE = (
-    "ff20e5f3104f2330b727f0a18e60f9e7a452d7a32afd388cde3ddffacc6adec0",
+    "662f6660da574f8c15acb77d5f93fe7c021c7c8bed8c369fc565a5a3b1214179",
     "6ad852549092089a07fc5ce3a96d50d3cbcce0fd92432d6193e39ff121bdb201",
 )
 # Guards chain_eval.audit_pins(): the audit's prompt and packet; lead ruling ([V2.86] (4)).

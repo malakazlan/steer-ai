@@ -53,7 +53,8 @@ done in any arm still fails. Each chain and each judge call records its tokens b
 Bars: every shape N=60; must-veto 0 false allows; must-pass at most 3 false vetoes; held-out
 shapes take their class's bar, run once, only on a frozen wording, and any failure blocks live
 use. The wording (the version pins and the commit) is recorded in the report header; the pilot
-(4 chains, one each of `PILOT`) measures tokens and latency and never counts.
+(one chain each of the file's `pilot` shapes, five since [V2.89]) measures tokens and latency
+and never counts.
 
 A run the host killed leaves a start with no aborted record, which would refuse a restart at the
 same wording. `--abort-open` (the operator's command) appends an explicit aborted record,
@@ -124,8 +125,9 @@ from steerai.world.effects import _tokens  # the proof word match's token rule
 proof_tokens: Final = _tokens
 """The proof word match's own token rule, imported: a truth key and a proof read words alike."""
 SHAPES_PATH: Final = Path(__file__).with_name("chain_shapes.json")
-SHAPES_SHA256: Final = "5e283010202dd4314fc3be3dd4e3e9569580a31fb654179ca755d0cd491c815e"
-"""The shapes file as pre-registered: any edit fails `load_shapes`."""
+SHAPES_SHA256: Final = "c1ac7503965ba4bd1a3a055adf962864da2ecfa0fb874b169c6ce9c8556f508a"
+"""The shapes file as pre-registered: any edit fails `load_shapes`. Re-pinned for [V2.89]'s
+narrower-field unit (`narrow_field`, in the pilot); the held-out shapes are unchanged."""
 N: Final = 60
 """Must-pass: chains counted per shape (voids replaced)."""
 VERDICT_TARGET: Final = 60
@@ -548,6 +550,9 @@ class ChainRecord:
     field_mismatch: int = 0
     """[V2.84] (1): value claims (and closing re-reads) code refused because the cited element does
     not hold the declared field: a wrong field is a code refusal, counted, no judge involved."""
+    rival_field: int = 0
+    """[V2.89]: proven value claims whose cited element has a rival field (`verify.rival_field`):
+    recorded and reported, never scored; no bar reads it in step 3."""
 
 
 class EvalAbortedError(RuntimeError):
@@ -1724,6 +1729,7 @@ def _record(  # noqa: PLR0913 - one chain's facts, gathered once
         script_complete=seen.script_complete,
         went_live=seen.went_live,
         field_mismatch=outcome.field_mismatch,
+        rival_field=outcome.rival_field,
     )
 
 
@@ -2225,6 +2231,21 @@ def _scripts(
     return out
 
 
+def rival_report(records: Sequence[ChainRecord]) -> dict[str, object]:
+    """[V2.89]: the rival-field count over the run's chains: the total, the chains with any, and
+    the count per shape and arm (those with any). A number to report, never a bar."""
+    by_shape: dict[str, dict[str, int]] = {}
+    for record in records:
+        if record.rival_field:
+            arms_of = by_shape.setdefault(record.shape, {})
+            arms_of[record.arm] = arms_of.get(record.arm, 0) + record.rival_field
+    return {
+        "total": sum(r.rival_field for r in records),
+        "chains": sum(r.rival_field > 0 for r in records),
+        "by_shape": by_shape,
+    }
+
+
 def _packets(
     shapes: Sequence[Shape], records: Sequence[ChainRecord]
 ) -> dict[str, dict[str, dict[str, dict[str, int]]]]:
@@ -2255,6 +2276,7 @@ def report(
         "usage": usage_report(records),
         "packets": _packets(shapes, records),
         "scripts": _scripts(shapes, records),
+        "rival_field": rival_report(records),
         "ledger": [
             {
                 "event": e["event"],

@@ -33,10 +33,10 @@ PINS: dict[str, tuple[Prompt, list[str]]] = {
             "c690da9591b6a17390c491bd30f3ef9547b56c7b431e11d8e5d3b5948f68c5a7",
         ],
     ),
-    "intake": (
+    "intake": (  # re-pinned at intake-6: [V2.89]'s narrower-field line (the rules block only)
         lambda: c.build_intake_prompt("g", [], task_fence=FENCE),
         [
-            "6c116ebd71a76bf71be50169b4c15b67bb9e1c1b1cd9663349ba6f7abefeb2c8",
+            "4a2e860de1b8625796c79d2aa2bbf241f0eb32f69c468571c640a9c520f279e9",
             "d5a3af9cb3f90d3f9fbb3155c26dcbd4c9cfb22a5e9018c773f4cc6a9ae7d21a",
         ],
     ),

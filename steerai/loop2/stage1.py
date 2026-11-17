@@ -989,6 +989,7 @@ OUTCOME_COUNTS: Final = (
     "not_own_text",
     "evidence_taken",
     "field_mismatch",
+    "rival_field",
     "turns_to_claim",
     "repeated_words_missing",
     "rebased_open",
