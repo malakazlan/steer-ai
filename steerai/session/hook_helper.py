@@ -185,10 +185,10 @@ def run_helper(args: list[str], platform: HelperPlatform) -> int:  # noqa: PLR09
         core.ws_floor(set_ok=platform.set_ws_floor())
         handlers = _Handlers(core, platform, handles.wake)
         platform.settle_gc()
+        step = ERROR_HOTKEY  # [V2.80]: the kill key first, so a second Steer fails here, unhooked
+        platform.register_hotkey(config.get("kill_mods"), config.get("kill_vk"))
         step = ERROR_HOOKS
         platform.install_hooks(handlers.keyboard, handlers.mouse, handlers.error)
-        step = ERROR_HOTKEY
-        platform.register_hotkey(config.get("kill_mods"), config.get("kill_vk"))
         step = ERROR_INTERNAL
         core.ready(qpc=platform.qpc(), unbiased_100ns=platform.unbiased())
         platform.wake(handles.wake)
