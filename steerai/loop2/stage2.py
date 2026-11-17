@@ -569,7 +569,8 @@ def _live_site(  # noqa: PLR0911 - one return per way a run ends  # pragma: no c
         def record(log_read: bool, check: bool | None) -> RunRecord:
             return RunRecord(task_id, run, ran.final, True, log_read, check, None,
                              killed=ran.killed, code=ran.code, memory=memory,
-                             kill_failure=ran.kill_failure, loss_watch=ran.loss_watch)  # fmt: skip
+                             kill_failure=ran.kill_failure, loss_watch=ran.loss_watch,
+                             kill_after_final=ran.kill_after_final)  # fmt: skip
 
         try:
             left = json.loads(_read(port, _WALL_EXPRESSION, "after") or "{}")

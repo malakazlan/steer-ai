@@ -194,6 +194,7 @@ def _ok(
         verdict == "monitor_lost",
         final,
         loss_watch=kw.pop("loss_watch", None),
+        kill_after_final=kw.pop("kill_after_final", False),
     )
 
 
