@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from typing import Final
 
+RETIRED_WORDS: Final = tuple(f"retired_{i}" for i in range(16))
+"""Steer's ring of retired probe tags, newest first (`classifier.RETIRED_KEPT` of them)."""
 STATUS_WORDS: Final = (
     "kill",
     "state",
@@ -30,8 +32,10 @@ STATUS_WORDS: Final = (
     "nonce_echo_hi",
     "heartbeat_qpc",
     "heartbeat_count",
-    "delivered_keyboard",
-    "delivered_mouse",
+    "proof_keyboard",
+    "proof_mouse",
+    "proof_qpc_keyboard",
+    "proof_qpc_mouse",
     "last_own_qpc_keyboard",
     "last_own_qpc_mouse",
     "last_user_qpc_keyboard",
@@ -71,6 +75,8 @@ CONFIG_WORDS: Final = (
     "ask_depth",
     "kill_ack",
     "end_self_failures",
+    "probe_tag",
+    *RETIRED_WORDS,
 )
 LATENCY_BUCKETS: Final = 1001
 """Event tick to entry tick, one bucket per ms, 0..1000; 1000 holds 1000 ms and over (the hook
@@ -82,7 +88,10 @@ HISTOGRAMS: Final = (("latency", LATENCY_BUCKETS), ("run_time", RUN_TIME_BUCKETS
 
 MAGIC: Final = 0x5354_4545_484F_4F4B
 """`STEEHOOK`: the config section's first word."""
-LAYOUT_VERSION: Final = 2
+LAYOUT_VERSION: Final = 5
+"""5: `proof_*` (the tag of the last probe each hook saw) replaced `delivered_*`, with
+`proof_qpc_*` its time; Steer writes the retired ring, then `probe_tag`, before it injects a
+probe ([V2.81]); older versions are refused."""
 
 STATE_STARTING: Final = 0
 STATE_READY: Final = 1

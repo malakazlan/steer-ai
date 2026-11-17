@@ -1122,6 +1122,26 @@ def test_a_uia_client_outside_the_mta_never_starts() -> None:
     assert failed.value.message == "com_apartment"
 
 
+def test_a_first_probe_that_is_not_proven_refuses_the_start_with_its_own_reason() -> None:
+    """[V2.81]: the start self-check: an unproven first probe is `probe_unproven_at_start`,
+    never `monitor_lost`, and the world is closed before any action."""
+    platform = Platform()
+    platform.monitor.seen = False
+    with pytest.raises(SteerError) as failed:
+        _world(platform)
+    assert failed.value.code is ErrorCode.GATE_BLOCKED
+    assert failed.value.message == "probe_unproven_at_start"
+    assert platform.monitor.closed == 1
+    assert platform.monitor.probes >= 1
+
+
+def test_a_proven_first_probe_lets_the_start_through() -> None:
+    platform = Platform()
+    world, _ = _world(platform)
+    assert platform.monitor.probes >= 1
+    world.close()
+
+
 def test_the_ports_run_only_on_the_thread_that_built_the_world() -> None:
     """LW-12: COM elements never cross threads (packet §1, a design choice)."""
     world, _ = _world()
@@ -1788,8 +1808,9 @@ def test_a_lost_monitor_stays_lost_and_is_counted_once() -> None:
 
 def test_the_desk_proves_both_hooks_with_a_fresh_probe() -> None:
     world, platform = _world()
+    at_start = platform.monitor.probes  # the start self-check's own probe
     world.desk.prove_hooks()
-    assert platform.monitor.probes == 1
+    assert platform.monitor.probes == at_start + 1
     assert world.interrupted() is None
 
 
@@ -1918,13 +1939,14 @@ def test_a_monitor_lost_twice_is_counted_once() -> None:
 def test_after_monitor_lost_a_recovered_hook_proves_nothing() -> None:
     """H1 (LW-06): the latch is read first; a hook that answers again is not trusted."""
     world, platform = _world()
+    at_start = platform.monitor.probes
     platform.monitor.ok = False
     assert world.interrupted() == "monitor_lost"
     platform.monitor.ok = True
     with pytest.raises(PortInterrupted) as lost:
         world.desk.prove_hooks()
     assert [lost.value.token] == ["monitor_lost"]
-    assert platform.monitor.probes == 0  # not even probed
+    assert platform.monitor.probes == at_start  # not even probed
 
 
 def test_a_seen_probe_on_an_unhealthy_monitor_is_lost() -> None:
@@ -1988,3 +2010,59 @@ def test_the_monitor_and_the_header_get_the_derived_deadline(timeout: int | None
     world, _ = _world(platform)
     assert platform.monitor_deadline == probe_deadline_s(timeout)
     assert world.header(task())["probe_deadline_ms"] == str(round(probe_deadline_s(timeout) * 1000))
+
+
+def test_the_self_check_ends_only_on_a_kill_not_on_any_switch_token() -> None:
+    """Principal 2: a lock or a lost monitor during the check is not a pass."""
+    platform = Platform()
+    platform.monitor.seen = False
+    platform.locked = True
+    with pytest.raises(SteerError) as failed:
+        _world(platform)
+    assert failed.value.message == "probe_unproven_at_start"
+    killed = Platform()
+    killed.monitor.seen = False
+    killed.monitor.killed = True
+    _world(killed)  # a kill ends the wait; the task's first send reads it
+
+
+def test_a_monitor_fault_during_the_self_check_keeps_its_own_reason() -> None:
+    """PT-05/06: unproven is only 'sent, deadline passed, tag unseen'; a fault is not that."""
+    platform = Platform()
+    platform.monitor.seen = False
+    platform.monitor.ok = False  # a callback error, a dead thread or a failed send
+    platform.monitor.lost_hooks = lambda: ()  # type: ignore[method-assign]  # no deadline loss
+    with pytest.raises(SteerError) as failed:
+        _world(platform)
+    assert failed.value.code is ErrorCode.GATE_BLOCKED
+    assert failed.value.message == "monitor_unavailable"
+
+
+def test_a_first_probe_lost_to_a_physical_move_is_retried_once_after_idle() -> None:
+    """PT-07: the person's move can merge with the probe's; one retry after the idle wait, and
+    the retry is counted apart."""
+    platform = Platform()
+    monitor = platform.monitor
+    config = _config()
+
+    def probe_now() -> None:
+        monitor.probes += 1
+        monitor.seen = monitor.probes >= 2
+        if monitor.probes == 1:
+            monitor.last = config.clock()  # the person moved the mouse as the first probe went
+
+    monitor.seen = False
+    monitor.probe_now = probe_now  # type: ignore[method-assign]  # the second probe is answered
+    world = LiveWorld(config, platform)
+    assert monitor.probes == 2
+    assert world.start_probe_retries == 1
+
+
+def test_a_first_probe_unproven_with_the_person_idle_is_not_retried() -> None:
+    platform = Platform()
+    platform.monitor.seen = False
+    config = _config()
+    with pytest.raises(SteerError) as failed:
+        LiveWorld(config, platform)
+    assert failed.value.message == "probe_unproven_at_start"
+    assert platform.monitor.probes == 1

@@ -21,6 +21,9 @@ from typing import Final
 
 from steerai.session.hook_classifier import (
     HOOKS,
+    LLKHF_INJECTED,
+    LLKHF_UP,
+    LLMHF_INJECTED,
     OTHER_STEER_INPUT,
     UNASSIGNED_VKS,
     V1_TAG,
@@ -35,6 +38,7 @@ from steerai.session.hook_layout import (
     LATENCY_BUCKETS,
     LAYOUT_VERSION,
     MAGIC,
+    RETIRED_WORDS,
     STATE_CLOSED,
     STATE_FAILED,
     STATE_READY,
@@ -71,7 +75,9 @@ EXIT_MAP: Final = 3
 """The status section could not be mapped, so nothing could be published."""
 EXIT_FAILED: Final = 4
 """A failure was published in the status words (`state = failed`, an error code)."""
-_STEERS_OWN: Final = frozenset({"crc", "ask_depth", "kill_ack", "end_self_failures"})
+_STEERS_OWN: Final = frozenset(
+    {"crc", "ask_depth", "kill_ack", "end_self_failures", "probe_tag", *RETIRED_WORDS}
+)
 _IMMUTABLE: Final = tuple(n for n in CONFIG_WORDS if n not in _STEERS_OWN)
 _COUNTS: Final = ("user", "injected_other", "steer", "answer", "other_steer")
 _TICK_WRAP: Final = 0xFFFF_FFFF
@@ -150,7 +156,8 @@ def config_error(config: Words) -> int:
         config.get("magic") == MAGIC
         and config.get("layout_version") == LAYOUT_VERSION
         and config.get("crc") == _crc(config)
-        and tag not in {0, V1_TAG}
+        and 0 < tag < 1 << 32
+        and tag != V1_TAG
         and config.get("v1_tag") == V1_TAG
         and config.get("probe_vk") in UNASSIGNED_VKS
         and config.get("hook_timeout_ms") > 0
@@ -176,8 +183,10 @@ class HelperCore:
             extra_info=config.get("run_tag"),
             probe_vk=config.get("probe_vk"),
             dead_band_px=config.get("dead_band_px"),
+            probe_tags=True,
         )
         self._published_user: float | None = None
+        self._seen_probe_tag = 0
         self._published_own = dict.fromkeys(HOOKS, float(started_qpc))
         self._last_loop: tuple[int, int] | None = None
         self._kill_qpc: int | None = None
@@ -213,7 +222,8 @@ class HelperCore:
         """One keyboard event; True when it delivered a probe (the caller wakes Steer)."""
         self._lag(event_ms, entry_ms)
         self._sync_ask()
-        before = self._classifier.delivered("keyboard")
+        self._sync_probe()
+        before = self._classifier.proof("keyboard")
         self._classifier.on_keyboard(flags=flags, extra=extra, now=float(entry_qpc), vk=vk)
         return self._publish("keyboard", before)
 
@@ -231,7 +241,8 @@ class HelperCore:
         """One mouse event; True when it delivered a probe. `pt` reaches only the dead band."""
         self._lag(event_ms, entry_ms)
         self._sync_ask()
-        before = self._classifier.delivered("mouse")
+        self._sync_probe()
+        before = self._classifier.proof("mouse")
         self._classifier.on_mouse(
             message=message, flags=flags, extra=extra, pt=pt, now=float(entry_qpc)
         )
@@ -300,6 +311,15 @@ class HelperCore:
             depth = 0
         self._classifier.sync_ask_depth(depth)
 
+    def _sync_probe(self) -> None:
+        """[V2.81]: Steer's probe-tag word, read directly before each event. Steer writes it
+        before it injects the probe, so the tag is known when the probe's event arrives."""
+        tag = self._config.get("probe_tag")
+        if tag != self._seen_probe_tag:
+            self._seen_probe_tag = tag
+            ring = [self._config.get(name) for name in RETIRED_WORDS]  # written before the tag
+            self._classifier.sync_probe(tag, ring)
+
     def _resumed(self, qpc: int) -> None:
         """HH-01: the wake input happened while the hooks were blind: counted as the person's."""
         s = self._status
@@ -335,10 +355,11 @@ class HelperCore:
         if own != self._published_own[hook]:
             s.set(f"last_own_qpc_{hook}", int(own))
             self._published_own[hook] = own
-        delivered = c.delivered(hook)
-        if delivered == delivered_before:
+        seen = c.proof(hook)
+        if seen == delivered_before:
             return False
-        s.set(f"delivered_{hook}", delivered)  # last: after the times it vouches for (§5.2)
+        s.set(f"proof_qpc_{hook}", int(c.proof_at(hook)))
+        s.set(f"proof_{hook}", seen)  # last: after the times it vouches for (§5.2)
         return True
 
 
@@ -355,12 +376,14 @@ def warm_up(config: Words, *, freq: int, rounds: int = WARM_ROUNDS) -> None:
         started_qpc=1,
         pid=0,
     )
-    tag = config.get("run_tag")
     probe = config.get("probe_vk")
     for i in range(rounds):
         at = 1_000 + i
-        core.keyboard(flags=0x80, extra=tag, vk=probe, event_ms=at, entry_ms=at, entry_qpc=at)
-        core.mouse(message=0x0200, flags=0, extra=0, pt=(i, i), event_ms=at, entry_ms=at,
-                   entry_qpc=at)  # fmt: skip
+        probe_word = 0x7000_0000 + i  # a probe tag on both hooks, as the real one
+        scratch_config.set("probe_tag", probe_word)
+        core.keyboard(flags=LLKHF_UP | LLKHF_INJECTED, extra=probe_word, vk=probe, event_ms=at,
+                      entry_ms=at, entry_qpc=at)  # fmt: skip
+        core.mouse(message=0x0200, flags=LLMHF_INJECTED, extra=probe_word, pt=(i, i), event_ms=at,
+                   entry_ms=at, entry_qpc=at)  # fmt: skip
         core.finished(entry_qpc=at, exit_qpc=at + 1)
         core.loop(qpc=at * freq // 1000, unbiased_100ns=at * 10_000)

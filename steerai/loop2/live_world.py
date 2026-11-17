@@ -125,7 +125,7 @@ class Monitor(Protocol):
     def takeover_token(self) -> str: ...
     def probe_now(self) -> None: ...
     def probe_seen(self) -> bool:
-        """[V2.57] LW-01: both hooks saw an own event since the last probe."""
+        """[V2.57] LW-01, [V2.81]: both hooks saw the last probe's own tag, within its deadline."""
         ...
 
     def latency(self) -> tuple[int, int | None, int | None]:
@@ -320,17 +320,15 @@ def close_noting(close: Callable[[], None], cause: BaseException) -> None:
 
 
 def bound_probe(
-    tag: int,
     *,
     vk: int,
     nudge: Callable[..., None],
     key_up: Callable[..., None],
-) -> Callable[[], None]:
-    """LW-01: the helper's probe, the mouse nudge then the keyboard probe, bound to the run's
-    tag (#385 HH4-11): never the process tag read at call time, so a late probe after the
-    restore still goes out as this run's own input."""
+) -> Callable[[int], None]:
+    """LW-01: the helper's probe, the mouse nudge then the keyboard probe, both carrying the
+    probe's own tag ([V2.81] #492), never the process tag read at call time (#385 HH4-11)."""
 
-    def probe() -> None:
+    def probe(tag: int) -> None:
         nudge(tag=tag)
         key_up(vk, tag=tag)
 
@@ -430,9 +428,51 @@ class LiveWorld:
                 self._token("session_abandoned")  # a previous Steer died holding it
             debug = self._debug_sink()
             self._build(client, bindings, debug)
+            self._self_check()
         except BaseException as exc:
             close_noting(self.close, exc)  # #385 HH4-06: never in place of the refusal
             raise
+
+    def _self_check(self) -> None:
+        """[V2.81] #492: the first probe at start must be proven, on both hooks, within the
+        derived deadline: else Steer refuses to start, before any action. Only a kill ends the
+        wait without a verdict (the first send's own check reads the switch). A probe that was
+        sent, whose deadline passed with its tag unseen, is `probe_unproven_at_start`, separate
+        from a mid-task `monitor_lost`; a fault of the monitor (a failed send, a dead thread, a
+        callback error) keeps its own reason, `monitor_unavailable`. The person's move can merge
+        with the probe's, so a first miss while the person was active is retried once after the
+        idle wait, counted apart (`start_probe_retries`)."""
+        if self._probe_once():
+            return
+        monitor = self._monitor
+        if self._kill_token() is None and (
+            self._config.clock() - monitor.last_user_input() < IDLE_S
+        ):
+            self.start_probe_retries += 1
+            self._write({"event": "start_probe", "token": "retry_after_physical_input"})
+            if not self._idle_to_start():
+                return
+            if self._probe_once():
+                return
+        raise SteerError(ErrorCode.GATE_BLOCKED, "probe_unproven_at_start")
+
+    def _probe_once(self) -> bool:
+        """One probe at start: True when proven or a kill ended the wait; False when it was sent
+        and its deadline passed with the tag unseen. A monitor fault raises its own reason."""
+        monitor = self._monitor
+        monitor.probe_now()
+        started = self._config.clock()
+        while not monitor.probe_seen():
+            if self._kill_token() is not None:
+                return True
+            if not monitor.healthy():
+                if cast(HookWorldMonitor, monitor).lost_hooks():  # deadline passed, unproven
+                    return False
+                raise SteerError(ErrorCode.GATE_BLOCKED, "monitor_unavailable")
+            if self._config.clock() - started >= self._probe_deadline_s:
+                return False
+            self._pause(PROVE_POLL_S)  # ends early only for a kill, read at the loop's top
+        return True
 
     def _take_session(self, platform: Platform, config: LiveConfig) -> tuple[str, Monitor]:
         """[V2.57] LW-02: the session, then the run's tag, then the monitor on it. Any failure
@@ -468,6 +508,8 @@ class LiveWorld:
         self.trace_unwritable = 0
         self.late_sink_failures = 0
         self._latched: str | None = None
+        self.start_probe_retries = 0
+        """[V2.81]: first probes at start retried once after the idle wait (a physical move)."""
         self._lost = False
         """[V2.57] LW-01: monitor_lost is final for the task: never re-installed and resumed."""
         self.monitor_lost = 0
@@ -1253,7 +1295,7 @@ class LossWatch:
         with self._lock:  # a backstop close never has a probe sent after it
             if self._closed:
                 return LossReport(None, None, "overrun")
-            monitor.probe_now()  # the one probe after the loss, tagged with the run's own tag
+            monitor.probe_now()  # the one probe after the loss, with its own fresh tag
         return self._poll(sent)
 
     def _poll(self, sent: float) -> LossReport:
@@ -1298,7 +1340,7 @@ def _run_tag() -> int:
     """[V2.57] LW-02: a random nonzero 32-bit input tag for this run, never v1's."""
     while True:
         tag = secrets.randbits(32)
-        if tag not in {0, _V1_TAG}:
+        if tag not in {0, _V1_TAG} and tag & 0xFFFF_FF00 != 0xFF51_5700:  # not pen or touch
             return tag
 
 
@@ -1512,7 +1554,7 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
         )
         helper.start()
 
-        probe = bound_probe(extra_info, vk=PROBE_VK, nudge=nudge_in_place, key_up=key_up_probe)
+        probe = bound_probe(vk=PROBE_VK, nudge=nudge_in_place, key_up=key_up_probe)
         try:
             qpc, freq = qpc_clock()
             return HelperMonitor(

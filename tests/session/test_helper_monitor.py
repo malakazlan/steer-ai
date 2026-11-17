@@ -152,25 +152,31 @@ class Rig:
         s.set("heartbeat_qpc", int(self.t[0] * FREQ))
         s.set("heartbeat_count", s.get("heartbeat_count") + 1)
 
-    def deliver(self, *hooks: str) -> None:
+    def deliver(self, *hooks: str, seq: int | None = None) -> None:
+        """The helper saw a probe event on each hook: the last probe sent, unless `seq`."""
         s = self.helper.status_w
         for hook in hooks:
             s.set(f"last_own_qpc_{hook}", int(self.t[0] * FREQ))
-            s.set(f"delivered_{hook}", s.get(f"delivered_{hook}") + 1)
+            s.set(f"proof_{hook}", (self.probes[-1] if self.probes else 1) if seq is None else seq)
 
 
-def _rig(*, probe_fails: bool = False, session: FakeSession | None = None) -> Rig:
+def _rig(
+    *, probe_fails: bool = False, session: FakeSession | None = None, answers: bool = False
+) -> Rig:
     helper = FakeHelper()
     session = FakeSession() if session is None else session
     t = [100.0]
     probes: list[int] = []
     ended: list[int] = []
 
-    def probe() -> None:
+    def probe(seq: int) -> None:
         if probe_fails:
             raise OSError(5, "UIPI")
-        probes.append(1)
+        probes.append(seq)
+        if answers:  # a helper whose hooks answer every probe at once (the start self-check)
+            box[0].deliver("mouse", "keyboard", seq=seq)
 
+    box: list[Rig] = []
     monitor = HelperMonitor(
         helper,
         session=session,
@@ -183,6 +189,7 @@ def _rig(*, probe_fails: bool = False, session: FakeSession | None = None) -> Ri
         start_thread=False,
     )
     rig = Rig(helper, session, monitor, t, probes, ended)
+    box.append(rig)
     rig.heartbeat()
     return rig
 
@@ -224,7 +231,7 @@ def test_the_loop_threads_own_read_also_loses_and_ends_the_helper() -> None:
 
 
 def test_a_watchdog_read_in_the_middle_of_a_loop_read_is_no_false_decrease() -> None:
-    """Rev 2a: the loop thread has read `delivered_mouse` (old) when the helper moves on and the
+    """Rev 2a: the loop thread has read `proof_mouse` (old) when the helper moves on and the
     watchdog reads the newer words. Were the last-read values shared, the loop's older value
     would look like a decrease and the monitor would be lost for nothing."""
     rig = _rig()
@@ -265,11 +272,41 @@ def test_the_loop_thread_and_the_watchdog_never_share_last_read_values() -> None
 def test_a_probe_is_proven_only_when_both_hooks_delivered_it() -> None:
     rig = _rig()
     rig.monitor.probe_now()
-    assert rig.probes == [1]
+    assert len(rig.probes) == 1
     rig.at(100.01)
     rig.deliver("mouse")
     assert not rig.monitor.probe_seen()
     rig.deliver("keyboard")
+    assert rig.monitor.probe_seen()
+
+
+def test_a_late_own_action_event_is_no_proof_only_the_probes_number_is() -> None:
+    """#492, [V2.80], helper mode: the helper's word holds the last probe number it saw, and
+    the monitor proves a hook only when that is the probe it sent. An own action's event
+    leaves the word where it was (the helper never moves it)."""
+    rig = _rig()
+    rig.monitor.probe_now()
+    rig.at(100.01)
+    rig.deliver("keyboard")
+    rig.deliver("mouse", seq=0)  # what an own action's mouse event leaves in the word
+    assert not rig.monitor.probe_seen()
+    rig.deliver("mouse", seq=rig.probes[-1])
+    assert rig.monitor.probe_seen()
+
+
+def test_a_stale_probe_number_in_the_words_does_not_prove_the_next_probe() -> None:
+    rig = _rig()
+    rig.monitor.probe_now()
+    rig.deliver("mouse", "keyboard")
+    assert rig.monitor.probe_seen()
+    rig.at(102.0)
+    rig.heartbeat()
+    rig.monitor.probe_now()
+    assert rig.probes[1] != rig.probes[0]  # a fresh tag per probe
+    assert not rig.monitor.probe_seen()
+    rig.deliver("mouse", "keyboard", seq=rig.probes[0])
+    assert not rig.monitor.probe_seen()
+    rig.deliver("mouse", "keyboard", seq=rig.probes[1])
     assert rig.monitor.probe_seen()
 
 
@@ -296,7 +333,7 @@ def test_maintain_probes_only_when_due() -> None:
     rig.at(101.5)
     rig.heartbeat()
     rig.monitor.maintain()
-    assert rig.probes == [1]
+    assert len(rig.probes) == 1
 
 
 # ---- K4, [V2.60] Q1: the kill and its layers -----------------------------------------------------
@@ -596,7 +633,7 @@ def test_close_waits_for_a_watchdog_still_ending_the_helper() -> None:
         qpc=lambda: int(100.0 * FREQ),
         freq=FREQ,
         deadline_s=DEADLINE_S,
-        probe=lambda: None,
+        probe=lambda _seq: None,
         terminate_self=lambda: None,
     )
     assert helper.entered.wait(5)
@@ -714,8 +751,8 @@ def test_the_counts_fetch_the_words_on_every_read() -> None:
     rig = _rig()
     fresh = bytearray(len(rig.helper.status_buf))
     rig.helper.status_buf = fresh
-    rig.helper.status_w.set("delivered_keyboard", 5)
-    assert rig.monitor._counts.delivered("keyboard") == 5
+    rig.helper.status_w.set("proof_keyboard", 5)
+    assert rig.monitor._counts.proof("keyboard") == 5
 
 
 # ---- #385 HH4-14: every public method is safe after close -------------------------------------
@@ -733,6 +770,7 @@ _AFTER_CLOSE: dict[str, tuple[tuple[object, ...], object]] = {
     "probe_seen": ((), False),
     "last_user_input": ((), None),  # input "just now" (the clock): every send is refused
     "takeover_token": ((), TAKEOVER),
+    "lost_hooks": ((), ()),  # nothing is read once closed
     "session_change": ((), None),  # #398: the "closed" loss stops the task
     "latency": ((), (0, None, None)),
     "wait": ((0.0,), None),
@@ -779,3 +817,71 @@ def test_a_failed_end_of_the_helper_is_recorded_in_the_loss_never_raised() -> No
     assert rig.helper.terminated == 1
     assert rig.monitor._lost is not None
     assert rig.monitor._lost.endswith(";end_unconfirmed:6")
+
+
+def test_the_probe_tag_is_in_the_shared_word_before_the_probe_is_sent() -> None:
+    """[V2.81]: the parent publishes the tag, then injects; never after (PS-28, helper mode)."""
+    rig = _rig()
+    seen: list[tuple[int, int]] = []
+    rig.monitor._probe = lambda tag: seen.append((rig.helper.config.get("probe_tag"), tag))
+    rig.monitor.probe_now()
+    assert len(seen) == 1
+    assert seen[0][0] == seen[0][1] != 0
+    assert 0 < seen[0][1] < 1 << 32
+
+
+def test_each_probe_publishes_a_fresh_tag_and_the_old_one_is_not_proof() -> None:
+    rig = _rig()
+    rig.monitor.probe_now()
+    first = rig.probes[0]
+    assert rig.helper.config.get("probe_tag") == first
+    rig.at(102.0)
+    rig.heartbeat()
+    rig.monitor.probe_now()
+    assert rig.helper.config.get("probe_tag") == rig.probes[1] != first
+
+
+def test_the_retired_ring_is_published_before_the_new_probe_tag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PT-03: the helper must never see a new tag without the ring that retires the old one."""
+    rig = _rig()
+    order: list[str] = []
+    buf = rig.helper.config_buf
+
+    class Spy:
+        def __init__(self) -> None:
+            self.inner = config_words(memoryview(buf))
+
+        def get(self, name: str) -> int:
+            return self.inner.get(name)
+
+        def set(self, name: str, value: int) -> None:
+            order.append(name)
+            self.inner.set(name, value)
+
+    monkeypatch.setattr(type(rig.helper), "config", property(lambda _self: Spy()))
+    rig.monitor.probe_now()
+    rig.at(102.0)
+    rig.heartbeat()
+    rig.monitor.probe_now()
+    last = len(order) - 1 - order[::-1].index("probe_tag")
+    assert all(name.startswith("retired_") for name in order[last - 16 : last])
+    assert order[last] == "probe_tag"
+    assert config_words(memoryview(buf)).get("retired_0") == rig.probes[0]
+
+
+def test_an_echo_after_the_deadline_in_the_words_is_a_lost_hook() -> None:
+    """PT-02, helper mode: the helper's QPC proof time against the probe's send time."""
+    rig = _rig()
+    rig.monitor.probe_now()
+    tag = rig.probes[0]
+    late = int((100.0 + DEADLINE_S + 0.001) * FREQ)
+    for hook in ("mouse", "keyboard"):
+        rig.helper.status_w.set(f"proof_{hook}", tag)
+        rig.helper.status_w.set(f"proof_qpc_{hook}", late)
+        rig.helper.status_w.set(f"last_own_qpc_{hook}", late)
+    rig.at(100.0 + DEADLINE_S + 0.005)
+    rig.heartbeat()
+    assert not rig.monitor.probe_seen()
+    assert not rig.monitor.healthy()

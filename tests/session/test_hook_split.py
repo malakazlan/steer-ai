@@ -16,13 +16,16 @@ import pytest
 
 from steerai.probes.win_input import STEER_EXTRA_INFO
 from steerai.session.hook_classifier import (
+    LLKHF_INJECTED,
     LLKHF_UP,
+    LLMHF_INJECTED,
     OTHER_STEER_INPUT,
     TAKEOVER,
     V1_TAG,
     WM_LBUTTONDOWN,
     WM_MOUSEMOVE,
     Classifier,
+    ProbeTags,
 )
 from steerai.session.probe_ledger import ProbeLedger
 
@@ -175,24 +178,7 @@ PROBE = 0x0E
 
 
 def _classifier() -> Classifier:
-    return Classifier(started_at=10.0, extra_info=RUN_TAG, probe_vk=PROBE)
-
-
-def test_only_the_probe_keys_own_key_up_is_a_keyboard_delivery() -> None:
-    c = _classifier()
-    c.on_keyboard(flags=0, extra=RUN_TAG, now=11.0, vk=PROBE)  # key-down: not the probe
-    c.on_keyboard(flags=LLKHF_UP, extra=RUN_TAG, now=11.1, vk=0x41)  # own, another key
-    assert c.delivered("keyboard") == 0
-    c.on_keyboard(flags=LLKHF_UP, extra=RUN_TAG, now=11.2, vk=PROBE)
-    assert c.delivered("keyboard") == 1
-    assert c.last_own("keyboard") == 11.2
-
-
-def test_every_own_mouse_event_is_a_mouse_delivery() -> None:
-    c = _classifier()
-    c.on_mouse(message=WM_MOUSEMOVE, flags=0, extra=RUN_TAG, pt=(5, 5), now=12.0)
-    assert c.delivered("mouse") == 1
-    assert c.last_own("mouse") == 12.0
+    return Classifier(started_at=10.0, extra_info=RUN_TAG, probe_vk=PROBE, probe_tags=True)
 
 
 def test_a_persons_input_and_another_steers_are_told_apart() -> None:
@@ -215,20 +201,29 @@ def test_input_while_an_ask_is_open_is_the_answer() -> None:
 # ---- the probe ledger, alone -----------------------------------------------------------------
 
 
-def test_the_ledger_proves_only_when_both_hooks_delivered_every_probe() -> None:
+def _probe(c: Classifier, ledger: ProbeLedger, tags: ProbeTags, now: float) -> int:
+    def begin() -> int:
+        tag = tags.draw()
+        c.set_probe_tag(tag)
+        return tag
+
+    return ledger.probe_sent(now=now, begin=begin)
+
+
+def test_the_ledger_proves_only_when_both_hooks_saw_the_probes_tag() -> None:
     c = _classifier()
     ledger = ProbeLedger(per_hook=True, deadline_s=1.05)
-    ledger.probe_sent(now=20.0, counts=c)
-    c.on_mouse(message=WM_MOUSEMOVE, flags=0, extra=RUN_TAG, pt=(5, 5), now=20.01)
+    tag = _probe(c, ledger, ProbeTags(RUN_TAG), 20.0)
+    c.on_mouse(message=WM_MOUSEMOVE, flags=LLMHF_INJECTED, extra=tag, pt=(5, 5), now=20.01)
     assert not ledger.probe_seen(counts=c)  # the keyboard has not seen it
-    c.on_keyboard(flags=LLKHF_UP, extra=RUN_TAG, now=20.02, vk=PROBE)
+    c.on_keyboard(flags=LLKHF_UP | LLKHF_INJECTED, extra=tag, now=20.02, vk=PROBE)
     assert ledger.probe_seen(counts=c)
 
 
 def test_the_ledger_names_the_hook_that_missed_its_deadline() -> None:
     c = _classifier()
     ledger = ProbeLedger(per_hook=True, deadline_s=1.05)
-    ledger.probe_sent(now=20.0, counts=c)
-    c.on_mouse(message=WM_MOUSEMOVE, flags=0, extra=RUN_TAG, pt=(5, 5), now=20.01)
+    tag = _probe(c, ledger, ProbeTags(RUN_TAG), 20.0)
+    c.on_mouse(message=WM_MOUSEMOVE, flags=LLMHF_INJECTED, extra=tag, pt=(5, 5), now=20.01)
     assert ledger.lost_hooks(now=21.0, counts=c) == ()
     assert ledger.lost_hooks(now=21.1, counts=c) == ("keyboard",)
