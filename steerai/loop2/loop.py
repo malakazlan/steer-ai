@@ -215,8 +215,32 @@ class PortInterrupted(Exception):  # noqa: N818 - the packet's name ([V2.40] Q4)
         super().__init__(token)
         self.token = token
         self.sent = sent
+        self.requests_sent: int | None = None
+        """Model requests sent in the decide turn that raised this (set by `DecideCalls.turn`,
+        #489); None when no turn set it."""
         """False when the port gave up before its model request went out (#457 principal 2):
         such a wait is no call. True otherwise, the safe default for counting."""
+
+
+class CountFailed(SteerError):  # noqa: N818 - named for the failed count, as PortInterrupted
+    """A token count failed in a way the counter did not map (a bug in it, not the provider's
+    answer). Only a count request went out, never a model request: it is no model call (#468,
+    invariant 9). Raised by `DecideCalls.count`, chained to the failure."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(ErrorCode.MODEL_ERROR, message)
+
+
+def calls_made(exc: PortInterrupted | SteerError) -> int:
+    """The model calls a failed turn made (#468, #489, invariant 9): the requests its
+    `DecideCalls.turn` sent. When no turn set it (a failure before the turn, or a port double),
+    one if the request went out (False for a wait given up before the send and for a failed
+    count), else none."""
+    if exc.requests_sent is not None:
+        return exc.requests_sent
+    if isinstance(exc, PortInterrupted):
+        return int(exc.sent)
+    return 0 if isinstance(exc, CountFailed) else 1
 
 
 UrlRead = Literal["read", "no_bar", "document_url_unread", "not_composed"]

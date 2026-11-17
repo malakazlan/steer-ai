@@ -89,6 +89,7 @@ from steerai.loop2.loop import (
     ActResult,
     Audited,
     AuditView,
+    CountFailed,
     Dispatch,
     IntakeLine,
     IntakeView,
@@ -111,6 +112,7 @@ from steerai.loop2.loop import (
     WatchKind,
     WindowCovered,
     action_risk,
+    calls_made,
     type_refusal,
     url_read,
     watch_kind,
@@ -860,8 +862,15 @@ class _Run:
             record = exc.record if isinstance(exc, ControllerError) else None
             if isinstance(exc, ControllerError) and record is None:
                 raise  # no call was made: nothing billed
-            # invariant 9, [V2.68]: every model call the turn made, a repair included
-            self.model_calls += 1 if record is None else record.calls
+            made = (
+                (record.calls if record else 0)
+                if isinstance(exc, ControllerError)
+                else calls_made(exc)
+            )
+            if made == 0:
+                raise  # #468: a count or a wait given up before any send: no call, nothing billed
+            # invariant 9, [V2.68], #489: every request the turn sent, a repair included
+            self.model_calls += made
             if isinstance(exc, ControllerError):  # [V2.67] D: the failed turn's facts
                 self.turn.usage = exc.usage
                 if isinstance(record, DecideRecord):
@@ -1273,9 +1282,11 @@ class _Run:
                 self.intake_counts["intake_tokens"] += sum(_counts(exc.usage) or ())
             raise _End("blocked", Reason("intake_failed")) from None
         except (PortInterrupted, SteerError) as exc:
-            if isinstance(exc, PortInterrupted) and not exc.sent:
-                raise  # #457 P2, packet §4 F3: nothing went out, so nothing is counted
-            self._intake_failed(1)
+            if (made := calls_made(exc)) == 0:
+                if isinstance(exc, CountFailed):  # as the bound's refusal: [V2.74] (iii)
+                    self.intake_counts["intake_no_call"] += 1
+                raise  # #457 P2, packet §4 F3, #468: nothing went out, so nothing is counted
+            self._intake_failed(made)
             self.tokens = math.nan  # abandoned or failed: billed, never reported ([V2.41] (1))
             self.usage_incomplete = True
             raise
@@ -1331,12 +1342,17 @@ class _Run:
         try:
             audited = audit(view)
         except (PortInterrupted, SteerError, ControllerError) as exc:
-            if isinstance(exc, ControllerError) and exc.record is None:
-                # refused before any call (the bound, a fence in the data): no call is counted
+            if isinstance(exc, PortInterrupted) and calls_made(exc) == 0:
+                raise  # #468: a wait given up before the send: no call, nothing billed
+            if isinstance(exc, CountFailed) or (
+                isinstance(exc, ControllerError) and exc.record is None
+            ):
+                # refused before any call (the bound, a fence in the data, a failed count): no
+                # call is counted (#468)
                 self.audit_counts["audit_no_call"] += 1
                 self.audit = ("failed", AUDIT_NO_CALL)
                 raise _End("blocked", Reason("audit_failed")) from None
-            self.model_calls += 1
+            self.model_calls += 1 if isinstance(exc, ControllerError) else calls_made(exc)
             self.audit_counts["audit_calls"] += 1
             self.audit_counts["audit_failed"] += 1
             if isinstance(exc, PortInterrupted):

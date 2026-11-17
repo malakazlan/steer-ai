@@ -21,7 +21,7 @@ from typing import Any, Final, TypeVar
 
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.controller import AskModel, ControllerError
-from steerai.loop2.loop import PortInterrupted, TokenUsage
+from steerai.loop2.loop import CountFailed, PortInterrupted, TokenUsage
 from steerai.planner.claude_planner import DEFAULT_MAX_TOKENS, DEFAULT_MODEL, EFFORT
 
 POLL_S: Final = 0.05
@@ -248,15 +248,20 @@ class DecideCalls:
         self._late_error = late_error
         self._poll_s = poll_s
         self._usages: list[TokenUsage | None] = []
+        self._requests = 0
 
     def turn(self, run: Callable[[AskModel], T]) -> tuple[T, TokenUsage | None]:
         """Run one controller turn with this `ask_model`; its result and the summed usage of
         its calls (None when a call reported none, or no call was made)."""
         self._usages = []
+        self._requests = 0
         try:
             result = run(self._ask)
         except ControllerError as rejected:  # the shakedown's #2: its calls' usage goes with it
             rejected.usage = _summed(self._usages)
+            raise
+        except (PortInterrupted, SteerError) as failed:  # #489: the requests this turn sent
+            failed.requests_sent = self._requests
             raise
         return result, _summed(self._usages)
 
@@ -270,6 +275,7 @@ class DecideCalls:
             name="steer-decide",
             daemon=True,  # an abandoned call never holds the process open at exit
         )
+        self._requests += 1  # the request goes out with the worker (#489)
         worker.start()
         while not box.done.wait(self._poll_s):
             self._check(box)
@@ -286,7 +292,8 @@ class DecideCalls:
     def count(self, system: list[str], blocks: list[str]) -> int | None:
         """[V2.61]: the prompt's exact input tokens, on a daemon worker, the wait kill-aware and
         cut at `count_timeout_s`. None, so the prompt is cut by the bound, with no counter, on a
-        failure the counter mapped, or late; any other failure is raised here as itself."""
+        failure the counter mapped, or late. Any other failure of the counter is a `CountFailed`
+        (no model request went out: no model call, #468), chained to it."""
         counter = self._counter
         if counter is None:
             return None
@@ -310,7 +317,10 @@ class DecideCalls:
         if self._generations.current() != generation:
             box.abandon()
             raise PortInterrupted("generation", sent=False)
-        return box.result()[0]
+        try:
+            return box.result()[0]
+        except Exception as exc:
+            raise CountFailed("count") from exc
 
     def _check(self, box: _Box[Any] | None, *, sent: bool = True) -> None:  # Any: reply or count
         """Read the switch: on a token, the generation moves on (any result in flight is stale),
