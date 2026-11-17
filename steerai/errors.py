@@ -46,6 +46,7 @@ WORLD_START_DETAILS: Final = frozenset(
         "nudge_refused",
         "page_hidden",
         "person_active",
+        "probe_unproven_at_start",
         "restore_failed",
         "session_mutex_unavailable",
         "steer_already_running",

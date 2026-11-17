@@ -46,8 +46,8 @@ def test_the_verdicts_are_the_harness_verdicts() -> None:
 
 def _lost_world(*, watch: bool) -> tuple[LiveWorld, Platform]:
     platform = Platform()
-    platform.monitor.seen = False  # a probe sent and never seen: the deadline loss
     world = LiveWorld(_config(), platform, watch_losses=watch)
+    platform.monitor.seen = False  # a probe sent and never seen: the deadline loss
     with pytest.raises(PortInterrupted):
         world._prove_hooks()
     return world, platform
@@ -97,9 +97,9 @@ def test_r4_helper_mode_is_never_watched() -> None:
 
     platform = Platform()
     helper = Helper()
-    helper.seen = False
     platform.monitor = helper
     world = LiveWorld(_config(), platform, watch_losses=True)
+    helper.seen = False
     world._helper_monitor = helper  # helper mode, as the world sets it
     with pytest.raises(PortInterrupted):
         world._prove_hooks()
@@ -110,7 +110,6 @@ def test_r4_helper_mode_is_never_watched() -> None:
 
 def test_r9_a_lost_hooks_read_that_fails_is_traced_with_a_code_and_has_no_verdict() -> None:
     platform = Platform()
-    platform.monitor.seen = False
 
     def raises() -> tuple[str, ...]:
         raise OSError("not read")
@@ -118,6 +117,7 @@ def test_r9_a_lost_hooks_read_that_fails_is_traced_with_a_code_and_has_no_verdic
     platform.monitor.lost_hooks = raises  # type: ignore[method-assign]  # a failing read
     config = _config()
     world = LiveWorld(config, platform, watch_losses=True)
+    platform.monitor.seen = False
     with pytest.raises(PortInterrupted):
         world._prove_hooks()
     world.close()

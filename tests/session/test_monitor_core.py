@@ -248,16 +248,21 @@ def _per_hook(start: float = 100.0) -> MonitorCore:
     return MonitorCore(started_at=start, per_hook=True)
 
 
-def _own_key(core: MonitorCore, now: float, *, vk: int = PROBE_VK, up: bool = True) -> None:
-    """An own tagged key event; by default the probe's: a key-up of the probe key."""
+def _tag(probe: int) -> int:
+    """The tag of an own event: the bare run tag, or the probe's own tag ([V2.81])."""
+    return probe if probe else STEER_EXTRA_INFO
+
+
+def _own_key(
+    core: MonitorCore, now: float, seq: int = 0, *, vk: int = PROBE_VK, up: bool = True
+) -> None:
+    """An own tagged key event; with `seq`, the probe's: a numbered key-up of the probe key."""
     flags = LLKHF_INJECTED | (LLKHF_UP if up else 0)
-    core.on_keyboard(flags=flags, extra=STEER_EXTRA_INFO, now=now, vk=vk)
+    core.on_keyboard(flags=flags, extra=_tag(seq), now=now, vk=vk)
 
 
-def _own_move(core: MonitorCore, now: float) -> None:
-    core.on_mouse(
-        message=WM_MOUSEMOVE, flags=LLMHF_INJECTED, extra=STEER_EXTRA_INFO, pt=(1, 1), now=now
-    )
+def _own_move(core: MonitorCore, now: float, seq: int = 0) -> None:
+    core.on_mouse(message=WM_MOUSEMOVE, flags=LLMHF_INJECTED, extra=_tag(seq), pt=(1, 1), now=now)
 
 
 def test_a_probe_seen_by_one_hook_only_is_a_lost_monitor() -> None:
@@ -265,19 +270,19 @@ def test_a_probe_seen_by_one_hook_only_is_a_lost_monitor() -> None:
     proof stays healthy; per hook, the unseen keyboard hook is lost past the deadline."""
     for per_hook, healthy in ((False, True), (True, False)):
         core = MonitorCore(started_at=100.0, per_hook=per_hook)
-        core.probe_sent(now=101.0)
-        _own_move(core, 101.1)
+        seq = core.probe_sent(now=101.0)
+        _own_move(core, 101.1, seq if per_hook else 0)  # v1 sends the bare tag
         assert core.healthy(now=101.0 + PROBE_DEADLINE_S + 0.01, thread_alive=True) is healthy
     assert core.lost_hooks(now=101.0 + PROBE_DEADLINE_S + 0.01) == ("keyboard",)
 
 
 def test_a_probe_seen_by_both_hooks_is_proof() -> None:
     core = _per_hook()
-    core.probe_sent(now=101.0)
+    seq = core.probe_sent(now=101.0)
     assert core.probe_seen() is False
-    _own_move(core, 101.1)
+    _own_move(core, 101.1, seq)
     assert core.probe_seen() is False
-    _own_key(core, 101.2)
+    _own_key(core, 101.2, seq)
     assert core.probe_seen() is True
     assert core.healthy(now=105.0, thread_alive=True) is True
     assert core.lost_hooks(now=105.0) == ()
@@ -285,8 +290,8 @@ def test_a_probe_seen_by_both_hooks_is_proof() -> None:
 
 def test_each_hook_unseen_past_the_deadline_is_named() -> None:
     core = _per_hook()
-    core.probe_sent(now=101.0)
-    _own_key(core, 101.1)
+    seq = core.probe_sent(now=101.0)
+    _own_key(core, 101.1, seq)
     assert core.lost_hooks(now=101.0 + PROBE_DEADLINE_S) == ()  # not yet past it
     assert core.lost_hooks(now=101.0 + PROBE_DEADLINE_S + 0.01) == ("mouse",)
     core = _per_hook()
@@ -306,10 +311,10 @@ def test_a_probe_is_due_when_either_hook_has_been_quiet() -> None:
 
 def test_one_per_hook_probe_in_flight_at_a_time() -> None:
     core = _per_hook()
-    core.probe_sent(now=101.0)
-    _own_move(core, 101.1)
+    seq = core.probe_sent(now=101.0)
+    _own_move(core, 101.1, seq)
     assert core.probe_due(now=103.0) is False  # the keyboard half is still in flight
-    _own_key(core, 101.2)
+    _own_key(core, 101.2, seq)
     assert core.probe_due(now=101.2 + PROBE_PERIOD_S) is True
 
 
@@ -322,22 +327,23 @@ def test_an_own_event_in_the_same_tick_as_the_probe_is_not_proof() -> None:
     core = _per_hook()
     _own_key(core, 101.0)
     _own_move(core, 101.0)
-    core.probe_sent(now=101.0)
+    seq = core.probe_sent(now=101.0)
     assert core.probe_seen() is False
-    _own_key(core, 101.0)
-    _own_move(core, 101.0)
-    assert core.probe_seen() is True  # delivered after the probe went out, same tick or not
+    _own_key(core, 101.0, seq)
+    _own_move(core, 101.0, seq)
+    assert core.probe_seen() is True  # its own number proves it, same tick or not
 
 
 def test_a_tagged_key_other_than_the_probe_key_up_is_not_keyboard_proof() -> None:
     core = _per_hook()
-    core.probe_sent(now=101.0)
-    _own_move(core, 101.1)
-    _own_key(core, 101.1, vk=0x41)  # an act's own letter
-    _own_key(core, 101.1, up=False)  # the probe key, but down
+    seq = core.probe_sent(now=101.0)
+    _own_move(core, 101.1, seq)
+    _own_key(core, 101.1, seq, vk=0x41)  # an act's own letter
+    _own_key(core, 101.1, seq, up=False)  # the probe key, but down
+    _own_key(core, 101.1)  # the probe key's key-up, but no number
     assert core.probe_seen() is False
     assert core.lost_hooks(now=102.0) == ("keyboard",)
-    _own_key(core, 101.2)
+    _own_key(core, 101.2, seq)
     assert core.probe_seen() is True
 
 
@@ -345,13 +351,13 @@ def test_a_late_event_of_an_overwritten_probe_is_not_proof_of_the_next() -> None
     """maintain() sent probe A at act entry; prove_hooks sends B before A arrived: A's late
     events prove A, never B."""
     core = _per_hook()
-    core.probe_sent(now=101.0)  # A
-    core.probe_sent(now=101.05)  # B, A still in flight
-    _own_key(core, 101.1)
-    _own_move(core, 101.1)  # A's own events, late
+    a = core.probe_sent(now=101.0)  # A
+    b = core.probe_sent(now=101.05)  # B, A still in flight
+    _own_key(core, 101.1, a)
+    _own_move(core, 101.1, a)  # A's own events, late
     assert core.probe_seen() is False
-    _own_key(core, 101.2)
-    _own_move(core, 101.2)  # B's
+    _own_key(core, 101.2, b)
+    _own_move(core, 101.2, b)  # B's
     assert core.probe_seen() is True
 
 
@@ -383,7 +389,7 @@ def test_the_probe_deadline_is_the_hook_timeout_plus_the_measurer_margin(
 
 def test_a_per_hook_core_loses_a_hook_only_past_its_own_deadline() -> None:
     core = MonitorCore(started_at=100.0, per_hook=True, deadline_s=1.05)
-    core.probe_sent(now=101.0)
-    _own_move(core, 101.1)
+    seq = core.probe_sent(now=101.0)
+    _own_move(core, 101.1, seq)
     assert core.lost_hooks(now=101.0 + 1.05) == ()
     assert core.lost_hooks(now=101.0 + 1.06) == ("keyboard",)

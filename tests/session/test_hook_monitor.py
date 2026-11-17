@@ -84,6 +84,23 @@ def test_our_own_injection_is_steer_and_the_self_probe_keeps_it_healthy() -> Non
 
 
 @pytest.mark.windows
+def test_the_v2_probe_is_proven_by_its_own_numbered_events_on_the_real_hooks() -> None:
+    """#492, [V2.80]: both real hooks see the probe's number; each probe has a new number."""
+    monitor = HookMonitor(per_hook=True, probe_vk=0x0E)
+    monitor.start()
+    try:
+        for _ in range(2):
+            monitor.probe_now()
+            deadline = time.monotonic() + 2.0
+            while not monitor.probe_seen() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert monitor.probe_seen() is True
+            assert monitor.lost_hooks() == ()
+    finally:
+        monitor.close()
+
+
+@pytest.mark.windows
 def test_the_hot_key_sets_the_sticky_kill_flag() -> None:
     monitor = HookMonitor()
     monitor.start()

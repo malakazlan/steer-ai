@@ -51,6 +51,7 @@ from steerai.session.hook_classifier import (
     WM_MOUSEMOVE,
     WM_MOUSEWHEEL,
     Classifier,
+    ProbeTags,
 )
 from steerai.session.probe_ledger import PROBE_DEADLINE_S, PROBE_PERIOD_S, ProbeLedger
 
@@ -199,12 +200,15 @@ class MonitorCore:
         deadline_s: float = PROBE_DEADLINE_S,
     ) -> None:
         self._started_at = started_at
+        self._per_hook = per_hook
         self._classifier = Classifier(
             started_at=started_at,
             extra_info=extra_info,
             probe_vk=probe_vk,
             dead_band_px=dead_band_px,
+            probe_tags=per_hook,
         )
+        self._tags = ProbeTags(extra_info)
         self._ledger = ProbeLedger(per_hook=per_hook, deadline_s=deadline_s)
         """[V2.57] LW-01 (v2): each hook proves itself; v1 keeps one proof for both. [V2.59]
         (v2): the derived probe deadline; v1 keeps `PROBE_DEADLINE_S`."""
@@ -262,16 +266,27 @@ class MonitorCore:
         return self._ledger.probe_due(now=now, counts=self._classifier)
 
     def probe_seen(self) -> bool:
-        """LW-01, #364 P1: every probe sent since the last proof was delivered on both hooks
-        (counted, never by timestamp)."""
+        """LW-01, #364 P1, [V2.81] #492: the last probe was seen on both hooks by its own tag,
+        within its deadline (never by timestamp, never by another own event). v1 never proves
+        by a probe tag: it draws none."""
         return self._ledger.probe_seen(counts=self._classifier)
 
     def lost_hooks(self, *, now: float) -> tuple[str, ...]:
         """LW-01: the hooks that have not seen the last probe past its deadline, in order."""
         return self._ledger.lost_hooks(now=now, counts=self._classifier)
 
-    def probe_sent(self, *, now: float) -> None:
-        self._ledger.probe_sent(now=now, counts=self._classifier)
+    def probe_sent(self, *, now: float) -> int:
+        """[V2.81] #492: the tag this probe's events must carry (0 in v1, which sends the run's
+        tag and proves nothing by a probe tag)."""
+        return self._ledger.probe_sent(now=now, begin=self._begin_probe)
+
+    def _begin_probe(self) -> int:
+        """A fresh tag, registered with the classifier before the probe is injected."""
+        if not self._per_hook:
+            return 0
+        tag = self._tags.draw()
+        self._classifier.set_probe_tag(tag)
+        return tag
 
     def healthy(self, *, now: float, thread_alive: bool) -> bool:
         c = self._classifier
@@ -471,18 +486,21 @@ class HookMonitor:
             self.probe_now()
 
     def probe_now(self) -> None:
-        self._core.probe_sent(now=self._monotonic())
         try:
-            # [V2.80]: the monitor's own tag, never the process's current one (a probe after
-            # `restore_extra_info`); a probe that also takes a sequence number (#493) keeps it
-            nudge_in_place(tag=self._extra_info)
-            if self._per_hook and self._probe_vk is not None:
-                key_up_probe(self._probe_vk, tag=self._extra_info)  # LW-01: the keyboard's proof
-        except OSError:
+            tag = self._core.probe_sent(now=self._monotonic())
+            # [V2.81]: v2 sends this probe's own tag on both hooks; v1 the monitor's own tag,
+            # never the process's current one (a probe after `restore_extra_info`)
+            if self._per_hook:
+                nudge_in_place(tag=tag)
+                if self._probe_vk is not None:
+                    key_up_probe(self._probe_vk, tag=tag)  # LW-01: the keyboard hook's own proof
+            else:
+                nudge_in_place(tag=self._extra_info)
+        except (OSError, RuntimeError):  # a failed send, or no tag could be drawn
             self._core.on_probe_failed()  # fails closed: the next boundary stops (D4)
 
     def probe_seen(self) -> bool:
-        """LW-01: both hooks saw an own event since the last probe."""
+        """LW-01: both hooks saw the last probe's own tag, within its deadline."""
         return self._core.probe_seen()
 
     def latency(self) -> tuple[int, int | None, int | None]:

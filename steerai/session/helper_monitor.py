@@ -38,8 +38,8 @@ from steerai.session.helper_reader import (
     last_user_seconds,
     read_status,
 )
-from steerai.session.hook_classifier import HOOKS, OTHER_STEER_INPUT, TAKEOVER
-from steerai.session.hook_layout import LATENCY_BUCKETS, Words
+from steerai.session.hook_classifier import HOOKS, OTHER_STEER_INPUT, TAKEOVER, ProbeTags
+from steerai.session.hook_layout import LATENCY_BUCKETS, RETIRED_WORDS, Words
 from steerai.session.probe_ledger import ProbeLedger
 
 CLOCK_RESOLUTION_S: Final = 0.015625
@@ -89,8 +89,11 @@ class _WordCounts:
         self._helper = helper  # the words fetched on every read, never kept (#383 note 1)
         self._freq = freq
 
-    def delivered(self, hook: str) -> int:
-        return self._helper.status.get(f"delivered_{hook}")
+    def proof(self, hook: str) -> int:
+        return self._helper.status.get(f"proof_{hook}")
+
+    def proof_at(self, hook: str) -> float:
+        return self._helper.status.get(f"proof_qpc_{hook}") / self._freq
 
     def last_own(self, hook: str) -> float:
         return self._helper.status.get(f"last_own_qpc_{hook}") / self._freq
@@ -111,7 +114,7 @@ class HelperMonitor:
         qpc: Callable[[], int],
         freq: int,
         deadline_s: float,
-        probe: Callable[[], None],
+        probe: Callable[[int], None],
         terminate_self: Callable[[], None],
         clock_resolution: float = CLOCK_RESOLUTION_S,
         start_thread: bool = True,
@@ -131,6 +134,7 @@ class HelperMonitor:
         self._pid = helper.pid()
         self._counts = _WordCounts(helper, freq)
         self._ledger = ProbeLedger(per_hook=True, deadline_s=deadline_s)
+        self._tags = ProbeTags(config.get("run_tag"))
         self._loop_state = ReaderState()
         self._watch_state = ReaderState()
         self._lock = threading.Lock()
@@ -197,11 +201,29 @@ class HelperMonitor:
     def probe_now(self) -> None:
         if self._closed:
             return  # #385 HH4-14: no probe for a closed helper
-        self._ledger.probe_sent(now=self._now(), counts=self._counts)
         try:
-            self._probe()
-        except OSError:
+            tag = self._ledger.probe_sent(now=self._now(), begin=self._publish_probe_tag)
+            self._probe(tag)
+        except (OSError, RuntimeError):  # a failed send, or no tag could be drawn
             self._probe_failed = True  # fails closed: the next health check is false
+
+    def _publish_probe_tag(self) -> int:
+        """[V2.81]: the fresh tag into the shared word before the probe is injected, never
+        after: the helper compares each event with it."""
+        tag = self._tags.draw()
+        config = self._helper.config
+        ring = self._tags.retired()
+        for i, name in enumerate(RETIRED_WORDS):  # the ring first: the helper reads it when the
+            config.set(name, ring[i] if i < len(ring) else 0)  # tag changes, so it is ready
+        config.set("probe_tag", tag)  # x64 stores are not reordered with each other (TSO)
+        return tag
+
+    def lost_hooks(self) -> tuple[str, ...]:
+        """The hooks that missed the last probe past its deadline (the start self-check reads
+        it to tell an unproven first probe from a fault of the monitor)."""
+        if self._closed:
+            return ()
+        return self._ledger.lost_hooks(now=self._now(), counts=self._counts)
 
     def probe_seen(self) -> bool:
         return not self._closed and self._ledger.probe_seen(counts=self._counts)

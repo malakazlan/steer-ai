@@ -295,26 +295,21 @@ def _send(user32: ctypes.WinDLL, *records: INPUT) -> None:
 
 def key_up_probe(vk: int, *, tag: int | None = None) -> None:
     """[V2.57] LW-01: one tagged key-up of an unassigned virtual key, the v2 monitor's keyboard
-    hook probe (a key-up with no key-down; the key is chosen by probe, see `monitor.PROBE_VK`)."""
+    hook probe (a key-up with no key-down; the key is chosen by probe, see `monitor.PROBE_VK`).
+    `tag`: this probe's own 32-bit tag ([V2.81]); None is the process tag."""
     _send(_user32(), build_keyboard_input(vk=vk, keyup=True, tag=tag))
 
 
 def nudge_in_place(*, tag: int | None = None) -> None:
     """A tagged absolute move to the cursor's current position: reaches a low-level hook as
     Steer's own event and leaves the cursor still (probe `hook-latency-2026-11-04`: a
-    zero-delta relative move never reaches a hook)."""
+    zero-delta relative move never reaches a hook). `tag`: this probe's own 32-bit tag
+    ([V2.81]); None is the process tag."""
     user32 = _user32()
     x, y = cursor_pos()
     ax, ay = _to_absolute(user32, x, y)
-    _send(
-        user32,
-        build_mouse_input(
-            dx=ax,
-            dy=ay,
-            flags=_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE | _MOUSEEVENTF_VIRTUALDESK,
-            tag=tag,
-        ),
-    )
+    flags = _MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE | _MOUSEEVENTF_VIRTUALDESK
+    _send(user32, build_mouse_input(dx=ax, dy=ay, flags=flags, tag=tag))
 
 
 def move_cursor(x: int, y: int) -> None:

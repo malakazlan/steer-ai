@@ -8,7 +8,7 @@ import ctypes
 from typing import Any
 
 from steerai.session.helper_core import HelperCore, write_config
-from steerai.session.hook_classifier import LLKHF_UP
+from steerai.session.hook_classifier import LLKHF_INJECTED, LLKHF_UP
 from steerai.session.hook_helper import (
     HC_ACTION,
     KeyboardHookStruct,
@@ -27,6 +27,7 @@ from steerai.session.hook_layout import (
 )
 
 RUN_TAG = 0x1234_5678
+PTAG = 0x3333_0001
 PROBE = 0x0E
 VK = 0xA7
 SCAN = 0x5C4A_77
@@ -60,6 +61,7 @@ def _wired() -> tuple[Any, Any, Any, Platform]:  # Any: the procs and the words
     write_config(cfg, run_tag=RUN_TAG, probe_vk=PROBE, kill_mods=7, kill_vk=0x53,
                  dead_band_px=4, heartbeat_ms=100, hook_timeout_ms=1000,
                  nonce=(1, 2))  # fmt: skip
+    cfg.set("probe_tag", PTAG)  # Steer writes it before it injects a probe
     status = status_words(memoryview(bytearray(status_size())))
     platform = Platform()
     core = HelperCore(config=cfg, status=status, freq=10_000_000, started_qpc=1, pid=7)
@@ -101,10 +103,10 @@ def test_no_status_word_is_written_from_the_events_content() -> None:
 
 def test_the_probe_key_up_through_the_real_procedure_is_delivered_and_wakes_steer() -> None:
     kb, _ms, status, platform = _wired()
-    info = KeyboardHookStruct(vkCode=PROBE, scanCode=0, flags=LLKHF_UP, time=platform.tick(),
-                              dwExtraInfo=RUN_TAG)  # fmt: skip
+    info = KeyboardHookStruct(vkCode=PROBE, scanCode=0, flags=LLKHF_UP | LLKHF_INJECTED,
+                              time=platform.tick(), dwExtraInfo=PTAG)  # fmt: skip
     assert kb(HC_ACTION, 0x101, ctypes.addressof(info)) == NEXT
-    assert status.get("delivered_keyboard") == 1
+    assert status.get("proof_keyboard") == PTAG
     assert platform.wakes == 1
 
 

@@ -8,9 +8,10 @@ reference, or anything that grows with the input (K11, K15). The key code is com
 probe key and nothing else.
 
 Rules (edge cases TK-01..49, probe `hook-latency-2026-11-04`):
-- Only Steer's own `dwExtraInfo` tag exempts an event. Any other keyboard, button or wheel
-  event is the person's, injected bit or not; an injected bare mouse move is counted but is
-  never a takeover.
+- Only Steer's own `dwExtraInfo` tag exempts an event: the run's tag (v1: exactly; v2: on an
+  injected event), or a probe's own 32-bit tag ([V2.81]; v2, injected, probe-shaped). Any other
+  keyboard, button or wheel event is the person's, injected bit or not; an injected bare mouse
+  move is counted but is never a takeover.
 - Real mouse moves pass a dead band around the last cursor position any move set, so a nudged
   desk is not a takeover; wheel and button events always count.
 - Input while an ask is open is the person's answer, not a takeover.
@@ -19,6 +20,9 @@ Rules (edge cases TK-01..49, probe `hook-latency-2026-11-04`):
 
 from __future__ import annotations
 
+import secrets
+from collections import deque
+from collections.abc import Callable, Iterable
 from typing import Final
 
 LLKHF_INJECTED: Final = 0x10
@@ -41,6 +45,62 @@ another Steer, not a person at the keys."""
 TAKEOVER_TOKENS: Final = frozenset({TAKEOVER, OTHER_STEER_INPUT})
 """The closed tokens of a stop for someone else's input: a person, or another Steer."""
 
+MAX_TAG: Final = 0xFFFF_FFFF
+"""[V2.81]: every tag (the run's and each probe's) is a nonzero 32-bit value, and the high half of
+`dwExtraInfo` never carries meaning: the mouse hook was measured to deliver only the low 32 bits
+(probe #495)."""
+RETIRED_KEPT: Final = 16
+"""How many retired probe tags the classifier remembers (own and stale, never the person's)."""
+RECENT_DRAWN: Final = 64
+"""How many drawn probe tags `ProbeTags` refuses to draw again (more than `RETIRED_KEPT`, so a
+retired tag is always among them)."""
+MAX_REDRAWS: Final = 1000
+"""`ProbeTags.draw` gives up after this many refused draws (a broken random source)."""
+PEN_TOUCH_MASK: Final = 0xFFFF_FF00
+PEN_TOUCH_SIGNATURE: Final = 0xFF51_5700
+"""Windows marks pen and touch input in `dwExtraInfo` (MI_WP_SIGNATURE, Microsoft Learn,
+Mouse Input Notifications): no tag of ours is in that range, so no pen event can be one."""
+
+
+def _pen_or_touch(tag: int) -> bool:
+    return tag & PEN_TOUCH_MASK == PEN_TOUCH_SIGNATURE
+
+
+class ProbeTags:
+    """[V2.81] #492: each probe's tag, a fresh random 32-bit value (not derived from anything),
+    redrawn when it is zero, the run's tag, v1's tag, in the pen and touch range or a recent
+    probe's. Kept in the monitor's memory, one scheme for both hooks. Not thread-safe by itself:
+    the ledger calls `draw` under its lock."""
+
+    def __init__(self, run_tag: int, *, rand32: Callable[[], int] | None = None) -> None:
+        if not 0 < run_tag <= MAX_TAG:
+            raise ValueError("a run tag is a nonzero 32-bit value")
+        if _pen_or_touch(run_tag):
+            raise ValueError("a run tag is never in the pen and touch signature range")
+        self._run_tag = run_tag
+        self._rand32 = rand32 if rand32 is not None else lambda: secrets.randbits(32)
+        self._recent: deque[int] = deque(maxlen=RECENT_DRAWN)
+
+    def draw(self) -> int:
+        for _ in range(MAX_REDRAWS):
+            tag = self._rand32()
+            if (
+                0 < tag <= MAX_TAG
+                and tag not in (self._run_tag, V1_TAG)
+                and not _pen_or_touch(tag)
+                and tag not in self._recent
+            ):
+                self._recent.append(tag)
+                return tag
+        raise RuntimeError("no probe tag could be drawn")
+
+    def retired(self) -> tuple[int, ...]:
+        """The tags drawn before the latest one, newest first, at most `RETIRED_KEPT`: the ring
+        the helper's classifier treats as own and stale."""
+        older = list(self._recent)[:-1]
+        return tuple(reversed(older))[:RETIRED_KEPT]
+
+
 HOOKS: Final = ("keyboard", "mouse")
 UNASSIGNED_VKS: Final = frozenset({0x0E, 0x0F, *range(0x97, 0xA0), 0xE8})
 """Microsoft Learn, Virtual-Key Codes (Winuser.h): 0x0E-0F, 0x97-9F and 0xE8 are Unassigned; the
@@ -59,13 +119,26 @@ class Classifier:
         extra_info: int,
         probe_vk: int,
         dead_band_px: int = DEAD_BAND_PX,
+        probe_tags: bool = False,
     ) -> None:
         self._extra_info = extra_info
+        self._probe_tags = probe_tags
+        """[V2.81] #492: v2 (the hook monitor with `per_hook`, the helper): the outstanding
+        probe's tag proves a hook. v1 keeps its exact compare, unchanged."""
+        self._probe_tag = 0
+        """The outstanding probe's tag (0: none), set before the probe is injected."""
+        self._retired: deque[int] = deque(maxlen=RETIRED_KEPT)
+        """Recently retired probe tags: own and stale, never proof and never the person's."""
         self._probe_vk = probe_vk
         self._dead_band = dead_band_px
-        self._delivered = dict.fromkeys(HOOKS, 0)
-        """#364 P1: own events delivered per hook; the keyboard counts only the probe key's
-        key-up. A count, never a key code."""
+        self._proof_at = dict.fromkeys(HOOKS, 0.0)
+        """When each hook's proof arrived (the callback's `now`): an echo after the probe's
+        deadline is a lost hook ([V2.59], #364)."""
+        self._proof = dict.fromkeys(HOOKS, 0)
+        """[V2.81] #492: per hook, the tag of the last probe event it saw (0: none). Only the
+        outstanding probe's own event sets it (the keyboard's is the probe key's injected
+        key-up, the mouse's an injected move); no other own event is proof. A tag, never a key
+        code."""
         self._last_by = dict.fromkeys(HOOKS, started_at)
         """Each hook's last own event (LW-01)."""
         self._last_steer = started_at
@@ -81,9 +154,10 @@ class Classifier:
     # ---- what the hook thread feeds -------------------------------------------------------------
 
     def on_keyboard(self, *, flags: int, extra: int, now: float, vk: int = 0) -> None:
-        if extra == self._extra_info:
-            probe = vk == self._probe_vk and bool(flags & LLKHF_UP)
-            self._steer(now, "keyboard", delivered=probe)
+        probe = vk == self._probe_vk and bool(flags & LLKHF_UP)
+        proof = self._own(extra, probe_shaped=probe, injected=bool(flags & LLKHF_INJECTED))
+        if proof is not None:
+            self._steer(now, "keyboard", proof=proof)
             return
         if extra == V1_TAG:
             self._other_steer(now)
@@ -94,8 +168,11 @@ class Classifier:
         self, *, message: int, flags: int, extra: int, pt: tuple[int, int], now: float
     ) -> None:
         x, y = pt
-        if extra == self._extra_info:
-            self._steer(now, "mouse", delivered=True)
+        proof = self._own(
+            extra, probe_shaped=message == WM_MOUSEMOVE, injected=bool(flags & LLMHF_INJECTED)
+        )
+        if proof is not None:
+            self._steer(now, "mouse", proof=proof)
             if message == WM_MOUSEMOVE:
                 self._reference = (x, y)
             return
@@ -131,6 +208,19 @@ class Classifier:
     def on_loop_error(self) -> None:
         self._loop_failed = True
 
+    def set_probe_tag(self, tag: int) -> None:
+        """[V2.81]: the next probe's tag, before it is injected; the one before it retires."""
+        old = self._probe_tag
+        if old and old != tag:
+            self._retired.append(old)
+        self._probe_tag = tag
+
+    def sync_probe(self, tag: int, retired: Iterable[int]) -> None:
+        """[V2.81], the helper: the parent's published tag and its retired ring (written first),
+        so a tag the helper never saw as outstanding is still own and stale."""
+        self._probe_tag = tag
+        self._retired = deque((t for t in retired if t and t != tag), maxlen=RETIRED_KEPT)
+
     def mark_ask_open(self) -> None:
         self._ask_depth += 1
 
@@ -143,8 +233,11 @@ class Classifier:
 
     # ---- what the ledger and the loop read ------------------------------------------------------
 
-    def delivered(self, hook: str) -> int:
-        return self._delivered[hook]
+    def proof(self, hook: str) -> int:
+        return self._proof[hook]
+
+    def proof_at(self, hook: str) -> float:
+        return self._proof_at[hook]
 
     def last_own(self, hook: str) -> float:
         return self._last_by[hook]
@@ -173,11 +266,32 @@ class Classifier:
 
     # ---- internals -----------------------------------------------------------------------------
 
-    def _steer(self, now: float, hook: str, *, delivered: bool) -> None:
+    def _own(self, extra: int, *, probe_shaped: bool, injected: bool) -> int | None:
+        """[V2.81] #492: None when the event is not Steer's own; else the tag it proves its hook
+        with (0: it proves nothing). Every own class is an injected event. Order: the outstanding
+        probe's tag on a probe-shaped event is the probe, the only proof; the run's tag is an own
+        action; a recently retired probe's tag on a probe-shaped event is own and stale.
+        Anything else, a probe tag on another shape included, is foreign: a person's. v1
+        compares the run's tag only, as it always did."""
+        if not self._probe_tags:
+            return 0 if extra == self._extra_info else None
+        if not injected:
+            return None  # every own class is injected input; anything else is a person's
+        if extra == self._probe_tag and self._probe_tag:
+            return extra if probe_shaped else None
+        if extra == self._extra_info:
+            return 0
+        if extra in self._retired:
+            return 0 if probe_shaped else None
+        return None
+
+    def _steer(self, now: float, hook: str, *, proof: int) -> None:
         self._last_steer = now
         self._last_by[hook] = now
-        if delivered:
-            self._delivered[hook] += 1
+        if proof:
+            if self._proof[hook] != proof:  # a probe's second echo keeps the first one's time
+                self._proof_at[hook] = now
+            self._proof[hook] = proof
         self._count("steer")
 
     def _person(self, now: float, *, injected: bool) -> None:

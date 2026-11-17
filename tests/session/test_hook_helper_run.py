@@ -24,7 +24,7 @@ from steerai.session.helper_core import (
     parse_helper_argv,
     write_config,
 )
-from steerai.session.hook_classifier import LLKHF_UP
+from steerai.session.hook_classifier import LLKHF_INJECTED, LLKHF_UP
 from steerai.session.hook_helper import HelperStepError, run_helper
 from steerai.session.hook_layout import (
     ERROR_HOOKS,
@@ -47,6 +47,7 @@ from steerai.session.hook_layout import (
 
 HANDLES = HelperHandles(config=11, status=12, quit=13, wake=14, parent=15)
 RUN_TAG = 0x1234_5678
+PT = 0x3333_0001
 PROBE = 0x0E
 
 
@@ -86,6 +87,7 @@ class FakePlatform:
             hook_timeout_ms=1000,
             nonce=(1, 2),
         )
+        config_words(memoryview(self.config_buf)).set("probe_tag", PT)  # Steer's word
 
     def _step(self, name: str) -> None:
         self.calls.append(name)
@@ -282,13 +284,18 @@ def test_a_probe_delivery_from_the_callback_wakes_steer_and_times_the_callback()
 
     def pump() -> Iterator[str]:
         assert p.keyboard is not None
-        p.keyboard(flags=LLKHF_UP, extra=RUN_TAG, vk=PROBE, event_ms=p.tick())
+        p.keyboard(
+            flags=LLKHF_UP | LLKHF_INJECTED,
+            extra=PT,
+            vk=PROBE,
+            event_ms=p.tick(),
+        )
         yield from original()
 
     p.pump = pump  # type: ignore[method-assign]  # the callback fires during the pump
     run_helper(_argv(), p)
     s = _status(p)
-    assert s.get("delivered_keyboard") == 1
+    assert s.get("proof_keyboard") == PT
     assert s.get("run_time_events") == 1
     assert p.calls.count("wake") >= 2
 
