@@ -71,6 +71,7 @@ from steerai.loop2.history import (
     RunnerClaim,
     Vocab,
     WorldMoved,
+    is_cause,
     log_role,
     record_ok,
     refused_shape,
@@ -155,6 +156,7 @@ from steerai.loop2.verify import (
     field_held,
     holds_words,
     judge,
+    list_closed,
 )
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.orchestrator.loop import REUSE_FRESHNESS_S
@@ -167,6 +169,10 @@ from steerai.world.observe2 import FIRST_READY_S, YOUNG_S, document_nodes
 from steerai.world.reads import ReadCost
 from steerai.world.watch import Watched
 
+VERIFYING_VERBS: Final = READ_BACK_VERBS - {"focus"}
+"""[V2.85] (i): the verbs whose read-back is the value or state itself."""
+REPEATED: Final = 2
+"""[V2.85] (iii): the refusal on which a subgoal's `words_missing` counts as repeated."""
 STRIKE_LIMIT: Final = 3
 """[V2.4]: the pooled set runs with a limit of 3, frozen before H7."""
 RefusalKind = Literal["policy", "step", "model", "world"]
@@ -298,6 +304,8 @@ class _ActCounts:
     not_own_text: int = 0
     evidence_taken: int = 0
     field_mismatch: int = 0
+    turns_to_claim: int = 0
+    repeated_words_missing: int = 0
 
 
 @dataclass
@@ -528,6 +536,10 @@ class _Run:
         self.started = ports.clock()
         self.turn = _Turn()
         self.turns = 0
+        self.verified_at: dict[str, int] = {}
+        """[V2.85] (i): each subgoal's turn of the last act under it with a verified read-back."""
+        self.words_missing: dict[str, int] = {}
+        """[V2.85] (iii): how many claims on each subgoal were refused `words_missing`."""
         """[V2.67] D: the turns the loop opened (its trace's turn numbers), never the calls."""
         self.turn_trace_dropped = 0
         """[V2.67] D: turn records the no-free-text check dropped."""
@@ -663,6 +675,8 @@ class _Run:
             not_own_text=self.counts.not_own_text,
             evidence_taken=self.counts.evidence_taken,
             field_mismatch=self.counts.field_mismatch,
+            turns_to_claim=self.counts.turns_to_claim,
+            repeated_words_missing=self.counts.repeated_words_missing,
             rebased_open=len(self.rebased - self.proven),
             rebased_open_commit=len(self.rebased_commit - self.proven),
         )
@@ -1035,6 +1049,10 @@ class _Run:
         param = _proved_param(claim, subgoal)
         refused = self._refused(claim, subgoal, param, observed)
         if refused is not None:
+            if refused == "words_missing":
+                seen = self.words_missing[subgoal.id] = self.words_missing.get(subgoal.id, 0) + 1
+                if seen == REPEATED:  # [V2.85] (iii): counted once, at the second refusal
+                    self.counts.repeated_words_missing += 1
             self._reject(subgoal, (refused,))
             return
         rejected = check_claim(
@@ -1140,8 +1158,9 @@ class _Run:
             if not field_held(observed.snapshot, element, subgoal):
                 self.counts.field_mismatch += 1  # a first proof that no longer holds the field
                 return False
+            closed = list_closed(observed.snapshot, element, readers.read_state)  # [V2.85]
             want = readers.fact_of(subgoal.params[param].text)
-            if readers.read_value(element) != want:
+            if closed is not True or readers.read_value(element) != want:
                 return False
         return True
 
@@ -1186,6 +1205,8 @@ class _Run:
             raise AssertionError("auto proof reached a commit subgoal")
         self.proven.add(subgoal.id)
         self.proven_how[subgoal.id] = how
+        if how == "claim" and subgoal.id in self.verified_at:  # [V2.85] (i)
+            self.counts.turns_to_claim += self.turn.number - self.verified_at[subgoal.id]
         self.turn.ticked = True
         self.refusal = None
         self._note(Proven(subgoal.id, how))
@@ -1827,6 +1848,9 @@ class _Run:
         if element is not None:
             self.last_acted = _Acted(element.runtime_id, element.role, element.name)
         self._note(self._log_entry(sent, act, report))
+        owner = sent.action.subgoal
+        if owner is not None and sent.action.verb in VERIFYING_VERBS and act.read_back is True:
+            self.verified_at[owner] = self.turn.number  # [V2.85] (i): the last one
         if element is not None and _focus_left(sent, element, watched.after):
             self.counts.focus_moved_after_press += 1  # [V2.43] (1): seen and counted, no extra read
             self._note(FocusMovedAfterPress(self._handle_of(element)))
@@ -1862,7 +1886,7 @@ class _Run:
             self.counts.fields_not_empty += 1
             self._refuse("field_not_empty", handle=self._handle_of(element), detail=detail)
             return
-        self._refuse("not_delivered", handle=self._handle_of(element), detail=detail)
+        self._refuse("not_delivered", handle=self._handle_of(element), detail=detail, cause=detail)
 
     def _judge_submit(
         self,
@@ -2047,18 +2071,25 @@ class _Run:
         subgoal: str | None = None,
         handle: int | None = None,
         detail: object = None,
+        cause: object = None,
     ) -> None:
         """[V2.11] decision 4, [V2.37] P5: nothing dispatched is a refusal with a token and a
         strike; it replaces the latest refusal, whatever its kind. [V2.42] RT-29: several tokens
         take the kind by priority and every token is recorded. RT-30: a policy or step-limit
-        refusal also attaches to the refused action's subgoal and stands until it is proven."""
+        refusal also attaches to the refused action's subgoal and stands until it is proven.
+        [V2.85] (iv): the history shows `cause`, the act's own closed detail, in place of the
+        broader `not_delivered` when code knows one; the kind and the counts stay the token's."""
         kind, token = refusal_of(tokens)
         self.refusal = (kind, token)
         shown = detail_token(detail)  # [V2.67] D: every token, closed, with its detail
         self.turn.refusals.extend(RefusalFact(word, shown) for word in tokens)
         for word in tokens:  # every token is counted, as every token is recorded (RT-29)
             self.refusal_counts[word] = self.refusal_counts.get(word, 0) + 1
-        self._notes(Refused(token, handle) for token in tokens)  # [V2.47]: its element
+        specific = cause if is_cause(cause) else None
+        self._notes(  # [V2.47]: its element
+            Refused(specific if specific is not None and word == "not_delivered" else word, handle)
+            for word in tokens
+        )
         self.turn.refused = True
         if kind in ("policy", "step") and subgoal is not None:
             self.refused_seq += 1

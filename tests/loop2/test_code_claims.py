@@ -40,12 +40,15 @@ TYPED = ValueFact(filled=True, digest="d:red shoes")
 
 
 def readers(
-    state: bool | None = True, value: ValueFact | None = TYPED, reads: list[int] | None = None
+    state: bool | None = True,
+    value: ValueFact | None = TYPED,
+    reads: list[int] | None = None,
+    expanded: bool | None = False,
 ) -> Readers:
     def read_state(e: Element, wanted: str) -> bool | None:
         if reads is not None:
             reads.append(e.id)
-        return state
+        return expanded if wanted == "expanded" and state is not None else state  # [V2.85]
 
     def read_value(e: Element) -> ValueFact | None:
         if reads is not None:

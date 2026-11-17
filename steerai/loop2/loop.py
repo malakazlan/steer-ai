@@ -34,7 +34,13 @@ from steerai.loop2.form import (
     form_facts,
 )
 from steerai.loop2.guards import StrikeReason
-from steerai.loop2.history import RECORD_TYPES, HistoryRecord, RefusalWord, render
+from steerai.loop2.history import (
+    RECORD_TYPES,
+    HistoryRecord,
+    PortDetail,
+    RefusalWord,
+    render,
+)
 from steerai.loop2.listing import ListingTurn
 from steerai.loop2.query import SearchFacts, classify, search_landmark_of
 from steerai.loop2.task import Commit, Subgoal
@@ -441,45 +447,11 @@ class Ports:
 
 
 WatchKind = Literal["plain", "trigger", "submit", "wait"]
-PortDetail = Literal[
-    # the act port's own refusals and results
-    "port_error",
-    "screen_changed_during_wait",
-    "target_gone",
-    "expand_needs_click",
-    "not_in_step",
-    "commit_not_in_step",
-    "shape",
-    "text_missing",
-    "focus_needs_field",
-    "key_not_allowed",
-    "not_own_text",
-    "secure_unread",
-    "wall_budget",
-    "press_not_at_focus",
-    # the input guard and the toggle guard
-    "idle_unread",
-    "not_armed",
-    "toggle_limit",
-    "second_toggle_refused",
-    "second_toggle_uncertain",
-    "settled_on_reread",
-    # the tap check, the takeover and the switch (`interrupted`)
-    "hands_on",
-    "foreground_elevated",
-    "tap_unreadable",
-    "takeover",
-    "other_steer_input",
-    "killed",
-    "monitor_lost",
-    "session_locked",
-    "generation",
-]
-"""[V2.67] D: every `detail` the act port, its guards and the switch put on an act result, on
-top of the executors' (`execution.RefusalDetail`). Pinned to its producers by
-`tests/action/test_refusal_details.py`."""
-PORT_DETAILS: Final = frozenset(get_args(PortDetail))
 """[V2.48]: the watch classes, each with its own deadline (`world_ports.WorldTimes`)."""
+PORT_DETAILS: Final = frozenset(get_args(PortDetail))
+"""[V2.67] D: every `detail` the act port, its guards and the switch put on an act result, on top
+of the executors' (`execution.RefusalDetail`); the type is `history.PortDetail`. Pinned to its
+producers by `tests/action/test_refusal_details.py`."""
 
 
 def watch_kind(dispatch: Dispatch) -> WatchKind:
@@ -559,6 +531,14 @@ class TaskOutcome:
     field_mismatch: int = 0
     """[V2.84]: value claims refused, and closing re-reads failed, because the cited element does
     not hold the subgoal's declared field (`field_mismatch`). Refused claims, not tasks."""
+    turns_to_claim: int = 0
+    """[V2.85] (i): for each subgoal closed by a model claim, the turns from the last act under it
+    whose read-back verified (a type, a choose or a state verb) to the claim's turn, summed over
+    subgoals. Large means the claim is late: closing value and state subgoals in code is the real
+    fix, a later step."""
+    repeated_words_missing: int = 0
+    """[V2.85] (iii): subgoals whose claims were refused `words_missing` more than once (a subgoal
+    counts once, at its second refusal): the dead end a narrowed param would loosen, left safe."""
     rebased_open: int = 0
     """[V2.74] (#475): non-commit subgoals that another subgoal's close through a model claim
     rebased (`_rebase`) and that were still open when the task ended. An auto-proof close does

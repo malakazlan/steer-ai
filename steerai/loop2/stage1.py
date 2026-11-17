@@ -837,6 +837,8 @@ OUTCOME_COUNTS: Final = (
     "not_own_text",
     "evidence_taken",
     "field_mismatch",
+    "turns_to_claim",
+    "repeated_words_missing",
     "rebased_open",
     "rebased_open_commit",
     "target_changes",

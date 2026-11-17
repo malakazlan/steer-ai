@@ -125,6 +125,11 @@ def check_claim(  # noqa: PLR0911, PLR0912, PLR0913 - one return per outcome; ke
         raise ValueError("param_missing")
     if not field_held(now.snapshot, element, subgoal):
         return ("field_mismatch",)
+    closed = list_closed(now.snapshot, element, readers.read_state)
+    if closed is False:
+        return ("control_expanded",)  # [V2.85]: a value read while its list is open proves nothing
+    if closed is None:
+        return ("value_unread",)
     read = readers.read_value(element)
     if read is None:
         return ("value_unread",)
@@ -166,6 +171,7 @@ CheckToken = Literal[
     "no_scope",
     "inside_field",
     "field_mismatch",
+    "control_expanded",
 ]
 """#349: every rejection the step 3 claim checks give (`_excluded` included), closed for mypy."""
 ClaimCheck = CheckToken | OwnedToken
@@ -403,6 +409,23 @@ def holds_words(snapshot: Snapshot, element: Element, text: str) -> bool:
     wanted = set(_tokens(text))
     names = (element.name, group_name(snapshot, element) or "")
     return bool(wanted) and any(wanted <= set(_tokens(name)) for name in names)
+
+
+CLOSED: Final = "collapsed"
+"""The live state a list must read ([V2.85]); a state word, never a claim token."""
+
+
+def list_closed(
+    snapshot: Snapshot, element: Element, read_state: Callable[[Element, str], bool | None]
+) -> bool | None:
+    """[V2.85] H2 guard: whether a value may be read from the element. An element that lists
+    expanded or collapsed among its caps, or any element when the snapshot did not read caps,
+    must read Collapsed live: False is open (PartiallyExpanded is neither), None unread (an
+    absent pattern and a failed read look alike, so neither is taken as closed). An element a
+    read snapshot shows with neither cap has no list. Code never closes the list."""
+    if snapshot.caps_read and not {"expanded", "collapsed"} & set(element.caps):
+        return True
+    return read_state(element, CLOSED)
 
 
 def field_held(snapshot: Snapshot, element: Element, subgoal: Subgoal) -> bool:

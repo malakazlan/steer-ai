@@ -15,6 +15,7 @@ from steerai.loop2.history import (
     CLAIM_RESULTS,
     PROVEN_HOW,
     REFUSAL_TOKENS,
+    Cause,
     ClaimResult,
     ClaimWord,
     Proven,
@@ -47,7 +48,7 @@ def test_the_closed_sets_are_the_literals() -> None:
 
 
 def test_the_record_fields_are_typed_with_the_literals() -> None:
-    assert typing.get_type_hints(Refused)["token"] == RefusalWord
+    assert typing.get_type_hints(Refused)["token"] == RefusalWord | Cause
     assert typing.get_type_hints(ClaimResult)["result"] == ClaimWord
     assert typing.get_type_hints(Proven)["how"] == ProvenHow
 

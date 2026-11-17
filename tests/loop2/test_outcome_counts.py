@@ -32,6 +32,8 @@ OUTCOME = TaskOutcome(
     not_own_text=5,
     evidence_taken=11,
     field_mismatch=14,
+    turns_to_claim=15,
+    repeated_words_missing=16,
     rebased_open=12,
     rebased_open_commit=13,
     target_changes=6,
@@ -66,6 +68,8 @@ COUNTS = {
     "not_own_text": 5,
     "evidence_taken": 11,
     "field_mismatch": 14,
+    "turns_to_claim": 15,
+    "repeated_words_missing": 16,
     "rebased_open": 12,
     "rebased_open_commit": 13,
     "target_changes": 6,
@@ -146,6 +150,8 @@ def test_the_stage_summary_sums_the_counts_and_says_odd_ones() -> None:
     report = accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="t").report
     json.dumps(report, allow_nan=False)
     assert report["counts"]["history_dropped"] == 24
+    assert report["counts"]["turns_to_claim"] == 45
+    assert report["counts"]["repeated_words_missing"] == 48
     assert report["counts"]["turn_trace_dropped"] == 30
     assert report["counts"]["turn_trace_errors"] == 33  # #463 (1)
     assert report["counts"]["focus_losses"] == 14  # the odd run's is said, not summed
