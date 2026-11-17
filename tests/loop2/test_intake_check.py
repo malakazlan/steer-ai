@@ -49,7 +49,7 @@ from tests.loop2.world_fakes import (
 from tests.loop2.world_fakes import PAGE as SCREEN
 
 NEWLINE = chr(10)
-INTAKE_FIXED = "51f0de21f916ad1a7c99e84e1a5cc02a7e8fd0f9b01bcae3968eb3ab4885d180"
+INTAKE_FIXED = "86218b88dcf33070ffbbfae96431cf27638147c4c13bdff143d5b4ddb147f65a"
 """V4: sha256 of the intake's rules and schema blocks, joined by newlines."""
 AUDIT_FIXED = "0b9a5f1b1945c7119c5fdc399a23a67ef682e973a5904106efca38d53e79d251"
 """V4: sha256 of the audit's rules and schema blocks, joined by newlines."""
@@ -360,9 +360,20 @@ def test_the_runner_hands_the_check_positions_never_model_ids() -> None:
 
 
 def test_the_intake_prompt_version_and_header() -> None:
-    assert INTAKE_PROMPT_VERSION == "intake-3"
+    assert INTAKE_PROMPT_VERSION == "intake-4"
     live, _ = _world()
-    assert live.header(task())["intake_prompt_version"] == "intake-3"
+    assert live.header(task())["intake_prompt_version"] == "intake-4"
+
+
+def test_the_intake_says_an_outcome_the_page_shows_needs_its_own_subgoal() -> None:
+    """[V2.82] (1), intake-4: one general rule, no site, task or shape word in it (the held-back
+    shape was pinned before it and shares none of its words)."""
+    rules = controller.INTAKE_RULES
+    assert "when the outcome is something the page shows after an action" in rules
+    assert "needs a subgoal that closes on that outcome" in rules
+    for word in ("articles", "search", "filter", "products", "results", "click"):
+        assert word not in rules.casefold(), word
+    assert controller.AUDIT_RULES.count("shows after an action") == 0  # the audit is untouched
 
 
 def test_both_judges_share_the_criterion() -> None:
@@ -381,7 +392,7 @@ def test_each_judges_fixed_blocks_are_pinned_with_its_version() -> None:
     audit, _ = build_audit_prompt("g", (), "w", [], task_fence="taskfence01",
                                   screen_fence="scrfence01")  # fmt: skip
     pinned = (INTAKE_PROMPT_VERSION, _fixed(intake), controller.AUDIT_PROMPT_VERSION, _fixed(audit))
-    assert pinned == ("intake-3", INTAKE_FIXED, "audit-5", AUDIT_FIXED)
+    assert pinned == ("intake-4", INTAKE_FIXED, "audit-5", AUDIT_FIXED)
 
 
 def test_intake_insufficient_is_told_to_the_model() -> None:

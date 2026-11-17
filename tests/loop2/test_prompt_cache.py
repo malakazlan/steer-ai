@@ -36,7 +36,7 @@ PINS: dict[str, tuple[Prompt, list[str]]] = {
     "intake": (
         lambda: c.build_intake_prompt("g", [], task_fence=FENCE),
         [
-            "d9ae68b1fcbed9c81c27f133848b564023445f6a8d85a906528dd66f25aae15d",
+            "683587b42eaff38d1d84d7923fc5e16b0cdfa1f98e00cb95df624004ebf03611",
             "d5a3af9cb3f90d3f9fbb3155c26dcbd4c9cfb22a5e9018c773f4cc6a9ae7d21a",
         ],
     ),
