@@ -46,6 +46,7 @@ def ready(step: int) -> bool:
         turn_trace,
         unstick_probe,
         verify,
+        wal,
         world_ports,
     )
     from steerai.loop2._stub import PENDING_STEP  # noqa: PLC0415 - after the modules registered
