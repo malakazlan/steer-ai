@@ -1122,21 +1122,24 @@ def test_a_uia_client_outside_the_mta_never_starts() -> None:
     assert failed.value.message == "com_apartment"
 
 
-def test_a_32_bit_interpreter_is_refused_before_the_session_or_the_monitor(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """PS-12: a probe's number needs a 64-bit dwExtraInfo; refuse with its own token, taking
-    nothing, so it is never read as a lost monitor."""
-    from steerai.loop2 import live_world  # noqa: PLC0415 - this test only
-
-    monkeypatch.setattr(live_world, "_pointer_bytes", lambda: 4)
+def test_a_first_probe_that_is_not_proven_refuses_the_start_with_its_own_reason() -> None:
+    """[V2.81]: the start self-check: an unproven first probe is `probe_unproven_at_start`,
+    never `monitor_lost`, and the world is closed before any action."""
     platform = Platform()
+    platform.monitor.seen = False
     with pytest.raises(SteerError) as failed:
         _world(platform)
     assert failed.value.code is ErrorCode.GATE_BLOCKED
-    assert failed.value.message == "interpreter_not_64bit"
-    assert "session" not in platform.calls
-    assert platform.monitor.closed == 0
+    assert failed.value.message == "probe_unproven_at_start"
+    assert platform.monitor.closed == 1
+    assert platform.monitor.probes >= 1
+
+
+def test_a_proven_first_probe_lets_the_start_through() -> None:
+    platform = Platform()
+    world, _ = _world(platform)
+    assert platform.monitor.probes >= 1
+    world.close()
 
 
 def test_the_ports_run_only_on_the_thread_that_built_the_world() -> None:
@@ -1805,8 +1808,9 @@ def test_a_lost_monitor_stays_lost_and_is_counted_once() -> None:
 
 def test_the_desk_proves_both_hooks_with_a_fresh_probe() -> None:
     world, platform = _world()
+    at_start = platform.monitor.probes  # the start self-check's own probe
     world.desk.prove_hooks()
-    assert platform.monitor.probes == 1
+    assert platform.monitor.probes == at_start + 1
     assert world.interrupted() is None
 
 
@@ -1935,13 +1939,14 @@ def test_a_monitor_lost_twice_is_counted_once() -> None:
 def test_after_monitor_lost_a_recovered_hook_proves_nothing() -> None:
     """H1 (LW-06): the latch is read first; a hook that answers again is not trusted."""
     world, platform = _world()
+    at_start = platform.monitor.probes
     platform.monitor.ok = False
     assert world.interrupted() == "monitor_lost"
     platform.monitor.ok = True
     with pytest.raises(PortInterrupted) as lost:
         world.desk.prove_hooks()
     assert [lost.value.token] == ["monitor_lost"]
-    assert platform.monitor.probes == 0  # not even probed
+    assert platform.monitor.probes == at_start  # not even probed
 
 
 def test_a_seen_probe_on_an_unhealthy_monitor_is_lost() -> None:

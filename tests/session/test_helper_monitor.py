@@ -18,7 +18,7 @@ from steerai.session import helper_monitor
 from steerai.session.helper_core import KILL_ACK_S, write_config
 from steerai.session.helper_launch import CLOSE_TIMEOUT_MS
 from steerai.session.helper_monitor import WATCH_PERIOD_MS, HelperMonitor
-from steerai.session.hook_classifier import TAKEOVER, next_probe_seq
+from steerai.session.hook_classifier import TAKEOVER
 from steerai.session.hook_layout import (
     HISTOGRAMS,
     KIND_OTHER_STEER,
@@ -157,12 +157,12 @@ class Rig:
         s = self.helper.status_w
         for hook in hooks:
             s.set(f"last_own_qpc_{hook}", int(self.t[0] * FREQ))
-            s.set(
-                f"probe_seq_{hook}", (self.probes[-1] if self.probes else 1) if seq is None else seq
-            )
+            s.set(f"proof_{hook}", (self.probes[-1] if self.probes else 1) if seq is None else seq)
 
 
-def _rig(*, probe_fails: bool = False, session: FakeSession | None = None) -> Rig:
+def _rig(
+    *, probe_fails: bool = False, session: FakeSession | None = None, answers: bool = False
+) -> Rig:
     helper = FakeHelper()
     session = FakeSession() if session is None else session
     t = [100.0]
@@ -173,7 +173,10 @@ def _rig(*, probe_fails: bool = False, session: FakeSession | None = None) -> Ri
         if probe_fails:
             raise OSError(5, "UIPI")
         probes.append(seq)
+        if answers:  # a helper whose hooks answer every probe at once (the start self-check)
+            box[0].deliver("mouse", "keyboard", seq=seq)
 
+    box: list[Rig] = []
     monitor = HelperMonitor(
         helper,
         session=session,
@@ -186,6 +189,7 @@ def _rig(*, probe_fails: bool = False, session: FakeSession | None = None) -> Ri
         start_thread=False,
     )
     rig = Rig(helper, session, monitor, t, probes, ended)
+    box.append(rig)
     rig.heartbeat()
     return rig
 
@@ -227,7 +231,7 @@ def test_the_loop_threads_own_read_also_loses_and_ends_the_helper() -> None:
 
 
 def test_a_watchdog_read_in_the_middle_of_a_loop_read_is_no_false_decrease() -> None:
-    """Rev 2a: the loop thread has read `probe_seq_mouse` (old) when the helper moves on and the
+    """Rev 2a: the loop thread has read `proof_mouse` (old) when the helper moves on and the
     watchdog reads the newer words. Were the last-read values shared, the loop's older value
     would look like a decrease and the monitor would be lost for nothing."""
     rig = _rig()
@@ -298,7 +302,7 @@ def test_a_stale_probe_number_in_the_words_does_not_prove_the_next_probe() -> No
     rig.at(102.0)
     rig.heartbeat()
     rig.monitor.probe_now()
-    assert rig.probes[1] == next_probe_seq(rig.probes[0])
+    assert rig.probes[1] != rig.probes[0]  # a fresh tag per probe
     assert not rig.monitor.probe_seen()
     rig.deliver("mouse", "keyboard", seq=rig.probes[0])
     assert not rig.monitor.probe_seen()
@@ -747,8 +751,8 @@ def test_the_counts_fetch_the_words_on_every_read() -> None:
     rig = _rig()
     fresh = bytearray(len(rig.helper.status_buf))
     rig.helper.status_buf = fresh
-    rig.helper.status_w.set("probe_seq_keyboard", 5)
-    assert rig.monitor._counts.probe_seq("keyboard") == 5
+    rig.helper.status_w.set("proof_keyboard", 5)
+    assert rig.monitor._counts.proof("keyboard") == 5
 
 
 # ---- #385 HH4-14: every public method is safe after close -------------------------------------
@@ -814,11 +818,23 @@ def test_a_failed_end_of_the_helper_is_recorded_in_the_loss_never_raised() -> No
     assert rig.monitor._lost.endswith(";end_unconfirmed:6")
 
 
-def test_the_helpers_ledger_has_the_probes_number_before_the_probe_is_sent() -> None:
-    """PS-28, helper mode."""
+def test_the_probe_tag_is_in_the_shared_word_before_the_probe_is_sent() -> None:
+    """[V2.81]: the parent publishes the tag, then injects; never after (PS-28, helper mode)."""
     rig = _rig()
     seen: list[tuple[int, int]] = []
-    rig.monitor._probe = lambda seq: seen.append((rig.monitor._ledger._seq, seq))
+    rig.monitor._probe = lambda tag: seen.append((rig.helper.config.get("probe_tag"), tag))
     rig.monitor.probe_now()
     assert len(seen) == 1
     assert seen[0][0] == seen[0][1] != 0
+    assert 0 < seen[0][1] < 1 << 32
+
+
+def test_each_probe_publishes_a_fresh_tag_and_the_old_one_is_not_proof() -> None:
+    rig = _rig()
+    rig.monitor.probe_now()
+    first = rig.probes[0]
+    assert rig.helper.config.get("probe_tag") == first
+    rig.at(102.0)
+    rig.heartbeat()
+    rig.monitor.probe_now()
+    assert rig.helper.config.get("probe_tag") == rig.probes[1] != first

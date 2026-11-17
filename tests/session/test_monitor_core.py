@@ -6,7 +6,6 @@ from __future__ import annotations
 import pytest
 
 from steerai.probes.win_input import STEER_EXTRA_INFO
-from steerai.session.hook_classifier import probe_tag
 from steerai.session.monitor import (
     DEAD_BAND_PX,
     LLKHF_INJECTED,
@@ -249,9 +248,9 @@ def _per_hook(start: float = 100.0) -> MonitorCore:
     return MonitorCore(started_at=start, per_hook=True)
 
 
-def _tag(seq: int) -> int:
-    """The tag of an own event: the bare run tag, or the probe's with its number ([V2.80])."""
-    return probe_tag(STEER_EXTRA_INFO, seq) if seq else STEER_EXTRA_INFO
+def _tag(probe: int) -> int:
+    """The tag of an own event: the bare run tag, or the probe's own tag ([V2.81])."""
+    return probe if probe else STEER_EXTRA_INFO
 
 
 def _own_key(
