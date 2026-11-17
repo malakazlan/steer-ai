@@ -264,9 +264,25 @@ class PageRead:
     kind: str
     observed: str
     events: int | None
+    dom: str | None = None
+    """A select row's final DOM value over CDP (the fixture's own option token), else None."""
+    entries: tuple[LogEntry, ...] = ()
+    """A select row's log entries in order, kept so two readings of a miscount stay apart."""
+
+
+@dataclass(frozen=True)
+class LogEntry:
+    """One page-log entry of a select row's run: its row, its fixed option value (None when
+    the entry is another row's, whose value could be typed text) and its trusted flag."""
+
+    row: str
+    value: str | None
+    trusted: bool
 
 
 UNREAD: Final = PageRead(False, "unread", "unread", None)
+ENTRIES_CAP: Final = 50
+"""No more entries than this are kept in a record (a runaway log is still counted whole)."""
 
 
 def _entries(raw: str) -> list[Any] | None:  # Any: the page log's JSON entries
@@ -281,23 +297,50 @@ def _redact(row: str, observed: str) -> str:
     return REDACTED_OBSERVED if row in FREE_TEXT_ROWS else observed
 
 
-def _gallery_read(  # noqa: PLR0911 - one return per rule, in the rules' order
-    row: Task, raw: str
+def _select_read(
+    row: Task,
+    entries: list[Any],
+    dom: str | None,  # Any: the page log's JSON entries
 ) -> PageRead:
+    """[V2.84] (2): outcome = the select's final DOM value is the expected one and the last
+    change event is trusted and says so; path = how many entries the log holds."""
+    count = len(entries)
+    kept = tuple(
+        LogEntry(
+            str(e.get("row")),
+            e.get("value") if e.get("row") in SELECT_ROWS and isinstance(e.get("value"), str)
+            else None,
+            not e.get("untrusted"),
+        )
+        for e in entries[:ENTRIES_CAP]
+    )  # fmt: skip
+
+    def read(ok: bool, kind: str, observed: str) -> PageRead:
+        return PageRead(ok, kind, observed, count, dom, kept)
+
+    if not entries:
+        return PageRead(False, "events:0", "events:0", 0, dom)
+    last = entries[-1]
+    text = json.dumps(last, sort_keys=True)
+    if dom is None:
+        return read(False, "unread", "dom_unread")
+    if last.get("untrusted"):
+        return read(False, "untrusted", "untrusted")
+    wanted = json.loads(row.expected)["value"]
+    if dom != wanted:
+        return read(False, "dom_value_differs", f"dom:{dom}")
+    if text != row.expected:
+        return read(False, "wrong_value", text)
+    return read(True, "ok", text)
+
+
+def _gallery_read(row: Task, raw: str, dom: str | None) -> PageRead:
     entries = _entries(raw)
     if entries is None or not all(isinstance(e, dict) for e in entries):
         return PageRead(False, "unread", "bad_log", None)
     count = len(entries)
-    if row.task_id in SELECT_ROWS:  # outcome: the last change; path: how many there were
-        if not entries:
-            return PageRead(False, "events:0", "events:0", 0)
-        last = entries[-1]
-        text = json.dumps(last, sort_keys=True)
-        if last.get("untrusted"):
-            return PageRead(False, "untrusted", "untrusted", count)
-        if text != row.expected:
-            return PageRead(False, "wrong_value", text, count)
-        return PageRead(True, "ok", text, count)
+    if row.task_id in SELECT_ROWS:
+        return _select_read(row, entries, dom)
     observed = h2_event(raw).strip()
     if observed == row.expected:
         return PageRead(True, "ok", observed, count)
@@ -308,14 +351,15 @@ def _gallery_read(  # noqa: PLR0911 - one return per rule, in the rules' order
     return PageRead(False, "wrong_value", _redact(row.task_id, observed), count)
 
 
-def read_page(task: StageTask, raw: str) -> PageRead:
+def read_page(task: StageTask, raw: str, dom: str | None = None) -> PageRead:
     """The page's own pass check on its log as read over DevTools, with what it observed
     ([V2.84] (2)); shares no code with the v2 loop or the verifier. Gallery: the one trusted
     event the row expects (v1's suite check), a select row on its last change; large:
-    `gallery_page.large_passes`. A large log of another shape is a `ValueError`."""
+    `gallery_page.large_passes`. A large log of another shape is a `ValueError`. `dom`: a
+    select row's final DOM value (`SELECT_ROWS`); unread there fails closed."""
     if task.fixture == "gallery":
         row = next(t for t in GALLERY if t.task_id == task.task_id)
-        return _gallery_read(row, raw)
+        return _gallery_read(row, raw, dom)
     if task.fixture == "large":
         for large in LARGE_TASKS:
             if large.task_id == task.task_id:
@@ -324,9 +368,9 @@ def read_page(task: StageTask, raw: str) -> PageRead:
     raise ValueError(f"no page check for {task.fixture} task {task.task_id}")
 
 
-def page_check(task: StageTask, raw: str) -> bool:
+def page_check(task: StageTask, raw: str, dom: str | None = None) -> bool:
     """`read_page`'s verdict alone."""
-    return read_page(task, raw).ok
+    return read_page(task, raw, dom).ok
 
 
 CHROME_LOST: Final = "chrome_lost"
@@ -343,7 +387,15 @@ PAGE_CHECK_FILE: Final = "page_check.json"
 def page_row(page: PageRead | None) -> dict[str, Any]:  # Any: JSON values
     """The page check as the report rows and the out dir keep it (closed, redaction-safe)."""
     read = UNREAD if page is None else page
-    return {"observed": read.observed, "check_kind": read.kind, "path_events": read.events}
+    row: dict[str, Any] = {  # Any: JSON values
+        "observed": read.observed, "check_kind": read.kind, "path_events": read.events,
+    }  # fmt: skip
+    if read.entries or read.dom is not None:  # a select row: every entry and the DOM value
+        row["dom_value"] = read.dom
+        row["entries"] = [
+            {"row": e.row, "value": e.value, "trusted": e.trusted} for e in read.entries
+        ]
+    return row
 
 
 @dataclass(frozen=True)
@@ -1669,7 +1721,11 @@ def _live_page(
                 raw = evaluate(cdp, f'localStorage.getItem("{LOG_KEY}") || "[]"')
                 if not isinstance(raw, str):
                     raise ValueError("the page log is not text")
-                page = read_page(task, raw)
+                dom = None
+                if task.task_id in SELECT_ROWS:  # the select's own value, over CDP
+                    read = evaluate(cdp, f'document.getElementById("{task.task_id}").value')
+                    dom = read if isinstance(read, str) else None
+                page = read_page(task, raw, dom)
                 (run_dir / PAGE_CHECK_FILE).write_text(
                     json.dumps(page_row(page), allow_nan=False), encoding="utf-8"
                 )

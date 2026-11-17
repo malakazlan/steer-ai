@@ -151,32 +151,70 @@ TOKYO: dict[str, object] = {"row": "g13", "value": "Asia/Tokyo"}
 
 
 def test_one_trusted_rome_event_is_ok_with_path_one() -> None:
-    got = read_page(_tasks()["g13"], _log(ROME))
+    got = read_page(_tasks()["g13"], _log(ROME), dom="Europe/Rome")
     assert (got.ok, got.kind, got.events) == (True, "ok", 1)
     assert json.loads(got.observed) == ROME
 
 
 def test_three_events_ending_trusted_rome_is_an_ok_outcome_with_path_three() -> None:
     raw = _log({"row": "g13", "value": "Europe/Paris"}, TOKYO, ROME)
-    got = read_page(_tasks()["g13"], raw)
+    got = read_page(_tasks()["g13"], raw, dom="Europe/Rome")
     assert (got.ok, got.kind, got.events) == (True, "ok", 3)
-    assert page_check(_tasks()["g13"], raw) is True
+    assert page_check(_tasks()["g13"], raw, dom="Europe/Rome") is True
 
 
-def test_three_events_ending_tokyo_is_wrong_value() -> None:
-    got = read_page(_tasks()["g13"], _log(ROME, ROME, TOKYO))
+def test_a_log_ending_tokyo_over_a_rome_dom_is_wrong_value() -> None:
+    got = read_page(_tasks()["g13"], _log(ROME, ROME, TOKYO), dom="Europe/Rome")
     assert (got.ok, got.kind, got.events) == (False, "wrong_value", 3)
     assert json.loads(got.observed) == TOKYO
 
 
+def test_h2_a_dom_other_than_rome_while_the_log_read_rome_is_dom_value_differs() -> None:
+    """The popup was open: the log holds [Rome, X], the select holds X, code read Rome."""
+    got = read_page(_tasks()["g13"], _log(ROME, TOKYO), dom="Asia/Tokyo")
+    assert (got.ok, got.kind, got.events, got.dom) == (False, "dom_value_differs", 2, "Asia/Tokyo")
+    task = _tasks()["g13"]
+    record = RunRecord("g13", 1, DONE_FINAL, True, True, got.ok, None, page=got)
+    assert classify(task, record).verdict == "false_done"
+
+
+def test_h1_extra_events_ending_rome_with_a_rome_dom_is_ok_path_three() -> None:
+    got = read_page(_tasks()["g13"], _log(ROME, TOKYO, ROME), dom="Europe/Rome")
+    assert (got.ok, got.kind, got.events, got.dom) == (True, "ok", 3, "Europe/Rome")
+    assert [(e.row, e.value, e.trusted) for e in got.entries] == [
+        ("g13", "Europe/Rome", True), ("g13", "Asia/Tokyo", True), ("g13", "Europe/Rome", True),
+    ]  # fmt: skip
+
+
+def test_an_unread_dom_on_a_select_row_fails_closed() -> None:
+    got = read_page(_tasks()["g13"], _log(ROME), dom=None)
+    assert (got.ok, got.kind) == (False, "unread")
+
+
+def test_the_record_keeps_every_entry_and_the_dom_for_the_out_dir() -> None:
+    got = read_page(_tasks()["g13"], _log(ROME, {**TOKYO, "untrusted": True}), dom="Europe/Rome")
+    row = page_row(got)
+    assert row["dom_value"] == "Europe/Rome"
+    assert row["entries"] == [
+        {"row": "g13", "value": "Europe/Rome", "trusted": True},
+        {"row": "g13", "value": "Asia/Tokyo", "trusted": False},
+    ]
+
+
+def test_a_stray_entry_of_a_typed_row_keeps_no_value() -> None:
+    raw = _log({"row": "g22", "value": "secret"}, ROME)
+    got = read_page(_tasks()["g13"], raw, dom="Europe/Rome")
+    assert got.entries[0].value is None
+
+
 def test_an_untrusted_last_event_is_untrusted() -> None:
-    got = read_page(_tasks()["g13"], _log(ROME, {**ROME, "untrusted": True}))
+    got = read_page(_tasks()["g13"], _log(ROME, {**ROME, "untrusted": True}), dom="Europe/Rome")
     assert (got.ok, got.kind, got.observed, got.events) == (False, "untrusted", "untrusted", 2)
 
 
 def test_no_event_and_a_bad_log_on_a_select_row() -> None:
-    assert read_page(_tasks()["g13"], "[]").kind == "events:0"
-    assert read_page(_tasks()["g13"], "not json").kind == "unread"
+    assert read_page(_tasks()["g13"], "[]", dom="").kind == "events:0"
+    assert read_page(_tasks()["g13"], "not json", dom="").kind == "unread"
 
 
 @pytest.mark.parametrize("task_id", ["g12", "g14"])
@@ -186,7 +224,8 @@ def test_every_select_row_takes_the_outcome_rule(task_id: str) -> None:
         "g14": {"row": "g14", "value": "Teal"},
     }
     other: dict[str, object] = {"row": task_id, "value": "Other"}
-    assert read_page(_tasks()[task_id], _log(other, row[task_id])).ok is True
+    value = str(row[task_id]["value"])
+    assert read_page(_tasks()[task_id], _log(other, row[task_id]), dom=value).ok is True
 
 
 def test_a_non_select_row_keeps_its_check_and_names_the_failure() -> None:
@@ -212,24 +251,24 @@ def test_a_large_task_reads_closed() -> None:
 DONE_FINAL = {"status": "done", "reason": None, "used": {"max_actions": 1}}
 
 
-def _run(task: StageTask, raw: str, run: int = 1) -> tuple[RunRecord, bool]:
-    page = read_page(task, raw)
+def _run(task: StageTask, raw: str, run: int = 1, dom: str | None = None) -> tuple[RunRecord, bool]:
+    page = read_page(task, raw, dom=dom)
     return RunRecord(task.task_id, run, DONE_FINAL, True, True, page.ok, None, page=page), page.ok
 
 
 def test_a_false_done_keeps_its_observation_and_path_is_not_a_false_done() -> None:
     task = _tasks()["g13"]
-    bad, _ = _run(task, _log(ROME, TOKYO))
+    bad, _ = _run(task, _log(ROME, TOKYO), dom="Asia/Tokyo")
     got = classify(task, bad)
     assert (got.verdict, got.page) == ("false_done", bad.page)
-    many, _ = _run(task, _log(TOKYO, ROME, ROME))
+    many, _ = _run(task, _log(TOKYO, ROME, ROME), dom="Europe/Rome")
     assert classify(task, many).verdict == "pass"
 
 
 def test_the_summary_reports_path_apart_from_the_verdicts() -> None:
     task = _tasks()["g13"]
     runs = [
-        classify(task, _run(task, raw, i)[0])
+        classify(task, _run(task, raw, i, "Europe/Rome")[0])
         for i, raw in enumerate((_log(ROME), _log(TOKYO, ROME, ROME)), 1)
     ]
     got = _page_checks(runs)
@@ -238,6 +277,12 @@ def test_the_summary_reports_path_apart_from_the_verdicts() -> None:
         "observed": json.dumps(ROME, sort_keys=True),
         "check_kind": "ok",
         "path_events": 3,
+        "dom_value": "Europe/Rome",
+        "entries": [
+            {"row": "g13", "value": "Asia/Tokyo", "trusted": True},
+            {"row": "g13", "value": "Europe/Rome", "trusted": True},
+            {"row": "g13", "value": "Europe/Rome", "trusted": True},
+        ],
     }
 
 
@@ -247,7 +292,9 @@ def test_a_diagnostic_names_one_task_and_carries_no_gate() -> None:
     assert diagnostic_tasks(tasks, None) == tasks
     with pytest.raises(ValueError, match="no stage 1 task"):
         diagnostic_tasks(tasks, "nope")
-    row = diagnostic_row([classify(_tasks()["g13"], _run(_tasks()["g13"], _log(ROME))[0])])
+    row = diagnostic_row(
+        [classify(_tasks()["g13"], _run(_tasks()["g13"], _log(ROME), dom="Europe/Rome")[0])]
+    )
     assert row["diagnostic"]["uncounted"] is True
     assert "gates" not in row
     assert "accepted" not in row
