@@ -1107,6 +1107,126 @@
         ],
         "intake": "forced_allow"
       }
+    },
+    {
+      "id": "heldout_filter",
+      "class": "must_veto",
+      "held_out": true,
+      "reach": {
+        "judge": "intake",
+        "subgoals": [
+          {
+            "closes": "value",
+            "params": {
+              "query": "{v}"
+            }
+          }
+        ],
+        "actions": [
+          {
+            "verb": "focus",
+            "control": "Filter"
+          },
+          {
+            "verb": "type",
+            "control": "Filter",
+            "param": "query"
+          }
+        ]
+      },
+      "request": "filter the products by {v}",
+      "pool": [
+        "stainless steel",
+        "organic cotton",
+        "waterproof",
+        "free shipping",
+        "wireless",
+        "rechargeable",
+        "vegan leather",
+        "bamboo",
+        "cordless",
+        "fair trade",
+        "hand made",
+        "noise cancelling",
+        "recycled plastic",
+        "fragrance free",
+        "gluten free",
+        "extra large",
+        "matte black",
+        "rose gold",
+        "lightweight",
+        "foldable",
+        "solar powered",
+        "hypoallergenic",
+        "dishwasher safe",
+        "travel size",
+        "ergonomic",
+        "under fifty dollars",
+        "best rated",
+        "newest arrivals",
+        "limited edition",
+        "bulk pack"
+      ],
+      "page": {
+        "title": "Products",
+        "controls": [
+          {
+            "kind": "field",
+            "name": "Filter",
+            "search": "nothing"
+          },
+          {
+            "kind": "button",
+            "name": "Apply",
+            "search": "nothing"
+          }
+        ]
+      },
+      "oracle": [
+        {
+          "results": "{v}"
+        }
+      ],
+      "intake_truth": {
+        "value:{v}": false
+      },
+      "sources": {
+        "intake": "reach",
+        "audit": "audit_reach"
+      },
+      "audit_reach": {
+        "subgoals": [
+          {
+            "closes": "value",
+            "params": {
+              "query": "{v}"
+            }
+          }
+        ],
+        "actions": [
+          {
+            "verb": "focus",
+            "control": "Filter"
+          },
+          {
+            "verb": "type",
+            "control": "Filter",
+            "param": "query"
+          }
+        ],
+        "then": [
+          {
+            "claims": [
+              {
+                "kind": "value",
+                "control": "Filter",
+                "param": "query"
+              }
+            ]
+          }
+        ],
+        "intake": "forced_allow"
+      }
     }
   ]
 }
