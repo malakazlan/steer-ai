@@ -76,6 +76,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Final, Literal, Protocol, get_args
 
+from steerai.loop2 import controller
 from steerai.loop2.chain_pages import Page, PageWorld, outcome_shown
 from steerai.loop2.controller import (
     AUDIT_PROMPT_VERSION,
@@ -83,13 +84,15 @@ from steerai.loop2.controller import (
     PROMPT_VERSION,
     ControllerError,
 )
-from steerai.loop2.decide_port import Call, Counter, DecideCalls, TaskGenerations
+from steerai.loop2.decide_port import Call, Counter, DecideCalls, Reply, TaskGenerations
 from steerai.loop2.decision import Decision, SubgoalDoc, validate
 from steerai.loop2.loop import (
     Audited,
+    AuditView,
     Decided,
     IntakeView,
     Ports,
+    ProofLine,
     TaskOutcome,
     TokenUsage,
     TurnView,
@@ -102,7 +105,7 @@ from steerai.world.effects import _tokens  # the proof word match's token rule
 proof_tokens: Final = _tokens
 """The proof word match's own token rule, imported: a truth key and a proof read words alike."""
 SHAPES_PATH: Final = Path(__file__).with_name("chain_shapes.json")
-SHAPES_SHA256: Final = "ad7f9c744b11dd042bdcae73d0a5aba0c47e9e147e018209848d89d4aab12b76"
+SHAPES_SHA256: Final = "5db5d7f76abfdaea3f104f21ab61877d84437f1e21a83bdaeb45eb49b2135eb5"
 """The shapes file as pre-registered: any edit fails `load_shapes`."""
 N: Final = 60
 """Must-pass: chains counted per shape (voids replaced)."""
@@ -1054,6 +1057,7 @@ def header(
         "controller": PROMPT_VERSION,
         "intake": INTAKE_PROMPT_VERSION,
         "audit": AUDIT_PROMPT_VERSION,
+        "audit_pins": audit_pins(),
         "commit": commit,
         "dirty": dirty,
         "model": model,
@@ -1080,7 +1084,8 @@ def header(
 
 
 FROZEN_KEYS: Final = (
-    "controller", "intake", "audit", "commit", "shapes_sha256", "draw_seed", "draw_order_sha256",
+    "controller", "intake", "audit", "audit_pins", "commit", "shapes_sha256", "draw_seed",
+    "draw_order_sha256",
     "sources", "audit_intake", "budgets", "stopping",
     "scoring", "reach_miss_reasons", "reach_miss_world_tokens",
 )  # fmt: skip
@@ -1220,8 +1225,63 @@ def packet_digest(blocks: Sequence[str]) -> str | None:
     blocks."""
     if not blocks:
         return None
+    return masked_sha256(blocks)[:16]
+
+
+def masked_sha256(blocks: Sequence[str]) -> str:
+    """The SHA-256 of blocks with every fence token masked."""
     text = _FENCE_CLOSE.sub("F>>>", _FENCE_OPEN.sub(r"<<<\1 F", "\n".join(blocks)))
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+_PIN_PAGE: Final[Mapping[str, Any]] = {  # Any: JSON, a fixed page for the packet pin
+    "title": "Profile",
+    "controls": [
+        {"kind": "field", "name": "Full name"},
+        {"kind": "select", "name": "Country", "options": ["Kenya", "Ghana", "Peru"]},
+    ],
+}
+_PIN_PROOFS: Final[tuple[ProofLine, ...]] = (
+    (1, "value", "claim", "value", ("value_read", "equals_param"), ((1, "Ada Lovelace"),)),
+    (2, "state", "claim", "state", ("state_read", "selected"), ((1, "Kenya"),)),
+)
+_PIN_GOAL: Final = "type Ada Lovelace as the full name and keep Kenya selected"
+
+
+def audit_pins() -> dict[str, str]:
+    """[V2.82] (2): the audit's prompt and its packet builder, pinned by hash in the header so a
+    rerun can prove both are unchanged. `prompt` hashes the audit's system blocks (its rules and
+    schema) with its version; `packet` hashes the whole request `make_audit` sends on a fixed page
+    and fixed proofs (system and user blocks, fence tokens masked): the rules, the proof and
+    listing lines, the masking, the listing's selection and where the fences sit."""
+    page = PageWorld(Page.from_spec(_PIN_PAGE)).observe()
+    sent: list[str] = []
+
+    def provider(system: list[str], blocks: list[str]) -> Reply:
+        sent.extend([*system, *blocks])
+        return Reply('{"sufficient": true, "reason": "facts_finish_request"}', "end_turn", None)
+
+    calls = DecideCalls(
+        provider,
+        interrupted=lambda: None,
+        generations=TaskGenerations(),
+        late_error=lambda _token: None,
+    )
+    view = AuditView(
+        observed=page,
+        handles={e.id: e.id for e in page.snapshot.elements},
+        proofs=_PIN_PROOFS,
+        words=frozenset({"ada", "lovelace", "kenya"}),
+    )
+    make_audit(calls, goal=_PIN_GOAL, task_fence="pinfence01")(view)
+    system, _ = controller.build_audit_prompt(
+        _PIN_GOAL, _PIN_PROOFS, "t", [], task_fence="pinfence01", screen_fence="pinscreen01"
+    )
+    prompt = json.dumps({"version": controller.AUDIT_PROMPT_VERSION, "system": system})
+    return {
+        "prompt": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        "packet": masked_sha256(sent),
+    }
 
 
 def packet_report(records: Sequence[ChainRecord]) -> dict[str, dict[str, int]]:

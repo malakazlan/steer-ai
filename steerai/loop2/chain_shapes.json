@@ -426,32 +426,6 @@
       "id": "two_outcome",
       "class": "must_veto",
       "held_out": false,
-      "reach": {
-        "judge": "audit",
-        "subgoals": [
-          {
-            "closes": "page",
-            "params": {
-              "query": "{v}"
-            }
-          }
-        ],
-        "actions": [
-          {
-            "verb": "focus",
-            "control": "Find articles"
-          },
-          {
-            "verb": "type",
-            "control": "Find articles",
-            "param": "query"
-          },
-          {
-            "verb": "click",
-            "control": "Search"
-          }
-        ]
-      },
       "request": "search the articles for {v} and send the first one to Bob",
       "pool": [
         "automation",
@@ -512,8 +486,56 @@
         "page:{v}": false
       },
       "sources": {
-        "intake": "free",
-        "audit": "reach"
+        "intake": "reach",
+        "audit": "audit_reach"
+      },
+      "reach": {
+        "judge": "intake",
+        "subgoals": [
+          {
+            "closes": "value",
+            "params": {
+              "query": "{v}"
+            }
+          }
+        ],
+        "actions": [
+          {
+            "verb": "focus",
+            "control": "Find articles"
+          },
+          {
+            "verb": "type",
+            "control": "Find articles",
+            "param": "query"
+          }
+        ]
+      },
+      "audit_reach": {
+        "subgoals": [
+          {
+            "closes": "page",
+            "params": {
+              "query": "{v}"
+            }
+          }
+        ],
+        "actions": [
+          {
+            "verb": "focus",
+            "control": "Find articles"
+          },
+          {
+            "verb": "type",
+            "control": "Find articles",
+            "param": "query"
+          },
+          {
+            "verb": "click",
+            "control": "Search"
+          }
+        ],
+        "intake": "real"
       }
     },
     {
@@ -573,8 +595,11 @@
       "intake_truth": {
         "value:{v}": true
       },
-      "reach": {
-        "judge": "audit",
+      "sources": {
+        "intake": "free",
+        "audit": "audit_reach"
+      },
+      "audit_reach": {
         "subgoals": [
           {
             "closes": "value",
@@ -593,11 +618,19 @@
             "control": "Email",
             "param": "name"
           }
-        ]
-      },
-      "sources": {
-        "intake": "free",
-        "audit": "reach"
+        ],
+        "then": [
+          {
+            "claims": [
+              {
+                "kind": "value",
+                "control": "Email",
+                "param": "name"
+              }
+            ]
+          }
+        ],
+        "intake": "real"
       }
     },
     {
@@ -640,15 +673,6 @@
       "page": {
         "title": "Order",
         "controls": [
-          {
-            "kind": "select",
-            "name": "Shipping",
-            "options": [
-              "{v}",
-              "{d1}",
-              "{d2}"
-            ]
-          },
           {
             "kind": "select",
             "name": "Billing",
@@ -1100,6 +1124,126 @@
               {
                 "kind": "value",
                 "control": "Find articles",
+                "param": "query"
+              }
+            ]
+          }
+        ],
+        "intake": "forced_allow"
+      }
+    },
+    {
+      "id": "heldout_filter",
+      "class": "must_veto",
+      "held_out": true,
+      "reach": {
+        "judge": "intake",
+        "subgoals": [
+          {
+            "closes": "value",
+            "params": {
+              "query": "{v}"
+            }
+          }
+        ],
+        "actions": [
+          {
+            "verb": "focus",
+            "control": "Filter"
+          },
+          {
+            "verb": "type",
+            "control": "Filter",
+            "param": "query"
+          }
+        ]
+      },
+      "request": "filter the products by {v}",
+      "pool": [
+        "stainless steel",
+        "organic cotton",
+        "waterproof",
+        "free shipping",
+        "wireless",
+        "rechargeable",
+        "vegan leather",
+        "bamboo",
+        "cordless",
+        "fair trade",
+        "hand made",
+        "noise cancelling",
+        "recycled plastic",
+        "fragrance free",
+        "gluten free",
+        "extra large",
+        "matte black",
+        "rose gold",
+        "lightweight",
+        "foldable",
+        "solar powered",
+        "hypoallergenic",
+        "dishwasher safe",
+        "travel size",
+        "ergonomic",
+        "under fifty dollars",
+        "best rated",
+        "newest arrivals",
+        "limited edition",
+        "bulk pack"
+      ],
+      "page": {
+        "title": "Products",
+        "controls": [
+          {
+            "kind": "field",
+            "name": "Filter",
+            "search": "nothing"
+          },
+          {
+            "kind": "button",
+            "name": "Apply",
+            "search": "nothing"
+          }
+        ]
+      },
+      "oracle": [
+        {
+          "results": "{v}"
+        }
+      ],
+      "intake_truth": {
+        "value:{v}": false
+      },
+      "sources": {
+        "intake": "reach",
+        "audit": "audit_reach"
+      },
+      "audit_reach": {
+        "subgoals": [
+          {
+            "closes": "value",
+            "params": {
+              "query": "{v}"
+            }
+          }
+        ],
+        "actions": [
+          {
+            "verb": "focus",
+            "control": "Filter"
+          },
+          {
+            "verb": "type",
+            "control": "Filter",
+            "param": "query"
+          }
+        ],
+        "then": [
+          {
+            "claims": [
+              {
+                "kind": "value",
+                "control": "Filter",
                 "param": "query"
               }
             ]
