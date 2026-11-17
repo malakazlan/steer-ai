@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from steerai.loop2.controller import SYSTEM_RULES, ControllerError
+from steerai.loop2.controller import SYSTEM_RULES, ControllerError, DecideRecord
 from steerai.loop2.decision import MAX_SUBGOALS, Closes, Decision
 from steerai.loop2.history import (
     GRAMMAR,
@@ -100,6 +100,35 @@ def test_a_last_attempt_that_did_not_parse_has_no_shape() -> None:
     with pytest.raises(ControllerError) as e:
         run(ask)
     assert e.value.shape is None
+
+
+def test_a_rejected_error_always_carries_a_parsed_shape() -> None:
+    """#472: `refused_shape:unparsed` is format-only. A `rejected` error is raised only after a
+    Decision parsed, and sets its shape then; a last attempt that did not parse is `not_json` or
+    `schema`, which the runner's `_rejected_turn` re-raises before any `_note`."""
+    ask, _ = make_model([BAD_TARGET, "not json"])
+    with pytest.raises(ControllerError) as unparsed:
+        run(ask)
+    assert unparsed.value.code != "rejected"
+    ask, _ = make_model([BAD_TARGET, BAD_TARGET])
+    with pytest.raises(ControllerError) as rejected:
+        run(ask)
+    assert rejected.value.code == "rejected"
+    assert rejected.value.shape is not None
+
+
+def test_an_unparsed_last_attempt_adds_no_shape_line_in_the_runner() -> None:
+    error = ControllerError("not_json", ["not_json"], DecideRecord("controller-14", 2, True, True))
+    world = World([])
+    world.decide_errors = [error]
+    outcome = run_task(task(), world.ports())
+    assert (outcome.status, outcome.reason) == ("stopped", "port_not_json")
+    assert all(not _shapes(view.history) for view in world.views)
+
+
+def test_the_kind_position_class_holds_every_subgoal_position() -> None:
+    """#472: `_KIND`'s `[1-N]` class is one digit; it holds only while `MAX_SUBGOALS` <= 9."""
+    assert MAX_SUBGOALS <= 9
 
 
 # ---- the runner: each refused first Decision -------------------------------------------------
