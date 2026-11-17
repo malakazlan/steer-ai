@@ -34,7 +34,7 @@ from steerai.loop2.decide_port import (
     TaskGenerations,
     anthropic_count,
 )
-from steerai.loop2.loop import PortInterrupted, TokenUsage
+from steerai.loop2.loop import CountFailed, PortInterrupted, TokenUsage
 from steerai.loop2.prompt_inputs import make_decide
 from steerai.world.elements import MAX_NAME_CHARS, Element, format_lines, safe_name
 from tests.loop2.test_listing_wiring import GOAL, _view
@@ -280,12 +280,13 @@ def test_a_kill_during_a_count_abandons_it() -> None:
         release.set()
 
 
-def test_a_counters_unmapped_failure_is_raised_as_itself() -> None:
+def test_a_counters_unmapped_failure_is_a_count_failure_chained_to_it() -> None:
     def broken(_s: list[str], _b: list[str]) -> int:
         raise KeyError("x")
 
-    with pytest.raises(KeyError):
+    with pytest.raises(CountFailed) as raised:  # #468: no model request went out
         _counting(broken).count(["s"], ["u"])
+    assert isinstance(raised.value.__cause__, KeyError)
 
 
 # ---- the SDK counter ---------------------------------------------------------------------------

@@ -219,6 +219,24 @@ class PortInterrupted(Exception):  # noqa: N818 - the packet's name ([V2.40] Q4)
         such a wait is no call. True otherwise, the safe default for counting."""
 
 
+class CountFailed(SteerError):  # noqa: N818 - named for the failed count, as PortInterrupted
+    """A token count failed in a way the counter did not map (a bug in it, not the provider's
+    answer). Only a count request went out, never a model request: it is no model call (#468,
+    invariant 9). Raised by `DecideCalls.count`, chained to the failure."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(ErrorCode.MODEL_ERROR, message)
+
+
+def request_went_out(exc: BaseException) -> bool:
+    """Whether a model request went out before this failure: False for a wait given up before
+    the send and for a failed count; True for everything else, the safe default for counting
+    (#468, invariant 9)."""
+    if isinstance(exc, PortInterrupted):
+        return exc.sent
+    return not isinstance(exc, CountFailed)
+
+
 UrlRead = Literal["read", "no_bar", "document_url_unread", "not_composed"]
 """Stage 2 plan §5: why an observation's URL is what it is, in closed tokens."""
 URL_READS: Final[tuple[UrlRead, ...]] = get_args(UrlRead)

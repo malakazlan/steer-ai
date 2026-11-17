@@ -89,6 +89,7 @@ from steerai.loop2.loop import (
     ActResult,
     Audited,
     AuditView,
+    CountFailed,
     Dispatch,
     IntakeLine,
     IntakeView,
@@ -111,6 +112,7 @@ from steerai.loop2.loop import (
     WatchKind,
     WindowCovered,
     action_risk,
+    request_went_out,
     type_refusal,
     url_read,
     watch_kind,
@@ -860,6 +862,8 @@ class _Run:
             record = exc.record if isinstance(exc, ControllerError) else None
             if isinstance(exc, ControllerError) and record is None:
                 raise  # no call was made: nothing billed
+            if not request_went_out(exc):
+                raise  # #468: a count or a wait given up before the send: no call, nothing billed
             # invariant 9, [V2.68]: every model call the turn made, a repair included
             self.model_calls += 1 if record is None else record.calls
             if isinstance(exc, ControllerError):  # [V2.67] D: the failed turn's facts
@@ -1273,8 +1277,8 @@ class _Run:
                 self.intake_counts["intake_tokens"] += sum(_counts(exc.usage) or ())
             raise _End("blocked", Reason("intake_failed")) from None
         except (PortInterrupted, SteerError) as exc:
-            if isinstance(exc, PortInterrupted) and not exc.sent:
-                raise  # #457 P2, packet §4 F3: nothing went out, so nothing is counted
+            if not request_went_out(exc):
+                raise  # #457 P2, packet §4 F3, #468: nothing went out, so nothing is counted
             self._intake_failed(1)
             self.tokens = math.nan  # abandoned or failed: billed, never reported ([V2.41] (1))
             self.usage_incomplete = True
@@ -1331,8 +1335,13 @@ class _Run:
         try:
             audited = audit(view)
         except (PortInterrupted, SteerError, ControllerError) as exc:
-            if isinstance(exc, ControllerError) and exc.record is None:
-                # refused before any call (the bound, a fence in the data): no call is counted
+            if isinstance(exc, PortInterrupted) and not exc.sent:
+                raise  # #468: a wait given up before the send: no call, nothing billed
+            if isinstance(exc, CountFailed) or (
+                isinstance(exc, ControllerError) and exc.record is None
+            ):
+                # refused before any call (the bound, a fence in the data, a failed count): no
+                # call is counted (#468)
                 self.audit_counts["audit_no_call"] += 1
                 self.audit = ("failed", AUDIT_NO_CALL)
                 raise _End("blocked", Reason("audit_failed")) from None
