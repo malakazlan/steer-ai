@@ -31,6 +31,7 @@ from tests.loop2.world_fakes import (
     act_result,
     decision,
     element,
+    judged_by,
     observed,
     report,
     snapshot,
@@ -99,7 +100,7 @@ def test_rt06_a_commit_subgoal_is_never_ticked_in_step_3(monkeypatch: pytest.Mon
     send = [
         SubgoalDoc(id="s1", desc="send", params={"text": "red shoes"}, commit="send", closes="page")
     ]
-    claim = Claim(subgoal="s1", kind="state", evidence=[GO.id], wanted="on")
+    claim = Claim(subgoal="s1", kind="state", evidence=[GO.id])
     world = World([Decision(subgoals=send, claims=[claim])])
     outcome = run_task(task(), world.ports())
     assert outcome.status != "done"
@@ -257,7 +258,7 @@ def test_p2_pending_text_belongs_to_the_field_whatever_subgoal_typed_it() -> Non
     """A click beside a field typed under s1 is a submit even when s2 clicks."""
     two = [
         SubgoalDoc(id="s1", desc="type", params={"text": "red shoes"}, closes="page"),
-        SubgoalDoc(id="s2", desc="go", params={"text": "shop"}, closes="state"),
+        SubgoalDoc(id="s2", desc="go", params={"text": "shop"}, closes="state", wanted="on"),
     ]
     plain = observed(list(QUERY_PAGE), focus=FIELD.runtime_id, searchbox=False)
     world = World(
@@ -376,7 +377,9 @@ def test_rt03_two_identity_matches_keep_it_pending_and_unread() -> None:
 def test_rt03_a_replaced_top_document_ends_the_pending_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(runner, "auto_proof", lambda *_a, **_k: None)  # not proven; not under test
+    monkeypatch.setattr(
+        runner, "judge", judged_by(lambda *_a, **_k: None)
+    )  # not proven; not under test
     new_doc = dataclasses.replace(PAGE[0], runtime_id=(9, 501))
     replaced = [new_doc, *[e for e in _rerendered() if e.id != PAGE[0].id]]
     world = _composer_world(replaced, {(9, 191): TYPED_VALUE})

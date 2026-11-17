@@ -592,17 +592,28 @@ def window_cover(hwnd: int) -> CoverFacts:  # pragma: no cover - live, Windows o
     monitor's work area. Read-only."""
     user32 = _cover_user32()
     found: list[Rect] = []
+    owners: list[int] = []
     for above in windows_above(_z_order(user32), hwnd):
         rect = _occluding_rect(user32, above)
         if rect is not None:
             found.append(rect)
+            owners.append(_owner(above))
     return CoverFacts(
         minimized=bool(user32.IsIconic(hwnd)),
         cloaked=is_cloaked(hwnd),
         rect=_fit(user32, hwnd, _window_rect(user32, hwnd) or (0, 0, 0, 0)),
         above=tuple(found),
         screen=_virtual_screen(user32),
+        above_pids=tuple(owners),
     )
+
+
+def _owner(hwnd: int) -> int:  # pragma: no cover - live, Windows only
+    """The window's process id, 0 when it cannot be read ([V2.67] C)."""
+    try:
+        return window_pid(hwnd)
+    except OSError:
+        return 0
 
 
 def _virtual_screen(user32: ctypes.WinDLL) -> Rect:  # pragma: no cover - live
@@ -749,6 +760,95 @@ def _cover_user32() -> ctypes.WinDLL:  # pragma: no cover - live, Windows only
     user32.GetMonitorInfoW.argtypes = (wintypes.HMONITOR, ctypes.POINTER(_MonitorInfo))
     user32.GetMonitorInfoW.restype = wintypes.BOOL
     return user32
+
+
+# ---- [V2.64] the nudge's placement reads and writes (our own bound window only) ------------
+
+
+class _WindowPlacement(ctypes.Structure):
+    _fields_ = (
+        ("length", wintypes.UINT),
+        ("flags", wintypes.UINT),
+        ("showCmd", wintypes.UINT),
+        ("ptMinPosition", wintypes.POINT),
+        ("ptMaxPosition", wintypes.POINT),
+        ("rcNormalPosition", wintypes.RECT),
+    )
+
+
+def get_placement(  # pragma: no cover - live, Windows only
+    hwnd: int,
+) -> tuple[int, int, Rect, tuple[int, int], tuple[int, int]]:
+    """GetWindowPlacement: (flags, show command, normal rect, minimised position, maximised
+    position)."""
+    placement = _WindowPlacement()
+    placement.length = ctypes.sizeof(_WindowPlacement)
+    if not ctypes.windll.user32.GetWindowPlacement(hwnd, ctypes.byref(placement)):
+        raise OSError("GetWindowPlacement failed")
+    normal = placement.rcNormalPosition
+    return (
+        int(placement.flags),
+        int(placement.showCmd),
+        (normal.left, normal.top, normal.right, normal.bottom),
+        (placement.ptMinPosition.x, placement.ptMinPosition.y),
+        (placement.ptMaxPosition.x, placement.ptMaxPosition.y),
+    )
+
+
+def set_placement(  # noqa: PLR0913 - one field each  # pragma: no cover - live, Windows only
+    hwnd: int,
+    *,
+    flags: int,
+    show_cmd: int,
+    normal: Rect,
+    min_pos: tuple[int, int],
+    max_pos: tuple[int, int],
+) -> None:
+    """SetWindowPlacement with the saved values and `flags` as given."""
+    placement = _WindowPlacement()
+    placement.length = ctypes.sizeof(_WindowPlacement)
+    placement.flags = flags
+    placement.showCmd = show_cmd
+    placement.ptMinPosition = wintypes.POINT(*min_pos)
+    placement.ptMaxPosition = wintypes.POINT(*max_pos)
+    placement.rcNormalPosition = wintypes.RECT(*normal)
+    if not ctypes.windll.user32.SetWindowPlacement(hwnd, ctypes.byref(placement)):
+        raise OSError("SetWindowPlacement failed")
+
+
+_MONITORINFOF_PRIMARY = 0x1
+"""winuser.h; MONITORINFO.dwFlags "This is the primary display monitor" (learn.microsoft.com,
+ns-winuser-monitorinfo, read 2026-11-15)."""
+
+
+def on_primary_monitor(hwnd: int) -> bool:  # pragma: no cover - live, Windows only
+    """MonitorFromWindow (nearest) then GetMonitorInfoW: whether that monitor is the primary one;
+    an OSError when either read fails. Read-only."""
+    user32 = _cover_user32()
+    monitor = user32.MonitorFromWindow(hwnd, _MONITOR_DEFAULTTONEAREST)
+    if not monitor:
+        raise OSError("MonitorFromWindow failed")
+    info = _MonitorInfo()
+    info.cbSize = ctypes.sizeof(_MonitorInfo)
+    if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        raise OSError("GetMonitorInfoW failed")
+    return bool(info.dwFlags & _MONITORINFOF_PRIMARY)
+
+
+def get_window_rect(hwnd: int) -> Rect:  # pragma: no cover - live, Windows only
+    rect = wintypes.RECT()
+    if not ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        raise OSError("GetWindowRect failed")
+    return (rect.left, rect.top, rect.right, rect.bottom)
+
+
+def set_window_rect(hwnd: int, rect: Rect) -> None:  # pragma: no cover - live, Windows only
+    """SetWindowPos to `rect`: SWP_NOZORDER 0x4 | SWP_NOACTIVATE 0x10."""
+    left, top, right, bottom = rect
+    if not ctypes.windll.user32.SetWindowPos(
+        hwnd, None, left, top, right - left, bottom - top, 0x14
+    ):
+        raise OSError("SetWindowPos failed")
 
 
 # ---- the session's lock state (issue #31) ------------------------------------------------------

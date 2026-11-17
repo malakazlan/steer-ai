@@ -44,7 +44,7 @@ def _system() -> list[str]:
 
 
 def test_the_prompt_version_moved() -> None:
-    assert PROMPT_VERSION == "controller-8"
+    assert PROMPT_VERSION == "controller-14"
 
 
 def test_a_rule_says_param_is_a_subgoal_params_name_never_its_words() -> None:
@@ -75,12 +75,14 @@ def test_the_subgoal_rule_says_what_will_be_true_as_the_person_would_check_it() 
 
 def test_the_prompt_offers_exactly_the_claim_kinds_validate_accepts_for_the_step() -> None:
     """[V2.44] (1)'s rule for verbs, for claim kinds: one table, both ways."""
-    offered = set(json.loads(_system()[1])["$defs"]["Claim"]["properties"]["kind"]["enum"])
+    schema = json.loads(_system()[1])
+    refs = schema["properties"]["claims"]["items"]["oneOf"]  # [V2.65]: a union by kind
+    offered = {
+        schema["$defs"][r["$ref"].rsplit("/", 1)[1]]["properties"]["kind"]["const"] for r in refs
+    }
     accepted = set()
     for kind in get_args(ClaimKind):
         claim: dict[str, Any] = {"subgoal": "s1", "kind": kind, "param": "text"}  # Any: JSON
-        if kind == "state":
-            claim["wanted"] = "on"
         decision = Decision.model_validate({
             "subgoals": [{"id": "s1", "desc": "d", "params": {"text": "red shoes"},
                           "closes": "page"}],
@@ -137,4 +139,4 @@ def test_the_rule_says_a_type_never_gives_both_param_and_text() -> None:
 
 def test_the_rule_says_a_reply_stops_or_asks_never_both() -> None:
     """The [V2.64] eval: 18 of 20 3d-b replies stopped blocked with an ask (`ask_with_stop`)."""
-    assert "A reply either stops or asks, never both." in _system()[0]
+    assert "A reply either stops or asks, never both, and then has no actions." in _system()[0]

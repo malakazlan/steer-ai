@@ -34,6 +34,7 @@ SUB = Subgoal(
     closes="page",
     params={"text": GoalSpan.of(GOAL, START, START + len("red shoes"))},
 )
+STATE_SUB = dataclasses.replace(SUB, closes="state", wanted="on")
 TYPED = ValueFact(filled=True, digest="d:red shoes")
 
 
@@ -58,11 +59,12 @@ def readers(
 
 
 def check(claim: Claim, seen: Observed = SHOWN, **kw: object) -> tuple[str, ...]:
-    return check_claim(claim, SUB, seen, seen, readers=readers(**kw))  # type: ignore[arg-type]  # test kwargs
+    sub = STATE_SUB if claim.kind == "state" else SUB
+    return check_claim(claim, sub, seen, seen, readers=readers(**kw))  # type: ignore[arg-type]  # test kwargs
 
 
-def state(*ids: int, wanted: str = "on") -> Claim:
-    return Claim(subgoal="s1", kind="state", evidence=list(ids), wanted=wanted)  # type: ignore[arg-type]  # a closed literal
+def state(*ids: int) -> Claim:
+    return Claim(subgoal="s1", kind="state", evidence=list(ids))
 
 
 def value(*ids: int) -> Claim:

@@ -2,7 +2,9 @@
 click handler flips aria-selected and shows its panel, and native radios in a fieldset with a
 legend, through the loop with the real semantic executor and live reads. The page writes its own
 state into a status line, so each pass is judged by the page as well as by T1's IsSelected read.
-Semantic UIA only: no input is injected."""
+Semantic UIA only.
+The window is brought to the front first (#205, #439): at most a tagged zero-distance
+mouse move inside `acquire_foreground`."""
 
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ from steerai.orchestrator.loop import Session
 from steerai.orchestrator.trace import ListTrace
 from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome, stop_chrome
 from steerai.probes.uia_snapshot import UiaClient
+from steerai.probes.win_input import acquire_foreground
 from steerai.probes.windows import wait_window_for_pid
 from steerai.world.model import Snapshot, WorldModel
 
@@ -108,6 +111,7 @@ def test_select_picks_a_real_tab_and_a_real_radio(tmp_path: Path) -> None:
         window = wait_window_for_pid(
             proc.pid, title_contains="Google Chrome", image="chrome.exe", process=proc
         )
+        acquire_foreground(window.hwnd)
         client = UiaClient()
         model = WorldModel(client)
         _ready(model, window.hwnd)

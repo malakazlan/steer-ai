@@ -12,7 +12,7 @@ from typing import Final, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
-from steerai.loop2.task import Commit
+from steerai.loop2.task import Commit, Wanted
 from steerai.loop2.text import clean_line, has_control
 
 Verb = Literal[
@@ -89,6 +89,7 @@ ValidateToken = Literal[
     "too_many_subgoals",
     "type_text_and_param",
     "wanted_missing",
+    "wanted_not_state",
     "value_without_param",
     "state_without_param",
     "page_without_param",
@@ -120,8 +121,12 @@ NOT_IN_STEP_VERBS: Final = frozenset(get_args(Verb)) - STEP_VERBS[STEP]
 MAX_ACTIONS = 4
 MAX_SUBGOALS = 5
 MAX_DESC_CHARS = 120
+SUBGOAL_ID_CHARS = 16
+PARAM_NAME_CHARS = 24
 SUBGOAL_ID = re.compile(r"[a-z0-9_]{1,16}")
 PARAM_NAME = re.compile(r"[a-z0-9_]{1,24}")
+"""Literals (a token producer builds no string at runtime); a test pins each bound to its
+`*_CHARS` constant, which the prompt's schema states."""
 """[V2.47]: a param name is closed at intake: lowercase letters, digits and underscore, at most
 24 characters (subgoal ids: the same alphabet, at most 16, `SUBGOAL_ID`)."""
 STEP_KINDS: Final[Mapping[int, frozenset[str]]] = {
@@ -144,6 +149,8 @@ class SubgoalDoc(_Strict):
     """[V2.39] the kind of fact that closes it, declared at intake and frozen with it."""
     params: dict[str, str] = Field(default_factory=dict)
     commit: Commit = "none"
+    wanted: Wanted | None = None
+    """[V2.78] required when it closes with a state, refused on any other kind."""
 
 
 class ActionDoc(_Strict):
@@ -162,8 +169,11 @@ class Claim(_Strict):
     kind: ClaimKind
     evidence: list[StrictInt] = Field(default_factory=list)
     param: str | None = None
-    wanted: Literal["on", "off", "selected", "expanded", "collapsed"] | None = None
     answer: str | None = None
+
+
+Stop = Literal["cannot", "blocked"]
+"""A Decision's stop: the closed set the runner's `_stopped` and the turn trace share."""
 
 
 class Decision(_Strict):
@@ -171,7 +181,7 @@ class Decision(_Strict):
     claims: list[Claim] = Field(default_factory=list)
     actions: list[ActionDoc] = Field(default_factory=list)
     ask: str | None = None
-    stop: Literal["cannot", "blocked"] | None = None
+    stop: Stop | None = None
 
 
 def _action_tokens(
@@ -227,8 +237,6 @@ def _claim_tokens(
         tokens.append("param_unknown")
     if claim.kind == "value" and claim.param is None:
         tokens.append("param_missing")
-    if claim.kind == "state" and claim.wanted is None:
-        tokens.append("wanted_missing")
     return tokens
 
 
@@ -243,6 +251,10 @@ def _subgoal_doc_tokens(sub: SubgoalDoc, goal: str, fences: frozenset[str]) -> l
         tokens.append("param_name_bad")
     if any(not value or value not in goal for value in sub.params.values()):
         tokens.append("param_not_span")
+    if sub.closes == "state" and sub.wanted is None:
+        tokens.append("wanted_missing")  # [V2.78]: declared before acting, never at the claim
+    if sub.closes != "state" and sub.wanted is not None:
+        tokens.append("wanted_not_state")
     if not sub.params:
         # [V2.39], [V2.40] Q7: every closing kind proves params (page_without_param,
         # value_without_param, state_without_param); with none it could never close

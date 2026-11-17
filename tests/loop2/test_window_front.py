@@ -189,7 +189,7 @@ def _world_ports(screen: Screen, clock: Clock, cover: Callable[[], str | None]) 
     return ports
 
 
-@pytest.mark.parametrize("token", ["covered", "minimized", "cloaked", "cover_unread"])
+@pytest.mark.parametrize("token", ["covered", "minimized", "cloaked", "unread"])
 def test_a_covered_window_ends_the_observe_before_any_read(token: str) -> None:
     clock = Clock()
     screen = Screen(observed(), clock)
@@ -353,19 +353,23 @@ def test_a_window_still_not_in_front_after_the_acquire_never_starts() -> None:
 
 
 @pytest.mark.parametrize(
-    "facts",
+    ("facts", "detail"),
     [
-        COVERED,
-        dataclasses.replace(COVERED, minimized=True, above=()),
-        dataclasses.replace(COVERED, cloaked=None, above=()),
+        (COVERED, "window_covered"),
+        (dataclasses.replace(COVERED, minimized=True, above=()), "window_minimized"),
+        (dataclasses.replace(COVERED, cloaked=True, above=()), "window_cloaked"),
+        (dataclasses.replace(COVERED, cloaked=None, above=()), "cover_unread"),
     ],
-    ids=["covered", "minimized", "cloak_unread"],
+    ids=["covered", "minimized", "cloaked", "cloak_unread"],
 )
-def test_a_window_in_front_but_covered_or_hidden_never_starts(facts: CoverFacts) -> None:
+def test_a_window_in_front_but_covered_or_hidden_never_starts(
+    facts: CoverFacts, detail: str
+) -> None:
+    """[V2.67] C: each cover its own detail; unread is never reported as cloaked."""
     platform = _platform()
     platform.cover = facts
     refused = _refusal(_config(), platform)
-    assert (refused.code, refused.message) == (ErrorCode.FOCUS_LOST, "window_covered")
+    assert (refused.code, refused.message) == (ErrorCode.FOCUS_LOST, detail)
 
 
 def test_a_cover_read_that_fails_is_a_cover() -> None:
@@ -374,7 +378,29 @@ def test_a_cover_read_that_fails_is_a_cover() -> None:
             raise OSError(f"no read of {hwnd}")
 
     refused = _refusal(_config(), Unreadable())
-    assert refused.message == "window_covered"
+    assert refused.message == "cover_unread"
+
+
+def test_a_cover_refusal_reports_the_windows_above_ours_or_not() -> None:
+    """[V2.67] C: closed facts only (the cover's token, how many windows were above it and how
+    many were ours) on the clear trace and in the world's report; never an image name."""
+    platform = _platform()
+    platform.cover = dataclasses.replace(COVERED, above=COVERED.above * 2, above_pids=(4242, 99))
+    config = _config(bound_pid=4242)
+    world = LiveWorld(config, platform)
+    try:
+        with pytest.raises(SteerError):
+            world.bring_to_front()
+    finally:
+        world.close()
+    report = world.report()
+    assert (report["cover"], report["cover_above"], report["cover_above_ours"]) == (
+        "covered", 2, 1,
+    )  # fmt: skip
+    lines = config.trace.lines  # type: ignore[attr-defined]  # a ListTrace
+    assert any('"event": "cover"' in line and '"above_ours": 1' in line for line in lines)
+    assert not any(".exe" in line for line in lines)
+    assert platform.images_read == []  # names are read only at the debug level
 
 
 def test_a_window_covered_after_the_start_ends_the_task_at_its_first_observe() -> None:
@@ -434,3 +460,50 @@ def test_a_kill_is_read_before_the_cover_so_it_counts_as_a_kill() -> None:
     assert str(stopped.value) == "killed"
     with pytest.raises(PortInterrupted):
         ports.settle(observed(), 10.0)
+
+
+def test_the_images_above_go_only_to_the_debug_trace(tmp_path: Path) -> None:
+    """[V2.67] C: at level `debug` the image names of the windows above are kept, through DPAPI
+    (the debug file), never on the clear trace."""
+    platform = _platform()
+    platform.cover = dataclasses.replace(COVERED, above=COVERED.above * 2, above_pids=(4242, 99))
+    config = _config(trace_level="debug", debug_path=tmp_path / "d.dpapi", bound_pid=4242)
+    world = LiveWorld(config, platform)
+    try:
+        with pytest.raises(SteerError):
+            world.bring_to_front()
+    finally:
+        world.close()
+    assert platform.images_read == [4242, 99]
+    assert any(b"chrome.exe" in blob for blob in platform.protected)
+    assert not any(".exe" in line for line in config.trace.lines)  # type: ignore[attr-defined]
+
+
+def test_every_cover_detail_is_a_closed_start_detail() -> None:
+    """#442 review: a start refused for a cover keeps its detail in the report's cause split."""
+    from steerai.errors import START_DETAILS  # noqa: PLC0415
+    from steerai.loop2.live_world import COVER_DETAILS  # noqa: PLC0415
+
+    assert set(COVER_DETAILS.values()) <= START_DETAILS
+
+
+def test_a_debug_record_that_fails_to_build_is_reported_never_raised(tmp_path: Path) -> None:
+    """#442 review: reading the images above for the debug trace is guarded (the sink's own
+    `capture`): a read that raises becomes the debug failure token, the start refusal stands."""
+
+    class Failing(Platform):
+        def process_image(self, pid: int) -> str:
+            raise RuntimeError(f"no image for {pid}")
+
+    platform = Failing()
+    platform.fake_input = _platform().fake_input
+    platform.cover = dataclasses.replace(COVERED, above=COVERED.above * 2, above_pids=(4242, 99))
+    config = _config(trace_level="debug", debug_path=tmp_path / "d.dpapi", bound_pid=4242)
+    world = LiveWorld(config, platform)
+    try:
+        with pytest.raises(SteerError) as refused:
+            world.bring_to_front()
+    finally:
+        world.close()
+    assert refused.value.message == "window_covered"
+    assert world.report()["debug_failure"] == "build_failed"

@@ -31,6 +31,7 @@ from tests.loop2.world_fakes import (
     act,
     decision,
     element,
+    judged_by,
     observed,
     report,
     task,
@@ -55,7 +56,8 @@ def test_the_prompt_asks_for_the_closing_kind_generically() -> None:
     """Each closing kind is named and described generically ([V2.64] One: the page kind
     describes the request, not what the step can prove), naming no task."""
     assert "closes" in SYSTEM_RULES
-    for kind in ("value (a field holds the text)", "state (an element is in a state)",
+    for kind in ("value (a field holds the text)",
+                 "state (an element is in a state; declare `wanted` with it",
                  "page: the page shows the result the request asks for"):  # fmt: skip
         assert kind in SYSTEM_RULES
 
@@ -96,7 +98,7 @@ def test_the_auto_proof_never_closes_a_value_subgoal(monkeypatch: pytest.MonkeyP
         calls.append(1)
         return "title"
 
-    monkeypatch.setattr(runner, "auto_proof", proven)
+    monkeypatch.setattr(runner, "judge", judged_by(proven))
     moved = dataclasses.replace(
         observed(), url=URL + "?q=red%20shoes", document_url=URL + "?q=red%20shoes"
     )
@@ -276,10 +278,9 @@ def test_a_value_subgoal_without_a_param_is_refused_into_the_repair_turn() -> No
 def _ticks(boxes: list[Element], cites: list[tuple[int, str]], spans: dict[str, str]) -> World:
     """A state subgoal over `spans`; each turn cites one (element id, param) as on."""
     on: Literal["on"] = "on"
-    subs = [SubgoalDoc(id="s1", desc="tick", params=spans, closes="state")]
+    subs = [SubgoalDoc(id="s1", desc="tick", params=spans, closes="state", wanted="on")]
     claims = [
-        Claim(subgoal="s1", kind="state", evidence=[eid], param=param, wanted=on)
-        for eid, param in cites
+        Claim(subgoal="s1", kind="state", evidence=[eid], param=param) for eid, param in cites
     ]
     turns = [Decision(subgoals=subs, claims=claims[:1])]
     turns += [Decision(claims=[claim]) for claim in claims[1:]]
@@ -337,20 +338,20 @@ def _renamed_world(*, renamed: bool) -> World:
     on: Literal["on"] = "on"
     red = element(42, "CheckBox", "Red", (9, 42), 1)
     shoes = element(43, "CheckBox", "Shoes", (9, 43), 1)
-    subs = [SubgoalDoc(id="s1", desc="tick", params={"a": "red", "b": "shoes"}, closes="state")]
+    subs = [
+        SubgoalDoc(
+            id="s1", desc="tick", params={"a": "red", "b": "shoes"}, closes="state", wanted="on"
+        )
+    ]
     after = [dataclasses.replace(red, name="Blue") if renamed else red, shoes]
     world = World(
         [
             Decision(
                 subgoals=subs,
-                claims=[Claim(subgoal="s1", kind="state", evidence=[red.id], param="a", wanted=on)],
+                claims=[Claim(subgoal="s1", kind="state", evidence=[red.id], param="a")],
             ),
             Decision(actions=[act("click", target=MENU.id)]),
-            Decision(
-                claims=[
-                    Claim(subgoal="s1", kind="state", evidence=[shoes.id], param="b", wanted=on)
-                ]
-            ),
+            Decision(claims=[Claim(subgoal="s1", kind="state", evidence=[shoes.id], param="b")]),
         ],
         effects=[report("content_changed")],
         screen=observed([*PAGE, red, shoes]),
@@ -371,7 +372,9 @@ def test_a_proven_element_renamed_away_from_its_words_does_not_close() -> None:
 
 
 def test_a_state_subgoal_without_a_param_is_refused_into_the_repair_turn() -> None:
-    bare = Decision(subgoals=[SubgoalDoc(id="s1", desc="tick", closes="state")], stop="cannot")
+    bare = Decision(
+        subgoals=[SubgoalDoc(id="s1", desc="tick", closes="state", wanted="on")], stop="cannot"
+    )
     assert "state_without_param" in validate(
         bare, listed_ids=frozenset(), goal=GOAL, first_turn=True
     )
@@ -414,19 +417,48 @@ def test_the_file_start_is_the_documents_address_not_the_bar() -> None:
     assert run_task(task(), _file_start(FILE, URL).ports()).status != "done"
 
 
-def test_the_auto_proof_never_closes_a_commit_subgoal() -> None:
-    """An undeclared action on a commit subgoal sets its baseline, so the auto proof reaches it;
-    `_tick` refuses (RT-06)."""
-    subs = [
-        SubgoalDoc(
-            id="s1", desc="search", params={"text": "red shoes"}, closes="page", commit="submit"
-        )
-    ]
-    world = World(
-        [Decision(subgoals=subs, actions=[act("click", target=GO.id)])],
+def _commit_world(*decisions: Decision) -> World:
+    return World(
+        list(decisions),
         effects=[report("navigated")],
         later=page([], url=URL + "?q=red%20shoes", title="red shoes"),
     )
+
+
+COMMIT_SUB = SubgoalDoc(
+    id="s1", desc="search", params={"text": "red shoes"}, closes="page", commit="submit"
+)
+
+
+def test_the_auto_proof_skips_a_commit_subgoal() -> None:
+    """[V2.72], #474: the auto proof reaches every open page subgoal, but a commit subgoal
+    closes only in the strict tier (step 4); the auto path skips it, so a claim the model never
+    made is neither refused with `standard_only` nor a strike."""
+    world = _commit_world(Decision(subgoals=[COMMIT_SUB], actions=[act("click", target=GO.id)]))
+    outcome = run_task(task(), world.ports())
+    assert outcome.status != "done"
+    assert "claim:s1:standard_only" not in [t for v in world.views for t in v.history]
+    assert outcome.strikes == ()
+
+
+def test_the_auto_proof_writes_no_claim_line_at_all() -> None:
+    """[V2.74]: an auto proof attempt is code's own act; it never yields a `claim:` refusal on
+    any subgoal, and a plain page subgoal beside a commit one still closes by it."""
+    plain = SubgoalDoc(id="s2", desc="results", params={"text": "red shoes"}, closes="page")
+    world = _commit_world(
+        Decision(subgoals=[COMMIT_SUB, plain], actions=[act("click", target=GO.id)])
+    )
+    outcome = run_task(task(), world.ports())
+    seen = [t for v in world.views for t in v.history]
+    assert not [t for t in seen if t.startswith("claim:")]
+    assert "proven:s2:title" in seen
+    assert outcome.strikes == ()
+
+
+def test_a_model_claim_on_a_commit_subgoal_is_still_standard_only() -> None:
+    """RT-06 holds for a claim the model made: refused, never closed in step 3."""
+    claim = Claim(subgoal="s1", kind="navigated")
+    world = _commit_world(Decision(subgoals=[COMMIT_SUB], claims=[claim]))
     outcome = run_task(task(), world.ports())
     assert outcome.status != "done"
     assert "claim:s1:standard_only" in [t for v in world.views for t in v.history]
@@ -447,8 +479,8 @@ def test_a_proven_state_that_now_reads_unread_is_not_true() -> None:
 def test_a_state_claim_without_a_param_on_a_two_param_subgoal_is_param_missing() -> None:
     """[V2.40] Q7: no first-param guess; the claim must name its param."""
     spans = {"name": "Ada", "city": "Rome"}
-    subs = [SubgoalDoc(id="s1", desc="tick", params=spans, closes="state")]
-    claim = Claim(subgoal="s1", kind="state", evidence=[ADA.id], wanted="on")
+    subs = [SubgoalDoc(id="s1", desc="tick", params=spans, closes="state", wanted="on")]
+    claim = Claim(subgoal="s1", kind="state", evidence=[ADA.id])
     world = World([Decision(subgoals=subs, claims=[claim])], screen=observed([*PAGE, ADA, ROME]))
     world.states[(ADA.runtime_id, "on")] = True
     run_task(_fill_task(), world.ports())  # type: ignore[arg-type]  # a Task

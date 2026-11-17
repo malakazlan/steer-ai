@@ -27,7 +27,7 @@ real input through the child; only in a window the coordinator has cleared with 
 from __future__ import annotations
 
 import argparse
-import contextlib
+import base64
 import json
 import math
 import subprocess
@@ -39,15 +39,27 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Literal, Protocol, get_args
 
+from steerai.errors import START_DETAILS, ErrorCode
 from steerai.loop2.guards import StrikeReason
 from steerai.loop2.history import REFUSAL_TOKENS
-from steerai.loop2.loop import PARENT_KINDS, URL_READS
+from steerai.loop2.loop import (
+    AUDIT_COUNTS,
+    INTAKE_COUNTS,
+    PARENT_KINDS,
+    REASON_TOKEN,
+    URL_READS,
+    RunnerAuditReason,
+    SufficiencyReason,
+)
 from steerai.loop2.stage1_expected import LARGE_TASKS, Expected, large_expected
+from steerai.orchestrator.contracts import RISKS
 from steerai.probes.gallery_page import large_passes, parse_large_log
 from steerai.probes.process_tree import Sample, summarize
 from steerai.probes.task_suite import GALLERY, h2_event
 
-Expect = Literal["done", "blocked", "never_done", "not_done"]
+Expect = Literal["done", "blocked", "never_done", "not_done", "unrated"]
+"""`unrated` ([V2.65] (2)): a task held for the lead's ruling still runs and still meets the hard
+bar (false_done, no dispatch at R2 or above); only its expected outcome is not checked."""
 Verdict = Literal["pass", "fail", "false_done", "void", "monitor_lost"]
 Json = Mapping[str, Any]  # Any: a JSON object from the child's final line
 
@@ -114,13 +126,24 @@ class StageTask:
     expect: Expect
     enters: int | None = None
     """When set, exactly this many Enter presses must reach the page (c-nobutton: 1)."""
+    max_enters: int | None = None
+    """[V2.67] When set, at most this many Enter presses may reach the page (d: zero or one;
+    whether the Enter is sent depends on timing, both paths are correct, never two)."""
     never_reason: str | None = None
     """When set, the run's reason must never be this one (c-nobutton: `unexpected_effect`)."""
     reason: str | None = None
-    """#366 P4: when set, the run's reason must be this one (c-nobutton: `no_progress`, the
-    runner's guard; a gallery row expected blocked: `commit_not_in_step`)."""
+    """#366 P4: when set, the run's reason must be this one (a gallery row expected blocked:
+    `commit_not_in_step`)."""
+    reasons: frozenset[str] = frozenset()
+    """[V2.67] B: when set, the run's reason must be one of these (c-nobutton's endings)."""
 
 
+NOBUTTON_REASONS: Final = frozenset(
+    {"no_progress", "controller_stop", "after_refusal:press_not_at_focus"}
+)
+"""[V2.67] B: the closed endings c-nobutton may reach without acting further: the runner's
+no-progress guard, the controller's own stop, or a press refused after its Enter (measured
+2026-11-15: 3 of 3 runs ended on the last two)."""
 THREE_D_GOAL: Final = "search the catalog for red shoes"
 THREE_D: Final = (
     StageTask("3d-a", THREE_D_GOAL, "3d", "/a", "done"),
@@ -134,12 +157,13 @@ THREE_D: Final = (
         "not_done",
         enters=1,
         never_reason="unexpected_effect",
-        reason="no_progress",
+        reasons=NOBUTTON_REASONS,
     ),
-    StageTask("3d-d", THREE_D_GOAL, "3d", "/d", "done"),
+    StageTask("3d-d", THREE_D_GOAL, "3d", "/d", "done", max_enters=1),
 )
-"""§12's expected step-3 outcomes for the 3d variants (a, c-button, d done; b never done;
-c-nobutton not done with exactly one Enter, never `unexpected_effect`)."""
+"""The expected step-3 outcomes for the 3d variants (§12): a, c-button and d done; b never done;
+c-nobutton not done with exactly one Enter, never `unexpected_effect`, ending on one of
+`NOBUTTON_REASONS` ([V2.67] B); d with zero or one Enter, never two ([V2.67])."""
 
 GALLERY_PAGE: Final = "/page.html"
 SETS: Final = ("3d", "gallery", "large")
@@ -183,6 +207,35 @@ def tasks_for(name: str, expected: Mapping[str, Expected]) -> tuple[StageTask, .
     raise ValueError(f"unknown set: {name}")
 
 
+MTA_COMPARABILITY: Final[Mapping[str, Any]] = {  # Any: JSON values
+    "status": "closed",
+    "ruling": "[V2.65] Four",
+    "asked_by": "[V2.64] Four",
+    "probe": "probes.mta_act, 2026-11-15: v1's Session on the gallery's 11 widget rows, 3 runs "
+    "per arm, its UIA client in the STA and forced into the MTA",
+    "steps_ok": {"sta": "30/33", "mta": "30/33"},
+    "trusted_in_every_run": 10,
+    "differ": [],
+    "g12": "explained: the probe's executor had no option source (#406, #414)",
+    "artefact": "D:/steerai-data/probes/2026-11-15/mta_act.json",
+    "artefact_summary": "local only, not in the repo; its summary verbatim in PR #400's body",
+    "artefact_sha256": "02f8e6d1cbcfca359ecc8aa3ea143faab455d6b8c2d3975eaeea6527c9667e8a",
+}
+"""[V2.64] Four, closed by [V2.65] Four: v1's executors behave the same in both apartments, so
+the stage 1 report states executor behaviour under the MTA as compared, not as unseparated."""
+
+
+def report_header(name: str, *, runs: int) -> dict[str, Any]:  # Any: JSON values
+    """The stage 1 report's first row: the set (a shakedown below `MIN_RUNS_PER_TASK` says so),
+    the runs per task, the floor the runs start on and the MTA comparability statement."""
+    return {
+        "set": name if runs >= MIN_RUNS_PER_TASK else f"{name}-shakedown",
+        "runs_per_task": runs,
+        "floor_mb": STAGE1_FLOOR_MB,
+        "mta_comparability": dict(MTA_COMPARABILITY),
+    }
+
+
 def page_check(task: StageTask, raw: str) -> bool:
     """The page's own pass check on its log as read over DevTools; shares no code with the v2
     loop or the verifier. Gallery: the one trusted event the row expects (v1's suite check);
@@ -195,6 +248,13 @@ def page_check(task: StageTask, raw: str) -> bool:
             if large.task_id == task.task_id:
                 return large_passes(large.task_id, parse_large_log(raw))
     raise ValueError(f"no page check for {task.fixture} task {task.task_id}")
+
+
+CHROME_LOST: Final = "chrome_lost"
+"""#459: the run's own Chrome went away under the harness (its DevTools connection closed). With
+no done claimed it is an infrastructure void, re-run within the bound and counted toward the
+1-in-10 void limit; a done it leaves unread fails closed as `done_log_unread:chrome_lost`. The
+same token as `chrome_a11y.CHROME_LOST`, which a test pins."""
 
 
 @dataclass(frozen=True)
@@ -218,6 +278,10 @@ class RunRecord:
     """[V2.63]: the working-set sampler's summary over the child's run (`run_sampled`)."""
     loss_watch: LossVerdict | None = None
     """[V2.64] Two: the child's `loss_watch` line after a declared monitor loss; None: none."""
+    kill_failure: str | None = None
+    """#431: the cap's kill did not end the child (`ChildRun.kill_failure`)."""
+    lost: str | None = None
+    """#459: the run's own Chrome went away under the harness (`CHROME_LOST`); None when not."""
 
 
 @dataclass(frozen=True)
@@ -247,23 +311,35 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
     if not record.fixture_ok:
         return verdict("void", "fixture_failed_before_start")
     if record.killed:
-        return verdict("fail", "cap_killed")
+        failure = record.kill_failure
+        return verdict("fail", "cap_killed" if failure is None else f"cap_killed:{failure}")
     final = record.final
     if final is None or final.get("status") not in STATUSES:  # #366 E2: the CLI's own line
         return verdict("fail", "no_final_line")
     if final.get("detail") == "internal_error" or final.get("reason") in INTERNAL:
         return verdict("fail", "internal")
-    if final.get("status") == "error":
-        return verdict("fail", f"start_refused:{final.get('detail')}")
-    if not isinstance(final.get("used"), Mapping):  # LiveWorld refused to start: no use at all
-        return verdict("fail", f"start_refused:{final.get('code')}")
+    # [V2.67] C: a run that never began cannot be scored: an infrastructure void, its cause
+    # split in the report and counted toward the 1-in-10 void limit (supersedes the fail rule)
+    if not _started(final):  # refused before the task began: no use at all
+        return verdict("void", _refused_start(final))
+    if final.get("status") == "error":  # #438: an error after the task began stays Steer's
+        return verdict("fail", "error_after_start")
     status, reason = final.get("status"), final.get("reason")
+    if record.lost is not None:  # #459: the browser went away under the harness
+        # a done that cannot be checked is where a false done would hide: it fails closed,
+        # its cause kept; anything else is the machine's, a void (the coordinator's ruling)
+        if status == "done":
+            return verdict("fail", f"done_log_unread:{record.lost}")
+        return verdict("void", record.lost)
     if status == "done":  # done is never void and never hidden behind a lost monitor
         if not record.log_read:
             return verdict("fail", "done_log_unread")
         if record.check is not True:
             return verdict("false_done", reason)
     if record.log_read and task.enters is not None and record.enters != task.enters:
+        return verdict("fail", f"enters:{record.enters}")
+    over = task.max_enters is not None and (record.enters or 0) > task.max_enters
+    if record.log_read and over:
         return verdict("fail", f"enters:{record.enters}")
     if final.get("monitor_lost") is True:
         return verdict("monitor_lost", "monitor_lost")
@@ -276,15 +352,37 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
         )
     if task.never_reason is not None and reason == task.never_reason:
         return verdict("fail", f"reason:{reason}")
-    if task.reason is not None and reason != task.reason:
+    if task.reason is not None and not reason_matches(task.reason, reason):
+        return verdict("fail", f"reason:{reason}")
+    if task.reasons and not any(reason_matches(r, reason) for r in task.reasons):
         return verdict("fail", f"reason:{reason}")
     met = {
         "done": status == "done",
         "blocked": status == "blocked",
         "never_done": status != "done",
         "not_done": status != "done",
+        "unrated": True,  # any ending; a false done was caught above
     }[task.expect]
     return verdict("pass") if met else verdict("fail", f"expected_{task.expect}:{status}:{reason}")
+
+
+REASON_CAP: Final = 80
+"""A start refusal's reason, code and detail, cut to this many characters."""
+
+
+def _refused_start(final: Json) -> str:
+    """A refused start's reason: `start_refused:<code>` and its detail when it has one, as the
+    child wrote them (the report keeps closed values only: `_closed_reason`)."""
+    detail = final.get("detail")
+    named = f":{detail}" if isinstance(detail, str) and detail else ""
+    return f"start_refused:{final.get('code')}{named}"[:REASON_CAP]
+
+
+def _started(final: Json | None) -> bool:
+    """The child's line is a task's own (it has a `used` block): its world started. A start
+    refusal ([V2.62]: the session, the window, the page) has none: an infrastructure void
+    ([V2.67] C), never counted under a gate that reads a run's use."""
+    return final is not None and isinstance(final.get("used"), Mapping)
 
 
 def _actions(final: Json) -> int | None:
@@ -342,14 +440,21 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
         if k in site_ids and k not in failed and len(vs) < runs_per_task
     ]
     infra = verdicts["void"] - len(site)
-    measured = {k: vs for k, vs in scored.items() if k not in unmeasured}
-    counted = [r for r in runs if r.final is not None and r.final.get("status") != "error"]
+    held = {t.task_id for t in tasks if t.expect == "unrated"}  # [V2.65] (2): not exempt
+    measured = {k: vs for k, vs in scored.items() if k not in unmeasured and k not in held}
+    counted = [
+        r
+        for r in runs
+        if r.final is not None and _started(r.final) and r.final.get("status") != "error"
+    ]
     large_ids = {t.task_id for t in tasks if t.fixture == "large"}
     finals = [r.final for r in counted if r.final is not None]
     gates = {
         "controls": controls is None or (controls[1] > 0 and controls[0] == controls[1]),
         "tasks": all(vs.count("pass") == runs_per_task == len(vs) for vs in measured.values()),
         "false_done": verdicts["false_done"] == 0,
+        # [V2.65] (2): the step 3 invariant over every run, unrated tasks' too; unread fails
+        "no_r2_dispatch": not any(_r2_dispatched(r) for r in runs),
         # a run not started was not Steer's either: it counts with the voids ([V2.41])
         "void": (infra + not_started) * 10 <= total - len(site) + not_started,
         "monitor_lost": verdicts["monitor_lost"] * 10 <= total,
@@ -379,6 +484,18 @@ def accept(  # noqa: PLR0913 - the runs and every keyword-only count the gates r
         },
         "valid_tasks": valid,
         "site_invalid_tasks": unmeasured,
+        "unrated_tasks": sorted(held),
+        # #419: a gate failure on an unread count shows the run's own reason beside it
+        "no_r2_dispatch_failures": [
+            {
+                "task": r.task_id,
+                "run": r.run,
+                "reason": _closed_reason(r.reason),
+                "counts": _counts_state(r),
+            }
+            for r in runs
+            if _r2_dispatched(r)
+        ],
     }
     kept = total - len(site)
     report["void_rate"] = round(infra / kept, 3) if kept else None  # infrastructure only
@@ -419,6 +536,85 @@ def _listed_when_acted(final: Json | None) -> bool:
             if not listed:
                 return False
     return acted_any or final is None or final.get("status") != "done"
+
+
+def _r2_dispatched(run: Classified) -> bool:
+    """[V2.65] (2), every run (#413 blocker 2): the run dispatched an action at R2 or above, or
+    what it dispatched is unread: fail closed. Only a void with no line (the child never ran: a
+    fixture or start void) and a refused start (a void whose line has no use: the run never
+    began) dispatched nothing; any other line, an internal error's among them, is checked."""
+    final = run.final
+    if run.verdict == "void" and (final is None or not _started(final)):
+        return False
+    counts = None if final is None else final.get("dispatch_risks")
+    if not isinstance(counts, Mapping):
+        return True
+    exact = {r: counts.get(r) for r in RISKS}  # #413 blocker 3: exact non-negative ints
+    if not all(type(n) is int and n >= 0 for n in exact.values()):
+        return True
+    return any(exact[r] != 0 for r in RISKS[RISKS.index("R2") :])
+
+
+def _closed_reason(reason: str | None) -> str | None:  # noqa: PLR0911 - one return per field
+    """#428 (2): a run's reason as closed tokens only. A reason that carries a field of the
+    child's own line keeps it only when it is one of the closed values that field can hold (an
+    error code, a count, a status, a reason token); anything else is `other`, so no page text
+    can reach the report."""
+    if reason is None or ":" not in reason:
+        return reason
+    head, _, tail = reason.partition(":")
+    if head == "start_refused":
+        code, sep, detail = tail.partition(":")
+        if not sep:
+            return reason if tail in _START_DETAILS else f"{head}:other"
+        kept_code = code if code in _START_CODES else "other"
+        kept_detail = detail if detail in START_DETAILS else "other"
+        return f"{head}:{kept_code}:{kept_detail}"
+    if head == "enters":
+        return reason if tail.isdigit() or tail == "None" else f"{head}:other"
+    if head == "done_log_unread":
+        return reason if tail == CHROME_LOST else f"{head}:other"
+    if head == "reason":
+        return reason if _token(tail) else f"{head}:other"
+    if head.startswith("expected_"):
+        status, _, why = tail.partition(":")
+        closed = status in STATUSES and (why == "None" or _token(why))
+        return reason if closed else f"{head}:other"
+    return "other"
+
+
+def _token(text: str) -> bool:
+    """A run's reason: a token, `after_refusal:<token>`, or `<class>:<token>` ([V2.70])."""
+    parts = text.removeprefix("after_refusal:").split(":")
+    return len(parts) <= 2 and all(REASON_TOKEN.fullmatch(p) is not None for p in parts)
+
+
+def reason_matches(expected: str, got: object) -> bool:
+    """[V2.70]: an expected ending scored by its reason class. Only `no_progress` has a class
+    (its single cause, [V2.69] Two, is diagnostic detail): it matches `no_progress` and any
+    `no_progress:<token>`. Every other expectation matches only itself (#460 review)."""
+    if not isinstance(got, str):
+        return False
+    return got == expected or (expected == "no_progress" and got.startswith("no_progress:"))
+
+
+_START_CODES: Final = frozenset({c.value for c in ErrorCode} | {"None"})
+"""#438: the codes a refused start's line may carry: an error code, or none."""
+_START_DETAILS: Final = frozenset(
+    {c.value for c in ErrorCode} | START_DETAILS | {"internal_error", "None"}
+)
+"""The values a refused start's line carries that the report keeps: its code, a closed detail
+the emitters share (`errors.START_DETAILS`, #429), or the CLI's own internal-error token."""
+
+
+def _counts_state(run: Classified) -> str:
+    """Why a run failed `no_r2_dispatch`: its counts were unread, or it dispatched at R2+."""
+    counts = None if run.final is None else run.final.get("dispatch_risks")
+    if not isinstance(counts, Mapping):
+        return "unread"
+    if not all(type(counts.get(r)) is int and counts.get(r, -1) >= 0 for r in RISKS):
+        return "unread"
+    return "r2_dispatched"
 
 
 def _cache_spent(final: Json | None) -> bool:
@@ -467,10 +663,18 @@ OUTCOME_COUNTS: Final = (
     "toggles_settled_on_reread",
     "fields_not_empty",
     "not_own_text",
+    "evidence_taken",
+    "rebased_open",
+    "rebased_open_commit",
     "target_changes",
     "focus_losses",
     "history_dropped",
+    "turn_trace_dropped",
+    "turn_trace_errors",
     "pre_task_draft_clicks",
+    *AUDIT_COUNTS,
+    *INTAKE_COUNTS,
+    "saved_calls",
 )
 """[V2.63]: the final line's `counts` block, summed over the runs (its `submit_parents` by
 `PARENT_KINDS`)."""
@@ -735,10 +939,62 @@ def _report(
             )
             for kind in ("slow", "gone", "unknown")
         },
-        "fail_reasons": _counts(r.reason for r in runs if r.verdict == "fail"),
+        "fail_reasons": _counts(_closed_reason(r.reason) for r in runs if r.verdict == "fail"),
+        "void_causes": _counts(_closed_reason(r.reason) for r in runs if r.verdict == "void"),
+        "audit": _audits(finals),
+        "start_nudge": _start_nudges(finals),
         **_watch_deadlines(finals),
         **_run_facts(finals),
     }
+
+
+NUDGE_KINDS: Final = ("move1px", "minrestore")
+
+
+def _start_nudges(finals: Sequence[Json]) -> dict[str, int]:
+    """[V2.64] Three: how many runs' starts needed the one nudge, by kind, from the final
+    line's `world` block; `none` when the start needed none, `unread` when the block or the
+    key is missing or not a known kind."""
+    counts = dict.fromkeys((*NUDGE_KINDS, "none", "unread"), 0)
+    for final in finals:
+        world = final.get("world")
+        if not isinstance(world, Mapping) or "front_nudged" not in world:
+            counts["unread"] += 1
+            continue
+        kind = world["front_nudged"]
+        key = "none" if kind is None else kind if kind in NUDGE_KINDS else "unread"
+        counts[key] += 1
+    return counts
+
+
+AUDIT_RESULTS: Final = ("allowed", "vetoed", "failed")
+AUDIT_REASONS: Final = frozenset({*get_args(SufficiencyReason), *get_args(RunnerAuditReason)})
+"""#425 (3): the closed audit reasons (the controller's verdicts and the runner's failures); any
+other text is counted as `other`, so a model's words never become report keys."""
+
+
+def _audits(finals: Sequence[Json]) -> dict[str, Any]:  # Any: JSON figures
+    """[V2.64] One: the final audits over the runs: how many ran, by result and by reason. A
+    block that is missing or of another shape is counted in `incomplete`, never guessed."""
+    ran = incomplete = 0
+    results: dict[str, int] = {}
+    reasons: dict[str, int] = {}
+    for final in finals:
+        block = final.get("audit")
+        if not isinstance(block, Mapping) or not isinstance(block.get("ran"), bool):
+            incomplete += 1
+            continue
+        if not block["ran"]:
+            continue
+        result, reason = block.get("result"), block.get("reason")
+        if result not in AUDIT_RESULTS or not isinstance(reason, str):
+            incomplete += 1
+            continue
+        ran += 1
+        results[result] = results.get(result, 0) + 1
+        key = reason if reason in AUDIT_REASONS else "other"
+        reasons[key] = reasons.get(key, 0) + 1
+    return {"ran": ran, "result": results, "reason": reasons, "incomplete": incomplete}
 
 
 def _number(final: Json, outer: str, key: str) -> float | None:
@@ -950,6 +1206,9 @@ class ChildRun:
     killed: bool
     code: int | None
     loss_watch: LossVerdict | None = None
+    kill_failure: str | None = None
+    """#431: why the kill did not end the child (`kill_failed:<code>`, `kill_timeout`,
+    `kill_raised:<type>`, `child_survived`); None when it did, or no kill was needed."""
 
 
 def child_argv(task: StageTask, *, hwnd: int, price: Path, trace: Path) -> list[str]:
@@ -966,24 +1225,52 @@ def run_child(
     cap_s: float,
     out: Path,
     start: Callable[[list[str], Path], Child],
-    kill: Callable[[int], None],
+    kill: Callable[[int], str | None],
 ) -> ChildRun:
     """Run the child to its end or its cap (then its whole tree is killed), and read its final
-    line and its `loss_watch` line from `out` (`_read_out`)."""
+    JSON line from `out`, and its `loss_watch` line apart (`_read_out`: the final line is the
+    last JSON object with a known CLI status, never just the last line). On any
+    other exit path (a Ctrl+C, any exception while waiting) the child this call started is
+    killed the same way before the exception goes on: a stopped run never leaves its task
+    running. A kill that did not end the child is never a clean stop: on the cap it is the
+    run's `kill_failure`; on another exit path it is a note on the original exception, which
+    is re-raised as itself. A `start` that raises started nothing and kills nothing. Residual:
+    a second Ctrl+C during the bounded kill wait interrupts that wait (the kill itself was
+    already sent)."""
     child = start(argv, out)
     killed = False
+    failure: str | None = None
     try:
         code: int | None = child.wait(timeout=cap_s)
     except subprocess.TimeoutExpired:
         killed = True
-        kill(child.pid)
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            child.wait(timeout=KILL_WAIT_S)  # bounded: a tree that will not die is not waited on
+        failure = _end(child, kill)
         code = None
+    except BaseException as exc:
+        stopped = _end(child, kill)
+        if stopped is not None:
+            exc.add_note(f"child kill: {stopped}")
+        raise
     if killed:
-        return ChildRun(None, killed, code)
+        return ChildRun(None, killed, code, kill_failure=failure)
     final, watch = _read_out(out)
-    return ChildRun(final, killed, code, watch)
+    return ChildRun(final, killed, code, loss_watch=watch, kill_failure=failure)
+
+
+def _end(child: Child, kill: Callable[[int], str | None]) -> str | None:
+    """Kill the child's tree by the pid of the handle `start` gave, then wait for it, bounded
+    by `KILL_WAIT_S`. None when the child ended; else why not (closed tokens): the kill's own
+    report, `kill_raised:<type>` when the kill call raised, or `child_survived` when the child
+    outlived the bounded wait."""
+    try:
+        failed = kill(child.pid)
+    except Exception as exc:  # noqa: BLE001 - reported as a token, never masks the caller's stop
+        failed = f"kill_raised:{type(exc).__name__}"
+    try:
+        child.wait(timeout=KILL_WAIT_S)
+    except subprocess.TimeoutExpired:
+        return "child_survived"
+    return failed
 
 
 def _read_out(out: Path) -> tuple[Json | None, LossVerdict | None]:
@@ -1012,9 +1299,74 @@ def _read_out(out: Path) -> tuple[Json | None, LossVerdict | None]:
     return final, watch
 
 
-def _start(argv: list[str], out: Path) -> Child:  # pragma: no cover - live
+STDERR_NAME: Final = "stderr.dpapi"
+"""[V2.67] C, #438: the child's stderr, kept beside its final line only protected (DPAPI, one
+base64 line, as the debug trace): it can quote a title (a traceback's message, the CLI's list of
+candidate windows), so it is never written in plaintext."""
+STDERR_UNPROTECTED: Final = b"unprotected: dropped\n"
+"""What the file holds when DPAPI failed: the stderr is dropped, never written clear."""
+MAX_STDERR_BYTES: Final = 256 * 1024
+"""The most stderr kept (the rest is dropped): a bound on memory, not a measured size."""
+STDERR_JOIN_S: Final = 5.0
+"""How long the reader may take to finish after the child ended (unmeasured)."""
+
+
+class _GuardedChild:
+    """A child whose stderr is read into memory as it comes (so the pipe never fills) and,
+    once the child has ended, written protected beside its final line, exactly once."""
+
+    def __init__(  # Any: a subprocess.Popen (its stderr a binary pipe), or a test's fake
+        self, proc: Any, path: Path, protect: Callable[[bytes], bytes]
+    ) -> None:
+        self.pid = proc.pid
+        self._proc, self._path, self._protect = proc, path, protect
+        self._chunks: list[bytes] = []
+        self._kept = False
+        self._reader = threading.Thread(target=self._read, name="steer-stage1-stderr", daemon=True)
+        self._reader.start()
+
+    def _read(self) -> None:
+        pipe, size = self._proc.stderr, 0
+        if pipe is None:
+            return
+        while chunk := pipe.read(4096):
+            if size < MAX_STDERR_BYTES:
+                self._chunks.append(chunk[: MAX_STDERR_BYTES - size])
+                size += len(chunk)
+
+    def wait(self, timeout: float | None = None) -> int:
+        code = int(self._proc.wait(timeout=timeout))  # a timeout raises before anything is kept
+        self._keep()
+        return code
+
+    def _keep(self) -> None:
+        if self._kept:
+            return
+        self._kept = True
+        self._reader.join(timeout=STDERR_JOIN_S)
+        try:
+            line = base64.b64encode(self._protect(b"".join(self._chunks))) + b"\n"
+        except OSError:
+            line = STDERR_UNPROTECTED
+        self._path.write_bytes(line)
+
+
+def _start(
+    argv: list[str],
+    out: Path,
+    *,
+    popen: Callable[..., Any] = subprocess.Popen,  # Any: a Popen or a test's fake
+    protect: Callable[[bytes], bytes] | None = None,
+) -> Child:
+    """The child with its stdout to `out` and its stderr, protected, to `STDERR_NAME` beside
+    it once it has ended (`_GuardedChild`). `protect` defaults to DPAPI for the current user."""
+    if protect is None:
+        from steerai.debug_trace import protect_for_user  # noqa: PLC0415 - DPAPI, Windows
+
+        protect = protect_for_user
     with out.open("w", encoding="utf-8") as handle:  # the child holds its own copy
-        return subprocess.Popen(argv, stdout=handle, stderr=subprocess.DEVNULL)  # noqa: S603 - our own CLI, a fixed argv
+        proc = popen(argv, stdout=handle, stderr=subprocess.PIPE)
+    return _GuardedChild(proc, out.with_name(STDERR_NAME), protect)
 
 
 # ---- the live run (Windows; real input through the child) ---------------------------------------
@@ -1055,6 +1407,7 @@ def _live_3d(
     from steerai.probes import instant_search as fixture  # noqa: PLC0415 - live only
     from steerai.probes.chrome_a11y import (  # noqa: PLC0415
         CHROME_DEFAULT,
+        ChromeLost,
         launch_chrome,
         stop_chrome,
     )
@@ -1089,9 +1442,14 @@ def _live_3d(
             time.sleep(fixture.SETTLE_S)
             try:
                 entries = fixture.parse_log(fixture._read_log(cdp, base))
+            except ChromeLost:  # #459: the browser went away; a void, never a crash
+                return RunRecord(task.task_id, run, ran.final, True, False, None, None,
+                                 killed=ran.killed, code=ran.code, memory=memory,
+                                 kill_failure=ran.kill_failure, lost=CHROME_LOST)  # fmt: skip
             except (OSError, RuntimeError, ValueError):
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
                                  killed=ran.killed, code=ran.code, memory=memory,
+                                 kill_failure=ran.kill_failure,
                                  loss_watch=ran.loss_watch)  # fmt: skip
             finally:
                 cdp.close()
@@ -1099,6 +1457,7 @@ def _live_3d(
             passed = fixture.passes(variant, entries)  # type: ignore[arg-type]  # a variant's path
             return RunRecord(task.task_id, run, ran.final, True, True, passed, enters,
                              killed=ran.killed, code=ran.code, memory=memory,
+                                 kill_failure=ran.kill_failure,
                                  loss_watch=ran.loss_watch)  # fmt: skip
         finally:
             stop_chrome(proc, tmp / "profile")
@@ -1121,6 +1480,7 @@ def _live_page(
     from steerai.probes import instant_search  # noqa: PLC0415 - live only
     from steerai.probes.chrome_a11y import (  # noqa: PLC0415
         CHROME_DEFAULT,
+        ChromeLost,
         launch_chrome,
         stop_chrome,
     )
@@ -1167,14 +1527,20 @@ def _live_page(
                 if not isinstance(raw, str):
                     raise ValueError("the page log is not text")
                 check = page_check(task, raw)
+            except ChromeLost:  # #459: the browser went away; a void, never a crash
+                return RunRecord(task.task_id, run, ran.final, True, False, None, None,
+                                 killed=ran.killed, code=ran.code, memory=memory,
+                                 kill_failure=ran.kill_failure, lost=CHROME_LOST)  # fmt: skip
             except (OSError, RuntimeError, ValueError):
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
                                  killed=ran.killed, code=ran.code, memory=memory,
+                                 kill_failure=ran.kill_failure,
                                  loss_watch=ran.loss_watch)  # fmt: skip
             finally:
                 cdp.close()
             return RunRecord(task.task_id, run, ran.final, True, True, check, None,
                              killed=ran.killed, code=ran.code, memory=memory,
+                                 kill_failure=ran.kill_failure,
                                  loss_watch=ran.loss_watch)  # fmt: skip
         finally:
             stop_chrome(proc, tmp / "profile")
@@ -1201,6 +1567,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
     expected = gallery_expected(observed_from_json(args.gallery_read.read_text("utf-8")))
     tasks = tasks_for(args.set, expected)
+    header = report_header(args.set, runs=args.runs)
+    _emit({"header": header})
     controls: tuple[int, int] | None = None
     if args.set == "3d":
         ours: set[int] = set()
@@ -1236,7 +1604,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
                                       row={"floor_mb": STAGE1_FLOOR_MB})  # fmt: skip
         classified += runs
         not_started += refused
-    label = args.set if args.runs >= MIN_RUNS_PER_TASK else f"{args.set}-shakedown"
+    label = header["set"]
     summary = accept(tasks, classified, controls=controls,
                      runs_per_task=max(args.runs, MIN_RUNS_PER_TASK), label=label,
                      not_started=not_started, floor_mb=STAGE1_FLOOR_MB)  # fmt: skip

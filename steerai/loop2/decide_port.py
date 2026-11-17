@@ -21,11 +21,14 @@ from typing import Any, Final, TypeVar
 
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.controller import AskModel, ControllerError
-from steerai.loop2.loop import PortInterrupted, TokenUsage
+from steerai.loop2.loop import CountFailed, PortInterrupted, TokenUsage
 from steerai.planner.claude_planner import DEFAULT_MAX_TOKENS, DEFAULT_MODEL, EFFORT
 
 POLL_S: Final = 0.05
 """[V2.40] Q4: the loop thread polls `interrupted()` this often while a call runs (packet 5)."""
+MODEL_REFUSAL: Final = "refusal"
+"""The provider declined to answer (`stop_reason == "refusal"`): a call made, with no answer;
+the judges read it as an unusable reply (#457 principal 3)."""
 COUNT_TIMEOUT_S: Final = 0.889 * 1.25
 """[V2.61]: the longest wait for an exact count: the measured max, 889 ms, plus a quarter
 (count_tokens on claude-opus-5, 2026-11-15, n=60: p50 310 ms, p95 370 ms, max 889 ms). Later,
@@ -245,20 +248,25 @@ class DecideCalls:
         self._late_error = late_error
         self._poll_s = poll_s
         self._usages: list[TokenUsage | None] = []
+        self._requests = 0
 
     def turn(self, run: Callable[[AskModel], T]) -> tuple[T, TokenUsage | None]:
         """Run one controller turn with this `ask_model`; its result and the summed usage of
         its calls (None when a call reported none, or no call was made)."""
         self._usages = []
+        self._requests = 0
         try:
             result = run(self._ask)
         except ControllerError as rejected:  # the shakedown's #2: its calls' usage goes with it
             rejected.usage = _summed(self._usages)
             raise
+        except (PortInterrupted, SteerError) as failed:  # #489: the requests this turn sent
+            failed.requests_sent = self._requests
+            raise
         return result, _summed(self._usages)
 
     def _ask(self, system: list[str], blocks: list[str]) -> str:
-        self._check(None)  # nothing is sent after the latch: not even a repair ask
+        self._check(None, sent=False)  # nothing is sent after the latch: not even a repair ask
         generation = self._generations.current()
         box: _Box[Reply] = _Box(self._late_error)
         worker = threading.Thread(
@@ -267,6 +275,7 @@ class DecideCalls:
             name="steer-decide",
             daemon=True,  # an abandoned call never holds the process open at exit
         )
+        self._requests += 1  # the request goes out with the worker (#489)
         worker.start()
         while not box.done.wait(self._poll_s):
             self._check(box)
@@ -277,17 +286,18 @@ class DecideCalls:
         reply = box.result()
         self._usages.append(reply.usage)
         if reply.stop_reason == "refusal":
-            raise SteerError(ErrorCode.MODEL_ERROR, "refusal")
+            raise SteerError(ErrorCode.MODEL_ERROR, MODEL_REFUSAL)
         return reply.text
 
     def count(self, system: list[str], blocks: list[str]) -> int | None:
         """[V2.61]: the prompt's exact input tokens, on a daemon worker, the wait kill-aware and
         cut at `count_timeout_s`. None, so the prompt is cut by the bound, with no counter, on a
-        failure the counter mapped, or late; any other failure is raised here as itself."""
+        failure the counter mapped, or late. Any other failure of the counter is a `CountFailed`
+        (no model request went out: no model call, #468), chained to it."""
         counter = self._counter
         if counter is None:
             return None
-        self._check(None)
+        self._check(None, sent=False)  # a count is never a model call (#457 principal 2)
         generation = self._generations.current()
         box: _Box[tuple[int | None]] = _Box(self._late_error)
         worker = threading.Thread(
@@ -299,26 +309,30 @@ class DecideCalls:
         deadline = time.monotonic() + self._count_timeout_s
         worker.start()
         while not box.done.wait(max(0.0, min(self._poll_s, deadline - time.monotonic()))):
-            self._check(box)
+            self._check(box, sent=False)
             if time.monotonic() >= deadline:
                 box.abandon()  # late: its answer is never read
                 return None
-        self._check(box)
+        self._check(box, sent=False)
         if self._generations.current() != generation:
             box.abandon()
-            raise PortInterrupted("generation")
-        return box.result()[0]
+            raise PortInterrupted("generation", sent=False)
+        try:
+            return box.result()[0]
+        except Exception as exc:
+            raise CountFailed("count") from exc
 
-    def _check(self, box: _Box[Any] | None) -> None:  # Any: a reply or a count
+    def _check(self, box: _Box[Any] | None, *, sent: bool = True) -> None:  # Any: reply or count
         """Read the switch: on a token, the generation moves on (any result in flight is stale),
-        the call is abandoned, and the wait ends with `PortInterrupted`."""
+        the call is abandoned, and the wait ends with `PortInterrupted` (`sent`: whether a model
+        request had gone out, #457 principal 2)."""
         token = self._interrupted()
         if token is None:
             return
         self._generations.bump()
         if box is not None:
             box.abandon()
-        raise PortInterrupted(token)
+        raise PortInterrupted(token, sent=sent)
 
 
 def _summed(usages: list[TokenUsage | None]) -> TokenUsage | None:
@@ -332,6 +346,16 @@ def _summed(usages: list[TokenUsage | None]) -> TokenUsage | None:
         cache_write_1h=sum(u.cache_write_1h for u in known),
         cache_read=sum(u.cache_read for u in known),
     )
+
+
+def _cached_system(system: list[str]) -> list[dict[str, object]]:
+    """#484: the system blocks, the last one marked cacheable. Every judge's system blocks (its
+    rules, then its schema) are identical on every call of that judge and come before all per-turn
+    content, so the one marker ends the fixed prefix. The text is sent as built."""
+    blocks: list[dict[str, object]] = [{"type": "text", "text": s} for s in system]
+    if blocks:
+        blocks[-1]["cache_control"] = {"type": "ephemeral"}
+    return blocks
 
 
 def anthropic_call(
@@ -350,7 +374,7 @@ def anthropic_call(
             response = client.messages.create(
                 model=model,
                 max_tokens=max_tokens,
-                system=[{"type": "text", "text": s} for s in system],
+                system=_cached_system(system),
                 messages=[
                     {"role": "user", "content": [{"type": "text", "text": b} for b in blocks]}
                 ],
