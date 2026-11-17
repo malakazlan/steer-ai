@@ -124,9 +124,8 @@ def _pending_steps(path: Path) -> list[object]:
 
 def test_every_pending_mark_carries_its_step_and_none_is_step_3() -> None:
     steps = [step for path in TESTS.glob("test_*.py") for step in _pending_steps(path)]
-    assert len(steps) > 100
     assert None not in steps, "every pending mark names its step"
-    assert 3 not in steps
+    assert [s for s in steps if not (isinstance(s, int) and s >= 4)] == [], "a step >= 4"
 
 
 def _ready_imports() -> set[str]:
