@@ -26,6 +26,8 @@ FAKED: frozenset[str] = frozenset(
         # #469: the same for its gallery and large run
         "loop2/test_chrome_lost.py::"
         "test_the_page_run_voids_when_chrome_goes_away_before_the_log_is_read",
+        # [V2.80]: the same 3d run, the loss record kept on a chrome_lost record
+        "loop2/test_loss_watch_harness.py::test_a_chrome_lost_record_carries_the_loss_watch",
         # v1's keyboard tests: `send_inputs` / `build_keyboard_unicode` over a fake user32
         "action/test_keyboard.py::test_send_inputs_of_an_empty_batch_never_loads_user32",
         "action/test_keyboard.py::test_send_inputs_forwards_every_record_to_one_sendinput_call",
