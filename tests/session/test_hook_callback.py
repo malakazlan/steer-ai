@@ -895,3 +895,22 @@ def test_stop_timed_out_is_false_after_a_clean_close(monkeypatch: pytest.MonkeyP
     assert monitor.stop_timed_out is False
     monitor.close()
     assert monitor.stop_timed_out is False
+
+
+def test_a_probe_tag_that_cannot_be_drawn_fails_closed_not_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(monitor_module, "nudge_in_place", lambda **_k: None)
+    monkeypatch.setattr(monitor_module, "key_up_probe", lambda _vk, **_k: None)
+    monitor = _v2_started(monkeypatch, FakeUser32())
+
+    def broken() -> int:
+        raise RuntimeError("no probe tag could be drawn")
+
+    monitor._core._tags.draw = broken  # type: ignore[method-assign]  # a broken random source
+    try:
+        monitor.probe_now()  # never raises out of the loop boundary
+        assert monitor.healthy() is False
+        assert monitor.detail() == "monitor_lost"
+    finally:
+        monitor.close()

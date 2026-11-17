@@ -380,3 +380,15 @@ def test_a_superseded_probes_late_echo_is_not_the_next_probes_proof() -> None:
     core.on_keyboard(flags=INJ_UP, extra=first, now=12.1, vk=PROBE)
     assert core.probe_seen() is False
     assert core.lost_hooks(now=13.2) == ("keyboard", "mouse")
+
+
+def test_a_second_echo_of_the_same_tag_does_not_move_the_proof_time() -> None:
+    """A probe's second move must not push the recorded time past its deadline."""
+    c = _c()
+    c.set_probe_tag(0xAAAA_0001)
+    _move(c, 0xAAAA_0001, now=20.0)
+    _move(c, 0xAAAA_0001, now=22.0)
+    assert c.proof_at("mouse") == 20.0
+    c.set_probe_tag(0xAAAA_0002)
+    _move(c, 0xAAAA_0002, now=23.0)
+    assert c.proof_at("mouse") == 23.0

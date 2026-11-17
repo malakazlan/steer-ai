@@ -885,3 +885,15 @@ def test_an_echo_after_the_deadline_in_the_words_is_a_lost_hook() -> None:
     rig.heartbeat()
     assert not rig.monitor.probe_seen()
     assert not rig.monitor.healthy()
+
+
+def test_a_probe_tag_that_cannot_be_drawn_loses_the_helper_monitor_not_raises() -> None:
+    rig = _rig()
+
+    def broken() -> int:
+        raise RuntimeError("no probe tag could be drawn")
+
+    rig.monitor._tags.draw = broken  # type: ignore[method-assign]  # a broken random source
+    rig.monitor.probe_now()
+    assert rig.probes == []
+    assert not rig.monitor.healthy()

@@ -503,3 +503,29 @@ def test_the_helper_records_when_a_hook_was_proven() -> None:
                       event_ms=2_000, entry_ms=2_000, entry_qpc=2_000 * MS)  # fmt: skip
     assert status.get("proof_qpc_mouse") == 2_000 * MS
     assert status.get("proof_qpc_keyboard") == 0
+
+
+def test_a_probe_tag_that_changes_while_the_ring_is_read_is_not_recorded() -> None:
+    """The parent writes the ring, then the tag: a tag re-read after the ring that differs means
+    the parent moved on; the helper does not record the old one and re-syncs on the next event."""
+    core, cfg, status = _core()
+    a, b = 0x3333_00A1, 0x3333_00B2
+    cfg.set("probe_tag", a)
+    real_get = cfg.get
+    reads = {"probe_tag": 0}
+
+    def get(name: str) -> int:
+        if name == "probe_tag":
+            reads["probe_tag"] += 1
+            if reads["probe_tag"] == 2:  # the re-read after the ring: the parent has moved on
+                cfg.set("probe_tag", b)
+        return real_get(name)
+
+    cfg.get = get  # type: ignore[method-assign]  # a spy that moves the tag mid-sync
+    assert not core.mouse(message=WM_MOUSEMOVE, flags=LLMHF_INJECTED, extra=a, pt=(1, 1),
+                          event_ms=2_000, entry_ms=2_000, entry_qpc=2_000 * MS)  # fmt: skip
+    assert status.get("proof_mouse") == 0
+    cfg.get = real_get  # type: ignore[method-assign]
+    assert core.mouse(message=WM_MOUSEMOVE, flags=LLMHF_INJECTED, extra=b, pt=(1, 1),
+                      event_ms=2_001, entry_ms=2_001, entry_qpc=2_001 * MS)  # fmt: skip
+    assert status.get("proof_mouse") == b

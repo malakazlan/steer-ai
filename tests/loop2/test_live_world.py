@@ -2038,27 +2038,74 @@ def test_a_monitor_fault_during_the_self_check_keeps_its_own_reason() -> None:
     assert failed.value.message == "monitor_unavailable"
 
 
-def test_a_first_probe_lost_to_a_physical_move_is_retried_once_after_idle() -> None:
-    """PT-07: the person's move can merge with the probe's; one retry after the idle wait, and
-    the retry is counted apart."""
+class _Latching(Monitor):
+    """Like `HelperMonitor`: the first `healthy()` after a deadline loss latches the loss, and a
+    latched monitor reports no lost hooks (it is closed)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.polls = 0
+        self.latched = False
+        self.seen = False
+
+    def probe_seen(self) -> bool:
+        self.polls += 1
+        return self.seen
+
+    def lost_hooks(self) -> tuple[str, ...]:
+        if self.latched or self.polls < 3:
+            return ()
+        return ("keyboard", "mouse")
+
+    def healthy(self) -> bool:
+        if self.polls >= 3:
+            self.latched = True
+        return not self.latched
+
+
+def test_an_unproven_first_probe_refuses_the_start_and_never_counts_a_monitor_loss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[V2.81], principal delta: a monitor that latches its loss on the first `healthy()` after
+    the deadline must still give `probe_unproven_at_start`, with no `monitor_lost` and no retry."""
+    lost: list[int] = []
+    real = LiveWorld._lose
+
+    def counting(self: LiveWorld) -> None:
+        lost.append(1)
+        real(self)
+
+    monkeypatch.setattr(LiveWorld, "_lose", counting)
+    platform = Platform()
+    platform.monitor = _Latching()  # type: ignore[assignment]  # a fake with the real latch
+    with pytest.raises(SteerError) as failed:
+        _world(platform)
+    assert failed.value.message == "probe_unproven_at_start"
+    assert lost == []
+    assert platform.monitor.probes == 1  # never retried
+
+
+def test_a_person_active_during_an_unproven_first_probe_is_a_separate_trace_fact() -> None:
     platform = Platform()
     monitor = platform.monitor
     config = _config()
+    monitor.seen = False
+    real = monitor.probe_now
 
     def probe_now() -> None:
-        monitor.probes += 1
-        monitor.seen = monitor.probes >= 2
-        if monitor.probes == 1:
-            monitor.last = config.clock()  # the person moved the mouse as the first probe went
+        real()
+        monitor.last = config.clock()  # the person moved the mouse as the probe went
 
-    monitor.seen = False
-    monitor.probe_now = probe_now  # type: ignore[method-assign]  # the second probe is answered
-    world = LiveWorld(config, platform)
-    assert monitor.probes == 2
-    assert world.start_probe_retries == 1
+    monitor.probe_now = probe_now  # type: ignore[method-assign]
+    with pytest.raises(SteerError) as failed:
+        LiveWorld(config, platform)
+    assert failed.value.message == "probe_unproven_at_start"
+    assert monitor.probes == 1
+    lines = config.trace.lines  # type: ignore[attr-defined]  # a ListTrace
+    assert any('"token": "person_active_during_probe"' in ln for ln in lines)
 
 
-def test_a_first_probe_unproven_with_the_person_idle_is_not_retried() -> None:
+def test_an_unproven_first_probe_with_the_person_idle_has_no_person_fact() -> None:
     platform = Platform()
     platform.monitor.seen = False
     config = _config()
@@ -2066,3 +2113,5 @@ def test_a_first_probe_unproven_with_the_person_idle_is_not_retried() -> None:
         LiveWorld(config, platform)
     assert failed.value.message == "probe_unproven_at_start"
     assert platform.monitor.probes == 1
+    lines = config.trace.lines  # type: ignore[attr-defined]  # a ListTrace
+    assert not any("person_active_during_probe" in ln for ln in lines)
