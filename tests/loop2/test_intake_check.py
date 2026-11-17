@@ -49,8 +49,9 @@ from tests.loop2.world_fakes import (
 from tests.loop2.world_fakes import PAGE as SCREEN
 
 NEWLINE = chr(10)
-INTAKE_FIXED = "175a03d8d8db926d55e605b29ec261a118b8686900c227acb17c7ff41539a0e4"
-"""V4: sha256 of the intake's rules and schema blocks, joined by newlines."""
+INTAKE_FIXED = "e4625e63110624cd72465a4bda8e575fffa8f10f7947794a8f8231e50aba17e0"
+"""V4: sha256 of the intake's rules and schema blocks, joined by newlines; re-pinned at intake-6
+for [V2.89]'s narrower-field line."""
 AUDIT_FIXED = "4916d5435849d15eaa0be0ea789508ad92cecdd8343c1ba9e204aa3f97c68e40"
 """V4: sha256 of the audit's rules and schema blocks, joined by newlines."""
 
@@ -360,9 +361,27 @@ def test_the_runner_hands_the_check_positions_never_model_ids() -> None:
 
 
 def test_the_intake_prompt_version_and_header() -> None:
-    assert INTAKE_PROMPT_VERSION == "intake-5"
+    assert INTAKE_PROMPT_VERSION == "intake-6"  # [V2.89]: the narrower-field line
     live, _ = _world()
-    assert live.header(task())["intake_prompt_version"] == "intake-5"
+    assert live.header(task())["intake_prompt_version"] == "intake-6"
+
+
+NARROWER = (
+    "- When the request names a field and the subgoal's field= has only some of that field's "
+    "words, the request is not finished by it: another field's name may hold those words."
+)
+"""[V2.89] (c), #505: the intake owns a declaration narrower than the request; one general line."""
+
+
+def test_the_intake_vetoes_a_field_narrower_than_the_request_names() -> None:
+    """[V2.89]: one rule line, right after the value line; no word of a held-out shape in it (the
+    sealed billing shape's words) and no site, task or field example."""
+    rules = controller.INTAKE_RULES
+    assert rules.count(NARROWER + NEWLINE) == 1
+    assert rules.index(NARROWER) + len(NARROWER + NEWLINE) == rules.index("- closes=state:")
+    for word in ("billing", "email", "address", "contact", "enter", "phone", "work"):
+        assert word not in NARROWER.casefold().split(), word
+    assert NARROWER not in controller.AUDIT_RULES  # the audit is untouched
 
 
 def test_the_intake_says_an_outcome_the_page_shows_needs_its_own_subgoal() -> None:
@@ -393,7 +412,7 @@ def test_each_judges_fixed_blocks_are_pinned_with_its_version() -> None:
     audit, _ = build_audit_prompt("g", (), "w", [], task_fence="taskfence01",
                                   screen_fence="scrfence01")  # fmt: skip
     pinned = (INTAKE_PROMPT_VERSION, _fixed(intake), controller.AUDIT_PROMPT_VERSION, _fixed(audit))
-    assert pinned == ("intake-5", INTAKE_FIXED, "audit-6", AUDIT_FIXED)
+    assert pinned == ("intake-6", INTAKE_FIXED, "audit-6", AUDIT_FIXED)
 
 
 def test_intake_insufficient_is_told_to_the_model() -> None:

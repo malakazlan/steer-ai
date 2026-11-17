@@ -32,6 +32,7 @@ OUTCOME = TaskOutcome(
     not_own_text=5,
     evidence_taken=11,
     field_mismatch=14,
+    rival_field=17,  # [V2.89]
     turns_to_claim=15,
     repeated_words_missing=16,
     rebased_open=12,
@@ -68,6 +69,7 @@ COUNTS = {
     "not_own_text": 5,
     "evidence_taken": 11,
     "field_mismatch": 14,
+    "rival_field": 17,  # [V2.89]
     "turns_to_claim": 15,
     "repeated_words_missing": 16,
     "rebased_open": 12,
@@ -152,6 +154,7 @@ def test_the_stage_summary_sums_the_counts_and_says_odd_ones() -> None:
     assert report["counts"]["history_dropped"] == 24
     assert report["counts"]["turns_to_claim"] == 45
     assert report["counts"]["repeated_words_missing"] == 48
+    assert report["counts"]["rival_field"] == 51  # [V2.89]: in the stage 1 summary
     assert report["counts"]["turn_trace_dropped"] == 30
     assert report["counts"]["turn_trace_errors"] == 33  # #463 (1)
     assert report["counts"]["focus_losses"] == 14  # the odd run's is said, not summed
