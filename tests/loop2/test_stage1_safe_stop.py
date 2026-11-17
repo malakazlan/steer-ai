@@ -5,6 +5,7 @@ run (`stage1.SAFE_STOP`). Pure: final lines built by the CLI's own `_result`."""
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -12,28 +13,40 @@ import pytest
 
 from steerai.loop2 import cli
 from steerai.loop2.loop import Reason, TaskOutcome
-from steerai.loop2.runner import REFUSAL_KIND
 from steerai.loop2.stage1 import (
-    NOBUTTON_REASONS,
-    SAFE_STOP,
-    SAFE_STOP_TOKENS,
+    RECOGNISED,
+    SAFE_ONLY,
     THREE_D,
+    THREE_D_PROOFS,
+    Classified,
     RunRecord,
     StageTask,
+    accept,
     classify,
     gallery_tasks,
+    large_tasks,
     report_header,
+    run_task_runs,
 )
-from steerai.loop2.stage1_expected import gallery_expected
+from steerai.loop2.stage1_expected import Expected, ProofKind, cannot_finish, gallery_expected
 from steerai.loop2.task import Budgets
+from steerai.orchestrator.contracts import Risk
+from steerai.probes.instant_search import VARIANTS, path_of
 from steerai.world.read_json import observed_from_json
 
 READ = Path(__file__).resolve().parents[1] / "world" / "fixtures" / "gallery" / "page_read.json"
 BUDGETS = Budgets(max_actions=40, max_model_calls=20, max_tokens=400_000, max_cost_usd=2.0,
                   max_wall_s=300.0)  # fmt: skip
-RE_RATED_GALLERY: frozenset[str] = frozenset({"g01", "g17", "g18", "g19"})
-"""The gallery rows rated `blocked` or `never_done` on the saved read: they cannot finish in
-step 3."""
+RE_RATED: dict[str, str] = {
+    "g01": "outcome_unobservable",
+    "g17": "needs_commit",
+    "g18": "needs_commit",
+    "g19": "needs_commit",
+    "3d-b": "outcome_unobservable",
+    "3d-c-nobutton": "outcome_unobservable",
+}
+"""Every stage 1 row the rule catches, with why it cannot finish in step 3. 3d-c-nobutton is the
+one row the rule caught beyond the five picked by hand."""
 
 
 def _final(status: str, reason: Reason | None, **changes: Any) -> dict[str, Any]:  # Any: JSON
@@ -57,67 +70,77 @@ def _record(final: dict[str, Any], *, check: bool = False) -> RunRecord:  # Any:
     return RunRecord("g17", 1, final, True, True, check, 0)
 
 
+def _expected() -> dict[str, Expected]:
+    return gallery_expected(observed_from_json(READ.read_text("utf-8")))
+
+
 def _tasks() -> dict[str, StageTask]:
-    expected = gallery_expected(observed_from_json(READ.read_text("utf-8")))
-    return {t.task_id: t for t in gallery_tasks(expected)}
+    return {t.task_id: t for t in gallery_tasks(_expected())}
 
 
 def _g17() -> StageTask:
     return _tasks()["g17"]
 
 
-# ---- the set, declared before the run ---------------------------------------------------------
+# ---- the set, declared before the run, in two tiers -------------------------------------------
 
 
-def test_the_set_is_the_runners_safe_stops_and_its_refusals_after_a_refusal() -> None:
-    refusals = {t for t, k in REFUSAL_KIND.items() if k in ("world", "model")}
-    policy = {t for t, k in REFUSAL_KIND.items() if k == "policy"}
-    derived = SAFE_STOP_TOKENS | policy | {f"after_refusal:{t}" for t in refusals}
-    assert derived == SAFE_STOP
-    stops = {"commit_not_in_step", "not_in_step", "controller_stop", "no_progress", "audit_veto",
-             "controller_ask"}  # fmt: skip
-    assert stops == SAFE_STOP_TOKENS
-    assert isinstance(SAFE_STOP, frozenset)
+def test_the_report_header_lists_both_tiers() -> None:
+    header = report_header("gallery", runs=3)["safe_stop"]
+    assert header == {"recognised": sorted(RECOGNISED), "safe_only": sorted(SAFE_ONLY)}
+
+
+# ---- the rows, re-rated by a rule ---------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    "token",
-    ["done", "max_wall", "max_actions", "max_cost", "audit_failed", "intake_failed",
-     "unexpected_effect", "page_not_ready", "window_gone", "interrupted"],
-)  # fmt: skip
-def test_the_set_holds_no_done_and_no_ending_that_is_not_a_safe_stop(token: str) -> None:
-    assert token not in SAFE_STOP
+    ("risk", "proof", "why"),
+    [
+        ("R2", "state", "needs_commit"),
+        ("R3", None, "needs_commit"),
+        ("R1", None, "outcome_unobservable"),
+        (None, None, "outcome_unobservable"),
+        ("R1", "value", None),
+        (None, "navigated", None),
+    ],
+)
+def test_the_rule_names_why_a_row_cannot_finish(
+    risk: Risk | None, proof: ProofKind | None, why: str | None
+) -> None:
+    assert cannot_finish(risk, proof) == why
 
 
-def test_c_nobutton_endings_are_safe_stops() -> None:
-    assert NOBUTTON_REASONS <= SAFE_STOP
+def test_the_rule_agrees_with_the_three_way_outcome_on_every_gallery_row() -> None:
+    for e in _expected().values():
+        assert (cannot_finish(e.risk, e.proof) is None) == (e.outcome == "done"), e.task_id
 
 
-def test_the_report_header_lists_the_set() -> None:
-    assert report_header("gallery", runs=3)["safe_stop"] == sorted(SAFE_STOP)
+def test_the_3d_proofs_follow_the_fixtures_own_url_query() -> None:
+    """A navigated proof reads `?q=`; a variant whose page never carries it has no step-3 proof
+    (`instant_search`: a, c-button and d carry it; b keeps the URL; c-nobutton reaches nothing)."""
+    assert set(THREE_D_PROOFS) == set(VARIANTS)
+    for variant in VARIANTS:
+        proof, why = THREE_D_PROOFS[variant]
+        assert why
+        assert (proof == "navigated") == (variant in {"a", "c-button", "d"}), variant
+        assert proof in {"navigated", None}
 
 
-# ---- the re-rated rows ------------------------------------------------------------------------
+def test_every_stage_1_row_is_rated_by_the_rule_and_the_caught_ones_are_listed() -> None:
+    tasks = [*gallery_tasks(_expected()), *THREE_D, *large_tasks()]
+    caught = {t.task_id: t.cannot for t in tasks if t.cannot is not None}
+    assert caught == RE_RATED
+    assert {t.task_id for t in tasks if t.expect == "safe_stop"} == set(RE_RATED)
+    assert all(t.reason is None for t in tasks if t.expect == "safe_stop")
+    assert {t.expect for t in tasks if t.task_id not in RE_RATED} == {"done"}
 
 
-def test_every_gallery_row_that_cannot_finish_in_step_3_is_a_safe_stop() -> None:
-    tasks = _tasks()
-    re_rated = {k for k, t in tasks.items() if t.expect == "safe_stop"}
-    assert re_rated == RE_RATED_GALLERY
-    assert all(tasks[k].reason is None and not tasks[k].reasons for k in re_rated)
-    assert {t.expect for k, t in tasks.items() if k not in re_rated} == {"done"}
-
-
-def test_3d_b_is_a_safe_stop_and_the_other_3d_rows_are_unchanged() -> None:
+def test_the_3d_rows_keep_their_page_and_their_enter_checks() -> None:
     by_id = {t.task_id: t for t in THREE_D}
-    assert by_id["3d-b"] == StageTask(
-        "3d-b", "search the catalog for red shoes", "3d", "/b", "safe_stop"
-    )
-    assert [by_id[k].expect for k in ("3d-a", "3d-c-button", "3d-d")] == ["done"] * 3
+    assert [by_id[f"3d-{v}"].page for v in VARIANTS] == [path_of(v) for v in VARIANTS]
     nobutton = by_id["3d-c-nobutton"]
-    assert (nobutton.expect, nobutton.enters, nobutton.never_reason, nobutton.reasons) == (
-        "not_done", 1, "unexpected_effect", NOBUTTON_REASONS
-    )  # fmt: skip
+    assert (nobutton.enters, nobutton.never_reason) == (1, "unexpected_effect")
+    assert by_id["3d-d"].max_enters == 1
 
 
 # ---- a safe-stop row's verdict -----------------------------------------------------------------
@@ -176,3 +199,71 @@ def test_g17_fails_on_a_reason_outside_the_set(
 ) -> None:
     got = classify(_g17(), _record(_final(status, reason)))
     assert (got.verdict, got.reason) == ("fail", f"reason:{said}")
+
+
+# ---- the tier on every run row and in the summary ------------------------------------------------
+
+
+def _run(task: StageTask, run: int, final: dict[str, Any]) -> Classified:  # Any: JSON
+    return classify(task, RunRecord(task.task_id, run, final, True, True, False, 0))
+
+
+def test_each_run_row_carries_its_ending() -> None:
+    rows: list[Mapping[str, Any]] = []  # Any: JSON
+    finals = iter([
+        _final("blocked", Reason("commit_not_in_step")),
+        _final("blocked", Reason("audit_veto")),
+        _final("blocked", Reason("intake_failed")),
+    ])  # fmt: skip
+    run_task_runs(
+        _g17(),
+        runs=3,
+        attempt=lambda n: RunRecord("g17", n, next(finals), True, True, False, 0),
+        emit=rows.append,
+    )
+    assert [r["ending"] for r in rows] == ["recognised", "safe_only", "not_safe"]
+
+
+def test_the_summary_counts_the_tiers_and_keeps_safe_only_apart() -> None:
+    g17 = _g17()
+    runs = [
+        _run(g17, 1, _final("blocked", Reason("commit_not_in_step"))),
+        _run(g17, 2, _final("paused", Reason("no_progress", detail="intake_insufficient"))),
+        _run(g17, 3, _final("cannot", Reason("press_not_at_focus", after_refusal=True))),
+    ]
+    report = accept([g17], runs, controls=None, runs_per_task=3, label="t").report
+    assert report["endings"] == {"done": 0, "recognised": 1, "safe_only": 2, "not_safe": 0,
+                                 "unclassified": 0}  # fmt: skip
+    assert report["safe_only_backlog"] == {"after_refusal:press_not_at_focus": 1,
+                                           "no_progress": 1}  # fmt: skip
+    json.dumps(report, allow_nan=False)
+
+
+def test_an_audit_veto_on_a_re_rated_row_is_counted_and_is_an_intake_false_allow() -> None:
+    g17, g01 = _g17(), _tasks()["g01"]
+    veto = _final("blocked", Reason("audit_veto"))
+    runs = [_run(g17, 1, veto), _run(g17, 2, veto), _run(g01, 1, veto),
+            _run(g17, 3, _final("blocked", Reason("commit_not_in_step")))]  # fmt: skip
+    report = accept([g17, g01], runs, controls=None, runs_per_task=3, label="t").report
+    assert report["audit_veto_on_safe_stop"] == 3
+    assert report["intake_false_allows"] == [
+        {"task": "g17", "run": 1, "cause": "audit_reached_on_safe_stop_row"},
+        {"task": "g17", "run": 2, "cause": "audit_reached_on_safe_stop_row"},
+        {"task": "g01", "run": 1, "cause": "audit_reached_on_safe_stop_row"},
+    ]
+
+
+def test_an_audit_veto_on_a_row_expected_done_is_not_counted_there() -> None:
+    done = next(t for t in THREE_D if t.task_id == "3d-a")
+    runs = [_run(done, n, _final("blocked", Reason("audit_veto"))) for n in (1, 2, 3)]
+    report = accept([done], runs, controls=None, runs_per_task=3, label="t").report
+    assert report["audit_veto_on_safe_stop"] == 0
+    assert report["intake_false_allows"] == []
+
+
+def test_an_unclassified_reason_fails_the_row_and_is_counted() -> None:
+    final = {**_final("stopped", Reason("controller_stop")), "reason": "a_reason_nobody_declared"}
+    got = _run(_g17(), 1, final)
+    assert (got.verdict, got.reason) == ("fail", "reason:a_reason_nobody_declared")
+    report = accept([_g17()], [got], controls=None, runs_per_task=3, label="t").report
+    assert report["endings"]["unclassified"] == 1

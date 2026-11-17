@@ -3,25 +3,24 @@ one Enter reaching the page and never `unexpected_effect`; the reason it ends wi
 the closed endings the loop reaches there without acting further: the no-progress guard
 (`no_progress`), the controller's own stop (`controller_stop`) or a press refused after its
 Enter (`after_refusal:press_not_at_focus`). Measured in the 2026-11-15 stage 1 run (3 of 3 fail
-under the single `no_progress` reason)."""
+under the single `no_progress` reason). [V2.85] (v), #503: no end state is reachable, so the rule
+re-rates it a safe stop (`outcome_unobservable`); the three ruled endings stay safe stops, the
+Enter count and the never reason stay."""
 
 from __future__ import annotations
 
 import pytest
 
-from steerai.loop2.stage1 import NOBUTTON_REASONS, THREE_D, classify
+from steerai.loop2.stage1 import SAFE_STOP, THREE_D, classify
 from tests.loop2.test_stage1 import _final, _record
 
 NOBUTTON = next(t for t in THREE_D if t.task_id == "3d-c-nobutton")
 
 
-def test_the_widened_reasons_are_exactly_the_ruled_three() -> None:
-    assert frozenset({"no_progress", "controller_stop", "after_refusal:press_not_at_focus"}) == (
-        NOBUTTON_REASONS
-    )
-    assert NOBUTTON.reasons == NOBUTTON_REASONS
-    assert (NOBUTTON.expect, NOBUTTON.enters, NOBUTTON.never_reason) == (
-        "not_done", 1, "unexpected_effect",
+def test_the_ruled_three_are_safe_stops_and_the_row_is_re_rated() -> None:
+    assert {"no_progress", "controller_stop", "after_refusal:press_not_at_focus"} <= SAFE_STOP
+    assert (NOBUTTON.expect, NOBUTTON.cannot, NOBUTTON.enters, NOBUTTON.never_reason) == (
+        "safe_stop", "outcome_unobservable", 1, "unexpected_effect",
     )  # fmt: skip
 
 
