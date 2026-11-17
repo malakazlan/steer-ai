@@ -342,7 +342,7 @@ INTAKE_COUNTS: Final = (
 ProofParam = tuple[int, str]
 """[V2.68], packet rev 5 §5: a proven param for the audit: its position among the subgoal's
 params (sorted by name, as `decision_shape`) and its span of the request (the person's words)."""
-ProofLine = tuple[int, str, str, str, tuple[ReadKind, str], tuple[ProofParam, ...]]
+ProofLine = tuple[int, str, str, str, tuple[ReadKind, str], tuple[ProofParam, ...], str | None]
 """[V2.68], [V2.69] One: one proven subgoal for the audit, by position, never its id: (position,
 closes, how, kind, read, params). `read` is what code verified, a closed (kind, detail) pair the
 prompt renders as `value_read:equals_param`, `state_read:<wanted>` or `navigated:<how>`."""
@@ -557,9 +557,8 @@ class TaskOutcome:
     """[V2.73]: value or state claims refused because their element is already the evidence of
     another, closed subgoal of the same kind sharing a span (`evidence_taken`)."""
     field_mismatch: int = 0
-    """[V2.84]: value claims refused because the cited element's name and group name do not hold
-    the subgoal's declared field (`field_mismatch`): the count of correct tasks that can end not
-    done because a field has no readable name."""
+    """[V2.84]: value claims refused, and closing re-reads failed, because the cited element does
+    not hold the subgoal's declared field (`field_mismatch`). Refused claims, not tasks."""
     rebased_open: int = 0
     """[V2.74] (#475): non-commit subgoals that another subgoal's close through a model claim
     rebased (`_rebase`) and that were still open when the task ended. An auto-proof close does

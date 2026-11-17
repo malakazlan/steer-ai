@@ -45,6 +45,7 @@ LINE: ProofLine = (
     "value",
     ("value_read", "equals_param"),
     ((1, "red shoes"),),
+    "unnamed",
 )
 
 
@@ -216,7 +217,7 @@ def test_the_audit_prompt_holds_no_desc_no_param_words_and_nothing_outside_the_f
     assert text.count("red shoes") == 2  # the request and the param's span, both fenced
     assert "taskfence01" in text
     assert "f" * 32 in text
-    assert AUDIT_PROMPT_VERSION == "audit-5"  # the shared schema's title changed (#457)
+    assert AUDIT_PROMPT_VERSION == "audit-6"  # the shared schema's title changed (#457)
     schema = json.loads(system[1])
     assert set(schema["properties"]) == {"sufficient", "reason"}
 

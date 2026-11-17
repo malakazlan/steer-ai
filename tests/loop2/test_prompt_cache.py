@@ -43,7 +43,7 @@ PINS: dict[str, tuple[Prompt, list[str]]] = {
     "audit": (
         lambda: c.build_audit_prompt("g", [], "t", [], task_fence=FENCE, screen_fence=SCREEN),
         [
-            "4a7196a4ae75bb64eadc5aec748de109d71168149194b259c330db982f53cbc4",
+            "44c6da8d264f101e33664c9b1af63dc053b920a970afb4d9885151168b952b31",
             "d5a3af9cb3f90d3f9fbb3155c26dcbd4c9cfb22a5e9018c773f4cc6a9ae7d21a",
         ],
     ),

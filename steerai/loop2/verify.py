@@ -407,12 +407,18 @@ def holds_words(snapshot: Snapshot, element: Element, text: str) -> bool:
 
 def field_held(snapshot: Snapshot, element: Element, subgoal: Subgoal) -> bool:
     """[V2.84]: a value read counts only from an element that holds the subgoal's declared field
-    words, by the word match state proofs use (`holds_words`: its name, or its group name). An
-    `unnamed` field holds anything. Nearby text never counts; the label UIA gives
-    (`LabeledBy`) is not in the observation, so it is not read."""
-    if subgoal.field is None or subgoal.field == UNNAMED:
+    words. `unnamed` holds anything; a subgoal with no field fails closed. The words must be held
+    by the element's own name, and only an element with no name of its own falls back to its
+    group name (a named "Name" inside "Email preferences" is not the Email field). Word match as
+    state proofs use. Nearby text never counts; the label UIA gives (`LabeledBy`) is not in the
+    observation, so it is not read."""
+    if subgoal.field is None:
+        return False
+    if subgoal.field == UNNAMED:
         return True
-    return holds_words(snapshot, element, subgoal.field)
+    wanted = set(_tokens(subgoal.field))
+    name = element.name if normalise_name(element.name) else group_name(snapshot, element) or ""
+    return bool(wanted) and wanted <= set(_tokens(name))
 
 
 def _excluded(

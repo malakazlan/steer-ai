@@ -1264,8 +1264,16 @@ _PIN_PAGE: Final[Mapping[str, Any]] = {  # Any: JSON, a fixed page for the packe
     ],
 }
 _PIN_PROOFS: Final[tuple[ProofLine, ...]] = (
-    (1, "value", "claim", "value", ("value_read", "equals_param"), ((1, "Ada Lovelace"),)),
-    (2, "state", "claim", "state", ("state_read", "selected"), ((1, "Kenya"),)),
+    (
+        1,
+        "value",
+        "claim",
+        "value",
+        ("value_read", "equals_param"),
+        ((1, "Ada Lovelace"),),
+        "unnamed",
+    ),
+    (2, "state", "claim", "state", ("state_read", "selected"), ((1, "Kenya"),), None),
 )
 _PIN_GOAL: Final = "type Ada Lovelace as the full name and keep Kenya selected"
 

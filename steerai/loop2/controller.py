@@ -702,7 +702,7 @@ def build_prompt(  # noqa: PLR0913, PLR0917 - distinct prompt inputs
     return [SYSTEM_RULES, schema_json], [stable, log, turn]
 
 
-AUDIT_PROMPT_VERSION = "audit-5"
+AUDIT_PROMPT_VERSION = "audit-6"
 SUFFICIENCY_CRITERION = (
     "Answer whether these facts finish the request as the person who asked would check it; "
     "they do not when the request asks for a result beyond them."
@@ -713,7 +713,8 @@ AUDIT_RULES = (
     "You check whether a Windows computer-use agent has finished a request. Code has verified "
     "the facts below; treat them as true. " + SUFFICIENCY_CRITERION + "\n"
     "- value_read:equals_param: code read the field or the select, and it holds exactly the "
-    "param's words.\n"
+    "param's words; field=<words> or field=unnamed says which field. A request that names a "
+    "field is not finished by a value fact whose field is unnamed or another field.\n"
     "- state_read:<state>: code read the element, and it is in that state.\n"
     "- proven=<how>:<kind>: how code closed the subgoal (claim, or the page's own proof token) "
     "and the kind of proof.\n"
@@ -754,8 +755,11 @@ def build_audit_prompt(  # noqa: PLR0913 - distinct prompt inputs
     closed); and the final listing inside the screen fence."""
     _check_fences(task_fence, screen_fence)
     lines: list[str] = []
-    for position, closes, how, kind, (read, detail), params in proofs:
-        lines.append(f"subgoal {position} closes={closes} proven={how}:{kind} {read}:{detail}")
+    for position, closes, how, kind, (read, detail), params, field in proofs:
+        tail = "" if field is None else f" field={_data(field, task_fence)}"
+        lines.append(
+            f"subgoal {position} closes={closes} proven={how}:{kind} {read}:{detail}{tail}"
+        )
         lines.extend(f"  param:{n} {_data(span, task_fence)}" for n, span in params)
     stable = "\n".join(
         [f"<<<request {task_fence}", _data(task_goal, task_fence), f"{task_fence}>>>",

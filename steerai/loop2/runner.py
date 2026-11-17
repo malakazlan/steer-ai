@@ -1138,6 +1138,7 @@ class _Run:
                     return False
                 continue
             if not field_held(observed.snapshot, element, subgoal):
+                self.counts.field_mismatch += 1  # a first proof that no longer holds the field
                 return False
             want = readers.fact_of(subgoal.params[param].text)
             if readers.read_value(element) != want:
@@ -1226,7 +1227,17 @@ class _Run:
                 else ("navigated" if how == "claim" else how)
             )
             params = tuple((n, param.text) for n, param in numbered_params(subgoal.params))
-            lines.append((position, subgoal.closes, how, kind, _read_token(subgoal, how), params))
+            lines.append(
+                (
+                    position,
+                    subgoal.closes,
+                    how,
+                    kind,
+                    _read_token(subgoal, how),
+                    params,
+                    subgoal.field,
+                )
+            )
         return tuple(lines)
 
     def _intake_passes(self, decision: Decision) -> bool:

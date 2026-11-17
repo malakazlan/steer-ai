@@ -51,7 +51,7 @@ from tests.loop2.world_fakes import PAGE as SCREEN
 NEWLINE = chr(10)
 INTAKE_FIXED = "175a03d8d8db926d55e605b29ec261a118b8686900c227acb17c7ff41539a0e4"
 """V4: sha256 of the intake's rules and schema blocks, joined by newlines."""
-AUDIT_FIXED = "0b9a5f1b1945c7119c5fdc399a23a67ef682e973a5904106efca38d53e79d251"
+AUDIT_FIXED = "4916d5435849d15eaa0be0ea789508ad92cecdd8343c1ba9e204aa3f97c68e40"
 """V4: sha256 of the audit's rules and schema blocks, joined by newlines."""
 
 VALUE = SubgoalDoc(id="s1", desc="x", params={"text": "red shoes"}, closes="value", field="unnamed")
@@ -393,7 +393,7 @@ def test_each_judges_fixed_blocks_are_pinned_with_its_version() -> None:
     audit, _ = build_audit_prompt("g", (), "w", [], task_fence="taskfence01",
                                   screen_fence="scrfence01")  # fmt: skip
     pinned = (INTAKE_PROMPT_VERSION, _fixed(intake), controller.AUDIT_PROMPT_VERSION, _fixed(audit))
-    assert pinned == ("intake-5", INTAKE_FIXED, "audit-5", AUDIT_FIXED)
+    assert pinned == ("intake-5", INTAKE_FIXED, "audit-6", AUDIT_FIXED)
 
 
 def test_intake_insufficient_is_told_to_the_model() -> None:
