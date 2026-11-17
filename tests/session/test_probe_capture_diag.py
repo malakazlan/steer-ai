@@ -32,14 +32,14 @@ def test_capture_what_the_real_hooks_see(capfd: pytest.CaptureFixture[str]) -> N
     def kb(*, flags: int, extra: int, now: float, vk: int = 0) -> None:
         shaped = vk == VK and bool(flags & 0x80)
         rows.append(
-            f"KB vk={vk:#x} flags={flags:#x} extra={extra:#018x} "
+            f"KB vk={vk:#x} flags={flags:#x} extra={extra:#018x} high32={extra >> 32:#x} "
             f"outstanding={cls._probe_tag:#x} own={cls._own(extra, probe_shaped=shaped, injected=bool(flags & 0x10))}"
         )
         real_kb(flags=flags, extra=extra, now=now, vk=vk)
 
     def ms(*, message: int, flags: int, extra: int, pt: tuple[int, int], now: float) -> None:
         rows.append(
-            f"MS msg={message:#x} flags={flags:#x} extra={extra:#018x} pt={pt} "
+            f"MS msg={message:#x} flags={flags:#x} extra={extra:#018x} high32={extra >> 32:#x} pt={pt} "
             f"outstanding={cls._probe_tag:#x} own={cls._own(extra, probe_shaped=message == 0x200, injected=bool(flags & 1))}"
         )
         real_ms(message=message, flags=flags, extra=extra, pt=pt, now=now)
@@ -63,7 +63,24 @@ def test_capture_what_the_real_hooks_see(capfd: pytest.CaptureFixture[str]) -> N
                 f"proof(keyboard)={cls.proof('keyboard'):#x} probe_seen={monitor.probe_seen()} "
                 f"lost={monitor.lost_hooks()}"
             )
-        step("an action-shaped nudge with the run tag", lambda: win_input.nudge_in_place(tag=TAG))
+        high = iter((0x8000_0001, 0xC0DE_BEEF, 0xFFFF_FFFE))
+        core._tags._rand32 = lambda: next(high)  # type: ignore[attr-defined]  # tags with bit 31 set
+        for n in range(1, 4):
+            step(f"monitor.probe_now() high-bit tag #{n}", monitor.probe_now)
+            rows.append(
+                f"  tag={core._ledger._tag:#x} proof(mouse)={cls.proof('mouse'):#x} "
+                f"proof(keyboard)={cls.proof('keyboard'):#x} probe_seen={monitor.probe_seen()}"
+            )
+            for hook in ("mouse", "keyboard"):
+                got = cls.proof(hook)
+                kind = (
+                    "proven" if got == core._ledger._tag else "NOT proven (zero- or sign-extended?)"
+                )
+                rows.append(f"  {hook}: {kind}")
+                step(
+                    "an action-shaped nudge with the run tag",
+                    lambda: win_input.nudge_in_place(tag=TAG),
+                )
         step(
             "an action-shaped key-up with the run tag", lambda: win_input.key_up_probe(VK, tag=TAG)
         )
