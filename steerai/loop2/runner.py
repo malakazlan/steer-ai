@@ -154,9 +154,9 @@ from steerai.loop2.verify import (
     Readers,
     check_claim,
     field_held,
-    list_closed,
     holds_words,
     judge,
+    list_closed,
 )
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.orchestrator.loop import REUSE_FRESHNESS_S
@@ -169,6 +169,8 @@ from steerai.world.observe2 import FIRST_READY_S, YOUNG_S, document_nodes
 from steerai.world.reads import ReadCost
 from steerai.world.watch import Watched
 
+VERIFYING_VERBS: Final = READ_BACK_VERBS - {"focus"}
+"""[V2.85] (i): the verbs whose read-back is the value or state itself."""
 REPEATED: Final = 2
 """[V2.85] (iii): the refusal on which a subgoal's `words_missing` counts as repeated."""
 STRIKE_LIMIT: Final = 3
@@ -535,7 +537,7 @@ class _Run:
         self.turn = _Turn()
         self.turns = 0
         self.verified_at: dict[str, int] = {}
-        """[V2.85] (i): each subgoal's first turn with a delivered_verified action under it."""
+        """[V2.85] (i): each subgoal's turn of the last act under it with a verified read-back."""
         self.words_missing: dict[str, int] = {}
         """[V2.85] (iii): how many claims on each subgoal were refused `words_missing`."""
         """[V2.67] D: the turns the loop opened (its trace's turn numbers), never the calls."""
@@ -1847,12 +1849,8 @@ class _Run:
             self.last_acted = _Acted(element.runtime_id, element.role, element.name)
         self._note(self._log_entry(sent, act, report))
         owner = sent.action.subgoal
-        if (
-            owner is not None
-            and sent.action.verb != "wait"
-            and act.delivery is Delivery.DELIVERED_VERIFIED
-        ):
-            self.verified_at.setdefault(owner, self.turn.number)  # [V2.85] (i): the first one
+        if owner is not None and sent.action.verb in VERIFYING_VERBS and act.read_back is True:
+            self.verified_at[owner] = self.turn.number  # [V2.85] (i): the last one
         if element is not None and _focus_left(sent, element, watched.after):
             self.counts.focus_moved_after_press += 1  # [V2.43] (1): seen and counted, no extra read
             self._note(FocusMovedAfterPress(self._handle_of(element)))

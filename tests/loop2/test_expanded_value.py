@@ -18,7 +18,8 @@ from steerai.loop2.decision import Claim, Decision, SubgoalDoc
 from steerai.loop2.history import CLAIM_RESULTS
 from steerai.loop2.runner import run_task
 from steerai.world.effects import ValueFact
-from tests.loop2.test_act_port import COMBO, SHOWN as ACT_SHOWN, Executor, _dispatch, _port, ok
+from tests.loop2.test_act_port import COMBO, Executor, _dispatch, _port, ok
+from tests.loop2.test_act_port import SHOWN as ACT_SHOWN
 from tests.loop2.world_fakes import PAGE, World, act, element, observed, task
 
 SAID = ValueFact(filled=True, digest="d:red shoes")

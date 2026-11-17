@@ -411,6 +411,10 @@ def holds_words(snapshot: Snapshot, element: Element, text: str) -> bool:
     return bool(wanted) and any(wanted <= set(_tokens(name)) for name in names)
 
 
+CLOSED: Final = "collapsed"
+"""The live state a list must read ([V2.85]); a state word, never a claim token."""
+
+
 def list_closed(
     snapshot: Snapshot, element: Element, read_state: Callable[[Element, str], bool | None]
 ) -> bool | None:
@@ -421,7 +425,7 @@ def list_closed(
     read snapshot shows with neither cap has no list. Code never closes the list."""
     if snapshot.caps_read and not {"expanded", "collapsed"} & set(element.caps):
         return True
-    return read_state(element, "collapsed")
+    return read_state(element, CLOSED)
 
 
 def field_held(snapshot: Snapshot, element: Element, subgoal: Subgoal) -> bool:

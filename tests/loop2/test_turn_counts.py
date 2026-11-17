@@ -1,12 +1,12 @@
 """[V2.85] (i), (iii): two counts, wired as `evidence_taken` is. `turns_to_claim`: for each
-subgoal closed by a model claim after a delivered_verified action under it (a `wait` actuates
-nothing and does not count), the turns from the first such action's turn to the claim's turn,
-summed over subgoals. `repeated_words_missing`: subgoals whose claims were refused
+subgoal closed by a model claim, the turns from the last act under it whose read-back verified
+(a type, a choose or a state verb; never a click, a wait or a focus) to the claim's turn, summed
+over subgoals. `repeated_words_missing`: subgoals whose claims were refused
 `words_missing` more than once (a subgoal counts once, at its second refusal)."""
 
 from __future__ import annotations
 
-from steerai.loop2.decision import Claim, Decision, SubgoalDoc
+from steerai.loop2.decision import ActionDoc, Claim, Decision, SubgoalDoc
 from steerai.loop2.runner import run_task
 from steerai.world.effects import ValueFact
 from tests.loop2.world_fakes import GO, PAGE, World, act, element, observed, task
@@ -14,6 +14,7 @@ from tests.loop2.world_fakes import GO, PAGE, World, act, element, observed, tas
 SAID = ValueFact(filled=True, digest="d:red shoes")
 FIELD_BOX = element(42, "Edit", "Shop", (9, 42), 1)
 CHECK = element(43, "CheckBox", "Other", (9, 43), 1)
+OTHER = element(44, "CheckBox", "Third", (9, 44), 1)
 
 
 def _value_sub() -> SubgoalDoc:
@@ -29,44 +30,47 @@ def _value_claim() -> Decision:
 
 
 def _world(turns: list[Decision]) -> World:
-    world = World(turns, screen=observed([*PAGE, FIELD_BOX, CHECK]))
+    world = World(turns, screen=observed([*PAGE, FIELD_BOX, CHECK, OTHER]))
     world.values[FIELD_BOX.runtime_id] = SAID
     world.fact_text = True
     return world
 
 
-def test_turns_between_a_verified_action_and_its_claim_are_counted() -> None:
-    world = _world(
-        [
-            Decision(subgoals=[_value_sub()], actions=[act("click", target=GO.id, subgoal="s1")]),
-            Decision(actions=[act("wait", subgoal="s1")]),
-            _value_claim(),
-        ]
-    )
-    outcome = run_task(task(), world.ports())
+def _count(*acts_by_turn: list[ActionDoc]) -> int:
+    """A value subgoal, one batch of actions per turn, then its claim on the next turn."""
+    turns = [Decision(subgoals=[_value_sub()], actions=acts_by_turn[0])]
+    turns += [Decision(actions=batch) for batch in acts_by_turn[1:]]
+    outcome = run_task(task(), _world([*turns, _value_claim()]).ports())
     assert outcome.status == "done"
-    assert outcome.turns_to_claim == 2
+    return outcome.turns_to_claim
 
 
-def test_a_claim_on_the_turn_of_the_verified_action_counts_none() -> None:
+def _check() -> ActionDoc:
+    return act("check", target=CHECK.id, subgoal="s1")
+
+
+def test_turns_after_the_last_verified_read_back_are_counted() -> None:
+    wait = act("wait", subgoal="s1")
+    assert _count([_check()], [wait]) == 2
+    other = act("check", target=OTHER.id, subgoal="s1")
+    assert _count([_check()], [other]) == 1  # the last one, not the first
+
+
+def test_a_click_a_wait_and_a_focus_are_no_verified_read_back() -> None:
+    click = act("click", target=GO.id, subgoal="s1")
+    wait = act("wait", subgoal="s1")
+    assert _count([click], [wait]) == 0
+    assert _count([wait], [wait]) == 0
+
+
+def test_a_claim_on_the_turn_of_the_verified_act_counts_none() -> None:
     first = Decision(
         subgoals=[_value_sub()],
-        actions=[act("click", target=GO.id, subgoal="s1")],
+        actions=[_check()],
         claims=[Claim(subgoal="s1", kind="value", evidence=[FIELD_BOX.id], param="text")],
     )
     outcome = run_task(task(), _world([first]).ports())
     assert outcome.turns_to_claim == 0
-
-
-def test_a_wait_is_no_delivered_action_and_a_subgoal_with_none_counts_none() -> None:
-    world = _world(
-        [
-            Decision(subgoals=[_value_sub()], actions=[act("wait", subgoal="s1")]),
-            Decision(actions=[act("wait", subgoal="s1")]),
-            _value_claim(),
-        ]
-    )
-    assert run_task(task(), world.ports()).turns_to_claim == 0
 
 
 def _state_sub() -> SubgoalDoc:

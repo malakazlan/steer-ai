@@ -221,9 +221,10 @@ class ActPort:
             # [V2.85]: "already satisfied" read from an open or unread list proves nothing; code
             # does not close it
             closed = self._list_closed(element)
-            if closed is not True:
-                detail = "control_expanded" if closed is False else "unreadable_value"
-                raise _Refused(ErrorCode.ELEMENT_NOT_ACTIONABLE, detail)
+            if closed is False:
+                raise _Refused(ErrorCode.ELEMENT_NOT_ACTIONABLE, "control_expanded")
+            if closed is None:
+                raise _Refused(ErrorCode.ELEMENT_NOT_ACTIONABLE, "unreadable_value")
         if verb == "focus":
             focused = self._read_focus(element, snapshot)
             return ActResult(dataclasses.replace(result, verb="focus"), focused)
