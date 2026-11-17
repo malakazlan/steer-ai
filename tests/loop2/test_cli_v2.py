@@ -105,8 +105,8 @@ class Run:
         return cli.main(argv, deps=self.deps, stdout=self.stdout, stderr=self.stderr)
 
     def result(self) -> dict[str, Any]:  # Any: the final JSON
-        lines = self.stdout.getvalue().splitlines()
-        assert len(lines) == 1, "one JSON line on stdout"
+        lines = [ln for ln in self.stdout.getvalue().splitlines() if '"loss_watch"' not in ln]
+        assert len(lines) == 1, "one final JSON line on stdout ([V2.80]: the loss record is apart)"
         return json.loads(lines[0])  # type: ignore[no-any-return]  # a JSON object
 
     def header(self) -> dict[str, str]:
@@ -553,6 +553,8 @@ def test_a_lost_monitor_is_reported_apart_from_steers_own_stops(tmp_path: Path) 
     assert (lost["status"], lost["reason"], lost["monitor_lost"]) == (
         "stopped", "monitor_lost", True,
     )  # fmt: skip
+    record = json.loads(run.stdout.getvalue().splitlines()[-1])
+    assert record["loss_watch"] == {"no_verdict": "not_deadline"}  # [V2.80]: never a default
     clean = Run(tmp_path)
     clean()
     assert clean.result()["monitor_lost"] is False

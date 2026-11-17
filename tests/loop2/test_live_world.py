@@ -1456,7 +1456,9 @@ def test_the_session_is_taken_only_where_the_monitor_starts() -> None:
     assert callers == ["live_world.py:_take_session"]
     assert starts == {"start_monitor", "start_helper_monitor"}
     source = (package / "loop2" / "live_world.py").read_text(encoding="utf-8")
-    init = source[source.index("    def __init__(self, config: LiveConfig") :]
+    init = source[
+        source.index("    def __init__(" + chr(10) + "        self, config: LiveConfig") :
+    ]
     init = init[: init.index(chr(10) + "    def ", 1)]
     assert source.count("self._take_session(") == init.count("self._take_session(") == 1
 
