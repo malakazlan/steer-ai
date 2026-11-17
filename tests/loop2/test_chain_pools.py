@@ -249,6 +249,15 @@ def test_the_header_freezes_the_seed_and_the_draw_order() -> None:
             check_frozen({**head, **change}, head)
 
 
+DRAW_ORDER_SHA256 = "9e7ef6b8284af4495a1c6e26299898e3e30add112c855e1ae051cd17ec1bb592"
+"""The draw order the header freezes, re-pinned on purpose with the shapes ([V2.84] fields and the
+held-out wrong-field shape): a change to a pool, the seed or the slot rule shows here."""
+
+
+def test_the_draw_order_hash_is_the_pinned_one() -> None:
+    assert chain_eval.draw_order_sha256(load_shapes()) == DRAW_ORDER_SHA256
+
+
 def test_the_draw_order_hash_changes_with_the_seed(monkeypatch: pytest.MonkeyPatch) -> None:
     before = chain_eval.draw_order_sha256(tuple(SHAPES.values()))
     monkeypatch.setattr(chain_eval, "DRAW_SEED", "another")
