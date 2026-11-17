@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from steerai.probes import hook_tags
-from steerai.probes.hook_tags import (
+from steerai.loop2 import hook_tags_probe as hook_tags
+from steerai.loop2.hook_tags_probe import (
     HOOKS,
     LATE,
     LOST,
@@ -260,3 +260,10 @@ def test_the_prompts_tell_the_person_what_to_do() -> None:
     assert "move the mouse continuously now for ~85 seconds" in asked[0]
     assert "press Enter to start" in asked[0]
     assert "do not touch" in asked[1]
+
+
+def test_an_unknown_case_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as stop:
+        hook_tags.main(["--i-am-present", "--out", str(tmp_path), "--cases", "hook-idle,nope"])
+    assert stop.value.code == 2
+    assert list(tmp_path.iterdir()) == []

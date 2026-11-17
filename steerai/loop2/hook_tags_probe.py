@@ -8,7 +8,7 @@ foreign (`injected_other` rose while only Steer injected) and a merged move (the
 unproven while physical input was counted in the window). Only counts and times are kept: no key
 code, no tag, nothing the person types.
 
-    uv run python -m steerai.probes.hook_tags --i-am-present --out DIR [--probes 500]
+    uv run python -m steerai.loop2.hook_tags_probe --i-am-present --out DIR [--probes 500]
         [--interval-ms 150] [--cases hook-idle helper-idle hook-moving helper-moving]
 """
 
@@ -334,14 +334,19 @@ def run_live(  # noqa: PLR0913 - keyword seams  # pragma: no cover - live, Windo
 def main(argv: Sequence[str] | None = None) -> int:
     from steerai.session.monitor import DEFAULT_KILL_KEY  # noqa: PLC0415
 
-    parser = argparse.ArgumentParser(prog="python -m steerai.probes.hook_tags")
+    parser = argparse.ArgumentParser(prog="python -m steerai.loop2.hook_tags_probe")
     parser.add_argument("--i-am-present", action="store_true", dest="present")
     parser.add_argument("--out", required=True, help="a directory for the .jsonl and the summary")
     parser.add_argument("--probes", type=int, default=500)
     parser.add_argument("--interval-ms", type=float, default=150.0)
-    parser.add_argument("--cases", nargs="+", choices=CASES, default=list(CASES))
+    parser.add_argument("--cases", nargs="+", default=list(CASES), help="space or comma separated")
     parser.add_argument("--kill-key", default=DEFAULT_KILL_KEY)
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    cases = [c for item in args.cases for c in item.split(",") if c]
+    unknown = [c for c in cases if c not in CASES]
+    if unknown:
+        parser.error(f"unknown case {unknown[0]!r}; choose from {', '.join(CASES)}")
+    args.cases = cases
     if not args.present:
         sys.stderr.write("refused: this probe injects input; run it with --i-am-present\n")
         return 2
