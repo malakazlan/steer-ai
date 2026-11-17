@@ -11,6 +11,7 @@ import pytest
 
 import steerai.session.monitor  # noqa: F401 - imported before any trap: it copies `_send`
 from steerai.probes.chrome_a11y import CHROME_DEFAULT, ColdStart, measure_cold_start
+from tests._leaks import leaked_threads
 
 COLD_START = pytest.StashKey[ColdStart]()
 
@@ -113,3 +114,13 @@ def warm_chrome(pytestconfig: pytest.Config) -> None:
     measured = pytestconfig.stash.get(COLD_START, None)
     if measured is not None and measured.error is not None:
         pytest.fail(measured.summary())
+
+
+@pytest.fixture(autouse=True)
+def _no_hook_survives_a_windows_test(request: pytest.FixtureRequest) -> Iterator[None]:
+    """[V2.80]: after every Windows test no hook, hot key or monitor thread remains (a leaked
+    kill chord fails the next test's `RegisterHotKey` with error 1409, far from its cause)."""
+    yield
+    if "windows" in request.node.keywords:
+        left = leaked_threads()
+        assert left == [], f"the test left a monitor running: {left}"

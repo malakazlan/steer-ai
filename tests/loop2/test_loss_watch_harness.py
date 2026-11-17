@@ -9,7 +9,20 @@ import json
 import subprocess
 from pathlib import Path
 
-from steerai.loop2.stage1 import ChildRun, RunRecord, accept, classify, run_child
+import pytest
+
+from steerai.loop2 import stage1
+from steerai.loop2.stage1 import (
+    CHROME_LOST,
+    NO_VERDICT_CAUSES,
+    ChildRun,
+    RunRecord,
+    StageTask,
+    accept,
+    classify,
+    run_child,
+)
+from tests.loop2.test_chrome_lost import _fake_live_edges, _lost_session
 from tests.loop2.test_stage1 import DONE, _Child, _final, _ok, _record
 
 
@@ -147,3 +160,55 @@ def test_r8_the_watch_seconds_are_not_wall_time() -> None:
     runs = [_ok(DONE, r, "monitor_lost", loss_watch="gone") for r in (1, 2, 3)]
     report = accept([DONE], runs, controls=(5, 5), runs_per_task=3, label="t").report
     assert report["wall_s_p50"] == _final()["used"]["max_wall_s"]
+
+
+# ---- [V2.80]: the no-verdict cause is kept ---------------------------------------------------
+
+
+def _no_verdict(cause: object) -> str:
+    return json.dumps({"task_id": "t", "loss_watch": {"no_verdict": cause}})
+
+
+@pytest.mark.parametrize("cause", NO_VERDICT_CAUSES)
+def test_a_no_verdict_cause_is_kept_not_folded_into_unknown(tmp_path: Path, cause: str) -> None:
+    assert _ran(tmp_path, [json.dumps(_final()), _no_verdict(cause)])[1] == f"no_verdict:{cause}"
+
+
+def test_a_no_verdict_cause_off_the_closed_set_is_none(tmp_path: Path) -> None:
+    for odd in ("whatever", 1, None, ["killed"]):
+        assert _ran(tmp_path, [json.dumps(_final()), _no_verdict(odd)])[1] is None
+
+
+def test_the_summary_keeps_each_no_verdict_cause_apart() -> None:
+    runs = [
+        _ok(DONE, 1, "monitor_lost", loss_watch="no_verdict:not_deadline"),
+        _ok(DONE, 2, "monitor_lost", loss_watch="no_verdict:not_deadline"),
+        _ok(DONE, 3, "monitor_lost", loss_watch="no_verdict:killed"),
+        _ok(DONE, 4, "monitor_lost", loss_watch="gone"),
+        _ok(DONE, 5, "monitor_lost"),
+    ]
+    report = accept([DONE], runs, controls=(5, 5), runs_per_task=5, label="t").report
+    assert report["loss_no_verdict"] == {"no_verdict:not_deadline": 2, "no_verdict:killed": 1}
+    assert report["monitor_losses"] == {"slow": 0, "gone": 1, "unknown": 4}
+
+
+def test_a_chrome_lost_record_carries_the_loss_watch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_live_edges(monkeypatch, _lost_session())
+
+    class Child:
+        pid = 5151
+
+        def wait(self, timeout: float | None = None) -> int:  # noqa: ARG002 - the Child shape
+            return 0
+
+    def start(_argv: list[str], out: Path) -> Child:
+        lines = [json.dumps(_final("blocked", "controller_stop")), _watch("slow")]
+        out.write_text("".join(f"{ln}\n" for ln in lines), encoding="utf-8")
+        return Child()
+
+    monkeypatch.setattr(stage1, "_start", start)
+    task = StageTask("3d-a", "search the catalog for red shoes", "3d", "/a", "done")
+    record = stage1._live_3d(task, 1, out_dir=tmp_path, price=tmp_path / "price.json")
+    assert (record.lost, record.loss_watch) == (CHROME_LOST, "slow")
