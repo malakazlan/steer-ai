@@ -12,7 +12,7 @@ from typing import Final, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
-from steerai.loop2.task import UNNAMED, Commit, Wanted
+from steerai.loop2.task import UNNAMED, Commit, Step, Wanted
 from steerai.loop2.text import clean_line, has_control
 
 Verb = Literal[
@@ -111,16 +111,23 @@ NO_COMMIT_VERBS = frozenset({"wait", "scroll", "focus"})
 """[V2.42] RT-42: verbs that cannot commit anything; a declared commit on one is a shape error
 (a model fault). Every other verb: a declared commit still raises the tier."""
 STEP: Final = 3
-"""The v2 loop's current step (V2 §12)."""
-STEP_VERBS: Final[Mapping[int, frozenset[str]]] = {
-    3: frozenset(get_args(Verb)) - {"open", "switch", "scroll"},
+"""Step 3's alias ([V2.86] (4)): the tables below are keyed by `task.Step`, and code that is not
+told the step reads step 3's."""
+_STEP_3_VERBS: Final = frozenset(get_args(Verb)) - {"open", "switch", "scroll"}
+STEP_VERBS: Final[Mapping[Step, frozenset[str]]] = {
+    3: _STEP_3_VERBS,
+    4: _STEP_3_VERBS,
 }
 """[V2.44] (1): the one table, keyed by step, of the verbs a Decision may use. The prompt offers
 exactly these and `validate` accepts exactly these. Step 3 leaves out `open` and `switch`
 (window switching is step 7) and `scroll` ([V2.41] (2), #299: no stage 1 row needs it, and
 `ScrollPattern.Scroll()` is unprobed, a step 5 probe task)."""
-NOT_IN_STEP_VERBS: Final = frozenset(get_args(Verb)) - STEP_VERBS[STEP]
+NOT_IN_STEP_VERBS_BY_STEP: Final[Mapping[Step, frozenset[str]]] = {
+    step: frozenset(get_args(Verb)) - verbs for step, verbs in STEP_VERBS.items()
+}
 """Refused as a step limit (`not_in_step`): the backstop for a model that sends one anyway."""
+NOT_IN_STEP_VERBS: Final = NOT_IN_STEP_VERBS_BY_STEP[STEP]
+"""Step 3's alias."""
 MAX_ACTIONS = 4
 MAX_SUBGOALS = 5
 MAX_DESC_CHARS = 120
@@ -132,13 +139,17 @@ PARAM_NAME = re.compile(r"[a-z0-9_]{1,24}")
 `*_CHARS` constant, which the prompt's schema states."""
 """[V2.47]: a param name is closed at intake: lowercase letters, digits and underscore, at most
 24 characters (subgoal ids: the same alphabet, at most 16, `SUBGOAL_ID`)."""
-STEP_KINDS: Final[Mapping[int, frozenset[str]]] = {
-    3: frozenset({"state", "value", "navigated"}),
+_STEP_3_KINDS: Final = frozenset({"state", "value", "navigated"})
+STEP_KINDS: Final[Mapping[Step, frozenset[str]]] = {
+    3: _STEP_3_KINDS,
+    4: _STEP_3_KINDS | {"content_present"},
 }
 """#386, [V2.44] (1)'s rule for verbs applied to claim kinds: the one table, keyed by step, of the
 kinds a Decision may claim. The prompt offers exactly these and `validate` accepts exactly
-these; step 3 checks state, value and navigated (the other kinds are steps 4 to 7)."""
+these; step 3 checks state, value and navigated, step 4 adds content_present ([V2.88]; the
+other kinds are steps 4e to 7). It is also the keyed table of the checked kinds."""
 CHECKED_KINDS = STEP_KINDS[STEP]
+"""Step 3's alias."""
 
 
 class _Strict(BaseModel):
@@ -192,12 +203,12 @@ class Decision(_Strict):
 
 
 def _action_tokens(
-    action: ActionDoc, listed_ids: frozenset[int], known: Mapping[str, set[str]]
+    action: ActionDoc, listed_ids: frozenset[int], known: Mapping[str, set[str]], step: Step
 ) -> list[ValidateToken]:
     tokens: list[ValidateToken] = []
     if action.commit != "none" and action.verb in NO_COMMIT_VERBS:
         tokens.append("commit_cannot_apply")  # [V2.42] RT-42: these verbs cannot commit
-    if action.verb in NOT_IN_STEP_VERBS:
+    if action.verb in NOT_IN_STEP_VERBS_BY_STEP[step]:
         return [*tokens, "not_in_step"]
     if action.subgoal not in known:
         tokens.append("subgoal_unknown")
@@ -231,10 +242,10 @@ def _type_tokens(action: ActionDoc, params: set[str]) -> list[ValidateToken]:
 
 
 def _claim_tokens(
-    claim: Claim, listed_ids: frozenset[int], known: Mapping[str, set[str]]
+    claim: Claim, listed_ids: frozenset[int], known: Mapping[str, set[str]], step: Step
 ) -> list[ValidateToken]:
     tokens: list[ValidateToken] = []
-    if claim.kind not in CHECKED_KINDS:
+    if claim.kind not in STEP_KINDS[step]:
         tokens.append("not_in_step")
     if claim.subgoal not in known:
         tokens.append("subgoal_unknown")
@@ -336,18 +347,20 @@ def validate(  # noqa: PLR0913 - the decision and its keyword-only context
     first_turn: bool,
     known_subgoals: Mapping[str, frozenset[str]] | None = None,
     fences: frozenset[str] = frozenset(),
+    step: Step = 3,
 ) -> list[ValidateToken]:
     """Return the closed rejection tokens for a decision, deduplicated, in first-seen order.
 
     `known_subgoals` maps each declared subgoal id to the names of its params (build it with
     `task.known_params`); subgoals declared by this decision (first turn) are added to it. A
     subgoal desc holding any of `fences` is `desc_bad`: it is shown inside the task fence later.
+    `step` picks the verbs and claim kinds in step ([V2.86] (4)); step 3 unless told.
     """
     known = {sid: set(names) for sid, names in (known_subgoals or {}).items()}
     tokens = _subgoal_tokens(decision, goal, first_turn, known, fences)
     tokens.extend(_shape_tokens(decision))
     for action in decision.actions:
-        tokens.extend(_action_tokens(action, listed_ids, known))
+        tokens.extend(_action_tokens(action, listed_ids, known, step))
     for claim in decision.claims:
-        tokens.extend(_claim_tokens(claim, listed_ids, known))
+        tokens.extend(_claim_tokens(claim, listed_ids, known, step))
     return list(dict.fromkeys(tokens))
