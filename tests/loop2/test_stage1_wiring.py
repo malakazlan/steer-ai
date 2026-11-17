@@ -27,6 +27,7 @@ from steerai.loop2.stage1 import (
     tasks_for,
 )
 from steerai.loop2.stage1_expected import COMMIT_REASON, Expected, gallery_expected
+from steerai.orchestrator.contracts import RISKS
 from steerai.probes.gallery_page import LARGE_TARGET
 from steerai.probes.task_suite import GALLERY
 from steerai.world.read_json import observed_from_json
@@ -50,9 +51,8 @@ def test_every_gallery_row_is_a_task_with_its_expected_outcome_and_reason() -> N
             "/page.html",
         )
     by_id = {t.task_id: t for t in tasks}
-    for blocked in ("g17", "g18", "g19"):
-        assert (by_id[blocked].expect, by_id[blocked].reason) == ("blocked", COMMIT_REASON)
-    assert (by_id["g01"].expect, by_id["g01"].reason) == ("never_done", None)
+    for stops in ("g01", "g17", "g18", "g19"):  # [V2.85] (v): re-rated to a safe stop
+        assert (by_id[stops].expect, by_id[stops].reason) == ("safe_stop", None)
     done = [t.task_id for t in tasks if t.expect == "done"]
     assert len(done) == 20
     assert all(by_id[t].reason is None for t in done)
@@ -86,18 +86,21 @@ def test_large_acceptance_still_fails_closed() -> None:
     assert summary.accepted is False
 
 
-# ---- a blocked gallery row passes only on the runner's own reason ----------------------------
+# ---- a gallery row rated blocked passes on a safe stop ([V2.85] (v)) --------------------------
 
 
 def _blocked_run(reason: str) -> RunRecord:
-    final = {"status": "blocked", "reason": reason, "used": {"max_actions": 0}}
+    risks = dict.fromkeys(RISKS, 0)
+    final = {"status": "blocked", "reason": reason, "used": {"max_actions": 0},
+             "dispatch_risks": risks}  # fmt: skip
     return RunRecord("g17", 1, final, True, True, False, None)
 
 
-def test_a_blocked_row_passes_on_commit_not_in_step() -> None:
+def test_a_blocked_row_passes_on_a_safe_stop_only() -> None:
     g17 = next(t for t in gallery_tasks(_expected()) if t.task_id == "g17")
     assert classify(g17, _blocked_run(COMMIT_REASON)).verdict == "pass"
-    assert classify(g17, _blocked_run("not_in_step")).verdict == "fail"
+    assert classify(g17, _blocked_run("not_in_step")).verdict == "pass"
+    assert classify(g17, _blocked_run("audit_veto")).verdict == "fail"
 
 
 # ---- each page's own pass check, from its log alone ------------------------------------------
