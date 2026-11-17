@@ -12,7 +12,7 @@ import json
 import re
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import pytest
 
@@ -2480,3 +2480,72 @@ AUDIT_PINS = {
     "prompt": "d6878a5e61346d6658b8ea99806a7c3e4c6c4555502620f1502ab3ca9608d129",
     "packet": "0c5e8d1b9f557369bf4c7b92c88001d587c68941e67888ba7675b2f3648570c5",
 }
+
+
+# ---- an aborted run frees its wording: the operator's --abort-open ------------------------------
+
+
+def test_an_open_start_is_aborted_by_the_operator_and_the_wording_runs_again(
+    tmp_path: Path,
+) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.start("pilot", _wired())
+    ledger.start("counted", _wired())  # the host killed the run: no aborted record
+    with pytest.raises(ValueError, match="counted_run_exists"):
+        ledger.start("counted", _wired())
+    rows = ledger.abort_open(at="2026-11-17T10:00:00+00:00")
+    assert [(r["event"], r["kind"], r["cause"], r["at"]) for r in rows] == [
+        ("aborted", "counted", "infra_killed", "2026-11-17T10:00:00+00:00")
+    ]
+    assert rows[0]["commit"] == "a" * 40
+    assert ledger.entries()[-1] == rows[0]  # appended, nothing rewritten
+    ledger.start("counted", _wired())  # accepted: from chain 0, same header
+    with pytest.raises(ValueError, match="counted_run_exists"):
+        ledger.start("counted", _wired())  # the new start is open again
+
+
+def test_two_counted_starts_without_an_abort_are_still_refused(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.start("pilot", _wired())
+    ledger.start("counted", _wired())
+    ledger.aborted("counted", "g22", 3, "free", error="RuntimeError", head=_wired())
+    ledger.start("counted", _wired())  # the first one aborted, any cause
+    with pytest.raises(ValueError, match="counted_run_exists"):
+        ledger.start("counted", _wired())
+
+
+def test_abort_open_with_nothing_open_is_refused(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    with pytest.raises(ValueError, match="no_open_start"):
+        ledger.abort_open(at="2026-11-17T10:00:00+00:00")
+    ledger.start("pilot", _wired())
+    ledger.aborted("pilot", "g22", 0, "free", error="RuntimeError", head=_wired())
+    with pytest.raises(ValueError, match="no_open_start"):
+        ledger.abort_open(at="2026-11-17T10:00:00+00:00")
+    assert len(ledger.entries()) == 2
+
+
+def test_a_killed_held_out_run_can_be_aborted_and_run_again(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.start("pilot", _wired())
+    ledger.start("held_out", _wired())
+    with pytest.raises(ValueError, match="held_out_run_exists"):
+        ledger.start("held_out", _wired())
+    ledger.abort_open(at="2026-11-17T10:00:00+00:00")
+    ledger.start("held_out", _wired())
+    with pytest.raises(ValueError, match="held_out_run_exists"):
+        ledger.start("held_out", _wired())
+
+
+def test_the_report_lists_an_operator_abort_with_its_cause(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    head = _wired()
+    ledger.start("pilot", head)
+    ledger.start("counted", head)
+    ledger.abort_open(at="2026-11-17T10:00:00+00:00")
+    listed = cast(
+        list[dict[str, object]],
+        chain_eval.report("pilot", [], [], ledger=ledger, head=head)["ledger"],
+    )
+    assert listed[-1] == {"event": "aborted", "kind": "counted", "commit": "a" * 40,
+                          "cause": "infra_killed"}  # fmt: skip

@@ -53,6 +53,15 @@ shapes take their class's bar, run once, only on a frozen wording, and any failu
 use. The wording (the version pins and the commit) is recorded in the report header; the pilot
 (4 chains, one each of `PILOT`) measures tokens and latency and never counts.
 
+A run the host killed leaves a start with no aborted record, which would refuse a restart at the
+same wording. `--abort-open` (the operator's command) appends an explicit aborted record,
+`cause: infra_killed`, for each open counted or held-out start (a start no later aborted record
+closes); it never deletes or rewrites a line and refuses when nothing is open. A counted or
+held-out start is accepted again only when every earlier start of its kind at that wording has
+a later aborted record, whatever its cause. The new run starts from chain 0 on the same frozen
+header and seeds, with no resume; the report lists the aborted runs and their cause, and an
+aborted run's chains are never scored or merged.
+
 Every record holds closed tokens and numbers only: no request, page or model text.
 """
 
@@ -73,6 +82,7 @@ import sys
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final, Literal, Protocol, get_args
 
@@ -1717,21 +1727,41 @@ class Ledger:
     def start(self, kind: RunKind, head: Mapping[str, object]) -> None:
         if head.get("dirty") is not False:
             raise ValueError("tree_not_clean")
-        starts = [e for e in self.entries() if e.get("event") == "start"]
+        entries = self.entries()
+        starts = [e for e in entries if e.get("event") == "start"]
         if kind != "pilot":
             pilots = [e for e in starts if e["kind"] == "pilot"]
             if not any(_same_wording(head, e) for e in pilots):
                 raise ValueError("wording_not_frozen")
-            if kind == "counted" and any(
-                e["kind"] == "counted" and _same_wording(head, e) for e in starts
-            ):
+            if kind == "counted" and _open_starts(entries, "counted", head, _same_wording):
                 raise ValueError("counted_run_exists")
-            if kind == "held_out" and any(
-                e["kind"] == "held_out" and e.get("shapes_sha256") == head.get("shapes_sha256")
-                for e in starts
-            ):
+            if kind == "held_out" and _open_starts(entries, "held_out", head, _same_shapes):
                 raise ValueError("held_out_run_exists")
         self._append({"event": "start", "kind": kind, **{k: head.get(k) for k in FROZEN_KEYS}})
+
+    def abort_open(self, *, at: str) -> list[dict[str, object]]:
+        """The operator's record for a run the host killed: one aborted record, cause
+        `infra_killed`, per open counted or held-out start, written with the start's wording.
+        Nothing is deleted or rewritten; with nothing open, a refusal."""
+        entries = self.entries()
+        rows: list[dict[str, object]] = []
+        for kind in ("counted", "held_out"):
+            heads = {
+                json.dumps(h, sort_keys=True): h
+                for h in (
+                    {k: e.get(k) for k in FROZEN_KEYS} for e in entries if e.get("kind") == kind
+                )
+            }
+            for head in heads.values():
+                rows.extend(
+                    {"event": "aborted", "kind": kind, "cause": "infra_killed", "at": at, **head}
+                    for _ in _open_starts(entries, kind, head, _same_wording)
+                )
+        if not rows:
+            raise ValueError("no_open_start")
+        for row in rows:
+            self._append(row)
+        return rows
 
     def aborted(  # noqa: PLR0913 - where the run stopped, and on which wording
         self,
@@ -1751,6 +1781,29 @@ class Ledger:
 
 def _same_wording(head: Mapping[str, object], entry: Mapping[str, object]) -> bool:
     return all(head.get(k) == entry.get(k) for k in FROZEN_KEYS)
+
+
+def _same_shapes(head: Mapping[str, object], entry: Mapping[str, object]) -> bool:
+    return head.get("shapes_sha256") == entry.get("shapes_sha256")
+
+
+def _open_starts(
+    entries: Sequence[Mapping[str, Any]],  # Any: JSON
+    kind: str,
+    head: Mapping[str, object],
+    same: Callable[[Mapping[str, object], Mapping[str, object]], bool],
+) -> list[Mapping[str, Any]]:  # Any: JSON
+    """The starts of this kind on this wording that no later aborted record closed; each abort
+    closes the earliest open start it matches."""
+    opened: list[Mapping[str, Any]] = []  # Any: JSON
+    for e in entries:
+        if e.get("kind") != kind or not same(head, e):
+            continue
+        if e.get("event") == "start":
+            opened.append(e)
+        elif e.get("event") == "aborted" and opened:
+            opened.pop(0)
+    return opened
 
 
 def _flush(path: Path, row: Mapping[str, object]) -> None:
@@ -1862,7 +1915,12 @@ def report(
                 "event": e["event"],
                 "kind": e["kind"],
                 "commit": e.get("commit"),
-                **({k: e[k] for k in ("shape", "index", "arm")} if e["event"] == "aborted" else {}),
+                **(
+                    {k: e[k] for k in ("shape", "index", "arm") if k in e}
+                    if e["event"] == "aborted"
+                    else {}
+                ),
+                **({"cause": e["cause"]} if "cause" in e else {}),
             }
             for e in ledger.entries()
             if all(e.get(k) == head.get(k) for k in WORDING_KEYS)
@@ -1883,9 +1941,25 @@ def report(
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live model calls
     parser = argparse.ArgumentParser(prog="chain_eval")
-    parser.add_argument("--out", type=Path, required=True, help="a new directory")
-    parser.add_argument("--run", choices=("pilot", "counted", "held_out"), required=True)
+    parser.add_argument("--out", type=Path, help="a new directory")
+    parser.add_argument("--run", choices=("pilot", "counted", "held_out"))
+    parser.add_argument(
+        "--abort-open", action="store_true",
+        help="append an infra_killed aborted record for each open counted or held-out start",
+    )  # fmt: skip
     args = parser.parse_args(argv)
+    if args.abort_open:
+        try:
+            rows = Ledger(ledger_path()).abort_open(at=datetime.now(UTC).isoformat())
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        for row in rows:
+            sys.stdout.write(
+                json.dumps({k: row[k] for k in ("event", "kind", "cause", "at")}) + "\n"
+            )
+        return 0
+    if args.out is None or args.run is None:
+        parser.error("--out and --run are required unless --abort-open")
     kind: RunKind = args.run
     import anthropic  # noqa: PLC0415 - the SDK, only when chains really run
 
