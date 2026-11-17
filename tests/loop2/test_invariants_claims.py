@@ -1,13 +1,16 @@
 """`content_present` at the standard tier (packet v2-step4-claims §3.1, §3.2; [V2.3], [V2.15] Q4
 and amendment 1), refreshed to the later rulings: the baseline and its rebase ([V2.72],
 [V2.73]), task-wide echo guards ([V2.38]), every param on one observation with one element per
-param ([V2.39], [V2.40]), the scope ([V2.73] (1)) and the own name only ([V2.88] L10). Red on
-the step 4 stub."""
+param ([V2.39], [V2.40]), the scope ([V2.73] (1)), the own name only ([V2.88] L10) and the
+step 3 field-owned function applied to every field typed in the task ([V2.90] (2)). Red on the
+step 4 stub."""
 
 from __future__ import annotations
 
 import dataclasses
 from collections.abc import Mapping, Sequence
+
+import pytest
 
 from steerai.loop2.claims import Checked, RuntimeId, SubgoalFacts, check_content
 from steerai.loop2.decision import CLAIM_CLOSES, Claim
@@ -208,7 +211,7 @@ def test_an_element_inside_a_typed_fields_container_is_inside_field() -> None:
     assert "inside_field" in check(claim(hint.id), [group, field, hint], subgoal).tokens
 
 
-@pending("[V2.88] L10: text Steer typed itself never counts as content present", step=4)
+@pending("[V2.88] L10, [V2.90] (2): a field Steer typed into is never evidence", step=4)
 def test_a_field_steer_typed_never_counts_even_when_its_name_holds_the_words() -> None:
     typed = element(53, "Edit", "red shoes", (9, 53), 1)
     result = check(claim(typed.id), [typed], facts(typed_fields=(typed.runtime_id,)))
@@ -524,6 +527,45 @@ def test_an_unread_controller_for_never_fails_closed() -> None:
     result = check(claim(RESULT.id), [RESULT], subgoal)
     assert result.proof is not None
     assert "landmarks_unread" not in result.tokens
+
+
+BOX = element(170, "Group", "", (9, 170), 1)
+BOX_FIELD = element(171, "Edit", "Search", (9, 171), 170)
+BOX_HINTS = element(172, "List", "", (9, 172), 170)
+BOX_HINT = element(173, "Text", "red shoes", (9, 173), 172)
+TWO_FIELDS = [COMBO, COMBO_FIELD, COMBO_LIST, COMBO_ITEM, BOX, BOX_FIELD, BOX_HINTS, BOX_HINT]
+
+
+@pending("[V2.90] (2): the step 3 field-owned rules apply to every field typed in the task", step=4)
+@pytest.mark.parametrize(
+    ("cited", "rule"),
+    [(COMBO_ITEM, "owned_by_combobox"), (BOX_HINT, "owned_by_parent")],
+    ids=["first_field_rule_1", "second_field_rule_4"],
+)
+@pytest.mark.parametrize("order", [1, -1], ids=["typed_in_order", "typed_in_reverse"])
+def test_every_field_typed_in_the_task_owns_its_lists(
+    cited: Element, rule: str, order: int
+) -> None:
+    """Two fields were typed into, under two subgoals; neither is privileged, so a list each one
+    owns is rejected whichever was typed last."""
+    typed = (COMBO_FIELD.runtime_id, BOX_FIELD.runtime_id)[::order]
+    tokens = check(claim(cited.id), TWO_FIELDS, facts(typed_fields=typed)).tokens
+    assert "under_suggestions" in tokens
+    assert rule in tokens
+
+
+NO_RESULTS = element(180, "Text", "No results for red shoes", (9, 180), 1)
+"""A page's answer to a search that found nothing: outside the field, a new element whose own
+name holds every typed word."""
+
+
+@pending("[V2.90] (2) must-not-prove: 'No results for <typed words>' is not content", step=4)
+def test_a_no_results_line_echoing_the_typed_words_never_proves_content_present() -> None:
+    """[V2.90] (2): if the design cannot reject this, it is a counted safety issue, never left
+    unmeasured. Typed words in a real result elsewhere can still count (lb16 e3)."""
+    subgoal = facts(typed_fields=(FIELD.runtime_id,), typed_params=frozenset({"text"}))
+    result = check(claim(NO_RESULTS.id), [NO_RESULTS], subgoal)
+    assert result.proof is None
 
 
 @pending("[V2.21] #9: the option rule stays on top of the field-owned rules", step=4)
