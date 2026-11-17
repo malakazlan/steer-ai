@@ -34,7 +34,15 @@ from steerai.debug_trace import (
     debug_path_for,
     protect_for_user,
 )
-from steerai.errors import ErrorCode, SteerError
+from steerai.errors import (
+    DETAIL_AMBIGUOUS_TARGET,
+    DETAIL_CLOAK_UNREADABLE,
+    DETAIL_MINIMIZED,
+    DETAIL_NO_MATCH,
+    DETAIL_USAGE,
+    ErrorCode,
+    SteerError,
+)
 from steerai.goal_match import GoalMatcher, matcher_id
 from steerai.memory.plan_cache import CacheKey, Entry, PlanCache, outcome_of, refusal
 from steerai.orchestrator.console import ConsoleConfirmer, escape_text
@@ -303,14 +311,14 @@ def resolve_window(
     visible = [w for w in windows if w.hwnd not in excluded_hwnds and w.pid not in excluded_pids]
     matches = [w for w in visible if wanted in normalise_name(w.title).casefold()]
     if not matches:
-        raise RunnerError(ErrorCode.ELEMENT_NOT_FOUND, "no_match", visible)
+        raise RunnerError(ErrorCode.ELEMENT_NOT_FOUND, DETAIL_NO_MATCH, visible)
     # an unreadable twin still counts: dropping it would turn ambiguity into a pick (CU-05)
     if len(matches) > 1:
-        raise RunnerError(ErrorCode.ELEMENT_NOT_FOUND, "ambiguous_target", matches)
+        raise RunnerError(ErrorCode.ELEMENT_NOT_FOUND, DETAIL_AMBIGUOUS_TARGET, matches)
     if matches[0].minimized:
-        raise RunnerError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "minimized", matches)
+        raise RunnerError(ErrorCode.ELEMENT_NOT_ACTIONABLE, DETAIL_MINIMIZED, matches)
     if matches[0].cloak_unreadable:
-        raise RunnerError(ErrorCode.WINDOW_OTHER_DESKTOP, "cloak_unreadable", matches)
+        raise RunnerError(ErrorCode.WINDOW_OTHER_DESKTOP, DETAIL_CLOAK_UNREADABLE, matches)
     return matches[0]
 
 
@@ -674,14 +682,14 @@ def _pick_window(options: Options, deps: Deps) -> WindowInfo:
     if options.hwnd is not None:
         listed = [w for w in windows if w.hwnd == options.hwnd]
         if not listed:
-            raise RunnerError(ErrorCode.ELEMENT_NOT_FOUND, "no_match", windows)
+            raise RunnerError(ErrorCode.ELEMENT_NOT_FOUND, DETAIL_NO_MATCH, windows)
         window = listed[0]
         if window.hwnd in excluded_hwnds or window.pid in excluded_pids:
             raise UsageError("--hwnd names this runner's own console")
         if window.minimized:
-            raise RunnerError(ErrorCode.ELEMENT_NOT_ACTIONABLE, "minimized", listed)
+            raise RunnerError(ErrorCode.ELEMENT_NOT_ACTIONABLE, DETAIL_MINIMIZED, listed)
         if window.cloak_unreadable:
-            raise RunnerError(ErrorCode.WINDOW_OTHER_DESKTOP, "cloak_unreadable", listed)
+            raise RunnerError(ErrorCode.WINDOW_OTHER_DESKTOP, DETAIL_CLOAK_UNREADABLE, listed)
         return window
     if options.window is None:  # the parser requires one of the two
         raise UsageError("--window or --hwnd is required")
@@ -811,7 +819,7 @@ def _run_bound(  # noqa: PLR0913 - the run's state, one return per exit path
             )
         monitor = _started_monitor(deps, options)
     except UsageError as exc:
-        return out.error("usage", note=str(exc))
+        return out.error(DETAIL_USAGE, note=str(exc))
     except LedgerError as exc:
         return _ledger_refusal(out, exc)
     except SteerError as exc:
@@ -950,7 +958,7 @@ def _run_monitored(  # noqa: PLR0913, PLR0911 - the run's state, one return per 
         )
         trace.write({"kind": "model_calls", **model_calls.snapshot()})
     except UsageError as exc:
-        return out.error("usage", note=str(exc))
+        return out.error(DETAIL_USAGE, note=str(exc))
     except LedgerError as exc:
         return _ledger_refusal(out, exc)
     except RunnerError as exc:
@@ -1777,7 +1785,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         options = parse_args(args)
     except UsageError as exc:
         sys.stderr.write(f"usage error: {exc}\n")
-        sys.stdout.write(json.dumps({"status": "error", "code": None, "detail": "usage"}) + "\n")
+        sys.stdout.write(
+            json.dumps({"status": "error", "code": None, "detail": DETAIL_USAGE}) + "\n"
+        )
         return EXIT_USAGE
     if options.loop == "v2":  # an abbreviated flag: the v2 parser takes no abbreviations
         return _loop_v2(args)

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import itertools
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ from steerai.loop2.stage2 import (
     SiteTask,
     StartPage,
     classify_site,
+    days_bound,
     harness_failed,
     interleaved,
     invalid_run_void,
@@ -34,6 +36,8 @@ from steerai.loop2.stage2 import (
     volume_bound,
 )
 from steerai.loop2.stage2_expected import (
+    ATTEMPT_LOADS,
+    DAILY_CAP,
     SITE_SPACING_S,
     DecidingFacts,
     SiteRow,
@@ -74,6 +78,12 @@ def record(task_id: str, run: int, *, final: Mapping[str, Any] | None = DONE) ->
 
 def test_a_clean_start_page_is_no_void() -> None:
     assert start_void(StartPage(loaded=True, wall=False, facts=FACTS), FACTS) is None
+
+
+def test_a_task_with_no_committed_facts_is_checked_only_for_down_and_walled() -> None:
+    assert start_void(StartPage(loaded=True, wall=False, facts=None), None) is None
+    assert start_void(StartPage(loaded=False, wall=False, facts=None), None) == "site_down"
+    assert start_void(StartPage(loaded=True, wall=True, facts=None), None) == "bot_wall"
 
 
 @pytest.mark.parametrize(
@@ -152,7 +162,6 @@ def test_a_cap_kill_with_a_wall_is_a_fail() -> None:
     [
         {"status": "nonsense"},  # no_final_line
         {"status": "done", "reason": "internal_error", "used": {"max_actions": 1}},  # internal
-        {"status": "error", "detail": "x"},  # start_refused
     ],
 )
 def test_every_steer_caused_result_wins_over_a_confirmed_wall(final: Mapping[str, Any]) -> None:
@@ -211,7 +220,7 @@ def test_an_unread_start_page_is_an_infrastructure_void() -> None:
 
 def test_a_second_load_of_a_host_waits_out_its_spacing() -> None:
     clock = Clock()
-    spacer = Spacer(clock, clock.sleep)
+    spacer = Spacer(clock, clock.sleep, day=lambda: 0)
     spacer.wait("a.test")
     spacer.loaded("a.test")
     clock.now += 10.0
@@ -267,7 +276,7 @@ def _run(
         attempt=logged_attempt,
         control=logged_control,
         confirm=logged_confirm,
-        spacer=Spacer(clock, clock.sleep),
+        spacer=Spacer(clock, clock.sleep, day=Days(clock)),
     )
     return got, not_started, loads, clock
 
@@ -282,8 +291,9 @@ def test_run_one_of_every_task_comes_before_run_two_of_any() -> None:
 
 def test_every_load_of_a_host_is_spaced_and_controls_count_as_loads() -> None:
     tasks = [site("a1", "a.test")]
-    _, _, _, clock = _run(tasks, lambda t, n: SiteRecord(record(t.stage.task_id, n), None))
-    assert len(clock.slept) == 5  # control, run, control, run, control, run: 5 waits
+    _, _, loads, clock = _run(tasks, lambda t, n: SiteRecord(record(t.stage.task_id, n), None))
+    assert loads == [("control", "a.test")] + [("run", "a1")] * 3
+    assert len(clock.slept) == 3  # control, then three runs: every load after the first waited
     assert all(s == pytest.approx(SITE_SPACING_S) for s in clock.slept)
 
 
@@ -339,7 +349,7 @@ def test_a_run_not_started_is_counted_and_re_run() -> None:
         return refused if refused else SiteRecord(record(t.stage.task_id, n), None)
 
     clock = Clock()
-    spacer = Spacer(clock, clock.sleep)
+    spacer = Spacer(clock, clock.sleep, day=lambda: 0)
     got, not_started = run_stage(
         tasks,
         runs=3,
@@ -350,8 +360,8 @@ def test_a_run_not_started_is_counted_and_re_run() -> None:
     )
     assert not_started == 1
     assert sum(c.verdict == "pass" for c in got) == 3
-    # 4 batches each ran a control; the run that never started loaded nothing (#403 blocker)
-    assert spacer.loads == {"a.test": 4 + 3}
+    # [V2.65] (3): one control, in the first batch; the run never started loaded nothing
+    assert spacer.loads == {"a.test": 1 + 3}
 
 
 # ---- the tasks from the committed table ---------------------------------------------------------
@@ -518,7 +528,7 @@ def test_re_runs_are_spaced_too() -> None:
 def test_the_loads_per_host_are_counted_and_reported() -> None:
     tasks = [site("a1", "a.test")]
     clock = Clock()
-    spacer = Spacer(clock, clock.sleep)
+    spacer = Spacer(clock, clock.sleep, day=lambda: 0)
     got, not_started = run_stage(
         tasks,
         runs=3,
@@ -528,9 +538,11 @@ def test_the_loads_per_host_are_counted_and_reported() -> None:
         spacer=spacer,
     )
     summary = summarize(tasks, got, not_started=not_started, runs_per_task=3, loads=spacer.loads)
-    assert summary.report["harness_loads_per_host"] == {"a.test": 6}
-    assert summary.report["harness_loads_per_host_max"] == 6
-    assert summary.report["harness_loads_bound"] == volume_bound(tasks, runs=3) == {"a.test": 12}
+    assert summary.report["harness_loads_per_host"] == {"a.test": 4}
+    assert summary.report["harness_loads_per_host_max"] == 4
+    # [V2.65] (3): 3 runs and 3 re-runs, one control first and one per re-run batch at most
+    assert summary.report["harness_loads_bound"] == volume_bound(tasks, runs=3) == {"a.test": 10}
+    assert summary.report["harness_days_bound"] == {"a.test": 2}  # #428 (5): 10 loads at 6
 
 
 def test_the_volume_bound_per_host_from_the_task_data() -> None:
@@ -539,3 +551,444 @@ def test_the_volume_bound_per_host_from_the_task_data() -> None:
     bound = volume_bound(site_tasks(_table()), runs=3)
     assert set(bound) == {t.host for t in site_tasks(_table())}
     assert all(n >= 3 + MAX_RERUNS for n in bound.values())
+
+
+# ---- [V2.65] (3): a control once per host per session; at most 12 loads a host a day ----------
+
+
+class Days:
+    """The calendar day on the fake clock: a day is 86,400 s."""
+
+    def __init__(self, clock: Clock) -> None:
+        self.clock = clock
+
+    def __call__(self) -> int:
+        return int(self.clock() // 86_400)
+
+
+def _staged(tasks: list[SiteTask], attempt: Any, *, control: Any = lambda _h: "pass") -> Any:
+    clock = Clock()
+    loads: list[tuple[int, str, str]] = []
+    days = Days(clock)
+    spacer = Spacer(clock, clock.sleep, day=days)
+
+    def logged(t: SiteTask, n: int) -> Any:
+        loads.append((days(), "run", t.host))
+        return attempt(t, n)
+
+    def ctl(host: str) -> Any:
+        loads.append((days(), "control", host))
+        return control(host)
+
+    got, _ = run_stage(
+        tasks, runs=3, attempt=logged, control=ctl, confirm=lambda _t: False, spacer=spacer
+    )
+    return got, loads, clock, spacer
+
+
+def test_a_control_repeats_after_a_site_void_on_its_host() -> None:
+    tasks = [site("a1", "a.test")]
+    outcomes = iter(["site_down", None, None, None])
+
+    def attempt(t: SiteTask, n: int) -> SiteRecord:
+        void = next(outcomes)
+        return SiteRecord(record("a1", n, final=None if void else DONE), void)
+
+    _, loads, _, _ = _staged(tasks, attempt)
+    kinds = [kind for _, kind, _ in loads]
+    assert kinds == ["control", "run", "control", "run", "run", "run"]
+
+
+def test_a_control_repeats_for_a_re_run_on_a_later_day() -> None:
+    """A re-run batch on a new day controls again; a later batch on the same day does not."""
+    tasks = [site("a1", "a.test")]
+    clock_ref: list[Clock] = []
+    outcomes = iter(["monitor_lost", None, None, None])
+
+    def attempt(t: SiteTask, n: int) -> SiteRecord:
+        lost = next(outcomes) == "monitor_lost"
+        if lost:
+            clock_ref[0].now += 86_400.0  # the next batch falls on the next day
+        final = {**DONE, "monitor_lost": True} if lost else DONE
+        return SiteRecord(record("a1", n, final=final), None)
+
+    clock = Clock()
+    clock_ref.append(clock)
+    days = Days(clock)
+    loads: list[tuple[int, str]] = []
+
+    def logged(t: SiteTask, n: int) -> SiteRecord:
+        loads.append((days(), "run"))
+        return attempt(t, n)
+
+    def ctl(_host: str) -> ControlResult:
+        loads.append((days(), "control"))
+        return "pass"
+
+    run_stage(tasks, runs=3, attempt=logged, control=ctl, confirm=lambda _t: False,
+              spacer=Spacer(clock, clock.sleep, day=days))  # fmt: skip
+    assert [k for _, k in loads] == ["control", "run", "control", "run", "run", "run"]
+
+
+def test_a_host_stops_at_its_daily_cap_and_resumes_the_next_day() -> None:
+    tasks = [site(f"a{i}", "a.test") for i in range(5)]  # 15 runs and a control on one host
+    _, loads, _, spacer = _staged(tasks, lambda t, n: SiteRecord(record(t.stage.task_id, n), None))
+    per_day: dict[int, int] = {}
+    for day, _, _ in loads:
+        per_day[day] = per_day.get(day, 0) + 1
+    assert all(n <= DAILY_CAP for n in per_day.values())
+    assert len(per_day) == 2  # 16 loads at 12 a day: two days
+    assert sum(per_day.values()) == 16 == spacer.loads["a.test"]
+
+
+def test_the_policy_caps() -> None:
+    assert DAILY_CAP == 12
+
+
+def test_an_unrated_task_runs_with_the_unrated_expectation() -> None:
+    """[V2.65] (2): unrated never means exempt. It runs, held to the hard bar; only its expected
+    outcome is not checked. It has no committed facts, so the start check reads only whether the
+    site is up and not walled."""
+    table = _table()
+    gone = next(iter(table))
+    table.pop(gone)
+    tasks = site_tasks(table, unrated={gone: "target_after_opener"})
+    held = next(t for t in tasks if t.stage.task_id == gone)
+    assert (held.stage.expect, held.facts) == ("unrated", None)
+    assert len(tasks) == 30
+    summary = summarize(
+        tasks,
+        [],
+        not_started=0,
+        runs_per_task=3,
+        unrated={gone: "target_after_opener"},
+    )
+    assert summary.report["unrated"] == {gone: "target_after_opener"}
+
+
+# ---- #413 item 4: when a control does not repeat -----------------------------------------------
+
+
+def test_a_re_run_on_the_same_day_does_not_repeat_the_control() -> None:
+    tasks = [site("a1", "a.test")]
+    outcomes = iter([True, False, False, False])
+
+    def attempt(t: SiteTask, n: int) -> SiteRecord:
+        lost = next(outcomes)
+        final = {**DONE, "monitor_lost": True} if lost else DONE
+        return SiteRecord(record("a1", n, final=final), None)
+
+    _, loads, _, _ = _staged(tasks, attempt)
+    assert [kind for _, kind, _ in loads] == ["control", "run", "run", "run", "run"]
+
+
+def test_a_site_void_on_one_host_repeats_only_that_hosts_control() -> None:
+    tasks = [site("a1", "a.test"), site("b1", "b.test")]
+    voids = iter(["site_down"])
+
+    def attempt(t: SiteTask, n: int) -> SiteRecord:
+        void = next(voids, None) if t.host == "a.test" else None
+        return SiteRecord(record(t.stage.task_id, n, final=None if void else DONE), void)
+
+    _, loads, _, _ = _staged(tasks, attempt)
+    controls = [host for _, kind, host in loads if kind == "control"]
+    assert controls.count("a.test") == 2
+    assert controls.count("b.test") == 1
+
+
+# ---- #419: the midnight flake, and the daily cap as a hard cap -----------------------------------
+
+CALENDAR_TEST = "test_a_spacer_counts_days_on_the_calendar_by_default"
+
+
+def _names_of(tree: ast.Module, target: str) -> set[str]:
+    """`target` and every name bound to it: an import alias (`import ... as x`), a module's
+    attribute (`mod.target`), and a rebinding (`x = target`, `x = mod.target`, `x = y` of a
+    name already bound), to a fixpoint."""
+    names = {target} | {
+        a.asname or a.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for a in node.names
+        if a.name == target
+    }
+    while True:
+        more = {
+            t.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign) and _refers(node.value, names, target)
+            for t in node.targets
+            if isinstance(t, ast.Name)
+        }
+        if more <= names:
+            return names
+        names |= more
+
+
+def _refers(node: ast.expr | None, names: set[str], target: str) -> bool:
+    return (isinstance(node, ast.Name) and node.id in names) or (
+        isinstance(node, ast.Attribute) and node.attr == target
+    )
+
+
+def _bare_spacers(source: str, name: str = "t.py") -> list[str]:
+    """Every `Spacer` built in `source` (module level, a def or an async def; by its own name,
+    an import alias, a rebound name, `module.Spacer`, or through `partial(Spacer, ...)`) without
+    `day=`, or with the calendar (`calendar_day`, an alias or a rebinding of it, or
+    `module.calendar_day`); the one test of the calendar default is exempt. Known limit
+    (#466 (1)): a call that passes `**kw` is flagged even when the mapping holds a day (the
+    check cannot see into it: fail closed)."""
+    tree = ast.parse(source)
+    spacers = _names_of(tree, "Spacer")
+    calendars = _names_of(tree, "calendar_day")
+    exempt: set[int] = set()
+    for fn in ast.walk(tree):
+        if isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef) and fn.name == CALENDAR_TEST:
+            exempt |= {id(n) for n in ast.walk(fn)}
+    bare = []
+    for call in ast.walk(tree):
+        if not isinstance(call, ast.Call) or id(call) in exempt:
+            continue
+        func = call.func
+        partial = getattr(func, "id", getattr(func, "attr", None)) == "partial"
+        if partial:
+            built = bool(call.args) and _refers(call.args[0], spacers, "Spacer")
+        else:
+            built = _refers(func, spacers, "Spacer")
+        if not built:
+            continue
+        day = next((k.value for k in call.keywords if k.arg == "day"), None)
+        if day is None or _refers(day, calendars, "calendar_day"):
+            bare.append(f"{name}:{call.lineno}")
+    return bare
+
+
+def test_no_stage_test_reads_the_real_calendar() -> None:
+    """#419 (1): a run across local midnight must never flip a result. Every `Spacer` built in a
+    stage test is given its day (never the calendar), except the one test of the default."""
+    tests = Path(__file__).parent
+    bare = [
+        found
+        for path in sorted(tests.glob("test_stage*.py"))
+        for found in _bare_spacers(path.read_text(encoding="utf-8"), path.name)
+    ]
+    assert bare == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "s = Spacer(clock, sleep)\n",  # module level
+        "async def t():\n    Spacer(clock, sleep)\n",
+        "from steerai.loop2.stage2_expected import Spacer as S\ndef t():\n    S(c, s)\n",
+        "import steerai.loop2.stage2_expected as se\ndef t():\n    se.Spacer(c, s)\n",
+        "def t():\n    Spacer(c, s, day=calendar_day)\n",
+        "def t():\n    Spacer(c, s, day=se.calendar_day)\n",
+        # #466 (1): the common bypasses
+        "from steerai.loop2.stage2_expected import calendar_day as cd\n"
+        "def t():\n    Spacer(c, s, day=cd)\n",  # an aliased calendar import
+        "def t():\n    cd = calendar_day\n    Spacer(c, s, day=cd)\n",  # a rebound calendar
+        "def t():\n    S = Spacer\n    S(c, s)\n",  # a rebound Spacer
+        "S = Spacer\ndef t():\n    S(c, s)\n",  # rebound at module level
+        "def t():\n    S = se.Spacer\n    S(c, s)\n",  # rebound from the module
+        "from functools import partial\ndef t():\n    partial(Spacer, c, s)()\n",
+        "import functools\ndef t():\n    functools.partial(Spacer, c)(s)\n",
+        "def t():\n    partial(Spacer, c, s, day=calendar_day)()\n",
+        "def t():\n    Spacer(c, s, **kw)\n",  # the known limit: `**kw` is flagged
+    ],
+)
+def test_the_calendar_check_sees_every_form(source: str) -> None:
+    """#428 (3), #466 (1): module-level calls, async defs, aliases, attribute forms, the
+    calendar, an aliased or rebound calendar, a rebound `Spacer` and `partial(Spacer, ...)`."""
+    assert _bare_spacers(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def t():\n    Spacer(c, s, day=days)\n",
+        "def t():\n    S = Spacer\n    S(c, s, day=days)\n",
+        "from functools import partial\ndef t():\n    partial(Spacer, c, s, day=days)()\n",
+    ],
+)
+def test_the_calendar_check_passes_a_spacer_given_its_day_in_any_form(source: str) -> None:
+    assert _bare_spacers(source) == []
+
+
+def test_an_attempt_never_starts_without_its_whole_budget_left_today() -> None:
+    """#419 (2): the cap is hard. An attempt's loads (its control when due, its run, and a
+    possible wall confirmation) all count; one that would overrun waits for the next day."""
+    clock = Clock()
+    days = Days(clock)
+    spacer = Spacer(clock, clock.sleep, day=days, cap=3)
+    loads: list[tuple[int, str]] = []
+
+    def attempt(t: SiteTask, n: int) -> SiteRecord:
+        loads.append((days(), "run"))
+        return SiteRecord(record("a1", n, final=None), "site_down")  # a control repeats
+
+    def ctl(_host: str) -> ControlResult:
+        loads.append((days(), "control"))
+        return "pass"
+
+    run_stage([site("a1", "a.test")], runs=1, attempt=attempt, control=ctl,
+              confirm=lambda _t: False, spacer=spacer)  # fmt: skip
+    per_day: dict[int, list[str]] = {}
+    for day, kind in loads:
+        per_day.setdefault(day, []).append(kind)
+    assert all(len(kinds) <= 3 for kinds in per_day.values())
+    assert all(kinds[-1] == "run" for kinds in per_day.values())  # no control left without its run
+    assert len(per_day) > 1  # the attempts that would overrun waited for the next day
+
+
+# ---- #428 (4): the hard cap with a confirmation, and with several hosts --------------------------
+
+
+def _confirming(tasks: list[SiteTask], *, cap: int, runs: int = 2) -> list[tuple[int, str, str]]:
+    """Every run meets a wall on its own host that needs its confirming load."""
+    clock = Clock()
+    days = Days(clock)
+    loads: list[tuple[int, str, str]] = []
+
+    def attempt(t: SiteTask, n: int) -> SiteRecord:
+        loads.append((days(), t.host, "run"))
+        return SiteRecord(walled(), None, wall_host=t.host)
+
+    def confirm(t: SiteTask) -> bool:
+        loads.append((days(), t.host, "confirm"))
+        return False
+
+    def ctl(host: str) -> ControlResult:
+        loads.append((days(), host, "control"))
+        return "pass"
+
+    run_stage(tasks, runs=runs, attempt=attempt, control=ctl, confirm=confirm,
+              spacer=Spacer(clock, clock.sleep, day=days, cap=cap))  # fmt: skip
+    return loads
+
+
+def test_a_wall_needing_its_confirmation_at_two_left_keeps_both_loads_on_its_day() -> None:
+    """With 2 left today, an attempt starts and its run and its confirmation both land today."""
+    assert needs_confirmation(
+        site("a1", "a.test", controlled=False),
+        SiteRecord(walled(), None, wall_host="a.test"),
+    )
+    loads = _confirming([site("a1", "a.test", controlled=False)], cap=4, runs=2)
+    per_day: dict[int, list[str]] = {}
+    for day, _host, kind in loads:
+        per_day.setdefault(day, []).append(kind)
+    assert per_day[0] == ["run", "confirm", "run", "confirm"]  # the second began with 2 left
+    assert all(len(kinds) <= 4 for kinds in per_day.values())
+
+
+def test_the_cap_holds_per_host_with_several_hosts_and_confirmations() -> None:
+    tasks = [site("a1", "a.test"), site("b1", "b.test"), site("a2", "a.test")]
+    loads = _confirming(tasks, cap=5, runs=2)
+    per: dict[tuple[int, str], int] = {}
+    for day, host, _kind in loads:
+        per[(day, host)] = per.get((day, host), 0) + 1
+    assert all(n <= 5 for n in per.values())
+    # each run's confirmation follows it on the same day and the same host
+    for (day, host, kind), (day2, host2, kind2) in itertools.pairwise(loads):
+        if kind2 == "confirm":
+            assert (kind, day, host) == ("run", day2, host2)
+
+
+# ---- #428 (5): the days bound never understates ------------------------------------------------
+
+
+def test_the_days_bound_reserves_each_attempts_confirmation() -> None:
+    per_day = DAILY_CAP // ATTEMPT_LOADS
+    assert days_bound({"a.test": per_day}) == {"a.test": 1}
+    assert days_bound({"a.test": per_day + 1}) == {"a.test": 2}
+    assert days_bound({"a.test": DAILY_CAP}) == {"a.test": 2}  # the old bound said 1
+
+
+def test_a_run_where_every_attempt_confirms_fits_its_days_bound() -> None:
+    tasks = [site("a1", "a.test"), site("a2", "a.test")]
+    loads = _confirming(tasks, cap=DAILY_CAP, runs=3)
+    used = len({day for day, _host, _kind in loads})
+    assert used <= days_bound(volume_bound(tasks, runs=3))["a.test"]
+
+
+# ---- #428 (6): a host with only uncontrolled tasks reserves no control ---------------------------
+
+
+def test_an_uncontrolled_host_needs_only_an_attempts_loads() -> None:
+    """With a cap of one attempt's loads a day (`ATTEMPT_LOADS`), an uncontrolled task runs
+    today: no control's load is reserved for it."""
+    clock = Clock()
+    days = Days(clock)
+    ran: list[int] = []
+
+    def bounded() -> int:  # a reserved control would wait day after day: fail, never hang
+        day = days()
+        assert day < 3, "the task never ran: a control load was reserved for it"
+        return day
+
+    def attempt(t: SiteTask, n: int) -> SiteRecord:
+        ran.append(days())
+        return SiteRecord(record(t.stage.task_id, n), None)
+
+    run_stage([site("u1", "u.test", controlled=False)], runs=1, attempt=attempt,
+              control=lambda _h: "pass", confirm=lambda _t: False,
+              spacer=Spacer(clock, clock.sleep, day=bounded, cap=ATTEMPT_LOADS))  # fmt: skip
+    assert ran == [0]
+
+
+# ---- #428 (7): a load counts on the day it started ---------------------------------------------
+
+
+def test_a_run_that_crosses_midnight_counts_on_the_day_it_started() -> None:
+    clock = Clock()
+    days = Days(clock)
+    spacer = Spacer(clock, clock.sleep, day=days, cap=3)
+    start = days()
+
+    def attempt(t: SiteTask, n: int) -> SiteRecord:
+        clock.now += 86_400.0  # the run ends after midnight
+        return SiteRecord(record(t.stage.task_id, n), None)
+
+    run_stage([site("a1", "a.test", controlled=False)], runs=1, attempt=attempt,
+              control=lambda _h: "pass", confirm=lambda _t: False, spacer=spacer)  # fmt: skip
+    clock.now -= 86_400.0  # back on the day it started
+    assert days() == start
+    assert spacer.remaining("a.test") == 2
+
+
+def test_a_control_that_crosses_midnight_counts_on_the_day_it_started() -> None:
+    """#466 (3): the control's load is stamped with the day it began, like the run's."""
+    clock = Clock()
+    days = Days(clock)
+    spacer = Spacer(clock, clock.sleep, day=days, cap=3)
+
+    def ctl(_host: str) -> ControlResult:
+        clock.now += 86_400.0  # the control ends after midnight
+        return "pass"
+
+    run_stage([site("a1", "a.test")], runs=1,
+              attempt=lambda t, n: SiteRecord(record(t.stage.task_id, n), None),
+              control=ctl, confirm=lambda _t: False, spacer=spacer)  # fmt: skip
+    clock.now -= 86_400.0  # back on the day the control started
+    assert spacer.remaining("a.test") == 3 - 1  # the control, and only it, on day 0
+    clock.now += 86_400.0
+    assert spacer.remaining("a.test") == 3 - 1  # the run, after midnight, on day 1
+
+
+def test_a_confirmation_that_crosses_midnight_counts_on_the_day_it_started() -> None:
+    """#466 (3): a wall confirmation's load is stamped with the day it began."""
+    clock = Clock()
+    days = Days(clock)
+    spacer = Spacer(clock, clock.sleep, day=days, cap=3)
+
+    def confirm(_t: SiteTask) -> bool:
+        clock.now += 86_400.0  # the confirmation ends after midnight
+        return False
+
+    run_stage([site("a1", "a.test", controlled=False)], runs=1,
+              attempt=lambda t, _n: SiteRecord(walled(), None, wall_host=t.host),
+              control=lambda _h: "pass", confirm=confirm, spacer=spacer)  # fmt: skip
+    clock.now -= 86_400.0  # back on the day the run and its confirmation started
+    assert spacer.remaining("a.test") == 3 - 2  # the run and its confirmation, both on day 0
+    clock.now += 86_400.0
+    assert spacer.remaining("a.test") == 3

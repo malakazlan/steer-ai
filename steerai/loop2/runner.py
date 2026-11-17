@@ -7,17 +7,18 @@ write-ahead. Every outside effect goes through `Ports`; a port error ends the ta
 a taxonomy token and the evidence kept (RT-16).
 
 The claim checks and the `navigated` auto proof are step 3c PR B (`verify.check_claim`,
-`verify.auto_proof`); the auto proof is tried only when there is a change signal since a
-subgoal's baseline (the URL changed, or the top Document was replaced), which §7.1 requires
-before anything else. The Enter table on the watch's final report and the staleness rule are
-PR C (`enter_outcome`, `stale_observation`).
+`verify.judge`, whose verdict is `verify.auto_proof`'s); the auto proof is tried on every full
+observation ([V2.67] A) when there is a change signal since a subgoal's baseline (the URL
+changed, or the top Document was replaced), which §7.1 requires before anything else. The
+Enter table on the watch's final report and the staleness rule are PR C (`enter_outcome`,
+`stale_observation`).
 """
 
 from __future__ import annotations
 
 import hashlib
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Final, Literal, get_args
 
@@ -25,14 +26,21 @@ from steerai.action.dispositions import Delivery
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2.actuate import may_retry, press_allowed, type_focus_ok
 from steerai.loop2.batch import batch_continues
-from steerai.loop2.controller import TOKEN, ControllerError, focus_state
+from steerai.loop2.controller import (
+    TOKEN,
+    ControllerError,
+    DecideRecord,
+    decision_shape,
+    focus_state,
+)
 from steerai.loop2.decision import (
     CLAIM_CLOSES,
     NOT_IN_STEP_VERBS,
     ActionDoc,
     Claim,
     Decision,
-    subgoal_tokens,
+    Stop,
+    SubgoalDoc,
     validate,
 )
 from steerai.loop2.form import ENTER_FIELDS, STATE_SET_VERB, scope_fields
@@ -45,8 +53,10 @@ from steerai.loop2.guards import (
     budget_hit,
     made_progress,
     same_action,
+    single_cause,
 )
 from steerai.loop2.history import (
+    REFUSAL_TOKENS,
     ClaimResult,
     ClaimWord,
     Entered,
@@ -63,24 +73,38 @@ from steerai.loop2.history import (
     WorldMoved,
     log_role,
     record_ok,
+    refused_shape,
+    render,
 )
 from steerai.loop2.listing import ListingTurn, words_of
 from steerai.loop2.loop import (
+    AUDIT_COUNTS,
+    AUDIT_FAILED,
+    AUDIT_NO_CALL,
     COMMIT_RISK,
+    INTAKE_COUNTS,
     PARENT_KINDS,
     READ_BACK_VERBS,
     URL_READS,
     ActResult,
+    Audited,
     AuditView,
+    CountFailed,
     Dispatch,
+    IntakeLine,
+    IntakeView,
     ParentKind,
     PendingText,
     PortInterrupted,
     Ports,
     ProofLine,
     Provenance,
+    ReadKind,
     Reason,
+    RiskWhy,
+    RunnerAuditReason,
     Status,
+    SufficiencyReason,
     TaskOutcome,
     TokenUsage,
     TurnView,
@@ -88,6 +112,7 @@ from steerai.loop2.loop import (
     WatchKind,
     WindowCovered,
     action_risk,
+    calls_made,
     type_refusal,
     url_read,
     watch_kind,
@@ -103,13 +128,32 @@ from steerai.loop2.query import (
     top_document_replaced,
 )
 from steerai.loop2.task import GoalSpan, Subgoal, Task, known_params
+from steerai.loop2.turn_trace import (
+    ActFact,
+    CarrierFact,
+    Gate,
+    ParamProof,
+    ProofAttempt,
+    ReadFacts,
+    RefusalFact,
+    Skipped,
+    TurnTrace,
+    WatchFacts,
+    closed,
+    detail_token,
+    positional,
+    turn_record,
+)
+from steerai.loop2.turn_trace import ReadKind as ProofRead
 from steerai.loop2.verify import (
     PAGE_CARRIERS,
     URL_CARRIERS,
+    CheckToken,
+    Judged,
     Readers,
-    auto_proof,
     check_claim,
     holds_words,
+    judge,
 )
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.orchestrator.loop import REUSE_FRESHNESS_S
@@ -136,15 +180,59 @@ REFUSAL_KIND: Final[Mapping[str, RefusalKind]] = {
     "secure_unread": "policy",
     "text_changed": "policy",
     "not_in_step": "step",
-    "target_changed": "world",
     "not_delivered": "world",
     "press_not_at_focus": "world",
     "press_target_gone": "world",
     "press_target_changed": "world",
     "type_not_at_focus": "world",
     "field_not_empty": "world",
+    "not_foreground": "world",
+    "screen_changed_during_ask": "world",
+    "composer_unreadable": "world",
+    "composer_differs": "world",
+    "ask_empty": "model",
+    "ask_with_actions": "model",
+    "ask_with_stop": "model",
+    "commit_cannot_apply": "model",
+    "commit_conflict": "model",
+    "commit_undeclared": "model",
+    "desc_bad": "model",
+    "done_already": "model",
+    "empty_decision": "model",
+    "focus_needs_field": "model",
+    "id_not_listed": "model",
+    "intake_insufficient": "model",
+    "key_missing": "model",
+    "no_strict_shape": "model",
+    "not_own_text": "model",
+    "option_missing": "model",
+    "page_without_param": "model",
+    "param_missing": "model",
+    "param_name_bad": "model",
+    "param_not_span": "model",
+    "param_unknown": "model",
+    "repeat_send": "model",
+    "state_without_param": "model",
+    "stop_with_actions": "model",
+    "subgoal_duplicate": "model",
+    "subgoal_id_bad": "model",
+    "subgoal_unknown": "model",
+    "subgoals_after_first": "model",
+    "subgoals_missing": "model",
+    "target_missing": "model",
+    "target_on_untargeted_verb": "model",
+    "text_bad": "model",
+    "text_missing": "model",
+    "too_many_actions": "model",
+    "too_many_subgoals": "model",
+    "type_text_and_param": "model",
+    "value_without_param": "model",
+    "wanted_missing": "model",
+    "wanted_not_state": "model",
 }
-"""[V2.12], [V2.37] P5: each refusal token's kind; any other token is a model fault."""
+"""[V2.12], [V2.37] P5, [V2.74]: each refusal token's kind, declared for every token (no default;
+a token without a kind fails a test). [V2.43]: a world fact the person-ask
+step meets is `world`."""
 KIND_ORDER: Final[tuple[RefusalKind, ...]] = ("policy", "step", "world", "model")
 """[V2.42] RT-29: several refusal reasons take the kind by this priority, never token order."""
 CLOCK_DOMAIN_S: Final = 3600.0
@@ -204,6 +292,7 @@ class _ActCounts:
     toggles_settled_on_reread: int = 0
     fields_not_empty: int = 0
     not_own_text: int = 0
+    evidence_taken: int = 0
 
 
 @dataclass
@@ -252,6 +341,28 @@ class _Turn:
     focused: tuple[int, ...] | None = None
     """[V2.51] (3): the field a focus in this turn's batch put the focus on (read back True): a
     type after it is checked against it, not against the listing taken before it."""
+    seen: Observed | None = None
+    """[V2.67] D: the observation the model saw this turn."""
+    shape: dict[str, Any] | None = None  # Any: JSON values (`decision_shape`)
+    number: int = 0
+    """[V2.67] D: the turn's number among the loop's turns, fixed when the turn is made."""
+    listing: ListingTurn | None = None
+    """This turn's own listing, as its decide reported it; None: unknown."""
+    usage: TokenUsage | None = None
+    refusals: list[RefusalFact] = field(default_factory=list)
+    acts: list[ActFact] = field(default_factory=list)
+    repair: bool = False
+    repair_tokens: tuple[str, ...] = ()
+    at: int = 0
+    """[V2.67] D: the position in the batch of the action being handled."""
+    ratings: dict[int, tuple[Risk, RiskWhy | None]] = field(default_factory=dict)
+    """[V2.67] D: each rated action's tier and the rule that set it, by batch position."""
+    traced: bool = False
+    """[V2.67] D: this turn's record went to the trace port (or was dropped): once only."""
+    watches: list[WatchFacts] = field(default_factory=list)
+    history: list[str] = field(default_factory=list)
+    proofs: list[ProofAttempt] = field(default_factory=list)
+    """[V2.67] D: every proof attempt this turn, filled by the verifier's judgements."""
 
 
 class _Handles:
@@ -296,11 +407,10 @@ class _Handles:
 @dataclass(frozen=True)
 class _Ever:
     """[V2.38] RT-39: one type Steer sent in this task, never pruned (unlike pending text): the
-    field, the subgoal it was typed under, and the words when typed by param (None: generated
-    text, whose words are not kept)."""
+    field and the words when typed by param (None: generated text, whose words are not kept).
+    [V2.73]: the subgoal it was typed under is not kept; a label never decides evidence."""
 
     field: tuple[int, ...]
-    subgoal: str
     words: str | None
 
 
@@ -311,7 +421,6 @@ class _Proof:
 
     handle: int
     kind: str
-    wanted: str | None
 
 
 @dataclass(frozen=True)
@@ -392,17 +501,33 @@ class _Run:
         """The shakedown's #3: the last rejected turn's closed tokens, for the final line."""
         self.strikes = Strikes(STRIKE_LIMIT)
         self.strike_log: list[tuple[StrikeReason, ...]] = []
+        self.strike_words: list[frozenset[str]] = []
+        """[V2.69] Two: each strike's refusal tokens, beside `strike_log`, for the single cause."""
         self.refusal: tuple[RefusalKind, str] | None = None
         self.typed: list[_Typed] = []
         self.pending: list[_Pending] = []
         """#335 review: the pending fields as the last `_pending` found them, for row 2."""
         self.baselines: dict[str, Observed] = {}
         self.first: Observed | None = None
+        self.first_full: Observed | None = None
+        """[V2.72]: the task's first full observation, every subgoal's baseline."""
+        self.rebased: set[str] = set()
+        """[V2.74] (#475): the non-commit subgoals another subgoal's close through a model claim
+        rebased (`_rebase`); `rebased_open` counts those still open when the task ends. An auto
+        proof's close rebases too, but is not counted: no claim order decided it."""
+        self.rebased_commit: set[str] = set()
+        """[V2.76]: as `rebased`, for commit subgoals."""
         self.last_acted: _Acted | None = None
         self.batch_last: tuple[ActionKey, EffectReport] | None = None
         self.fresh: dict[tuple[int, ...], ValueFact | None] = {}
         self.started = ports.clock()
         self.turn = _Turn()
+        self.turns = 0
+        """[V2.67] D: the turns the loop opened (its trace's turn numbers), never the calls."""
+        self.turn_trace_dropped = 0
+        """[V2.67] D: turn records the no-free-text check dropped."""
+        self.turn_trace_errors = 0
+        """#463 (1): turns whose record could not be built or written."""
         self.read_costs: list[ReadCost] = []
         self.reasked: set[tuple[int, ...]] = set()
         """[V2.38] RT-12: the top Documents already re-asked on (once per Document)."""
@@ -425,13 +550,29 @@ class _Run:
         self.unread_aids = 0
         self.proven_how: dict[str, ProvenHow] = {}
         """[V2.64] One: how each subgoal was proven (a claim, or the auto proof's token)."""
-        self.audit: tuple[str, str] | None = None
+        self.audit: tuple[str, SufficiencyReason | RunnerAuditReason] | None = None
         """[V2.64] One: the final audit's outcome and reason, when it ran."""
+        self.audit_counts: dict[str, int] = dict.fromkeys(AUDIT_COUNTS, 0)
+        """[V2.69] One, packet rev 4 item 4: the audit's counts (`_audit`)."""
+        self.intake_counts: dict[str, int] = dict.fromkeys(INTAKE_COUNTS, 0)
+        """[V2.68] One, packet rev 4 item 4: the intake check's counts (`_intake_passes`)."""
+        self.intake_memo: dict[str, bool] = {}
+        """Packet rev 5 item 1 (P4): each declared set's verdict by its digest, passed or
+        rejected; a set already judged makes no new call."""
+        self.free_texts: list[str] = []
+        """Packet rev 5 item 5: the free text of each `type` Steer sent with `text` (not a
+        param), kept in memory only, masked out of the audit's view."""
         self.query_combobox_listed = False
         self.typed_into_combobox = False
         """[V2.64] Two: the two ComboBox facts of the task, no judgement."""
         """#301: unread automation ids over every observation taken in (`_in_domain`)."""
         self.partial_page_calls = 0
+        self.judged: Observed | None = None
+        """§7.1: the last read the auto proof judged (`_auto_proofs`)."""
+        self.saved_calls = 0
+        """[V2.67] A: turns the turn-start judgement closed the task, so no model call was made."""
+        self.next_read: ProofRead = "turn_start"
+        """[V2.67] D: what the next turn-start judgement runs on (`_stale` marks a re-read)."""
         self.pre_task_draft_clicks = 0
         """[V2.64] Two: counted at each non-field click (`_pre_task_draft`)."""
         """[V2.35]: model calls made on a growing or young observation (`_decide`)."""
@@ -470,6 +611,7 @@ class _Run:
         return self._outcome("stopped", Reason("port_interrupted_unlatched"))
 
     def _outcome(self, status: Status, cause: Reason | None) -> TaskOutcome:
+        self._trace_turn()  # [V2.67] D: the turn the task ended in, before its counts
         return TaskOutcome(
             status=status,
             cause=cause,
@@ -492,13 +634,18 @@ class _Run:
             unread_automation_ids=self.unread_aids,
             url_reads=tuple(self.url_reads.items()),
             audit=self.audit,
+            **self.audit_counts,
+            **self.intake_counts,
             query_combobox_listed=self.query_combobox_listed,
             typed_into_combobox=self.typed_into_combobox,
             partial_page_calls=self.partial_page_calls,
             pre_task_draft_clicks=self.pre_task_draft_clicks,
+            saved_calls=self.saved_calls,
             refusals=tuple(self.refusal_counts.items()),
             submit_parents=tuple(self.submit_parents.items()),
             history_dropped=self.history_dropped,
+            turn_trace_dropped=self.turn_trace_dropped,
+            turn_trace_errors=self.turn_trace_errors,
             listings=tuple(self.listing.turns),
             focus_moved_after_press=self.counts.focus_moved_after_press,
             observations_focus_unread=self.counts.observations_focus_unread,
@@ -509,6 +656,9 @@ class _Run:
             toggles_settled_on_reread=self.counts.toggles_settled_on_reread,
             fields_not_empty=self.counts.fields_not_empty,
             not_own_text=self.counts.not_own_text,
+            evidence_taken=self.counts.evidence_taken,
+            rebased_open=len(self.rebased - self.proven),
+            rebased_open_commit=len(self.rebased_commit - self.proven),
         )
 
     def _cost(self) -> float | None:
@@ -525,7 +675,7 @@ class _Run:
             total += used * (rate or 0.0)
         return math.nan if self.usage_incomplete else total
 
-    def _stopped(self, stop: Literal["cannot", "blocked"]) -> _End:
+    def _stopped(self, stop: Stop) -> _End:
         """[V2.12], [V2.37] P5: the status after a stop, from the latest refusal since the last
         progress."""
         standing = [
@@ -560,18 +710,43 @@ class _Run:
             if not self.handles.bind(observed):
                 observed = self._nothing_listed(observed)
                 continue
-            decision = self._decide(observed)
+            self.turns += 1  # [V2.67] D: turns, not calls (a repaired turn is two calls)
+            # [V2.67] A: a close at turn start is this turn's progress; made once, never
+            # replaced ([V2.67] D: the trace's facts are set on it as they arrive)
+            self.turn = _Turn(seen=observed, number=self.turns)
+            self._judge_turn_start(observed)
+            try:
+                decision = self._decide(observed)
+            except ControllerError as rejected:
+                observed = self._rejected_turn(rejected, observed)
+                self._trace_turn()  # [V2.67] D: one record per rejected turn
+                continue
+            if self.ports.turn_trace is not None:  # #444: no trace work without a sink
+                # #457 review: shaped before the intake check, so a refused intake turn's record
+                # carries the Decision it judged (None means no call)
+                self.turn.shape = decision_shape(
+                    decision,
+                    known_subgoals=known_params(self.subgoals),
+                    tokens=(),
+                    turn=self.turn.number,
+                    attempt=0,
+                )
+            if not self._intake_passes(decision):  # [V2.68] One: refused before anything freezes
+                observed = self._record_strike(observed)
+                self._trace_turn()  # [V2.67] D: one record per refused intake turn (#457 P5)
+                continue
             self._check_interrupt()  # #326, [V2.40] Q4: a Decision after the kill is discarded
-            self.turn = _Turn()
             fresh = self._observe()
             if fresh.read_cost is not None:
                 self.read_costs.append(fresh.read_cost)  # [V2.34]: this re-read is paid for too
             if stale_observation(observed, fresh):
+                self._trace_turn()
                 observed = self._stale(fresh, moved="page")
                 continue
             loading = (observed.growing or observed.young) and self._guard_left(observed) > 0
             observed = self._turn(decision, observed, fresh)
             if self.turn.stale_read is not None:
+                self._trace_turn()
                 observed = self._stale(self.turn.stale_read, moved=self.turn.moved)
                 continue
             if not self.turn.moved_after_send:
@@ -582,6 +757,23 @@ class _Run:
                 # in full with nothing refused, is no strike (more may arrive)
                 self.turn.neutral = self.turn.neutral or not self.turn.refused
             observed = self._record_strike(observed)
+            self._trace_turn()
+
+    def _rejected_turn(self, rejected: ControllerError, observed: Observed) -> Observed:
+        """[V2.68]: a Decision the controller still rejected after its repair is a refused turn,
+        never the end of the task. Its tokens are refusals (history lines and counts), the turn
+        takes one strike, and nothing is frozen, so an intake turn stays one; the task ends
+        through the strike limit or a budget. An error with no call made, or with no token the
+        history can show, keeps the port-failure path."""
+        self._check_interrupt()
+        tokens = [t for t in rejected.tokens if t in REFUSAL_TOKENS]
+        if rejected.code != "rejected" or rejected.record is None or not tokens:
+            raise rejected
+        # on the turn the loop opened ([V2.67] A): a close at its start still counts
+        self._refuse(*tokens)  # type: ignore[arg-type]  # each one checked against the set above
+        if not self.frozen:  # [V2.69] Three: the next intake turn sees what it declared
+            self._note(refused_shape(rejected.shape))
+        return self._record_strike(observed)
 
     def _observe(self) -> Observed:
         return self._in_domain(self.ports.observe())
@@ -631,6 +823,8 @@ class _Run:
         beyond `CLOCK_DOMAIN_S`, or not finite, is another clock (small skew is clamped by the
         load guard)."""
         observed = self.ports.stamp(observed)
+        if self.first_full is None and observed.tier == "full":
+            self.first_full = observed  # [V2.72]: every subgoal's baseline
         self.unread_aids += observed.snapshot.unread_automation_id_count  # #301: counted
         self.url_reads[url_read(observed)] += 1
         focus = focus_state(observed.snapshot, observed.focus)  # [V2.52] (b): counted
@@ -654,6 +848,7 @@ class _Run:
             proven=frozenset(self.proven),
             issued=frozenset(self.handles.by_handle),
             keep=self._always_keep(),
+            calls_left=self.task.budgets.max_model_calls - self.model_calls,
             **self._delta(observed),
         )
         self.listing.seen = observed
@@ -664,9 +859,23 @@ class _Run:
                 self.rejections = tuple(t for t in exc.tokens if TOKEN.fullmatch(t))
                 self.exact_counts += exc.exact_counted
                 self.estimates_low += exc.estimate_low
-            if isinstance(exc, ControllerError) and exc.record is None:
+            record = exc.record if isinstance(exc, ControllerError) else None
+            if isinstance(exc, ControllerError) and record is None:
                 raise  # no call was made: nothing billed
-            self.model_calls += 1
+            made = (
+                (record.calls if record else 0)
+                if isinstance(exc, ControllerError)
+                else calls_made(exc)
+            )
+            if made == 0:
+                raise  # #468: a count or a wait given up before any send: no call, nothing billed
+            # invariant 9, [V2.68], #489: every request the turn sent, a repair included
+            self.model_calls += made
+            if isinstance(exc, ControllerError):  # [V2.67] D: the failed turn's facts
+                self.turn.usage = exc.usage
+                if isinstance(record, DecideRecord):
+                    self.turn.repair = record.repaired
+                    self.turn.repair_tokens = record.rejections
             self.partial_page_calls += observed.growing or observed.young
             counts = _counts(exc.usage) if isinstance(exc, ControllerError) else None
             if counts is None:
@@ -678,11 +887,19 @@ class _Run:
                 self.tokens += sum(counts)
                 self.by_category = [a + b for a, b in zip(self.by_category, counts, strict=True)]
             raise
-        self.model_calls += 1
-        self.partial_page_calls += observed.growing or observed.young  # [V2.35]: counted
+        self.model_calls += decided.calls  # invariant 9, [V2.68]: a repaired turn is two calls
+        made = decided.calls > 0  # [V2.71] (a): a Decision no model made spends nothing
+        if not made and self.turns != 1:  # #454 round 2 (2): only the task's first turn
+            raise ValueError("no_call_after_the_first_turn")
+        self.partial_page_calls += made and (observed.growing or observed.young)  # [V2.35]
+        self.turn.usage = decided.usage  # [V2.67] D: this turn's own facts
+        self.turn.listing = decided.listing
+        self.turn.repair = decided.calls > 1
+        self.turn.repair_tokens = decided.rejections
         self.exact_counts += decided.exact_counted
         self.estimates_low += decided.estimate_low
-        self._spend(decided.usage)
+        if made:
+            self._spend(decided.usage)
         self.listing.shown = None if decided.listing is None else decided.listing.listed
         if not self.query_combobox_listed:
             self.query_combobox_listed = _query_combobox_listed(
@@ -729,8 +946,6 @@ class _Run:
             listed &= self.listing.shown
         first = not self.frozen
         goal = self.task.goal
-        if first and decision.subgoals and not subgoal_tokens(decision, goal=goal):
-            self._intake(decision)  # valid subgoals are taken even when an action is refused
         tokens = validate(
             decision,
             listed_ids=listed,
@@ -741,8 +956,11 @@ class _Run:
         if tokens:
             self._refuse(*tokens, subgoal=_step_subgoal(decision))
             return observed
-        for claim in decision.claims:
-            self._claim(claim, observed)
+        if first and decision.subgoals:
+            # packet rev 5 §4: subgoals freeze only on a turn that is not stale, after validate
+            # and the intake check (`_intake_passes`) both passed
+            self._intake(decision)
+        self._claims(decision.claims, observed)
         self._check_done(observed)
         if decision.ask is not None:
             raise _End("asked", Reason("controller_ask"))
@@ -775,6 +993,7 @@ class _Run:
                 params={name: _span(goal, text) for name, text in doc.params.items()},
                 closes=doc.closes,
                 commit=doc.commit,
+                wanted=doc.wanted,
             )
             for doc in docs
         )
@@ -784,13 +1003,22 @@ class _Run:
         return next(s for s in self.subgoals if s.id == sid)
 
     def _baseline(self, sid: str) -> Observed:
-        """[V2.38] RT-39: the observation before the first action dispatched under `sid`
-        (mid-batch, the previous action's after); with none yet, the task's first observation."""
+        """[V2.38] RT-39 as [V2.72] tightens it: the task's first full observation, for every
+        subgoal; it never moves later, except where [V2.72] Two moves it (`_rebase`). Which
+        subgoal an action was dispatched under plays no part: the model assigns those labels."""
         if sid in self.baselines:
             return self.baselines[sid]
-        if self.first is None:  # set before the first decide
-            raise AssertionError("no first observation")
-        return self.first
+        if self.first_full is None:  # `observe` is a full read, taken before the first decide
+            raise AssertionError("no full observation")  # #473 review: never a poll that moves
+        return self.first_full
+
+    def _claims(self, claims: Sequence[Claim], observed: Observed) -> None:
+        """[V2.74] (#475): the claims of one Decision, judged in the subgoals' declaration order
+        (stable for one subgoal's own), so the model's listing never decides which close
+        rebases which. An unknown subgoal sorts last; `validate` has refused it before."""
+        order = {s.id: i for i, s in enumerate(self.subgoals)}
+        for claim in sorted(claims, key=lambda c: order.get(c.subgoal, len(order))):
+            self._claim(claim, observed)
 
     def _claim(self, claim: Claim, observed: Observed) -> None:
         """One claim: code's refusals first (`_refused`), then the claim check. A page claim
@@ -809,7 +1037,7 @@ class _Run:
             observed,
             readers=self._readers(observed),
             typed=self._typed_fields(),
-            acted=self._acted(subgoal),
+            acted=self._acted(),
             echo=self._echo(subgoal),
             allow_file=self._allow_file(),
         )
@@ -817,23 +1045,25 @@ class _Run:
             self._reject(subgoal, rejected)
             return
         if subgoal.closes == "page":
-            self._tick(subgoal, how="claim")
+            self._tick(subgoal, how="claim", at=observed)
             return
         proofs = self.proofs.setdefault(subgoal.id, {})
-        proofs[param or ""] = _Proof(claim.evidence[0], claim.kind, claim.wanted)
+        proofs[param or ""] = _Proof(claim.evidence[0], claim.kind)
         if set(proofs) >= set(subgoal.params) and self._still(subgoal, observed):
-            self._tick(subgoal, how="claim")
+            self._tick(subgoal, how="claim", at=observed)
             return
         self._note(ClaimResult(subgoal.id, "accepted"))  # [V2.47]: one param held, not closed
 
-    def _refused(
+    def _refused(  # noqa: PLR0911 - one return per refusal, in the rules' order
         self, claim: Claim, subgoal: Subgoal, param: str | None, observed: Observed
-    ) -> RunnerClaim | None:
+    ) -> RunnerClaim | CheckToken | None:
         """Code's refusals before the claim check, first match wins: a commit subgoal is never
         closed in step 3 (RT-06); the claim's kind must prove the subgoal's closing kind
-        ([V2.39]); a value or state claim must name one param, by an element that proves no
+        ([V2.39]); a value or state claim must name one param and cite exactly one element (#422:
+        the claim check's own count tokens, before anything reads it), an element that proves no
         other param (#334 review), and a state claim's element must hold the param's words
-        ([V2.40] Q7)."""
+        ([V2.40] Q7). [V2.73]: nor one that is already the evidence of a closed subgoal of the
+        same kind sharing a span (`evidence_taken`, counted)."""
         if subgoal.commit != "none":
             return "standard_only"
         if CLAIM_CLOSES.get(claim.kind) != subgoal.closes:
@@ -842,10 +1072,31 @@ class _Run:
             return None
         if param is None:
             return "param_missing"
+        if len(claim.evidence) != 1:
+            return "too_much_evidence" if claim.evidence else "evidence_missing"
         if self._reused(subgoal, param, claim.evidence[0]):
             return "evidence_reused"
+        if self._taken(subgoal, param, claim.evidence[0]):
+            self.counts.evidence_taken += 1
+            return "evidence_taken"
         named = claim.kind != "state" or self._named(subgoal, param, claim.evidence[0], observed)
         return None if named else "words_missing"
+
+    def _taken(self, subgoal: Subgoal, param: str, handle: int) -> bool:
+        """[V2.73], extending [V2.40]'s one-handle rule across subgoals: an element that is the
+        evidence of a closed subgoal cannot be the evidence of another subgoal of the same kind
+        whose param shares a span with that closed subgoal's (`spans_shared`)."""
+        span = subgoal.params[param]
+        for other in self.subgoals:
+            if other.id == subgoal.id or other.id not in self.proven:
+                continue
+            if other.closes != subgoal.closes:
+                continue
+            for name, proof in self.proofs.get(other.id, {}).items():
+                shared = name in other.params and spans_shared(other.params[name], span)
+                if proof.handle == handle and shared:
+                    return True
+        return False
 
     def _named(self, subgoal: Subgoal, param: str, handle: int, observed: Observed) -> bool:
         """[V2.40] Q7: a state claim proves a param only when the cited element's name, or its
@@ -872,9 +1123,9 @@ class _Run:
                 return False
             if proof.kind == "state":
                 words = holds_words(observed.snapshot, element, subgoal.params[param].text)
-                if not words or proof.wanted is None:
+                if not words or subgoal.wanted is None:
                     return False
-                if readers.read_state(element, proof.wanted) is not True:
+                if readers.read_state(element, subgoal.wanted) is not True:
                     return False
                 continue
             want = readers.fact_of(subgoal.params[param].text)
@@ -893,6 +1144,9 @@ class _Run:
         vocab = Vocab(known_params(self.subgoals), frozenset(self.handles.by_handle))
         if record_ok(record, vocab):
             self.log.append(record)
+            if self.ports.turn_trace is not None:  # #444: no trace work without a sink
+                ids = [s.id for s in self.subgoals]  # [V2.67] D (a): positions, never names
+                self.turn.history.append(render(positional(record, ids, vocab.known)))
         else:
             self.history_dropped += 1
 
@@ -912,35 +1166,46 @@ class _Run:
         address = None if first is None else (first.document_url or first.url)
         return address is not None and address.lower().startswith("file:")
 
-    def _tick(self, subgoal: Subgoal, *, how: ProvenHow) -> None:
-        """A proven subgoal. RT-06, §8.8: a commit subgoal is never closed in step 3 (a standard
-        proof never closes it; the strict tier is step 4)."""
+    def _tick(self, subgoal: Subgoal, *, how: ProvenHow, at: Observed) -> None:
+        """A proven subgoal, closed on the observation `at`. RT-06, §8.8: never a commit subgoal
+        (`_refused` stops a claim on one, `_auto_proofs` skips it; the strict tier is step 4).
+        [V2.74]: code's own proof is never a refusal, so nothing here can refuse."""
         if subgoal.commit != "none":
-            self._note(ClaimResult(subgoal.id, "standard_only"))
-            self.turn.claim_rejected = True
-            return
+            raise AssertionError("auto proof reached a commit subgoal")
         self.proven.add(subgoal.id)
         self.proven_how[subgoal.id] = how
         self.turn.ticked = True
         self.refusal = None
         self._note(Proven(subgoal.id, how))
+        self._rebase(subgoal, at, by_claim=how == "claim")
+
+    def _rebase(self, closed: Subgoal, at: Observed, *, by_claim: bool = False) -> None:
+        """[V2.72] Two: one event cannot close two subgoals of the same kind. Every other open
+        subgoal with the same closing kind and a shared param span takes `at` as its baseline,
+        so its evidence must be newer. Same kind only: a value and a page subgoal sharing a span
+        may both close on one type (a field's digest and a page's carriers differ)."""
+        for other in self.subgoals:
+            if other.id in self.proven or other.closes != closed.closes:
+                continue
+            if _shares_span(closed, other):
+                self.baselines[other.id] = at
+                if by_claim:
+                    (self.rebased if other.commit == "none" else self.rebased_commit).add(other.id)
 
     def _check_done(self, observed: Observed) -> None:
-        """A task with zero subgoals never ends `done` ([V2.11] decision 1). [V2.64] One: when
-        the task is closed only by value or state claims (rev 4.6), the final audit runs
-        first, and only its pass ends done."""
+        """A task with zero subgoals never ends `done` ([V2.11] decision 1). [V2.69] One: every
+        task about to end done is audited first, whatever closed its subgoals, and only the
+        audit's allow ends done."""
         if self.subgoals and all(s.id in self.proven for s in self.subgoals):
-            lines = self._proof_lines()
-            if all(line[4] for line in lines):
-                self._audit(observed, lines)
+            self._audit(observed, self._proof_lines())
             raise _End("done", None)
 
     def _proof_lines(self) -> tuple[ProofLine, ...]:
-        """Each proven subgoal: id, closes, how, kind, and whether it was closed only by value or
-        state claims (rev 4.6: on any element, whoever set it; an editable ComboBox exposes its
-        child Edit's Value, so "an element Steer acted on" was a trigger a mirror could skip)."""
+        """[V2.68], packet rev 5 §5: each proven subgoal by position (never its id): closes, how,
+        kind, the closed token of what code read, and its params by sorted position with their
+        spans of the request."""
         lines: list[ProofLine] = []
-        for subgoal in self.subgoals:
+        for position, subgoal in enumerate(self.subgoals, 1):
             how = self.proven_how.get(subgoal.id, "claim")
             proofs = self.proofs.get(subgoal.id, {})
             kinds = {p.kind for p in proofs.values()}
@@ -949,23 +1214,115 @@ class _Run:
                 if proofs
                 else ("navigated" if how == "claim" else how)
             )
-            own = how == "claim" and bool(proofs) and kinds <= {"value", "state"}
-            lines.append((subgoal.id, subgoal.closes, how, kind, own))
+            params = tuple((n, param.text) for n, param in numbered_params(subgoal.params))
+            lines.append((position, subgoal.closes, how, kind, _read_token(subgoal, how), params))
         return tuple(lines)
 
+    def _intake_passes(self, decision: Decision) -> bool:
+        """[V2.68] One, [V2.69] Two and Four, packet rev 5 §4: a first Decision whose declared
+        subgoals are all value or state (no ask, no stop) is checked once for sufficiency on the
+        request and the subgoals alone, before anything freezes. A set already judged takes its
+        verdict from the memo with no call. A spent budget pauses with its token, no call. A
+        failed call made ends `blocked/intake_failed`; a port error takes decide's path. An
+        insufficient set is refused (`intake_insufficient`): one strike, nothing frozen,
+        nothing dispatched. True: the Decision goes on."""
+        subs = decision.subgoals or []
+        due = not self.frozen and bool(subs) and decision.ask is None and decision.stop is None
+        intake = self.ports.intake
+        if not due or intake is None or any(s.closes not in {"value", "state"} for s in subs):
+            return True
+        lines = _intake_lines(subs)
+        key = hashlib.sha256(repr([(c, p, w) for _pos, c, p, w in lines]).encode()).hexdigest()
+        if key in self.intake_memo:
+            if self.intake_memo[key]:
+                return True
+            self.intake_counts["intake_memo_refused"] += 1
+            self._refuse("intake_insufficient")
+            self._note(refused_shape([s.closes for s in subs]))  # [V2.69] Three
+            return False
+        self._intake_budget()
+        self._check_interrupt()  # #457 P2: a latched switch sends nothing and counts nothing
+        judged = self._intake_call(intake, IntakeView(subgoals=lines))
+        passed = judged.sufficient and judged.reason == "facts_finish_request"
+        self.intake_memo[key] = passed
+        self.intake_counts["intake_passed" if passed else "intake_rejected"] += 1
+        self._check_interrupt()  # #326: a verdict after the kill is discarded, its counts kept
+        if not passed:
+            self._refuse("intake_insufficient")
+            self._note(refused_shape([s.closes for s in subs]))  # [V2.69] Three
+        return passed
+
+    def _intake_budget(self) -> None:
+        """[V2.69] Four: a budget spent before the intake call: no call, `paused`, counted."""
+        used = Usage(
+            actions=len(self.dispatched),
+            model_calls=self.model_calls,
+            cost_usd=self._cost(),
+            wall_s=self.ports.clock() - self.started,
+            tokens=self.tokens,
+        )
+        hit = budget_hit(self.task.budgets, used)
+        if hit is not None:
+            self.intake_counts["intake_budget_stops"] += 1
+            raise _End("paused", Reason(hit))
+
+    def _intake_call(self, intake: Callable[[IntakeView], Audited], view: IntakeView) -> Audited:
+        """Packet rev 5 item 1 (failures): no call (over the bound) keeps the no-call path; a port
+        error or an interrupt takes decide's path, counted as a failed call; an unusable reply
+        (unparsed, schema-invalid, a provider refusal) ends `blocked/intake_failed`."""
+        try:
+            judged = intake(view)
+        except ControllerError as exc:
+            if exc.record is None:
+                self.intake_counts["intake_no_call"] += 1
+                raise
+            self._intake_failed(exc.record.calls)
+            self._spend(exc.usage)
+            if exc.usage is not None:  # #457 P1, as #452 G3: a failed call's reported tokens
+                self.intake_counts["intake_tokens"] += sum(_counts(exc.usage) or ())
+            raise _End("blocked", Reason("intake_failed")) from None
+        except (PortInterrupted, SteerError) as exc:
+            if (made := calls_made(exc)) == 0:
+                if isinstance(exc, CountFailed):  # as the bound's refusal: [V2.74] (iii)
+                    self.intake_counts["intake_no_call"] += 1
+                raise  # #457 P2, packet §4 F3, #468: nothing went out, so nothing is counted
+            self._intake_failed(made)
+            self.tokens = math.nan  # abandoned or failed: billed, never reported ([V2.41] (1))
+            self.usage_incomplete = True
+            raise
+        self.model_calls += 1
+        self.intake_counts["intake_checks"] += 1
+        self._spend(judged.usage)
+        if judged.usage is not None:
+            self.intake_counts["intake_tokens"] += sum(_counts(judged.usage) or ())
+        return judged
+
+    def _intake_failed(self, calls: int) -> None:
+        self.model_calls += calls
+        self.intake_counts["intake_checks"] += calls
+        self.intake_counts["intake_failed"] += calls
+
     def _audit(self, observed: Observed, lines: tuple[ProofLine, ...]) -> None:
-        """[V2.64] One: one veto-only call. No port, no call left in the budget, a failed or
-        unparsed call: `audit_failed`; a veto: `audit_veto`. Both end `blocked`, never done."""
+        """[V2.64] One, [V2.68] One, [V2.69] One and Four (audit-2): one sufficiency call. A spent
+        budget: no call, `paused` with its token. No port, or a prompt over its bound: no call,
+        `audit_failed`. A failed or unparsed call: `audit_failed`. Anything but sufficient with
+        `facts_finish_request`: `audit_veto`. Each ends not done."""
         audit = self.ports.audit
         used = Usage(  # #404 principal 3: every budget, checked as decide checks it before a call
-            actions=len(self.dispatched),
+            actions=0,  # #452 principal 1: the audit sends no action; a task that spent its last
+            # allowed action closing is audited, never paused for it (packet §4)
             model_calls=self.model_calls,  # the guard trips at `not spent < limit`, as decide
             cost_usd=self._cost(),
             wall_s=self.ports.clock() - self.started,
             tokens=self.tokens,
         )
-        if audit is None or budget_hit(self.task.budgets, used) is not None:
-            self.audit = ("failed", "audit_failed")
+        hit = budget_hit(self.task.budgets, used)
+        if hit is not None:  # [V2.69] Four: never "done but unaudited"
+            self.audit_counts["audit_budget_stops"] += 1
+            raise _End("paused", Reason(hit))
+        if audit is None:
+            self.audit_counts["audit_no_call"] += 1
+            self.audit = ("failed", AUDIT_NO_CALL)
             raise _End("blocked", Reason("audit_failed"))
         cited = {
             self.handles.by_handle[p.handle]
@@ -976,6 +1333,7 @@ class _Run:
         words = words_of(span.text for s in self.subgoals for span in s.params.values())
         view = AuditView(
             observed=observed,
+            typed=tuple(self.free_texts),
             handles=self.handles.bind(observed),
             proofs=lines,
             keep=self._always_keep() | cited,
@@ -984,23 +1342,39 @@ class _Run:
         try:
             audited = audit(view)
         except (PortInterrupted, SteerError, ControllerError) as exc:
-            if isinstance(exc, ControllerError) and exc.record is None:
-                # refused before any call (the bound, a fence in the data): no call is counted
-                self.audit = ("failed", "audit_no_call")
+            if isinstance(exc, PortInterrupted) and calls_made(exc) == 0:
+                raise  # #468: a wait given up before the send: no call, nothing billed
+            if isinstance(exc, CountFailed) or (
+                isinstance(exc, ControllerError) and exc.record is None
+            ):
+                # refused before any call (the bound, a fence in the data, a failed count): no
+                # call is counted (#468)
+                self.audit_counts["audit_no_call"] += 1
+                self.audit = ("failed", AUDIT_NO_CALL)
                 raise _End("blocked", Reason("audit_failed")) from None
-            self.model_calls += 1
+            self.model_calls += 1 if isinstance(exc, ControllerError) else calls_made(exc)
+            self.audit_counts["audit_calls"] += 1
+            self.audit_counts["audit_failed"] += 1
             if isinstance(exc, PortInterrupted):
                 self.tokens = math.nan  # abandoned: billed, never reported ([V2.41] (1))
                 self.usage_incomplete = True
                 raise
-            self._spend(exc.usage if isinstance(exc, ControllerError) else None)
-            self.audit = ("failed", "audit_failed")
+            usage = exc.usage if isinstance(exc, ControllerError) else None
+            self._spend(usage)
+            if usage is not None:  # #452 tester G3: a failed call's reported tokens are counted
+                self.audit_counts["audit_tokens"] += sum(_counts(usage) or ())
+            self.audit = ("failed", AUDIT_FAILED)
             raise _End("blocked", Reason("audit_failed")) from None
         self.model_calls += 1
+        self.audit_counts["audit_calls"] += 1
         self._spend(audited.usage)
-        if audited.veto or audited.reason != "outcome_shown":  # #404 principal 4: fail closed
+        if audited.usage is not None:
+            self.audit_counts["audit_tokens"] += sum(_counts(audited.usage) or ())
+        if not audited.sufficient or audited.reason != "facts_finish_request":  # fail closed
+            self.audit_counts["audit_vetoed"] += 1
             self.audit = ("vetoed", audited.reason)
             raise _End("blocked", Reason("audit_veto"))
+        self.audit_counts["audit_allowed"] += 1
         self.audit = ("allowed", audited.reason)
 
     # ---- the batch ------------------------------------------------------------------------
@@ -1013,12 +1387,18 @@ class _Run:
         self.batch_last = None
         for index, action in enumerate(actions):
             self._check_interrupt()
-            result = self._one(action, listed, observed)
+            acts = len(self.turn.acts)
+            self.turn.at = index
+            try:
+                result = self._one(action, listed, observed)
+            finally:
+                if len(self.turn.acts) == acts:  # [V2.67] D: refused before the port
+                    self.turn.acts.append(ActFact(action.verb, "not_sent"))
             if result is None:
                 return observed
             after, sent = result
             observed = after
-            self._auto_proofs(observed)
+            self._auto_proofs(observed, "after_action")
             nxt = actions[index + 1] if index + 1 < len(actions) else None
             if nxt is None or not self._continues(sent, nxt, listed, observed):
                 return observed
@@ -1266,10 +1646,13 @@ class _Run:
         """The action's risk, and whether it is a submit that goes through the Enter table
         ([V2.28] item 1: an Enter on a field, or a click or key that submits pending text)."""
         if element is None:  # a wait sends nothing; validate refuses a commit on it (RT-42)
-            return COMMIT_RISK[action.commit], False, False
+            risk = COMMIT_RISK[action.commit]
+            self.turn.ratings[self.turn.at] = (risk, None if risk == "R0" else "commit_declared")
+            return risk, False, False
         verdict = action_risk(
             action, element, goal=self.task.goal, observed=observed, pending=self._pending(observed)
         )
+        self.turn.ratings[self.turn.at] = (verdict.risk, verdict.why)  # [V2.67] D
         if verdict.submit_parent is not None:  # [V2.25]: counted where it fires, once an action
             self.submit_parents[verdict.submit_parent] += 1
         if verdict.refusal is not None:
@@ -1341,13 +1724,11 @@ class _Run:
         task, whether its text is still pending or not."""
         return tuple(dict.fromkeys(e.field for e in self.ever))
 
-    def _acted(self, subgoal: Subgoal) -> tuple[int, ...] | None:
-        """The field whose Document scopes a subgoal's carriers: the last one typed under it,
-        else the last one typed in the task, else none (#331 review B8b)."""
-        mine = [e.field for e in self.ever if e.subgoal == subgoal.id]
-        if mine:
-            return mine[-1]
-        return self.ever[-1].field if self.ever else None
+    def _acted(self) -> tuple[int, ...] | None:
+        """[V2.73]: the element whose outermost Document scopes the carriers (the [V2.3]
+        observer scope rule): the most recently acted element in the task, whatever subgoal its
+        action was labelled with; None when nothing was acted on (the observer's own rule)."""
+        return None if self.last_acted is None else self.last_acted.runtime_id
 
     def _log_entry(self, sent: Dispatch, act: ActResult, report: EffectReport) -> LogEntry:
         """[V2.46], §8.6: the action as closed tokens and its task handle; never the target's
@@ -1390,7 +1771,6 @@ class _Run:
         observed: Observed,
         key: ActionKey | None,
     ) -> tuple[Observed, tuple[ActResult, EffectReport]] | None:
-        self.baselines.setdefault(sent.action.subgoal, observed)
         before = observed
         if element is not None:  # [V2.28] item 3: the target's own value, just before dispatch
             before = _with_value(observed, self._read_value(element, observed))
@@ -1406,7 +1786,9 @@ class _Run:
         if sent.action.verb == "focus" and act.read_back is True and element is not None:
             self.turn.focused = element.runtime_id
         pending_before = list(self.pending)  # each pending field as found just before dispatch
+        watch_started = self.ports.clock()
         watched = self.ports.watch(before, sent)
+        self.turn.watches.append(WatchFacts(watch_kind(sent), self.ports.clock() - watch_started))
         # [V2.48]: counted only once the watch returned; one that raised (a kill, a port error)
         # never reached a deadline verdict and is in neither count
         counted = self.watch_counts[watch_kind(sent)]
@@ -1454,9 +1836,9 @@ class _Run:
             self._check_budgets()
         if detail == "field_not_empty":
             self.counts.fields_not_empty += 1
-            self._refuse("field_not_empty", handle=self._handle_of(element))
+            self._refuse("field_not_empty", handle=self._handle_of(element), detail=detail)
             return
-        self._refuse("not_delivered", handle=self._handle_of(element))
+        self._refuse("not_delivered", handle=self._handle_of(element), detail=detail)
 
     def _judge_submit(
         self,
@@ -1535,6 +1917,8 @@ class _Run:
         if may_retry(risk=sent.risk, verified=False, report=None, act=act.action):
             self._check_interrupt()
             act = self.ports.act(sent)
+        result = "skipped" if act.action.skipped else act.delivery.value
+        self.turn.acts.append(ActFact(sent.action.verb, result))  # [V2.67] D
         return act
 
     def _remember_type(
@@ -1559,7 +1943,9 @@ class _Run:
         words = (
             subgoal.params[param].text if param is not None and param in subgoal.params else None
         )
-        self.ever.append(_Ever(element.runtime_id, subgoal.id, words))
+        self.ever.append(_Ever(element.runtime_id, words))
+        if param is None and sent.text:  # packet rev 5 item 5: masked out of the audit's view
+            self.free_texts.append(sent.text)
 
     def _after(self, after: Observed) -> Observed:
         """[V2.11] decision 6: reuse the watch's after only when it is full, stable and fresh."""
@@ -1569,34 +1955,74 @@ class _Run:
             return after
         return self._observe()
 
-    def _auto_proofs(self, observed: Observed) -> None:
-        """§7.1: the code-only proof is tried after every effect, for each open subgoal with a
-        change signal since its baseline."""
-        for subgoal in self.subgoals:
-            if subgoal.id in self.proven or subgoal.id not in self.baselines:
+    def _judge_turn_start(self, observed: Observed) -> None:
+        """[V2.67] A: the read a decision is about to be made on is judged first; when that
+        closes the task, the model call this turn would have made is not made and is counted."""
+        proven = len(self.proven)
+        read, self.next_read = self.next_read, "turn_start"
+        try:
+            self._auto_proofs(observed, read)
+        except _End as end:
+            if end.status == "done" and len(self.proven) > proven:
+                self.saved_calls += 1
+            raise
+
+    def _auto_proofs(self, observed: Observed, read_kind: ProofRead) -> None:
+        """§7.1, [V2.67] A: the code-only proof runs on every full observation code takes (the
+        turn-start read, the stale re-read and the after-action read), for each open subgoal
+        with a change signal since its baseline: same rules, guards and baseline, every param on
+        this one read ([V2.39]). Only a stable full-tier read is judged, never a poll (a page
+        still growing is: its evidence is there). The same read is judged once. [V2.67] D: every
+        attempt, a skipped read and a closed gate included, goes to the turn's trace record with
+        every condition it rests on."""
+        if observed is self.judged:
+            return
+        self.judged = observed
+        tracing = self.ports.turn_trace is not None  # #444: no trace work without a sink
+        skipped: Skipped | None = None
+        if observed.tier != "full":
+            skipped = "poll"
+        elif not observed.snapshot.stable:
+            skipped = "unstable"
+        for position, subgoal in enumerate(self.subgoals):  # the trace's 0-based positions
+            if subgoal.id in self.proven:
                 continue
             if subgoal.closes != "page":
                 continue  # [V2.39]: the navigated auto proof closes only a page subgoal
-            baseline = self.baselines[subgoal.id]
-            if not _changed_since(baseline, observed):
+            if subgoal.commit != "none":
+                continue  # #474: a commit subgoal closes only in the strict tier (step 4)
+            baseline = self._baseline(subgoal.id)  # [V2.72]: every open page subgoal is judged
+            gate = None if skipped is not None else _change_gate(baseline, observed)
+            if gate is None:
+                if tracing:
+                    self.turn.proofs.append(
+                        _attempt(position, read_kind, observed, skipped, gate, None)
+                    )
                 continue
-            proof = auto_proof(
+            judged = judge(
                 subgoal,
                 baseline,
                 observed,
                 typed=self._typed_fields(),
-                acted=self._acted(subgoal),
+                acted=self._acted(),
                 echo=self._echo(subgoal),
                 allow_file=self._allow_file(),
             )
-            if proof is not None:
-                self._tick(subgoal, how=proof)
-        self._check_done(observed)
+            if tracing:
+                self.turn.proofs.append(_attempt(position, read_kind, observed, None, gate, judged))
+            if judged.proof is not None:
+                self._tick(subgoal, how=judged.proof, at=observed)
+        if skipped is None:
+            self._check_done(observed)
 
     # ---- refusals, guards -----------------------------------------------------------------
 
     def _refuse(
-        self, *tokens: RefusalWord, subgoal: str | None = None, handle: int | None = None
+        self,
+        *tokens: RefusalWord,
+        subgoal: str | None = None,
+        handle: int | None = None,
+        detail: object = None,
     ) -> None:
         """[V2.11] decision 4, [V2.37] P5: nothing dispatched is a refusal with a token and a
         strike; it replaces the latest refusal, whatever its kind. [V2.42] RT-29: several tokens
@@ -1604,6 +2030,8 @@ class _Run:
         refusal also attaches to the refused action's subgoal and stands until it is proven."""
         kind, token = refusal_of(tokens)
         self.refusal = (kind, token)
+        shown = detail_token(detail)  # [V2.67] D: every token, closed, with its detail
+        self.turn.refusals.extend(RefusalFact(word, shown) for word in tokens)
         for word in tokens:  # every token is counted, as every token is recorded (RT-29)
             self.refusal_counts[word] = self.refusal_counts.get(word, 0) + 1
         self._notes(Refused(token, handle) for token in tokens)  # [V2.47]: its element
@@ -1647,12 +2075,58 @@ class _Run:
         controller asked again on the fresh read. No strike for one; the second in a row (and
         each after) is a strike. Each kind is counted on its own."""
         self.stale_streak += 1
+        self.next_read = "stale_reread"  # [V2.67] D: the next turn starts on this re-read
         self._count_moved(moved)
         if self.stale_streak < 2:
             self.turn.neutral = True
         else:
             self.turn.refused = True
         return self._record_strike(fresh)
+
+    def _trace_turn(self) -> None:
+        """[V2.67] D: the turn's closed record to the trace port; a record that fails the
+        no-free-text check is dropped and counted, never written in part. #444: an exception
+        while building or writing it is never raised: the turn is often the one the task ends in
+        (`_outcome`), and its outcome must never be lost. #463 (1): it is counted as a trace
+        error, apart from the drops; an interrupt is not an `Exception` and propagates."""
+        sink = self.ports.turn_trace
+        turn = self.turn
+        if sink is None or turn.seen is None or turn.traced:
+            return
+        turn.traced = True
+        try:
+            self._write_turn(sink, turn)
+        except Exception:  # noqa: BLE001 - a trace failure never loses the task; it is counted
+            self.turn_trace_errors += 1
+
+    def _write_turn(self, sink: Callable[[Mapping[str, object]], None], turn: _Turn) -> None:
+        seen = turn.seen
+        if seen is None:  # checked by the caller; kept for the type checker
+            return
+        listing = turn.listing
+        record = turn_record(
+            TurnTrace(
+                turn=turn.number,
+                listed=None if listing is None else listing.shown,
+                cut=None if listing is None else listing.cut,
+                growing=seen.growing,
+                young=seen.young,
+                focus=focus_state(seen.snapshot, seen.focus),
+                decision=_rated(turn.shape, turn.ratings),
+                refusals=tuple(turn.refusals),
+                acts=tuple(turn.acts),
+                repair=turn.repair,
+                repair_tokens=turn.repair_tokens,
+                watch=tuple(turn.watches),
+                tokens=turn.usage,
+                history=tuple(turn.history),
+                proofs=tuple(turn.proofs),
+            )
+        )
+        if closed(record):
+            sink(record)
+        else:
+            self.turn_trace_dropped += 1
 
     def _record_strike(self, observed: Observed) -> Observed:
         if self.turn.neutral:
@@ -1669,10 +2143,12 @@ class _Run:
         reasons = self.strikes.record(facts)
         if reasons:
             self.strike_log.append(reasons)
+            self.strike_words.append(frozenset(f.refusal for f in self.turn.refusals))
         if self.strikes.paused:
             held = self._hold(observed)
-            if held is None:
-                raise _End("paused", Reason("no_progress"))
+            if held is None:  # [V2.69] Two: one cause behind every strike is named
+                cause = single_cause(zip(self.strike_log, self.strike_words, strict=True))
+                raise _End("paused", Reason("no_progress", detail=cause))
             return held
         return observed
 
@@ -1740,12 +2216,26 @@ def _window_gone(observed: Observed) -> bool:
 def refusal_of(tokens: Sequence[str]) -> tuple[RefusalKind, str]:
     """[V2.42] RT-29: the kind of a refusal with these tokens, by a fixed priority (policy, step
     limit, world, model fault), never by their order; the token is the first of that kind."""
-    kinds = [(REFUSAL_KIND.get(t, "model"), t) for t in tokens]
+    kinds = [(REFUSAL_KIND[t], t) for t in tokens]
     for kind in KIND_ORDER:
         for found, token in kinds:
             if found == kind:
                 return kind, token
     raise ValueError("a refusal needs a token")
+
+
+def _rated(
+    shape: Mapping[str, Any] | None, ratings: Mapping[int, tuple[Risk, RiskWhy | None]]
+) -> dict[str, Any] | None:  # Any: JSON values (`decision_shape`)
+    """[V2.67] D: the decision's shape with each action's rated tier and the rule that set it;
+    None for an action the batch never rated (it ended first, or it was refused before)."""
+    if shape is None:
+        return None
+    actions = [
+        {**a, "risk": ratings.get(i, (None, None))[0], "why": ratings.get(i, (None, None))[1]}
+        for i, a in enumerate(shape["actions"])
+    ]
+    return {**shape, "actions": actions}
 
 
 def _step_subgoal(decision: Decision) -> str | None:
@@ -1789,6 +2279,18 @@ def _shared_rids(observed: Observed) -> frozenset[tuple[int, ...]]:
 def _folded(text: str) -> str:
     """Words as the echo guard compares them: NFKC, collapsed whitespace, case-folded."""
     return normalise_name(text).casefold()
+
+
+def spans_shared(a: GoalSpan, b: GoalSpan) -> bool:
+    """[V2.72] Two, #473 review: two params share a span when their ranges of the request
+    overlap (one contains the other included) or their words are the same, folded (the same
+    words at another place in the request)."""
+    overlap = a.start < b.end and b.start < a.end
+    return overlap or _folded(a.text) == _folded(b.text)
+
+
+def _shares_span(one: Subgoal, other: Subgoal) -> bool:
+    return any(spans_shared(a, b) for a in one.params.values() for b in other.params.values())
 
 
 def _proved_param(claim: Claim, subgoal: Subgoal) -> str | None:
@@ -1858,12 +2360,15 @@ def _key(action: ActionDoc, element: Element, *, text_digest: str | None) -> Act
     )
 
 
-def _changed_since(baseline: Observed, now: Observed) -> bool:
-    """§7.1's change signal: the URL changed (both read), or the top Document was replaced."""
+def _change_gate(baseline: Observed, now: Observed) -> Gate | None:
+    """§7.1's change signal, and which: the URL changed (both read), or the top Document was
+    replaced; None: neither, so the proof is not tried ([V2.67] D names it)."""
     if baseline.url is not None and now.url is not None and baseline.url != now.url:
-        return True
+        return "url"
     old, new = top_document(baseline.snapshot), top_document(now.snapshot)
-    return old is not None and new is not None and old.runtime_id != new.runtime_id
+    if old is not None and new is not None and old.runtime_id != new.runtime_id:
+        return "document"
+    return None
 
 
 def _digest(observed: Observed) -> str:
@@ -1871,3 +2376,85 @@ def _digest(observed: Observed) -> str:
     pattern states, so ticking another box is new state (RT-09)."""
     rows = sorted((e.runtime_id, e.role, e.name, e.caps) for e in observed.snapshot.elements)
     return hashlib.sha256(repr(rows).encode()).hexdigest()
+
+
+def _attempt(  # noqa: PLR0913, PLR0917 - one attempt's facts, positional for brevity
+    position: int,
+    read_kind: ProofRead,
+    observed: Observed,
+    skipped: Skipped | None,
+    gate: Gate | None,
+    judged: Judged | None,
+) -> ProofAttempt:
+    """[V2.67] D: one judgement of one subgoal on one read as closed facts: positions, closed
+    tokens and booleans, never a name, a word or an address."""
+    read = ReadFacts(
+        tier=observed.tier,
+        stable=observed.snapshot.stable,
+        growing=observed.growing,
+        young=observed.young,
+    )
+    if judged is None:
+        return ProofAttempt(subgoal=position, read_kind=read_kind, read=read, skipped=skipped,
+                            gate=gate, change=False, change_by=(), refused=(), params=(),
+                            content=False, content_by=None, guards=(), proven=False,
+                            proven_how=None)  # fmt: skip
+    params = tuple(
+        ParamProof(
+            param=n,
+            carriers=tuple(
+                CarrierFact(carrier=c, held=held, absent_before=None if was is None else not was)
+                for c, held, was in facts
+            ),
+        )
+        for n, (_name, facts) in enumerate(judged.params)  # sorted by name, as decision_shape
+    )
+    return ProofAttempt(
+        subgoal=position,
+        read_kind=read_kind,
+        read=read,
+        skipped=skipped,
+        gate=gate,
+        change=bool(judged.change_by),
+        change_by=judged.change_by,
+        refused=judged.refused,
+        params=params,
+        content=judged.content_by is not None,
+        content_by=judged.content_by,
+        guards=judged.guards,
+        proven=judged.proof is not None,
+        proven_how=judged.proof,
+    )
+
+
+def _read_token(subgoal: Subgoal, how: str) -> tuple[ReadKind, str]:
+    """[V2.68] One: what code verified for a proven subgoal, as a closed (kind, detail) pair that
+    the audit's prompt renders (`kind:detail`); no string is built here (#347 decision B)."""
+    if subgoal.closes == "value":
+        return ("value_read", "equals_param")
+    if subgoal.closes == "state":
+        if subgoal.wanted is None:  # `validate` refused a state subgoal without one
+            raise AssertionError("state subgoal without wanted")
+        return ("state_read", subgoal.wanted)
+    return ("navigated", how)
+
+
+def numbered_params[V](params: Mapping[str, V]) -> tuple[tuple[int, V], ...]:
+    """#457 review, coordinator ruling: the one numbering both judges read: a subgoal's params
+    by their names' sorted order, 1-based (`param:1`), each with its value. The model's names
+    are never shown, only their order."""
+    return tuple((n, params[name]) for n, name in enumerate(sorted(params), 1))
+
+
+def _intake_lines(subs: Sequence[SubgoalDoc]) -> tuple[IntakeLine, ...]:
+    """[V2.68] One, packet rev 5 (P1): each declared subgoal by position and closing kind, its
+    params by sorted position with their words; never the model's id, param names or desc."""
+    return tuple(
+        (
+            position,
+            doc.closes,
+            numbered_params(doc.params),
+            doc.wanted,
+        )
+        for position, doc in enumerate(subs, 1)
+    )

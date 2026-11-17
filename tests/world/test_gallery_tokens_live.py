@@ -1,7 +1,9 @@
 """The gallery's capability tokens in real Chrome (packet interaction-model-2026-11-12 §1, §5;
 principal item 7: the gallery and this test are the measuring instrument). Each row is the
 control type and tokens measured once (Chrome 156, 2026-11-12) and pinned here, so a Chrome that
-maps an idiom differently fails here before any planner sees it. Observe only, no input."""
+maps an idiom differently fails here before any planner sees it. Observe only. The window is
+brought to the front first (#205, #439): at most a tagged zero-distance mouse move inside
+`acquire_foreground`."""
 
 from __future__ import annotations
 
@@ -15,6 +17,7 @@ from steerai.probes.chrome_a11y import CHROME_DEFAULT, launch_chrome, stop_chrom
 from steerai.probes.gallery_page import page_html
 from steerai.probes.layer_b_pages import PageServer
 from steerai.probes.uia_snapshot import UiaClient
+from steerai.probes.win_input import acquire_foreground
 from steerai.probes.windows import wait_window_for_pid
 from steerai.world.model import Snapshot, WorldModel
 
@@ -82,6 +85,7 @@ def test_every_gallery_row_reads_its_measured_tokens() -> None:
             window = wait_window_for_pid(
                 proc.pid, title_contains="Steer gallery", image="chrome.exe", process=proc
             )
+            acquire_foreground(window.hwnd)
             snapshot = _ready(WorldModel(UiaClient()), window.hwnd)
             assert snapshot.caps_read is True
             seen: dict[tuple[str, str], tuple[str, ...]] = {}

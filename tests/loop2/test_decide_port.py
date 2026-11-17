@@ -308,6 +308,7 @@ def test_a_kill_latched_before_the_ask_starts_no_call() -> None:
     with pytest.raises(PortInterrupted) as err:
         calls.turn(lambda ask: ask([], []))
     assert err.value.token == "killed"  # noqa: S105 - an interrupt token, not a password
+    assert err.value.sent is False  # #457 principal 2: nothing went out, no call to count
     assert started == []
     assert generations.current() != before
 
@@ -325,9 +326,10 @@ def test_a_kill_latched_while_a_quick_call_ran_is_seen_before_its_reply_is_used(
         return Reply(text="bad json", stop_reason="end_turn", usage=_usage(PLAIN))
 
     calls = _calls(call, lambda: latched[0] if latched else None)
-    with pytest.raises(PortInterrupted):
+    with pytest.raises(PortInterrupted) as err:
         calls.turn(lambda ask: (ask([], []), ask([], [])))
     assert started == [1]
+    assert err.value.sent is True  # #457 principal 2: the first request went out: a call
 
 
 @pytest.mark.parametrize("error", [KeyError("x"), RuntimeError("boom"), SystemExit(3)])
@@ -635,7 +637,7 @@ def test_the_provider_call_sends_v1s_model_and_effort_and_reads_text_and_usage()
     assert messages.kwargs["max_tokens"] == 4096
     assert messages.kwargs["system"] == [
         {"type": "text", "text": "rules"},
-        {"type": "text", "text": "schema"},
+        {"type": "text", "text": "schema", "cache_control": {"type": "ephemeral"}},
     ]
     assert messages.kwargs["messages"] == [
         {
@@ -727,11 +729,11 @@ def test_a_failed_call_counts_as_a_model_call_with_usage_incomplete() -> None:
 
 
 def test_a_controller_failure_after_calling_counts_the_call() -> None:
-    error = ControllerError("not_json", record=DecideRecord("controller-8", 2, True, True))
+    error = ControllerError("not_json", record=DecideRecord("controller-14", 2, True, True))
     world = World([], decide_raises=error)
     outcome = run_task(task(), world.ports())
     assert (outcome.status, outcome.reason) == ("stopped", "port_not_json")
-    assert outcome.model_calls == 1
+    assert outcome.model_calls == 2  # invariant 9, [V2.68]: the call and its repair
     assert outcome.usage_incomplete
 
 

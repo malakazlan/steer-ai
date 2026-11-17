@@ -13,20 +13,26 @@ decide worker (`DecideCalls`).
 
 from __future__ import annotations
 
+import dataclasses
 import math
+import re
 import secrets
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
+from steerai.errors import SteerError
 from steerai.loop2 import controller
 from steerai.loop2.controller import (
     AUDIT_PROMPT_VERSION,
     TOKENS_PER_BYTE,
+    AskModel,
     ControllerError,
     DecideRecord,
     FocusState,
     ListingRow,
+    SufficiencyDoc,
     build_audit_prompt,
     decide,
     focus_state,
@@ -34,11 +40,12 @@ from steerai.loop2.controller import (
     prompt_tokens,
     v2_listing,
 )
-from steerai.loop2.decide_port import DecideCalls
+from steerai.loop2.decide_port import MODEL_REFUSAL, DecideCalls
 from steerai.loop2.history import HistoryRecord
 from steerai.loop2.listing import LISTING_CAP, Listing, select_listing, words_of
-from steerai.loop2.loop import Audited, AuditView, Decided, TokenUsage, TurnView
+from steerai.loop2.loop import Audited, AuditView, Decided, IntakeView, TokenUsage, TurnView
 from steerai.loop2.task import Status, Subgoal, known_params
+from steerai.world.effects import Observed
 
 CALIBRATION_MARGIN: Final = 1.1
 """[V2.61]: a turn whose true input tokens beat the bound tightens the task's tokens per byte to
@@ -159,7 +166,7 @@ def make_decide(
             return calls.count(system, user)
 
         try:
-            (decision, _record), usage = calls.turn(
+            (decision, record), usage = calls.turn(
                 lambda ask: decide(
                     ask,
                     task_goal=inputs.task_goal,
@@ -187,6 +194,7 @@ def make_decide(
                     on_sent=sent.append,
                     on_rejected=on_rejected,
                     turn=turns,
+                    max_calls=view.calls_left,
                 )
             )
         except ControllerError as failed:
@@ -200,7 +208,15 @@ def make_decide(
         listing = (
             None if inputs.listing is None else inputs.listing.turn(listed, cut, tokens, first)
         )
-        return Decided(decision, usage, listing, exact_counted=spent, estimate_low=low)
+        return Decided(
+            decision,
+            usage,
+            listing,
+            exact_counted=spent,
+            estimate_low=low,
+            calls=record.calls,
+            rejections=record.rejections,
+        )
 
     return port
 
@@ -211,7 +227,7 @@ def make_audit(calls: DecideCalls, *, goal: str, task_fence: str) -> Callable[[A
     or unparsed call raises (`ControllerError` carries its usage): the runner vetoes."""
 
     def port(view: AuditView) -> Audited:
-        observed = view.observed
+        observed = masked(view.observed, view.typed)
         snapshot = observed.snapshot
         listing = select_listing(  # #404 principal 2: decide's cap and keep set
             snapshot, cap=LISTING_CAP, focus=observed.focus, keep=view.keep, goal_words=view.words
@@ -227,7 +243,7 @@ def make_audit(calls: DecideCalls, *, goal: str, task_fence: str) -> Callable[[A
         except ControllerError as failed:
             failed.record = DecideRecord(AUDIT_PROMPT_VERSION, 1, False, True)  # a call was made
             raise
-        return Audited(doc.veto, doc.reason, usage)
+        return Audited(doc.sufficient, doc.reason, usage)
 
     return port
 
@@ -256,3 +272,71 @@ def calibrated(
     if truth <= sum(math.ceil(size * per_byte) for size in sent):
         return per_byte, False
     return max(per_byte, truth / sum(sent) * CALIBRATION_MARGIN), True
+
+
+TYPED_TEXT: Final = "[typed_text]"
+"""Packet rev 5 item 5: what a free text Steer typed reads as in the audit's view."""
+
+
+def masked(observed: Observed, texts: Sequence[str]) -> Observed:
+    """Packet rev 5 item 5, #452 review: every free text Steer typed in this task, replaced in
+    each element's name and in the window title by `TYPED_TEXT`. Both sides are folded the same
+    way (NFKC, whitespace collapsed, full casefold) and only whole words match, so "Straße"
+    matches "STRASSE" and a typed "a" never garbles "Search". A name with a match is shown
+    folded; a name with none is left exactly as it was. A part echo is not caught; the chain eval
+    measures how often one escapes."""
+    folded = sorted({_fold(t) for t in texts if t.strip()}, key=len, reverse=True)
+    if not folded:
+        return observed
+    words = "|".join(re.escape(t) for t in folded)
+    pattern = re.compile(rf"(?<!\w)(?:{words})(?!\w)")
+
+    def mask(text: str) -> str:
+        line = _fold(text)
+        return pattern.sub(TYPED_TEXT, line) if pattern.search(line) else text
+
+    snapshot = observed.snapshot
+    elements = type(snapshot.elements)(
+        dataclasses.replace(e, name=mask(e.name)) for e in snapshot.elements
+    )
+    title = None if snapshot.title is None else mask(snapshot.title)
+    return dataclasses.replace(
+        observed, snapshot=dataclasses.replace(snapshot, elements=elements, title=title)
+    )
+
+
+def _fold(text: str) -> str:
+    """NFKC, whitespace collapsed, full casefold, NFKC again (casefold can denormalise)."""
+    collapsed = " ".join(unicodedata.normalize("NFKC", text).split())
+    return unicodedata.normalize("NFKC", collapsed.casefold())
+
+
+def make_intake(
+    calls: DecideCalls, *, goal: str, task_fence: str
+) -> Callable[[IntakeView], Audited]:
+    """`Ports.intake` ([V2.68] One): the request and the declared subgoals through
+    `build_intake_prompt`, one call on the decide worker (kill-aware, its usage summed), the
+    audit's strict parser. A prompt over the bound is refused with no call (`prompt_too_large`,
+    no record); a failed or unparsed call raises with its record."""
+
+    def port(view: IntakeView) -> Audited:
+        system, user = controller.build_intake_prompt(goal, view.subgoals, task_fence=task_fence)
+        _within_bound(calls, system, user)
+
+        def judge(ask: AskModel) -> SufficiencyDoc:
+            try:
+                raw = ask(system, user)
+            except SteerError as exc:  # #457 principal 3: a provider refusal is an unusable
+                if exc.message != MODEL_REFUSAL:  # reply (blocked/intake_failed), not a port
+                    raise  # error, which takes decide's path
+                raise ControllerError("model_refusal") from None
+            return parse_audit(raw)
+
+        try:
+            doc, usage = calls.turn(judge)
+        except ControllerError as failed:
+            failed.record = DecideRecord(controller.INTAKE_PROMPT_VERSION, 1, False, True)
+            raise
+        return Audited(doc.sufficient, doc.reason, usage)
+
+    return port

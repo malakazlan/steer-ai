@@ -560,3 +560,29 @@ def test_an_enter_with_the_aria_roles_unread_is_never_a_query() -> None:
 def test_an_enter_when_the_field_is_no_longer_a_searchbox_is_a_commit() -> None:
     seen = dataclasses.replace(_no_search_landmark(), aria_roles={BOX.runtime_id: "textbox"})
     assert risk("press", BOX, key="Enter", pend=pending(BOX, ONLY_SEARCHBOX), seen=seen) == "R2"
+
+
+# ---- [V2.67] D: the rule that set the tier, for the redacted trace -----------------------------
+
+ORPHAN = element(50, "Button", "", (9, 50), 999)  # a parent the snapshot does not hold
+CHECK = element(51, "CheckBox", "", (9, 51), 1)
+
+
+@pytest.mark.parametrize(
+    ("verb", "target", "kw", "expected"),
+    [
+        ("click", UNNAMED, {}, ("R0", None)),
+        ("click", UNNAMED, {"commit": "submit"}, ("R2", "commit_declared")),
+        ("click", SENDER, {}, ("R2", "deny_pattern")),
+        ("click", TRASH, {}, ("R3", "deny_pattern")),
+        ("check", CHECK, {}, ("R1", "state_floor")),
+        ("click", ORPHAN, {}, ("R2", "parent_unread")),
+        ("click", SENDER, {"commit": "submit"}, ("R2", "commit_declared")),
+    ],
+)
+def test_the_verdict_names_the_first_rule_that_reached_its_tier(
+    verb: str, target: Element, kw: dict[str, object], expected: tuple[str, str | None]
+) -> None:
+    seen = screen([*SHOWN, ORPHAN, CHECK])
+    got = verdict(verb, target, seen=seen, **kw)  # type: ignore[arg-type]  # test kwargs
+    assert (got.risk, got.why) == expected

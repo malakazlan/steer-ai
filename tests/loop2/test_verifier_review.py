@@ -33,6 +33,7 @@ from tests.loop2.world_fakes import (
     act,
     decision,
     element,
+    judged_by,
     observed,
     report,
     task,
@@ -189,7 +190,7 @@ def test_b6_the_echo_guard_holds_every_field_typed_in_the_task(
     def spy(*_a: object, typed: tuple[tuple[int, ...], ...] = (), **_k: object) -> None:
         seen.append(tuple(typed))
 
-    monkeypatch.setattr(runner, "auto_proof", spy)
+    monkeypatch.setattr(runner, "judge", judged_by(spy))
     first = Decision(subgoals=_subgoals(), actions=[act("type", target=FIELD.id, param="text")])
     second = Decision(
         actions=[
@@ -212,17 +213,18 @@ def test_b6_the_echo_guard_holds_every_field_typed_in_the_task(
     assert set(seen[-1]) == {FIELD.runtime_id, other.runtime_id}
 
 
-def test_b8b_the_acted_field_is_the_one_typed_under_the_subgoal_being_proved(
+def test_v273_the_acted_element_is_the_last_acted_whatever_the_subgoal_label(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """s1 typed into FIELD, s2 later into another field: s1's proof reads carriers from FIELD."""
+    """[V2.73] (replaces #331 B8b): s1 typed into FIELD, s2 later into another field: every
+    later proof, s1's included, reads carriers from the most recently acted element."""
     other = element(12, "Edit", "Other", (9, 12), 1)
     acted: dict[str, object] = {}
 
     def spy(subgoal: object, *_a: object, acted_field: object = None, **k: object) -> None:
         acted[getattr(subgoal, "id", "?")] = k.get("acted")
 
-    monkeypatch.setattr(runner, "auto_proof", spy)
+    monkeypatch.setattr(runner, "judge", judged_by(spy))
     first = Decision(subgoals=_subgoals(), actions=[act("type", target=FIELD.id, param="text")])
     second = Decision(
         actions=[
@@ -241,7 +243,7 @@ def test_b8b_the_acted_field_is_the_one_typed_under_the_subgoal_being_proved(
         later_after_acts=3,
     )
     run_task(task(), world.ports())
-    assert acted["s1"] == FIELD.runtime_id
+    assert acted["s1"] == other.runtime_id
     assert acted["s2"] == other.runtime_id
 
 
@@ -322,7 +324,7 @@ def test_the_echo_guard_matches_words_case_folded_and_normalised(
     def spy(subgoal: object, *_a: object, **k: object) -> None:
         echoes[getattr(subgoal, "id", "?")] = k.get("echo")
 
-    monkeypatch.setattr(runner, "auto_proof", spy)
+    monkeypatch.setattr(runner, "judge", judged_by(spy))
     goal = "type Red  Shoes then find red shoes"
     subs = [
         SubgoalDoc(id="s1", desc="a", params={"text": "Red  Shoes"}, closes="page"),
@@ -370,7 +372,7 @@ def _spied(monkeypatch: pytest.MonkeyPatch, key: str) -> dict[str, object]:
     def spy(subgoal: object, *_a: object, **k: object) -> None:
         seen[getattr(subgoal, "id", "?")] = k.get(key)
 
-    monkeypatch.setattr(runner, "auto_proof", spy)
+    monkeypatch.setattr(runner, "judge", judged_by(spy))
     return seen
 
 
@@ -394,9 +396,11 @@ def test_the_acted_field_is_the_last_one_typed_under_the_subgoal(
     assert acted["s1"] == other.runtime_id
 
 
-def test_a_subgoal_with_nothing_typed_under_it_takes_the_tasks_last_typed_field(
+def test_v273_a_click_after_the_type_moves_the_acted_element(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """[V2.73]: the [V2.3] scope follows the most recently acted element, a click included, not
+    the last field typed."""
     acted = _spied(monkeypatch, "acted")
     first = Decision(subgoals=_subgoals(), actions=[act("type", target=FIELD.id, param="text")])
     second = Decision(actions=[act("click", target=GO.id, subgoal="s2")])
@@ -407,7 +411,7 @@ def test_a_subgoal_with_nothing_typed_under_it_takes_the_tasks_last_typed_field(
         later_after_acts=2,
     )
     run_task(task(), world.ports())
-    assert acted["s2"] == FIELD.runtime_id
+    assert acted["s2"] == GO.runtime_id
 
 
 def test_the_echo_guard_folds_the_subgoals_words_too(monkeypatch: pytest.MonkeyPatch) -> None:
