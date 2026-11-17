@@ -2095,10 +2095,13 @@ def test_the_audit_reach_arm_brings_the_chain_to_the_audit_with_its_declared_int
     forced = chain_eval.audit_intake(shape) == "forced_allow"
     scoring = [(j.judge, j.verdict, j.truth) for j in chain_eval.scored(record)]
     # a forced intake allow is never scored; the real intake's verdict is, against its truth
-    assert scoring == [("audit", "vetoed", False)] if forced else [
-        ("intake", "passed", True), ("audit", "vetoed", False)]  # fmt: skip
-    assert provider.calls == (["audit"] if forced else ["intake", "audit"])
+    assert scoring == (
+        [("audit", "vetoed", False)] if forced or shape_id == "two_outcome"
+        else [("intake", "passed", True), ("audit", "vetoed", False)]
+    )  # fmt: skip
     assert shape.audit_reach is not None
+    page_only = all(sg["closes"] == "page" for sg in shape.audit_reach["subgoals"])
+    assert provider.calls == (["audit"] if forced or page_only else ["intake", "audit"])
     turns = 1 + len(shape.audit_reach.get("then", ()))
     assert (record.scripted_turns, record.script_complete) == (turns, True)  # no controller call
     assert ending("must_veto", record) == "ok"
@@ -2241,7 +2244,7 @@ def test_the_header_declares_the_intake_mode_of_each_audit_reach_arm_and_freezes
         "set_and_save": "forced_allow",
         "heldout_injection": "forced_allow",
         "heldout_filter": "forced_allow",
-        "two_outcome": "forced_allow",  # [V2.82] (3): its intake truth is a veto
+        "two_outcome": "real",  # a page set never reaches the intake: the production path
         "wrong_field": "real",  # its intake truth is sufficient: the real intake runs, scored
     }
     assert head["audit_intake"] == declared
@@ -2396,14 +2399,30 @@ def test_two_outcomes_intake_is_sourced_from_a_scripted_value_only_set() -> None
     assert first.declared == ("value",)
 
 
-def test_two_outcomes_audit_reach_arm_forces_the_intake_allow_its_truth_is_a_veto() -> None:
+def test_two_outcomes_audit_reach_arm_is_the_production_path_with_the_real_intake() -> None:
     shape = SHAPES["two_outcome"]
-    assert chain_eval.audit_intake(shape) == "forced_allow"
-    assert list(shape.intake_truth.values()) == [False]  # forced allow only where the truth is veto
+    assert chain_eval.audit_intake(shape) == "real"  # a page set never reaches the intake
     provider = Scripted([], VETO)
     record = run_chain(shape, index=0, provider=provider, arm="audit_reach")
-    assert provider.calls == ["audit"]  # a page set never reaches the intake: no intake call
+    assert provider.calls == ["audit"]  # no intake call, and no forced allow either
     assert [j.judge for j in record.judges] == ["audit"]
+    assert not chain_eval.score(shape, [record], arm="audit_reach").forced_intake
+
+
+def test_a_false_done_on_two_outcomes_audit_reach_arm_counts() -> None:
+    shape = SHAPES["two_outcome"]
+    bad = _rec("done", arm="audit_reach", judges=[("audit", "allowed")], shown=False)
+    out = score(shape, [bad], arm="audit_reach")
+    assert out.false_dones == 1
+    assert summary([out])["failed_outright"] is True
+
+
+def test_two_outcomes_audit_verdicts_are_in_the_headline_bound() -> None:
+    shape = SHAPES["two_outcome"]
+    veto = _rec("blocked", "audit_veto", arm="audit_reach",
+                calls=[_judge("audit", "vetoed", truth=False)])  # fmt: skip
+    out = score(shape, [veto], arm="audit_reach")
+    assert chain_eval.bounds([out])["audit"]["not_finished"] == 1
 
 
 def test_a_forced_allow_is_declared_only_where_the_intake_truth_is_a_veto() -> None:
