@@ -2,8 +2,8 @@
 and amendment 1), refreshed to the later rulings: the baseline and its rebase ([V2.72],
 [V2.73]), task-wide echo guards ([V2.38]), every param on one observation with one element per
 param ([V2.39], [V2.40]), the scope ([V2.73] (1)), the own name only ([V2.88] L10) and the
-step 3 field-owned function applied to every field typed in the task ([V2.90] (2)). Red on the
-step 4 stub."""
+step 3 field-owned function applied to every field typed in the task ([V2.90] (2)) and the
+typed-words-only rule ([V2.91]). Red on the step 4 stub."""
 
 from __future__ import annotations
 
@@ -39,6 +39,7 @@ def facts(
     revealed_roots: tuple[RuntimeId, ...] = (),
     controlled: tuple[RuntimeId, ...] = (),
     typed_params: frozenset[str] = frozenset(),
+    typed_words: frozenset[str] = frozenset(),
 ) -> SubgoalFacts:
     return dataclasses.replace(
         BASE,
@@ -48,6 +49,7 @@ def facts(
         revealed_roots=revealed_roots,
         controlled=controlled,
         typed_params=typed_params,
+        typed_words=typed_words,
     )
 
 
@@ -559,15 +561,45 @@ NO_RESULTS = element(180, "Text", "No results for red shoes", (9, 180), 1)
 name holds every typed word."""
 
 
-@pending("[V2.90] (2) #511 must-not-prove: 'No results for <typed words>'", step=4)
+@pending("[V2.90] (2), [V2.91], #511 must-not-prove: 'No results for <typed words>'", step=4)
 def test_a_no_results_line_echoing_the_typed_words_never_proves_content_present() -> None:
-    """[V2.90] (2): if the design cannot reject this, it is a counted safety issue (#511),
-    never left unmeasured. Typed words in a real result elsewhere can still count (lb16 e3).
-    4b must not weaken this to an expected failure that is not tied to the stub: any mark on
-    it names #511 and the lead's ruling on it."""
-    subgoal = facts(typed_fields=(FIELD.runtime_id,), typed_params=frozenset({"text"}))
+    """#511, closed by [V2.91] once this passes: every word of the param is a word Steer typed
+    in the task, so `content_present` cannot prove it, whatever element holds them. Pending
+    until 4b; any mark on it names #511 and [V2.91]."""
+    subgoal = facts(
+        typed_fields=(FIELD.runtime_id,),
+        typed_params=frozenset({"text"}),
+        typed_words=frozenset({"red", "shoes"}),
+    )
     result = check(claim(NO_RESULTS.id), [NO_RESULTS], subgoal)
     assert result.proof is None
+    assert "typed_words_only" in result.tokens
+
+
+@pending("[V2.91]: a param of typed words only is never proven, an honest result included", step=4)
+def test_a_real_result_holding_only_typed_words_is_typed_words_only() -> None:
+    """The accepted consequence: such a search closes by the page or address kind instead."""
+    subgoal = facts(typed_fields=(FIELD.runtime_id,), typed_words=frozenset({"red", "shoes"}))
+    result = check(claim(RESULT.id), [RESULT], subgoal)
+    assert result.proof is None
+    assert "typed_words_only" in result.tokens
+
+
+@pending("[V2.91]: a param with a word Steer did not type stays provable", step=4)
+def test_a_param_mixing_typed_and_untyped_words_is_proven_by_an_element_holding_all() -> None:
+    subgoal = facts(typed_fields=(FIELD.runtime_id,), typed_words=frozenset({"red"}))
+    result = check(claim(RESULT.id), [RESULT], subgoal)
+    assert result.proof is not None
+    assert "typed_words_only" not in result.tokens
+
+
+@pending("[V2.91]: the echo lacks the untyped word, so it never proves the param", step=4)
+def test_an_echo_of_the_typed_words_only_does_not_prove_a_mixed_param() -> None:
+    echo = element(181, "Text", "No results for red", (9, 181), 1)
+    subgoal = facts(typed_fields=(FIELD.runtime_id,), typed_words=frozenset({"red"}))
+    result = check(claim(echo.id), [echo], subgoal)
+    assert result.proof is None
+    assert "words_missing" in result.tokens
 
 
 @pending("[V2.21] #9: the option rule stays on top of the field-owned rules", step=4)

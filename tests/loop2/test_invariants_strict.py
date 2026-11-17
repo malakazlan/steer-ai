@@ -49,7 +49,10 @@ SUBGOAL = SubgoalFacts(
     commit="send",
     baseline=BEFORE,
     typed_fields=(COMPOSER.runtime_id,),
+    typed_words=frozenset({"ok", "thanks"}),
 )
+"""Steer typed the content itself, so every word of it is typed: [V2.91]'s typed-words-only
+rule is the standard tier's; the strict tier proves Steer's own text by equality instead."""
 
 
 def claim(*ids: int, param: str = "text") -> Claim:
@@ -221,6 +224,27 @@ def test_a_live_preview_shown_before_the_dispatch_never_proves_the_send() -> Non
     result = check([*PAGE, preview], cited=claim(preview.id), records=(record,))
     assert result.proof is None
     assert "not_new" in result.tokens
+
+
+@pending("[V2.91]: a strict send's new element's name equals the typed text, folded", step=4)
+@pytest.mark.parametrize("name", ["ok thanks", "Ok thanks", "ok  thanks"])
+def test_an_honest_send_whose_name_equals_the_typed_text_is_a_strict_proof(name: str) -> None:
+    bubble = element(16, "ListItem", name, (5, 16), 4)
+    result = check([*PAGE, bubble], cited=claim(bubble.id))
+    assert result.proof is not None
+    assert "typed_words_only" not in result.tokens
+
+
+@pending("[V2.91], #511 must-not-prove: a name holding the typed text is not equal", step=4)
+@pytest.mark.parametrize(
+    "name", ["Failed to send: ok thanks", "No results for ok thanks"], ids=["failed", "no_results"]
+)
+def test_a_name_that_only_holds_the_typed_text_never_proves_the_send(name: str) -> None:
+    """T1's `name_matches` is full-string (VF-06), so the template gives `no_match`."""
+    line = element(17, "ListItem", name, (5, 17), 4)
+    result = check([*PAGE, line], cited=claim(line.id))
+    assert result.proof is None
+    assert "no_match" in result.tokens
 
 
 @pending("§3.3 strict rule 4 duplicate_effect", step=4)

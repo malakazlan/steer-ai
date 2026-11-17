@@ -23,6 +23,7 @@ Phase = Literal["written", "acting", "verified"]
 ClaimToken = Literal[
     "param_missing",
     "param_unproven",
+    "typed_words_only",
     "evidence_missing",
     "evidence_reused",
     "too_much_evidence",
@@ -58,7 +59,9 @@ ClaimToken = Literal[
     "failed_status",
 ]
 """Step 4's own tokens ([V2.39]: `param_unproven`, a param no cited element holds on this
-observation; [V2.40]: `evidence_reused`, one element cited for two params), then the strict
+observation; [V2.40]: `evidence_reused`, one element cited for two params; [V2.91]:
+`typed_words_only`, a param every word of which Steer typed in this task, which
+`content_present` never proves: a claim result, no refusal and no strike), then the strict
 tier's: `inside_composer` and `composer_not_cleared` are new in v2 (T1 has no equivalent);
 `no_scope` to `failed_status` are T1's `Appeared` reasons, passed through unchanged ([V2.17]
 item 7)."""
@@ -119,6 +122,10 @@ class SubgoalFacts:
     in the task; every param once the task typed generated text (its words are not kept). The
     selectable-option rule applies only when the claim's param is one of them (the echo
     risk)."""
+    typed_words: frozenset[str] = frozenset()
+    """[V2.91]: the words (casefolded whole tokens, as the word rule reads them) of every text
+    Steer typed in this task, from the pending-text records, never the subgoal label. At the
+    standard tier a param all of whose words are here is `typed_words_only`."""
 
 
 @dataclass(frozen=True)
@@ -177,7 +184,11 @@ def check_content(  # noqa: PLR0913 - the claim, its screens, and keyword-only f
     nothing was acted on, and then the top Document of `after` (none or several: `no_scope`).
     [V2.39], [V2.40]: every param of the subgoal is held by a cited element on `after`, one
     element per param. [V2.88] L10: a param's words count only in the element's own name, never
-    its group name, and text Steer typed (a typed field) never counts.
+    its group name, and text Steer typed (a typed field) never counts. [V2.91]: at the standard
+    tier a param every word of which is in `typed_words` is never proven (`typed_words_only`;
+    a page can echo them, "No results for ..."); one with a word Steer did not type stays
+    provable. At the strict tier the new element's name must equal the typed text after
+    folding (T1's full-string `name_matches`), never merely hold its words.
 
     [V2.21] #9 field-owned: after the option rule ([V2.17] item 2, on top), a cited element is
     field-owned (`under_suggestions`) when any holds, each adding the token of the rule that
