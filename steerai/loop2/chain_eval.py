@@ -64,6 +64,7 @@ import hashlib
 import json
 import math
 import os
+import random
 import re
 import shutil
 import statistics
@@ -101,7 +102,7 @@ from steerai.world.effects import _tokens  # the proof word match's token rule
 proof_tokens: Final = _tokens
 """The proof word match's own token rule, imported: a truth key and a proof read words alike."""
 SHAPES_PATH: Final = Path(__file__).with_name("chain_shapes.json")
-SHAPES_SHA256: Final = "472a84b4e7b10731aef288975187132006b9fb575dc5c805b8fe9354746473d6"
+SHAPES_SHA256: Final = "5f36adddc73c65d70cf1456da3ad6825df398f69ac59288a37bf9d045a4f59f6"
 """The shapes file as pre-registered: any edit fails `load_shapes`."""
 N: Final = 60
 """Must-pass: chains counted per shape (voids replaced)."""
@@ -180,11 +181,24 @@ refusing (the window gone or covered, the page not ready, an empty listing, or a
 whose token the runner's `REFUSAL_KIND` declares `world`) and the step limit
 (the action and model-call budgets). A chain that stopped for one of them, with no judge verdict
 missing or failed, is a reach miss. Any other reason, one not listed included, is counted."""
-CAUSES: Final = ("no_call", "not_done", "reach", "unknown_truth")
-"""[V2.76]: why a shape is inconclusive (a closed set; several may apply): a judge never called,
-more counted not-done chains than the rate allows, a judge short of scored verdicts because chains
+CAUSES: Final = ("few_packets", "no_call", "not_done", "reach", "unknown_truth")
+"""[V2.76], [V2.79]: why a shape is inconclusive (a closed set; several may apply): a judge's
+source arm ended with fewer than `MIN_PACKETS` distinct packets, a judge never called, more
+counted not-done chains than the rate allows, a judge short of scored verdicts because chains
 never reached it (or too few chains were not reach misses), or short because its verdicts' truth
 was unknown."""
+PACKET_CAP: Final = 3
+"""[V2.79]: scored verdicts per distinct packet digest, per (shape, judge) source arm: 60 verdicts
+on one packet are one data point repeated. A further verdict on that digest is reported
+(`ShapeScore.excess`), never scored; a false allow among them still fails (a counterexample is
+not evidence to drop)."""
+MIN_PACKETS: Final = VERDICT_TARGET // PACKET_CAP
+"""[V2.79]: distinct packet digests a source arm must end with (20 for 60 verdicts at 3 each);
+fewer is inconclusive, cause `few_packets`."""
+MIN_POOL: Final = 20
+"""[V2.79]: values in each shape's pool."""
+DRAW_SEED: Final = "chain-eval-pools-1"
+"""[V2.79]: the seed of every shape's draw order (with the shape's id), frozen in the header."""
 SCORING: Final[Mapping[str, str]] = {
     "scored": "first_per_judge_per_chain",
     "truth": "oracle",
@@ -222,6 +236,27 @@ class Shape:
     """Whether a declared set is sufficient for the request: the intake's truth, pre-registered,
     keyed by `declared_key` (kind and the param's words per subgoal, folded); a set not named is
     unknown. The file keeps readable `kind:words` strings, parsed at load."""
+    pool: tuple[Mapping[str, str], ...] = ()
+    """[V2.79]: the values the request's variable part is drawn from (each a mapping of placeholder
+    to text; `v` always, `email` for the two-field shape), at least `MIN_POOL`."""
+    value: Mapping[str, str] = field(default_factory=dict)
+    """The pool entry this shape was rendered with."""
+    raw: Mapping[str, Any] = field(default_factory=dict, compare=False, repr=False)  # Any: JSON
+    """The shape as the file has it, `{v}` placeholders unfilled: what `at` renders from."""
+    fixed: bool = False
+    """Rendered with one chosen value: `at` returns it as it is (fixtures; never a counted run)."""
+
+    def at(self, index: int) -> Shape:
+        """[V2.79]: the shape for chain `index`: its value is the pool's, in the seeded draw order
+        (a pool cycles), the request, page, oracle, truth and scripts all built from it."""
+        if self.fixed or not self.pool:
+            return self
+        order = draw_order(self.id, len(self.pool))
+        return _build(self.raw, order[index % len(order)], fixed=False)
+
+    def fixed_at(self, pool_index: int) -> Shape:
+        """The shape rendered with the pool's `pool_index`th entry, whatever the chain."""
+        return _build(self.raw, pool_index, fixed=True)
 
 
 def load_shapes(path: Path = SHAPES_PATH, *, pin: str | None = None) -> tuple[Shape, ...]:
@@ -231,25 +266,95 @@ def load_shapes(path: Path = SHAPES_PATH, *, pin: str | None = None) -> tuple[Sh
     if hashlib.sha256(raw).hexdigest() != want:
         raise ValueError("chain_shapes_changed")
     doc = json.loads(raw)
-    shapes = tuple(
-        Shape(
-            id=s["id"],
-            cls=s["class"],
-            held_out=bool(s["held_out"]),
-            request=s["request"],
-            page=s["page"],
-            oracle=tuple(s["oracle"]),
-            reach=s.get("reach"),
-            audit_reach=s.get("audit_reach"),
-            sources=s.get("sources", {}),
-            intake_truth=_parse_truth(s.get("intake_truth", {})),
-        )
-        for s in doc["shapes"]
-    )
+    shapes = tuple(_build(s, 0, fixed=False) for s in doc["shapes"])
     for shape in shapes:
         sources(shape)  # refuses a shape whose declared sources are not usable
         audit_intake(shape)
+    _check_pools(shapes)
     return shapes
+
+
+_PLACEHOLDER: Final = re.compile(r"\{(\w+)\}")
+
+
+def _render(node: Any, binding: Mapping[str, str]) -> Any:  # Any: JSON in, JSON out
+    """A JSON node with every `{name}` (in strings and keys) filled from `binding`."""
+    if isinstance(node, str):
+        return _PLACEHOLDER.sub(lambda m: binding[m.group(1)], node)
+    if isinstance(node, list):
+        return [_render(n, binding) for n in node]
+    if isinstance(node, dict):
+        return {_render(k, binding): _render(v, binding) for k, v in node.items()}
+    return node
+
+
+def _entry(item: str | Mapping[str, str]) -> dict[str, str]:
+    return {"v": item} if isinstance(item, str) else dict(item)
+
+
+def _build(s: Mapping[str, Any], at: int, *, fixed: bool) -> Shape:  # Any: JSON
+    """One shape of the file rendered with the pool's `at`th entry (`{d1}` and `{d2}` are the
+    next two entries' `v`: the page's other options, never the drawn value)."""
+    pool = tuple(_entry(item) for item in s["pool"])
+    if len(pool) < MIN_POOL:
+        raise ValueError("pool_too_small")
+    if any("v" not in entry or set(entry) != set(pool[0]) for entry in pool):
+        raise ValueError("pool_entries_differ")
+    chosen = pool[at]
+    binding = {
+        **chosen,
+        "d1": pool[(at + 1) % len(pool)]["v"],
+        "d2": pool[(at + 2) % len(pool)]["v"],
+    }
+    doc = _render({k: v for k, v in s.items() if k != "pool"}, binding)
+    if _PLACEHOLDER.search(json.dumps(doc)):
+        raise ValueError("pool_placeholder_unbound")
+    return Shape(
+        id=doc["id"],
+        cls=doc["class"],
+        held_out=bool(doc["held_out"]),
+        request=doc["request"],
+        page=doc["page"],
+        oracle=tuple(doc["oracle"]),
+        reach=doc.get("reach"),
+        audit_reach=doc.get("audit_reach"),
+        sources=doc.get("sources", {}),
+        intake_truth=_parse_truth(doc.get("intake_truth", {})),
+        pool=pool,
+        value=chosen,
+        raw=s,
+        fixed=fixed,
+    )
+
+
+def _check_pools(shapes: Sequence[Shape]) -> None:
+    """[V2.79]: each pool's values are distinct (case-folded) and each a span of the request (every
+    placeholder of an entry is in the request template); a held-out pool shares nothing with a
+    gate shape's."""
+    for shape in shapes:
+        names = [entry["v"].casefold() for entry in shape.pool]
+        if len(set(names)) != len(names):
+            raise ValueError("pool_not_distinct")
+        if any(f"{{{key}}}" not in str(shape.raw["request"]) for key in shape.pool[0]):
+            raise ValueError("pool_value_not_in_request")
+    held = {v.casefold() for s in shapes if s.held_out for e in s.pool for v in e.values()}
+    gate = {v.casefold() for s in shapes if not s.held_out for e in s.pool for v in e.values()}
+    if held & gate:
+        raise ValueError("pool_shared_with_gate")
+
+
+def draw_order(shape_id: str, size: int) -> tuple[int, ...]:
+    """[V2.79]: the fixed order a shape's pool is drawn in: a permutation seeded by `DRAW_SEED` and
+    the shape's id (a string seed is hashed, the same on every run and platform)."""
+    order = list(range(size))
+    random.Random(f"{DRAW_SEED}:{shape_id}").shuffle(order)  # noqa: S311 - a fixed draw, not secret
+    return tuple(order)
+
+
+def draw_order_sha256(shapes: Sequence[Shape]) -> str:
+    """The SHA-256 of every shape's pool in draw order: frozen in the header with the seed."""
+    drawn = {s.id: [s.pool[k] for k in draw_order(s.id, len(s.pool))] for s in shapes}
+    return hashlib.sha256(json.dumps(drawn, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 AUDIT_INTAKE_MODES: Final = ("forced_allow", "real")
@@ -338,8 +443,9 @@ class JudgeCall:
     """[V2.78] Intake only: the verdict of the audit reach arm's forced allow port. It is marked
     scripted, never scored, never counted as unknown, and left out of every aggregate."""
     packet: str | None = None
-    """[V2.77] Audit only: a digest of the audit's prompt blocks with the fence tokens masked, so
-    two chains with the same packet read alike; None when no call was made."""
+    """[V2.77], [V2.79]: a digest of the packet the judge saw, its prompt blocks with the fence
+    tokens masked (the audit's packet; the intake's user block), so two chains with the same packet
+    read alike; None when no call was made. Distinct digests are the [V2.79] bar's unit."""
     usage: UsageRecord | None = None
     """[V2.77] (7): the tokens of this call's provider replies; None when no reply came back."""
 
@@ -494,13 +600,20 @@ class ShapeScore:
     """A later verdict of a judge in a chain, by `judge:set:verdict` (the set by closing kind)."""
     unknown_first: dict[str, int] = field(default_factory=dict)
     """A judge's first verdict whose truth is unknown, by judge: reported apart, never scored."""
+    packet_counts: dict[str, dict[str, int]] = field(default_factory=dict)
+    """[V2.79]: per required judge, the verdicts of known truth on each distinct packet digest
+    (scored and excess); a verdict with no digest (no call made) is never counted here."""
+    excess: dict[str, int] = field(default_factory=dict)
+    """[V2.79]: per judge, verdicts past `PACKET_CAP` on one digest: reported, never scored."""
+    excess_false_allows: int = 0
+    """[V2.79]: false allows among the excess verdicts: they are not scored but still fail."""
     forced_intake: bool = False
     """[V2.78]: this arm's intake verdict was the forced allow, so its audit verdicts are reported
     apart (`audit_after_forced_intake_allow`), still scored and still failing on a false allow."""
 
     @property
     def false_allows(self) -> int:
-        return sum(b.false_allows for b in self.judges.values())
+        return sum(b.false_allows for b in self.judges.values()) + self.excess_false_allows
 
     @property
     def causes(self) -> list[str]:
@@ -529,8 +642,11 @@ class ShapeScore:
         if self.scored(judge) < VERDICT_TARGET:
             if unknown:
                 found.add("unknown_truth")
-            if self.scored(judge) + unknown < VERDICT_TARGET:
+            if self.scored(judge) + unknown + self.excess.get(judge, 0) < VERDICT_TARGET:
                 found.add("reach")
+        packets = self.packet_counts.get(judge)
+        if packets and len(packets) < MIN_PACKETS:
+            found.add("few_packets")  # [V2.79]: the verdicts are on too few distinct inputs
         return found
 
     @property
@@ -701,19 +817,38 @@ def _report_unscored(out: ShapeScore, record: ChainRecord, scoring: Sequence[Jud
         out.unscored[key] = out.unscored.get(key, 0) + 1
 
 
+def _past_cap(out: ShapeScore, j: JudgeCall) -> bool:
+    """[V2.79]: count this verdict against its packet digest (a required judge's, with a digest):
+    True when `PACKET_CAP` verdicts of that digest were already scored."""
+    if j.judge not in out.required or j.packet is None:
+        return False
+    seen = out.packet_counts.setdefault(j.judge, {})
+    seen[j.packet] = seen.get(j.packet, 0) + 1
+    return seen[j.packet] > PACKET_CAP
+
+
+def _score_verdict(out: ShapeScore, j: JudgeCall) -> None:
+    """One scored verdict into its judge's bounds, or past its packet's cap into the excess."""
+    wrong = _wrong(j)
+    if _past_cap(out, j):
+        out.excess[j.judge] = out.excess.get(j.judge, 0) + 1
+        out.excess_false_allows += wrong == "false_allow"
+        return
+    bounds = out.judges.setdefault(j.judge, Bounds())
+    if j.truth:
+        bounds.finished += 1
+        bounds.false_vetoes += wrong == "false_veto"
+    else:
+        bounds.not_finished += 1
+        bounds.false_allows += wrong == "false_allow"
+    out.verdicts += j.judge in out.required
+
+
 def _count(shape: Shape, out: ShapeScore, record: ChainRecord) -> None:
     out.chains += 1
     scoring = scored(record)
     for j in scoring:
-        bounds = out.judges.setdefault(j.judge, Bounds())
-        wrong = _wrong(j)
-        if j.truth:
-            bounds.finished += 1
-            bounds.false_vetoes += wrong == "false_veto"
-        else:
-            bounds.not_finished += 1
-            bounds.false_allows += wrong == "false_allow"
-        out.verdicts += j.judge in out.required
+        _score_verdict(out, j)
     _report_unscored(out, record, scoring)
     kind = ending(shape.cls, record)
     if kind == "void":
@@ -815,6 +950,7 @@ def summary(scores: Sequence[ShapeScore]) -> dict[str, object]:
                 "causes": s.causes if s.result == "inconclusive" else [],
                 "false_vetoes": {j: b.false_vetoes for j, b in s.judges.items()},
                 "not_done_counted": s.not_done_counted,
+                "distinct_packets": {j: len(p) for j, p in s.packet_counts.items()},
                 "controller": s.controller,
                 "result": s.result,
                 "passed": s.passed,
@@ -891,6 +1027,8 @@ def header(
         "model": model,
         "effort": effort,
         "shapes_sha256": SHAPES_SHA256,
+        "draw_seed": DRAW_SEED,
+        "draw_order_sha256": draw_order_sha256(chosen),
         "sources": {shape.id: dict(sources(shape)) for shape in chosen},
         "audit_intake": {
             shape.id: mode for shape in chosen if (mode := audit_intake(shape)) is not None
@@ -910,8 +1048,8 @@ def header(
 
 
 FROZEN_KEYS: Final = (
-    "controller", "intake", "audit", "commit", "shapes_sha256", "sources", "audit_intake",
-    "budgets", "stopping",
+    "controller", "intake", "audit", "commit", "shapes_sha256", "draw_seed", "draw_order_sha256",
+    "sources", "audit_intake", "budgets", "stopping",
     "scoring", "reach_miss_reasons", "reach_miss_world_tokens",
 )  # fmt: skip
 
@@ -1101,12 +1239,13 @@ def _judged(  # noqa: PLR0913 - one judge call's facts, gathered once
             usage=_summed(seen.used),
         )
     scripted, seen.scripted_pending = seen.scripted_pending, False
+    packet = packet_digest(seen.prompts)
     declared = seen.declared[-1] if seen.declared else None
     known = seen.intake_truth.get(seen.declared_keys[-1]) if seen.declared_keys else None
     truth = False if scripted else known  # [V2.73]: the scripted insufficient set is known no
     return JudgeCall(
         judge, verdict, reason, ms, None, scripted=scripted, declared=declared, truth=truth,
-        usage=_summed(seen.used),
+        packet=packet, usage=_summed(seen.used),
     )  # fmt: skip
 
 
@@ -1220,8 +1359,6 @@ def _arm(
     shape: Shape,
     arm: Arm,
     seen: _Recorder,
-    *,
-    index: int = 0,
 ) -> Callable[[TurnView], Decided]:
     """[V2.71] (a), [V2.77]: on a scripted arm the script's Decisions come first: the first one
     makes no model call (`calls=0`, the only turn the runner takes one on), each later one is the
@@ -1244,7 +1381,7 @@ def _arm(
         step[0] += 1
         seen.scripted_turns += 1
         seen.script_complete = step[0] == turns
-        decision = reach_decision(spec, view, goal=shape.request, turn=at, index=index)
+        decision = reach_decision(spec, view, goal=shape.request, turn=at)
         if at:
             return Decided(decision, SCRIPTED_USAGE, None)
         seen.scripted_pending = arm == "reach" and spec.get("judge") == "intake"
@@ -1253,29 +1390,17 @@ def _arm(
     return decide
 
 
-def _pooled(
-    params: Mapping[str, str], pool: Mapping[str, Sequence[str]], index: int
-) -> dict[str, str]:
-    """A scripted subgoal's params: each name in the shape's pool takes the pool's value for this
-    chain (`index` modulo the pool, so a run cycles through it); any other keeps its own."""
-    return {
-        name: pool[name][index % len(pool[name])] if pool.get(name) else value
-        for name, value in params.items()
-    }
-
-
 def reach_decision(
     spec: Mapping[str, Any],  # Any: JSON
     view: TurnView,
     *,
     goal: str,
     turn: int = 0,
-    index: int = 0,
 ) -> Decision:
     """One scripted Decision: turn 0 is the spec's subgoals (closing kind and params, the request's
-    own words, drawn from the spec's `pool`) and its actions, each later turn one of `then` (actions
-    and claims). A control is named by the page's name, or `List/Option` for the option of a
-    select that is listed under it; it is bound to the handle the listing shows."""
+    own words: the shape's drawn value is in them) and its actions, each later turn one of `then`
+    (actions and claims). A control is named by the page's name, or `List/Option` for the option
+    of a select that is listed under it; it is bound to the handle the listing shows."""
     elements = view.observed.snapshot.elements
 
     def target(name: str) -> int:
@@ -1288,11 +1413,10 @@ def reach_decision(
             raise ValueError("reach_control_not_unique")
         return view.handles[found[0].id]
 
-    pool = spec.get("pool", {})
     body = spec if turn == 0 else spec["then"][turn - 1]
     declared = [
         {"id": f"s{i + 1}", "desc": "declared by the harness",
-         "params": _pooled(sg["params"], pool, index), "closes": sg["closes"],
+         "params": dict(sg["params"]), "closes": sg["closes"],
          **({"wanted": sg["wanted"]} if "wanted" in sg else {})}
         for i, sg in enumerate(spec["subgoals"])
     ]  # fmt: skip
@@ -1335,7 +1459,9 @@ def run_chain(  # noqa: PLR0913 - the shape, then keyword-only knobs
 ) -> ChainRecord:
     """One chain: the shape's page, the real controller and audit on `provider`, to the end.
     On the `reach` arm the first Decision is the shape's scripted insufficient set (no model
-    call); every later turn is live."""
+    call); every later turn is live. The request's variable part is the shape's pool value for
+    `index` ([V2.79]), on every arm."""
+    shape = shape.at(index)
     page = Page.from_spec(shape.page)
     world = PageWorld(page)
     seen = _Recorder(intake_truth=shape.intake_truth)
@@ -1356,9 +1482,7 @@ def run_chain(  # noqa: PLR0913 - the shape, then keyword-only knobs
         budgets=budgets,
         history=[],
     )
-    decide = _arm(
-        make_decide(calls, goal=shape.request, task_fence=fence), shape, arm, seen, index=index
-    )
+    decide = _arm(make_decide(calls, goal=shape.request, task_fence=fence), shape, arm, seen)
     intake = make_intake(calls, goal=shape.request, task_fence=fence)
     ports = Ports(
         intake=forced_intake(seen)
