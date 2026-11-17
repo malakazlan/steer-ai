@@ -602,6 +602,10 @@ class TaskOutcome:
     field_mismatch: int = 0
     """[V2.84]: value claims refused, and closing re-reads failed, because the cited element does
     not hold the subgoal's declared field (`field_mismatch`). Refused claims, not tasks."""
+    rival_field: int = 0
+    """[V2.89] (#505): proven value claims where another value-bearing element holds a request
+    word the cited element's name lacks (`verify.rival_field`). Recorded only: step 3 changes no
+    behaviour on it; the lead decides from it before step 4's first live commit."""
     turns_to_claim: int = 0
     """[V2.85] (i): for each subgoal closed by a model claim, the turns from the last act under it
     whose read-back verified (a type, a choose or a state verb) to the claim's turn, summed over

@@ -4,7 +4,7 @@ be inside the scope Document; a tab name, the address bar or another Document ne
 from __future__ import annotations
 
 import urllib.parse
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal
 
@@ -12,6 +12,7 @@ from steerai.loop2.decision import Claim
 from steerai.loop2.owned import OwnedToken, field_owned
 from steerai.loop2.task import UNNAMED, Subgoal
 from steerai.orchestrator.gate import group_name
+from steerai.verify.predicates import FIELD_ROLES
 from steerai.world.effects import (
     CarrierHeld,
     Observed,
@@ -440,8 +441,43 @@ def field_held(snapshot: Snapshot, element: Element, subgoal: Subgoal) -> bool:
     if subgoal.field == UNNAMED:
         return True
     wanted = set(_tokens(subgoal.field))
+    return bool(wanted) and wanted <= _field_words(snapshot, element)
+
+
+def _field_words(snapshot: Snapshot, element: Element) -> set[str]:
+    """`field_held`'s name rule: the element's own name, or its group name only when it has no
+    name of its own."""
     name = element.name if normalise_name(element.name) else group_name(snapshot, element) or ""
-    return bool(wanted) and wanted <= set(_tokens(name))
+    return set(_tokens(name))
+
+
+def rival_field(
+    snapshot: Snapshot,
+    element: Element,
+    *,
+    goal: str,
+    value: str,
+    other_fields: Iterable[str],
+) -> bool:
+    """[V2.89] (#505): another value-bearing element (a field role inside the top Document, not
+    the Document itself) holds a request word that the cited element's name lacks, both read by
+    `field_held`'s name rule, ignoring the value's words and the other subgoals' declared field
+    words. A count only: step 3 changes no behaviour on it (function words give false hits)."""
+    top = top_document(snapshot)
+    if top is None:
+        return False
+    ignored = set(_tokens(value)).union(*(_tokens(f) for f in other_fields))
+    words = set(_tokens(goal)) - ignored - _field_words(snapshot, element)
+    if not words:
+        return False
+    by_id = {e.id: e for e in snapshot.elements}
+    return any(
+        other.id not in {element.id, top.id}
+        and other.role in FIELD_ROLES
+        and _inside(other, by_id, top.runtime_id)
+        and bool(words & _field_words(snapshot, other))
+        for other in snapshot.elements
+    )
 
 
 def _excluded(

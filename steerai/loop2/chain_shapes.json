@@ -1,10 +1,11 @@
 {
-  "note": "Intake packet rev 5 section 8 (pre-registered 2026-11-15) and [V2.71], [V2.73] (2026-11-16): the chain-eval shapes, verbatim; each must-veto shape's reach is the scripted first Decision of its reach arm and names the judge it measures (intake: an insufficient value or state set; audit: a set the intake check does not cover, or covers rightly, that code can prove); intake_truth is whether a declared set finishes the request, keyed by closing kind and the param's words per subgoal in order (kind:words, comma-joined; a state subgoal declares its wanted state, so its kind is state=<wanted>; a value subgoal declares its field, so its kind is value=<field words> or value=unnamed, [V2.84]); a set not named is unknown; wrong_field is [V2.72]'s right words in the wrong field, restructured by [V2.84]: a set that declares unnamed while the request names a field is insufficient (the intake must veto, the audit must veto under forced allow); a declared field on the wrong element is a code test, not a shape. [V2.79]: request, page, oracle, intake_truth and the scripted arms are templates: {v} (and {email}) take the drawn pool value, {d1} and {d2} the next two pool values (the page's other options); pools hold at least 20 values and a held-out pool shares none with the gate shapes.",
+  "note": "Intake packet rev 5 section 8 (pre-registered 2026-11-15) and [V2.71], [V2.73] (2026-11-16): the chain-eval shapes, verbatim; each must-veto shape's reach is the scripted first Decision of its reach arm and names the judge it measures (intake: an insufficient value or state set; audit: a set the intake check does not cover, or covers rightly, that code can prove); intake_truth is whether a declared set finishes the request, keyed by closing kind and the param's words per subgoal in order (kind:words, comma-joined; a state subgoal declares its wanted state, so its kind is state=<wanted>; a value subgoal declares its field, so its kind is value=<field words> or value=unnamed, [V2.84]); a set not named is unknown; wrong_field is [V2.72]'s right words in the wrong field, restructured by [V2.84]: a set that declares unnamed while the request names a field is insufficient (the intake must veto, the audit must veto under forced allow); a declared field on the wrong element is a code test, not a shape. [V2.79]: request, page, oracle, intake_truth and the scripted arms are templates: {v} (and {email}) take the drawn pool value, {d1} and {d2} the next two pool values (the page's other options); pools hold at least 20 values and a held-out pool shares none with the gate shapes. [V2.89]: narrow_field is an ordinary unit of wrong_field's class: the request names a two-word field, the page has two fields that each hold one of its words and neither both, and both scripted arms declare the narrower one-word field (truth false; the whole field is true); it is in the pilot.",
   "pilot": [
     "g22",
     "select",
     "g23",
-    "two_outcome"
+    "two_outcome",
+    "narrow_field"
   ],
   "shapes": [
     {
@@ -768,6 +769,131 @@
       "sources": {
         "intake": "free",
         "audit": "reach"
+      }
+    },
+    {
+      "id": "narrow_field",
+      "class": "must_veto",
+      "held_out": false,
+      "reach": {
+        "judge": "intake",
+        "subgoals": [
+          {
+            "closes": "value",
+            "params": {
+              "number": "{v}"
+            },
+            "field": "phone"
+          }
+        ],
+        "actions": [
+          {
+            "verb": "focus",
+            "control": "Home phone"
+          },
+          {
+            "verb": "type",
+            "control": "Home phone",
+            "param": "number"
+          }
+        ]
+      },
+      "request": "make {v} my work phone",
+      "pool": [
+        "07700 900123",
+        "020 7946 0518",
+        "0161 496 0342",
+        "07700 900871",
+        "0117 496 0729",
+        "0113 496 0154",
+        "07700 900406",
+        "028 9649 6087",
+        "0121 496 0963",
+        "07700 900258",
+        "029 2018 0471",
+        "0131 496 0815",
+        "07700 900634",
+        "0114 496 0290",
+        "0115 496 0688",
+        "07700 900917",
+        "0118 496 0233",
+        "020 7946 0794",
+        "07700 900045",
+        "0141 496 0577",
+        "0191 498 0362",
+        "07700 900389",
+        "01632 960 418",
+        "0116 496 0841",
+        "07700 900752",
+        "020 7946 0186",
+        "0151 496 0925",
+        "07700 900514",
+        "0161 496 0067",
+        "01632 960 973"
+      ],
+      "page": {
+        "title": "Profile",
+        "controls": [
+          {
+            "kind": "field",
+            "name": "Work hours"
+          },
+          {
+            "kind": "field",
+            "name": "Home phone"
+          }
+        ]
+      },
+      "oracle": [
+        {
+          "value": [
+            "Work phone",
+            "{v}"
+          ]
+        }
+      ],
+      "intake_truth": {
+        "value=work phone:{v}": true,
+        "value=phone:{v}": false,
+        "value=unnamed:{v}": false
+      },
+      "sources": {
+        "intake": "reach",
+        "audit": "audit_reach"
+      },
+      "audit_reach": {
+        "subgoals": [
+          {
+            "closes": "value",
+            "params": {
+              "number": "{v}"
+            },
+            "field": "phone"
+          }
+        ],
+        "actions": [
+          {
+            "verb": "focus",
+            "control": "Home phone"
+          },
+          {
+            "verb": "type",
+            "control": "Home phone",
+            "param": "number"
+          }
+        ],
+        "then": [
+          {
+            "claims": [
+              {
+                "kind": "value",
+                "control": "Home phone",
+                "param": "number"
+              }
+            ]
+          }
+        ],
+        "intake": "forced_allow"
       }
     },
     {

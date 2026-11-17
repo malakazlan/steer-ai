@@ -129,7 +129,7 @@ from steerai.loop2.query import (
     search_landmark_of,
     top_document_replaced,
 )
-from steerai.loop2.task import GoalSpan, Subgoal, Task, known_params
+from steerai.loop2.task import UNNAMED, GoalSpan, Subgoal, Task, known_params
 from steerai.loop2.turn_trace import (
     ActFact,
     CarrierFact,
@@ -158,6 +158,7 @@ from steerai.loop2.verify import (
     holds_words,
     judge,
     list_closed,
+    rival_field,
 )
 from steerai.orchestrator.contracts import RISKS, Risk
 from steerai.orchestrator.loop import REUSE_FRESHNESS_S
@@ -305,6 +306,7 @@ class _ActCounts:
     not_own_text: int = 0
     evidence_taken: int = 0
     field_mismatch: int = 0
+    rival_field: int = 0
     turns_to_claim: int = 0
     repeated_words_missing: int = 0
 
@@ -679,6 +681,7 @@ class _Run:
             not_own_text=self.counts.not_own_text,
             evidence_taken=self.counts.evidence_taken,
             field_mismatch=self.counts.field_mismatch,
+            rival_field=self.counts.rival_field,
             turns_to_claim=self.counts.turns_to_claim,
             repeated_words_missing=self.counts.repeated_words_missing,
             rebased_open=len(self.rebased - self.proven),
@@ -1078,12 +1081,34 @@ class _Run:
         if subgoal.closes == "page":
             self._tick(subgoal, how="claim", at=observed)
             return
+        if claim.kind == "value" and param is not None:
+            self._count_rival(subgoal, param, claim, observed)
         proofs = self.proofs.setdefault(subgoal.id, {})
         proofs[param or ""] = _Proof(claim.evidence[0], claim.kind)
         if set(proofs) >= set(subgoal.params) and self._still(subgoal, observed):
             self._tick(subgoal, how="claim", at=observed)
             return
         self._note(ClaimResult(subgoal.id, "accepted"))  # [V2.47]: one param held, not closed
+
+    def _count_rival(self, subgoal: Subgoal, param: str, claim: Claim, observed: Observed) -> None:
+        """[V2.89] (#505): a proven value claim whose cited element has a rival field is counted;
+        nothing else changes in step 3."""
+        element = self.handles.element(claim.evidence[0], observed)
+        if element is None:
+            return
+        others = (
+            s.field
+            for s in self.subgoals
+            if s.id != subgoal.id and s.field is not None and s.field != UNNAMED
+        )
+        if rival_field(
+            observed.snapshot,
+            element,
+            goal=self.task.goal,
+            value=subgoal.params[param].text,
+            other_fields=others,
+        ):
+            self.counts.rival_field += 1
 
     def _refused(  # noqa: PLR0911 - one return per refusal, in the rules' order
         self, claim: Claim, subgoal: Subgoal, param: str | None, observed: Observed
