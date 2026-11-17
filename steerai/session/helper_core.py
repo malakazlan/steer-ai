@@ -316,8 +316,10 @@ class HelperCore:
         before it injects the probe, so the tag is known when the probe's event arrives."""
         tag = self._config.get("probe_tag")
         if tag != self._seen_probe_tag:
-            self._seen_probe_tag = tag
             ring = [self._config.get(name) for name in RETIRED_WORDS]  # written before the tag
+            if self._config.get("probe_tag") != tag:
+                return  # the parent moved on while the ring was read: the next event re-syncs
+            self._seen_probe_tag = tag
             self._classifier.sync_probe(tag, ring)
 
     def _resumed(self, qpc: int) -> None:

@@ -201,10 +201,10 @@ class HelperMonitor:
     def probe_now(self) -> None:
         if self._closed:
             return  # #385 HH4-14: no probe for a closed helper
-        tag = self._ledger.probe_sent(now=self._now(), begin=self._publish_probe_tag)
         try:
+            tag = self._ledger.probe_sent(now=self._now(), begin=self._publish_probe_tag)
             self._probe(tag)
-        except OSError:
+        except (OSError, RuntimeError):  # a failed send, or no tag could be drawn
             self._probe_failed = True  # fails closed: the next health check is false
 
     def _publish_probe_tag(self) -> int:

@@ -438,41 +438,30 @@ class LiveWorld:
         derived deadline: else Steer refuses to start, before any action. Only a kill ends the
         wait without a verdict (the first send's own check reads the switch). A probe that was
         sent, whose deadline passed with its tag unseen, is `probe_unproven_at_start`, separate
-        from a mid-task `monitor_lost`; a fault of the monitor (a failed send, a dead thread, a
-        callback error) keeps its own reason, `monitor_unavailable`. The person's move can merge
-        with the probe's, so a first miss while the person was active is retried once after the
-        idle wait, counted apart (`start_probe_retries`)."""
-        if self._probe_once():
-            return
-        monitor = self._monitor
-        if self._kill_token() is None and (
-            self._config.clock() - monitor.last_user_input() < IDLE_S
-        ):
-            self.start_probe_retries += 1
-            self._write({"event": "start_probe", "token": "retry_after_physical_input"})
-            if not self._idle_to_start():
-                return
-            if self._probe_once():
-                return
-        raise SteerError(ErrorCode.GATE_BLOCKED, "probe_unproven_at_start")
-
-    def _probe_once(self) -> bool:
-        """One probe at start: True when proven or a kill ended the wait; False when it was sent
-        and its deadline passed with the tag unseen. A monitor fault raises its own reason."""
+        from a mid-task `monitor_lost`: the world does not latch a loss here, whatever the
+        monitor itself does on the deadline. A fault of the monitor (a failed send, a dead
+        thread, a callback error) keeps its own reason, `monitor_unavailable`. There is no retry:
+        a monitor that has seen a deadline loss is closed. If the person was active within
+        `IDLE_S` while the probe was out, that is a separate trace fact,
+        `person_active_during_probe` (their move can merge with the probe's)."""
         monitor = self._monitor
         monitor.probe_now()
         started = self._config.clock()
         while not monitor.probe_seen():
             if self._kill_token() is not None:
-                return True
+                return
+            if cast(HookWorldMonitor, monitor).lost_hooks():  # read before `healthy` latches
+                break
             if not monitor.healthy():
-                if cast(HookWorldMonitor, monitor).lost_hooks():  # deadline passed, unproven
-                    return False
                 raise SteerError(ErrorCode.GATE_BLOCKED, "monitor_unavailable")
             if self._config.clock() - started >= self._probe_deadline_s:
-                return False
+                break
             self._pause(PROVE_POLL_S)  # ends early only for a kill, read at the loop's top
-        return True
+        else:
+            return
+        if self._config.clock() - monitor.last_user_input() < IDLE_S:
+            self._write({"event": "start_probe", "token": "person_active_during_probe"})
+        raise SteerError(ErrorCode.GATE_BLOCKED, "probe_unproven_at_start")
 
     def _take_session(self, platform: Platform, config: LiveConfig) -> tuple[str, Monitor]:
         """[V2.57] LW-02: the session, then the run's tag, then the monitor on it. Any failure
@@ -508,8 +497,6 @@ class LiveWorld:
         self.trace_unwritable = 0
         self.late_sink_failures = 0
         self._latched: str | None = None
-        self.start_probe_retries = 0
-        """[V2.81]: first probes at start retried once after the idle wait (a physical move)."""
         self._lost = False
         """[V2.57] LW-01: monitor_lost is final for the task: never re-installed and resumed."""
         self.monitor_lost = 0

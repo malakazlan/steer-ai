@@ -2077,7 +2077,7 @@ def test_an_unproven_first_probe_refuses_the_start_and_never_counts_a_monitor_lo
 
     monkeypatch.setattr(LiveWorld, "_lose", counting)
     platform = Platform()
-    platform.monitor = _Latching()  # type: ignore[assignment]  # a fake with the real latch
+    platform.monitor = _Latching()
     with pytest.raises(SteerError) as failed:
         _world(platform)
     assert failed.value.message == "probe_unproven_at_start"

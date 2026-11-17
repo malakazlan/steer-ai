@@ -486,8 +486,8 @@ class HookMonitor:
             self.probe_now()
 
     def probe_now(self) -> None:
-        tag = self._core.probe_sent(now=self._monotonic())
         try:
+            tag = self._core.probe_sent(now=self._monotonic())
             # [V2.81]: v2 sends this probe's own tag on both hooks; v1 the monitor's own tag,
             # never the process's current one (a probe after `restore_extra_info`)
             if self._per_hook:
@@ -496,7 +496,7 @@ class HookMonitor:
                     key_up_probe(self._probe_vk, tag=tag)  # LW-01: the keyboard hook's own proof
             else:
                 nudge_in_place(tag=self._extra_info)
-        except OSError:
+        except (OSError, RuntimeError):  # a failed send, or no tag could be drawn
             self._core.on_probe_failed()  # fails closed: the next boundary stops (D4)
 
     def probe_seen(self) -> bool:

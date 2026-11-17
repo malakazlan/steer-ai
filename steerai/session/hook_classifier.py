@@ -289,8 +289,9 @@ class Classifier:
         self._last_steer = now
         self._last_by[hook] = now
         if proof:
+            if self._proof[hook] != proof:  # a probe's second echo keeps the first one's time
+                self._proof_at[hook] = now
             self._proof[hook] = proof
-            self._proof_at[hook] = now
         self._count("steer")
 
     def _person(self, now: float, *, injected: bool) -> None:
