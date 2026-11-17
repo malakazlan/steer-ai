@@ -1,4 +1,4 @@
-# ruff: noqa: T201
+# ruff: noqa: T201, E501
 """Diagnostic only (probe branch, never merged): what the real low-level hooks hand the
 callback for a numbered probe. Prints; passes."""
 
