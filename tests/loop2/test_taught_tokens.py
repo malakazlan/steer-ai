@@ -162,11 +162,13 @@ TAUGHT: Final[Mapping[str, Taught]] = {
 EXCLUDED: Final[Mapping[str, str]] = {
     "done_already": "step 4: only `loop2.consent` gives it, and the runner does not use it",
     "commit_conflict": "step 4: only `loop2.consent` gives it, and the runner does not use it",
-    "no_strict_shape": "step 4: only `loop2.consent` gives it, and the runner does not use it",
+    "send_not_typed": "step 4: only `loop2.consent` gives it, and the runner does not use it",
 }
 """All three are step 4 tokens, taught when the runner wires `consent` (the tripwire below fails
 then). `done_already` is a `model` fault by [V2.74] (repeating a delivered commit is the model's
-choice), so it will need a rule then."""
+choice), and `send_not_typed` by [V2.90] (1) (the content's record is missing or holds other
+text), so each needs its own legend line then. `no_strict_shape` is a step limit ([V2.90] (1)),
+never a model fault, so it is not listed."""
 
 
 def _model_faults() -> set[str]:

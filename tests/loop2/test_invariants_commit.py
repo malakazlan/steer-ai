@@ -1,23 +1,32 @@
 """Which subgoals are commits, the refusals before any ask, and the caution-R2 post-check
-(packet v2-step4-claims §3.3; [V2.15] Q2, Q3, amendment 2). Red on the step 4 stub."""
+(packet v2-step4-claims §3.3; [V2.15] Q2, Q3, amendment 2), refreshed to [V2.88] L8:
+`commit_undeclared` is a model fault only when the commit fact was on the row the model acted
+on, else a limit. Red on the step 4 stub."""
 
 from __future__ import annotations
 
 import pytest
 
+from steerai.loop2.claims import Sent
 from steerai.loop2.consent import (
     WordClass,
     commit_refusal,
     effective_commit,
     needs_write_ahead,
     post_check,
+    refusal_kind,
     tier_for,
 )
 from steerai.loop2.query import query_outcome
-from steerai.loop2.task import Commit
+from steerai.loop2.task import Commit, GoalSpan
 from steerai.orchestrator.contracts import Risk
 from steerai.world.effects import EffectClass, Token
-from tests.loop2.world_fakes import pending, report
+from tests.loop2.world_fakes import FIELD, GOAL, pending, report
+
+TEXT = GoalSpan.of(GOAL, 20, 29)
+"""`red shoes`, the one content param."""
+TYPED = Sent(field=FIELD.runtime_id, span=TEXT, read_back=True)
+"""The field's pending-text record holding the param, the digest read back equal."""
 
 
 @pending("§3.3 the effective commit: declared, raised by dispatched actions", step=4)
@@ -50,7 +59,7 @@ def refusal(
     action: Commit = "none",
     verb: str = "click",
     raised_by: WordClass | None = None,
-    typed: str | None = "text",
+    pending: Sent | None = TYPED,
 ) -> str | None:
     return commit_refusal(
         subgoal_commit=subgoal,
@@ -58,7 +67,8 @@ def refusal(
         action_commit=action,
         verb=verb,
         raised_by=raised_by,
-        typed_param=typed,
+        params={"text": TEXT},
+        pending=pending,
     )
 
 
@@ -75,7 +85,7 @@ def test_a_deny_word_raise_with_a_declared_send_and_a_typed_param_is_allowed() -
 
 @pending("[V2.15] Q2: only a deny-word raise makes a subgoal strict", step=4)
 def test_a_caution_raise_without_a_word_class_is_not_refused() -> None:
-    assert refusal(raised_by=None, action="none", typed="text") is None
+    assert refusal(raised_by=None, action="none") is None
 
 
 @pending(
@@ -111,10 +121,22 @@ def test_delete_and_pay_are_not_in_step(commit: Commit) -> None:
     assert refusal(subgoal=commit, action=commit, raised_by="deny") == "not_in_step"
 
 
-@pending("[V2.15] amendment 2: no_strict_shape is a recorded limit", step=4)
+@pending("[V2.88] L3, [V2.90] (1): a send with no record of its content", step=4)
 @pytest.mark.parametrize("commit", ["send", "submit"])
-def test_a_send_without_a_typed_param_is_no_strict_shape(commit: Commit) -> None:
-    assert refusal(subgoal=commit, action=commit, raised_by="deny", typed=None) == "no_strict_shape"
+def test_a_send_without_a_pending_text_record_is_send_not_typed(commit: Commit) -> None:
+    assert refusal(subgoal=commit, action=commit, raised_by="deny", pending=None) == (
+        "send_not_typed"
+    )
+
+
+@pending("[V2.88] L8: commit_undeclared is a model fault when the row showed the fact", step=4)
+def test_commit_undeclared_with_the_commit_fact_on_the_acted_row_is_a_model_fault() -> None:
+    assert refusal_kind("commit_undeclared", commit_on_row=True) == "model"
+
+
+@pending("[V2.88] L8: commit_undeclared is a limit, no strike, when the row did not", step=4)
+def test_commit_undeclared_without_the_commit_fact_on_the_acted_row_is_a_limit() -> None:
+    assert refusal_kind("commit_undeclared", commit_on_row=False) == "step"
 
 
 @pending("§8.4: every R2/R3 dispatch has a write-ahead record first", step=4)

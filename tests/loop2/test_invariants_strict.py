@@ -1,10 +1,12 @@
 """The strict tier for commit subgoals, bound to the write-ahead record (V2 §8.8; packet
-v2-step4-claims §3.3; [V2.15] Q1). Red on the step 4 stub."""
+v2-step4-claims §3.3; [V2.15] Q1), refreshed to [V2.88]: one content param (L2), and the binding
+to the content field's pending-text record by provenance and digest, never by the subgoal label
+on the `type` (L3). Red on the step 4 stub."""
 
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import pytest
 
@@ -20,8 +22,10 @@ from steerai.loop2.claims import (
     closes,
     strict_reason,
 )
+from steerai.loop2.consent import commit_refusal
 from steerai.loop2.decision import Claim
-from steerai.loop2.task import GoalSpan
+from steerai.loop2.runner import REFUSAL_KIND
+from steerai.loop2.task import Commit, GoalSpan
 from steerai.world.elements import Element
 from tests.loop2.world_fakes import element, pending, snapshot
 
@@ -38,13 +42,17 @@ PAGE = [DOC, COMPOSER, SEND, CONVERSATION]
 BUBBLE = element(10, "ListItem", "ok thanks", (5, 10), 4)
 BEFORE = snapshot(PAGE)
 RECORD = CommitRecord(action_key="k-send", subgoal="s1", phase="acting", before=BEFORE)
-SENT = Sent(param="text", field=COMPOSER.runtime_id)
+SENT = Sent(field=COMPOSER.runtime_id, span=CONTENT, read_back=True)
+"""The composer's pending-text record: typed from the content span, the digest read back equal."""
 SUBGOAL = SubgoalFacts(
-    params={"text": CONTENT, "to": OTHER},
+    params={"text": CONTENT},
     commit="send",
     baseline=BEFORE,
     typed_fields=(COMPOSER.runtime_id,),
+    typed_words=frozenset({"ok", "thanks"}),
 )
+"""Steer typed the content itself, so every word of it is typed: [V2.91]'s typed-words-only
+rule is the standard tier's; the strict tier proves Steer's own text by equality instead."""
 
 
 def claim(*ids: int, param: str = "text") -> Claim:
@@ -103,17 +111,140 @@ def test_a_record_of_another_subgoal_is_no_record() -> None:
     assert "no_record" in check([*PAGE, BUBBLE], records=(other,)).tokens
 
 
-@pending("§3.3 strict rule 3 param_not_sent", step=4)
-def test_a_param_other_than_the_one_typed_is_param_not_sent() -> None:
-    to_line = element(11, "ListItem", "the team", (5, 11), 4)
-    result = check([*PAGE, to_line], cited=claim(to_line.id, param="to"))
+@pending("[V2.88] L3: param_not_sent binds to the record's provenance and digest", step=4)
+@pytest.mark.parametrize(
+    "record",
+    [
+        dataclasses.replace(SENT, span=OTHER),
+        dataclasses.replace(SENT, span=None),
+        dataclasses.replace(SENT, read_back=False),
+    ],
+    ids=["another_span", "generated_text", "digest_differs"],
+)
+def test_a_record_not_holding_this_subgoals_param_is_param_not_sent(record: Sent) -> None:
+    result = check([*PAGE, BUBBLE], sent=record)
+    assert result.proof is None
     assert "param_not_sent" in result.tokens
+
+
+@pending("[V2.88] L3: a missing or unread pending-text record fails closed", step=4)
+@pytest.mark.parametrize(
+    "record", [None, dataclasses.replace(SENT, read_back=None)], ids=["missing", "unread"]
+)
+def test_a_missing_or_unread_record_fails_closed(record: Sent | None) -> None:
+    result = check([*PAGE, BUBBLE], sent=record)
+    assert result.proof is None
+    assert "param_not_sent" in result.tokens
+
+
+def test_the_pending_text_record_carries_no_subgoal_label() -> None:
+    """[V2.88] L3, [V2.72]: the label on the `type` is ignored, so the record the strict tier
+    binds to has no field for it."""
+    assert {f.name for f in dataclasses.fields(Sent)} == {"field", "span", "read_back"}
+
+
+def refusal(
+    *, commit: Commit = "send", params: Mapping[str, GoalSpan] | None = None, pending: Sent | None
+) -> str | None:
+    return commit_refusal(
+        subgoal_commit=commit,
+        prior=(),
+        action_commit=commit,
+        verb="click",
+        raised_by="deny",
+        params=SUBGOAL.params if params is None else params,
+        pending=pending,
+    )
+
+
+@pending("[V2.88] L2, L3: one content param, its record holding it, goes on to the ask", step=4)
+@pytest.mark.parametrize("commit", ["send", "submit"])
+def test_a_commit_with_one_param_and_its_record_is_not_refused(commit: Commit) -> None:
+    assert refusal(commit=commit, pending=SENT) is None
+
+
+@pending("[V2.88] L2, [V2.90] (1): one param only; more is a step limit, before the ask", step=4)
+@pytest.mark.parametrize("commit", ["send", "submit"])
+@pytest.mark.parametrize(
+    "params", [{}, {"text": CONTENT, "to": OTHER}], ids=["no_param", "two_params"]
+)
+def test_a_commit_subgoal_without_exactly_one_param_is_no_strict_shape(
+    commit: Commit, params: Mapping[str, GoalSpan]
+) -> None:
+    assert refusal(commit=commit, params=params, pending=SENT) == "no_strict_shape"
+
+
+@pending("[V2.88] L3, [V2.90] (1): a send with no record of its param is send_not_typed", step=4)
+@pytest.mark.parametrize(
+    "record",
+    [None, dataclasses.replace(SENT, span=OTHER), dataclasses.replace(SENT, span=None)],
+    ids=["missing", "another_span", "generated_text"],
+)
+def test_a_send_whose_record_does_not_hold_the_param_is_send_not_typed(
+    record: Sent | None,
+) -> None:
+    assert refusal(pending=record) == "send_not_typed"
+
+
+def test_no_strict_shape_is_a_step_limit_and_send_not_typed_a_model_fault() -> None:
+    """[V2.90] (1): `no_strict_shape` keeps one kind, a step limit with no strike, for a declared
+    shape beyond step 4; a send whose content Steer did not type is the model's fault."""
+    assert REFUSAL_KIND["no_strict_shape"] == "step"
+    assert REFUSAL_KIND["send_not_typed"] == "model"
+
+
+@pending("[V2.90] (1): a failed read-back is a world fact, never a model strike", step=4)
+@pytest.mark.parametrize(
+    ("read_back", "token"),
+    [(False, "composer_differs"), (None, "composer_unreadable")],
+    ids=["digest_differs", "unread"],
+)
+def test_a_failed_read_back_of_the_record_is_a_world_refusal(
+    read_back: bool | None, token: str
+) -> None:
+    """The record holds the param's span, but its digest read back differs or was never read;
+    nothing is sent in either case."""
+    assert refusal(pending=dataclasses.replace(SENT, read_back=read_back)) == token
+    assert REFUSAL_KIND[token] == "world"
 
 
 @pending("§3.3 strict rule 4, T1 not_new ([V2.17].7)", step=4)
 def test_content_already_in_the_records_before_is_not_new() -> None:
     old = dataclasses.replace(RECORD, before=snapshot([*PAGE, BUBBLE]))
     assert "not_new" in check([*PAGE, BUBBLE], records=(old,)).tokens
+
+
+@pending("[V2.90] (2): a strict send's evidence must be new after the dispatch", step=4)
+def test_a_live_preview_shown_before_the_dispatch_never_proves_the_send() -> None:
+    """A preview of the draft, outside the composer, already held the words on the observation
+    before the dispatch (the record's before). It appeared after the task's first observation,
+    so the standard delta would count it; the strict tier never does."""
+    preview = element(15, "Text", "ok thanks", (5, 15), 1)
+    record = dataclasses.replace(RECORD, before=snapshot([*PAGE, preview]))
+    result = check([*PAGE, preview], cited=claim(preview.id), records=(record,))
+    assert result.proof is None
+    assert "not_new" in result.tokens
+
+
+@pending("[V2.91]: a strict send's new element's name equals the typed text, folded", step=4)
+@pytest.mark.parametrize("name", ["ok thanks", "Ok thanks", "ok  thanks"])
+def test_an_honest_send_whose_name_equals_the_typed_text_is_a_strict_proof(name: str) -> None:
+    bubble = element(16, "ListItem", name, (5, 16), 4)
+    result = check([*PAGE, bubble], cited=claim(bubble.id))
+    assert result.proof is not None
+    assert "typed_words_only" not in result.tokens
+
+
+@pending("[V2.91], #511 must-not-prove: a name holding the typed text is not equal", step=4)
+@pytest.mark.parametrize(
+    "name", ["Failed to send: ok thanks", "No results for ok thanks"], ids=["failed", "no_results"]
+)
+def test_a_name_that_only_holds_the_typed_text_never_proves_the_send(name: str) -> None:
+    """T1's `name_matches` is full-string (VF-06), so the template gives `no_match`."""
+    line = element(17, "ListItem", name, (5, 17), 4)
+    result = check([*PAGE, line], cited=claim(line.id))
+    assert result.proof is None
+    assert "no_match" in result.tokens
 
 
 @pending("§3.3 strict rule 4 duplicate_effect", step=4)
