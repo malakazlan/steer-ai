@@ -22,14 +22,14 @@ PINS: dict[str, tuple[Prompt, list[str]]] = {
     "decide_first_turn": (
         lambda: c.build_prompt("g", [], [], [], "t", [], task_fence=FENCE, screen_fence=SCREEN),
         [
-            "0896d56b9e603241ad3022dca3f6303694bfe725040ec91aaa6915e546922457",
+            "8420777eeb3947901599930489bd7f812c73b464a5fb1ddee2a7b4046fa99afb",
             "45d33f68f06d7673a75a167bcecf7edfff54253f234d286109bfa96267ae0345",
         ],
     ),
     "decide_later_turn": (
         lambda: c.build_prompt("g", ["s"], [], [], "t", [], task_fence=FENCE, screen_fence=SCREEN),
         [
-            "0896d56b9e603241ad3022dca3f6303694bfe725040ec91aaa6915e546922457",
+            "8420777eeb3947901599930489bd7f812c73b464a5fb1ddee2a7b4046fa99afb",
             "c690da9591b6a17390c491bd30f3ef9547b56c7b431e11d8e5d3b5948f68c5a7",
         ],
     ),
