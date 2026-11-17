@@ -105,6 +105,7 @@ from steerai.loop2.loop import (
     RiskWhy,
     RunnerAuditReason,
     Status,
+    StepPortsMismatchError,
     SufficiencyReason,
     TaskOutcome,
     TokenUsage,
@@ -452,7 +453,10 @@ def run_task(task: Task, ports: Ports) -> TaskOutcome:
     """Run `task` to an outcome. Between batch actions the watch's after observation is reused
     only when it is a full-tier read, stable and within v1's R0/R1 freshness limit
     (`REUSE_FRESHNESS_S`, its age `clock() - snapshot.taken_at`); otherwise the loop re-observes
-    ([V2.11] decision 6)."""
+    ([V2.11] decision 6). A task is step 4 exactly when its ports carry the step 4 ports; a
+    mismatch raises `StepPortsMismatchError` before anything runs ([V2.88])."""
+    if (task.step == 4) != (ports.step4 is not None):
+        raise StepPortsMismatchError
     return _Run(task, ports).go()
 
 
