@@ -22,28 +22,28 @@ PINS: dict[str, tuple[Prompt, list[str]]] = {
     "decide_first_turn": (
         lambda: c.build_prompt("g", [], [], [], "t", [], task_fence=FENCE, screen_fence=SCREEN),
         [
-            "4531e697253a877ef7b8f3145ae77c61092465ce3be6f8c83c0b1eb9d75c5603",
-            "54a6ebf9a8b041849256e594809091837ed92a160627de58800c12aae4f36dd8",
+            "0896d56b9e603241ad3022dca3f6303694bfe725040ec91aaa6915e546922457",
+            "45d33f68f06d7673a75a167bcecf7edfff54253f234d286109bfa96267ae0345",
         ],
     ),
     "decide_later_turn": (
         lambda: c.build_prompt("g", ["s"], [], [], "t", [], task_fence=FENCE, screen_fence=SCREEN),
         [
-            "4531e697253a877ef7b8f3145ae77c61092465ce3be6f8c83c0b1eb9d75c5603",
+            "0896d56b9e603241ad3022dca3f6303694bfe725040ec91aaa6915e546922457",
             "c690da9591b6a17390c491bd30f3ef9547b56c7b431e11d8e5d3b5948f68c5a7",
         ],
     ),
     "intake": (
         lambda: c.build_intake_prompt("g", [], task_fence=FENCE),
         [
-            "9fa9b4d4215aaa2b33ddc5bb278ef6c2b596fd65d8636fbddae5511c7d127c74",
+            "6c116ebd71a76bf71be50169b4c15b67bb9e1c1b1cd9663349ba6f7abefeb2c8",
             "d5a3af9cb3f90d3f9fbb3155c26dcbd4c9cfb22a5e9018c773f4cc6a9ae7d21a",
         ],
     ),
     "audit": (
         lambda: c.build_audit_prompt("g", [], "t", [], task_fence=FENCE, screen_fence=SCREEN),
         [
-            "4a7196a4ae75bb64eadc5aec748de109d71168149194b259c330db982f53cbc4",
+            "44c6da8d264f101e33664c9b1af63dc053b920a970afb4d9885151168b952b31",
             "d5a3af9cb3f90d3f9fbb3155c26dcbd4c9cfb22a5e9018c773f4cc6a9ae7d21a",
         ],
     ),

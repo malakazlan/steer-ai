@@ -45,6 +45,7 @@ LINE: ProofLine = (
     "value",
     ("value_read", "equals_param"),
     ((1, "red shoes"),),
+    "unnamed",
 )
 
 
@@ -52,7 +53,7 @@ def _value_only(audit: Any) -> World:  # Any: an Audited, an exception or a call
     """3d-b's value-only shape, scripted: one value subgoal, a type into the field, a value claim
     on that same field. Every proof is self-written."""
     subs = [SubgoalDoc(id="s1", desc="the field holds it", params={"text": "red shoes"},
-                       closes="value")]  # fmt: skip
+                       closes="value", field="unnamed")]  # fmt: skip
     world = World(
         [
             Decision(subgoals=subs, actions=[act("type", target=FIELD.id, param="text")]),
@@ -125,7 +126,15 @@ def test_a_navigated_page_proof_is_never_audited() -> None:
 def test_a_value_proof_on_an_element_steer_never_acted_on_is_audited_too() -> None:
     """Principal 1, rev 4.6: every task closed only by value or state claims is audited; a
     pre-filled field costs one call."""
-    subs = [SubgoalDoc(id="s1", desc="it holds it", params={"text": "red shoes"}, closes="value")]
+    subs = [
+        SubgoalDoc(
+            id="s1",
+            desc="it holds it",
+            params={"text": "red shoes"},
+            closes="value",
+            field="unnamed",
+        )
+    ]
     world = World(
         [
             Decision(subgoals=subs, actions=[act("click", target=GO.id)]),
@@ -144,7 +153,15 @@ def _combo_mirror() -> World:
     child, claim the value on the parent: the proof cites an element Steer never acted on."""
     combo = element(20, "ComboBox", "Search", (9, 20), 1)
     child = element(21, "Edit", "Search", (9, 21), 20)
-    subs = [SubgoalDoc(id="s1", desc="it holds it", params={"text": "red shoes"}, closes="value")]
+    subs = [
+        SubgoalDoc(
+            id="s1",
+            desc="it holds it",
+            params={"text": "red shoes"},
+            closes="value",
+            field="unnamed",
+        )
+    ]
     world = World(
         [
             Decision(subgoals=subs, actions=[act("type", target=child.id, param="text")]),
@@ -200,7 +217,7 @@ def test_the_audit_prompt_holds_no_desc_no_param_words_and_nothing_outside_the_f
     assert text.count("red shoes") == 2  # the request and the param's span, both fenced
     assert "taskfence01" in text
     assert "f" * 32 in text
-    assert AUDIT_PROMPT_VERSION == "audit-5"  # the shared schema's title changed (#457)
+    assert AUDIT_PROMPT_VERSION == "audit-6"  # the shared schema's title changed (#457)
     schema = json.loads(system[1])
     assert set(schema["properties"]) == {"sufficient", "reason"}
 
@@ -361,7 +378,9 @@ def test_a_mixed_task_value_plus_navigated_is_audited_too(
     """[V2.69] One (was rev 4.5 test 4, "never audited"): one value proof and one page proof."""
     monkeypatch.setattr("steerai.loop2.runner.judge", judged_by(lambda *_a, **_k: "url_query"))
     subs = [
-        SubgoalDoc(id="s1", desc="field", params={"text": "red shoes"}, closes="value"),
+        SubgoalDoc(
+            id="s1", desc="field", params={"text": "red shoes"}, closes="value", field="unnamed"
+        ),
         SubgoalDoc(id="s2", desc="results", params={"text": "red shoes"}, closes="page"),
     ]
     claim = Claim(subgoal="s1", kind="value", evidence=[FIELD.id], param="text")

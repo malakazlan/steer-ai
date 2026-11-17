@@ -42,7 +42,7 @@ def _tokens(decision: Decision) -> list[str]:
 
 def _sub(**changes: Any) -> SubgoalDoc:  # Any: test values
     base: dict[str, Any] = {"id": "s1", "desc": "the shoes", "closes": "value",
-                            "params": {"q": "red shoes"}}  # fmt: skip
+                            "params": {"q": "red shoes"}, "field": "unnamed"}  # fmt: skip
     return SubgoalDoc(**{**base, **changes})
 
 

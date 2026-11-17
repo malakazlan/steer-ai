@@ -118,7 +118,7 @@ def test_a_rejected_error_always_carries_a_parsed_shape() -> None:
 
 
 def test_an_unparsed_last_attempt_adds_no_shape_line_in_the_runner() -> None:
-    error = ControllerError("not_json", ["not_json"], DecideRecord("controller-14", 2, True, True))
+    error = ControllerError("not_json", ["not_json"], DecideRecord("controller-15", 2, True, True))
     world = World([])
     world.decide_errors = [error]
     outcome = run_task(task(), world.ports())

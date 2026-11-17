@@ -560,7 +560,13 @@ def handle(prompt: str, name: str) -> int:
     return int(found[-1])
 
 
-SUB = {"id": "s1", "desc": "it is set", "params": {"name": "Ada Lovelace"}, "closes": "value"}
+SUB = {
+    "id": "s1",
+    "desc": "it is set",
+    "params": {"name": "Ada Lovelace"},
+    "closes": "value",
+    "field": "unnamed",
+}
 ALLOW = json.dumps({"sufficient": True, "reason": "facts_finish_request"})
 VETO = json.dumps({"sufficient": False, "reason": "request_asks_more"})
 
@@ -780,7 +786,7 @@ def _subgoal(
     doc: dict[str, Any] = {  # Any: JSON
         "id": sid, "desc": "it is so", "params": {param: words}, "closes": closes
     }  # fmt: skip
-    return doc | ({"wanted": wanted} if closes == "state" else {})
+    return doc | ({"wanted": wanted} if closes == "state" else {"field": "unnamed"})
 
 
 def _state_turns(name: str) -> list[Callable[[str], dict[str, Any]]]:
@@ -2477,8 +2483,8 @@ def test_the_audit_pins_change_with_the_rules_and_with_the_packet(
 
 
 AUDIT_PINS = {
-    "prompt": "d6878a5e61346d6658b8ea99806a7c3e4c6c4555502620f1502ab3ca9608d129",
-    "packet": "0c5e8d1b9f557369bf4c7b92c88001d587c68941e67888ba7675b2f3648570c5",
+    "prompt": "bf644107c14a7203e5294e58a2cc3d24faef8a7b6250837f2a5189cb983471de",
+    "packet": "6de6da5e293f3872216382d4b3aa62afb937c903832178bd4be1c0460a1fd109",
 }
 
 

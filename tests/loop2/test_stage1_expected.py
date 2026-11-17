@@ -191,7 +191,7 @@ def _value_claim(
     seen = observed([DOC, box])
     assert seen.acted_value is None
     params = {"choice": GoalSpan.of(goal, 5, len(goal))}
-    subgoal = Subgoal("s1", "pick it", params, "value")
+    subgoal = Subgoal("s1", "pick it", params, "value", field="unnamed")
     claim = Claim(subgoal="s1", kind="value", evidence=[box.id], param="choice")
 
     def fact_of(text: str) -> ValueFact:

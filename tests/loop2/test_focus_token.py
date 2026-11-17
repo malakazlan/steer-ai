@@ -110,7 +110,7 @@ def test_no_header_line_when_a_row_carries_the_focus() -> None:
 
 
 def test_the_legend_explains_the_token_and_the_header() -> None:
-    assert PROMPT_VERSION == "controller-14"
+    assert PROMPT_VERSION == "controller-15"
     assert (
         "- `focused` marks the element with the keyboard focus; `focus: elsewhere` means it is "
         "on something not listed (such as the address bar), `focus: unread` that it could not "
