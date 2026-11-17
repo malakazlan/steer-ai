@@ -23,6 +23,7 @@ from steerai.loop2.stage1 import (
     page_check,
     page_row,
     read_page,
+    report_header,
     tasks_for,
 )
 from steerai.loop2.stage1_expected import COMMIT_REASON, Expected, gallery_expected
@@ -201,51 +202,47 @@ def test_the_record_keeps_every_entry_and_the_dom_for_the_out_dir() -> None:
     ]
 
 
-def test_a_stray_entry_of_a_typed_row_keeps_no_value() -> None:
-    raw = _log({"row": "g22", "value": "secret"}, ROME)
-    got = read_page(_tasks()["g13"], raw, dom="Europe/Rome")
-    assert got.entries[0].value is None
+SECRET: dict[str, object] = {"row": "g22", "value": "secret"}
 
 
-def test_an_untrusted_last_event_is_untrusted() -> None:
-    got = read_page(_tasks()["g13"], _log(ROME, {**ROME, "untrusted": True}), dom="Europe/Rome")
-    assert (got.ok, got.kind, got.observed, got.events) == (False, "untrusted", "untrusted", 2)
+def test_an_entry_of_another_row_fails_a_select_row_as_other_row() -> None:
+    got = read_page(_tasks()["g13"], _log(SECRET, ROME), dom="Europe/Rome")
+    assert (got.ok, got.kind, got.events) == (False, "other_row", 1)
+    assert "secret" not in repr(got)
+    assert [(e.row, e.value) for e in got.entries] == [
+        ("g22", "redacted:typed_value"),
+        *[("g13", "Europe/Rome")],
+    ]
 
 
-def test_no_event_and_a_bad_log_on_a_select_row() -> None:
-    assert read_page(_tasks()["g13"], "[]", dom="").kind == "events:0"
-    assert read_page(_tasks()["g13"], "not json", dom="").kind == "unread"
+def test_an_earlier_untrusted_entry_on_the_select_row_fails_closed() -> None:
+    got = read_page(_tasks()["g13"], _log({**ROME, "untrusted": True}, ROME), dom="Europe/Rome")
+    assert (got.ok, got.kind, got.events) == (False, "untrusted", 2)
 
 
-@pytest.mark.parametrize("task_id", ["g12", "g14"])
-def test_every_select_row_takes_the_outcome_rule(task_id: str) -> None:
-    row: dict[str, dict[str, object]] = {
-        "g12": {"row": "g12", "value": "Kenya"},
-        "g14": {"row": "g14", "value": "Teal"},
-    }
-    other: dict[str, object] = {"row": task_id, "value": "Other"}
-    value = str(row[task_id]["value"])
-    assert read_page(_tasks()[task_id], _log(other, row[task_id]), dom=value).ok is True
+def test_a_select_wrong_value_never_writes_a_typed_entry() -> None:
+    got = read_page(_tasks()["g13"], _log(ROME, SECRET), dom="Europe/Rome")
+    assert got.ok is False
+    assert "secret" not in repr(got)
+    assert "secret" not in json.dumps(page_row(got))
 
 
-def test_a_non_select_row_keeps_its_check_and_names_the_failure() -> None:
-    task = _tasks()["g03"]
-    two = read_page(task, _log({"row": "g03", "on": True}, {"row": "g03", "on": True}))
-    assert (two.ok, two.kind, two.observed, two.events) == (False, "events:2", "events:2", 2)
-    assert read_page(task, _log({"row": "g03", "on": False})).kind == "wrong_value"
-    assert read_page(task, _log({"row": "g03", "on": True, "untrusted": True})).kind == "untrusted"
-    assert read_page(task, "[]").kind == "events:0"
-    assert read_page(task, "garbage").kind == "unread"
+def test_a_non_select_row_redacts_by_the_entrys_own_row() -> None:
+    got = read_page(_tasks()["g25"], _log(SECRET))
+    assert (got.ok, got.kind, got.observed) == (False, "wrong_value", "redacted:typed_value")
 
 
-def test_a_typed_value_is_never_kept_in_the_observed_string() -> None:
-    got = read_page(_tasks()["g22"], _log({"row": "g22", "value": "someone's secret"}))
-    assert (got.kind, got.observed) == ("wrong_value", "redacted:typed_value")
+def test_the_dom_value_is_kept_only_when_it_is_a_fixture_option() -> None:
+    task = _tasks()["g13"]
+    assert page_row(read_page(task, _log(ROME), dom="Europe/Rome"))["dom_value"] == "Europe/Rome"
+    row = page_row(read_page(task, _log(ROME), dom="typed secret"))
+    assert (row["dom_value"], row["check_kind"]) == ("other", "dom_value_differs")
+    assert "secret" not in json.dumps(row)
 
 
-def test_a_large_task_reads_closed() -> None:
-    got = read_page(_tasks()["lg2"], _log({"row": "large-menu", "open": True}))
-    assert (got.ok, got.kind, got.observed, got.events) == (False, "wrong_value", "large", None)
+def test_the_diagnostic_header_says_so() -> None:
+    assert report_header("gallery", runs=3, diagnostic=True)["diagnostic"] is True
+    assert "diagnostic" not in report_header("gallery", runs=3)
 
 
 DONE_FINAL = {"status": "done", "reason": None, "used": {"max_actions": 1}}

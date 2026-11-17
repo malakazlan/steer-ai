@@ -30,6 +30,7 @@ import argparse
 import base64
 import json
 import math
+import re
 import subprocess
 import sys
 import threading
@@ -53,7 +54,7 @@ from steerai.loop2.loop import (
 )
 from steerai.loop2.stage1_expected import LARGE_TASKS, Expected, large_expected
 from steerai.orchestrator.contracts import RISKS
-from steerai.probes.gallery_page import large_passes, parse_large_log
+from steerai.probes.gallery_page import large_passes, page_html, parse_large_log
 from steerai.probes.process_tree import Sample, summarize
 from steerai.probes.task_suite import GALLERY, Task, h2_event
 
@@ -233,15 +234,20 @@ MTA_COMPARABILITY: Final[Mapping[str, Any]] = {  # Any: JSON values
 the stage 1 report states executor behaviour under the MTA as compared, not as unseparated."""
 
 
-def report_header(name: str, *, runs: int) -> dict[str, Any]:  # Any: JSON values
+def report_header(
+    name: str, *, runs: int, diagnostic: bool = False
+) -> dict[str, Any]:  # Any: JSON values
     """The stage 1 report's first row: the set (a shakedown below `MIN_RUNS_PER_TASK` says so),
     the runs per task, the floor the runs start on and the MTA comparability statement."""
-    return {
+    header: dict[str, Any] = {  # Any: JSON values
         "set": name if runs >= MIN_RUNS_PER_TASK else f"{name}-shakedown",
         "runs_per_task": runs,
         "floor_mb": STAGE1_FLOOR_MB,
         "mta_comparability": dict(MTA_COMPARABILITY),
     }
+    if diagnostic:  # [V2.84] (2): the rows that follow are never counted
+        header["diagnostic"] = True
+    return header
 
 
 SELECT_ROWS: Final = frozenset({"g12", "g13", "g14"})
@@ -257,8 +263,9 @@ REDACTED_OBSERVED: Final = "redacted:typed_value"
 @dataclass(frozen=True)
 class PageRead:
     """[V2.84] (2): what the page's own log said. `kind` is closed: `ok`, `events:<N>`,
-    `untrusted`, `wrong_value` or `unread`; `observed` is `h2_event`'s own string (the fixture's
-    row and fixed tokens, or `events:<N>`, `untrusted`, `bad_log`); `events` is the path."""
+    `untrusted`, `wrong_value`, `dom_value_differs`, `other_row` or `unread`; `observed` is
+    `h2_event`'s own string (the fixture's row and fixed tokens, or `events:<N>`, `untrusted`,
+    `bad_log`); a typed row's value is never in it; `events` is the path."""
 
     ok: bool
     kind: str
@@ -293,42 +300,56 @@ def _entries(raw: str) -> list[Any] | None:  # Any: the page log's JSON entries
     return entries if isinstance(entries, list) else None
 
 
-def _redact(row: str, observed: str) -> str:
-    return REDACTED_OBSERVED if row in FREE_TEXT_ROWS else observed
+def _option_values(select_id: str) -> frozenset[str]:
+    """The fixture's own option values for a select row, read from its page source."""
+    page = page_html()
+    if select_id == "g14":
+        block = re.search(r'<ul id="g14-list".*?</ul>', page, re.S)
+        return frozenset(re.findall(r">([^<]+)</li>", block.group(0) if block else ""))
+    block = re.search(rf'<select id="{select_id}">(.*?)</select>', page, re.S)
+    found = re.findall(r"<option([^>]*)>([^<]*)</option>", block.group(1) if block else "")
+    values = {
+        m.group(1) if (m := re.search(r'value="([^"]*)"', attrs)) else text for attrs, text in found
+    }
+    return frozenset(values)
 
 
-def _select_read(
+def _kept(entry: Mapping[str, Any], task_id: str) -> LogEntry:  # Any: a page log entry
+    """An entry as the record keeps it: a typed row's value is never kept, another row's value
+    is dropped; only the task's own fixed option value stays."""
+    row = str(entry.get("row"))
+    value = entry.get("value")
+    if row in FREE_TEXT_ROWS:
+        return LogEntry(row, REDACTED_OBSERVED, not entry.get("untrusted"))
+    kept = value if row == task_id and isinstance(value, str) else None
+    return LogEntry(row, kept, not entry.get("untrusted"))
+
+
+def _select_read(  # noqa: PLR0911 - one return per rule, in the rules' order
     row: Task,
-    entries: list[Any],
-    dom: str | None,  # Any: the page log's JSON entries
+    entries: list[Any],  # Any: the page log's JSON entries
+    dom: str | None,
 ) -> PageRead:
-    """[V2.84] (2): outcome = the select's final DOM value is the expected one and the last
-    change event is trusted and says so; path = how many entries the log holds."""
-    count = len(entries)
-    kept = tuple(
-        LogEntry(
-            str(e.get("row")),
-            e.get("value") if e.get("row") in SELECT_ROWS and isinstance(e.get("value"), str)
-            else None,
-            not e.get("untrusted"),
-        )
-        for e in entries[:ENTRIES_CAP]
-    )  # fmt: skip
+    """[V2.84] (2): outcome = the select's final DOM value is the expected one, every entry is
+    the task's own row and trusted, and the last one says so; path = the task row's entries."""
+    own = [e for e in entries if e.get("row") == row.task_id]
+    kept = tuple(_kept(e, row.task_id) for e in entries[:ENTRIES_CAP])
+    seen = dom if dom is None or dom in _option_values(row.task_id) else "other"
 
     def read(ok: bool, kind: str, observed: str) -> PageRead:
-        return PageRead(ok, kind, observed, count, dom, kept)
+        return PageRead(ok, kind, observed, len(own), seen, kept)
 
     if not entries:
-        return PageRead(False, "events:0", "events:0", 0, dom)
-    last = entries[-1]
-    text = json.dumps(last, sort_keys=True)
+        return PageRead(False, "events:0", "events:0", 0, seen)
     if dom is None:
         return read(False, "unread", "dom_unread")
-    if last.get("untrusted"):
+    if len(own) != len(entries):
+        return read(False, "other_row", "other_row")
+    if any(e.get("untrusted") for e in own):
         return read(False, "untrusted", "untrusted")
-    wanted = json.loads(row.expected)["value"]
-    if dom != wanted:
-        return read(False, "dom_value_differs", f"dom:{dom}")
+    if dom != json.loads(row.expected)["value"]:
+        return read(False, "dom_value_differs", f"dom:{seen}")
+    text = json.dumps(own[-1], sort_keys=True)
     if text != row.expected:
         return read(False, "wrong_value", text)
     return read(True, "ok", text)
@@ -348,7 +369,8 @@ def _gallery_read(row: Task, raw: str, dom: str | None) -> PageRead:
         return PageRead(False, observed, observed, count)
     if observed == "untrusted":
         return PageRead(False, "untrusted", observed, count)
-    return PageRead(False, "wrong_value", _redact(row.task_id, observed), count)
+    typed = count == 1 and entries[0].get("row") in FREE_TEXT_ROWS
+    return PageRead(False, "wrong_value", REDACTED_OBSERVED if typed else observed, count)
 
 
 def read_page(task: StageTask, raw: str, dom: str | None = None) -> PageRead:
@@ -1806,7 +1828,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live, 
     if (args.task is not None) != args.diagnostic:
         parser.error("--task and --diagnostic go together")
     tasks = diagnostic_tasks(tasks_for(args.set, expected), args.task)
-    header = report_header(args.set, runs=args.runs)
+    header = report_header(args.set, runs=args.runs, diagnostic=args.diagnostic)
     _emit({"header": header})
     controls: tuple[int, int] | None = None
     if args.set == "3d":
