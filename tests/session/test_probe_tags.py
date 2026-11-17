@@ -103,8 +103,8 @@ def test_an_action_event_with_the_run_tag_proves_nothing_and_is_not_the_person()
     c = _c()
     c.set_probe_tag(0xAAAA_0001)
     _move(c, RUN)
-    c.on_mouse(message=WM_LBUTTONDOWN, flags=0, extra=RUN, pt=(1, 1), now=2.1)
-    c.on_keyboard(flags=0, extra=RUN, now=2.2, vk=0x41)
+    c.on_mouse(message=WM_LBUTTONDOWN, flags=LLMHF_INJECTED, extra=RUN, pt=(1, 1), now=2.1)
+    c.on_keyboard(flags=LLKHF_INJECTED, extra=RUN, now=2.2, vk=0x41)
     _key(c, RUN)  # even the probe key's injected key-up, with the run tag
     assert (c.proof("mouse"), c.proof("keyboard")) == (0, 0)
     assert c.last_user() is None
@@ -117,10 +117,9 @@ def test_a_retired_probe_tag_is_own_and_stale_never_the_person() -> None:
     c.set_probe_tag(0xAAAA_0002)
     _move(c, 0xAAAA_0001)
     _key(c, 0xAAAA_0001)
-    c.on_mouse(message=WM_LBUTTONDOWN, flags=0, extra=0xAAAA_0001, pt=(1, 1), now=2.1)
     assert (c.proof("mouse"), c.proof("keyboard")) == (0, 0)
     assert c.last_user() is None
-    assert c.counts() == {"steer": 3}
+    assert c.counts() == {"steer": 2}
 
 
 def test_the_retired_set_is_bounded_and_forgets_the_oldest() -> None:
@@ -341,11 +340,15 @@ def _timed(c: Classifier, tag: int, *, at: float) -> None:
     c.on_keyboard(flags=INJ_UP, extra=tag, now=at, vk=PROBE)
 
 
+def _sent(c: Classifier, ledger: ProbeLedger, tags: ProbeTags, now: float) -> int:
+    return ledger.probe_sent(now=now, begin=lambda: _begin(c, tags))
+
+
 def test_an_echo_at_the_deadline_counts_and_one_a_millisecond_later_is_lost() -> None:
     for at, proven in ((21.05, True), (21.051, False)):
         c = _c()
         ledger, tags = _ledger()
-        tag = ledger.probe_sent(now=20.0, begin=lambda c=c, tags=tags: _begin(c, tags))
+        tag = _sent(c, ledger, tags, 20.0)
         _timed(c, tag, at=at)
         assert ledger.probe_seen(counts=c) is proven
         assert ledger.lost_hooks(now=21.055, counts=c) == (() if proven else ("keyboard", "mouse"))

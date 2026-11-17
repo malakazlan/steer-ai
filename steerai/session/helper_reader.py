@@ -37,6 +37,8 @@ MONOTONIC: Final = (
     "last_own_qpc_mouse",
     "last_user_qpc_keyboard",
     "last_user_qpc_mouse",
+    "proof_qpc_keyboard",
+    "proof_qpc_mouse",
     "gap_events",
     "resume_events",
     "callback_errors",

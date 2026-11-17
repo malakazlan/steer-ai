@@ -471,7 +471,7 @@ class LiveWorld:
                 raise SteerError(ErrorCode.GATE_BLOCKED, "monitor_unavailable")
             if self._config.clock() - started >= self._probe_deadline_s:
                 return False
-            self._kill_aware_sleep(PROVE_POLL_S)
+            self._pause(PROVE_POLL_S)  # ends early only for a kill, read at the loop's top
         return True
 
     def _take_session(self, platform: Platform, config: LiveConfig) -> tuple[str, Monitor]:

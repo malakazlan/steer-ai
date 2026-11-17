@@ -770,6 +770,7 @@ _AFTER_CLOSE: dict[str, tuple[tuple[object, ...], object]] = {
     "probe_seen": ((), False),
     "last_user_input": ((), None),  # input "just now" (the clock): every send is refused
     "takeover_token": ((), TAKEOVER),
+    "lost_hooks": ((), ()),  # nothing is read once closed
     "session_change": ((), None),  # #398: the "closed" loss stops the task
     "latency": ((), (0, None, None)),
     "wait": ((0.0,), None),
@@ -840,17 +841,26 @@ def test_each_probe_publishes_a_fresh_tag_and_the_old_one_is_not_proof() -> None
     assert rig.helper.config.get("probe_tag") == rig.probes[1] != first
 
 
-def test_the_retired_ring_is_published_before_the_new_probe_tag() -> None:
+def test_the_retired_ring_is_published_before_the_new_probe_tag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """PT-03: the helper must never see a new tag without the ring that retires the old one."""
     rig = _rig()
     order: list[str] = []
-    real = rig.helper.config.set
+    buf = rig.helper.config_buf
 
-    def spy(name: str, value: int) -> None:
-        order.append(name)
-        real(name, value)
+    class Spy:
+        def __init__(self) -> None:
+            self.inner = config_words(memoryview(buf))
 
-    rig.helper.config.set = spy  # type: ignore[method-assign]  # a spy on every store, in order
+        def get(self, name: str) -> int:
+            return self.inner.get(name)
+
+        def set(self, name: str, value: int) -> None:
+            order.append(name)
+            self.inner.set(name, value)
+
+    monkeypatch.setattr(type(rig.helper), "config", property(lambda _self: Spy()))
     rig.monitor.probe_now()
     rig.at(102.0)
     rig.heartbeat()
@@ -858,7 +868,7 @@ def test_the_retired_ring_is_published_before_the_new_probe_tag() -> None:
     last = len(order) - 1 - order[::-1].index("probe_tag")
     assert all(name.startswith("retired_") for name in order[last - 16 : last])
     assert order[last] == "probe_tag"
-    assert rig.helper.config.get("retired_0") == rig.probes[0]
+    assert config_words(memoryview(buf)).get("retired_0") == rig.probes[0]
 
 
 def test_an_echo_after_the_deadline_in_the_words_is_a_lost_hook() -> None:

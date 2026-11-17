@@ -2043,14 +2043,26 @@ def test_a_first_probe_lost_to_a_physical_move_is_retried_once_after_idle() -> N
     the retry is counted apart."""
     platform = Platform()
     monitor = platform.monitor
+    config = _config()
 
     def probe_now() -> None:
         monitor.probes += 1
         monitor.seen = monitor.probes >= 2
+        if monitor.probes == 1:
+            monitor.last = config.clock()  # the person moved the mouse as the first probe went
 
     monitor.seen = False
     monitor.probe_now = probe_now  # type: ignore[method-assign]  # the second probe is answered
-    monitor.last = 1e9  # the person was active at the first failure
-    world, _ = _world(platform)
+    world = LiveWorld(config, platform)
     assert monitor.probes == 2
     assert world.start_probe_retries == 1
+
+
+def test_a_first_probe_unproven_with_the_person_idle_is_not_retried() -> None:
+    platform = Platform()
+    platform.monitor.seen = False
+    config = _config()
+    with pytest.raises(SteerError) as failed:
+        LiveWorld(config, platform)
+    assert failed.value.message == "probe_unproven_at_start"
+    assert platform.monitor.probes == 1

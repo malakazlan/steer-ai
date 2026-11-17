@@ -178,7 +178,7 @@ PROBE = 0x0E
 
 
 def _classifier() -> Classifier:
-    return Classifier(started_at=10.0, extra_info=RUN_TAG, probe_vk=PROBE, numbered_probes=True)
+    return Classifier(started_at=10.0, extra_info=RUN_TAG, probe_vk=PROBE, probe_tags=True)
 
 
 def test_a_persons_input_and_another_steers_are_told_apart() -> None:

@@ -172,8 +172,9 @@ def test_an_own_action_mouse_event_is_no_mouse_delivery_and_wakes_nothing() -> N
     core, cfg, status = _core()
     cfg.set("probe_tag", PT)
     for message in (WM_MOUSEMOVE, WM_LBUTTONDOWN):
-        assert not core.mouse(message=message, flags=0, extra=RUN_TAG, pt=(1, 1), event_ms=2_000,
-                              entry_ms=2_000, entry_qpc=2_000 * MS)  # fmt: skip
+        assert not core.mouse(message=message, flags=LLMHF_INJECTED, extra=RUN_TAG,
+                              pt=(1, 1), event_ms=2_000, entry_ms=2_000,
+                              entry_qpc=2_000 * MS)  # fmt: skip
     assert status.get("proof_mouse") == 0
     assert status.get("last_own_qpc_mouse") == 2_000 * MS
 
