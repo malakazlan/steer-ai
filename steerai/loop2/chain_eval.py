@@ -124,7 +124,7 @@ from steerai.world.effects import _tokens  # the proof word match's token rule
 proof_tokens: Final = _tokens
 """The proof word match's own token rule, imported: a truth key and a proof read words alike."""
 SHAPES_PATH: Final = Path(__file__).with_name("chain_shapes.json")
-SHAPES_SHA256: Final = "6e46c38d420075e43c741d7e96d5c5a424e82977f4eed344c1dcb5fa78e1c71a"
+SHAPES_SHA256: Final = "5e283010202dd4314fc3be3dd4e3e9569580a31fb654179ca755d0cd491c815e"
 """The shapes file as pre-registered: any edit fails `load_shapes`."""
 N: Final = 60
 """Must-pass: chains counted per shape (voids replaced)."""

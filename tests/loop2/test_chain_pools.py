@@ -201,7 +201,8 @@ def test_the_other_options_of_a_select_are_never_the_drawn_value() -> None:
      ("wrong_field", "audit_reach"), ("wrong_field", "reach"),
      ("wrong_field_state", "reach"), ("heldout_injection", "audit_reach"),
      ("heldout_injection", "reach"), ("heldout_filter", "audit_reach"),
-     ("heldout_filter", "reach")],
+     ("heldout_filter", "reach"), ("heldout_billing_email", "audit_reach"),
+     ("heldout_billing_email", "reach")],
 )  # fmt: skip
 def test_a_scripted_arm_runs_on_every_drawn_value_of_its_pool(
     shape_id: str, arm: chain_eval.Arm

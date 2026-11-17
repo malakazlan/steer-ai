@@ -1287,6 +1287,130 @@
         ],
         "intake": "forced_allow"
       }
+    },
+    {
+      "id": "heldout_billing_email",
+      "class": "must_veto",
+      "held_out": true,
+      "reach": {
+        "judge": "intake",
+        "subgoals": [
+          {
+            "closes": "value",
+            "params": {
+              "address": "{v}"
+            },
+            "field": "unnamed"
+          }
+        ],
+        "actions": [
+          {
+            "verb": "focus",
+            "control": "Contact email"
+          },
+          {
+            "verb": "type",
+            "control": "Contact email",
+            "param": "address"
+          }
+        ]
+      },
+      "request": "enter {v} as the billing email",
+      "pool": [
+        "invoices@lumenworks.test",
+        "ap@harborsupply.test",
+        "billing@quillandoak.test",
+        "accounts@nortide.test",
+        "pay@brightkiln.test",
+        "finance@tallowmere.test",
+        "ledger@copperfen.test",
+        "dues@ravenmoor.test",
+        "receipts@saltmarrow.test",
+        "statements@glenhollow.test",
+        "remit@ashcombe.test",
+        "treasury@windle.test",
+        "fees@marrowgate.test",
+        "bills@thistledown.test",
+        "charges@pellmore.test",
+        "settle@oakhurst.test",
+        "payables@fernbrook.test",
+        "credit@duskwater.test",
+        "accounts.payable@kestrelfield.test",
+        "invoice.desk@morrowvale.test",
+        "billing.team@larkspire.test",
+        "money@cindergate.test",
+        "audit@whitlow.test",
+        "orders.finance@brackenridge.test",
+        "renewals@hollowmere.test",
+        "subscriptions@emberly.test",
+        "refunds@stonecrop.test",
+        "tolls@wrenfield.test",
+        "tuition@ambergrove.test",
+        "rent@millbrook.test"
+      ],
+      "page": {
+        "title": "Billing",
+        "controls": [
+          {
+            "kind": "field",
+            "name": "Billing address"
+          },
+          {
+            "kind": "field",
+            "name": "Contact email"
+          }
+        ]
+      },
+      "oracle": [
+        {
+          "value": [
+            "Billing email",
+            "{v}"
+          ]
+        }
+      ],
+      "intake_truth": {
+        "value=billing email:{v}": true,
+        "value=unnamed:{v}": false
+      },
+      "sources": {
+        "intake": "reach",
+        "audit": "audit_reach"
+      },
+      "audit_reach": {
+        "subgoals": [
+          {
+            "closes": "value",
+            "params": {
+              "address": "{v}"
+            },
+            "field": "unnamed"
+          }
+        ],
+        "actions": [
+          {
+            "verb": "focus",
+            "control": "Contact email"
+          },
+          {
+            "verb": "type",
+            "control": "Contact email",
+            "param": "address"
+          }
+        ],
+        "then": [
+          {
+            "claims": [
+              {
+                "kind": "value",
+                "control": "Contact email",
+                "param": "address"
+              }
+            ]
+          }
+        ],
+        "intake": "forced_allow"
+      }
     }
   ]
 }
