@@ -1025,7 +1025,7 @@ def decide(  # noqa: PLR0913 - keyword-only inputs of one turn
     raise final
 
 
-INTAKE_PROMPT_VERSION = "intake-3"
+INTAKE_PROMPT_VERSION = "intake-4"
 INTAKE_RULES = (
     "You check, before a Windows computer-use agent starts, whether the subgoals it declared "
     "would finish a request. Code will verify the facts below once the agent acts; treat them as "
@@ -1033,6 +1033,9 @@ INTAKE_RULES = (
     "- closes=value: a field or a select will hold exactly the param's words.\n"
     "- closes=state: an element named with the param's words will be in the state the subgoal "
     "wants (wanted=<state>).\n"
+    "- A value or state set is sufficient only when the request's outcome is that a field or a "
+    "select holds the words or an element is in a state; when the outcome is anything else the "
+    "page shows after an action, the set needs a subgoal that closes on that outcome.\n"
     "- Subgoals and params are numbered; each param line is param:<n> and then words of the "
     "request.\n"
     "- Answer with exactly one JSON object: sufficient true with facts_finish_request only when "
