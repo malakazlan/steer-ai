@@ -12,7 +12,7 @@ import json
 import re
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import pytest
 
@@ -2480,3 +2480,213 @@ AUDIT_PINS = {
     "prompt": "d6878a5e61346d6658b8ea99806a7c3e4c6c4555502620f1502ab3ca9608d129",
     "packet": "0c5e8d1b9f557369bf4c7b92c88001d587c68941e67888ba7675b2f3648570c5",
 }
+
+
+# ---- an aborted run frees its wording: the operator's --abort-open ------------------------------
+
+AT = "2026-11-17T10:00:00+00:00"
+GONE: dict[str, Any] = {"pid_alive": lambda _pid: False, "others_running": lambda: False}
+
+
+def test_an_open_start_is_aborted_by_the_operator_and_the_wording_runs_again(
+    tmp_path: Path,
+) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.start("pilot", _wired())
+    ledger.start("counted", _wired())  # the host killed the run: no aborted record
+    with pytest.raises(ValueError, match="counted_run_exists"):
+        ledger.start("counted", _wired())
+    rows = ledger.abort_open(at=AT, **GONE)
+    assert [(r["event"], r["kind"], r["cause"], r["at"]) for r in rows] == [
+        ("aborted", "counted", "infra_killed", "2026-11-17T10:00:00+00:00")
+    ]
+    assert rows[0]["commit"] == "a" * 40
+    assert ledger.entries()[-1] == rows[0]  # appended, nothing rewritten
+    ledger.start("counted", _wired())  # accepted: from chain 0, same header
+    with pytest.raises(ValueError, match="counted_run_exists"):
+        ledger.start("counted", _wired())  # the new start is open again
+
+
+def test_two_counted_starts_without_an_abort_are_still_refused(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.start("pilot", _wired())
+    ledger.start("counted", _wired())
+    ledger.aborted("counted", "g22", 3, "free", error="RuntimeError", head=_wired())
+    ledger.start("counted", _wired())  # the first one aborted, any cause
+    with pytest.raises(ValueError, match="counted_run_exists"):
+        ledger.start("counted", _wired())
+
+
+def test_abort_open_with_nothing_open_is_refused(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    with pytest.raises(ValueError, match="no_open_start"):
+        ledger.abort_open(at=AT, **GONE)
+    ledger.start("pilot", _wired())
+    ledger.aborted("pilot", "g22", 0, "free", error="RuntimeError", head=_wired())
+    with pytest.raises(ValueError, match="no_open_start"):
+        ledger.abort_open(at=AT, **GONE)
+    assert len(ledger.entries()) == 2
+
+
+def test_a_killed_held_out_run_can_be_aborted_and_run_again(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.start("pilot", _wired())
+    ledger.start("held_out", _wired())
+    with pytest.raises(ValueError, match="held_out_run_exists"):
+        ledger.start("held_out", _wired())
+    ledger.abort_open(at=AT, **GONE)
+    ledger.start("held_out", _wired())
+    with pytest.raises(ValueError, match="held_out_run_exists"):
+        ledger.start("held_out", _wired())
+
+
+def test_the_report_lists_an_operator_abort_with_its_cause(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    head = _wired()
+    ledger.start("pilot", head)
+    ledger.start("counted", head)
+    ledger.abort_open(at=AT, **GONE)
+    listed = cast(
+        list[dict[str, object]],
+        chain_eval.report("pilot", [], [], ledger=ledger, head=head)["ledger"],
+    )
+    assert listed[-1] == {"event": "aborted", "kind": "counted", "commit": "a" * 40,
+                          "cause": "infra_killed"}  # fmt: skip
+
+
+# ---- [V2.83]: facts, finished runs, aborted chains, the memory preflight -------------------------
+
+
+def _killed(tmp_path: Path, ledger: Ledger, head: dict[str, object],
+            records: Sequence[ChainRecord], *, kind: str = "counted", pid: int = 4242,
+            name: str = "old") -> Path:  # fmt: skip
+    out = tmp_path / name
+    out.mkdir()
+    (out / "chains.jsonl").write_text(
+        "".join(json.dumps(chain_eval.record_json(r)) + "\n" for r in records), encoding="utf-8"
+    )
+    ledger.start(kind, head, out=out, pid=pid)  # type: ignore[arg-type]  # a test token
+    return out
+
+
+def test_abort_open_refuses_while_the_run_process_is_alive(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.start("pilot", _wired())
+    _killed(tmp_path, ledger, _wired(), [_rec(index=0)])
+    with pytest.raises(ValueError, match="run_still_alive"):
+        ledger.abort_open(at=AT, pid_alive=lambda pid: pid == 4242, others_running=lambda: False)
+    assert [e["event"] for e in ledger.entries()] == ["start", "start"]
+
+
+def test_abort_open_stores_what_it_found(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.start("pilot", _wired())
+    _killed(tmp_path, ledger, _wired(), [_rec(index=0), _rec(index=1)])
+    (row,) = ledger.abort_open(at=AT, **GONE)
+    found = [row[k] for k in ("cause", "pid", "pid_alive", "final_line", "chains_written")]
+    assert found == ["infra_killed", 4242, False, False, 2]
+
+
+def test_abort_open_refuses_a_run_that_wrote_its_final_line(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.start("pilot", _wired())
+    out = _killed(tmp_path, ledger, _wired(), [])
+    (out / "report.jsonl").write_text("{}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="run_finished"):
+        ledger.abort_open(at=AT, **GONE)
+
+
+def test_abort_open_refuses_a_start_with_an_end_record(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.start("pilot", _wired())
+    ledger.start("counted", _wired())
+    ledger.end("counted", _wired(), passed=False)
+    with pytest.raises(ValueError, match="run_finished"):
+        ledger.abort_open(at=AT, **GONE)
+
+
+def test_abort_open_without_a_pid_needs_no_chain_eval_process_and_says_so(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.start("pilot", _wired())
+    ledger.start("counted", _wired())  # predates the pid field
+    with pytest.raises(ValueError, match="run_may_be_alive"):
+        ledger.abort_open(at=AT, pid_alive=lambda _p: False, others_running=lambda: True)
+    (row,) = ledger.abort_open(at=AT, **GONE)
+    assert (row["pid"], row["pid_alive"], row["chains_written"]) == ("unknown", None, None)
+
+
+@pytest.mark.parametrize("kind", ["counted", "held_out"])
+def test_a_finished_run_blocks_any_new_start(tmp_path: Path, kind: str) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.start("pilot", _wired())
+    ledger.start(kind, _wired())  # type: ignore[arg-type]  # a test token
+    ledger.end(kind, _wired(), passed=True)  # type: ignore[arg-type]  # a test token
+    with pytest.raises(ValueError, match=f"{kind}_run_exists"):
+        ledger.start(kind, _wired())  # type: ignore[arg-type]  # a test token
+
+
+def test_a_finished_run_after_an_abort_still_blocks(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.start("pilot", _wired())
+    ledger.start("counted", _wired())
+    ledger.abort_open(at=AT, **GONE)
+    ledger.start("counted", _wired())
+    ledger.end("counted", _wired(), passed=False)
+    with pytest.raises(ValueError, match="counted_run_exists"):
+        ledger.start("counted", _wired())
+
+
+def _false_done() -> ChainRecord:
+    return _rec("done", judges=[("audit", "allowed")], shown=False)
+
+
+def test_a_false_done_in_an_aborted_run_fails_the_gate(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    head = _wired()
+    ledger.start("pilot", head)
+    _killed(tmp_path, ledger, head, [_rec(index=0), dataclasses.replace(_false_done(), index=1)])
+    ledger.abort_open(at=AT, **GONE)
+    out = chain_eval.report("counted", [SHAPES["g22"]], [], ledger=ledger, head=head)
+    assert (out["passed"], out["result"], out["failed_outright"]) == (False, "fail", True)
+    assert out["aborted_failures"] == [{"shape": "g22", "arm": "free", "false_allows": 0,
+                                        "false_dones": 1}]  # fmt: skip
+    (shape,) = cast(list[dict[str, object]], out["shapes"])
+    assert shape["chains"] == 0  # never scored toward a bound
+    units = cast(list[dict[str, object]], out["units"])
+    assert {u["result"] for u in units} == {"fail"}
+
+
+def test_a_false_allow_in_an_aborted_held_out_run_fails_the_gate(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    head = _wired()
+    ledger.start("pilot", head)
+    scripted = _judge("intake", "passed", scripted=True, truth=False)
+    bad = dataclasses.replace(_rec("blocked", "audit_veto", arm="reach", calls=[scripted]),
+                              shape="g23")  # fmt: skip
+    _killed(tmp_path, ledger, head, [bad], kind="held_out")
+    ledger.abort_open(at=AT, **GONE)
+    shape = dataclasses.replace(SHAPES["g23"], held_out=True)
+    out = chain_eval.report("held_out", [shape], [], ledger=ledger, head=head)
+    assert out["passed"] is False
+    assert cast(list[dict[str, object]], out["aborted_failures"])[0]["false_allows"] == 1
+
+
+def test_clean_aborted_chains_never_help_and_are_listed(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    head = _wired()
+    ledger.start("pilot", head)
+    _killed(tmp_path, ledger, head, [_rec(index=i) for i in range(3)])
+    ledger.abort_open(at=AT, **GONE)
+    out = chain_eval.report("counted", [SHAPES["g22"]], [], ledger=ledger, head=head)
+    assert out["aborted_failures"] == []
+    assert out["passed"] is False  # nothing of the aborted run counted toward a pass
+    assert out["aborted_runs"] == [{"kind": "counted", "cause": "infra_killed", "chains": 3}]
+
+
+def test_the_low_memory_preflight_refuses_below_the_frozen_floor() -> None:
+    head = _head()
+    assert head["min_free_memory_bytes"] == 4 * 1024**3
+    chain_eval.preflight_memory(head, read=lambda: 4 * 1024**3)
+    with pytest.raises(ValueError, match="low_memory"):
+        chain_eval.preflight_memory(head, read=lambda: 4 * 1024**3 - 1)
+    chain_eval.preflight_memory(head, read=lambda: None)  # not measurable here: skipped

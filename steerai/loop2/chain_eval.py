@@ -53,6 +53,22 @@ shapes take their class's bar, run once, only on a frozen wording, and any failu
 use. The wording (the version pins and the commit) is recorded in the report header; the pilot
 (4 chains, one each of `PILOT`) measures tokens and latency and never counts.
 
+A run the host killed leaves a start with no aborted record, which would refuse a restart at the
+same wording. `--abort-open` (the operator's command) appends an explicit aborted record,
+`cause: infra_killed`, for each open counted or held-out start (a start no later aborted record
+closes); it never deletes or rewrites a line and refuses when nothing is open. A counted or
+held-out start is accepted again only when every earlier start of its kind at that wording has
+a later aborted record, whatever its cause. The new run starts from chain 0 on the same frozen
+header and seeds, with no resume; the report lists the aborted runs and their cause, and an
+aborted run's chains are never scored or merged. [V2.83] sharpens this: an aborted run's chains
+are still read (each start records its out dir and pid), and a false allow or a false done among
+them fails the gate at that wording as in a finished run; they never help a pass. `--abort-open`
+refuses while the run's process is alive, when its final line or an end record exists, or (no pid
+recorded) while any chain_eval process runs, and stores what it found. A finished run (an end
+record, pass or fail) blocks any new start. A counted or held-out start first needs
+`MIN_FREE_MEMORY_BYTES` of free physical memory (`low_memory`). The report header lists every
+abort with its cause and chain count.
+
 Every record holds closed tokens and numbers only: no request, page or model text.
 """
 
@@ -73,8 +89,9 @@ import sys
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final, Literal, Protocol, get_args
+from typing import Any, Final, Literal, Protocol, cast, get_args
 
 from steerai.loop2 import controller
 from steerai.loop2.chain_pages import Page, PageWorld, outcome_shown
@@ -1077,11 +1094,16 @@ def header(
             "max_wall_s": CHAIN_BUDGETS.max_wall_s,
         },
         "stopping": dict(STOPPING),
+        "min_free_memory_bytes": MIN_FREE_MEMORY_BYTES,
         "scoring": dict(SCORING),
         "reach_miss_reasons": list(REACH_MISS_REASONS),
         "reach_miss_world_tokens": sorted(t for t, k in REFUSAL_KIND.items() if k == "world"),
     }
 
+
+MIN_FREE_MEMORY_BYTES: Final = 4 * 1024**3
+"""[V2.83]: a counted or held-out run does not start with less free physical memory than this (a
+header value, not in `FROZEN_KEYS`, so the freeze of a ledger written before it still reads)."""
 
 FROZEN_KEYS: Final = (
     "controller", "intake", "audit", "audit_pins", "commit", "shapes_sha256", "draw_seed",
@@ -1714,24 +1736,73 @@ class Ledger:
             out.flush()
             os.fsync(out.fileno())
 
-    def start(self, kind: RunKind, head: Mapping[str, object]) -> None:
+    def start(
+        self, kind: RunKind, head: Mapping[str, object], *, out: Path | None = None,
+        pid: int | None = None,
+    ) -> None:  # fmt: skip
         if head.get("dirty") is not False:
             raise ValueError("tree_not_clean")
-        starts = [e for e in self.entries() if e.get("event") == "start"]
+        entries = self.entries()
+        starts = [e for e in entries if e.get("event") == "start"]
         if kind != "pilot":
             pilots = [e for e in starts if e["kind"] == "pilot"]
             if not any(_same_wording(head, e) for e in pilots):
                 raise ValueError("wording_not_frozen")
-            if kind == "counted" and any(
-                e["kind"] == "counted" and _same_wording(head, e) for e in starts
+            if kind == "counted" and (
+                _finished(entries, "counted", head, _same_wording)
+                or _open_starts(entries, "counted", head, _same_wording)
             ):
                 raise ValueError("counted_run_exists")
-            if kind == "held_out" and any(
-                e["kind"] == "held_out" and e.get("shapes_sha256") == head.get("shapes_sha256")
-                for e in starts
+            if kind == "held_out" and (
+                _finished(entries, "held_out", head, _same_shapes)
+                or _open_starts(entries, "held_out", head, _same_shapes)
             ):
                 raise ValueError("held_out_run_exists")
-        self._append({"event": "start", "kind": kind, **{k: head.get(k) for k in FROZEN_KEYS}})
+        self._append(
+            {"event": "start", "kind": kind, "pid": pid,
+             "out": None if out is None else str(out), **{k: head.get(k) for k in FROZEN_KEYS}}
+        )  # fmt: skip
+
+    def end(self, kind: RunKind, head: Mapping[str, object], *, passed: bool) -> None:
+        """A finished run, pass or fail: it blocks any new start at its wording."""
+        self._append(
+            {"event": "end", "kind": kind, "passed": passed,
+             **{k: head.get(k) for k in FROZEN_KEYS}}
+        )  # fmt: skip
+
+    def abort_open(
+        self,
+        *,
+        at: str,
+        pid_alive: Callable[[int], bool] | None = None,
+        others_running: Callable[[], bool] | None = None,
+    ) -> list[dict[str, object]]:
+        """The operator's record for a run the host killed: one aborted record, cause
+        `infra_killed`, per open counted or held-out start, written with the start's wording
+        and out dir. It checks facts first ([V2.83]): a run whose process is alive, or that
+        wrote its final line, is refused; a start with no recorded pid (written before the
+        field) is refused while any chain_eval process runs, and says `pid: unknown`. What it
+        found is stored next to the cause. Nothing is deleted or rewritten."""
+        alive = _pid_alive if pid_alive is None else pid_alive
+        running = _chain_eval_running if others_running is None else others_running
+        entries = self.entries()
+        rows: list[dict[str, object]] = []
+        for kind in ("counted", "held_out"):
+            heads = {
+                json.dumps(h, sort_keys=True): h
+                for h in (
+                    {k: e.get(k) for k in FROZEN_KEYS} for e in entries if e.get("kind") == kind
+                )
+            }
+            for head in heads.values():
+                for start in _open_starts(entries, kind, head, _same_wording):
+                    rows.append(_abort_row(kind, start, head, at, alive, running))
+        if not rows:
+            finished = any(e.get("event") == "end" for e in entries)
+            raise ValueError("run_finished" if finished else "no_open_start")
+        for row in rows:
+            self._append(row)
+        return rows
 
     def aborted(  # noqa: PLR0913 - where the run stopped, and on which wording
         self,
@@ -1742,15 +1813,262 @@ class Ledger:
         *,
         error: str,
         head: Mapping[str, object],
+        out: Path | None = None,
     ) -> None:
         self._append(
             {"event": "aborted", "kind": kind, "shape": shape, "index": index, "arm": arm,
-             "error": error, **{k: head.get(k) for k in FROZEN_KEYS}}
+             "error": error, "out": None if out is None else str(out),
+             **{k: head.get(k) for k in FROZEN_KEYS}}
         )  # fmt: skip
 
 
 def _same_wording(head: Mapping[str, object], entry: Mapping[str, object]) -> bool:
     return all(head.get(k) == entry.get(k) for k in FROZEN_KEYS)
+
+
+def _same_shapes(head: Mapping[str, object], entry: Mapping[str, object]) -> bool:
+    return head.get("shapes_sha256") == entry.get("shapes_sha256")
+
+
+def _closers(
+    entries: Sequence[Mapping[str, Any]],  # Any: JSON
+    kind: str,
+    head: Mapping[str, object],
+    same: Callable[[Mapping[str, object], Mapping[str, object]], bool],
+) -> tuple[list[Mapping[str, Any]], list[tuple[Mapping[str, Any], Mapping[str, Any]]]]:  # Any: JSON
+    """The starts of this kind on this wording that no later aborted or end record closed, and
+    the closed ones paired with their closer. A closer names its start by out dir when it has
+    one, else it closes the earliest open start."""
+    opened: list[Mapping[str, Any]] = []  # Any: JSON
+    closed: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = []  # Any: JSON
+    for e in entries:
+        if e.get("kind") != kind or not same(head, e):
+            continue
+        if e.get("event") == "start":
+            opened.append(e)
+        elif e.get("event") in ("aborted", "end") and opened:
+            named = [o for o in opened if e.get("out") is not None and o.get("out") == e["out"]]
+            target = named[0] if named else opened[0]
+            opened.remove(target)
+            closed.append((target, e))
+    return opened, closed
+
+
+def _open_starts(
+    entries: Sequence[Mapping[str, Any]],  # Any: JSON
+    kind: str,
+    head: Mapping[str, object],
+    same: Callable[[Mapping[str, object], Mapping[str, object]], bool],
+) -> list[Mapping[str, Any]]:  # Any: JSON
+    return _closers(entries, kind, head, same)[0]
+
+
+def _finished(
+    entries: Sequence[Mapping[str, Any]],  # Any: JSON
+    kind: str,
+    head: Mapping[str, object],
+    same: Callable[[Mapping[str, object], Mapping[str, object]], bool],
+) -> bool:
+    """A run of this kind at this wording ended (pass or fail): no new start, ever."""
+    return any(e.get("event") == "end" and e.get("kind") == kind and same(head, e) for e in entries)
+
+
+def _chains_written(out: object) -> int | None:
+    if not isinstance(out, str):
+        return None
+    path = Path(out) / "chains.jsonl"
+    if not path.exists():
+        return None
+    return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+
+
+def _abort_row(  # noqa: PLR0913, PLR0917 - the start, its wording, the facts' readers
+    kind: str,
+    start: Mapping[str, Any],  # Any: JSON
+    head: Mapping[str, object],
+    at: str,
+    alive: Callable[[int], bool],
+    running: Callable[[], bool],
+) -> dict[str, object]:
+    pid = start.get("pid")
+    out = start.get("out")
+    if isinstance(pid, int):
+        if alive(pid):
+            raise ValueError("run_still_alive")
+        found: dict[str, object] = {"pid": pid, "pid_alive": False}
+    else:
+        if running():
+            raise ValueError("run_may_be_alive")
+        found = {"pid": "unknown", "pid_alive": None}
+    if isinstance(out, str) and (Path(out) / "report.jsonl").exists():
+        raise ValueError("run_finished")
+    return {
+        "event": "aborted", "kind": kind, "cause": "infra_killed", "at": at, **found,
+        "final_line": False, "chains_written": _chains_written(out), "out": out,
+        **{k: head.get(k) for k in FROZEN_KEYS},
+    }  # fmt: skip
+
+
+def _pid_alive(pid: int) -> bool:  # pragma: no cover - the OS
+    if os.name == "nt":
+        import ctypes  # noqa: PLC0415 - Windows only
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return bool(ctypes.get_last_error() == 5)  # access denied: it exists
+        code = ctypes.c_ulong()
+        ok = kernel.GetExitCodeProcess(handle, ctypes.byref(code))
+        kernel.CloseHandle(handle)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _chain_eval_running() -> bool:  # pragma: no cover - the OS; best effort, unclear is True
+    """Whether any other python process has chain_eval in its command line; a failed check
+    reads as running (unclear means refuse)."""
+    if os.name != "nt":
+        return False
+    query = (
+        "Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | "
+        'ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }'
+    )
+    try:
+        done = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["powershell.exe", "-NoProfile", "-Command", query],  # noqa: S607 - the OS shell
+            capture_output=True, text=True, timeout=30, check=False,
+        )  # fmt: skip
+    except (OSError, subprocess.SubprocessError):
+        return True
+    if done.returncode != 0:
+        return True
+    return any(
+        "chain_eval" in line
+        and "--abort-open" not in line
+        and not line.startswith(f"{os.getpid()} ")
+        for line in done.stdout.splitlines()
+    )
+
+
+def free_physical_bytes() -> int | None:  # pragma: no cover - the OS
+    """Free physical memory (GlobalMemoryStatusEx); None where not measured (not Windows)."""
+    if os.name != "nt":
+        return None
+    import ctypes  # noqa: PLC0415 - Windows only
+
+    class _Status(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]  # fmt: skip
+
+    status = _Status()
+    status.dwLength = ctypes.sizeof(_Status)
+    if not ctypes.WinDLL("kernel32").GlobalMemoryStatusEx(ctypes.byref(status)):
+        return None
+    return int(status.ullAvailPhys)
+
+
+def preflight_memory(
+    head: Mapping[str, object], *, read: Callable[[], int | None] = free_physical_bytes
+) -> None:
+    """[V2.83]: refuse `low_memory` below the header's floor; where memory is not measured
+    (not Windows) the check is skipped."""
+    floor = head.get("min_free_memory_bytes")
+    if not isinstance(floor, int):
+        raise ValueError("preflight_floor_missing")
+    free = read()
+    if free is not None and free < floor:
+        raise ValueError("low_memory")
+
+
+def record_from_json(doc: Mapping[str, Any]) -> ChainRecord:  # Any: JSON
+    """A chain record read back from `chains.jsonl`; an unknown or missing key is an error."""
+
+    def usage(raw: Mapping[str, Any] | None) -> UsageRecord | None:  # Any: JSON
+        return None if raw is None else UsageRecord(**raw)
+
+    judges = tuple(
+        JudgeCall(
+            **{
+                **j,
+                "declared": None if j.get("declared") is None else tuple(j["declared"]),
+                "usage": usage(j.get("usage")),
+            }
+        )
+        for j in doc["judges"]
+    )
+    return ChainRecord(
+        **{
+            **doc,
+            "judges": judges,
+            "declared": tuple(tuple(d) for d in doc["declared"]),
+            "usage": usage(doc.get("usage")),
+        }
+    )
+
+
+def _aborted_runs(
+    entries: Sequence[Mapping[str, Any]],  # Any: JSON
+    head: Mapping[str, object],
+) -> list[dict[str, object]]:
+    """Every aborted run at this wording (the prompt pins and the shapes pin): its kind, cause,
+    out dir and how many chains it wrote (None when its out dir is unknown)."""
+    runs: list[dict[str, object]] = []
+    for kind in ("pilot", "counted", "held_out"):
+        for start, closer in _closers(entries, kind, head, _same_prompts)[1]:
+            if closer.get("event") == "aborted":
+                runs.append(
+                    {"kind": kind, "cause": closer.get("cause", "run_error"),
+                     "out": start.get("out"), "chains": _chains_written(start.get("out"))}
+                )  # fmt: skip
+    return runs
+
+
+def _same_prompts(head: Mapping[str, object], entry: Mapping[str, object]) -> bool:
+    return all(head.get(k) == entry.get(k) for k in WORDING_KEYS)
+
+
+def _aborted_failures(
+    kind: str, shapes: Sequence[Shape], runs: Sequence[Mapping[str, object]]
+) -> list[dict[str, object]]:
+    """[V2.83]: the chains of every aborted run of this kind are still checked: a false allow
+    or a false done fails the gate at the wording as in a finished run. They never count toward
+    a bound or a pass."""
+    by_id = {s.id: s for s in shapes}
+    found: dict[tuple[str, str], ShapeScore] = {}
+    for run in runs:
+        out = run["out"]
+        if run["kind"] != kind or not isinstance(out, str):
+            continue
+        path = Path(out) / "chains.jsonl"
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            record = record_from_json(json.loads(line))
+            if record.pilot or record.shape not in by_id:
+                continue
+            shape = by_id[record.shape]
+            key = (record.shape, record.arm)
+            if key not in found:
+                found[key] = _new_score(shape, record.arm)
+            _count(shape, found[key], record)
+    return [
+        {"shape": shape, "arm": arm, "false_allows": s.false_allows, "false_dones": s.false_dones}
+        for (shape, arm), s in sorted(found.items())
+        if s.false_allows or s.false_dones
+    ]
 
 
 def _flush(path: Path, row: Mapping[str, object]) -> None:
@@ -1774,7 +2092,7 @@ def run_eval(  # noqa: PLR0913 - the run's kind and shapes, then keyword-only pl
     pilot runs one chain per shape and never counts."""
     if out.exists():
         raise ValueError("out_exists")
-    ledger.start(kind, head)
+    ledger.start(kind, head, out=out, pid=os.getpid())
     out.mkdir(parents=True)
     _flush(out / "header.jsonl", dict(head))
     records: list[ChainRecord] = []
@@ -1798,7 +2116,13 @@ def run_eval(  # noqa: PLR0913 - the run's kind and shapes, then keyword-only pl
                     run_shape(shape, one, arm=arm, sink=sink)
     except BaseException as exc:
         ledger.aborted(
-            kind, str(at[0]), int(str(at[1])), str(at[2]), error=type(exc).__name__, head=head
+            kind,
+            str(at[0]),
+            int(str(at[1])),
+            str(at[2]),
+            error=type(exc).__name__,
+            head=head,
+            out=out,
         )
         raise
     return records
@@ -1862,12 +2186,21 @@ def report(
                 "event": e["event"],
                 "kind": e["kind"],
                 "commit": e.get("commit"),
-                **({k: e[k] for k in ("shape", "index", "arm")} if e["event"] == "aborted" else {}),
+                **(
+                    {k: e[k] for k in ("shape", "index", "arm") if k in e}
+                    if e["event"] == "aborted"
+                    else {}
+                ),
+                **({"cause": e["cause"]} if "cause" in e else {}),
             }
             for e in ledger.entries()
             if all(e.get(k) == head.get(k) for k in WORDING_KEYS)
         ],
     }
+    runs = _aborted_runs(ledger.entries(), head)
+    out["aborted_runs"] = [
+        {"kind": r["kind"], "cause": r["cause"], "chains": r["chains"]} for r in runs
+    ]
     if kind != "pilot":
         scores = [
             score(s, [r for r in records if r.shape == s.id and r.arm == arm], arm=arm)
@@ -1875,6 +2208,15 @@ def report(
             for arm in arms(s)
         ]
         out.update(summary(scores))
+        failures = _aborted_failures(kind, shapes, runs)
+        out["aborted_failures"] = failures
+        if failures:  # [V2.83]: an abort cannot erase a failure
+            out.update({"passed": False, "failed_outright": True, "result": "fail"})
+            failed = {str(f["shape"]) for f in failures}
+            out["units"] = [
+                {**u, "result": "fail"} if u["shape"] in failed else u
+                for u in cast(list[dict[str, object]], out["units"])
+            ]
     return out
 
 
@@ -1883,9 +2225,25 @@ def report(
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live model calls
     parser = argparse.ArgumentParser(prog="chain_eval")
-    parser.add_argument("--out", type=Path, required=True, help="a new directory")
-    parser.add_argument("--run", choices=("pilot", "counted", "held_out"), required=True)
+    parser.add_argument("--out", type=Path, help="a new directory")
+    parser.add_argument("--run", choices=("pilot", "counted", "held_out"))
+    parser.add_argument(
+        "--abort-open", action="store_true",
+        help="append an infra_killed aborted record for each open counted or held-out start",
+    )  # fmt: skip
     args = parser.parse_args(argv)
+    if args.abort_open:
+        try:
+            rows = Ledger(ledger_path()).abort_open(at=datetime.now(UTC).isoformat())
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        for row in rows:
+            sys.stdout.write(
+                json.dumps({k: row[k] for k in ("event", "kind", "cause", "at")}) + "\n"
+            )
+        return 0
+    if args.out is None or args.run is None:
+        parser.error("--out and --run are required unless --abort-open")
     kind: RunKind = args.run
     import anthropic  # noqa: PLC0415 - the SDK, only when chains really run
 
@@ -1911,9 +2269,13 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live m
         return run_chain(shape, index=index, provider=provider, pilot=kind == "pilot", arm=arm)
 
     ledger = Ledger(ledger_path())
+    if kind != "pilot":
+        preflight_memory(head)
     records = run_eval(kind, chosen, chain, out=args.out, ledger=ledger, head=head)
     summary_row = report(kind, chosen, records, ledger=ledger, head=head)
     _flush(args.out / "report.jsonl", {"header": head, **summary_row})
+    if kind != "pilot":
+        ledger.end(kind, head, passed=summary_row["passed"] is True)
     return 0
 
 
