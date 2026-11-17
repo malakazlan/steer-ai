@@ -248,15 +248,20 @@ class DecideCalls:
         self._late_error = late_error
         self._poll_s = poll_s
         self._usages: list[TokenUsage | None] = []
+        self._requests = 0
 
     def turn(self, run: Callable[[AskModel], T]) -> tuple[T, TokenUsage | None]:
         """Run one controller turn with this `ask_model`; its result and the summed usage of
         its calls (None when a call reported none, or no call was made)."""
         self._usages = []
+        self._requests = 0
         try:
             result = run(self._ask)
         except ControllerError as rejected:  # the shakedown's #2: its calls' usage goes with it
             rejected.usage = _summed(self._usages)
+            raise
+        except (PortInterrupted, SteerError) as failed:  # #489: the requests this turn sent
+            failed.requests_sent = self._requests
             raise
         return result, _summed(self._usages)
 
@@ -270,6 +275,7 @@ class DecideCalls:
             name="steer-decide",
             daemon=True,  # an abandoned call never holds the process open at exit
         )
+        self._requests += 1  # the request goes out with the worker (#489)
         worker.start()
         while not box.done.wait(self._poll_s):
             self._check(box)

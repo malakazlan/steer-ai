@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import threading
 from typing import Any
 
 import pytest
@@ -13,7 +14,7 @@ import pytest
 from steerai.errors import ErrorCode, SteerError
 from steerai.loop2 import controller
 from steerai.loop2.decide_port import DecideCalls, Reply, TaskGenerations
-from steerai.loop2.loop import CountFailed, PortInterrupted
+from steerai.loop2.loop import CountFailed, PortInterrupted, TokenUsage, calls_made
 from steerai.loop2.prompt_inputs import make_audit, make_intake
 from steerai.loop2.runner import run_task
 from tests.loop2.test_final_audit import _value_only
@@ -76,6 +77,7 @@ def test_a_count_failure_is_no_model_call_in_the_intake() -> None:
     assert outcome.reason == "port_model_error"
     assert outcome.model_calls == DECIDE_ONLY
     assert (outcome.intake_checks, outcome.intake_failed) == (0, 0)
+    assert outcome.intake_no_call == 1
     assert not outcome.usage_incomplete
 
 
@@ -185,3 +187,115 @@ def test_the_audit_provider_error_after_the_send_counts_one_call() -> None:
     outcome = run_task(task(), world.ports())
     assert outcome.model_calls == world.events.count("decide") + 1
     assert (outcome.audit_calls, outcome.audit_failed) == (1, 1)
+
+
+# ---- the requests a turn sent: a repair is a second call (#489 principal) -------------------
+
+
+def _turn_calls(interrupted: Any, provider: Any) -> DecideCalls:  # Any: test doubles
+    return DecideCalls(
+        provider,
+        interrupted=interrupted,
+        generations=TaskGenerations(),
+        late_error=lambda _t: None,
+    )
+
+
+def _reply() -> Reply:
+    return Reply("{}", "end_turn", TokenUsage(1, 1))
+
+
+def _first_then_repair(ask: Any) -> None:  # Any: the turn's ask
+    ask([], [])
+    ask([], [])
+
+
+def test_a_switch_latched_between_the_call_and_its_repair_reports_one_request() -> None:
+    latch: list[str] = []
+
+    def run(ask: Any) -> None:  # Any: the turn's ask
+        ask([], [])
+        latch.append("killed")  # the reply is in; the repair is about to be asked
+        ask([], [])
+
+    calls = _turn_calls(lambda: latch[0] if latch else None, lambda _s, _b: _reply())
+    with pytest.raises(PortInterrupted) as raised:
+        calls.turn(run)
+    assert raised.value.sent is False
+    assert calls_made(raised.value) == 1
+
+
+def test_a_switch_latched_during_the_repair_reports_two_requests() -> None:
+    sent: list[int] = []
+    release = threading.Event()
+
+    def provider(_s: list[str], _b: list[str]) -> Reply:
+        sent.append(1)
+        if len(sent) == 2:
+            release.wait(5)
+        return _reply()
+
+    calls = _turn_calls(lambda: "killed" if len(sent) == 2 else None, provider)
+    try:
+        with pytest.raises(PortInterrupted) as raised:
+            calls.turn(_first_then_repair)
+    finally:
+        release.set()
+    assert calls_made(raised.value) == 2
+
+
+def test_a_provider_error_on_the_repair_reports_two_requests() -> None:
+    sent: list[int] = []
+
+    def provider(_s: list[str], _b: list[str]) -> Reply:
+        sent.append(1)
+        if len(sent) == 2:
+            raise SteerError(ErrorCode.MODEL_TIMEOUT, "timeout")
+        return _reply()
+
+    calls = _turn_calls(lambda: None, provider)
+    with pytest.raises(SteerError) as raised:
+        calls.turn(_first_then_repair)
+    assert calls_made(raised.value) == 2
+
+
+def test_the_requests_count_is_per_turn() -> None:
+    calls = _turn_calls(lambda: None, lambda _s, _b: _reply())
+    calls.turn(_first_then_repair)
+
+    def interrupted_first() -> None:
+        raise PortInterrupted("killed", sent=False)
+
+    with pytest.raises(PortInterrupted) as raised:
+        calls.turn(lambda _ask: interrupted_first())
+    assert raised.value.requests_sent == 0
+
+
+@pytest.mark.parametrize("sent", [0, 1, 2])
+def test_the_runner_counts_the_requests_the_turn_sent(sent: int) -> None:
+    error = PortInterrupted("killed", sent=False)
+    error.requests_sent = sent
+    world = World([], decide_raises=error)
+    world.interrupt_in_decide = 1
+    world.interruption = "killed"
+    outcome = run_task(task(), world.ports())
+    assert outcome.model_calls == sent
+    assert outcome.usage_incomplete == (sent > 0)
+
+
+def test_a_provider_error_after_two_requests_counts_two() -> None:
+    error = SteerError(ErrorCode.MODEL_TIMEOUT, "timeout")
+    error.requests_sent = 2
+    outcome = run_task(task(), World([], decide_raises=error).ports())
+    assert outcome.model_calls == 2
+
+
+def test_an_intake_count_failure_is_a_no_call_cause() -> None:
+    world = _world_with([_first([VALUE])], reply=CountFailed("x"))
+    outcome = run_task(task(), world.ports())
+    assert outcome.intake_no_call == 1
+
+
+def test_an_audit_count_failure_is_a_no_call_cause() -> None:
+    outcome = run_task(task(), _value_only(CountFailed("x")).ports())
+    assert outcome.audit_no_call == 1

@@ -83,3 +83,6 @@ class SteerError(Exception):
         super().__init__(f"{code.value}: {message}")
         self.code = code
         self.message = message
+        self.requests_sent: int | None = None
+        """Model requests sent in the decide turn that raised this (set by `DecideCalls.turn`,
+        #489); None when no turn set it."""
