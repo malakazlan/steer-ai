@@ -277,19 +277,20 @@ def test_a_kill_ends_a_helper_pause_early() -> None:
 
 
 def test_the_helper_probe_is_bound_to_the_runs_tag() -> None:
-    """#385 HH4-11: the probe callable carries the run's tag; it never reads the process-wide
-    tag at call time, so a late probe after the restore still goes out with the run's tag."""
+    """#385 HH4-11, [V2.81]: the probe callable carries the probe's own tag on both events and
+    never reads the process-wide tag at call time, so a late probe after the restore is still
+    this run's."""
     sent: list[tuple[str, int]] = []
 
-    def nudge(*, tag: int, seq: int) -> None:
-        sent.append((f"nudge:{seq}", tag))
+    def nudge(*, tag: int) -> None:
+        sent.append(("nudge", tag))
 
-    def key_up(vk: int, *, tag: int, seq: int) -> None:
-        sent.append((f"key_up:{vk:#x}:{seq}", tag))
+    def key_up(vk: int, *, tag: int) -> None:
+        sent.append((f"key_up:{vk:#x}", tag))
 
-    probe = live_world.bound_probe(0x2222_3333, vk=0x0E, nudge=nudge, key_up=key_up)
-    probe(7)
-    assert sent == [("nudge:7", 0x2222_3333), ("key_up:0xe:7", 0x2222_3333)]
+    probe = live_world.bound_probe(vk=0x0E, nudge=nudge, key_up=key_up)
+    probe(0x2222_3333)
+    assert sent == [("nudge", 0x2222_3333), ("key_up:0xe", 0x2222_3333)]
 
 
 def test_a_cleanup_that_raises_never_masks_the_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -388,7 +389,7 @@ class RigPlatform(HelperPlatform):
 
 
 def test_a_stale_watchdog_poll_stops_the_task_as_monitor_lost() -> None:
-    rig = _rig()
+    rig = _rig(answers=True)
     rig.heartbeat()
     world, _ = _world(RigPlatform(rig.monitor), hook_helper=True)
     assert world.interrupted() is None
@@ -401,7 +402,7 @@ def test_a_stale_watchdog_poll_stops_the_task_as_monitor_lost() -> None:
 
 def test_after_the_helper_closes_the_switch_reads_monitor_lost() -> None:
     """#385 final review (3): a closed helper's stale poll is not a lock."""
-    rig = _rig()
+    rig = _rig(answers=True)
     rig.heartbeat()
     world, _ = _world(RigPlatform(rig.monitor), hook_helper=True)
     rig.monitor.close()
@@ -411,7 +412,7 @@ def test_after_the_helper_closes_the_switch_reads_monitor_lost() -> None:
 
 def test_the_worlds_own_lock_read_still_wins_over_a_stale_poll() -> None:
     """LW-17/18: the lock is the cause; a monitor lost behind it is only a symptom."""
-    rig = _rig()
+    rig = _rig(answers=True)
     rig.heartbeat()
     platform = RigPlatform(rig.monitor)
     world, _ = _world(platform, hook_helper=True)

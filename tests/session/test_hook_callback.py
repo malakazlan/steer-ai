@@ -20,7 +20,6 @@ import pytest
 from steerai.errors import ErrorCode, SteerError
 from steerai.probes.win_input import STEER_EXTRA_INFO
 from steerai.session import monitor as monitor_module
-from steerai.session.hook_classifier import next_probe_seq, probe_tag
 from steerai.session.monitor import (
     HC_ACTION,
     HOTKEY_ID,
@@ -306,7 +305,7 @@ def test_the_procedure_keeps_no_key_code_scan_code_time_or_position(
                 f"{i}{k}": v
                 for i, part in enumerate(parts)
                 for k, v in part.items()
-                if k not in {"_reference", "_classifier", "_ledger", "_lock"}
+                if k not in {"_reference", "_classifier", "_ledger", "_lock", "_tags", "_retired"}
             }
             blob = repr(state) + repr(monitor.counts()) + repr(monitor.last_user_input())
             for sentinel in (VK_SENTINEL, SCAN_SENTINEL, TIME_SENTINEL, *PT_SENTINEL):
@@ -537,12 +536,10 @@ def test_the_v2_probe_proves_each_hook_with_its_own_event(
 ) -> None:
     sent: list[tuple[Any, ...]] = []
     monkeypatch.setattr(
-        monitor_module, "nudge_in_place", lambda seq=None, **_kw: sent.append(("nudge", seq))
+        monitor_module, "nudge_in_place", lambda tag=None: sent.append(("nudge", tag))
     )
     monkeypatch.setattr(
-        monitor_module,
-        "key_up_probe",
-        lambda vk, seq=None, **_kw: sent.append(("key_up", vk, seq)),
+        monitor_module, "key_up_probe", lambda vk, tag=None: sent.append(("key_up", vk, tag))
     )
     monitor = _v2_started(monkeypatch, FakeUser32())
     try:
@@ -550,8 +547,9 @@ def test_the_v2_probe_proves_each_hook_with_its_own_event(
         monitor.probe_now()
     finally:
         monitor.close()
-    first = sent[0][1]
-    second = next_probe_seq(first)
+    first, second = sent[0][1], sent[2][1]
+    assert first != second  # a fresh tag per probe, the same on both hooks
+    assert all(0 < t < 1 << 32 and t != STEER_EXTRA_INFO for t in (first, second))
     assert sent == [
         ("nudge", first),
         ("key_up", PROBE_VK, first),
@@ -564,7 +562,7 @@ def test_the_v2_probe_proves_each_hook_with_its_own_event(
         v1.probe_now()
     finally:
         v1.close()
-    assert sent == [("nudge", None)]  # v1's probe is unchanged: no number, no key
+    assert sent == [("nudge", STEER_EXTRA_INFO)]  # v1: its own tag, no probe tag, no key
 
 
 def test_a_key_probe_that_cannot_be_sent_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -604,19 +602,19 @@ def test_the_monitor_reports_whether_both_hooks_saw_the_probe(
     try:
         clock["t"] += 1.0  # the probe goes out after the hooks' start
         monitor.probe_now()
-        seq = monitor._core._ledger._seq
+        seq = monitor._core._ledger._tag
         clock["t"] += 0.01
         assert monitor.probe_seen() is False
         late = _mouse(flags=LLMHF_INJECTED, extra=STEER_EXTRA_INFO)  # an act's, no number
         user32.procs[WH_MOUSE_LL](HC_ACTION, WM_MOUSEMOVE, ctypes.addressof(late))
         assert monitor.probe_seen() is False  # #492: only the probe's own number proves it
-        mouse = _mouse(flags=LLMHF_INJECTED, extra=probe_tag(STEER_EXTRA_INFO, seq))
+        mouse = _mouse(flags=LLMHF_INJECTED, extra=seq)
         user32.procs[WH_MOUSE_LL](HC_ACTION, WM_MOUSEMOVE, ctypes.addressof(mouse))
         assert monitor.probe_seen() is False
-        other = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=probe_tag(STEER_EXTRA_INFO, seq))
+        other = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=seq)
         user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x101, ctypes.addressof(other))  # another key
         assert monitor.probe_seen() is False  # #364 P1: only the probe key's key-up proves it
-        key = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=probe_tag(STEER_EXTRA_INFO, seq))
+        key = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=seq)
         key.vkCode = PROBE_VK
         user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x101, ctypes.addressof(key))
         assert monitor.probe_seen() is True
@@ -781,18 +779,18 @@ def test_a_stalled_probe_that_counts_late_cannot_prove_a_probe_sent_after_it(
     try:
         clock["t"] += 1.0
         monitor.probe_now()  # A, whose callbacks stall
-        a = monitor._core._ledger._seq
+        a = monitor._core._ledger._tag
         clock["t"] += 0.01
         monitor.probe_now()  # B, sent while A is still out
-        b = monitor._core._ledger._seq
-        key = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=probe_tag(STEER_EXTRA_INFO, a))
+        b = monitor._core._ledger._tag
+        key = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=a)
         key.vkCode = PROBE_VK
-        move = _mouse(flags=LLMHF_INJECTED, extra=probe_tag(STEER_EXTRA_INFO, a))
+        move = _mouse(flags=LLMHF_INJECTED, extra=a)
         user32.procs[WH_MOUSE_LL](HC_ACTION, WM_MOUSEMOVE, ctypes.addressof(move))
         user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x101, ctypes.addressof(key))  # A, late
         assert monitor.probe_seen() is False
-        key.dwExtraInfo = probe_tag(STEER_EXTRA_INFO, b)
-        move.dwExtraInfo = probe_tag(STEER_EXTRA_INFO, b)
+        key.dwExtraInfo = b
+        move.dwExtraInfo = b
         user32.procs[WH_MOUSE_LL](HC_ACTION, WM_MOUSEMOVE, ctypes.addressof(move))
         user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x101, ctypes.addressof(key))  # B
         assert monitor.probe_seen() is True
@@ -800,26 +798,25 @@ def test_a_stalled_probe_that_counts_late_cannot_prove_a_probe_sent_after_it(
         monitor.close()
 
 
-def test_the_probe_goes_out_with_the_monitors_tag_and_is_proven_when_the_process_tag_differs(
+def test_a_probe_is_proven_by_its_own_tag_whatever_the_process_tag_is(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#420 interaction (PS-13): the probe carries the monitor's own tag, never the process tag
-    read at send time, so a monitor whose tag is not the process's still proves its hooks."""
-    from steerai.probes import win_input  # noqa: PLC0415 - this test only
-
+    """#420 interaction (PS-13), [V2.81]: the probe carries its own tag on both hooks, never the
+    process tag read at send time, so a monitor whose run tag is not the process's still proves
+    its hooks. The fakes hand the hook procedures what the real hooks do."""
     own = 0x1234_5678
-    assert own != win_input.extra_info()
+    assert own != STEER_EXTRA_INFO  # the process tag (v1's constant) is not the monitor's
     user32 = FakeUser32()
-    tags: list[int | None] = []
+    sent: list[int | None] = []
 
-    def nudge(*, tag: int | None = None, seq: int | None = None) -> None:
-        tags.append(tag)
-        info = _mouse(flags=LLMHF_INJECTED, extra=win_input._probe_tag_of(tag, seq) or 0)
+    def nudge(*, tag: int | None = None) -> None:
+        sent.append(tag)
+        info = _mouse(flags=LLMHF_INJECTED, extra=tag or 0)
         user32.procs[WH_MOUSE_LL](HC_ACTION, WM_MOUSEMOVE, ctypes.addressof(info))
 
-    def key_up(vk: int, *, tag: int | None = None, seq: int | None = None) -> None:
-        tags.append(tag)
-        info = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=win_input._probe_tag_of(tag, seq) or 0)
+    def key_up(vk: int, *, tag: int | None = None) -> None:
+        sent.append(tag)
+        info = _key(flags=LLKHF_INJECTED | LLKHF_UP, extra=tag or 0)
         info.vkCode = vk
         user32.procs[WH_KEYBOARD_LL](HC_ACTION, 0x101, ctypes.addressof(info))
 
@@ -829,21 +826,23 @@ def test_the_probe_goes_out_with_the_monitors_tag_and_is_proven_when_the_process
                        tick=lambda: 1000)  # fmt: skip
     try:
         monitor.probe_now()
-        assert tags == [own, own]
+        assert len(sent) == 2
+        assert sent[0] == sent[1]
+        assert sent[0] not in (None, own, STEER_EXTRA_INFO)
         assert monitor.probe_seen() is True
     finally:
         monitor.close()
 
 
-def test_the_ledger_has_the_probes_number_before_the_input_is_sent(
+def test_the_probes_tag_is_registered_before_the_input_is_sent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """PS-28: a probe sent before its number is recorded could be proven by nothing."""
+    """PS-28, [V2.81]: the classifier knows the tag before the probe is injected."""
     monitor_box: list[HookMonitor] = []
     at_send: list[tuple[int, int | None]] = []
 
-    def nudge(*, tag: int | None = None, seq: int | None = None) -> None:
-        at_send.append((monitor_box[0]._core._ledger._seq, seq))
+    def nudge(*, tag: int | None = None) -> None:
+        at_send.append((monitor_box[0]._core._classifier._probe_tag, tag))
 
     monkeypatch.setattr(monitor_module, "nudge_in_place", nudge)
     monkeypatch.setattr(monitor_module, "key_up_probe", lambda _vk, **_kw: None)
@@ -854,15 +853,15 @@ def test_the_ledger_has_the_probes_number_before_the_input_is_sent(
     finally:
         monitor.close()
     assert len(at_send) == 1
-    assert at_send[0][0] == at_send[0][1] != 0
+    assert at_send[0][0] == at_send[0][1]
+    assert at_send[0][0] != 0
 
 
-def test_a_per_hook_monitor_is_single_use(monkeypatch: pytest.MonkeyPatch) -> None:
-    """PS-04: a second start would begin a new number sequence under the same tag."""
-    monitor = _v2_started(monkeypatch, FakeUser32())
-    monitor.close()
-    with pytest.raises(SteerError, match="single use"):
-        monitor.start()
+def test_a_run_tag_wider_than_32_bits_is_refused_by_the_monitors_core() -> None:
+    from steerai.session.monitor import MonitorCore  # noqa: PLC0415 - this test only
+
+    with pytest.raises(ValueError, match="32-bit"):
+        MonitorCore(started_at=1.0, per_hook=True, extra_info=1 << 32 | 5)
 
 
 def test_a_v1_monitor_may_start_again(monkeypatch: pytest.MonkeyPatch) -> None:

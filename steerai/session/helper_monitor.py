@@ -38,7 +38,7 @@ from steerai.session.helper_reader import (
     last_user_seconds,
     read_status,
 )
-from steerai.session.hook_classifier import HOOKS, OTHER_STEER_INPUT, TAKEOVER
+from steerai.session.hook_classifier import HOOKS, OTHER_STEER_INPUT, TAKEOVER, ProbeTags
 from steerai.session.hook_layout import LATENCY_BUCKETS, Words
 from steerai.session.probe_ledger import ProbeLedger
 
@@ -89,8 +89,8 @@ class _WordCounts:
         self._helper = helper  # the words fetched on every read, never kept (#383 note 1)
         self._freq = freq
 
-    def probe_seq(self, hook: str) -> int:
-        return self._helper.status.get(f"probe_seq_{hook}")
+    def proof(self, hook: str) -> int:
+        return self._helper.status.get(f"proof_{hook}")
 
     def last_own(self, hook: str) -> float:
         return self._helper.status.get(f"last_own_qpc_{hook}") / self._freq
@@ -131,6 +131,7 @@ class HelperMonitor:
         self._pid = helper.pid()
         self._counts = _WordCounts(helper, freq)
         self._ledger = ProbeLedger(per_hook=True, deadline_s=deadline_s)
+        self._tags = ProbeTags(config.get("run_tag"))
         self._loop_state = ReaderState()
         self._watch_state = ReaderState()
         self._lock = threading.Lock()
@@ -197,11 +198,18 @@ class HelperMonitor:
     def probe_now(self) -> None:
         if self._closed:
             return  # #385 HH4-14: no probe for a closed helper
-        seq = self._ledger.probe_sent(now=self._now())
+        tag = self._ledger.probe_sent(now=self._now(), begin=self._publish_probe_tag)
         try:
-            self._probe(seq)
+            self._probe(tag)
         except OSError:
             self._probe_failed = True  # fails closed: the next health check is false
+
+    def _publish_probe_tag(self) -> int:
+        """[V2.81]: the fresh tag into the shared word before the probe is injected, never
+        after: the helper compares each event with it."""
+        tag = self._tags.draw()
+        self._helper.config.set("probe_tag", tag)
+        return tag
 
     def probe_seen(self) -> bool:
         return not self._closed and self._ledger.probe_seen(counts=self._counts)

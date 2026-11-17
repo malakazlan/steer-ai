@@ -82,9 +82,9 @@ def _break(rule: str, s: Words, state: ReaderState) -> dict[str, object]:
         s.set("pid", PID + 1)
     elif rule == "decreased":
         _read(s, state)
-        s.set("probe_seq_mouse", 5)
+        s.set("last_own_qpc_mouse", 5)
         _read(s, state)
-        s.set("probe_seq_mouse", 4)
+        s.set("last_own_qpc_mouse", 4)
     elif rule == "future":
         s.set("last_own_qpc_keyboard", int(1_000.5 * FREQ) + 2)
     elif rule == "stale":
@@ -154,8 +154,8 @@ def test_two_readers_interleaved_never_see_a_false_decrease() -> None:
     """The loop thread and the watchdog each keep their own last-read values: a newer read by
     one never becomes the other's baseline. Every interleaving of two readers over a helper
     whose words only grow gives no fault."""
-    script = [("probe_seq_mouse", 1), ("heartbeat_count", 2), ("probe_seq_keyboard", 1),
-              ("probe_seq_mouse", 2), ("heartbeat_count", 3)]  # fmt: skip
+    script = [("last_own_qpc_mouse", 1), ("heartbeat_count", 2), ("last_own_qpc_keyboard", 1),
+              ("last_own_qpc_mouse", 2), ("heartbeat_count", 3)]  # fmt: skip
     for order in set(itertools.permutations(["w"] * len(script) + ["a", "b"])):
         s = _status()
         readers = {"a": ReaderState(), "b": ReaderState()}
@@ -172,12 +172,12 @@ def test_sharing_one_reader_state_between_two_threads_is_what_fails() -> None:
     """The mutation the two-reader test guards: one shared baseline, a slower reader's view."""
     s = _status()
     shared = ReaderState()
-    s.set("probe_seq_mouse", 2)
+    s.set("last_own_qpc_mouse", 2)
     assert _read(s, shared).fault is None
     stale = status_words(memoryview(bytearray(status_size())))
     for name in s.names():
         stale.set(name, s.get(name))
-    stale.set("probe_seq_mouse", 1)  # what a reader that sampled earlier would hold
+    stale.set("last_own_qpc_mouse", 1)  # what a reader that sampled earlier would hold
     assert _read(stale, shared).fault is not None
 
 

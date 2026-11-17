@@ -22,7 +22,6 @@ semantic one over `ToggleGuard` and `UiaOptions(client)` (AP-54), the physical o
 
 from __future__ import annotations
 
-import ctypes
 import gc
 import math
 import os
@@ -321,20 +320,17 @@ def close_noting(close: Callable[[], None], cause: BaseException) -> None:
 
 
 def bound_probe(
-    tag: int,
     *,
     vk: int,
     nudge: Callable[..., None],
     key_up: Callable[..., None],
 ) -> Callable[[int], None]:
-    """LW-01: the helper's probe, the mouse nudge then the keyboard probe, bound to the run's
-    tag (#385 HH4-11): never the process tag read at call time, so a late probe after the
-    restore still goes out as this run's own input. Both events carry the probe's sequence
-    number ([V2.80] #492)."""
+    """LW-01: the helper's probe, the mouse nudge then the keyboard probe, both carrying the
+    probe's own tag ([V2.81] #492), never the process tag read at call time (#385 HH4-11)."""
 
-    def probe(seq: int) -> None:
-        nudge(tag=tag, seq=seq)
-        key_up(vk, tag=tag, seq=seq)
+    def probe(tag: int) -> None:
+        nudge(tag=tag)
+        key_up(vk, tag=tag)
 
     return probe
 
@@ -432,15 +428,29 @@ class LiveWorld:
                 self._token("session_abandoned")  # a previous Steer died holding it
             debug = self._debug_sink()
             self._build(client, bindings, debug)
+            self._self_check()
         except BaseException as exc:
             close_noting(self.close, exc)  # #385 HH4-06: never in place of the refusal
             raise
 
+    def _self_check(self) -> None:
+        """[V2.81] #492: the first probe at start must be proven, on both hooks, within the
+        derived deadline: else Steer refuses to start, with its own reason, separate from a
+        mid-task `monitor_lost` (an OS build where the probe scheme does not hold), before any
+        action. A kill during the wait ends it; the first send's own check reads the switch."""
+        monitor = self._monitor
+        monitor.probe_now()
+        started = self._config.clock()
+        while not monitor.probe_seen():
+            if not monitor.healthy() or self._config.clock() - started >= self._probe_deadline_s:
+                raise SteerError(ErrorCode.GATE_BLOCKED, "probe_unproven_at_start")
+            if self.interrupted():
+                return
+            self._kill_aware_sleep(PROVE_POLL_S)
+
     def _take_session(self, platform: Platform, config: LiveConfig) -> tuple[str, Monitor]:
         """[V2.57] LW-02: the session, then the run's tag, then the monitor on it. Any failure
         after the session was taken releases it (#361 H12)."""
-        if _pointer_bytes() < 8:  # [V2.80] #492: a probe's number needs a 64-bit dwExtraInfo
-            raise SteerError(ErrorCode.GATE_BLOCKED, "interpreter_not_64bit")
         # [V2.59]: the probe deadline from the system's hook timeout, read once at start
         self._hook_timeout_ms = platform.hook_timeout_ms()  # #385: the one read, passed on
         self._probe_deadline_s = probe_deadline_s(self._hook_timeout_ms)
@@ -1298,11 +1308,6 @@ def _shown(value: int | None) -> str:
     return "unset" if value is None else str(value)
 
 
-def _pointer_bytes() -> int:
-    """The interpreter's pointer size in bytes (a test seam)."""
-    return ctypes.sizeof(ctypes.c_void_p)
-
-
 def _run_tag() -> int:
     """[V2.57] LW-02: a random nonzero 32-bit input tag for this run, never v1's."""
     while True:
@@ -1521,7 +1526,7 @@ class WindowsPlatform:  # pragma: no cover - live, Windows only (the windows-mar
         )
         helper.start()
 
-        probe = bound_probe(extra_info, vk=PROBE_VK, nudge=nudge_in_place, key_up=key_up_probe)
+        probe = bound_probe(vk=PROBE_VK, nudge=nudge_in_place, key_up=key_up_probe)
         try:
             qpc, freq = qpc_clock()
             return HelperMonitor(

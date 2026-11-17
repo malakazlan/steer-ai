@@ -19,6 +19,9 @@ Rules (edge cases TK-01..49, probe `hook-latency-2026-11-04`):
 
 from __future__ import annotations
 
+import secrets
+from collections import deque
+from collections.abc import Callable
 from typing import Final
 
 LLKHF_INJECTED: Final = 0x10
@@ -41,27 +44,39 @@ another Steer, not a person at the keys."""
 TAKEOVER_TOKENS: Final = frozenset({TAKEOVER, OTHER_STEER_INPUT})
 """The closed tokens of a stop for someone else's input: a person, or another Steer."""
 
-TAG_MASK: Final = 0xFFFF_FFFF
-PROBE_SEQ_SHIFT: Final = 32
-PROBE_SEQ_MAX: Final = 0x7FFF_FFFF
+MAX_TAG: Final = 0xFFFF_FFFF
+"""[V2.81]: every tag (the run's and each probe's) is a nonzero 32-bit value, and the high half of
+`dwExtraInfo` never carries meaning: the mouse hook was measured to deliver only the low 32 bits
+(probe #495)."""
+RETIRED_KEPT: Final = 16
+"""How many retired probe tags the classifier remembers (own and stale, never the person's)."""
+RECENT_DRAWN: Final = 64
+"""How many drawn probe tags `ProbeTags` refuses to draw again."""
 
 
-def probe_tag(run_tag: int, seq: int) -> int:
-    """[V2.80] #492: the `dwExtraInfo` of one probe event: the run's tag in the low 32 bits and
-    the probe's sequence number (1..PROBE_SEQ_MAX) above it. An action event carries the bare
-    run tag, so only a probe has a sequence. Needs a 64-bit `ULONG_PTR`."""
-    if not 0 < run_tag <= TAG_MASK:
-        raise ValueError("a run tag is a nonzero 32-bit value")
-    if not 0 < seq <= PROBE_SEQ_MAX:
-        raise ValueError("a probe sequence is 1..PROBE_SEQ_MAX")
-    return run_tag | seq << PROBE_SEQ_SHIFT
+class ProbeTags:
+    """[V2.81] #492: each probe's tag, a fresh random 32-bit value (not derived from anything),
+    redrawn when it is zero, the run's tag, v1's tag or a recent probe's. Kept in the monitor's
+    memory, one scheme for both hooks. Not thread-safe by itself: the ledger calls `draw` under
+    its lock."""
 
+    def __init__(self, run_tag: int, *, rand32: Callable[[], int] | None = None) -> None:
+        if not 0 < run_tag <= MAX_TAG:
+            raise ValueError("a run tag is a nonzero 32-bit value")
+        self._run_tag = run_tag
+        self._rand32 = rand32 if rand32 is not None else lambda: secrets.randbits(32)
+        self._recent: deque[int] = deque(maxlen=RECENT_DRAWN)
 
-def next_probe_seq(seq: int) -> int:
-    """The sequence after `seq`, wrapping past PROBE_SEQ_MAX to 1 (0 means no probe). The wrap
-    is unreachable: a ledger starts at a random number and 2**31 probes at the 1 s period take
-    over 68 years."""
-    return seq % PROBE_SEQ_MAX + 1
+    def draw(self) -> int:
+        while True:
+            tag = self._rand32()
+            if (
+                0 < tag <= MAX_TAG
+                and tag not in (self._run_tag, V1_TAG)
+                and tag not in self._recent
+            ):
+                self._recent.append(tag)
+                return tag
 
 
 HOOKS: Final = ("keyboard", "mouse")
@@ -86,14 +101,19 @@ class Classifier:
     ) -> None:
         self._extra_info = extra_info
         self._numbered = numbered_probes
-        """[V2.80] #492: v2 (the hook monitor with `per_hook`, the helper): a probe-shaped event
-        may carry a number. v1 keeps its exact compare, unchanged."""
+        """[V2.81] #492: v2 (the hook monitor with `per_hook`, the helper): the outstanding
+        probe's tag proves a hook. v1 keeps its exact compare, unchanged."""
+        self._probe_tag = 0
+        """The outstanding probe's tag (0: none), set before the probe is injected."""
+        self._retired: deque[int] = deque(maxlen=RETIRED_KEPT)
+        """Recently retired probe tags: own and stale, never proof and never the person's."""
         self._probe_vk = probe_vk
         self._dead_band = dead_band_px
-        self._probe_seq = dict.fromkeys(HOOKS, 0)
-        """[V2.80] #492: per hook, the sequence of the last probe event it saw (0: none). Only a
-        probe event sets it (the keyboard's is the probe key's key-up, the mouse's an absolute
-        move); no other own event is proof. A number, never a key code."""
+        self._proof = dict.fromkeys(HOOKS, 0)
+        """[V2.81] #492: per hook, the tag of the last probe event it saw (0: none). Only the
+        outstanding probe's own event sets it (the keyboard's is the probe key's injected
+        key-up, the mouse's an injected move); no other own event is proof. A tag, never a key
+        code."""
         self._last_by = dict.fromkeys(HOOKS, started_at)
         """Each hook's last own event (LW-01)."""
         self._last_steer = started_at
@@ -110,9 +130,9 @@ class Classifier:
 
     def on_keyboard(self, *, flags: int, extra: int, now: float, vk: int = 0) -> None:
         probe = vk == self._probe_vk and bool(flags & LLKHF_UP)
-        seq = self._own_seq(extra, probe_shaped=probe, injected=bool(flags & LLKHF_INJECTED))
-        if seq is not None:
-            self._steer(now, "keyboard", seq=seq)
+        proof = self._own(extra, probe_shaped=probe, injected=bool(flags & LLKHF_INJECTED))
+        if proof is not None:
+            self._steer(now, "keyboard", proof=proof)
             return
         if extra == V1_TAG:
             self._other_steer(now)
@@ -123,11 +143,11 @@ class Classifier:
         self, *, message: int, flags: int, extra: int, pt: tuple[int, int], now: float
     ) -> None:
         x, y = pt
-        seq = self._own_seq(
+        proof = self._own(
             extra, probe_shaped=message == WM_MOUSEMOVE, injected=bool(flags & LLMHF_INJECTED)
         )
-        if seq is not None:
-            self._steer(now, "mouse", seq=seq)
+        if proof is not None:
+            self._steer(now, "mouse", proof=proof)
             if message == WM_MOUSEMOVE:
                 self._reference = (x, y)
             return
@@ -163,6 +183,13 @@ class Classifier:
     def on_loop_error(self) -> None:
         self._loop_failed = True
 
+    def set_probe_tag(self, tag: int) -> None:
+        """[V2.81]: the next probe's tag, before it is injected; the one before it retires."""
+        old = self._probe_tag
+        if old and old != tag:
+            self._retired.append(old)
+        self._probe_tag = tag
+
     def mark_ask_open(self) -> None:
         self._ask_depth += 1
 
@@ -175,8 +202,8 @@ class Classifier:
 
     # ---- what the ledger and the loop read ------------------------------------------------------
 
-    def probe_seq(self, hook: str) -> int:
-        return self._probe_seq[hook]
+    def proof(self, hook: str) -> int:
+        return self._proof[hook]
 
     def last_own(self, hook: str) -> float:
         return self._last_by[hook]
@@ -205,24 +232,25 @@ class Classifier:
 
     # ---- internals -----------------------------------------------------------------------------
 
-    def _own_seq(self, extra: int, *, probe_shaped: bool, injected: bool) -> int | None:
-        """[V2.80] #492: None when the event is not Steer's own; else its probe number (0: an
-        action's event, the bare tag). Own is the exact tag, or (v2) a probe-shaped, injected
-        event with the tag below and a number in range above. Any other numbered event is
-        foreign: a person's."""
+    def _own(self, extra: int, *, probe_shaped: bool, injected: bool) -> int | None:
+        """[V2.81] #492: None when the event is not Steer's own; else the tag it proves its hook
+        with (0: it proves nothing). Order: the outstanding probe's tag on a probe-shaped,
+        injected event is the probe, the only proof; the run's tag is an own action; a recently
+        retired probe's tag is own and stale. Anything else, the outstanding tag on another
+        shape included, is foreign: a person's. v1 compares the run's tag only."""
+        if self._numbered and extra == self._probe_tag and self._probe_tag:
+            return extra if probe_shaped and injected else None
         if extra == self._extra_info:
             return 0
-        if self._numbered and probe_shaped and injected and extra & TAG_MASK == self._extra_info:
-            seq = extra >> PROBE_SEQ_SHIFT
-            if 1 <= seq <= PROBE_SEQ_MAX:
-                return seq
+        if self._numbered and extra in self._retired:
+            return 0
         return None
 
-    def _steer(self, now: float, hook: str, *, seq: int) -> None:
+    def _steer(self, now: float, hook: str, *, proof: int) -> None:
         self._last_steer = now
         self._last_by[hook] = now
-        if seq:
-            self._probe_seq[hook] = seq
+        if proof:
+            self._proof[hook] = proof
         self._count("steer")
 
     def _person(self, now: float, *, injected: bool) -> None:

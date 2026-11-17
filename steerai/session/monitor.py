@@ -51,6 +51,7 @@ from steerai.session.hook_classifier import (
     WM_MOUSEMOVE,
     WM_MOUSEWHEEL,
     Classifier,
+    ProbeTags,
 )
 from steerai.session.probe_ledger import PROBE_DEADLINE_S, PROBE_PERIOD_S, ProbeLedger
 
@@ -199,6 +200,7 @@ class MonitorCore:
         deadline_s: float = PROBE_DEADLINE_S,
     ) -> None:
         self._started_at = started_at
+        self._per_hook = per_hook
         self._classifier = Classifier(
             started_at=started_at,
             extra_info=extra_info,
@@ -206,6 +208,7 @@ class MonitorCore:
             dead_band_px=dead_band_px,
             numbered_probes=per_hook,
         )
+        self._tags = ProbeTags(extra_info)
         self._ledger = ProbeLedger(per_hook=per_hook, deadline_s=deadline_s)
         """[V2.57] LW-01 (v2): each hook proves itself; v1 keeps one proof for both. [V2.59]
         (v2): the derived probe deadline; v1 keeps `PROBE_DEADLINE_S`."""
@@ -272,8 +275,17 @@ class MonitorCore:
         return self._ledger.lost_hooks(now=now, counts=self._classifier)
 
     def probe_sent(self, *, now: float) -> int:
-        """[V2.80] #492: the sequence number this probe's events must carry."""
-        return self._ledger.probe_sent(now=now)
+        """[V2.81] #492: the tag this probe's events must carry (0 in v1, which sends the run's
+        tag and proves nothing by a probe tag)."""
+        return self._ledger.probe_sent(now=now, begin=self._begin_probe)
+
+    def _begin_probe(self) -> int:
+        """A fresh tag, registered with the classifier before the probe is injected."""
+        if not self._per_hook:
+            return 0
+        tag = self._tags.draw()
+        self._classifier.set_probe_tag(tag)
+        return tag
 
     def healthy(self, *, now: float, thread_alive: bool) -> bool:
         c = self._classifier
@@ -394,8 +406,6 @@ class HookMonitor:
         self._procs: list[Any] = []  # the WINFUNCTYPE objects must outlive the hooks
         self._stop_timed_out = False
         self._hotkey_registered = False
-        self._started_once = False
-        """[V2.80] #492: a per-hook monitor starts once, so its probe numbers are not reused."""
 
     # ---- lifecycle ------------------------------------------------------------------------
 
@@ -407,12 +417,6 @@ class HookMonitor:
                 ErrorCode.GATE_BLOCKED,
                 "monitor_unavailable: a previous hook thread did not stop; restart the process",
             )
-        if self._per_hook and self._started_once:
-            raise SteerError(
-                ErrorCode.GATE_BLOCKED,
-                "monitor_unavailable: a per-hook monitor is single use (its probe numbers)",
-            )
-        self._started_once = True
         self._core = MonitorCore(
             started_at=self._monotonic(),
             dead_band_px=self._dead_band,
@@ -481,18 +485,16 @@ class HookMonitor:
             self.probe_now()
 
     def probe_now(self) -> None:
-        seq = self._core.probe_sent(now=self._monotonic())
+        tag = self._core.probe_sent(now=self._monotonic())
         try:
-            # [V2.80]: the monitor's own tag, never the process's current one (a probe after
-            # `restore_extra_info`); v2 also carries the probe's sequence number (#493)
+            # [V2.81]: v2 sends this probe's own tag on both hooks; v1 the monitor's own tag,
+            # never the process's current one (a probe after `restore_extra_info`)
             if self._per_hook:
-                nudge_in_place(tag=self._extra_info, seq=seq)
+                nudge_in_place(tag=tag)
                 if self._probe_vk is not None:
-                    key_up_probe(  # LW-01: the keyboard hook's own proof
-                        self._probe_vk, tag=self._extra_info, seq=seq
-                    )
+                    key_up_probe(self._probe_vk, tag=tag)  # LW-01: the keyboard hook's own proof
             else:
-                nudge_in_place(tag=self._extra_info)  # v1 sends the bare tag, no number
+                nudge_in_place(tag=self._extra_info)
         except OSError:
             self._core.on_probe_failed()  # fails closed: the next boundary stops (D4)
 

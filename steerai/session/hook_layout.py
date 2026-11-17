@@ -30,8 +30,8 @@ STATUS_WORDS: Final = (
     "nonce_echo_hi",
     "heartbeat_qpc",
     "heartbeat_count",
-    "probe_seq_keyboard",
-    "probe_seq_mouse",
+    "proof_keyboard",
+    "proof_mouse",
     "last_own_qpc_keyboard",
     "last_own_qpc_mouse",
     "last_user_qpc_keyboard",
@@ -71,6 +71,7 @@ CONFIG_WORDS: Final = (
     "ask_depth",
     "kill_ack",
     "end_self_failures",
+    "probe_tag",
 )
 LATENCY_BUCKETS: Final = 1001
 """Event tick to entry tick, one bucket per ms, 0..1000; 1000 holds 1000 ms and over (the hook
@@ -82,8 +83,9 @@ HISTOGRAMS: Final = (("latency", LATENCY_BUCKETS), ("run_time", RUN_TIME_BUCKETS
 
 MAGIC: Final = 0x5354_4545_484F_4F4B
 """`STEEHOOK`: the config section's first word."""
-LAYOUT_VERSION: Final = 3
-"""3: `probe_seq_*` replaced `delivered_*` in the same slots ([V2.80]); version 2 is refused."""
+LAYOUT_VERSION: Final = 4
+"""4: `proof_*` (the tag of the last probe each hook saw) replaced `delivered_*`, and
+Steer writes `probe_tag` before it injects a probe ([V2.81]); older versions are refused."""
 
 STATE_STARTING: Final = 0
 STATE_READY: Final = 1

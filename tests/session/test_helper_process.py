@@ -153,6 +153,7 @@ def test_a_real_helper_proves_two_numbered_probes_by_their_own_numbers() -> None
     from steerai.loop2.live_world import bound_probe  # noqa: PLC0415
     from steerai.probes.win_input import key_up_probe, nudge_in_place  # noqa: PLC0415
     from steerai.session.helper_monitor import _WordCounts  # noqa: PLC0415
+    from steerai.session.hook_classifier import ProbeTags  # noqa: PLC0415
     from steerai.session.probe_ledger import ProbeLedger  # noqa: PLC0415
 
     interpreter, launcher = this_interpreter()
@@ -172,12 +173,19 @@ def test_a_real_helper_proves_two_numbered_probes_by_their_own_numbers() -> None
     try:
         counts = _WordCounts(helper, 10_000_000)
         ledger = ProbeLedger(per_hook=True, deadline_s=1.0)
-        probe = bound_probe(tag, vk=0x0E, nudge=nudge_in_place, key_up=key_up_probe)
+        probe = bound_probe(vk=0x0E, nudge=nudge_in_place, key_up=key_up_probe)
         numbers = []
+        tags = ProbeTags(tag)
+
+        def begin() -> int:
+            drawn = tags.draw()
+            helper.config.set("probe_tag", drawn)  # before the probe is injected
+            return drawn
+
         for _ in range(2):
-            seq = ledger.probe_sent(now=time.monotonic())
-            numbers.append(seq)
-            probe(seq)
+            sent = ledger.probe_sent(now=time.monotonic(), begin=begin)
+            numbers.append(sent)
+            probe(sent)
             deadline = time.monotonic() + 2.0
             while not ledger.probe_seen(counts=counts) and time.monotonic() < deadline:
                 time.sleep(0.02)

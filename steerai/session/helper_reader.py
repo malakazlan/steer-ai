@@ -33,8 +33,6 @@ from steerai.session.hook_layout import (
 MONOTONIC: Final = (
     "heartbeat_count",
     "heartbeat_qpc",
-    "probe_seq_keyboard",
-    "probe_seq_mouse",
     "last_own_qpc_keyboard",
     "last_own_qpc_mouse",
     "last_user_qpc_keyboard",
