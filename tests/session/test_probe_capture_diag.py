@@ -1,17 +1,18 @@
 # ruff: noqa: T201, E501
 """Diagnostic only (probe branch, never merged): what the real low-level hooks hand the
-callback for a numbered probe. Prints; passes."""
+callback for a probe carrying its own random 32-bit tag ([V2.81]), on both hooks. Prints the
+raw values and passes. Run on a laptop to record the Windows build's behaviour."""
 
 from __future__ import annotations
 
-import ctypes
+import platform
+import sys
 import time
 from typing import Any
 
 import pytest
 
 from steerai.probes import win_input
-from steerai.session.hook_classifier import LLMHF_INJECTED, probe_tag
 from steerai.session.monitor import HookMonitor
 
 pytestmark = pytest.mark.windows
@@ -21,7 +22,7 @@ VK = 0x0E
 
 
 def test_capture_what_the_real_hooks_see(capfd: pytest.CaptureFixture[str]) -> None:
-    rows: list[str] = []
+    rows: list[str] = [f"windows={sys.getwindowsversion()} platform={platform.platform()}"]
     monitor = HookMonitor(per_hook=True, probe_vk=VK, extra_info=TAG)
     monitor.start()
     core = monitor._core
@@ -29,18 +30,17 @@ def test_capture_what_the_real_hooks_see(capfd: pytest.CaptureFixture[str]) -> N
     real_kb, real_ms = core.on_keyboard, core.on_mouse
 
     def kb(*, flags: int, extra: int, now: float, vk: int = 0) -> None:
+        shaped = vk == VK and bool(flags & 0x80)
         rows.append(
             f"KB vk={vk:#x} flags={flags:#x} extra={extra:#018x} "
-            f"own_seq(probe_shaped={vk == VK and bool(flags & 0x80)},"
-            f"injected={bool(flags & 0x10)})="
-            f"{cls._own_seq(extra, probe_shaped=vk == VK and bool(flags & 0x80), injected=bool(flags & 0x10))}"
+            f"outstanding={cls._probe_tag:#x} own={cls._own(extra, probe_shaped=shaped, injected=bool(flags & 0x10))}"
         )
         real_kb(flags=flags, extra=extra, now=now, vk=vk)
 
     def ms(*, message: int, flags: int, extra: int, pt: tuple[int, int], now: float) -> None:
         rows.append(
-            f"MS msg={message:#x} flags={flags:#x} extra={extra:#018x} pt={pt} own_seq="
-            f"{cls._own_seq(extra, probe_shaped=message == 0x200, injected=bool(flags & 1))}"
+            f"MS msg={message:#x} flags={flags:#x} extra={extra:#018x} pt={pt} "
+            f"outstanding={cls._probe_tag:#x} own={cls._own(extra, probe_shaped=message == 0x200, injected=bool(flags & 1))}"
         )
         real_ms(message=message, flags=flags, extra=extra, pt=pt, now=now)
 
@@ -56,42 +56,20 @@ def test_capture_what_the_real_hooks_see(capfd: pytest.CaptureFixture[str]) -> N
         time.sleep(0.4)
 
     try:
-        user32 = win_input._user32()
+        for n in range(1, 4):
+            step(f"monitor.probe_now() #{n} (a fresh random tag on both hooks)", monitor.probe_now)
+            rows.append(
+                f"  tag={core._ledger._tag:#x} proof(mouse)={cls.proof('mouse'):#x} "
+                f"proof(keyboard)={cls.proof('keyboard'):#x} probe_seen={monitor.probe_seen()} "
+                f"lost={monitor.lost_hooks()}"
+            )
+        step("an action-shaped nudge with the run tag", lambda: win_input.nudge_in_place(tag=TAG))
         step(
-            "numbered key-up (shipped key_up_probe seq=7)",
-            lambda: win_input.key_up_probe(VK, tag=TAG, seq=7),
+            "an action-shaped key-up with the run tag", lambda: win_input.key_up_probe(VK, tag=TAG)
         )
-        step(
-            "numbered nudge (shipped nudge_in_place seq=7)",
-            lambda: win_input.nudge_in_place(tag=TAG, seq=7),
-        )
-        x, y = win_input.cursor_pos()
-        ax, ay = win_input._to_absolute(user32, x, y)
-        flags = (
-            win_input._MOUSEEVENTF_MOVE
-            | win_input._MOUSEEVENTF_ABSOLUTE
-            | win_input._MOUSEEVENTF_VIRTUALDESK
-        )
-        step(
-            "numbered nudge WITHOUT nocoalesce (raw)",
-            lambda: win_input._send(
-                user32,
-                win_input.build_mouse_input(dx=ax, dy=ay, flags=flags, tag=probe_tag(TAG, 7)),
-            ),
-        )
-        step("bare-tag nudge (v1 shape)", lambda: win_input.nudge_in_place(tag=TAG))
-        step("bare-tag key-up", lambda: win_input.key_up_probe(VK, tag=TAG))
-        step("monitor.probe_now()", monitor.probe_now)
-        rows.append(
-            f"probe_seen={monitor.probe_seen()} healthy={monitor.healthy()} "
-            f"lost={monitor.lost_hooks()} seq={core._ledger._seq:#x}"
-        )
+        rows.append(f"after actions: probe_seen={monitor.probe_seen()} healthy={monitor.healthy()}")
     finally:
         monitor.close()
-    rows.append(
-        f"sizeof(ULONG_PTR)={ctypes.sizeof(win_input.ULONG_PTR)} "
-        f"sizeof(INPUT)={ctypes.sizeof(win_input.INPUT)} LLMHF_INJECTED={LLMHF_INJECTED:#x}"
-    )
     with capfd.disabled():
         print("\nPROBE_CAPTURE_BEGIN")
         for row in rows:
