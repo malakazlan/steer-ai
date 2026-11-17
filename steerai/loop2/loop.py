@@ -21,10 +21,13 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Final, Literal, get_args
+from typing import Final, Literal, Protocol, get_args
 
 from steerai.action.dispositions import ActionResult, Delivery
 from steerai.errors import ErrorCode, SteerError
+from steerai.goal_match import Verdict
+from steerai.loop2.claims import Phase
+from steerai.loop2.consent import GoalRow
 from steerai.loop2.decision import ActionDoc, Decision
 from steerai.loop2.form import (
     ACTING_ROLES,
@@ -43,9 +46,11 @@ from steerai.loop2.history import (
 )
 from steerai.loop2.listing import ListingTurn
 from steerai.loop2.query import SearchFacts, classify, search_landmark_of
+from steerai.loop2.record import V2Record
 from steerai.loop2.task import Commit, Subgoal
-from steerai.orchestrator.contracts import RISKS, Risk
-from steerai.orchestrator.gate import DenyFacts, deny_tier_of, group_name
+from steerai.orchestrator.contracts import RISKS, GateDecision, Risk
+from steerai.orchestrator.gate import Ask, DenyFacts, deny_tier_of, group_name
+from steerai.orchestrator.ledger import Admission
 from steerai.verify.predicates import FIELD_ROLES
 from steerai.world.effects import Observed, ValueFact
 from steerai.world.elements import Element
@@ -397,6 +402,70 @@ class IntakeView:
     subgoals: tuple[IntakeLine, ...]
 
 
+class AskPort(Protocol):
+    """[V2.88] L2, L5: shows one ask in Steer's own window and returns the person's answer token,
+    as v1's `gate.Confirmer` does (`yes`, `yes:<decision id>`, `no`, `unanswered`)."""
+
+    def __call__(self, ask: Ask, /) -> str: ...
+
+
+class GoalCheckPort(Protocol):
+    """Packet v2-step4-claims §3.5: the per-action goal check over the request and one row,
+    never the listing; its verdict adds reasons to the ask, never approves or blocks."""
+
+    def __call__(self, row: GoalRow, /) -> Verdict: ...
+
+
+class LedgerPort(Protocol):
+    """[V2.88] L9, packet §3.4: the v2 ledger's calls, additive to v1's; keyed by the action key."""
+
+    def admit(self, key: str, /) -> Admission: ...
+
+    def write_ahead(self, record: V2Record, decision: GateDecision, /) -> bool:
+        """False when the record could not be written (the task ends `wal_unavailable`)."""
+        ...
+
+    def mark(self, key: str, phase: Phase, /) -> None: ...
+
+    def close(self, key: str, outcome: str, /) -> None: ...
+
+
+class RaiseWindowPort(Protocol):
+    """[V2.88] L4: the one raise after a yes, of the bound window by its handle; True only when
+    it is in front afterwards."""
+
+    def __call__(self, hwnd: int, /) -> bool: ...
+
+
+class AskWaitClock(Protocol):
+    """Packet §3.4, [V2.15] Q7: the clock the person's wait is measured on (`ask_wait_s`, outside
+    `max_wall_s`), in seconds."""
+
+    def __call__(self) -> float: ...
+
+
+@dataclass(frozen=True)
+class Step4Ports:
+    """[V2.88]: the ports only a step 4 task has; declared in 4a.3, built by 4c."""
+
+    ask: AskPort
+    goal_check: GoalCheckPort
+    ledger: LedgerPort
+    raise_window: RaiseWindowPort
+    ask_wait_clock: AskWaitClock
+
+
+STEP_PORTS_MISMATCH: Final = "step_ports_mismatch"
+
+
+class StepPortsMismatchError(RuntimeError):
+    """A task whose step disagrees with its ports (step 4 exactly when `Ports.step4` is set): a
+    wiring bug, raised before anything runs; the command line reports it as `internal_error`."""
+
+    def __init__(self) -> None:
+        super().__init__(STEP_PORTS_MISMATCH)
+
+
 @dataclass(frozen=True)
 class Ports:
     decide: Callable[[TurnView], Decided]
@@ -444,6 +513,8 @@ class Ports:
     intake: Callable[[IntakeView], Audited] | None = None
     """[V2.68] One: the intake sufficiency check, on a first Decision of value or state subgoals
     only; None means there is none, and such a Decision is not checked."""
+    step4: Step4Ports | None = None
+    """[V2.88]: set exactly when the task is step 4 (`run_task` refuses a mismatch)."""
 
 
 WatchKind = Literal["plain", "trigger", "submit", "wait"]

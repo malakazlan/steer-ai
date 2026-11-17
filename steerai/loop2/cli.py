@@ -36,6 +36,7 @@ from steerai.errors import (
     SteerError,
 )
 from steerai.loop2 import ready as ready_step
+from steerai.loop2.controller import AUDIT_PROMPT_VERSION_BY_STEP, PROMPT_VERSION_BY_STEP
 from steerai.loop2.decide_port import TaskGenerations
 from steerai.loop2.live_world import (
     LiveConfig,
@@ -47,7 +48,7 @@ from steerai.loop2.live_world import (
 from steerai.loop2.loop import AUDIT_COUNTS, INTAKE_COUNTS, TaskOutcome
 from steerai.loop2.price import STALE_DAYS, PriceFile, load_price
 from steerai.loop2.runner import run_task
-from steerai.loop2.task import Budgets, Envelope, Task
+from steerai.loop2.task import Budgets, Envelope, Step, Task
 from steerai.orchestrator.console import escape_text
 from steerai.orchestrator.contracts import RISKS
 from steerai.orchestrator.trace import JsonLinesTrace, NullTrace, Trace
@@ -71,6 +72,8 @@ from steerai.world.reads import ReadCost
 
 DEFAULT_BUDGETS: Final = (20, 40, 400_000, 300.0)
 """[V2.53] (3), provisional: model calls, actions, tokens, wall seconds."""
+STEPS: Final[tuple[Step, ...]] = (3, 4)
+"""[V2.86] (4): the steps `--step` takes."""
 BUDGET_TOKENS: Final = frozenset(
     {"max_actions", "max_model_calls", "max_tokens", "max_cost", "max_wall"}
 )
@@ -100,6 +103,8 @@ class V2Options:
     max_wall_s: float
     hook_helper: bool = False
     """[V2.60]: the hooks in their own helper process (`--hook-helper`); off by default."""
+    step: Step = 3
+    """[V2.86] (4): the step the task runs under (`--step`); 3 unless chosen."""
 
 
 @dataclass(frozen=True)
@@ -168,6 +173,13 @@ def parse_v2(argv: Sequence[str]) -> V2Options:
         action="store_true",
         help="run the hooks and the kill key in a helper process ([V2.60])",
     )
+    parser.add_argument(
+        "--step",
+        type=int,
+        choices=STEPS,
+        default=3,
+        help="the V2 step to run under ([V2.86] (4)); 4 refuses until step 4 is built",
+    )
     try:
         args = parser.parse_args(list(argv))
     except argparse.ArgumentError as exc:
@@ -189,6 +201,7 @@ def parse_v2(argv: Sequence[str]) -> V2Options:
         max_tokens=args.max_tokens,
         max_wall_s=args.max_wall_s,
         hook_helper=bool(args.hook_helper),
+        step=4 if args.step == 4 else 3,  # argparse held it to `STEPS`
     )
 
 
@@ -265,8 +278,8 @@ def main(  # noqa: PLR0911 - one return per start refusal, in order
         out.note(f"usage error: {exc}")
         return out.error(None, DETAIL_USAGE, task_id=None)
     deps = real_deps() if deps is None else deps
-    if not deps.ready(3):
-        out.note("error: loop v2 is not built yet: step 3")
+    if not deps.ready(options.step):  # [V2.86] (4): step 4 refuses until it is built
+        out.note(f"error: loop v2 is not built yet: step {options.step}")
         return out.error(None, DETAIL_LOOP_V2_NOT_READY, task_id=options.task_id)
     try:
         price = load_price(options.price_file, model=DEFAULT_MODEL, today=deps.today())
@@ -319,6 +332,7 @@ def _run(options: V2Options, deps: V2Deps, out: _Out, price: PriceFile, window: 
             price=price.price,
         ),
         history=[],
+        step=options.step,
     )
     trace: Trace = NullTrace() if options.trace is None else JsonLinesTrace(options.trace)
     config = LiveConfig(
@@ -345,7 +359,7 @@ def _run(options: V2Options, deps: V2Deps, out: _Out, price: PriceFile, window: 
             worlds.append(world)  # [V2.64] Two: its loss watch is read after the final line
             world.bring_to_front()  # [V2.62]: a refusal here is a start refusal, its own reason
             started.append(True)
-            limits = _limits_header(task.budgets, price)
+            limits = {**_limits_header(task.budgets, price), **_step_header(task.step)}
             out.note("header: " + json.dumps({**world.header(task), **limits}, sort_keys=True))
             if price.stale:
                 out.note(
@@ -501,6 +515,16 @@ def _limits(budgets: Budgets) -> dict[str, int | float]:
         "max_tokens": budgets.max_tokens,
         "max_wall_s": budgets.max_wall_s,
         "max_cost_usd": budgets.max_cost_usd,
+    }
+
+
+def _step_header(step: Step) -> dict[str, str]:
+    """[V2.86] (4): the step and the wording versions it runs under; for step 3 the versions
+    are the ones the world's header already names."""
+    return {
+        "step": str(step),
+        "prompt_version": PROMPT_VERSION_BY_STEP[step],
+        "audit_prompt_version": AUDIT_PROMPT_VERSION_BY_STEP[step],
     }
 
 
