@@ -2432,7 +2432,7 @@ def test_a_false_done_in_the_free_arm_fails_the_eval() -> None:
 
 def test_a_free_arm_with_nothing_required_stops_at_the_controller_chains() -> None:
     runs = run_shape(SHAPES["g23"], lambda i: _rec("cannot", "controller_stop", index=i))
-    assert len(runs) == chain_eval.CONTROLLER_CHAINS == VERDICT_TARGET
+    assert len(runs) == chain_eval.CONTROLLER_CHAINS == 20  # [V2.86]: the lean eval
 
 
 def test_the_free_arm_of_a_judge_sourced_from_it_still_blocks_when_short() -> None:
@@ -2658,13 +2658,55 @@ def test_a_forced_allow_is_declared_only_where_the_intake_truth_is_a_veto() -> N
 def test_a_free_arm_that_sources_no_judge_runs_the_header_set_of_chains(shape_id: str) -> None:
     shape = SHAPES[shape_id]
     runs = run_shape(shape, lambda i: _rec("cannot", "controller_stop", index=i))
-    assert len(runs) == chain_eval.CONTROLLER_CHAINS == 60
+    assert len(runs) == chain_eval.CONTROLLER_CHAINS == 20  # [V2.86]: 20, not 60
     out = score(shape, runs)
     assert out.controller == {"intake": 0, "audit": 0}  # numbers, never a bar
     assert out.result == "pass"
     head = _head()
-    assert head["stopping"]["controller_chains"] == 60  # type: ignore[index]  # JSON header
+    assert head["stopping"]["controller_chains"] == 20  # type: ignore[index]  # JSON header
     assert "stopping" in chain_eval.FROZEN_KEYS
+    with pytest.raises(ValueError, match="wording_not_frozen"):
+        check_frozen(
+            {**head, "stopping": {**dict(chain_eval.STOPPING), "controller_chains": 60}}, head
+        )
+
+
+def _rank(shape: Shape, arm: chain_eval.Arm) -> int:
+    if not chain_eval.required(shape, arm):
+        return 2  # a controller arm: numbers only
+    return 0 if shape.cls == "must_veto" else 1
+
+
+def test_a_counted_run_orders_must_veto_sources_then_must_pass_then_controller_arms() -> None:
+    """[V2.86]: every unit changed, so the units that decide the safety bar run first: each
+    must-veto shape's source arms, then the must-pass shapes' free arms, then the 20-chain free
+    arms that source no judge; within each, the file's order."""
+    gate = [s for s in SHAPES.values() if not s.held_out]
+    plan = [(s.id, arm) for s, arm in chain_eval.run_order(gate)]
+    assert sorted(plan) == sorted((s.id, a) for s in gate for a in arms(s))  # every arm, once
+    ranks = [_rank(SHAPES[i], a) for i, a in plan]
+    assert ranks == sorted(ranks)
+    assert ranks[0] == 0
+    assert plan[-1][1] == "free"
+    assert ranks[-1] == 2
+
+
+def test_run_eval_runs_a_counted_run_in_the_run_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran: list[tuple[str, str]] = []
+
+    def fake_run_shape(shape: Shape, _chain: Any, *, arm: str, sink: Any) -> list[ChainRecord]:
+        ran.append((shape.id, arm))
+        return []
+
+    monkeypatch.setattr(chain_eval, "run_shape", fake_run_shape)
+    ledger = Ledger(tmp_path / "ledger.jsonl")
+    ledger.start("pilot", _wired())
+    gate = [s for s in SHAPES.values() if not s.held_out]
+    run_eval("counted", gate, lambda _s, i, _a: _rec(index=i), out=tmp_path / "run",
+             ledger=ledger, head=_wired())  # fmt: skip
+    assert ran == [(s.id, a) for s, a in chain_eval.run_order(gate)]
 
 
 def test_a_false_done_on_a_free_arm_that_sources_no_judge_still_fails() -> None:
