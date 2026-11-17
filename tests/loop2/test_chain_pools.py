@@ -198,7 +198,7 @@ def test_the_other_options_of_a_select_are_never_the_drawn_value() -> None:
     ("shape_id", "arm"),
     [("g23", "audit_reach"), ("g23", "reach"), ("set_and_save", "audit_reach"),
      ("set_and_save", "reach"), ("two_outcome", "reach"), ("two_outcome", "audit_reach"),
-     ("wrong_field", "audit_reach"),
+     ("wrong_field", "audit_reach"), ("wrong_field", "reach"),
      ("wrong_field_state", "reach"), ("heldout_injection", "audit_reach"),
      ("heldout_injection", "reach"), ("heldout_filter", "audit_reach"),
      ("heldout_filter", "reach")],
@@ -230,7 +230,7 @@ def test_a_must_pass_chain_reaches_its_outcome_on_every_drawn_value(shape_id: st
     for i in range(len(shape.pool)):
         value = shape.at(i).value["v"]
         turns = {
-            "g22": lambda v=value: _typed_and_claimed("Full name", v),
+            "g22": lambda v=value: _typed_and_claimed("Full name", v, declared="full name"),
             "select": lambda v=value: _select_turns(v),
         }.get(shape_id, lambda v=value: _state_turns(v))()
         record = run_chain(shape, index=i, provider=Scripted(turns, ALLOW))
