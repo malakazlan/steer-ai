@@ -31,23 +31,31 @@ CommitToken = Literal[
     "commit_undeclared",
     "not_in_step",
     "no_strict_shape",
+    "send_not_typed",
     "composer_differs",
     "composer_unreadable",
 ]
-"""The refusals before any ask. `composer_differs` and `composer_unreadable` are a failed
-read-back of the content's pending-text record, world facts, never a model strike."""
+"""The refusals before any ask ([V2.90] (1)). `no_strict_shape` is a step limit (no strike): a
+declared shape beyond step 4. `send_not_typed` is a model fault: the content's pending-text
+record is missing or holds another span or generated text. `composer_differs` and
+`composer_unreadable` are a failed read-back of that record, world facts; nothing is sent."""
 RefusalToken = Literal[
     "commit_conflict",
     "commit_undeclared",
     "not_in_step",
     "no_strict_shape",
+    "send_not_typed",
     "composer_differs",
     "composer_unreadable",
     "done_already",
     "screen_changed_during_ask",
     "not_foreground",
 ]
-EndReason = Literal["user_declined", "unanswered", "killed", "wal_unavailable"]
+EndReason = Literal[
+    "user_declined", "unanswered", "killed", "wal_unavailable", "takeover", "other_steer_input"
+]
+InputClass = Literal["takeover", "other_steer_input"]
+"""[V2.58] (2): who made an input, as the monitor classes it (`hook_classifier.TAKEOVER_TOKENS`)."""
 PostCheck = Literal["none", "query_outcome", "strict_claim"]
 TextFrom = Literal["request", "agent"]
 
@@ -79,12 +87,12 @@ def commit_refusal(  # noqa: PLR0913 - the closed facts of §3.3, keyword-only
     with declared commit `none` (`commit_undeclared`) by a deny word on any verb, or by a
     control, consent or billing word on a click or a key press ([V2.17] item 1; on a state verb
     those classes ask and the live read proves the state); a delete or pay (`not_in_step`); a
-    send or submit (`no_strict_shape`) unless the subgoal has exactly one param, the content
-    ([V2.88] L2), and `pending`, the content field's pending-text record, holds that param's
-    span ([V2.88] L3: the label on the `type` is ignored; a missing record, another span or
-    generated text is `no_strict_shape`) with an equal digest: a read-back that differs is
-    `composer_differs`, an unread one `composer_unreadable` (both world facts; the mapping is
-    pending the lead's confirmation). `prior` are the declared commits of the subgoal's
+    send or submit whose subgoal does not have exactly one param, the content ([V2.88] L2;
+    `no_strict_shape`, a step limit, [V2.90] (1)); else one whose `pending`, the content
+    field's pending-text record, is missing or holds another span or generated text
+    (`send_not_typed`, a model fault; [V2.88] L3: the label on the `type` is ignored); else a
+    digest read back that differs (`composer_differs`) or was unread (`composer_unreadable`),
+    both world facts ([V2.90] (1)). `prior` are the declared commits of the subgoal's
     dispatched actions; `params` are the subgoal's params."""
     raise NotImplementedError("step 4: commit checks")
 
@@ -212,14 +220,16 @@ class GateSteps:
     difference, in tier or ask reasons too, is `screen_changed_during_ask`."""
     write_ahead: Callable[[GateDecision], bool]
     """Step 10: False when the record could not be written."""
-    quiet: Callable[[], bool]
-    """[V2.88] L5, just before the dispatch: True when no input reached anything but Steer's
-    own ask window since the answer; any other input means no dispatch: the pass calls `void`
-    and refuses `screen_changed_during_ask`, a world refusal."""
+    input_since_answer: Callable[[], InputClass | None]
+    """[V2.88] L5, [V2.90] (3): the monitor's class of any input since the answer that is not
+    the ask bracket's own (`input_after_answer`); None when there is none. Read just before the
+    dispatch, and before a failed recheck is reported: a takeover is never relabelled, so any
+    input ends the task with its class (stopped), never `screen_changed_during_ask`."""
     void: Callable[[GateDecision], None]
-    """Closes the record written for `decision` as not delivered: the dispatch was never
-    called, which is provable, so the key is released (`record.RELEASED`). Never leaves an
-    open record behind a dispatch that did not happen."""
+    """[V2.90] (3): closes the record written for `decision` as not delivered. Called only on
+    the branch where the dispatch call was never made (input after the write-ahead); never
+    inferred at the next start, where an open record refuses. The yes is consumed by it: a new
+    attempt needs a new ask."""
     dispatch: Callable[[GateDecision], ActionResult]
     """Step 11, returning v1's result. [V2.25] (c): a `not_delivered` with v1's retry codes and
     no step tried gets v1's one local retry under the SAME decision: one ask, one write-ahead,
@@ -236,6 +246,25 @@ class GateEnd:
     status: Literal["blocked", "paused", "stopped"] | None
 
 
+@dataclass(frozen=True)
+class InputEvent:
+    """One low-level input event as the monitor saw it ([V2.88] L5), in arrival order."""
+
+    key: int | None
+    """The virtual-key code; None for a pointer event."""
+    down: bool
+    in_bracket: bool
+    """Seen while the ask bracket was open: input to Steer's own ask window."""
+
+
+@stub(4)
+def input_after_answer(events: Sequence[InputEvent]) -> bool:
+    """[V2.88] L5, [V2.90] (3): whether `events` hold input after the answer: any event outside
+    the bracket, except a key-up whose key-down was inside it (the answer key's own release can
+    arrive after the bracket closes; it belongs to the bracket and is never input)."""
+    raise NotImplementedError("step 4: the ask bracket")
+
+
 @stub(4)
 def gate_pass(
     request: GateRequest, steps: GateSteps, consents: Consents, *, task_id: str, goal: str
@@ -244,8 +273,10 @@ def gate_pass(
     `previous_attempt`), goal check, ask, answer (`no` ends blocked `user_declined`; `killed`
     ends stopped `killed`; anything else but a yes ends paused `unanswered`), the raise
     ([V2.88] L4, only after a yes and only when the window was in front before the ask), the
-    after-yes checks, write-ahead (a failed write ends blocked `wal_unavailable`), the input
-    check (input since the answer voids the record and dispatches nothing), one dispatch.
+    after-yes checks (a failed one is `screen_changed_during_ask` only with no input since the
+    answer), write-ahead (a failed write ends blocked `wal_unavailable`), the input check (any
+    input since the answer ends the task stopped with its class, voids the record and
+    dispatches nothing), one dispatch.
     [V2.88] L2: a commit ask shows the full request (`goal`) and the closed reason
     `recipient_unchecked` (Steer did not check the recipient)."""
     raise NotImplementedError("step 4: the gate pass")

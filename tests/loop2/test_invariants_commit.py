@@ -121,11 +121,11 @@ def test_delete_and_pay_are_not_in_step(commit: Commit) -> None:
     assert refusal(subgoal=commit, action=commit, raised_by="deny") == "not_in_step"
 
 
-@pending("[V2.15] amendment 2, [V2.88] L3: no_strict_shape is a recorded limit", step=4)
+@pending("[V2.88] L3, [V2.90] (1): a send with no record of its content", step=4)
 @pytest.mark.parametrize("commit", ["send", "submit"])
-def test_a_send_without_a_pending_text_record_is_no_strict_shape(commit: Commit) -> None:
+def test_a_send_without_a_pending_text_record_is_send_not_typed(commit: Commit) -> None:
     assert refusal(subgoal=commit, action=commit, raised_by="deny", pending=None) == (
-        "no_strict_shape"
+        "send_not_typed"
     )
 
 

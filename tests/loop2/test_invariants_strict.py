@@ -160,7 +160,7 @@ def test_a_commit_with_one_param_and_its_record_is_not_refused(commit: Commit) -
     assert refusal(commit=commit, pending=SENT) is None
 
 
-@pending("[V2.88] L2: a commit subgoal has exactly one param, refused before the ask", step=4)
+@pending("[V2.88] L2, [V2.90] (1): one param only; more is a step limit, before the ask", step=4)
 @pytest.mark.parametrize("commit", ["send", "submit"])
 @pytest.mark.parametrize(
     "params", [{}, {"text": CONTENT, "to": OTHER}], ids=["no_param", "two_params"]
@@ -171,19 +171,26 @@ def test_a_commit_subgoal_without_exactly_one_param_is_no_strict_shape(
     assert refusal(commit=commit, params=params, pending=SENT) == "no_strict_shape"
 
 
-@pending("[V2.88] L3: no_strict_shape binds to the field's pending-text record", step=4)
+@pending("[V2.88] L3, [V2.90] (1): a send with no record of its param is send_not_typed", step=4)
 @pytest.mark.parametrize(
     "record",
     [None, dataclasses.replace(SENT, span=OTHER), dataclasses.replace(SENT, span=None)],
     ids=["missing", "another_span", "generated_text"],
 )
-def test_a_send_whose_record_does_not_hold_the_param_is_no_strict_shape(
+def test_a_send_whose_record_does_not_hold_the_param_is_send_not_typed(
     record: Sent | None,
 ) -> None:
-    assert refusal(pending=record) == "no_strict_shape"
+    assert refusal(pending=record) == "send_not_typed"
 
 
-@pending("[V2.88] L3, [V2.74]: a failed read-back is a world fact, never a model strike", step=4)
+def test_no_strict_shape_is_a_step_limit_and_send_not_typed_a_model_fault() -> None:
+    """[V2.90] (1): `no_strict_shape` keeps one kind, a step limit with no strike, for a declared
+    shape beyond step 4; a send whose content Steer did not type is the model's fault."""
+    assert REFUSAL_KIND["no_strict_shape"] == "step"
+    assert REFUSAL_KIND["send_not_typed"] == "model"
+
+
+@pending("[V2.90] (1): a failed read-back is a world fact, never a model strike", step=4)
 @pytest.mark.parametrize(
     ("read_back", "token"),
     [(False, "composer_differs"), (None, "composer_unreadable")],
@@ -192,8 +199,8 @@ def test_a_send_whose_record_does_not_hold_the_param_is_no_strict_shape(
 def test_a_failed_read_back_of_the_record_is_a_world_refusal(
     read_back: bool | None, token: str
 ) -> None:
-    """Pending the lead's confirmation: the record holds the param's span, but its digest
-    read back differs or was never read."""
+    """The record holds the param's span, but its digest read back differs or was never read;
+    nothing is sent in either case."""
     assert refusal(pending=dataclasses.replace(SENT, read_back=read_back)) == token
     assert REFUSAL_KIND[token] == "world"
 
@@ -202,6 +209,18 @@ def test_a_failed_read_back_of_the_record_is_a_world_refusal(
 def test_content_already_in_the_records_before_is_not_new() -> None:
     old = dataclasses.replace(RECORD, before=snapshot([*PAGE, BUBBLE]))
     assert "not_new" in check([*PAGE, BUBBLE], records=(old,)).tokens
+
+
+@pending("[V2.90] (2): a strict send's evidence must be new after the dispatch", step=4)
+def test_a_live_preview_shown_before_the_dispatch_never_proves_the_send() -> None:
+    """A preview of the draft, outside the composer, already held the words on the observation
+    before the dispatch (the record's before). It appeared after the task's first observation,
+    so the standard delta would count it; the strict tier never does."""
+    preview = element(15, "Text", "ok thanks", (5, 15), 1)
+    record = dataclasses.replace(RECORD, before=snapshot([*PAGE, preview]))
+    result = check([*PAGE, preview], cited=claim(preview.id), records=(record,))
+    assert result.proof is None
+    assert "not_new" in result.tokens
 
 
 @pending("§3.3 strict rule 4 duplicate_effect", step=4)
