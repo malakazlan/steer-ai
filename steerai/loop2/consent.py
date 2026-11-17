@@ -2,18 +2,22 @@
 v2-step4-claims §3.3 to §3.5): which subgoals are commits, the gate pass for an R2/R3 action, the
 answer rule, and the per-action goal check.
 
-Interface stub for step 4; the tests in `tests/loop2/test_invariants_consent.py` and
-`tests/loop2/test_invariants_commit.py` come first.
+Pure: every step that touches the world or the ledger is a `GateSteps` callable, so the order is
+tested with no live port. The tests are `tests/loop2/test_invariants_consent.py`,
+`tests/loop2/test_invariants_commit.py` and `tests/loop2/test_consent_pass.py`.
 """
 
 from __future__ import annotations
 
+import json
+import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Final, Literal
 
-from steerai.action.dispositions import ActionResult
-from steerai.goal_match import Verdict
+from steerai.action.dispositions import ActionResult, Delivery
+from steerai.errors import ErrorCode, SteerError
+from steerai.goal_match import Verdict, build_prompt
 from steerai.loop2._stub import stub
 from steerai.loop2.claims import Sent
 from steerai.loop2.decision import ActionDoc
@@ -60,11 +64,36 @@ PostCheck = Literal["none", "query_outcome", "strict_claim"]
 TextFrom = Literal["request", "agent"]
 
 
-@stub(4)
+CONTENT_COMMITS: Final[frozenset[Commit]] = frozenset({"send", "submit"})
+"""The commits step 4 proves, by the strict `content_present` of their one content param."""
+NOT_IN_STEP_COMMITS: Final[frozenset[Commit]] = frozenset({"delete", "pay"})
+"""[V2.15] Q3: not in 4a to 4d (delete returns in 4e)."""
+CLICK_OR_PRESS: Final = frozenset({"click", "press"})
+"""[V2.17] item 1: the verbs on which a control, consent or billing raise is like a deny word."""
+RETRY_CODES: Final[frozenset[ErrorCode]] = frozenset(
+    {ErrorCode.ELEMENT_NOT_FOUND, ErrorCode.UNSTABLE_UI}
+)
+"""[V2.25] (c): v1's codes for nothing sent that get its one local retry under the same decision
+(v1 `orchestrator/loop.py` `_ACT_RETRY_CODES`; pinned equal by a test)."""
+GOAL_NAME_CAP: Final = 200
+GOAL_TEXT_CAP: Final = 500
+"""v1's goal-match caps on a row's name and text (`goal_match`; pinned equal by a test)."""
+UNKNOWN_ATTEMPT: Final = "unknown"
+"""§8.4: the `previous_attempt` an ask shows after an unknown or uncertain outcome (`confirm`)."""
+
+
+def _kinds(*commits: Commit) -> set[Commit]:
+    return {c for c in commits if c != "none"}
+
+
 def effective_commit(declared: Commit, dispatched: Sequence[Commit]) -> Commit:
     """A subgoal's commit: its declared one, raised by the declared commit of every action
-    dispatched for it (§3.3)."""
-    raise NotImplementedError("step 4: the effective commit")
+    dispatched for it (§3.3). Two kinds never both dispatch (`commit_conflict` refuses the
+    later action), so two here are an internal fault."""
+    kinds = _kinds(declared, *dispatched)
+    if len(kinds) > 1:
+        raise ValueError("commit_conflict")
+    return kinds.pop() if kinds else "none"
 
 
 WordClass = Literal["deny", "control", "consent", "billing"]
@@ -72,7 +101,6 @@ WordClass = Literal["deny", "control", "consent", "billing"]
 `BILLING_PATTERNS`."""
 
 
-@stub(4)
 def commit_refusal(  # noqa: PLR0913 - the closed facts of §3.3, keyword-only
     *,
     subgoal_commit: Commit,
@@ -93,55 +121,102 @@ def commit_refusal(  # noqa: PLR0913 - the closed facts of §3.3, keyword-only
     (`send_not_typed`, a model fault; [V2.88] L3: the label on the `type` is ignored); else a
     digest read back that differs (`composer_differs`) or was unread (`composer_unreadable`),
     both world facts ([V2.90] (1)). `prior` are the declared commits of the subgoal's
-    dispatched actions; `params` are the subgoal's params."""
-    raise NotImplementedError("step 4: commit checks")
+    dispatched actions; `params` are the subgoal's params.
+
+    The content checks bind to the action that declares the send or submit: the other actions
+    of a commit subgoal (typing the content first) have no record to check yet."""
+    kinds = _kinds(subgoal_commit, *prior, action_commit)
+    if len(kinds) > 1:
+        return "commit_conflict"
+    if action_commit == "none" and (raised_by == "deny" or (raised_by and verb in CLICK_OR_PRESS)):
+        return "commit_undeclared"
+    if kinds & NOT_IN_STEP_COMMITS:
+        return "not_in_step"
+    if action_commit not in CONTENT_COMMITS:
+        return None
+    if len(params) != 1:
+        return "no_strict_shape"
+    (content,) = params.values()
+    if pending is None or pending.span is None or pending.span != content:
+        return "send_not_typed"
+    if pending.read_back is None:
+        return "composer_unreadable"
+    if pending.read_back is False:
+        return "composer_differs"
+    return None
 
 
-@stub(4)
 def refusal_kind(token: RefusalToken, *, commit_on_row: bool) -> RefusalKind:
     """[V2.74]: a gate refusal's kind, as the token declares it in `runner.REFUSAL_KIND` (no
     default): `not_foreground`, `screen_changed_during_ask`, `composer_unreadable` and
     `composer_differs` are `world`, `done_already` a `model` fault. [V2.88] L8: except
     `commit_undeclared`, a `model` fault only when the commit fact was on the listing row the
     model acted on (`commit_on_row`), else a `step` limit, with no strike."""
-    raise NotImplementedError("step 4: refusal kinds")
+    # the runner imports `history`, which imports this module: the table is read at call time
+    from steerai.loop2.runner import REFUSAL_KIND  # noqa: PLC0415 - import cycle, see above
+
+    if token == "commit_undeclared" and not commit_on_row:
+        return "step"
+    return REFUSAL_KIND[token]
 
 
-@stub(4)
 def tier_for(commit: Commit) -> Literal["standard", "strict"]:
     """[V2.15] Q2: strict for a commit subgoal, standard otherwise."""
-    raise NotImplementedError("step 4: the proof tier")
+    return "standard" if commit == "none" else "strict"
 
 
-@stub(4)
 def needs_write_ahead(risk: Risk) -> bool:
     """§8.4: every R2/R3 dispatch has a record first, a caution-R2 Enter included."""
-    raise NotImplementedError("step 4: the write-ahead rule")
+    return risk in ("R2", "R3")
 
 
-@stub(4)
-def post_check(*, risk: Risk, subgoal_commit: Commit, classified: bool) -> PostCheck:
+def post_check(
+    *,
+    risk: Risk,  # noqa: ARG001 - [V2.15] Q2: the post-check is the same at any tier
+    subgoal_commit: Commit,
+    classified: bool,
+) -> PostCheck:
     """What judges a dispatched action's effect. `classified`: an Enter or button click the
     query classifier judged (R1 query or caution R2). [V2.15] Q2: a classified action under a
     commit-`none` subgoal takes the §7.2 three-outcome check at any tier; an action under a
     commit subgoal waits for a strict claim; anything else has no post-check."""
-    raise NotImplementedError("step 4: the post-check")
+    if subgoal_commit != "none":
+        return "strict_claim"
+    return "query_outcome" if classified else "none"
 
 
+@dataclass
 class Consents:
     """[V2.15] Q6: the yes answers of one task. A yes is exactly `yes` or `yes:<decision id>` for
     the open ask, the same for R2 and R3; it is bound to one action key and used once."""
 
-    @stub(4)
+    _answered: set[str] = field(default_factory=set)
+    """Every decision answered, yes or not: one ask, one answer."""
+    _granted: dict[str, str] = field(default_factory=dict)
+    """Each yes not yet used, by decision id, to its action key."""
+
     def grant(self, *, decision_id: str, action_key: str, answer: str) -> bool:
         """Record `answer` to the open ask `decision_id`; True only for a yes."""
-        raise NotImplementedError("step 4: the answer rule")
+        if decision_id in self._answered:
+            return False
+        self._answered.add(decision_id)
+        if answer not in ("yes", f"yes:{decision_id}"):
+            return False
+        self._granted[decision_id] = action_key
+        return True
 
-    @stub(4)
     def spend(self, *, decision_id: str, action_key: str) -> bool:
         """True once for a granted decision and its own key; False after that, for another
         key, or for a decision never granted."""
-        raise NotImplementedError("step 4: single use")
+        if self._granted.get(decision_id) != action_key:
+            return False
+        del self._granted[decision_id]
+        return True
+
+    def withdraw(self, decision_id: str) -> None:
+        """[V2.88] L4, [V2.90] (3): a yes no dispatch may use (a failed recheck or raise, input
+        since the answer, a failed write) is used up all the same: a new attempt asks again."""
+        self._granted.pop(decision_id, None)
 
 
 @dataclass(frozen=True)

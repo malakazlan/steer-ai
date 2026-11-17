@@ -157,13 +157,11 @@ def refusal(
     )
 
 
-@pending("[V2.88] L2, L3: one content param, its record holding it, goes on to the ask", step=4)
 @pytest.mark.parametrize("commit", ["send", "submit"])
 def test_a_commit_with_one_param_and_its_record_is_not_refused(commit: Commit) -> None:
     assert refusal(commit=commit, pending=SENT) is None
 
 
-@pending("[V2.88] L2, [V2.90] (1): one param only; more is a step limit, before the ask", step=4)
 @pytest.mark.parametrize("commit", ["send", "submit"])
 @pytest.mark.parametrize(
     "params", [{}, {"text": CONTENT, "to": OTHER}], ids=["no_param", "two_params"]
@@ -174,7 +172,6 @@ def test_a_commit_subgoal_without_exactly_one_param_is_no_strict_shape(
     assert refusal(commit=commit, params=params, pending=SENT) == "no_strict_shape"
 
 
-@pending("[V2.88] L3, [V2.90] (1): a send with no record of its param is send_not_typed", step=4)
 @pytest.mark.parametrize(
     "record",
     [None, dataclasses.replace(SENT, span=OTHER), dataclasses.replace(SENT, span=None)],
@@ -193,7 +190,6 @@ def test_no_strict_shape_is_a_step_limit_and_send_not_typed_a_model_fault() -> N
     assert REFUSAL_KIND["send_not_typed"] == "model"
 
 
-@pending("[V2.90] (1): a failed read-back is a world fact, never a model strike", step=4)
 @pytest.mark.parametrize(
     ("read_back", "token"),
     [(False, "composer_differs"), (None, "composer_unreadable")],
