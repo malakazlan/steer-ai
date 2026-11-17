@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import itertools
 import json
 import re
 from collections.abc import Callable, Sequence
@@ -38,8 +39,6 @@ from steerai.loop2.chain_eval import (
     recorded_judge,
     run_chain,
     run_eval,
-    run_shape,
-    score,
     summary,
     typed_text_escaped,
 )
@@ -48,6 +47,27 @@ from steerai.loop2.controller import AUDIT_RULES, INTAKE_PROMPT_VERSION, INTAKE_
 from steerai.loop2.decide_port import Reply
 from steerai.loop2.decision import ActionDoc
 from steerai.loop2.loop import Audited, Dispatch, TokenUsage
+
+_DIGESTS = itertools.count()
+
+
+def _fresh(record: ChainRecord) -> ChainRecord:
+    """Synthetic records carry no packet; each verdict gets a digest of its own (as real calls'
+    packets differ by value), so these tests count verdicts, not the [V2.79] cap."""
+    judges = tuple(
+        j if j.packet is not None else dataclasses.replace(j, packet=f"{next(_DIGESTS):016x}")
+        for j in record.judges
+    )
+    return dataclasses.replace(record, judges=judges)
+
+
+def score(shape: Shape, records: Sequence[ChainRecord], *, arm: chain_eval.Arm = "free") -> Any:
+    return chain_eval.score(shape, [_fresh(r) for r in records], arm=arm)
+
+
+def run_shape(shape: Shape, chain: Callable[[int], ChainRecord], **kw: Any) -> list[ChainRecord]:
+    return chain_eval.run_shape(shape, lambda i: _fresh(chain(i)), **kw)
+
 
 SHAPES = {s.id: s.fixed_at(0) for s in load_shapes()}
 TWO = SHAPES["heldout_two_field"].value
@@ -1522,7 +1542,10 @@ def test_the_truth_key_fold_is_the_proof_word_match_token_rule() -> None:
 
 
 def _shape_score(cls: Any, **kw: Any) -> chain_eval.ShapeScore:  # Any: ShapeScore fields
-    return chain_eval.ShapeScore("g22", cls, False, "free", **kw)
+    out = chain_eval.ShapeScore("g22", cls, False, "free", **kw)
+    for judge in out.judges:  # the verdicts were on distinct packets (the [V2.79] bar is met)
+        out.packet_counts[judge] = {f"{d:016x}": 1 for d in range(chain_eval.MIN_PACKETS)}
+    return out
 
 
 def test_the_false_veto_bound_is_one_in_twenty_scored_per_judge_over_all_of_them() -> None:

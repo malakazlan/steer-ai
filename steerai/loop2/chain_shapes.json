@@ -36,7 +36,13 @@
         "Shafi Goldwasser",
         "John Von Neumann",
         "Mary Kenneth Keller",
-        "Leslie Lamport"
+        "Leslie Lamport",
+        "Whitfield Diffie",
+        "Judea Pearl",
+        "Fran Allen Smith",
+        "Tony Hoare",
+        "Lynn Ann Conway",
+        "Bjarne Stroustrup"
       ],
       "page": {
         "title": "Profile",
@@ -88,7 +94,13 @@
         "Czech Republic",
         "Bolivia",
         "Senegal",
-        "Fiji"
+        "Fiji",
+        "Rwanda",
+        "Belgium",
+        "Mongolia",
+        "Cape Verde",
+        "Sierra Leone",
+        "El Salvador"
       ],
       "page": {
         "title": "Profile",
@@ -147,7 +159,13 @@
         "Live captions",
         "Screen reader",
         "Sticky keys",
-        "Data saver"
+        "Data saver",
+        "Closed captions",
+        "Mono audio",
+        "Haptic feedback",
+        "Always on display",
+        "Pointer trails",
+        "Ink workspace"
       ],
       "page": {
         "title": "Settings",
@@ -219,7 +237,13 @@
         "electric vehicles",
         "carbon capture",
         "local news",
-        "data centers"
+        "data centers",
+        "tree canopy mapping",
+        "quiet cities",
+        "fusion reactors",
+        "soil carbon",
+        "ferry timetables",
+        "deep sea mining"
       ],
       "page": {
         "title": "Articles",
@@ -330,7 +354,13 @@
         "Desktop widgets",
         "Lock screen tips",
         "Taskbar badges",
-        "Startup sound"
+        "Startup sound",
+        "Smart sorting",
+        "Quick launch",
+        "Tab groups",
+        "Reading list",
+        "Dictation",
+        "Zoom gestures"
       ],
       "page": {
         "title": "Settings",
@@ -447,7 +477,13 @@
         "mushroom foraging",
         "chess openings",
         "weather balloons",
-        "sound design"
+        "sound design",
+        "rooftop gardens",
+        "ice core samples",
+        "audio books",
+        "heat pumps",
+        "trade winds",
+        "lace making"
       ],
       "page": {
         "title": "Articles",
@@ -509,7 +545,13 @@
         "Barbara McClintock",
         "Hypatia",
         "Louis Pasteur",
-        "Gregor Johann Mendel"
+        "Gregor Johann Mendel",
+        "Jane Goodall",
+        "Alexander Fleming",
+        "Tu Youyou",
+        "Max Karl Planck",
+        "Mae Carol Jemison",
+        "Galileo Galilei"
       ],
       "page": {
         "title": "Profile",
@@ -587,7 +629,13 @@
         "Namibia",
         "Romania",
         "Slovenia",
-        "Tunisia"
+        "Tunisia",
+        "Switzerland",
+        "Lithuania",
+        "Madagascar",
+        "Bhutan",
+        "Trinidad and Tobago",
+        "Burkina Faso"
       ],
       "page": {
         "title": "Order",
@@ -768,6 +816,30 @@
         {
           "v": "Greta Holm",
           "email": "greta@example.com"
+        },
+        {
+          "v": "Rafael Ortega",
+          "email": "rafael@example.com"
+        },
+        {
+          "v": "Mei Ling Zhou",
+          "email": "mei@example.com"
+        },
+        {
+          "v": "Jonas Eriksen",
+          "email": "jonas@example.com"
+        },
+        {
+          "v": "Fatima Zahra El Idrissi",
+          "email": "fatima@example.com"
+        },
+        {
+          "v": "Oskar Berg",
+          "email": "oskar@example.com"
+        },
+        {
+          "v": "Chiara Moretti",
+          "email": "chiara@example.com"
         }
       ],
       "page": {
@@ -811,15 +883,15 @@
       "pool": [
         "Remember this device",
         "Keep me signed in",
-        "Send me a copy",
-        "Accept the terms",
-        "Subscribe to the newsletter",
+        "Keep this tab open",
+        "Enable shortcuts",
+        "Show thumbnails",
         "Show password",
         "Use my location",
         "Enable autofill",
-        "Share usage data",
+        "Show tooltips",
         "Receive updates by text",
-        "Allow cookies",
+        "Show clock",
         "Trust this browser",
         "Save my card",
         "Hide my profile",
@@ -830,9 +902,15 @@
         "Gift wrap my order",
         "Add insurance",
         "Require a signature",
-        "Allow substitutions",
+        "Use compact rows",
         "Mark as favourite",
-        "Archive after reading"
+        "Archive after reading",
+        "Stay on this page",
+        "Show line numbers",
+        "Lock my profile",
+        "Mute alerts",
+        "Hide read items",
+        "Pin this tab"
       ],
       "page": {
         "title": "Sign in",
@@ -882,7 +960,13 @@
         "Sicherungsdienst",
         "Benachrichtigungston",
         "Synchronisierungsdienst",
-        "Standortdienst"
+        "Standortdienst",
+        "Standbymodus",
+        "Zenmodus",
+        "Lautlosmodus",
+        "Sparbildschirm",
+        "Netzwerkdienst",
+        "Suchindex"
       ],
       "page": {
         "title": "Einstellungen",
@@ -955,7 +1039,13 @@
         "river deltas",
         "night markets",
         "paper recycling",
-        "lichen"
+        "lichen",
+        "moss gardens",
+        "clock repair",
+        "sailing knots",
+        "bat echolocation",
+        "cheese aging",
+        "canal locks"
       ],
       "page": {
         "title": "Articles",
