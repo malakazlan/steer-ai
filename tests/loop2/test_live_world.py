@@ -110,6 +110,10 @@ class Monitor:
     def probe_seen(self) -> bool:
         return self.seen
 
+    def lost_hooks(self) -> tuple[str, ...]:
+        """The hooks that missed the probe past its deadline: the keyboard when it was not seen."""
+        return () if self.seen else ("keyboard",)
+
     def latency(self) -> tuple[int, int | None, int | None]:
         return self.timed
 
@@ -1469,7 +1473,9 @@ def test_the_session_is_taken_only_where_the_monitor_starts() -> None:
     assert callers == ["live_world.py:_take_session"]
     assert starts == {"start_monitor", "start_helper_monitor"}
     source = (package / "loop2" / "live_world.py").read_text(encoding="utf-8")
-    init = source[source.index("    def __init__(self, config: LiveConfig") :]
+    init = source[
+        source.index("    def __init__(" + chr(10) + "        self, config: LiveConfig") :
+    ]
     init = init[: init.index(chr(10) + "    def ", 1)]
     assert source.count("self._take_session(") == init.count("self._take_session(") == 1
 

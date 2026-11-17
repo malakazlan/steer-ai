@@ -446,6 +446,11 @@ class HookMonitor:
         self._stop_timed_out = thread.is_alive()
         self._thread = None
 
+    @property
+    def stop_timed_out(self) -> bool:
+        """The last `close` returned with the hook thread still alive ([V2.80])."""
+        return self._stop_timed_out
+
     def thread_is_daemon(self) -> bool:
         return self._thread is not None and self._thread.daemon
 
@@ -478,15 +483,16 @@ class HookMonitor:
     def probe_now(self) -> None:
         seq = self._core.probe_sent(now=self._monotonic())
         try:
-            if self._per_hook:  # v1 sends the bare tag and proves nothing by number
-                # the monitor's own tag, never the process tag read at send time ([V2.64])
+            # [V2.80]: the monitor's own tag, never the process's current one (a probe after
+            # `restore_extra_info`); v2 also carries the probe's sequence number (#493)
+            if self._per_hook:
                 nudge_in_place(tag=self._extra_info, seq=seq)
                 if self._probe_vk is not None:
                     key_up_probe(  # LW-01: the keyboard hook's own proof
                         self._probe_vk, tag=self._extra_info, seq=seq
                     )
             else:
-                nudge_in_place()
+                nudge_in_place(tag=self._extra_info)  # v1 sends the bare tag, no number
         except OSError:
             self._core.on_probe_failed()  # fails closed: the next boundary stops (D4)
 
@@ -683,6 +689,15 @@ class HookMonitor:
         return hookproc(proc)
 
     def _install_and_pump(self, user32: Any, hookproc: Any, msg: Any, hooks: list[int]) -> None:
+        flags = sum(MOD_FLAGS[m] for m in self._mods) | _MOD_NOREPEAT
+        if not user32.RegisterHotKey(None, HOTKEY_ID, flags, self._vk):  # [V2.80]: the kill key
+            error = ctypes.get_last_error()  # first, so a second Steer fails here, hooks unset
+            self._error = (
+                f"kill_key_unavailable: RegisterHotKey failed (error {error}); "
+                "another program holds the chord, pass --kill-key"
+            )
+            return
+        self._hotkey_registered = True
         for mouse, kind in ((True, WH_MOUSE_LL), (False, WH_KEYBOARD_LL)):
             proc = self._make_proc(user32, hookproc, mouse=mouse)
             self._procs.append(proc)
@@ -692,15 +707,6 @@ class HookMonitor:
                 self._error = f"monitor_unavailable: SetWindowsHookEx failed (error {error})"
                 return
             hooks.append(int(hook))
-        flags = sum(MOD_FLAGS[m] for m in self._mods) | _MOD_NOREPEAT
-        if not user32.RegisterHotKey(None, HOTKEY_ID, flags, self._vk):
-            error = ctypes.get_last_error()
-            self._error = (
-                f"kill_key_unavailable: RegisterHotKey failed (error {error}); "
-                "another program holds the chord, pass --kill-key"
-            )
-            return
-        self._hotkey_registered = True
         self._ready.set()
         self._hotkey_registered = self._pump(user32, msg, hooks, hotkey=True)
 

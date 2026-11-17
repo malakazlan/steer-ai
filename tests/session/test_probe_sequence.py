@@ -159,3 +159,53 @@ def test_two_threads_never_get_the_same_number(monkeypatch: pytest.MonkeyPatch) 
     b.join(2)
     assert len(got) == 2
     assert got[0] != got[1]
+
+
+# ---- the ledger proves by exactly its number --------------------------------------------------
+
+_INJ_UP = LLKHF_INJECTED | LLKHF_UP
+
+
+def _numbered(c: Classifier, seq: int, *, now: float) -> None:
+    c.on_mouse(
+        message=WM_MOUSEMOVE, flags=LLMHF_INJECTED, extra=probe_tag(TAG, seq), pt=(5, 5), now=now
+    )
+    c.on_keyboard(flags=_INJ_UP, extra=probe_tag(TAG, seq), now=now + 0.01, vk=PROBE)
+
+
+def test_a_higher_number_than_the_probe_sent_does_not_prove_a_hook() -> None:
+    """The ledger's equality must never become `>=`."""
+    c = _c()
+    ledger = ProbeLedger(per_hook=True, deadline_s=1.05)
+    seq = ledger.probe_sent(now=20.0)
+    _numbered(c, seq + 1, now=20.01)
+    assert not ledger.probe_seen(counts=c)
+    assert ledger.lost_hooks(now=21.1, counts=c) == ("keyboard", "mouse")
+
+
+def test_an_own_action_event_after_the_proof_keeps_the_hook_proven() -> None:
+    c = _c()
+    ledger = ProbeLedger(per_hook=True, deadline_s=1.05)
+    seq = ledger.probe_sent(now=20.0)
+    _numbered(c, seq, now=20.01)
+    c.on_mouse(message=WM_LBUTTONDOWN, flags=0, extra=TAG, pt=(5, 5), now=20.03)
+    c.on_keyboard(flags=0, extra=TAG, now=20.04, vk=0x41)
+    assert (c.probe_seq("mouse"), c.probe_seq("keyboard")) == (seq, seq)
+    assert ledger.probe_seen(counts=c)
+    assert ledger.lost_hooks(now=21.1, counts=c) == ()
+
+
+def test_the_probe_number_boundaries() -> None:
+    assert next_probe_seq(1) == 2
+    assert next_probe_seq(PROBE_SEQ_MAX - 1) == PROBE_SEQ_MAX
+    assert next_probe_seq(PROBE_SEQ_MAX) == 1
+    for bad in (-1, 0, PROBE_SEQ_MAX + 1):
+        with pytest.raises(ValueError, match="PROBE_SEQ_MAX"):
+            probe_tag(TAG, bad)
+    c = _c()
+    c.on_keyboard(flags=_INJ_UP, extra=probe_tag(TAG, PROBE_SEQ_MAX), now=11.0, vk=PROBE)
+    c.on_mouse(
+        message=WM_MOUSEMOVE, flags=LLMHF_INJECTED, extra=probe_tag(TAG, 1), pt=(5, 5), now=11.1
+    )
+    assert (c.probe_seq("keyboard"), c.probe_seq("mouse")) == (PROBE_SEQ_MAX, 1)
+    assert c.last_user() is None

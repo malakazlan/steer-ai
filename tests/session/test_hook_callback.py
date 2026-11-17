@@ -341,7 +341,8 @@ def test_a_failed_hook_install_is_a_refusal_that_unhooks_what_was_installed(
     assert info.value.code is ErrorCode.GATE_BLOCKED
     assert info.value.message.startswith("monitor_unavailable")
     assert user32.named("UnhookWindowsHookEx") == [(FIRST_HOOK,)]
-    assert user32.named("RegisterHotKey") == []
+    assert len(user32.named("RegisterHotKey")) == 1  # the kill key goes first ([V2.80])
+    assert user32.named("UnregisterHotKey") == [(HOTKEY_ID,)]  # and is given back
     assert monitor.healthy() is False
     monitor.close()
     monitor.close()
@@ -358,7 +359,8 @@ def test_a_taken_hot_key_is_a_refusal_that_unhooks_both_hooks(
     assert info.value.code is ErrorCode.GATE_BLOCKED
     assert info.value.message.startswith("kill_key_unavailable")
     assert "--kill-key" in info.value.message
-    assert user32.named("UnhookWindowsHookEx") == [(SECOND_HOOK,), (FIRST_HOOK,)]
+    assert user32.named("SetWindowsHookExW") == [], "[V2.80]: no hook before the kill key"
+    assert user32.named("UnhookWindowsHookEx") == []
     assert user32.named("UnregisterHotKey") == [], "never registered, never unregistered"
     monitor.close()
 
@@ -490,7 +492,7 @@ def test_a_self_probe_that_cannot_be_sent_does_not_raise_and_fails_closed(
     monitor.start()
     try:
 
-        def refused() -> None:
+        def refused(**_k: object) -> None:
             raise OSError("SendInput sent 0/1: error 5")
 
         monkeypatch.setattr(monitor_module, "nudge_in_place", refused)
@@ -868,3 +870,29 @@ def test_a_v1_monitor_may_start_again(monkeypatch: pytest.MonkeyPatch) -> None:
     monitor.close()
     monitor.start()
     monitor.close()
+
+
+def test_a_second_steer_fails_on_the_kill_key_before_any_hook_or_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[V2.80]: inside a loss watch the first Steer still holds the kill key; the next one is
+    refused there, with no hook installed and nothing sent."""
+    sent: list[str] = []
+    monkeypatch.setattr(monitor_module, "nudge_in_place", lambda **_k: sent.append("nudge"))
+    monkeypatch.setattr(monitor_module, "key_up_probe", lambda _vk, **_k: sent.append("key_up"))
+    user32 = FakeUser32(register_ok=False)  # the chord is held by the first Steer
+    _patch(monkeypatch, user32)
+    second = HookMonitor(per_hook=True, probe_vk=PROBE_VK, tick=lambda: 1000)
+    with pytest.raises(SteerError) as info:
+        second.start()
+    assert info.value.message.startswith("kill_key_unavailable")
+    assert user32.named("SetWindowsHookExW") == []
+    assert sent == []
+    second.close()
+
+
+def test_stop_timed_out_is_false_after_a_clean_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    monitor = _started(monkeypatch, FakeUser32())
+    assert monitor.stop_timed_out is False
+    monitor.close()
+    assert monitor.stop_timed_out is False

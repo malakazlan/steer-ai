@@ -26,6 +26,8 @@ FAKED: frozenset[str] = frozenset(
         # #469: the same for its gallery and large run
         "loop2/test_chrome_lost.py::"
         "test_the_page_run_voids_when_chrome_goes_away_before_the_log_is_read",
+        # [V2.80]: the same 3d run, the loss record kept on a chrome_lost record
+        "loop2/test_loss_watch_harness.py::test_a_chrome_lost_record_carries_the_loss_watch",
         # v1's keyboard tests: `send_inputs` / `build_keyboard_unicode` over a fake user32
         "action/test_keyboard.py::test_send_inputs_of_an_empty_batch_never_loads_user32",
         "action/test_keyboard.py::test_send_inputs_forwards_every_record_to_one_sendinput_call",
@@ -81,6 +83,8 @@ FAKED: frozenset[str] = frozenset(
         "session/test_hook_callback.py::"
         "test_a_failed_hook_install_is_a_refusal_that_unhooks_what_was_installed",
         "session/test_hook_callback.py::test_a_taken_hot_key_is_a_refusal_that_unhooks_both_hooks",
+        "session/test_hook_callback.py::"
+        "test_a_second_steer_fails_on_the_kill_key_before_any_hook_or_input",
         "session/test_hook_callback.py::"
         "test_an_exception_in_the_hook_thread_before_ready_is_a_start_refusal",
         "session/test_hook_callback.py::"

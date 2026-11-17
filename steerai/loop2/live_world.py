@@ -35,7 +35,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
-from typing import Any, Final, Literal, Protocol
+from typing import Any, Final, Literal, Protocol, cast
 
 from steerai.action.execution import UiaBindings, WindowState, code_for
 from steerai.action.executor import Executor
@@ -389,9 +389,13 @@ class UiaElements:
 class LiveWorld:
     """One task's live world: build it (fail closed), take `ports(task)` once, `close()`."""
 
-    def __init__(self, config: LiveConfig, platform: Platform) -> None:
+    def __init__(
+        self, config: LiveConfig, platform: Platform, *, watch_losses: bool = False
+    ) -> None:
         self._config = config
         self._platform = platform
+        self._watch_losses = watch_losses
+        """[V2.80]: only the CLI sets it; every other world tears its monitor down at `close`."""
         self.clock = config.clock
         self._helper_monitor: HelperWorldMonitor | None = None
         if not platform.dpi_aware():
@@ -471,6 +475,13 @@ class LiveWorld:
         self._lost = False
         """[V2.57] LW-01: monitor_lost is final for the task: never re-installed and resumed."""
         self.monitor_lost = 0
+        self._loss_at: float | None = None
+        """[V2.80]: the world clock's instant of the first loss, stamped in `_lose`."""
+        self._loss_cause: NoVerdict | None = None
+        """[V2.80]: None for a watchable loss (a deadline loss after a real probe); else why not."""
+        self.loss_watch: LossWatch | None = None
+        self.loss_report: LossReport | None = None
+        """[V2.80]: the verdict record of a loss that is not watched (`no_verdict`)."""
         self.front_nudged: NudgeKind | None = None
         self.cover_seen: tuple[CoverToken, dict[str, int] | None] | None = None
         """[V2.67] C: the last cover read (token, the windows above), for the report."""
@@ -754,10 +765,44 @@ class LiveWorld:
         return "killed" if killed else None
 
     def _lose(self) -> None:
-        """LW-01: latch monitor_lost for the task, counted once."""
+        """LW-01: latch monitor_lost for the task, counted once. [V2.80]: the first loss stamps
+        its instant and, in a world that watches losses, whether it is watchable."""
         if not self._lost:
             self._lost = True
             self.monitor_lost += 1
+            try:
+                self._loss_at = self._config.clock()
+            except Exception:  # noqa: BLE001 - #385 HH4-01: no kill-path read ever raises
+                self._loss_at = None
+                self._write(
+                    {
+                        "event": "loss_watch",
+                        "code": ErrorCode.PERCEPTION_DEGRADED.value,
+                        "token": "loss_clock_unread",
+                    }
+                )
+            if self._watch_losses:
+                self._loss_cause = (
+                    "read_failed" if self._loss_at is None else self._unwatchable_cause()
+                )
+
+    def _unwatchable_cause(self) -> NoVerdict | None:
+        """None for a deadline loss after a real probe (some hook is named lost, so a probe was
+        sent and its deadline passed) in hook mode; else the closed reason it is not watched."""
+        if self._helper_monitor is not None:
+            return "helper_mode"
+        try:
+            lost = cast(HookWorldMonitor, self._monitor).lost_hooks()
+        except Exception:  # noqa: BLE001 - an unread fact is no verdict; the loss stands
+            self._write(
+                {
+                    "event": "loss_watch",
+                    "code": ErrorCode.PERCEPTION_DEGRADED.value,
+                    "token": "lost_hooks_unread",
+                }
+            )
+            return "read_failed"
+        return None if lost else "not_deadline"
 
     def _prove_hooks(self) -> None:
         """[V2.57] LW-01: just before each send, a fresh probe both hooks must see within the
@@ -1045,6 +1090,30 @@ class LiveWorld:
         """LW-06: any exception in the task still stops the hooks and the hot key."""
         self.close()
 
+    def _hand_off(self) -> bool:
+        """[V2.80]: True when the open monitor now belongs to a `LossWatch` (only a world built
+        with `watch_losses`, after a watchable loss). A loss that is not watched leaves its
+        `no_verdict` in `loss_report`; any failure to hand off tears down."""
+        if not self._watch_losses or not self._lost:
+            return False
+        if self._loss_cause is not None or self._loss_at is None:
+            self.loss_report = LossReport(None, None, self._loss_cause or "read_failed")
+            return False
+        try:
+            self.loss_watch = LossWatch(
+                self._monitor,
+                loss_at=self._loss_at,
+                probe_deadline_s=self._probe_deadline_s,
+                clock=self._config.clock,
+                pause=self._config.pause,
+                trace=self._write,
+            ).start()
+        except Exception:  # noqa: BLE001 - no thread, no watch: tear down, no verdict
+            self.loss_watch = None
+            self.loss_report = LossReport(None, None, "read_failed")
+            return False
+        return True
+
     def close(self) -> None:
         """Task end, on the loop thread only (rev 4.0c): the debug records are protected and
         written, every attribute holding a COM object is dropped (so they are released here, on
@@ -1063,7 +1132,8 @@ class LiveWorld:
                 if hasattr(self, name):
                     delattr(self, name)
             try:
-                self._monitor.close()
+                if not self._hand_off():  # [V2.80]: teardown is the default
+                    self._monitor.close()
             finally:
                 try:
                     self._platform.restore_extra_info()  # #361 B3: v1's tag for the process
@@ -1074,6 +1144,149 @@ class LiveWorld:
 _COM_HOLDERS = ("world", "semantic", "physical", "desk", "_observe", "_facts", "_client", "_debug")
 """Rev 4.0c: the attributes that hold COM objects (directly, or through an executor, the guard
 or the world ports); `close` drops them on the loop thread."""
+
+
+LOSS_WATCH_S = 3.0
+"""[V2.64] Two, [V2.80]: how long after the loss instant the monitor may stay open to watch it."""
+LOSS_WATCH_JOIN_S = LOSS_WATCH_S + 2.0
+"""How long `run` waits for the watch thread: the window plus the monitor's bounded close."""
+LossVerdict = Literal["slow", "gone"]
+"""[V2.64] Two: a watch probe seen within its deadline is a slow hook; not seen, a gone one."""
+NoVerdict = Literal[
+    "not_deadline", "no_probe", "helper_mode", "killed", "late_handoff", "read_failed", "overrun"
+]
+"""[V2.80]: why a loss has no verdict (closed): the loss was not a deadline loss, the watch probe
+could not complete inside the window, a helper monitor, a kill, a handoff past the window, a fact
+that could not be read, or a watch that outran its iterations. Never read as slow or gone."""
+
+
+@dataclass(frozen=True)
+class LossReport:
+    """[V2.80]: the loss record: a verdict (with ms from the watch probe), or why there is none."""
+
+    verdict: LossVerdict | None
+    after_ms: int | None
+    no_verdict: NoVerdict | None
+
+
+class HookWorldMonitor(Monitor, Protocol):
+    """The hook monitor (`session.monitor.HookMonitor`): a `Monitor`, plus which hooks missed the
+    last probe past its deadline."""
+
+    def lost_hooks(self) -> tuple[str, ...]: ...
+
+
+class LossWatch:
+    """[V2.80]: a monitor kept open past the task after a deadline loss, owned by a thread of its
+    own from the handoff. The thread sends one watch probe after the loss, waits its deadline and
+    closes the monitor by `loss_at + LOSS_WATCH_S` whatever any caller does; a handoff after that
+    instant closes at once with no verdict. `run` only joins and returns the report. The kill
+    key stays live and ends the watch with no verdict. Nothing else is sent: no `maintain`, no
+    other probe."""
+
+    def __init__(  # noqa: PLR0913 - the watch's parts, passed on as they are
+        self,
+        monitor: Monitor,
+        *,
+        loss_at: float,
+        probe_deadline_s: float,
+        clock: Callable[[], float],
+        pause: Callable[[float], None],
+        trace: Callable[[Mapping[str, Any]], None] | None = None,  # Any: closed tokens
+    ) -> None:
+        self._monitor = monitor
+        self._loss_at = loss_at
+        self._probe_deadline_s = probe_deadline_s
+        self._clock = clock
+        self._pause = pause
+        self._trace = trace
+        self._lock = threading.Lock()
+        self._closed = False
+        self.hooks_may_be_live = False
+        """The monitor's close returned with its hook thread still alive ([V2.80])."""
+        self._report = LossReport(None, None, "read_failed")
+        self._thread = threading.Thread(target=self._work, name="steer-loss-watch", daemon=True)
+
+    def start(self) -> LossWatch:
+        self._thread.start()
+        return self
+
+    def run(self) -> LossReport:
+        """Wait for the watch thread (bounded) and give its report. After the bound the watch has
+        outrun its window: no verdict, and the monitor is closed here."""
+        self._thread.join(timeout=LOSS_WATCH_JOIN_S)
+        if self._thread.is_alive():
+            self.close()
+            return LossReport(None, None, "overrun")
+        return self._report
+
+    def close(self) -> None:
+        """Close the monitor once, from any thread. Marked closed only after the monitor's close
+        returned: a close that raised is tried again by the next caller."""
+        with self._lock:
+            if not self._closed:
+                self._monitor.close()
+                self._closed = True
+                # `HookMonitor.close` joins its thread for 2 s: a thread still alive after it
+                # may still hold the hooks and the kill key. Recorded, never hidden.
+                self.hooks_may_be_live = bool(getattr(self._monitor, "stop_timed_out", False))
+                if self.hooks_may_be_live:
+                    self._note(ErrorCode.GATE_BLOCKED, "monitor_stop_timed_out")
+
+    def _work(self) -> None:
+        try:
+            self._report = self._watch()
+        except Exception:  # noqa: BLE001 - an unread fact is no verdict; traced, never raised
+            self._note(ErrorCode.PERCEPTION_DEGRADED, "watch_unread")
+            self._report = LossReport(None, None, "read_failed")
+        finally:
+            self._end()
+
+    def _watch(self) -> LossReport:
+        clock, monitor = self._clock, self._monitor
+        sent = clock()
+        refused: NoVerdict | None = None
+        if sent >= self._loss_at + LOSS_WATCH_S:
+            refused = "late_handoff"
+        elif monitor.kill_requested():
+            refused = "killed"
+        elif sent + self._probe_deadline_s > self._loss_at + LOSS_WATCH_S:
+            refused = "no_probe"  # its deadline would not elapse inside the window
+        if refused is not None:
+            return LossReport(None, None, refused)
+        with self._lock:  # a backstop close never has a probe sent after it
+            if self._closed:
+                return LossReport(None, None, "overrun")
+            monitor.probe_now()  # the one probe after the loss, tagged with the run's own tag
+        return self._poll(sent)
+
+    def _poll(self, sent: float) -> LossReport:
+        """Until the watch probe is seen (slow) or its deadline passes (gone); the kill ends it."""
+        due = sent + self._probe_deadline_s
+        for _ in range(math.ceil(LOSS_WATCH_S / KILL_POLL_S) + 2):
+            if self._monitor.kill_requested():
+                return LossReport(None, None, "killed")
+            now = self._clock()
+            ms = round((now - sent) * 1000)
+            if self._monitor.probe_seen():
+                return LossReport("slow", ms, None)
+            if now >= due:
+                return LossReport("gone", ms, None)
+            self._pause(min(KILL_POLL_S, due - now))
+        return LossReport(None, None, "overrun")
+
+    def _end(self) -> None:
+        for attempt in range(2):
+            try:
+                self.close()
+            except Exception:  # noqa: BLE001 - traced; the next caller of `close` is the backstop
+                self._note(ErrorCode.GATE_BLOCKED, "monitor_close_failed", attempt=attempt)
+            else:
+                return
+
+    def _note(self, code: ErrorCode, token: str, **facts: int) -> None:
+        if self._trace is not None:  # the world's `_write`: a sink that fails is counted there
+            self._trace({"event": "loss_watch", "code": code.value, "token": token, **facts})
 
 
 _LATENCY_KEYS = ("hook_events", "hook_latency_p95_ms", "hook_latency_p99_ms")

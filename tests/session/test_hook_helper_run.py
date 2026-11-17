@@ -176,7 +176,7 @@ def test_a_clean_run_is_ready_then_closed() -> None:
     assert s.get("state") == STATE_CLOSED
     assert s.get("pid") == 4242
     assert s.get("heartbeat_count") == 1
-    assert p.calls.index("install_hooks") < p.calls.index("register_hotkey")
+    assert p.calls.index("register_hotkey") < p.calls.index("install_hooks")  # [V2.80]
     assert p.calls[-1] == "release"
     assert p.chord == (0x7, 0x53)  # the kill chord from the config
     assert p.waited[0] == (100, HANDLES.parent, HANDLES.quit)  # the heartbeat period
@@ -216,6 +216,16 @@ def test_a_failure_in_each_step_is_published_as_failed_with_its_code(step: str, 
     s = _status(p)
     assert (s.get("state"), s.get("error")) == (STATE_FAILED, code)
     assert p.calls[-1] == "release"  # hooks and the hot key released on every path
+
+
+def test_a_taken_kill_key_installs_no_hook() -> None:
+    """[V2.80]: inside a loss watch the first Steer holds the chord; the second one's helper
+    fails on the kill key before any hook is installed (no SetWindowsHookEx)."""
+    p = FakePlatform(fail="register_hotkey")
+    assert run_helper(_argv(), p) == EXIT_FAILED
+    assert _status(p).get("error") == ERROR_HOTKEY
+    assert "install_hooks" not in p.calls
+    assert p.calls[-1] == "release"
 
 
 def test_a_changed_config_is_published_as_a_layout_failure_and_nothing_is_hooked() -> None:

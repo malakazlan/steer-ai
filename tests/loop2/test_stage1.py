@@ -4,6 +4,7 @@ Pure: no Chrome, no child process, no input; the live entry point is marked and 
 from __future__ import annotations
 
 import ast
+import dataclasses
 import json
 import subprocess
 from collections.abc import Mapping
@@ -186,7 +187,14 @@ def _ok(
 ) -> Classified:  # Any: knobs
     final = kw.pop("final", _final())
     return Classified(
-        task.task_id, run, verdict, kw.pop("reason", None), verdict == "monitor_lost", final
+        task.task_id,
+        run,
+        verdict,
+        kw.pop("reason", None),
+        verdict == "monitor_lost",
+        final,
+        loss_watch=kw.pop("loss_watch", None),
+        kill_after_final=kw.pop("kill_after_final", False),
     )
 
 
@@ -388,7 +396,8 @@ def test_a_crash_followed_by_a_noise_line_is_no_final_line(tmp_path: Path) -> No
     ran = run_child(
         ["steer"], cap_s=60.0, out=out, start=lambda _argv, _out: child, kill=lambda _pid: None
     )
-    got = classify(DONE, _record(ran.final))
+    assert ran.final is None  # the noise has no known status: never taken as the final line
+    got = classify(DONE, dataclasses.replace(_record(), final=ran.final))
     assert (got.verdict, got.reason) == ("fail", "no_final_line")
     assert classify(DONE, _record({"status": "finished"})).reason == "no_final_line"
 

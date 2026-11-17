@@ -110,6 +110,17 @@ NO_RETRY_VOIDS: Final = frozenset({"bot_wall"})
 """[V2.63] Q4: a bot wall voids its site for the rest of the stage, with no retry against it."""
 STATUSES: Final = frozenset({"done", "blocked", "asked", "paused", "stopped", "cannot", "error"})
 """The statuses the v2 CLI's final line can carry; anything else is not its line."""
+LossVerdict = Literal["slow", "gone"]
+"""[V2.64] Two: the `loss_watch` record's closed verdicts (a watch probe seen after the loss:
+slow; not seen inside its deadline: gone)."""
+NO_VERDICT_CAUSES: Final = (
+    "not_deadline", "no_probe", "helper_mode", "killed", "late_handoff", "read_failed", "overrun",
+)  # fmt: skip
+"""[V2.80]: why a loss has no verdict, as the CLI writes it (`live_world.NoVerdict`; a test pins
+the two equal). The harness keeps the cause: a missing verdict is never folded into "unknown"."""
+LossRead = str
+"""What the harness keeps of a `loss_watch` record: a `LossVerdict`, or `no_verdict:<cause>` with
+a cause from `NO_VERDICT_CAUSES`; None when the child wrote no record (it ended first)."""
 
 
 @dataclass(frozen=True)
@@ -273,8 +284,12 @@ class RunRecord:
     """The child's exit code; None when killed."""
     memory: Json | None = None
     """[V2.63]: the working-set sampler's summary over the child's run (`run_sampled`)."""
+    loss_watch: LossRead | None = None
+    """[V2.64] Two: the child's `loss_watch` line after a declared monitor loss; None: none."""
     kill_failure: str | None = None
     """#431: the cap's kill did not end the child (`ChildRun.kill_failure`)."""
+    kill_after_final: bool = False
+    """[V2.80]: the cap killed the child after its complete final line (`ChildRun`)."""
     lost: str | None = None
     """#459: the run's own Chrome went away under the harness (`CHROME_LOST`); None when not."""
 
@@ -288,6 +303,11 @@ class Classified:
     monitor_lost: bool
     final: Json | None
     memory: Json | None = None
+    loss_watch: LossRead | None = None
+    """[V2.64] Two: "slow" or "gone"; None on a monitor_lost run is "unknown"."""
+    kill_after_final: bool = False
+    """[V2.80]: the cap killed the child after its complete final line (its loss watch ran on):
+    the final line stands and the kill is recorded, never read as a run that did not finish."""
 
 
 def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' order
@@ -297,12 +317,13 @@ def classify(  # noqa: PLR0911, PLR0912 - one return per rule, in the rules' ord
 
     def verdict(v: Verdict, reason: str | None = None) -> Classified:
         lost = v == "monitor_lost"
-        return Classified(record.task_id, record.run, v, reason, lost, record.final, record.memory)
+        return Classified(record.task_id, record.run, v, reason, lost, record.final, record.memory,
+                          record.loss_watch, record.kill_after_final)  # fmt: skip
 
     # #366 P2: the rules in this order
     if not record.fixture_ok:
         return verdict("void", "fixture_failed_before_start")
-    if record.killed:
+    if record.killed and not (record.kill_after_final and record.kill_failure is None):
         failure = record.kill_failure
         return verdict("fail", "cap_killed" if failure is None else f"cap_killed:{failure}")
     final = record.final
@@ -925,6 +946,14 @@ def _report(
         "cost_usd_total": round(sum(costs), 6) if costs else None,
         "void_rate": round(verdicts.get("void", 0) / total, 3) if total else None,
         "monitor_lost_rate": round(verdicts.get("monitor_lost", 0) / total, 3) if total else None,
+        "cap_kills_after_final": sum(r.kill_after_final for r in runs),  # [V2.80]
+        "loss_no_verdict": _counts(  # [V2.80]: the cause is kept, never folded into unknown
+            r.loss_watch for r in runs if r.verdict == "monitor_lost" and _no_verdict(r.loss_watch)
+        ),
+        "monitor_losses": {  # [V2.64] Two: real against slow losses, from the loss watch
+            kind: sum(r.verdict == "monitor_lost" and _kind(r.loss_watch) == kind for r in runs)
+            for kind in ("slow", "gone", "unknown")
+        },
         "fail_reasons": _counts(_closed_reason(r.reason) for r in runs if r.verdict == "fail"),
         "void_causes": _counts(_closed_reason(r.reason) for r in runs if r.verdict == "void"),
         "audit": _audits(finals),
@@ -1191,6 +1220,9 @@ class ChildRun:
     final: Json | None
     killed: bool
     code: int | None
+    loss_watch: LossRead | None = None
+    kill_after_final: bool = False
+    """[V2.80]: killed at the cap with a complete final line already written."""
     kill_failure: str | None = None
     """#431: why the kill did not end the child (`kill_failed:<code>`, `kill_timeout`,
     `kill_raised:<type>`, `child_survived`); None when it did, or no kill was needed."""
@@ -1213,7 +1245,8 @@ def run_child(
     kill: Callable[[int], str | None],
 ) -> ChildRun:
     """Run the child to its end or its cap (then its whole tree is killed), and read its final
-    JSON line from `out`; a last line that is not one JSON object is no final line. On any
+    JSON line from `out`, and its `loss_watch` line apart (`_read_out`: the final line is the
+    last JSON object with a known CLI status, never just the last line). On any
     other exit path (a Ctrl+C, any exception while waiting) the child this call started is
     killed the same way before the exception goes on: a stopped run never leaves its task
     running. A kill that did not end the child is never a clean stop: on the cap it is the
@@ -1235,7 +1268,15 @@ def run_child(
         if stopped is not None:
             exc.add_note(f"child kill: {stopped}")
         raise
-    return ChildRun(None if killed else _last_json(out), killed, code, failure)
+    final, watch = _read_out(out)  # [V2.80]: on the cap too; a cut-off line is no final line
+    return ChildRun(
+        final,
+        killed,
+        code,
+        loss_watch=watch,
+        kill_after_final=killed and final is not None,
+        kill_failure=failure,
+    )
 
 
 def _end(child: Child, kill: Callable[[int], str | None]) -> str | None:
@@ -1254,18 +1295,43 @@ def _end(child: Child, kill: Callable[[int], str | None]) -> str | None:
     return failed
 
 
-def _last_json(out: Path) -> Json | None:
+def _no_verdict(read: LossRead | None) -> bool:
+    return read is not None and read.startswith("no_verdict:")
+
+
+def _kind(read: LossRead | None) -> str:
+    """slow, gone, or unknown: no record, or a record that says why there is no verdict."""
+    return "slow" if read == "slow" else "gone" if read == "gone" else "unknown"
+
+
+def _read_out(out: Path) -> tuple[Json | None, LossRead | None]:
+    """The final line is the last JSON object with a known CLI status (`STATUSES`), never just
+    the last line (the coordinator's ruling on [V2.64] Two); the `loss_watch` record is read
+    apart, from the last line that carries one, and only from the closed sets (a verdict, or
+    `no_verdict:<cause>`)."""
     try:
         lines = [ln for ln in out.read_text(encoding="utf-8").splitlines() if ln.strip()]
     except OSError:
-        return None
-    if not lines:
-        return None
-    try:
-        final = json.loads(lines[-1])
-    except ValueError:
-        return None
-    return final if isinstance(final, dict) else None
+        return None, None
+    final: Json | None = None
+    watch: LossRead | None = None
+    for line in lines:
+        try:
+            doc = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(doc, dict):
+            continue
+        if doc.get("status") in STATUSES:
+            final = doc
+        elif "loss_watch" in doc:
+            block = doc["loss_watch"]
+            verdict = block.get("verdict") if isinstance(block, dict) else None
+            cause = block.get("no_verdict") if isinstance(block, dict) else None
+            watch = "slow" if verdict == "slow" else "gone" if verdict == "gone" else None
+            if watch is None and cause in NO_VERDICT_CAUSES:
+                watch = f"no_verdict:{cause}"
+    return final, watch
 
 
 STDERR_NAME: Final = "stderr.dpapi"
@@ -1414,18 +1480,24 @@ def _live_3d(
             except ChromeLost:  # #459: the browser went away; a void, never a crash
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
                                  killed=ran.killed, code=ran.code, memory=memory,
-                                 kill_failure=ran.kill_failure, lost=CHROME_LOST)  # fmt: skip
+                                 kill_failure=ran.kill_failure, lost=CHROME_LOST,
+                                 loss_watch=ran.loss_watch,
+                                 kill_after_final=ran.kill_after_final)  # fmt: skip
             except (OSError, RuntimeError, ValueError):
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
                                  killed=ran.killed, code=ran.code, memory=memory,
-                             kill_failure=ran.kill_failure)  # fmt: skip
+                                 kill_failure=ran.kill_failure,
+                                 kill_after_final=ran.kill_after_final,
+                                 loss_watch=ran.loss_watch)  # fmt: skip
             finally:
                 cdp.close()
             enters = sum(e.ev == "enter" for e in entries)
             passed = fixture.passes(variant, entries)  # type: ignore[arg-type]  # a variant's path
             return RunRecord(task.task_id, run, ran.final, True, True, passed, enters,
                              killed=ran.killed, code=ran.code, memory=memory,
-                             kill_failure=ran.kill_failure)  # fmt: skip
+                                 kill_failure=ran.kill_failure,
+                                 kill_after_final=ran.kill_after_final,
+                                 loss_watch=ran.loss_watch)  # fmt: skip
         finally:
             stop_chrome(proc, tmp / "profile")
             shutil.rmtree(tmp, ignore_errors=True)
@@ -1497,16 +1569,22 @@ def _live_page(
             except ChromeLost:  # #459: the browser went away; a void, never a crash
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
                                  killed=ran.killed, code=ran.code, memory=memory,
-                                 kill_failure=ran.kill_failure, lost=CHROME_LOST)  # fmt: skip
+                                 kill_failure=ran.kill_failure, lost=CHROME_LOST,
+                                 loss_watch=ran.loss_watch,
+                                 kill_after_final=ran.kill_after_final)  # fmt: skip
             except (OSError, RuntimeError, ValueError):
                 return RunRecord(task.task_id, run, ran.final, True, False, None, None,
                                  killed=ran.killed, code=ran.code, memory=memory,
-                             kill_failure=ran.kill_failure)  # fmt: skip
+                                 kill_failure=ran.kill_failure,
+                                 kill_after_final=ran.kill_after_final,
+                                 loss_watch=ran.loss_watch)  # fmt: skip
             finally:
                 cdp.close()
             return RunRecord(task.task_id, run, ran.final, True, True, check, None,
                              killed=ran.killed, code=ran.code, memory=memory,
-                             kill_failure=ran.kill_failure)  # fmt: skip
+                                 kill_failure=ran.kill_failure,
+                                 kill_after_final=ran.kill_after_final,
+                                 loss_watch=ran.loss_watch)  # fmt: skip
         finally:
             stop_chrome(proc, tmp / "profile")
             shutil.rmtree(tmp, ignore_errors=True)
