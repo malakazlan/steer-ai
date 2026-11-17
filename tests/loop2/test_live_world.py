@@ -1118,6 +1118,23 @@ def test_a_uia_client_outside_the_mta_never_starts() -> None:
     assert failed.value.message == "com_apartment"
 
 
+def test_a_32_bit_interpreter_is_refused_before_the_session_or_the_monitor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PS-12: a probe's number needs a 64-bit dwExtraInfo; refuse with its own token, taking
+    nothing, so it is never read as a lost monitor."""
+    from steerai.loop2 import live_world  # noqa: PLC0415 - this test only
+
+    monkeypatch.setattr(live_world, "_pointer_bytes", lambda: 4)
+    platform = Platform()
+    with pytest.raises(SteerError) as failed:
+        _world(platform)
+    assert failed.value.code is ErrorCode.GATE_BLOCKED
+    assert failed.value.message == "interpreter_not_64bit"
+    assert "session" not in platform.calls
+    assert platform.monitor.closed == 0
+
+
 def test_the_ports_run_only_on_the_thread_that_built_the_world() -> None:
     """LW-12: COM elements never cross threads (packet §1, a design choice)."""
     world, _ = _world()

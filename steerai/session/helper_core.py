@@ -21,10 +21,14 @@ from typing import Final
 
 from steerai.session.hook_classifier import (
     HOOKS,
+    LLKHF_INJECTED,
+    LLKHF_UP,
+    LLMHF_INJECTED,
     OTHER_STEER_INPUT,
     UNASSIGNED_VKS,
     V1_TAG,
     Classifier,
+    probe_tag,
 )
 from steerai.session.hook_layout import (
     CONFIG_WORDS,
@@ -150,7 +154,8 @@ def config_error(config: Words) -> int:
         config.get("magic") == MAGIC
         and config.get("layout_version") == LAYOUT_VERSION
         and config.get("crc") == _crc(config)
-        and tag not in {0, V1_TAG}
+        and 0 < tag < 1 << 32
+        and tag != V1_TAG
         and config.get("v1_tag") == V1_TAG
         and config.get("probe_vk") in UNASSIGNED_VKS
         and config.get("hook_timeout_ms") > 0
@@ -176,6 +181,7 @@ class HelperCore:
             extra_info=config.get("run_tag"),
             probe_vk=config.get("probe_vk"),
             dead_band_px=config.get("dead_band_px"),
+            numbered_probes=True,
         )
         self._published_user: float | None = None
         self._published_own = dict.fromkeys(HOOKS, float(started_qpc))
@@ -359,8 +365,10 @@ def warm_up(config: Words, *, freq: int, rounds: int = WARM_ROUNDS) -> None:
     probe = config.get("probe_vk")
     for i in range(rounds):
         at = 1_000 + i
-        core.keyboard(flags=0x80, extra=tag, vk=probe, event_ms=at, entry_ms=at, entry_qpc=at)
-        core.mouse(message=0x0200, flags=0, extra=0, pt=(i, i), event_ms=at, entry_ms=at,
-                   entry_qpc=at)  # fmt: skip
+        numbered = probe_tag(tag, i + 1)  # a numbered probe on both hooks, as the real one
+        core.keyboard(flags=LLKHF_UP | LLKHF_INJECTED, extra=numbered, vk=probe, event_ms=at,
+                      entry_ms=at, entry_qpc=at)  # fmt: skip
+        core.mouse(message=0x0200, flags=LLMHF_INJECTED, extra=numbered, pt=(i, i), event_ms=at,
+                   entry_ms=at, entry_qpc=at)  # fmt: skip
         core.finished(entry_qpc=at, exit_qpc=at + 1)
         core.loop(qpc=at * freq // 1000, unbiased_100ns=at * 10_000)

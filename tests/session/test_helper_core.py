@@ -4,6 +4,8 @@ enums, a nonce and a pid into the status words, and reads `ask_depth` directly e
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from steerai.session.helper_core import (
@@ -17,7 +19,9 @@ from steerai.session.helper_core import (
     write_config,
 )
 from steerai.session.hook_classifier import (
+    LLKHF_INJECTED,
     LLKHF_UP,
+    LLMHF_INJECTED,
     V1_TAG,
     WM_LBUTTONDOWN,
     WM_MOUSEMOVE,
@@ -69,9 +73,17 @@ def _core(config: Words | None = None) -> tuple[HelperCore, Words, Words]:
     return core, cfg, status
 
 
-def _key(core: HelperCore, *, extra: int, vk: int = 0x41, up: bool = False, at_ms: int) -> bool:
+def _key(
+    core: HelperCore,
+    *,
+    extra: int,
+    vk: int = 0x41,
+    up: bool = False,
+    at_ms: int,
+    injected: bool = False,
+) -> bool:
     return core.keyboard(
-        flags=LLKHF_UP if up else 0,
+        flags=(LLKHF_UP if up else 0) | (LLKHF_INJECTED if injected else 0),
         extra=extra,
         vk=vk,
         event_ms=at_ms,
@@ -89,7 +101,15 @@ def test_a_written_config_is_valid() -> None:
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("magic", 1), ("layout_version", 99), ("run_tag", 0), ("run_tag", V1_TAG), ("probe_vk", 0x41)],
+    [
+        ("magic", 1),
+        ("layout_version", 99),
+        ("layout_version", 2),  # the helper of the version before [V2.80]
+        ("run_tag", 0),
+        ("run_tag", V1_TAG),
+        ("run_tag", 1 << 32 | RUN_TAG),  # wider than the 32-bit tag a probe's number sits above
+        ("probe_vk", 0x41),
+    ],
 )
 def test_a_config_that_was_changed_or_is_unusable_is_refused(field: str, value: int) -> None:
     """F15: the helper checks magic, version and the CRC before it hooks anything."""
@@ -131,15 +151,15 @@ def test_a_failure_and_a_close_are_states_with_a_code() -> None:
 def test_the_probe_keys_key_up_is_a_keyboard_delivery_and_wakes_steer() -> None:
     core, _cfg, status = _core()
     assert not _key(core, extra=RUN_TAG, vk=PROBE, up=False, at_ms=2_000)
-    assert _key(core, extra=probe_tag(RUN_TAG, 3), vk=PROBE, up=True, at_ms=2_001)
+    assert _key(core, extra=probe_tag(RUN_TAG, 3), vk=PROBE, up=True, at_ms=2_001, injected=True)
     assert status.get("probe_seq_keyboard") == 3
     assert status.get("last_own_qpc_keyboard") == 2_001 * MS
 
 
 def test_a_probe_move_is_a_mouse_delivery_by_its_number() -> None:
     core, _cfg, status = _core()
-    assert core.mouse(message=WM_MOUSEMOVE, flags=0, extra=probe_tag(RUN_TAG, 4), pt=(1, 1),
-                      event_ms=2_000, entry_ms=2_000, entry_qpc=2_000 * MS)  # fmt: skip
+    assert core.mouse(message=WM_MOUSEMOVE, flags=LLMHF_INJECTED, extra=probe_tag(RUN_TAG, 4),
+                      pt=(1, 1), event_ms=2_000, entry_ms=2_000, entry_qpc=2_000 * MS)  # fmt: skip
     assert status.get("probe_seq_mouse") == 4
     assert status.get("probe_seq_keyboard") == 0
 
@@ -178,12 +198,12 @@ def test_a_persons_event_is_published_before_that_hooks_later_probe(hook: str) -
     core._status = Spy(status)  # type: ignore[assignment]  # a spy on every store, in order
     if hook == "keyboard":
         _key(core, extra=0, at_ms=3_000)
-        _key(core, extra=probe_tag(RUN_TAG, 1), vk=PROBE, up=True, at_ms=3_001)
+        _key(core, extra=probe_tag(RUN_TAG, 1), vk=PROBE, up=True, at_ms=3_001, injected=True)
     else:
         core.mouse(message=WM_LBUTTONDOWN, flags=0, extra=0, pt=(9, 9), event_ms=3_000,
                    entry_ms=3_000, entry_qpc=3_000 * MS)  # fmt: skip
-        core.mouse(message=WM_MOUSEMOVE, flags=0, extra=probe_tag(RUN_TAG, 1), pt=(9, 9),
-                   event_ms=3_001, entry_ms=3_001, entry_qpc=3_001 * MS)  # fmt: skip
+        core.mouse(message=WM_MOUSEMOVE, flags=LLMHF_INJECTED, extra=probe_tag(RUN_TAG, 1),
+                   pt=(9, 9), event_ms=3_001, entry_ms=3_001, entry_qpc=3_001 * MS)  # fmt: skip
     assert all(user == 3_000 * MS for delivered, user in seen if delivered >= 1)
     assert seen[-1] == (1, 3_000 * MS)
 
@@ -375,7 +395,10 @@ def test_inside_one_publish_the_persons_time_is_stored_before_the_delivery() -> 
     before = classifier.probe_seq("keyboard")
     classifier.on_keyboard(flags=0, extra=0, now=float(3_000 * MS), vk=0x41)
     classifier.on_keyboard(
-        flags=LLKHF_UP, extra=probe_tag(RUN_TAG, 1), now=float(3_001 * MS), vk=PROBE
+        flags=LLKHF_UP | LLKHF_INJECTED,
+        extra=probe_tag(RUN_TAG, 1),
+        now=float(3_001 * MS),
+        vk=PROBE,
     )
     assert core._publish("keyboard", before)
     delivered = order.index("probe_seq_keyboard")
@@ -392,3 +415,39 @@ def test_a_stall_between_ready_and_the_first_loop_is_a_gap() -> None:
     core.ready(qpc=1_100 * MS, unbiased_100ns=1_100 * 10_000)
     core.loop(qpc=2_300 * MS, unbiased_100ns=2_300 * 10_000)  # 1.2 s after ready
     assert status.get("gap_events") == 1
+
+
+def test_a_foreign_numbered_event_leaves_the_probe_words_at_zero() -> None:
+    """PS-31: a person's event that merely looks numbered (not injected, or another key) moves
+    neither word."""
+    core, _cfg, status = _core()
+    assert not core.mouse(message=WM_LBUTTONDOWN, flags=0, extra=probe_tag(RUN_TAG, 4), pt=(1, 1),
+                          event_ms=2_000, entry_ms=2_000, entry_qpc=2_000 * MS)  # fmt: skip
+    assert not _key(core, extra=probe_tag(RUN_TAG, 4), vk=0x41, up=True, at_ms=2_001)
+    assert not _key(core, extra=probe_tag(RUN_TAG, 4), vk=PROBE, up=True, at_ms=2_002)
+    assert (status.get("probe_seq_mouse"), status.get("probe_seq_keyboard")) == (0, 0)
+
+
+def test_the_warm_up_runs_a_numbered_probe_through_both_hooks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PS-24: the first real probe is warm, so the numbered path is exercised in the warm-up."""
+    from steerai.session import helper_core  # noqa: PLC0415 - this test only
+
+    seen: list[tuple[str, int]] = []
+    real_key = helper_core.HelperCore.keyboard
+    real_mouse = helper_core.HelperCore.mouse
+
+    def key(self: HelperCore, **kw: Any) -> bool:  # Any: the callback's keywords, forwarded
+        seen.append(("keyboard", kw["extra"] >> 32))
+        return real_key(self, **kw)
+
+    def mouse(self: HelperCore, **kw: Any) -> bool:  # Any: the callback's keywords, forwarded
+        seen.append(("mouse", kw["extra"] >> 32))
+        return real_mouse(self, **kw)
+
+    monkeypatch.setattr(helper_core.HelperCore, "keyboard", key)
+    monkeypatch.setattr(helper_core.HelperCore, "mouse", mouse)
+    helper_core.warm_up(_config(), freq=FREQ, rounds=1)
+    assert ("keyboard", 1) in seen
+    assert ("mouse", 1) in seen

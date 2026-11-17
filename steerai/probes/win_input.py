@@ -313,6 +313,17 @@ def key_up_probe(vk: int, *, tag: int | None = None, seq: int | None = None) -> 
     _send(_user32(), build_keyboard_input(vk=vk, keyup=True, tag=_probe_tag_of(tag, seq)))
 
 
+_MOUSEEVENTF_MOVE_NOCOALESCE = 0x2000
+"""Microsoft Learn, MOUSEINPUT: the move is not coalesced with a later one."""
+
+
+def nudge_flags(*, seq: int | None) -> int:
+    """The nudge's `dwFlags`; a numbered probe's move is not coalesced, so it reaches the hook
+    ([V2.80]); an unnumbered nudge is as it was."""
+    flags = _MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE | _MOUSEEVENTF_VIRTUALDESK
+    return flags | _MOUSEEVENTF_MOVE_NOCOALESCE if seq is not None else flags
+
+
 def nudge_in_place(*, tag: int | None = None, seq: int | None = None) -> None:
     """A tagged absolute move to the cursor's current position: reaches a low-level hook as
     Steer's own event and leaves the cursor still (probe `hook-latency-2026-11-04`: a
@@ -325,7 +336,7 @@ def nudge_in_place(*, tag: int | None = None, seq: int | None = None) -> None:
         build_mouse_input(
             dx=ax,
             dy=ay,
-            flags=_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE | _MOUSEEVENTF_VIRTUALDESK,
+            flags=nudge_flags(seq=seq),
             tag=_probe_tag_of(tag, seq),
         ),
     )

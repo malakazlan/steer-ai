@@ -204,6 +204,7 @@ class MonitorCore:
             extra_info=extra_info,
             probe_vk=probe_vk,
             dead_band_px=dead_band_px,
+            numbered_probes=per_hook,
         )
         self._ledger = ProbeLedger(per_hook=per_hook, deadline_s=deadline_s)
         """[V2.57] LW-01 (v2): each hook proves itself; v1 keeps one proof for both. [V2.59]
@@ -393,6 +394,8 @@ class HookMonitor:
         self._procs: list[Any] = []  # the WINFUNCTYPE objects must outlive the hooks
         self._stop_timed_out = False
         self._hotkey_registered = False
+        self._started_once = False
+        """[V2.80] #492: a per-hook monitor starts once, so its probe numbers are not reused."""
 
     # ---- lifecycle ------------------------------------------------------------------------
 
@@ -404,6 +407,12 @@ class HookMonitor:
                 ErrorCode.GATE_BLOCKED,
                 "monitor_unavailable: a previous hook thread did not stop; restart the process",
             )
+        if self._per_hook and self._started_once:
+            raise SteerError(
+                ErrorCode.GATE_BLOCKED,
+                "monitor_unavailable: a per-hook monitor is single use (its probe numbers)",
+            )
+        self._started_once = True
         self._core = MonitorCore(
             started_at=self._monotonic(),
             dead_band_px=self._dead_band,
@@ -470,9 +479,12 @@ class HookMonitor:
         seq = self._core.probe_sent(now=self._monotonic())
         try:
             if self._per_hook:  # v1 sends the bare tag and proves nothing by number
-                nudge_in_place(seq=seq)
+                # the monitor's own tag, never the process tag read at send time ([V2.64])
+                nudge_in_place(tag=self._extra_info, seq=seq)
                 if self._probe_vk is not None:
-                    key_up_probe(self._probe_vk, seq=seq)  # LW-01: the keyboard hook's own proof
+                    key_up_probe(  # LW-01: the keyboard hook's own proof
+                        self._probe_vk, tag=self._extra_info, seq=seq
+                    )
             else:
                 nudge_in_place()
         except OSError:

@@ -272,7 +272,7 @@ def test_a_probe_seen_by_one_hook_only_is_a_lost_monitor() -> None:
     for per_hook, healthy in ((False, True), (True, False)):
         core = MonitorCore(started_at=100.0, per_hook=per_hook)
         seq = core.probe_sent(now=101.0)
-        _own_move(core, 101.1, seq)
+        _own_move(core, 101.1, seq if per_hook else 0)  # v1 sends the bare tag
         assert core.healthy(now=101.0 + PROBE_DEADLINE_S + 0.01, thread_alive=True) is healthy
     assert core.lost_hooks(now=101.0 + PROBE_DEADLINE_S + 0.01) == ("keyboard",)
 

@@ -82,7 +82,8 @@ HISTOGRAMS: Final = (("latency", LATENCY_BUCKETS), ("run_time", RUN_TIME_BUCKETS
 
 MAGIC: Final = 0x5354_4545_484F_4F4B
 """`STEEHOOK`: the config section's first word."""
-LAYOUT_VERSION: Final = 2
+LAYOUT_VERSION: Final = 3
+"""3: `probe_seq_*` replaced `delivered_*` in the same slots ([V2.80]); version 2 is refused."""
 
 STATE_STARTING: Final = 0
 STATE_READY: Final = 1

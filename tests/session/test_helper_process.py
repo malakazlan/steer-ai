@@ -143,3 +143,46 @@ def test_a_chord_already_held_refuses_the_helper_before_it_is_ready() -> None:
             helper.start()
     finally:
         user32.UnregisterHotKey(None, 0x5EED)
+
+
+def test_a_real_helper_proves_two_numbered_probes_by_their_own_numbers() -> None:
+    """#492, PS-06 (CI only): two probes through `bound_probe`, distinct numbers, each seen on
+    both hooks of the real helper, nothing lost."""
+    import time  # noqa: PLC0415 - this test only
+
+    from steerai.loop2.live_world import bound_probe  # noqa: PLC0415
+    from steerai.probes.win_input import key_up_probe, nudge_in_place  # noqa: PLC0415
+    from steerai.session.helper_monitor import _WordCounts  # noqa: PLC0415
+    from steerai.session.probe_ledger import ProbeLedger  # noqa: PLC0415
+
+    interpreter, launcher = this_interpreter()
+    tag = _run_tag()
+    helper = HelperProcess(
+        WindowsLaunch(),
+        interpreter=interpreter,
+        launcher=launcher,
+        system_root=os.environ["SYSTEMROOT"],
+        run_tag=tag,
+        probe_vk=0x0E,
+        kill_mods=_MOD_CTRL | _MOD_ALT | _MOD_SHIFT,
+        kill_vk=_VK_F10,
+        hook_timeout_ms=1000,
+    )
+    helper.start()
+    try:
+        counts = _WordCounts(helper, 10_000_000)
+        ledger = ProbeLedger(per_hook=True, deadline_s=1.0)
+        probe = bound_probe(tag, vk=0x0E, nudge=nudge_in_place, key_up=key_up_probe)
+        numbers = []
+        for _ in range(2):
+            seq = ledger.probe_sent(now=time.monotonic())
+            numbers.append(seq)
+            probe(seq)
+            deadline = time.monotonic() + 2.0
+            while not ledger.probe_seen(counts=counts) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert ledger.probe_seen(counts=counts)
+            assert ledger.lost_hooks(now=time.monotonic() + 5.0, counts=counts) == ()
+        assert numbers[0] != numbers[1]
+    finally:
+        helper.close()

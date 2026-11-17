@@ -24,7 +24,7 @@ from steerai.session.helper_core import (
     parse_helper_argv,
     write_config,
 )
-from steerai.session.hook_classifier import LLKHF_UP, probe_tag
+from steerai.session.hook_classifier import LLKHF_INJECTED, LLKHF_UP, probe_tag
 from steerai.session.hook_helper import HelperStepError, run_helper
 from steerai.session.hook_layout import (
     ERROR_HOOKS,
@@ -272,7 +272,12 @@ def test_a_probe_delivery_from_the_callback_wakes_steer_and_times_the_callback()
 
     def pump() -> Iterator[str]:
         assert p.keyboard is not None
-        p.keyboard(flags=LLKHF_UP, extra=probe_tag(RUN_TAG, 1), vk=PROBE, event_ms=p.tick())
+        p.keyboard(
+            flags=LLKHF_UP | LLKHF_INJECTED,
+            extra=probe_tag(RUN_TAG, 1),
+            vk=PROBE,
+            event_ms=p.tick(),
+        )
         yield from original()
 
     p.pump = pump  # type: ignore[method-assign]  # the callback fires during the pump

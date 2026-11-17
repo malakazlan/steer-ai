@@ -50,13 +50,17 @@ def probe_tag(run_tag: int, seq: int) -> int:
     """[V2.80] #492: the `dwExtraInfo` of one probe event: the run's tag in the low 32 bits and
     the probe's sequence number (1..PROBE_SEQ_MAX) above it. An action event carries the bare
     run tag, so only a probe has a sequence. Needs a 64-bit `ULONG_PTR`."""
+    if not 0 < run_tag <= TAG_MASK:
+        raise ValueError("a run tag is a nonzero 32-bit value")
     if not 0 < seq <= PROBE_SEQ_MAX:
         raise ValueError("a probe sequence is 1..PROBE_SEQ_MAX")
     return run_tag | seq << PROBE_SEQ_SHIFT
 
 
 def next_probe_seq(seq: int) -> int:
-    """The sequence after `seq`, wrapping past PROBE_SEQ_MAX to 1 (0 means no probe)."""
+    """The sequence after `seq`, wrapping past PROBE_SEQ_MAX to 1 (0 means no probe). The wrap
+    is unreachable: a ledger starts at a random number and 2**31 probes at the 1 s period take
+    over 68 years."""
     return seq % PROBE_SEQ_MAX + 1
 
 
@@ -78,8 +82,12 @@ class Classifier:
         extra_info: int,
         probe_vk: int,
         dead_band_px: int = DEAD_BAND_PX,
+        numbered_probes: bool = False,
     ) -> None:
         self._extra_info = extra_info
+        self._numbered = numbered_probes
+        """[V2.80] #492: v2 (the hook monitor with `per_hook`, the helper): a probe-shaped event
+        may carry a number. v1 keeps its exact compare, unchanged."""
         self._probe_vk = probe_vk
         self._dead_band = dead_band_px
         self._probe_seq = dict.fromkeys(HOOKS, 0)
@@ -101,9 +109,10 @@ class Classifier:
     # ---- what the hook thread feeds -------------------------------------------------------------
 
     def on_keyboard(self, *, flags: int, extra: int, now: float, vk: int = 0) -> None:
-        if extra & TAG_MASK == self._extra_info:
-            probe = vk == self._probe_vk and bool(flags & LLKHF_UP)
-            self._steer(now, "keyboard", seq=extra >> PROBE_SEQ_SHIFT if probe else 0)
+        probe = vk == self._probe_vk and bool(flags & LLKHF_UP)
+        seq = self._own_seq(extra, probe_shaped=probe, injected=bool(flags & LLKHF_INJECTED))
+        if seq is not None:
+            self._steer(now, "keyboard", seq=seq)
             return
         if extra == V1_TAG:
             self._other_steer(now)
@@ -114,9 +123,11 @@ class Classifier:
         self, *, message: int, flags: int, extra: int, pt: tuple[int, int], now: float
     ) -> None:
         x, y = pt
-        if extra & TAG_MASK == self._extra_info:
-            probe = message == WM_MOUSEMOVE
-            self._steer(now, "mouse", seq=extra >> PROBE_SEQ_SHIFT if probe else 0)
+        seq = self._own_seq(
+            extra, probe_shaped=message == WM_MOUSEMOVE, injected=bool(flags & LLMHF_INJECTED)
+        )
+        if seq is not None:
+            self._steer(now, "mouse", seq=seq)
             if message == WM_MOUSEMOVE:
                 self._reference = (x, y)
             return
@@ -193,6 +204,19 @@ class Classifier:
         return self._loop_failed
 
     # ---- internals -----------------------------------------------------------------------------
+
+    def _own_seq(self, extra: int, *, probe_shaped: bool, injected: bool) -> int | None:
+        """[V2.80] #492: None when the event is not Steer's own; else its probe number (0: an
+        action's event, the bare tag). Own is the exact tag, or (v2) a probe-shaped, injected
+        event with the tag below and a number in range above. Any other numbered event is
+        foreign: a person's."""
+        if extra == self._extra_info:
+            return 0
+        if self._numbered and probe_shaped and injected and extra & TAG_MASK == self._extra_info:
+            seq = extra >> PROBE_SEQ_SHIFT
+            if 1 <= seq <= PROBE_SEQ_MAX:
+                return seq
+        return None
 
     def _steer(self, now: float, hook: str, *, seq: int) -> None:
         self._last_steer = now

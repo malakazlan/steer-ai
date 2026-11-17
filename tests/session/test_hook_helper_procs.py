@@ -8,7 +8,7 @@ import ctypes
 from typing import Any
 
 from steerai.session.helper_core import HelperCore, write_config
-from steerai.session.hook_classifier import LLKHF_UP, probe_tag
+from steerai.session.hook_classifier import LLKHF_INJECTED, LLKHF_UP, probe_tag
 from steerai.session.hook_helper import (
     HC_ACTION,
     KeyboardHookStruct,
@@ -101,8 +101,8 @@ def test_no_status_word_is_written_from_the_events_content() -> None:
 
 def test_the_probe_key_up_through_the_real_procedure_is_delivered_and_wakes_steer() -> None:
     kb, _ms, status, platform = _wired()
-    info = KeyboardHookStruct(vkCode=PROBE, scanCode=0, flags=LLKHF_UP, time=platform.tick(),
-                              dwExtraInfo=probe_tag(RUN_TAG, 1))  # fmt: skip
+    info = KeyboardHookStruct(vkCode=PROBE, scanCode=0, flags=LLKHF_UP | LLKHF_INJECTED,
+                              time=platform.tick(), dwExtraInfo=probe_tag(RUN_TAG, 1))  # fmt: skip
     assert kb(HC_ACTION, 0x101, ctypes.addressof(info)) == NEXT
     assert status.get("probe_seq_keyboard") == 1
     assert platform.wakes == 1

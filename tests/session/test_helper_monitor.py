@@ -18,7 +18,7 @@ from steerai.session import helper_monitor
 from steerai.session.helper_core import KILL_ACK_S, write_config
 from steerai.session.helper_launch import CLOSE_TIMEOUT_MS
 from steerai.session.helper_monitor import WATCH_PERIOD_MS, HelperMonitor
-from steerai.session.hook_classifier import TAKEOVER
+from steerai.session.hook_classifier import TAKEOVER, next_probe_seq
 from steerai.session.hook_layout import (
     HISTOGRAMS,
     KIND_OTHER_STEER,
@@ -268,7 +268,7 @@ def test_the_loop_thread_and_the_watchdog_never_share_last_read_values() -> None
 def test_a_probe_is_proven_only_when_both_hooks_delivered_it() -> None:
     rig = _rig()
     rig.monitor.probe_now()
-    assert rig.probes == [1]
+    assert len(rig.probes) == 1
     rig.at(100.01)
     rig.deliver("mouse")
     assert not rig.monitor.probe_seen()
@@ -298,11 +298,11 @@ def test_a_stale_probe_number_in_the_words_does_not_prove_the_next_probe() -> No
     rig.at(102.0)
     rig.heartbeat()
     rig.monitor.probe_now()
-    assert rig.probes == [1, 2]
+    assert rig.probes[1] == next_probe_seq(rig.probes[0])
     assert not rig.monitor.probe_seen()
-    rig.deliver("mouse", "keyboard", seq=1)
+    rig.deliver("mouse", "keyboard", seq=rig.probes[0])
     assert not rig.monitor.probe_seen()
-    rig.deliver("mouse", "keyboard", seq=2)
+    rig.deliver("mouse", "keyboard", seq=rig.probes[1])
     assert rig.monitor.probe_seen()
 
 
@@ -329,7 +329,7 @@ def test_maintain_probes_only_when_due() -> None:
     rig.at(101.5)
     rig.heartbeat()
     rig.monitor.maintain()
-    assert rig.probes == [1]
+    assert len(rig.probes) == 1
 
 
 # ---- K4, [V2.60] Q1: the kill and its layers -----------------------------------------------------
@@ -812,3 +812,13 @@ def test_a_failed_end_of_the_helper_is_recorded_in_the_loss_never_raised() -> No
     assert rig.helper.terminated == 1
     assert rig.monitor._lost is not None
     assert rig.monitor._lost.endswith(";end_unconfirmed:6")
+
+
+def test_the_helpers_ledger_has_the_probes_number_before_the_probe_is_sent() -> None:
+    """PS-28, helper mode."""
+    rig = _rig()
+    seen: list[tuple[int, int]] = []
+    rig.monitor._probe = lambda seq: seen.append((rig.monitor._ledger._seq, seq))
+    rig.monitor.probe_now()
+    assert len(seen) == 1
+    assert seen[0][0] == seen[0][1] != 0

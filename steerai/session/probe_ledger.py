@@ -10,9 +10,11 @@ and no event of an earlier probe, is proof.
 
 from __future__ import annotations
 
+import secrets
+import threading
 from typing import Final, Protocol
 
-from steerai.session.hook_classifier import HOOKS, next_probe_seq
+from steerai.session.hook_classifier import HOOKS, PROBE_SEQ_MAX, next_probe_seq
 
 PROBE_PERIOD_S: Final = 1.0
 """Quiet time after the last tagged event before a self-probe is due (unmeasured)."""
@@ -39,6 +41,11 @@ class ProbeLedger:
         self._deadline_s = deadline_s
         self._seq = 0
         """The last probe's sequence number (0: none sent); both hooks must see exactly it."""
+        self._next = secrets.randbelow(PROBE_SEQ_MAX) + 1
+        """The next number: a random start, so a number is not reused for a tag in a process
+        (a new ledger under the same tag begins elsewhere), then counting up ([V2.80])."""
+        self._lock = threading.Lock()
+        """`probe_sent` may come from the loop and from a watch thread ([V2.64])."""
         self._probe_sent_at: float | None = None
 
     def probe_due(self, *, now: float, counts: HookCounts) -> bool:
@@ -63,12 +70,16 @@ class ProbeLedger:
 
     def probe_sent(self, *, now: float) -> int:
         """Start a probe: the sequence number its events must carry."""
-        self._seq = next_probe_seq(self._seq)
-        self._probe_sent_at = now
-        return self._seq
+        with self._lock:
+            seq = self._next
+            self._next = next_probe_seq(seq)
+            self._seq = seq
+            self._probe_sent_at = now
+            return seq
 
     def probe_ok(self, *, now: float, counts: HookCounts) -> bool:
-        """The probe half of health: v2, no hook lost; v1, the last probe not missed."""
+        """The probe half of health: v2, no hook lost; v1, the last probe not missed. In v1
+        `probe_seen` and `lost_hooks` never prove anything: v1 sends no number."""
         if self._per_hook:
             return not self.lost_hooks(now=now, counts=counts)
         sent = self._probe_sent_at

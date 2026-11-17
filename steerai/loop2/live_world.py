@@ -22,6 +22,7 @@ semantic one over `ToggleGuard` and `UiaOptions(client)` (AP-54), the physical o
 
 from __future__ import annotations
 
+import ctypes
 import gc
 import math
 import os
@@ -434,6 +435,8 @@ class LiveWorld:
     def _take_session(self, platform: Platform, config: LiveConfig) -> tuple[str, Monitor]:
         """[V2.57] LW-02: the session, then the run's tag, then the monitor on it. Any failure
         after the session was taken releases it (#361 H12)."""
+        if _pointer_bytes() < 8:  # [V2.80] #492: a probe's number needs a 64-bit dwExtraInfo
+            raise SteerError(ErrorCode.GATE_BLOCKED, "interpreter_not_64bit")
         # [V2.59]: the probe deadline from the system's hook timeout, read once at start
         self._hook_timeout_ms = platform.hook_timeout_ms()  # #385: the one read, passed on
         self._probe_deadline_s = probe_deadline_s(self._hook_timeout_ms)
@@ -1080,6 +1083,11 @@ PROVE_POLL_S = 0.01
 
 def _shown(value: int | None) -> str:
     return "unset" if value is None else str(value)
+
+
+def _pointer_bytes() -> int:
+    """The interpreter's pointer size in bytes (a test seam)."""
+    return ctypes.sizeof(ctypes.c_void_p)
 
 
 def _run_tag() -> int:

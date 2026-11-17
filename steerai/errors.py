@@ -41,6 +41,7 @@ WORLD_START_DETAILS: Final = frozenset(
         "dpi_context",
         "foreground_refused",
         "identity_unread",
+        "interpreter_not_64bit",
         "monitor_unavailable",
         "not_in_front",
         "nudge_refused",
