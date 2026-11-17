@@ -436,6 +436,11 @@ class HookMonitor:
         self._stop_timed_out = thread.is_alive()
         self._thread = None
 
+    @property
+    def stop_timed_out(self) -> bool:
+        """The last `close` returned with the hook thread still alive ([V2.80])."""
+        return self._stop_timed_out
+
     def thread_is_daemon(self) -> bool:
         return self._thread is not None and self._thread.daemon
 
@@ -468,8 +473,10 @@ class HookMonitor:
     def probe_now(self) -> None:
         self._core.probe_sent(now=self._monotonic())
         try:
-            nudge_in_place(tag=self._extra_info)  # [V2.80]: the monitor's own tag, never the
-            if self._per_hook and self._probe_vk is not None:  # process's current one
+            # [V2.80]: the monitor's own tag, never the process's current one (a probe after
+            # `restore_extra_info`); a probe that also takes a sequence number (#493) keeps it
+            nudge_in_place(tag=self._extra_info)
+            if self._per_hook and self._probe_vk is not None:
                 key_up_probe(self._probe_vk, tag=self._extra_info)  # LW-01: the keyboard's proof
         except OSError:
             self._core.on_probe_failed()  # fails closed: the next boundary stops (D4)

@@ -10,6 +10,7 @@ The hunter's table ids were not available to this build; the tests carry the rul
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import threading
@@ -401,13 +402,13 @@ def test_r2_a_close_that_keeps_failing_is_never_marked_closed_and_the_backstop_r
 
 
 @pytest.mark.parametrize("cause", get_args(NoVerdict))
-def test_every_no_verdict_cause_is_a_closed_token_the_harness_reads_as_unknown(
+def test_every_no_verdict_cause_is_a_closed_token_the_harness_keeps(
     cause: str, tmp_path: Path
 ) -> None:
     out = tmp_path / "out.jsonl"
     line = {"task_id": "t", "loss_watch": {"no_verdict": cause}}
     out.write_text(json.dumps(line) + "\n", encoding="utf-8")
-    assert _read_out(out) == (None, None)
+    assert _read_out(out) == (None, f"no_verdict:{cause}")
 
 
 # ---- the CLI: the final line first, then the loss_watch record -----------------------------------
@@ -581,3 +582,66 @@ def test_the_harness_reads_what_the_cli_writes(
     assert final is not None
     assert final["status"] == "stopped"
     assert watch == "slow"
+
+
+# ---- the re-review's folds ----------------------------------------------------------------------
+
+
+def test_a_probe_is_never_sent_after_the_backstop_close() -> None:
+    clock = Clock()
+    monitor = _Echo(clock, None)
+    watch = _watch(monitor, clock)
+    watch.close()  # the CLI's backstop got there first
+    assert watch.start().run() == LossReport(None, None, "overrun")
+    assert monitor.probes == 0
+    assert monitor.closed == 1
+
+
+def test_a_hook_thread_that_outlived_the_close_is_recorded_not_hidden() -> None:
+    clock = Clock()
+    traced: list[Any] = []
+
+    class Alive(_Echo):
+        stop_timed_out = True
+
+    watch = _watch(Alive(clock, None), clock, trace=traced.append).start()
+    watch.run()
+    assert watch.hooks_may_be_live is True
+    assert [t["token"] for t in traced] == ["monitor_stop_timed_out"]
+    assert traced[0]["code"] == "gate_blocked"
+
+
+def test_a_hook_thread_that_ended_is_not_recorded() -> None:
+    clock = Clock()
+    traced: list[Any] = []
+    watch = _watch(_Echo(clock, None), clock, trace=traced.append).start()
+    watch.run()
+    assert (watch.hooks_may_be_live, traced) == (False, [])
+
+
+def test_hh4_01_a_clock_that_fails_on_the_kill_path_never_escapes_kill_token() -> None:
+    platform = Platform()
+    platform.monitor.killed = False
+
+    def unread() -> bool:
+        raise OSError("kill unread")
+
+    platform.monitor.kill_requested = unread  # type: ignore[method-assign]  # a failing read
+    config = _config()
+    world = LiveWorld(config, platform, watch_losses=True)
+    config_clock = config.clock
+
+    def broken() -> float:
+        raise OSError("clock")
+
+    world._config = dataclasses.replace(config, clock=broken)
+    assert world._kill_token() == "monitor_lost"  # the loss is declared, no exception escapes
+    assert (world.monitor_lost, world._loss_at) == (1, None)
+    world._config = dataclasses.replace(config, clock=config_clock)
+    world.close()
+    assert world.loss_report == LossReport(None, None, "read_failed")
+    assert platform.monitor.closed == 1
+
+
+def test_the_stage_harness_causes_are_the_cli_causes() -> None:
+    assert get_args(NoVerdict) == stage1.NO_VERDICT_CAUSES

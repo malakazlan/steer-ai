@@ -766,9 +766,21 @@ class LiveWorld:
         if not self._lost:
             self._lost = True
             self.monitor_lost += 1
-            self._loss_at = self._config.clock()
+            try:
+                self._loss_at = self._config.clock()
+            except Exception:  # noqa: BLE001 - #385 HH4-01: no kill-path read ever raises
+                self._loss_at = None
+                self._write(
+                    {
+                        "event": "loss_watch",
+                        "code": ErrorCode.PERCEPTION_DEGRADED.value,
+                        "token": "loss_clock_unread",
+                    }
+                )
             if self._watch_losses:
-                self._loss_cause = self._unwatchable_cause()
+                self._loss_cause = (
+                    "read_failed" if self._loss_at is None else self._unwatchable_cause()
+                )
 
     def _unwatchable_cause(self) -> NoVerdict | None:
         """None for a deadline loss after a real probe (some hook is named lost, so a probe was
@@ -1078,10 +1090,10 @@ class LiveWorld:
         """[V2.80]: True when the open monitor now belongs to a `LossWatch` (only a world built
         with `watch_losses`, after a watchable loss). A loss that is not watched leaves its
         `no_verdict` in `loss_report`; any failure to hand off tears down."""
-        if not self._watch_losses or not self._lost or self._loss_at is None:
+        if not self._watch_losses or not self._lost:
             return False
-        if self._loss_cause is not None:
-            self.loss_report = LossReport(None, None, self._loss_cause)
+        if self._loss_cause is not None or self._loss_at is None:
+            self.loss_report = LossReport(None, None, self._loss_cause or "read_failed")
             return False
         try:
             self.loss_watch = LossWatch(
@@ -1186,6 +1198,8 @@ class LossWatch:
         self._trace = trace
         self._lock = threading.Lock()
         self._closed = False
+        self.hooks_may_be_live = False
+        """The monitor's close returned with its hook thread still alive ([V2.80])."""
         self._report = LossReport(None, None, "read_failed")
         self._thread = threading.Thread(target=self._work, name="steer-loss-watch", daemon=True)
 
@@ -1209,6 +1223,11 @@ class LossWatch:
             if not self._closed:
                 self._monitor.close()
                 self._closed = True
+                # `HookMonitor.close` joins its thread for 2 s: a thread still alive after it
+                # may still hold the hooks and the kill key. Recorded, never hidden.
+                self.hooks_may_be_live = bool(getattr(self._monitor, "stop_timed_out", False))
+                if self.hooks_may_be_live:
+                    self._note(ErrorCode.GATE_BLOCKED, "monitor_stop_timed_out")
 
     def _work(self) -> None:
         try:
@@ -1231,7 +1250,10 @@ class LossWatch:
             refused = "no_probe"  # its deadline would not elapse inside the window
         if refused is not None:
             return LossReport(None, None, refused)
-        monitor.probe_now()  # the one probe after the loss, tagged with the run's own tag
+        with self._lock:  # a backstop close never has a probe sent after it
+            if self._closed:
+                return LossReport(None, None, "overrun")
+            monitor.probe_now()  # the one probe after the loss, tagged with the run's own tag
         return self._poll(sent)
 
     def _poll(self, sent: float) -> LossReport:

@@ -819,3 +819,10 @@ def test_a_second_steer_fails_on_the_kill_key_before_any_hook_or_input(
     assert user32.named("SetWindowsHookExW") == []
     assert sent == []
     second.close()
+
+
+def test_stop_timed_out_is_false_after_a_clean_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    monitor = _started(monkeypatch, FakeUser32())
+    assert monitor.stop_timed_out is False
+    monitor.close()
+    assert monitor.stop_timed_out is False
